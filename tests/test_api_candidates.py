@@ -256,6 +256,96 @@ def test_research_packet_endpoints_unknown_ticker_404(client):
     assert test_client.get("/markets/NOPE-MKT/research-packets").status_code == 404
 
 
+def test_post_forecast_requires_research_packet(client):
+    test_client, _ = client
+    test_client.get("/markets/candidates")
+
+    response = test_client.post("/markets/GOOD-MKT/forecast")
+    assert response.status_code == 409
+    assert "research packet" in response.json()["detail"]
+
+
+def test_post_forecast_with_prepare_creates_packet_and_forecast(client):
+    test_client, session = client
+    test_client.get("/markets/candidates")
+
+    response = test_client.post("/markets/GOOD-MKT/forecast?prepare=true")
+    assert response.status_code == 201
+    body = response.json()
+    assert body["market_ticker"] == "GOOD-MKT"
+    assert body["forecaster_name"] == "template_baseline"
+    assert body["research_packet_id"] is not None
+    assert 0.0 <= body["estimated_probability"] <= 1.0
+    assert body["evidence_depth"] == "template_only"
+    assert body["confidence"] <= 0.55
+    assert body["bull_case"]["points"] and body["bear_case"]["points"]
+    assert "raw_response" not in body
+
+    from app.models import MarketForecastRecord, MarketResearchPacket
+
+    assert session.execute(select(MarketResearchPacket)).scalar_one() is not None
+    assert session.execute(select(MarketForecastRecord)).scalar_one().raw_response is not None
+
+
+def test_post_forecast_after_full_pipeline(client):
+    test_client, _ = client
+    test_client.get("/markets/candidates")
+    test_client.post("/markets/GOOD-MKT/enrich-details")
+    test_client.post("/markets/GOOD-MKT/resolution-assessment")
+    test_client.post("/markets/GOOD-MKT/research-packet")
+
+    body = test_client.post("/markets/GOOD-MKT/forecast").json()
+    assert body["resolution_assessment_id"] is not None
+    assert body["forecast_risk"] in ("medium", "high")  # template_only stays cautious
+
+
+def test_get_forecasts_newest_first_without_raw(client):
+    test_client, _ = client
+    test_client.get("/markets/candidates")
+    first = test_client.post("/markets/GOOD-MKT/forecast?prepare=true").json()
+    second = test_client.post("/markets/GOOD-MKT/forecast").json()
+
+    response = test_client.get("/markets/GOOD-MKT/forecasts")
+    assert response.status_code == 200
+    forecasts = response.json()
+    assert [f["id"] for f in forecasts] == [second["id"], first["id"]]
+    assert all("raw_response" not in f for f in forecasts)
+
+    assert len(test_client.get("/markets/GOOD-MKT/forecasts?limit=1").json()) == 1
+
+
+def test_forecast_endpoints_unknown_ticker_404(client):
+    test_client, _ = client
+    assert test_client.post("/markets/NOPE-MKT/forecast").status_code == 404
+    assert test_client.get("/markets/NOPE-MKT/forecasts").status_code == 404
+
+
+def test_include_forecast_attaches_latest_without_creating(client):
+    test_client, session = client
+    test_client.get("/markets/candidates")
+
+    # No forecast yet -> stays null even when requested
+    body = test_client.get("/markets/candidates?include_forecast=true").json()
+    assert body["candidates"][0]["forecast"] is None
+
+    created = test_client.post("/markets/GOOD-MKT/forecast?prepare=true").json()
+
+    from app.models import MarketForecastRecord
+
+    count_before = len(session.execute(select(MarketForecastRecord)).scalars().all())
+    body = test_client.get("/markets/candidates?include_forecast=true").json()
+    attached = body["candidates"][0]["forecast"]
+    assert attached is not None
+    assert attached["id"] == created["id"]
+    assert "raw_response" not in attached
+    # GET must never create forecasts
+    count_after = len(session.execute(select(MarketForecastRecord)).scalars().all())
+    assert count_after == count_before
+
+    # And the default response omits forecasts entirely
+    assert test_client.get("/markets/candidates").json()["candidates"][0]["forecast"] is None
+
+
 def test_scan_persists_eligibility_assessments_linked_to_run(client):
     test_client, session = client
     body = test_client.get("/markets/candidates").json()

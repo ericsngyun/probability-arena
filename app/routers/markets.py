@@ -8,12 +8,18 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.db import get_db
-from app.models import Market, MarketResearchPacket, MarketResolutionAssessment
+from app.models import (
+    Market,
+    MarketForecastRecord,
+    MarketResearchPacket,
+    MarketResolutionAssessment,
+)
 from app.schemas import (
     CandidateOut,
     CandidatesResponse,
     MarketData,
     MarketDetailEnrichmentOut,
+    MarketForecastOut,
     RejectedMarketOut,
     ResearchPacketOut,
     ResolutionAssessmentOut,
@@ -25,7 +31,8 @@ from app.services.enrichment import (
     MarketDetailEnrichmentService,
     apply_latest_enrichment,
 )
-from app.services.research import create_research_packet
+from app.services.forecasting import ForecastingService, MissingResearchPacketError
+from app.services.research import create_research_packet, latest_packet_for
 from app.services.resolution import get_judge, persist_assessment
 from app.services.scanner import ScanResult, run_scan
 
@@ -116,6 +123,26 @@ def _attach_resolutions(db: Session, response: CandidatesResponse) -> None:
             candidate.resolution = ResolutionAssessmentOut.model_validate(row)
 
 
+def _attach_forecasts(db: Session, response: CandidatesResponse) -> None:
+    """Attach the latest persisted forecast per candidate. Pure DB lookup —
+    a GET must never create forecasts or call models."""
+    tickers = [c.ticker for c in response.candidates]
+    if not tickers:
+        return
+    rows = db.execute(
+        select(MarketForecastRecord)
+        .where(MarketForecastRecord.market_ticker.in_(tickers))
+        .order_by(MarketForecastRecord.created_at.desc(), MarketForecastRecord.id.desc())
+    ).scalars()
+    latest: dict[str, MarketForecastRecord] = {}
+    for row in rows:
+        latest.setdefault(row.market_ticker, row)
+    for candidate in response.candidates:
+        row = latest.get(candidate.ticker)
+        if row is not None:
+            candidate.forecast = MarketForecastOut.model_validate(row)
+
+
 @router.get("/candidates", response_model=CandidatesResponse)
 async def get_candidates(
     limit: int | None = Query(default=None, ge=1, le=200),
@@ -126,6 +153,10 @@ async def get_candidates(
     include_resolution: bool = Query(
         default=False,
         description="Attach the latest persisted resolution assessment to each candidate",
+    ),
+    include_forecast: bool = Query(
+        default=False,
+        description="Attach the latest persisted forecast to each candidate (never creates one)",
     ),
     db: Session = Depends(get_db),
 ) -> CandidatesResponse:
@@ -142,6 +173,7 @@ async def get_candidates(
     cache_key = (
         f"{cache.CANDIDATES_KEY}:{limit}"
         f":rejected={int(include_rejected)}:resolution={int(include_resolution)}"
+        f":forecast={int(include_forecast)}"
     )
     cached = cache.get_cached(cache_key)
     if cached:
@@ -159,6 +191,8 @@ async def get_candidates(
     if include_resolution:
         # Read-only DB lookup; never triggers new (potentially LLM) assessments
         _attach_resolutions(db, response)
+    if include_forecast:
+        _attach_forecasts(db, response)
     cache.set_cached(cache_key, response.model_dump_json(), settings.candidates_cache_ttl_seconds)
     return response
 
@@ -252,6 +286,56 @@ async def create_market_research_packet(
     market = _require_market(db, ticker)
     row = await create_research_packet(db, market, scanner_run_id=None)
     return ResearchPacketOut.model_validate(row)
+
+
+@router.post("/{ticker}/forecast", response_model=MarketForecastOut, status_code=201)
+async def create_market_forecast(
+    ticker: str,
+    prepare: bool = Query(
+        default=False,
+        description="Create a research packet first if none exists (off by default)",
+    ),
+    db: Session = Depends(get_db),
+) -> MarketForecastOut:
+    """Build and persist a forecast from the market's latest research packet.
+    409 when no packet exists unless prepare=true. Probabilities and reasoning
+    only — no EV, no sizing, no trade advice."""
+    market = _require_market(db, ticker)
+    if latest_packet_for(db, market.ticker) is None:
+        if not prepare:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"No research packet exists for {ticker!r}; create one via "
+                    "POST /markets/{ticker}/research-packet or pass prepare=true"
+                ),
+            )
+        await create_research_packet(db, market, scanner_run_id=None)
+
+    service = ForecastingService()
+    try:
+        row = await service.forecast_market(db, market, scanner_run_id=None)
+    except MissingResearchPacketError as exc:  # pragma: no cover — guarded above
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return MarketForecastOut.model_validate(row)
+
+
+@router.get("/{ticker}/forecasts", response_model=list[MarketForecastOut])
+async def list_market_forecasts(
+    ticker: str,
+    limit: int = Query(default=10, ge=1, le=100),
+    db: Session = Depends(get_db),
+) -> list[MarketForecastOut]:
+    """Recent persisted forecasts for one market, newest first. Pure DB
+    lookup — never creates forecasts. raw_response stays DB-only."""
+    _require_market(db, ticker)
+    rows = db.execute(
+        select(MarketForecastRecord)
+        .where(MarketForecastRecord.market_ticker == ticker)
+        .order_by(MarketForecastRecord.created_at.desc(), MarketForecastRecord.id.desc())
+        .limit(limit)
+    ).scalars().all()
+    return [MarketForecastOut.model_validate(row) for row in rows]
 
 
 @router.get("/{ticker}/research-packets", response_model=list[ResearchPacketOut])

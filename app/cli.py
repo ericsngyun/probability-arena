@@ -5,14 +5,17 @@ Usage:
     python -m app.cli enrich-details --limit 20
     python -m app.cli assess-resolution --limit 20
     python -m app.cli collect-research --limit 10
+    python -m app.cli forecast --limit 10
 
 Read-only: `scan` fetches public Kalshi market data, ranks it, and persists
 snapshots; `enrich-details` fetches detail/event/series metadata for top
 eligible candidates; `assess-resolution` scores resolution clarity (using
 enriched metadata where available); `collect-research` builds structured
-evidence packets. Recommended sequence:
-scan -> enrich-details -> assess-resolution -> collect-research.
-There are no forecasting or trading commands.
+evidence packets; `forecast` turns packets into probability forecasts with
+capped confidence. Recommended sequence:
+scan -> enrich-details -> assess-resolution -> collect-research -> forecast.
+Forecasts are probabilities and reasoning artifacts only; there are no
+trading commands.
 """
 
 import argparse
@@ -299,6 +302,103 @@ async def collect_research(
             session.close()
 
 
+async def forecast(
+    limit: int = 10,
+    forecaster=None,
+    session=None,
+    prepare: bool = False,
+) -> int:
+    """Create forecasts for the top eligible candidates of the most recent
+    successful scan that already have research packets, preferring markets
+    that are also enriched and resolution-assessed as researchable. By default
+    markets without packets are skipped; with prepare=True, missing packets
+    (and their upstream rows) are created first. Returns forecasts persisted."""
+    from sqlalchemy import select
+
+    from app.models import Market, MarketSnapshot, ScannerRun
+    from app.services.enrichment import latest_enrichment_for
+    from app.services.forecasting import ForecastingService
+    from app.services.research import create_research_packet, latest_packet_for
+    from app.services.resolution import latest_assessment_for
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        run = session.execute(
+            select(ScannerRun).where(ScannerRun.status == "ok").order_by(ScannerRun.id.desc())
+        ).scalars().first()
+        if run is None:
+            print("no successful scan found; run `python -m app.cli scan` first")
+            return 0
+
+        rows = session.execute(
+            select(MarketSnapshot, Market)
+            .join(Market, MarketSnapshot.market_id == Market.id)
+            .where(MarketSnapshot.scanner_run_id == run.id, MarketSnapshot.score > 0)
+            .order_by(MarketSnapshot.score.desc())
+            .limit(limit)
+        ).all()
+        if not rows:
+            print(f"scan run {run.id} has no eligible candidates")
+            return 0
+
+        if prepare:
+            for _, market in rows:
+                if latest_packet_for(session, market.ticker) is None:
+                    await create_research_packet(session, market, scanner_run_id=run.id)
+
+        with_packets = [
+            pair for pair in rows if latest_packet_for(session, pair[1].ticker) is not None
+        ]
+        skipped = len(rows) - len(with_packets)
+        if skipped:
+            print(f"skipping {skipped} candidates without research packets (use --prepare)")
+        if not with_packets:
+            print("no candidates with research packets; run collect-research first")
+            return 0
+
+        def preparedness(market: Market) -> int:
+            enriched = latest_enrichment_for(session, market.ticker) is not None
+            resolution = latest_assessment_for(session, market.ticker)
+            researchable = resolution is not None and resolution.tradeability == "researchable"
+            return 0 if (enriched and researchable) else 1
+
+        ordered = sorted(
+            with_packets, key=lambda pair: (preparedness(pair[1]), -(pair[0].score or 0.0))
+        )
+
+        service = ForecastingService(forecaster=forecaster)
+        domain_counts: dict[str, int] = {}
+        depth_counts: dict[str, int] = {}
+        risk_counts: dict[str, int] = {}
+        print(
+            f"forecasting {len(ordered)} candidates from scan run {run.id} "
+            f"forecaster={service.forecaster.name}"
+        )
+        for _, market in ordered:
+            row = await service.forecast_market(session, market, scanner_run_id=run.id)
+            packet = latest_packet_for(session, market.ticker)
+            domain = packet.domain if packet else "general"
+            domain_counts[domain] = domain_counts.get(domain, 0) + 1
+            depth_counts[row.evidence_depth] = depth_counts.get(row.evidence_depth, 0) + 1
+            risk_counts[row.forecast_risk] = risk_counts.get(row.forecast_risk, 0) + 1
+            print(
+                f"  {market.ticker:<40} p={row.estimated_probability:.2f} "
+                f"conf={row.confidence:.2f} depth={row.evidence_depth} risk={row.forecast_risk}"
+            )
+        print("domains: " + ", ".join(f"{d}={n}" for d, n in sorted(domain_counts.items())))
+        print("evidence: " + ", ".join(f"{d}={n}" for d, n in sorted(depth_counts.items())))
+        print("risk: " + ", ".join(f"{r}={n}" for r, n in sorted(risk_counts.items())))
+        return len(ordered)
+    finally:
+        if owns_session:
+            session.close()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m app.cli",
@@ -335,6 +435,18 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Create missing enrichments/resolution assessments first (off by default)",
     )
+    forecast_parser = subparsers.add_parser(
+        "forecast",
+        help="Create probability forecasts for candidates with research packets",
+    )
+    forecast_parser.add_argument(
+        "--limit", type=int, default=10, help="Max candidates to forecast (default: 10)"
+    )
+    forecast_parser.add_argument(
+        "--prepare",
+        action="store_true",
+        help="Create missing research packets first (off by default)",
+    )
     return parser
 
 
@@ -352,6 +464,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "collect-research":
         collected = asyncio.run(collect_research(limit=args.limit, prepare=args.prepare))
         return 0 if collected >= 0 else 1
+    if args.command == "forecast":
+        forecasted = asyncio.run(forecast(limit=args.limit, prepare=args.prepare))
+        return 0 if forecasted >= 0 else 1
     return 2
 
 

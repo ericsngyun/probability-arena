@@ -126,6 +126,42 @@ def test_0006_creates_and_drops_research_packets_table(tmp_path):
     assert "market_research_packets" not in _tables(url)
 
 
+def test_0007_creates_and_drops_market_forecasts_table(tmp_path):
+    url = f"sqlite:///{tmp_path}/forecasts.db"
+    run_migrations(url)
+
+    assert "market_forecasts" in _tables(url)
+    columns = _columns(url, "market_forecasts")
+    assert {
+        "id",
+        "market_ticker",
+        "scanner_run_id",
+        "research_packet_id",
+        "resolution_assessment_id",
+        "forecaster_name",
+        "forecaster_version",
+        "model_name",
+        "prompt_version",
+        "estimated_probability",
+        "confidence",
+        "evidence_depth",
+        "forecast_risk",
+        "forecast_summary",
+        "bull_case",
+        "bear_case",
+        "skeptic_notes",
+        "key_assumptions",
+        "missing_info",
+        "what_would_change_mind",
+        "calibration_tags",
+        "raw_response",
+        "created_at",
+    } <= columns
+
+    command.downgrade(_config(url), "0006")
+    assert "market_forecasts" not in _tables(url)
+
+
 def test_migrated_schema_matches_orm_metadata(tmp_path):
     """Every ORM-mapped column must exist in the migrated schema."""
     url = f"sqlite:///{tmp_path}/parity.db"

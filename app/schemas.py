@@ -131,6 +131,60 @@ class ResearchPacketOut(ResearchPacket):
     created_at: datetime
 
 
+class ForecastCase(BaseModel):
+    """One side of the argument (bull = case for YES, bear = case for NO)."""
+
+    thesis: str
+    points: list[str] = []
+
+
+class ForecastAssumption(BaseModel):
+    assumption: str
+    criticality: Literal["low", "medium", "high"] = "medium"
+
+
+class ForecastChangeTrigger(BaseModel):
+    trigger: str
+    direction: Literal["increases_probability", "decreases_probability", "unclear"] = "unclear"
+
+
+class MarketForecast(BaseModel):
+    """Structured probability forecast for one market. Probabilities and
+    reasoning artifacts only — no EV, no sizing, no trade recommendations."""
+
+    estimated_probability: float = Field(ge=0.0, le=1.0)
+    confidence: float = Field(ge=0.0, le=1.0)
+    evidence_depth: Literal["template_only", "source_backed", "mixed"]
+    forecast_risk: Literal["low", "medium", "high"]
+    forecast_summary: str
+    bull_case: ForecastCase
+    bear_case: ForecastCase
+    skeptic_notes: list[str] = []
+    key_assumptions: list[ForecastAssumption] = []
+    missing_info: list[str] = []
+    what_would_change_mind: list[ForecastChangeTrigger] = []
+    calibration_tags: list[str] = []
+    # Raw forecaster output persisted for audit; never serialized in API responses
+    raw_response: dict | None = Field(default=None, exclude=True, repr=False)
+
+
+class MarketForecastOut(MarketForecast):
+    """A persisted forecast, as returned by the API (raw_response stays DB-only)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    market_ticker: str
+    scanner_run_id: int | None = None
+    research_packet_id: int | None = None
+    resolution_assessment_id: int | None = None
+    forecaster_name: str
+    forecaster_version: str
+    model_name: str | None = None
+    prompt_version: str
+    created_at: datetime
+
+
 class MarketDetailEnrichmentOut(BaseModel):
     """A persisted detail enrichment, without the large raw_* payloads
     (those stay DB-only for audit)."""
@@ -170,6 +224,9 @@ class CandidateOut(BaseModel):
     # Latest persisted resolution assessment; populated only when
     # include_resolution=true and an assessment exists for this ticker
     resolution: ResolutionAssessmentOut | None = None
+    # Latest persisted forecast; populated only when include_forecast=true
+    # (a GET never creates forecasts)
+    forecast: MarketForecastOut | None = None
 
 
 class RejectedMarketOut(BaseModel):

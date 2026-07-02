@@ -1,13 +1,13 @@
 # Probability Arena
 
-**Kalshi read-only market intelligence** (MVP-004A: hygiene gating + enrichment + resolution assessment + research packets).
+**Kalshi read-only market intelligence** (MVP-004B: gating + enrichment + resolution assessment + research packets + capped-confidence forecasts).
 
 Scans active Kalshi markets over the public REST API, ranks them on tradability signals (spread, liquidity, volume, time to expiration, resolution clarity), and stores time-series snapshots in Postgres. Optionally maintains live orderbook snapshots over WebSocket when API credentials are configured.
 
 ## Safety notes
 
 - **Read-only by design. No order placement exists.** There is no trading, betting, order placement, wallet, execution, portfolio-sizing, or paper-trading code anywhere in this repo — the REST adapter only issues GETs (market list, market/event/series detail), the WebSocket client only sends channel subscriptions, and the CLI commands (`scan`, `enrich-details`, `assess-resolution`, `collect-research`) only read market data and write to our own database.
-- **No forecasts either.** MVP-004A stops at structured evidence collection: research packets contain queries, sources, facts, and gaps — no probability estimates and no trade recommendations. Forecasting is a future, separately-gated milestone.
+- **Forecasts are probabilities and reasoning artifacts only.** MVP-004B adds structured probability forecasts, and stops there: no EV calculation, no position sizing, no paper trading, no trade recommendations, no execution. The forecast schema deliberately has no trade/EV/sizing fields, and tests assert the absence of trading language in forecast output.
 - **LLM resolution judgment is OFF by default** (`ENABLE_LLM_RESOLUTION=false`). The deterministic rule-based judge needs no credentials or network beyond Kalshi; tests never call an LLM. When enabled, the LLM only *reads* rules text and returns a structured quality verdict — it has no tools and no trading capability.
 - Public market data requires **no credentials**. The Kalshi API key is only needed for the optional WebSocket orderbook feed, and even then the client only sends channel subscriptions.
 - Keep your Kalshi private key **outside the repo** (it is `.gitignore`d by extension, but store it elsewhere, e.g. `~/.kalshi/`). Never commit `.env`.
@@ -30,6 +30,7 @@ app/
   services/enrichment.py  Market detail enrichment (detail/event/series metadata)
   services/resolution.py  Resolution-criteria judges (rule-based / mock / optional LLM)
   services/research.py    Research packet collectors (template / mock / optional LLM+web)
+  services/forecasting.py Forecast engine (template baseline / mock / optional LLM)
   services/ranking.py     Weighted scoring: spread, liquidity, volume, expiration, clarity
   services/scanner.py     fetch -> assess eligibility -> rank eligible -> persist
   services/ws_snapshots.py Optional WS orderbook snapshot service (credential-gated)
@@ -56,6 +57,8 @@ The api container runs Alembic migrations automatically on startup (databases cr
 - `POST http://localhost:8000/markets/{ticker}/resolution-assessment` — assess one known market ad hoc and persist the result
 - `POST http://localhost:8000/markets/{ticker}/research-packet` — build and persist a research packet (uses latest enrichment + resolution; `avoid` markets are forced to `research_risk=high`)
 - `GET http://localhost:8000/markets/{ticker}/research-packets?limit=10` — recent packets for a ticker, newest first (raw collector output stays DB-only)
+- `POST http://localhost:8000/markets/{ticker}/forecast` — build and persist a forecast from the latest research packet (409 if none exists; pass `?prepare=true` to create one first)
+- `GET http://localhost:8000/markets/{ticker}/forecasts?limit=10` — recent forecasts, newest first; `GET /markets/candidates?include_forecast=true` attaches each candidate's latest forecast. **GETs never create forecasts or call models.**
 - `http://localhost:8000/docs` — OpenAPI UI
 
 ### Live Kalshi smoke test
@@ -99,7 +102,33 @@ python -m app.cli collect-research --limit 10
 
 Builds research packets for the top `--limit` eligible candidates of the most recent successful scan, preferring markets that already have an enrichment and a researchable resolution, and prints per-market lines plus domain/risk summaries. It deliberately does **not** trigger enrichment or assessment on its own — pass `--prepare` to create missing upstream rows first.
 
-**Recommended sequence:** `scan` → `enrich-details` → `assess-resolution` → `collect-research`. Each stage automatically prefers the previous stage's output when it exists.
+```bash
+python -m app.cli forecast --limit 10
+```
+
+Creates forecasts for the top eligible candidates that already have research packets (markets without packets are skipped unless `--prepare` is passed), preferring enriched + researchable markets, and prints per-market lines plus domain/evidence-depth/risk summaries.
+
+**Recommended sequence:** `scan` → `enrich-details` → `assess-resolution` → `collect-research` → `forecast`. Each stage automatically prefers the previous stage's output when it exists.
+
+## Forecast engine
+
+A forecast is a structured reasoning artifact: `estimated_probability`, `confidence`, `evidence_depth`, `forecast_risk`, a summary, `bull_case`/`bear_case`, `skeptic_notes`, `key_assumptions`, `missing_info`, `what_would_change_mind`, and `calibration_tags` — linked back to the research packet and resolution assessment it consumed, with raw forecaster output kept DB-only for audit.
+
+**Evidence depth** is computed deterministically from the research packet: `template_only` (completeness ≤ 0.65 and no facts beyond local Kalshi metadata), `source_backed` (external facts and completeness above the ceiling), or `mixed`. **Confidence caps** are enforced in post-processing on every forecast regardless of forecaster:
+
+| Condition | Cap (env var) |
+|---|---|
+| `template_only` evidence | 0.55 (`TEMPLATE_ONLY_MAX_CONFIDENCE`) |
+| `source_backed`/`mixed` evidence | 0.75 (`SOURCE_BACKED_MAX_CONFIDENCE`) |
+| Critical info missing (unresolved settlement source, or no/non-researchable resolution assessment) | 0.50 (`MISSING_CRITICAL_INFO_MAX_CONFIDENCE`) |
+
+**Forecasters** (`app/services/forecasting.py`):
+
+- `TemplateBaselineForecaster` (default) — deterministic neutral prior: anchors to the quoted market midpoint when a two-sided quote exists (public consensus as prior; tagged `anchored_to_market_mid`), otherwise 0.50. Populates all reasoning fields, including skeptic notes stating that it adds no independent information. Template-only forecasts stay at medium/high risk.
+- `MockForecaster` — canned forecasts for tests.
+- `LLMForecaster` — enabled only with `ENABLE_LLM_FORECASTING=true` (default **false**); requires an Anthropic credential. Consumes enrichment + resolution assessment + research packet via a structured-output Claude call (`FORECAST_MODEL_NAME`, default `claude-opus-4-8`); evidence depth, confidence caps, and risk are recomputed deterministically regardless of model output, and any failure (credentials, refusal, malformed output, API error) falls back to the template baseline, flagged `llm_error_fallback`.
+
+An `avoid` resolution verdict forces `forecast_risk=high` at the service level. **MVP-004B does not trade, paper trade, calculate EV, or recommend positions.**
 
 ## Research packets
 
@@ -217,6 +246,7 @@ It subscribes to the `orderbook_delta` channel for those tickers, maintains book
 | `market_resolution_assessments` | One row per assessment: judge identity (`model_name`, `prompt_version`), clarity/risk/tradeability verdict, flags, reasons, `raw_response`; `scanner_run_id` null for ad-hoc assessments |
 | `market_detail_enrichments` | One row per enrichment: normalized `rules_text`/`settlement_source`/title/category plus raw market/event/series payloads for audit; `scanner_run_id` null for ad-hoc enrichments |
 | `market_research_packets` | One row per packet: collector identity, domain, queries/sources/facts/gaps, completeness score, risk, raw collector output; links to scan, enrichment, and resolution assessment |
+| `market_forecasts` | One row per forecast: forecaster identity, probability, capped confidence, evidence depth, risk, bull/bear/skeptic reasoning, assumptions, change triggers, calibration tags, raw output; links to scan, packet, and assessment |
 
 Schema is managed by Alembic (`alembic/versions/`); migrations run automatically at app/CLI startup.
 

@@ -37,6 +37,16 @@ class Settings(BaseSettings):
     research_collector_version: str = "v1"
     research_model_name: str = "claude-opus-4-8"
 
+    # Forecast engine (MVP-004B) — probabilities and reasoning artifacts only
+    enable_llm_forecasting: bool = False
+    forecaster_name: str = "template_baseline"
+    forecaster_version: str = "v1"
+    forecast_prompt_version: str = "v1"
+    forecast_model_name: str = "claude-opus-4-8"
+    template_only_max_confidence: float = 0.55
+    source_backed_max_confidence: float = 0.75
+    missing_critical_info_max_confidence: float = 0.50
+
     # Candidate hygiene / eligibility gating (MVP-003A)
     require_two_sided_quote: bool = True
     exclude_zero_quote_markets: bool = True

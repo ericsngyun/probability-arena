@@ -518,6 +518,16 @@ def market_data_from_row(market: Market) -> MarketData:
     )
 
 
+def latest_packet_for(session: Session, ticker: str) -> MarketResearchPacket | None:
+    from sqlalchemy import select
+
+    return session.execute(
+        select(MarketResearchPacket)
+        .where(MarketResearchPacket.market_ticker == ticker)
+        .order_by(MarketResearchPacket.created_at.desc(), MarketResearchPacket.id.desc())
+    ).scalars().first()
+
+
 async def create_research_packet(
     session: Session,
     market: Market,

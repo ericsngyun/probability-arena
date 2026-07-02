@@ -210,6 +210,46 @@ class MarketResearchPacket(Base):
     scanner_run: Mapped["ScannerRun | None"] = relationship(back_populates="research_packets")
 
 
+class MarketForecastRecord(Base):
+    """One structured probability forecast for one market. Probabilities and
+    reasoning artifacts only — this table (and this codebase) carries no EV,
+    sizing, or trade-recommendation fields by design.
+
+    Links back to the research packet and resolution assessment consumed."""
+
+    __tablename__ = "market_forecasts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    market_ticker: Mapped[str] = mapped_column(String(64), index=True)
+    scanner_run_id: Mapped[int | None] = mapped_column(ForeignKey("scanner_runs.id"), index=True)
+    research_packet_id: Mapped[int | None] = mapped_column(
+        ForeignKey("market_research_packets.id")
+    )
+    resolution_assessment_id: Mapped[int | None] = mapped_column(
+        ForeignKey("market_resolution_assessments.id")
+    )
+    forecaster_name: Mapped[str] = mapped_column(String(64))
+    forecaster_version: Mapped[str] = mapped_column(String(16), default="v1")
+    model_name: Mapped[str | None] = mapped_column(String(64))
+    prompt_version: Mapped[str] = mapped_column(String(16), default="v1")
+    estimated_probability: Mapped[float] = mapped_column(Float)
+    confidence: Mapped[float] = mapped_column(Float)
+    evidence_depth: Mapped[str] = mapped_column(String(16))  # template_only|source_backed|mixed
+    forecast_risk: Mapped[str] = mapped_column(String(16))  # low|medium|high
+    forecast_summary: Mapped[str] = mapped_column(Text, default="")
+    bull_case: Mapped[dict | None] = mapped_column(RawJSON)
+    bear_case: Mapped[dict | None] = mapped_column(RawJSON)
+    skeptic_notes: Mapped[list | None] = mapped_column(RawJSON)
+    key_assumptions: Mapped[list | None] = mapped_column(RawJSON)
+    missing_info: Mapped[list | None] = mapped_column(RawJSON)
+    what_would_change_mind: Mapped[list | None] = mapped_column(RawJSON)
+    calibration_tags: Mapped[list | None] = mapped_column(RawJSON)
+    raw_response: Mapped[dict | None] = mapped_column(RawJSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    scanner_run: Mapped["ScannerRun | None"] = relationship(back_populates="forecasts")
+
+
 class ScannerRun(Base):
     """One execution of the market scanner: fetch -> rank -> persist."""
 
@@ -239,3 +279,4 @@ class ScannerRun(Base):
     research_packets: Mapped[list[MarketResearchPacket]] = relationship(
         back_populates="scanner_run"
     )
+    forecasts: Mapped[list[MarketForecastRecord]] = relationship(back_populates="scanner_run")
