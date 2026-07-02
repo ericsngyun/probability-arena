@@ -1,0 +1,14 @@
+# Probability Arena — baseline pipeline timer (USER unit). Every 4 hours.
+# See the .service file in this directory for install commands.
+
+[Unit]
+Description=Run Probability Arena baseline pipeline every 4 hours
+
+[Timer]
+OnCalendar=*-*-* 00/4:00:00
+RandomizedDelaySec=300
+Persistent=true
+Unit=probability-arena-baseline.service
+
+[Install]
+WantedBy=timers.target

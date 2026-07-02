@@ -1,0 +1,24 @@
+# Probability Arena — baseline measurement pipeline (read-only), USER unit.
+# For systemd --user managers (repo at %h/projects/probability-arena).
+# Install:
+#   mkdir -p ~/.config/systemd/user
+#   cp infra/systemd/user/probability-arena-baseline.{service,timer} ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now probability-arena-baseline.timer
+# Requires lingering for unattended operation: loginctl enable-linger $USER
+
+[Unit]
+Description=Probability Arena baseline measurement pipeline (read-only)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/projects/probability-arena
+EnvironmentFile=%h/projects/probability-arena/.env
+ExecStart=%h/projects/probability-arena/.venv/bin/python -m app.cli run-baseline
+NoNewPrivileges=true
+TimeoutStartSec=30min
+
+[Install]
+WantedBy=default.target
