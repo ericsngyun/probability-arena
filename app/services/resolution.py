@@ -164,7 +164,8 @@ class RuleBasedResolutionJudge:
             score -= min(PENALTY_SUBJECTIVE_CAP, PENALTY_SUBJECTIVE_EACH * len(subjective))
             flags.extend(f"{FLAG_SUBJECTIVE_WORDING}:{term}" for term in subjective)
 
-        settlement_source = detect_settlement_source(rules_text)
+        # A known source from detail enrichment beats rules-text detection
+        settlement_source = market.settlement_source or detect_settlement_source(rules_text)
         if settlement_source is None:
             score -= PENALTY_NO_SOURCE
             flags.append(FLAG_UNCLEAR_SETTLEMENT_SOURCE)

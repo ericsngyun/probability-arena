@@ -60,8 +60,12 @@ def client(monkeypatch):
     def override_get_db():
         yield session
 
+    from app.services import enrichment as enrichment_module
+    from tests.test_enrichment import FakeDetailAdapter
+
     app.dependency_overrides[get_db] = override_get_db
     monkeypatch.setattr(scanner_module, "KalshiRestAdapter", lambda: FakeAdapter([GOOD, PARLAY]))
+    monkeypatch.setattr(enrichment_module, "KalshiRestAdapter", FakeDetailAdapter)
     monkeypatch.setattr(cache, "get_cached", lambda key: None)
     monkeypatch.setattr(cache, "set_cached", lambda key, value, ttl: None)
 
@@ -169,6 +173,41 @@ def test_include_resolution_attaches_latest_assessment(client):
     assert resolution["model_name"] == "rule-based"
     assert resolution["tradeability"] == "researchable"
     assert resolution["settlement_source"]
+
+
+def test_post_enrich_details_persists_and_excludes_raw_payloads(client):
+    test_client, session = client
+    test_client.get("/markets/candidates")  # scan stores market metadata
+
+    response = test_client.post("/markets/GOOD-MKT/enrich-details")
+    assert response.status_code == 201
+    body = response.json()
+    assert body["market_ticker"] == "GOOD-MKT"
+    assert body["series_ticker"] == "KXMLBHRR"
+    assert body["settlement_source"].startswith("ESPN")
+    assert body["scanner_run_id"] is None
+    assert not any(key.startswith("raw_") for key in body)
+
+    from app.models import MarketDetailEnrichment
+
+    row = session.execute(select(MarketDetailEnrichment)).scalar_one()
+    assert row.raw_market_detail is not None
+    assert row.raw_series_detail is not None
+
+
+def test_post_enrich_details_unknown_ticker_404(client):
+    test_client, _ = client
+    assert test_client.post("/markets/NOPE-MKT/enrich-details").status_code == 404
+
+
+def test_resolution_assessment_uses_persisted_enrichment(client):
+    test_client, _ = client
+    test_client.get("/markets/candidates")
+    test_client.post("/markets/GOOD-MKT/enrich-details")
+
+    body = test_client.post("/markets/GOOD-MKT/resolution-assessment").json()
+    assert body["settlement_source"].startswith("ESPN")
+    assert "unclear_settlement_source" not in body["ambiguity_flags"]
 
 
 def test_scan_persists_eligibility_assessments_linked_to_run(client):

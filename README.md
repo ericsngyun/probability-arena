@@ -1,12 +1,12 @@
 # Probability Arena
 
-**Kalshi read-only market intelligence** (MVP-003B: candidate hygiene gating + resolution-criteria assessment).
+**Kalshi read-only market intelligence** (MVP-003C: hygiene gating + detail enrichment + resolution assessment).
 
 Scans active Kalshi markets over the public REST API, ranks them on tradability signals (spread, liquidity, volume, time to expiration, resolution clarity), and stores time-series snapshots in Postgres. Optionally maintains live orderbook snapshots over WebSocket when API credentials are configured.
 
 ## Safety notes
 
-- **Read-only by design. No order placement exists.** There is no trading, betting, order placement, wallet, or execution code anywhere in this repo — the REST adapter only issues GETs, the WebSocket client only sends channel subscriptions, and the CLI commands (`scan`, `assess-resolution`) only read market data and write to our own database. None should be added under MVP-001/002/003.
+- **Read-only by design. No order placement exists.** There is no trading, betting, order placement, wallet, or execution code anywhere in this repo — the REST adapter only issues GETs (market list, market/event/series detail), the WebSocket client only sends channel subscriptions, and the CLI commands (`scan`, `enrich-details`, `assess-resolution`) only read market data and write to our own database. None should be added under MVP-001/002/003.
 - **LLM resolution judgment is OFF by default** (`ENABLE_LLM_RESOLUTION=false`). The deterministic rule-based judge needs no credentials or network beyond Kalshi; tests never call an LLM. When enabled, the LLM only *reads* rules text and returns a structured quality verdict — it has no tools and no trading capability.
 - Public market data requires **no credentials**. The Kalshi API key is only needed for the optional WebSocket orderbook feed, and even then the client only sends channel subscriptions.
 - Keep your Kalshi private key **outside the repo** (it is `.gitignore`d by extension, but store it elsewhere, e.g. `~/.kalshi/`). Never commit `.env`.
@@ -26,6 +26,7 @@ app/
   adapters/kalshi.py      REST adapter: fetch + parse active markets (cursor paging,
                           legacy int-cent and current *_dollars/*_fp payload shapes)
   services/eligibility.py Deterministic candidate hygiene gate (thresholds below)
+  services/enrichment.py  Market detail enrichment (detail/event/series metadata)
   services/resolution.py  Resolution-criteria judges (rule-based / mock / optional LLM)
   services/ranking.py     Weighted scoring: spread, liquidity, volume, expiration, clarity
   services/scanner.py     fetch -> assess eligibility -> rank eligible -> persist
@@ -49,6 +50,7 @@ The api container runs Alembic migrations automatically on startup (databases cr
 - `GET http://localhost:8000/markets/candidates?limit=25` — top **eligible** candidates (triggers a scan, cached ~30s)
 - `GET http://localhost:8000/markets/candidates?include_rejected=true` — also returns gated-out markets with their `rejection_reasons` (debugging)
 - `GET http://localhost:8000/markets/candidates?include_resolution=true` — attaches each candidate's latest persisted resolution assessment (cheap DB lookup; never triggers new assessments)
+- `POST http://localhost:8000/markets/{ticker}/enrich-details` — fetch and persist detail/event/series metadata for one known market (response excludes the raw payloads; those stay DB-only)
 - `POST http://localhost:8000/markets/{ticker}/resolution-assessment` — assess one known market ad hoc and persist the result
 - `http://localhost:8000/docs` — OpenAPI UI
 
@@ -76,10 +78,26 @@ python -m app.cli scan --limit 100
 Runs migrations, fetches up to `--limit` open markets, assesses eligibility, ranks the eligible ones, persists a `scanner_runs` audit row (with `source=cli`, `duration_ms`, and error details on failure) plus per-market snapshots and eligibility assessments, then prints the top 20 and a rejection-reason summary.
 
 ```bash
+python -m app.cli enrich-details --limit 20
+```
+
+Fetches detail/event/series metadata for the top `--limit` eligible candidates of the most recent successful scan and persists one `market_detail_enrichments` row per market (raw payloads included for audit). Individual fetch failures are skipped, never fatal.
+
+```bash
 python -m app.cli assess-resolution --limit 20
 ```
 
 Takes the top `--limit` eligible candidates from the most recent successful scan (running a fresh scan if none exists), scores each market's resolution criteria with the configured judge, and persists one `market_resolution_assessments` row per market linked to that scan.
+
+**Recommended sequence:** `scan` → `enrich-details` → `assess-resolution`. Assessment automatically prefers enriched metadata when it exists.
+
+## Market detail enrichment
+
+Kalshi's list endpoint omits the metadata that matters most for judging resolution quality — the settlement sources and secondary rules live on the market **detail**, **event**, and **series** endpoints. Enrichment (all read-only GETs) fetches those three levels per market, normalizes `rules_text` (primary + secondary), `settlement_source` (named sources like `ESPN (https://www.espn.com)`), title/subtitle/category, and persists them with the full raw payloads for audit.
+
+Resolution assessment then prefers enrichment over list-level data: enriched `rules_text` replaces the sparse list rules, and a known `settlement_source` removes the `unclear_settlement_source` penalty outright (no text detection needed). Without an enrichment row, behavior falls back to list-level data unchanged — same deterministic scores as before. Live effect: sports candidates that scored a uniform 0.75 pre-enrichment assess at 1.00/low-risk once their series' named settlement sources are known.
+
+Only eligible candidates are enriched by default (CLI batch); `POST /markets/{ticker}/enrich-details` allows ad-hoc enrichment of any known ticker.
 
 ## Resolution assessment
 
@@ -173,6 +191,7 @@ It subscribes to the `orderbook_delta` channel for those tickers, maintains book
 | `scanner_runs` | Audit trail of each scan: `started_at`/`finished_at`/`duration_ms`, `source` (api/cli), counts, `status`, and `error_type`/`error_message` on failure |
 | `market_eligibility_assessments` | One row per market per scan: `is_eligible`, `rejection_reasons`, `warnings`, quote/spread/liquidity/volume/expiration inputs, `market_type_flags` |
 | `market_resolution_assessments` | One row per assessment: judge identity (`model_name`, `prompt_version`), clarity/risk/tradeability verdict, flags, reasons, `raw_response`; `scanner_run_id` null for ad-hoc assessments |
+| `market_detail_enrichments` | One row per enrichment: normalized `rules_text`/`settlement_source`/title/category plus raw market/event/series payloads for audit; `scanner_run_id` null for ad-hoc enrichments |
 
 Schema is managed by Alembic (`alembic/versions/`); migrations run automatically at app/CLI startup.
 

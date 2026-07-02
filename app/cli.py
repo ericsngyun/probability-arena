@@ -2,11 +2,14 @@
 
 Usage:
     python -m app.cli scan --limit 100
+    python -m app.cli enrich-details --limit 20
     python -m app.cli assess-resolution --limit 20
 
 Read-only: `scan` fetches public Kalshi market data, ranks it, and persists
-snapshots; `assess-resolution` scores resolution clarity for top eligible
-candidates. There are no trading commands.
+snapshots; `enrich-details` fetches detail/event/series metadata for top
+eligible candidates; `assess-resolution` scores resolution clarity (using
+enriched metadata where available). Recommended sequence:
+scan -> enrich-details -> assess-resolution. There are no trading commands.
 """
 
 import argparse
@@ -74,6 +77,7 @@ async def assess_resolution(
 
     from app.models import Market, MarketSnapshot, ScannerRun
     from app.schemas import MarketData
+    from app.services.enrichment import apply_latest_enrichment
     from app.services.resolution import get_judge, persist_assessment
     from app.services.scanner import run_scan
 
@@ -121,6 +125,7 @@ async def assess_resolution(
                 expiration_time=market.expiration_time,
                 rules_primary=market.rules_primary,
             )
+            market_data = apply_latest_enrichment(session, market_data)
             assessment = await judge.assess(market_data)
             persist_assessment(session, market.ticker, assessment, judge, scanner_run_id=run.id)
             print(
@@ -128,6 +133,47 @@ async def assess_resolution(
                 f"risk={assessment.resolution_risk} tradeability={assessment.tradeability}"
             )
         return len(rows)
+    finally:
+        if owns_session:
+            session.close()
+
+
+async def enrich_details(
+    limit: int = 20,
+    adapter=None,
+    session=None,
+) -> int:
+    """Enrich detail/event/series metadata for the top eligible candidates of
+    the most recent successful scan (running a fresh scan if none exists).
+    Returns the number of markets enriched."""
+    from sqlalchemy import select
+
+    from app.models import ScannerRun
+    from app.services.enrichment import MarketDetailEnrichmentService
+    from app.services.scanner import run_scan
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        run = session.execute(
+            select(ScannerRun).where(ScannerRun.status == "ok").order_by(ScannerRun.id.desc())
+        ).scalars().first()
+        if run is None:
+            print("no prior scan found; running a fresh scan")
+            result = await run_scan(session, adapter=adapter, source="cli")
+            run = result.run
+
+        service = MarketDetailEnrichmentService(adapter=adapter)
+        enriched = await service.enrich_top_candidates(session, run_id=run.id, limit=limit)
+        print(f"enriched {len(enriched)} candidates from scan run {run.id}")
+        for row in enriched:
+            source = row.settlement_source or "-"
+            print(f"  {row.market_ticker:<40} series={row.series_ticker or '-':<16} source={source[:70]}")
+        return len(enriched)
     finally:
         if owns_session:
             session.close()
@@ -150,6 +196,13 @@ def build_parser() -> argparse.ArgumentParser:
     assess_parser.add_argument(
         "--limit", type=int, default=20, help="Max candidates to assess (default: 20)"
     )
+    enrich_parser = subparsers.add_parser(
+        "enrich-details",
+        help="Fetch detail/event/series metadata for top eligible candidates of the latest scan",
+    )
+    enrich_parser.add_argument(
+        "--limit", type=int, default=20, help="Max candidates to enrich (default: 20)"
+    )
     return parser
 
 
@@ -161,6 +214,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "assess-resolution":
         assessed = asyncio.run(assess_resolution(limit=args.limit))
         return 0 if assessed >= 0 else 1
+    if args.command == "enrich-details":
+        enriched = asyncio.run(enrich_details(limit=args.limit))
+        return 0 if enriched >= 0 else 1
     return 2
 
 

@@ -28,6 +28,9 @@ class MarketData(BaseModel):
     close_time: datetime | None = None
     expiration_time: datetime | None = None
     rules_primary: str | None = None
+    # Known settlement source, set by detail enrichment overlay (the list
+    # endpoint never provides one; judges fall back to rules-text detection)
+    settlement_source: str | None = None
     # Original API payload, persisted to market_snapshots.raw_payload for debugging
     raw: dict | None = None
 
@@ -77,6 +80,25 @@ class ResolutionAssessmentOut(ResolutionAssessment):
     model_name: str
     prompt_version: str
     scanner_run_id: int | None = None
+    created_at: datetime
+
+
+class MarketDetailEnrichmentOut(BaseModel):
+    """A persisted detail enrichment, without the large raw_* payloads
+    (those stay DB-only for audit)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    market_ticker: str
+    scanner_run_id: int | None = None
+    event_ticker: str | None = None
+    series_ticker: str | None = None
+    title: str | None = None
+    subtitle: str | None = None
+    rules_text: str | None = None
+    settlement_source: str | None = None
+    category: str | None = None
     created_at: datetime
 
 

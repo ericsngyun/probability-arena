@@ -13,11 +13,17 @@ from app.schemas import (
     CandidateOut,
     CandidatesResponse,
     MarketData,
+    MarketDetailEnrichmentOut,
     RejectedMarketOut,
     ResolutionAssessmentOut,
     ScoreComponents,
 )
 from app.services import cache
+from app.services.enrichment import (
+    EnrichmentError,
+    MarketDetailEnrichmentService,
+    apply_latest_enrichment,
+)
 from app.services.resolution import get_judge, persist_assessment
 from app.services.scanner import ScanResult, run_scan
 
@@ -184,7 +190,35 @@ async def create_resolution_assessment(
         expiration_time=market.expiration_time,
         rules_primary=market.rules_primary,
     )
+    market_data = apply_latest_enrichment(db, market_data)
     judge = get_judge()
     assessment = await judge.assess(market_data)
     row = persist_assessment(db, market.ticker, assessment, judge, scanner_run_id=None)
     return ResolutionAssessmentOut.model_validate(row)
+
+
+@router.post(
+    "/{ticker}/enrich-details",
+    response_model=MarketDetailEnrichmentOut,
+    status_code=201,
+)
+async def enrich_market_details(
+    ticker: str,
+    db: Session = Depends(get_db),
+) -> MarketDetailEnrichmentOut:
+    """Fetch detail/event/series metadata for one known market from Kalshi
+    (read-only GETs), persist it with raw payloads, and return the normalized
+    fields. Raw payloads stay DB-only."""
+    market = db.execute(select(Market).where(Market.ticker == ticker)).scalar_one_or_none()
+    if market is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Market {ticker!r} not found; run a scan first so its metadata is stored",
+        )
+
+    service = MarketDetailEnrichmentService()
+    try:
+        row = await service.enrich_ticker(db, market.ticker, scanner_run_id=None)
+    except EnrichmentError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return MarketDetailEnrichmentOut.model_validate(row)

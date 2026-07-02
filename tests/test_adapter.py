@@ -153,6 +153,58 @@ async def test_fetch_active_markets_respects_max(sample_kalshi_market):
     assert len(markets) == 3
 
 
+class TestDetailEndpoints:
+    BASE = "https://kalshi.test/trade-api/v2"
+
+    @respx.mock
+    async def test_market_detail_returns_market_object(self):
+        respx.get(f"{self.BASE}/markets/KXMLBHRR-1").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "market": {
+                        "ticker": "KXMLBHRR-1",
+                        "event_ticker": "KXMLBHRR-EVT",
+                        "rules_primary": "Resolves YES if ...",
+                    }
+                },
+            )
+        )
+        adapter = KalshiRestAdapter(base_url=self.BASE)
+        detail = await adapter.get_market_detail("KXMLBHRR-1")
+        assert detail["event_ticker"] == "KXMLBHRR-EVT"
+
+    @respx.mock
+    async def test_event_and_series_details_parse(self):
+        respx.get(f"{self.BASE}/events/KXMLBHRR-EVT").mock(
+            return_value=httpx.Response(
+                200, json={"event": {"series_ticker": "KXMLBHRR", "category": "Sports"}}
+            )
+        )
+        respx.get(f"{self.BASE}/series/KXMLBHRR").mock(
+            return_value=httpx.Response(
+                200,
+                json={"series": {"settlement_sources": [{"name": "ESPN", "url": "https://espn.com"}]}},
+            )
+        )
+        adapter = KalshiRestAdapter(base_url=self.BASE)
+        event = await adapter.get_event_detail("KXMLBHRR-EVT")
+        series = await adapter.get_series_detail(event["series_ticker"])
+        assert series["settlement_sources"][0]["name"] == "ESPN"
+
+    @respx.mock
+    async def test_detail_errors_return_none_instead_of_raising(self):
+        respx.get(f"{self.BASE}/markets/GONE").mock(return_value=httpx.Response(404))
+        respx.get(f"{self.BASE}/events/GONE").mock(return_value=httpx.Response(503))
+        respx.get(f"{self.BASE}/series/GONE").mock(
+            return_value=httpx.Response(200, json={"unexpected": "shape"})
+        )
+        adapter = KalshiRestAdapter(base_url=self.BASE)
+        assert await adapter.get_market_detail("GONE") is None
+        assert await adapter.get_event_detail("GONE") is None
+        assert await adapter.get_series_detail("GONE") is None
+
+
 @respx.mock
 async def test_fetch_active_markets_raises_on_http_error():
     base = "https://kalshi.test/trade-api/v2"

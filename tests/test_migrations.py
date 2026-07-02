@@ -70,6 +70,33 @@ def test_0004_creates_resolution_assessments_table(tmp_path):
     assert "market_resolution_assessments" not in _tables(url)
 
 
+def test_0005_creates_and_drops_detail_enrichments_table(tmp_path):
+    url = f"sqlite:///{tmp_path}/enrichment.db"
+    run_migrations(url)
+
+    assert "market_detail_enrichments" in _tables(url)
+    columns = _columns(url, "market_detail_enrichments")
+    assert {
+        "id",
+        "market_ticker",
+        "scanner_run_id",
+        "event_ticker",
+        "series_ticker",
+        "title",
+        "subtitle",
+        "rules_text",
+        "settlement_source",
+        "category",
+        "raw_market_detail",
+        "raw_event_detail",
+        "raw_series_detail",
+        "created_at",
+    } <= columns
+
+    command.downgrade(_config(url), "0004")
+    assert "market_detail_enrichments" not in _tables(url)
+
+
 def test_migrated_schema_matches_orm_metadata(tmp_path):
     """Every ORM-mapped column must exist in the migrated schema."""
     url = f"sqlite:///{tmp_path}/parity.db"

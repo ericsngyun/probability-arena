@@ -117,6 +117,35 @@ class MarketEligibilityAssessment(Base):
     scanner_run: Mapped["ScannerRun | None"] = relationship(back_populates="eligibility_assessments")
 
 
+class MarketDetailEnrichment(Base):
+    """Richest available Kalshi metadata for one market at one point in time,
+    fetched from the detail/event/series endpoints (the list endpoint omits
+    settlement sources and secondary rules). Raw payloads kept for audit.
+
+    scanner_run_id is null when enriched ad hoc (POST endpoint)."""
+
+    __tablename__ = "market_detail_enrichments"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    market_ticker: Mapped[str] = mapped_column(String(64), index=True)
+    scanner_run_id: Mapped[int | None] = mapped_column(ForeignKey("scanner_runs.id"), index=True)
+    event_ticker: Mapped[str | None] = mapped_column(String(64))
+    series_ticker: Mapped[str | None] = mapped_column(String(64))
+    title: Mapped[str | None] = mapped_column(Text)
+    subtitle: Mapped[str | None] = mapped_column(Text)
+    rules_text: Mapped[str | None] = mapped_column(Text)
+    settlement_source: Mapped[str | None] = mapped_column(Text)
+    category: Mapped[str | None] = mapped_column(Text)
+    raw_market_detail: Mapped[dict] = mapped_column(RawJSON)
+    raw_event_detail: Mapped[dict | None] = mapped_column(RawJSON)
+    raw_series_detail: Mapped[dict | None] = mapped_column(RawJSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    scanner_run: Mapped["ScannerRun | None"] = relationship(
+        back_populates="detail_enrichments"
+    )
+
+
 class MarketResolutionAssessment(Base):
     """Audit record of one resolution-criteria assessment for one market.
 
@@ -168,5 +197,8 @@ class ScannerRun(Base):
         back_populates="scanner_run"
     )
     resolution_assessments: Mapped[list[MarketResolutionAssessment]] = relationship(
+        back_populates="scanner_run"
+    )
+    detail_enrichments: Mapped[list[MarketDetailEnrichment]] = relationship(
         back_populates="scanner_run"
     )

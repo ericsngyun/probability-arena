@@ -153,3 +153,30 @@ class KalshiRestAdapter:
                     break
 
         return results[:limit]
+
+    async def _get_json(self, path: str) -> dict | None:
+        """GET a detail endpoint; None on any HTTP/network error (detail
+        enrichment is best-effort and must never break the pipeline)."""
+        try:
+            async with httpx.AsyncClient(base_url=self.base_url, timeout=self.timeout) as client:
+                response = await client.get(path)
+                response.raise_for_status()
+                return response.json()
+        except httpx.HTTPError as exc:
+            logger.warning("Kalshi detail fetch failed for %s: %s", path, exc)
+            return None
+
+    async def get_market_detail(self, ticker: str) -> dict | None:
+        """Full market object from GET /markets/{ticker}; None if unavailable."""
+        payload = await self._get_json(f"/markets/{ticker}")
+        return (payload or {}).get("market") or None
+
+    async def get_event_detail(self, event_ticker: str) -> dict | None:
+        """Event object (carries series_ticker, settlement_sources, category)."""
+        payload = await self._get_json(f"/events/{event_ticker}")
+        return (payload or {}).get("event") or None
+
+    async def get_series_detail(self, series_ticker: str) -> dict | None:
+        """Series object (carries settlement_sources, contract URLs, category)."""
+        payload = await self._get_json(f"/series/{series_ticker}")
+        return (payload or {}).get("series") or None
