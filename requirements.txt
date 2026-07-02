@@ -9,3 +9,4 @@ httpx>=0.27
 websockets>=12.0
 cryptography>=42.0
 redis>=5.0
+anthropic>=0.92

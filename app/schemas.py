@@ -1,6 +1,7 @@
 from datetime import datetime
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class MarketData(BaseModel):
@@ -51,6 +52,34 @@ class RankedMarket(BaseModel):
     components: ScoreComponents
 
 
+class ResolutionAssessment(BaseModel):
+    """Structured verdict on how clear and objective a market's resolution
+    criteria are. Produced by a ResolutionJudge (rule-based, mock, or LLM)."""
+
+    clarity_score: float = Field(ge=0.0, le=1.0)
+    resolution_risk: Literal["low", "medium", "high", "unknown"]
+    tradeability: Literal["researchable", "avoid", "needs_manual_review"]
+    settlement_source: str | None = None
+    resolution_summary: str = ""
+    ambiguity_flags: list[str] = []
+    rejection_reasons: list[str] = []
+    llm_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    # Raw judge output persisted for audit; never serialized in API responses
+    raw_response: dict | None = Field(default=None, exclude=True, repr=False)
+
+
+class ResolutionAssessmentOut(ResolutionAssessment):
+    """A persisted resolution assessment, as returned by the API."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    market_ticker: str
+    model_name: str
+    prompt_version: str
+    scanner_run_id: int | None = None
+    created_at: datetime
+
+
 class CandidateOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -68,6 +97,9 @@ class CandidateOut(BaseModel):
     components: ScoreComponents
     is_eligible: bool = True
     warnings: list[str] = []
+    # Latest persisted resolution assessment; populated only when
+    # include_resolution=true and an assessment exists for this ticker
+    resolution: ResolutionAssessmentOut | None = None
 
 
 class RejectedMarketOut(BaseModel):

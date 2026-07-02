@@ -117,6 +117,36 @@ class MarketEligibilityAssessment(Base):
     scanner_run: Mapped["ScannerRun | None"] = relationship(back_populates="eligibility_assessments")
 
 
+class MarketResolutionAssessment(Base):
+    """Audit record of one resolution-criteria assessment for one market.
+
+    scanner_run_id is null when the assessment was made ad hoc (POST endpoint)
+    rather than as part of a scan-driven batch.
+    """
+
+    __tablename__ = "market_resolution_assessments"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    market_ticker: Mapped[str] = mapped_column(String(64), index=True)
+    scanner_run_id: Mapped[int | None] = mapped_column(ForeignKey("scanner_runs.id"), index=True)
+    model_name: Mapped[str] = mapped_column(String(64))
+    prompt_version: Mapped[str] = mapped_column(String(16), default="v1")
+    clarity_score: Mapped[float] = mapped_column(Float)
+    resolution_risk: Mapped[str] = mapped_column(String(16))  # low|medium|high|unknown
+    tradeability: Mapped[str] = mapped_column(String(32))  # researchable|avoid|needs_manual_review
+    settlement_source: Mapped[str | None] = mapped_column(Text)
+    resolution_summary: Mapped[str] = mapped_column(Text, default="")
+    ambiguity_flags: Mapped[list | None] = mapped_column(RawJSON)
+    rejection_reasons: Mapped[list | None] = mapped_column(RawJSON)
+    llm_confidence: Mapped[float | None] = mapped_column(Float)
+    raw_response: Mapped[dict | None] = mapped_column(RawJSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    scanner_run: Mapped["ScannerRun | None"] = relationship(
+        back_populates="resolution_assessments"
+    )
+
+
 class ScannerRun(Base):
     """One execution of the market scanner: fetch -> rank -> persist."""
 
@@ -135,5 +165,8 @@ class ScannerRun(Base):
 
     snapshots: Mapped[list[MarketSnapshot]] = relationship(back_populates="scanner_run")
     eligibility_assessments: Mapped[list[MarketEligibilityAssessment]] = relationship(
+        back_populates="scanner_run"
+    )
+    resolution_assessments: Mapped[list[MarketResolutionAssessment]] = relationship(
         back_populates="scanner_run"
     )

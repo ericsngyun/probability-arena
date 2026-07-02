@@ -25,6 +25,12 @@ class Settings(BaseSettings):
     scanner_max_markets: int = 500
     candidates_default_limit: int = 25
 
+    # Resolution-criteria assessment (MVP-003B)
+    enable_llm_resolution: bool = False
+    resolution_model_name: str = "claude-opus-4-8"
+    resolution_prompt_version: str = "v1"
+    min_clarity_score: float = 0.70
+
     # Candidate hygiene / eligibility gating (MVP-003A)
     require_two_sided_quote: bool = True
     exclude_zero_quote_markets: bool = True

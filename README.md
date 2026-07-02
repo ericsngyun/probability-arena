@@ -1,12 +1,13 @@
 # Probability Arena
 
-**Kalshi read-only market intelligence** (MVP-002: migration-safe, live-integration-ready).
+**Kalshi read-only market intelligence** (MVP-003B: candidate hygiene gating + resolution-criteria assessment).
 
 Scans active Kalshi markets over the public REST API, ranks them on tradability signals (spread, liquidity, volume, time to expiration, resolution clarity), and stores time-series snapshots in Postgres. Optionally maintains live orderbook snapshots over WebSocket when API credentials are configured.
 
 ## Safety notes
 
-- **Read-only by design. No order placement exists.** There is no trading, betting, order placement, wallet, or execution code anywhere in this repo — the REST adapter only issues GETs, the WebSocket client only sends channel subscriptions, and the CLI's only command is `scan`. None should be added under MVP-001/002.
+- **Read-only by design. No order placement exists.** There is no trading, betting, order placement, wallet, or execution code anywhere in this repo — the REST adapter only issues GETs, the WebSocket client only sends channel subscriptions, and the CLI commands (`scan`, `assess-resolution`) only read market data and write to our own database. None should be added under MVP-001/002/003.
+- **LLM resolution judgment is OFF by default** (`ENABLE_LLM_RESOLUTION=false`). The deterministic rule-based judge needs no credentials or network beyond Kalshi; tests never call an LLM. When enabled, the LLM only *reads* rules text and returns a structured quality verdict — it has no tools and no trading capability.
 - Public market data requires **no credentials**. The Kalshi API key is only needed for the optional WebSocket orderbook feed, and even then the client only sends channel subscriptions.
 - Keep your Kalshi private key **outside the repo** (it is `.gitignore`d by extension, but store it elsewhere, e.g. `~/.kalshi/`). Never commit `.env`.
 - The `resolution_clarity` ranking component is a **placeholder** (constant 0.5). Do not treat scores as trading advice; they measure market microstructure quality, not edge.
@@ -25,6 +26,7 @@ app/
   adapters/kalshi.py      REST adapter: fetch + parse active markets (cursor paging,
                           legacy int-cent and current *_dollars/*_fp payload shapes)
   services/eligibility.py Deterministic candidate hygiene gate (thresholds below)
+  services/resolution.py  Resolution-criteria judges (rule-based / mock / optional LLM)
   services/ranking.py     Weighted scoring: spread, liquidity, volume, expiration, clarity
   services/scanner.py     fetch -> assess eligibility -> rank eligible -> persist
   services/ws_snapshots.py Optional WS orderbook snapshot service (credential-gated)
@@ -46,6 +48,8 @@ The api container runs Alembic migrations automatically on startup (databases cr
 - `GET http://localhost:8000/health` — liveness + whether WS is enabled
 - `GET http://localhost:8000/markets/candidates?limit=25` — top **eligible** candidates (triggers a scan, cached ~30s)
 - `GET http://localhost:8000/markets/candidates?include_rejected=true` — also returns gated-out markets with their `rejection_reasons` (debugging)
+- `GET http://localhost:8000/markets/candidates?include_resolution=true` — attaches each candidate's latest persisted resolution assessment (cheap DB lookup; never triggers new assessments)
+- `POST http://localhost:8000/markets/{ticker}/resolution-assessment` — assess one known market ad hoc and persist the result
 - `http://localhost:8000/docs` — OpenAPI UI
 
 ### Live Kalshi smoke test
@@ -70,6 +74,26 @@ python -m app.cli scan --limit 100
 ```
 
 Runs migrations, fetches up to `--limit` open markets, assesses eligibility, ranks the eligible ones, persists a `scanner_runs` audit row (with `source=cli`, `duration_ms`, and error details on failure) plus per-market snapshots and eligibility assessments, then prints the top 20 and a rejection-reason summary.
+
+```bash
+python -m app.cli assess-resolution --limit 20
+```
+
+Takes the top `--limit` eligible candidates from the most recent successful scan (running a fresh scan if none exists), scores each market's resolution criteria with the configured judge, and persists one `market_resolution_assessments` row per market linked to that scan.
+
+## Resolution assessment
+
+Answers "does this market have clear, objective settlement criteria?" before any research or forecasting effort is spent on it. Only **eligible** markets are assessed by default (the CLI batch); the POST endpoint allows ad-hoc assessment of any known ticker.
+
+Each assessment produces: `clarity_score` (0–1), `resolution_risk` (low/medium/high/unknown), `tradeability` (researchable/needs_manual_review/avoid), `settlement_source`, `resolution_summary`, `ambiguity_flags`, `rejection_reasons`, and optional `llm_confidence` — persisted with `model_name`, `prompt_version`, and the raw judge output for audit.
+
+**Judges** (`app/services/resolution.py`):
+
+- `RuleBasedResolutionJudge` (default) — deterministic text heuristics. Penalizes missing/short rules text, subjective wording ("major", "significant", "expected", "likely", …), an undetectable settlement source, and multi-condition/parlay phrasing. Same input always produces the same score.
+- `MockResolutionJudge` — canned results for tests.
+- `LLMResolutionJudge` — enabled only with `ENABLE_LLM_RESOLUTION=true`; requires an Anthropic credential. Refines the rule-based baseline with a structured-output Claude call (`RESOLUTION_MODEL_NAME`, default `claude-opus-4-8`; `RESOLUTION_PROMPT_VERSION=v1`) and **falls back to the rule-based result** (flagged `llm_error_fallback`) on any failure, so the pipeline never hard-fails on the LLM.
+
+Markets scoring below `MIN_CLARITY_SCORE` (default 0.70) are marked `needs_manual_review` (or `avoid` below 0.40) with a `clarity_below_min` rejection reason. The rule-based scoring is a first pass — expect sports markets to cluster around 0.75 because Kalshi's short rules sentences rarely name a settlement source.
 
 ## Candidate hygiene (eligibility gating)
 
@@ -148,6 +172,7 @@ It subscribes to the `orderbook_delta` channel for those tickers, maintains book
 | `orderbook_snapshots` | Full depth (`yes_levels`/`no_levels` as `[[price_cents, qty], ...]`) from WS |
 | `scanner_runs` | Audit trail of each scan: `started_at`/`finished_at`/`duration_ms`, `source` (api/cli), counts, `status`, and `error_type`/`error_message` on failure |
 | `market_eligibility_assessments` | One row per market per scan: `is_eligible`, `rejection_reasons`, `warnings`, quote/spread/liquidity/volume/expiration inputs, `market_type_flags` |
+| `market_resolution_assessments` | One row per assessment: judge identity (`model_name`, `prompt_version`), clarity/risk/tradeability verdict, flags, reasons, `raw_response`; `scanner_run_id` null for ad-hoc assessments |
 
 Schema is managed by Alembic (`alembic/versions/`); migrations run automatically at app/CLI startup.
 

@@ -28,6 +28,7 @@ def test_schema_creates_all_tables(session):
         "orderbook_snapshots",
         "scanner_runs",
         "market_eligibility_assessments",
+        "market_resolution_assessments",
     }
 
 

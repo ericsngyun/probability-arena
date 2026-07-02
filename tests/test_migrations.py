@@ -42,6 +42,34 @@ def test_upgrade_head_creates_full_schema(tmp_path):
     assert "raw_payload" in _columns(url, "market_snapshots")
 
 
+def test_0004_creates_resolution_assessments_table(tmp_path):
+    url = f"sqlite:///{tmp_path}/resolution.db"
+    run_migrations(url)
+
+    assert "market_resolution_assessments" in _tables(url)
+    columns = _columns(url, "market_resolution_assessments")
+    assert {
+        "id",
+        "market_ticker",
+        "scanner_run_id",
+        "model_name",
+        "prompt_version",
+        "clarity_score",
+        "resolution_risk",
+        "tradeability",
+        "settlement_source",
+        "resolution_summary",
+        "ambiguity_flags",
+        "rejection_reasons",
+        "llm_confidence",
+        "raw_response",
+        "created_at",
+    } <= columns
+
+    command.downgrade(_config(url), "0003")
+    assert "market_resolution_assessments" not in _tables(url)
+
+
 def test_migrated_schema_matches_orm_metadata(tmp_path):
     """Every ORM-mapped column must exist in the migrated schema."""
     url = f"sqlite:///{tmp_path}/parity.db"

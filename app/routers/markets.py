@@ -3,12 +3,22 @@ from datetime import datetime, timezone
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.db import get_db
-from app.schemas import CandidateOut, CandidatesResponse, RejectedMarketOut, ScoreComponents
+from app.models import Market, MarketResolutionAssessment
+from app.schemas import (
+    CandidateOut,
+    CandidatesResponse,
+    MarketData,
+    RejectedMarketOut,
+    ResolutionAssessmentOut,
+    ScoreComponents,
+)
 from app.services import cache
+from app.services.resolution import get_judge, persist_assessment
 from app.services.scanner import ScanResult, run_scan
 
 logger = logging.getLogger(__name__)
@@ -71,12 +81,43 @@ def _build_response(result: ScanResult, limit: int, include_rejected: bool) -> C
     )
 
 
+def _latest_assessments(
+    db: Session, tickers: list[str]
+) -> dict[str, MarketResolutionAssessment]:
+    """Most recent persisted resolution assessment per ticker."""
+    if not tickers:
+        return {}
+    rows = db.execute(
+        select(MarketResolutionAssessment)
+        .where(MarketResolutionAssessment.market_ticker.in_(tickers))
+        .order_by(
+            MarketResolutionAssessment.created_at.desc(), MarketResolutionAssessment.id.desc()
+        )
+    ).scalars()
+    latest: dict[str, MarketResolutionAssessment] = {}
+    for row in rows:
+        latest.setdefault(row.market_ticker, row)
+    return latest
+
+
+def _attach_resolutions(db: Session, response: CandidatesResponse) -> None:
+    latest = _latest_assessments(db, [c.ticker for c in response.candidates])
+    for candidate in response.candidates:
+        row = latest.get(candidate.ticker)
+        if row is not None:
+            candidate.resolution = ResolutionAssessmentOut.model_validate(row)
+
+
 @router.get("/candidates", response_model=CandidatesResponse)
 async def get_candidates(
     limit: int | None = Query(default=None, ge=1, le=200),
     include_rejected: bool = Query(
         default=False,
         description="Include markets rejected by the eligibility gate, with rejection_reasons",
+    ),
+    include_resolution: bool = Query(
+        default=False,
+        description="Attach the latest persisted resolution assessment to each candidate",
     ),
     db: Session = Depends(get_db),
 ) -> CandidatesResponse:
@@ -90,7 +131,10 @@ async def get_candidates(
     settings = get_settings()
     limit = limit or settings.candidates_default_limit
 
-    cache_key = f"{cache.CANDIDATES_KEY}:{limit}:rejected={int(include_rejected)}"
+    cache_key = (
+        f"{cache.CANDIDATES_KEY}:{limit}"
+        f":rejected={int(include_rejected)}:resolution={int(include_resolution)}"
+    )
     cached = cache.get_cached(cache_key)
     if cached:
         response = CandidatesResponse.model_validate_json(cached)
@@ -104,5 +148,43 @@ async def get_candidates(
         raise HTTPException(status_code=502, detail=f"Kalshi API unavailable: {exc}") from exc
 
     response = _build_response(result, limit, include_rejected)
+    if include_resolution:
+        # Read-only DB lookup; never triggers new (potentially LLM) assessments
+        _attach_resolutions(db, response)
     cache.set_cached(cache_key, response.model_dump_json(), settings.candidates_cache_ttl_seconds)
     return response
+
+
+@router.post(
+    "/{ticker}/resolution-assessment",
+    response_model=ResolutionAssessmentOut,
+    status_code=201,
+)
+async def create_resolution_assessment(
+    ticker: str,
+    db: Session = Depends(get_db),
+) -> ResolutionAssessmentOut:
+    """Assess one known market's resolution criteria ad hoc and persist the
+    result (scanner_run_id null). Uses the configured judge — rule-based unless
+    ENABLE_LLM_RESOLUTION=true. Run a scan first if the ticker is unknown."""
+    market = db.execute(select(Market).where(Market.ticker == ticker)).scalar_one_or_none()
+    if market is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Market {ticker!r} not found; run a scan first so its metadata is stored",
+        )
+
+    market_data = MarketData(
+        ticker=market.ticker,
+        event_ticker=market.event_ticker,
+        title=market.title or "",
+        category=market.category,
+        status=market.status,
+        close_time=market.close_time,
+        expiration_time=market.expiration_time,
+        rules_primary=market.rules_primary,
+    )
+    judge = get_judge()
+    assessment = await judge.assess(market_data)
+    row = persist_assessment(db, market.ticker, assessment, judge, scanner_run_id=None)
+    return ResolutionAssessmentOut.model_validate(row)

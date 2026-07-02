@@ -24,6 +24,10 @@ GOOD = make_market(
     ticker="GOOD-MKT",
     title="Healthy two-sided market",
     close_time=datetime.now(timezone.utc) + timedelta(days=7),
+    rules_primary=(
+        "Resolves YES if the final score exceeds 100 points "
+        "according to the official MLB box score at mlb.com."
+    ),
 )
 PARLAY = make_market(
     ticker="KXMVECROSSCATEGORY-S2026-XYZ",
@@ -108,6 +112,63 @@ def test_every_rejected_market_has_reasons(client):
     test_client, _ = client
     body = test_client.get("/markets/candidates?include_rejected=true").json()
     assert all(r["rejection_reasons"] for r in body["rejected"])
+
+
+def test_post_resolution_assessment_persists_and_returns_result(client):
+    test_client, session = client
+    test_client.get("/markets/candidates")  # scan stores market metadata
+
+    response = test_client.post("/markets/GOOD-MKT/resolution-assessment")
+    assert response.status_code == 201
+    body = response.json()
+    assert body["market_ticker"] == "GOOD-MKT"
+    assert body["model_name"] == "rule-based"
+    assert body["prompt_version"] == "v1"
+    assert body["scanner_run_id"] is None
+    assert body["tradeability"] == "researchable"
+    assert 0.0 <= body["clarity_score"] <= 1.0
+    assert "raw_response" not in body
+
+    from app.models import MarketResolutionAssessment
+
+    rows = session.execute(select(MarketResolutionAssessment)).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].raw_response is not None
+
+
+def test_post_resolution_assessment_unknown_ticker_404(client):
+    test_client, _ = client
+    response = test_client.post("/markets/NOPE-MKT/resolution-assessment")
+    assert response.status_code == 404
+
+
+def test_candidates_omit_resolution_by_default(client):
+    test_client, _ = client
+    test_client.get("/markets/candidates")
+    test_client.post("/markets/GOOD-MKT/resolution-assessment")
+
+    body = test_client.get("/markets/candidates").json()
+    assert body["candidates"][0]["resolution"] is None
+
+
+def test_include_resolution_attaches_latest_assessment(client):
+    test_client, _ = client
+    test_client.get("/markets/candidates")
+
+    # No assessment yet -> resolution stays null even when requested
+    body = test_client.get("/markets/candidates?include_resolution=true").json()
+    assert body["candidates"][0]["resolution"] is None
+
+    test_client.post("/markets/GOOD-MKT/resolution-assessment")
+    test_client.post("/markets/GOOD-MKT/resolution-assessment")  # newer row wins
+
+    body = test_client.get("/markets/candidates?include_resolution=true").json()
+    resolution = body["candidates"][0]["resolution"]
+    assert resolution is not None
+    assert resolution["market_ticker"] == "GOOD-MKT"
+    assert resolution["model_name"] == "rule-based"
+    assert resolution["tradeability"] == "researchable"
+    assert resolution["settlement_source"]
 
 
 def test_scan_persists_eligibility_assessments_linked_to_run(client):
