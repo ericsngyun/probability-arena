@@ -83,6 +83,54 @@ class ResolutionAssessmentOut(ResolutionAssessment):
     created_at: datetime
 
 
+class ResearchSource(BaseModel):
+    """One place evidence should come from (or came from)."""
+
+    name: str
+    url: str | None = None
+    source_type: str = "web"  # settlement_source|stats_provider|official|news|web
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+
+
+class ResearchFact(BaseModel):
+    """One piece of evidence with provenance and confidence."""
+
+    fact: str
+    confidence: float = Field(ge=0.0, le=1.0)
+    source_name: str | None = None
+
+
+class ResearchPacket(BaseModel):
+    """Structured evidence packet for one market. Contains research inputs
+    and facts only — no probability forecasts, no trade recommendations."""
+
+    domain: str
+    source_queries: list[str] = []
+    sources: list[ResearchSource] = []
+    key_facts: list[ResearchFact] = []
+    missing_info: list[str] = []
+    research_completeness_score: float = Field(ge=0.0, le=1.0)
+    research_risk: Literal["low", "medium", "high"]
+    # Raw collector output persisted for audit; never serialized in API responses
+    raw_response: dict | None = Field(default=None, exclude=True, repr=False)
+
+
+class ResearchPacketOut(ResearchPacket):
+    """A persisted research packet, as returned by the API (raw_response
+    stays DB-only)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    market_ticker: str
+    scanner_run_id: int | None = None
+    enrichment_id: int | None = None
+    resolution_assessment_id: int | None = None
+    collector_name: str
+    collector_version: str
+    created_at: datetime
+
+
 class MarketDetailEnrichmentOut(BaseModel):
     """A persisted detail enrichment, without the large raw_* payloads
     (those stay DB-only for audit)."""

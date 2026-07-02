@@ -30,6 +30,7 @@ def test_schema_creates_all_tables(session):
         "market_eligibility_assessments",
         "market_resolution_assessments",
         "market_detail_enrichments",
+        "market_research_packets",
     }
 
 

@@ -1,12 +1,13 @@
 # Probability Arena
 
-**Kalshi read-only market intelligence** (MVP-003C: hygiene gating + detail enrichment + resolution assessment).
+**Kalshi read-only market intelligence** (MVP-004A: hygiene gating + enrichment + resolution assessment + research packets).
 
 Scans active Kalshi markets over the public REST API, ranks them on tradability signals (spread, liquidity, volume, time to expiration, resolution clarity), and stores time-series snapshots in Postgres. Optionally maintains live orderbook snapshots over WebSocket when API credentials are configured.
 
 ## Safety notes
 
-- **Read-only by design. No order placement exists.** There is no trading, betting, order placement, wallet, or execution code anywhere in this repo — the REST adapter only issues GETs (market list, market/event/series detail), the WebSocket client only sends channel subscriptions, and the CLI commands (`scan`, `enrich-details`, `assess-resolution`) only read market data and write to our own database. None should be added under MVP-001/002/003.
+- **Read-only by design. No order placement exists.** There is no trading, betting, order placement, wallet, execution, portfolio-sizing, or paper-trading code anywhere in this repo — the REST adapter only issues GETs (market list, market/event/series detail), the WebSocket client only sends channel subscriptions, and the CLI commands (`scan`, `enrich-details`, `assess-resolution`, `collect-research`) only read market data and write to our own database.
+- **No forecasts either.** MVP-004A stops at structured evidence collection: research packets contain queries, sources, facts, and gaps — no probability estimates and no trade recommendations. Forecasting is a future, separately-gated milestone.
 - **LLM resolution judgment is OFF by default** (`ENABLE_LLM_RESOLUTION=false`). The deterministic rule-based judge needs no credentials or network beyond Kalshi; tests never call an LLM. When enabled, the LLM only *reads* rules text and returns a structured quality verdict — it has no tools and no trading capability.
 - Public market data requires **no credentials**. The Kalshi API key is only needed for the optional WebSocket orderbook feed, and even then the client only sends channel subscriptions.
 - Keep your Kalshi private key **outside the repo** (it is `.gitignore`d by extension, but store it elsewhere, e.g. `~/.kalshi/`). Never commit `.env`.
@@ -28,6 +29,7 @@ app/
   services/eligibility.py Deterministic candidate hygiene gate (thresholds below)
   services/enrichment.py  Market detail enrichment (detail/event/series metadata)
   services/resolution.py  Resolution-criteria judges (rule-based / mock / optional LLM)
+  services/research.py    Research packet collectors (template / mock / optional LLM+web)
   services/ranking.py     Weighted scoring: spread, liquidity, volume, expiration, clarity
   services/scanner.py     fetch -> assess eligibility -> rank eligible -> persist
   services/ws_snapshots.py Optional WS orderbook snapshot service (credential-gated)
@@ -52,6 +54,8 @@ The api container runs Alembic migrations automatically on startup (databases cr
 - `GET http://localhost:8000/markets/candidates?include_resolution=true` — attaches each candidate's latest persisted resolution assessment (cheap DB lookup; never triggers new assessments)
 - `POST http://localhost:8000/markets/{ticker}/enrich-details` — fetch and persist detail/event/series metadata for one known market (response excludes the raw payloads; those stay DB-only)
 - `POST http://localhost:8000/markets/{ticker}/resolution-assessment` — assess one known market ad hoc and persist the result
+- `POST http://localhost:8000/markets/{ticker}/research-packet` — build and persist a research packet (uses latest enrichment + resolution; `avoid` markets are forced to `research_risk=high`)
+- `GET http://localhost:8000/markets/{ticker}/research-packets?limit=10` — recent packets for a ticker, newest first (raw collector output stays DB-only)
 - `http://localhost:8000/docs` — OpenAPI UI
 
 ### Live Kalshi smoke test
@@ -89,7 +93,27 @@ python -m app.cli assess-resolution --limit 20
 
 Takes the top `--limit` eligible candidates from the most recent successful scan (running a fresh scan if none exists), scores each market's resolution criteria with the configured judge, and persists one `market_resolution_assessments` row per market linked to that scan.
 
-**Recommended sequence:** `scan` → `enrich-details` → `assess-resolution`. Assessment automatically prefers enriched metadata when it exists.
+```bash
+python -m app.cli collect-research --limit 10
+```
+
+Builds research packets for the top `--limit` eligible candidates of the most recent successful scan, preferring markets that already have an enrichment and a researchable resolution, and prints per-market lines plus domain/risk summaries. It deliberately does **not** trigger enrichment or assessment on its own — pass `--prepare` to create missing upstream rows first.
+
+**Recommended sequence:** `scan` → `enrich-details` → `assess-resolution` → `collect-research`. Each stage automatically prefers the previous stage's output when it exists.
+
+## Research packets
+
+A research packet is the structured evidence bundle a future forecasting chain would consume: `source_queries` to run, `sources` (with type and confidence), `key_facts` (with provenance), `missing_info` gaps, a deterministic `research_completeness_score`, and a `research_risk` level. Packets link back to the scan, enrichment, and resolution assessment they were built from, and store the raw collector output for audit. **They contain no probability forecasts and no trade recommendations.**
+
+Markets are first classified into a domain — `sports_baseball`, `sports_tennis`, `sports_soccer`, `macro`, `weather`, `politics`, `crypto`, or `general` — deterministically from ticker markers and enriched title/category/settlement-source text.
+
+**Collectors** (`app/services/research.py`):
+
+- `TemplateResearchCollector` (default) — deterministic, domain-templated queries and expected sources; the known settlement source becomes a high-confidence key fact; `missing_info` lists what the template cannot know without external research. Never touches the web.
+- `MockResearchCollector` — canned packets for tests.
+- `LLMWebResearchCollector` — enabled only with `ENABLE_EXTERNAL_RESEARCH=true` (default **false**); requires an Anthropic credential. Refines the template baseline with a Claude + web-search call (`RESEARCH_MODEL_NAME`, default `claude-opus-4-8`) and falls back to the template packet on any failure. Domain classification stays deterministic regardless.
+
+A market whose latest resolution assessment says `avoid` still gets a packet, but the service forces `research_risk=high` no matter what the collector reports.
 
 ## Market detail enrichment
 
@@ -192,6 +216,7 @@ It subscribes to the `orderbook_delta` channel for those tickers, maintains book
 | `market_eligibility_assessments` | One row per market per scan: `is_eligible`, `rejection_reasons`, `warnings`, quote/spread/liquidity/volume/expiration inputs, `market_type_flags` |
 | `market_resolution_assessments` | One row per assessment: judge identity (`model_name`, `prompt_version`), clarity/risk/tradeability verdict, flags, reasons, `raw_response`; `scanner_run_id` null for ad-hoc assessments |
 | `market_detail_enrichments` | One row per enrichment: normalized `rules_text`/`settlement_source`/title/category plus raw market/event/series payloads for audit; `scanner_run_id` null for ad-hoc enrichments |
+| `market_research_packets` | One row per packet: collector identity, domain, queries/sources/facts/gaps, completeness score, risk, raw collector output; links to scan, enrichment, and resolution assessment |
 
 Schema is managed by Alembic (`alembic/versions/`); migrations run automatically at app/CLI startup.
 

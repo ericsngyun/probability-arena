@@ -4,12 +4,15 @@ Usage:
     python -m app.cli scan --limit 100
     python -m app.cli enrich-details --limit 20
     python -m app.cli assess-resolution --limit 20
+    python -m app.cli collect-research --limit 10
 
 Read-only: `scan` fetches public Kalshi market data, ranks it, and persists
 snapshots; `enrich-details` fetches detail/event/series metadata for top
 eligible candidates; `assess-resolution` scores resolution clarity (using
-enriched metadata where available). Recommended sequence:
-scan -> enrich-details -> assess-resolution. There are no trading commands.
+enriched metadata where available); `collect-research` builds structured
+evidence packets. Recommended sequence:
+scan -> enrich-details -> assess-resolution -> collect-research.
+There are no forecasting or trading commands.
 """
 
 import argparse
@@ -179,6 +182,123 @@ async def enrich_details(
             session.close()
 
 
+async def collect_research(
+    limit: int = 10,
+    collector=None,
+    session=None,
+    prepare: bool = False,
+) -> int:
+    """Build research packets for the top eligible candidates of the most
+    recent successful scan, preferring markets that already have an enrichment
+    and a researchable resolution. By default nothing upstream is triggered;
+    with prepare=True, missing enrichments/assessments are created first.
+    Returns the number of packets persisted."""
+    from sqlalchemy import select
+
+    from app.models import Market, MarketSnapshot, ScannerRun
+    from app.services.enrichment import (
+        EnrichmentError,
+        MarketDetailEnrichmentService,
+        latest_enrichment_for,
+    )
+    from app.services.research import create_research_packet, get_collector
+    from app.services.resolution import get_judge, latest_assessment_for, persist_assessment
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        run = session.execute(
+            select(ScannerRun).where(ScannerRun.status == "ok").order_by(ScannerRun.id.desc())
+        ).scalars().first()
+        if run is None:
+            print("no successful scan found; run `python -m app.cli scan` first")
+            return 0
+
+        rows = session.execute(
+            select(MarketSnapshot, Market)
+            .join(Market, MarketSnapshot.market_id == Market.id)
+            .where(MarketSnapshot.scanner_run_id == run.id, MarketSnapshot.score > 0)
+            .order_by(MarketSnapshot.score.desc())
+            .limit(limit)
+        ).all()
+        if not rows:
+            print(f"scan run {run.id} has no eligible candidates")
+            return 0
+
+        if prepare:
+            enrichment_service = MarketDetailEnrichmentService()
+            judge = get_judge()
+            from app.schemas import MarketData
+            from app.services.enrichment import apply_latest_enrichment
+
+            for _, market in rows:
+                if latest_enrichment_for(session, market.ticker) is None:
+                    try:
+                        await enrichment_service.enrich_ticker(
+                            session, market.ticker, scanner_run_id=run.id
+                        )
+                    except EnrichmentError as exc:
+                        print(f"  prepare: enrichment failed for {market.ticker}: {exc}")
+                if latest_assessment_for(session, market.ticker) is None:
+                    market_data = apply_latest_enrichment(
+                        session,
+                        MarketData(
+                            ticker=market.ticker,
+                            title=market.title or "",
+                            status=market.status,
+                            close_time=market.close_time,
+                            rules_primary=market.rules_primary,
+                        ),
+                    )
+                    assessment = await judge.assess(market_data)
+                    persist_assessment(
+                        session, market.ticker, assessment, judge, scanner_run_id=run.id
+                    )
+
+        # Prefer markets that are fully prepared: enrichment present and
+        # latest resolution researchable; then by score.
+        def preparedness(market: Market) -> int:
+            enriched = latest_enrichment_for(session, market.ticker) is not None
+            resolution = latest_assessment_for(session, market.ticker)
+            researchable = resolution is not None and resolution.tradeability == "researchable"
+            return 0 if (enriched and researchable) else 1
+
+        ordered = sorted(
+            rows, key=lambda pair: (preparedness(pair[1]), -(pair[0].score or 0.0))
+        )
+
+        collector = collector or get_collector()
+        domain_counts: dict[str, int] = {}
+        risk_counts: dict[str, int] = {}
+        print(
+            f"collecting research for {len(ordered)} candidates from scan run {run.id} "
+            f"collector={collector.name}"
+        )
+        for _, market in ordered:
+            packet_row = await create_research_packet(
+                session, market, collector=collector, scanner_run_id=run.id
+            )
+            domain_counts[packet_row.domain] = domain_counts.get(packet_row.domain, 0) + 1
+            risk_counts[packet_row.research_risk] = (
+                risk_counts.get(packet_row.research_risk, 0) + 1
+            )
+            print(
+                f"  {market.ticker:<40} domain={packet_row.domain:<16} "
+                f"completeness={packet_row.research_completeness_score:.2f} "
+                f"risk={packet_row.research_risk}"
+            )
+        print("domains: " + ", ".join(f"{d}={n}" for d, n in sorted(domain_counts.items())))
+        print("risk: " + ", ".join(f"{r}={n}" for r, n in sorted(risk_counts.items())))
+        return len(ordered)
+    finally:
+        if owns_session:
+            session.close()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m app.cli",
@@ -203,6 +323,18 @@ def build_parser() -> argparse.ArgumentParser:
     enrich_parser.add_argument(
         "--limit", type=int, default=20, help="Max candidates to enrich (default: 20)"
     )
+    research_parser = subparsers.add_parser(
+        "collect-research",
+        help="Build research packets for top eligible candidates of the latest scan",
+    )
+    research_parser.add_argument(
+        "--limit", type=int, default=10, help="Max candidates to research (default: 10)"
+    )
+    research_parser.add_argument(
+        "--prepare",
+        action="store_true",
+        help="Create missing enrichments/resolution assessments first (off by default)",
+    )
     return parser
 
 
@@ -217,6 +349,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "enrich-details":
         enriched = asyncio.run(enrich_details(limit=args.limit))
         return 0 if enriched >= 0 else 1
+    if args.command == "collect-research":
+        collected = asyncio.run(collect_research(limit=args.limit, prepare=args.prepare))
+        return 0 if collected >= 0 else 1
     return 2
 
 

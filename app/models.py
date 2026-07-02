@@ -176,6 +176,40 @@ class MarketResolutionAssessment(Base):
     )
 
 
+class MarketResearchPacket(Base):
+    """Structured evidence packet for one market: queries, sources, facts,
+    gaps. Research inputs only — no forecasts, no trade recommendations.
+
+    scanner_run_id / enrichment_id / resolution_assessment_id link the packet
+    to the pipeline rows it was built from (null when built ad hoc or when
+    the upstream row didn't exist yet)."""
+
+    __tablename__ = "market_research_packets"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    market_ticker: Mapped[str] = mapped_column(String(64), index=True)
+    scanner_run_id: Mapped[int | None] = mapped_column(ForeignKey("scanner_runs.id"), index=True)
+    enrichment_id: Mapped[int | None] = mapped_column(
+        ForeignKey("market_detail_enrichments.id")
+    )
+    resolution_assessment_id: Mapped[int | None] = mapped_column(
+        ForeignKey("market_resolution_assessments.id")
+    )
+    collector_name: Mapped[str] = mapped_column(String(64))
+    collector_version: Mapped[str] = mapped_column(String(16), default="v1")
+    domain: Mapped[str] = mapped_column(String(32), index=True)
+    source_queries: Mapped[list | None] = mapped_column(RawJSON)
+    sources: Mapped[list | None] = mapped_column(RawJSON)
+    key_facts: Mapped[list | None] = mapped_column(RawJSON)
+    missing_info: Mapped[list | None] = mapped_column(RawJSON)
+    research_completeness_score: Mapped[float] = mapped_column(Float)
+    research_risk: Mapped[str] = mapped_column(String(16))  # low|medium|high
+    raw_response: Mapped[dict | None] = mapped_column(RawJSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    scanner_run: Mapped["ScannerRun | None"] = relationship(back_populates="research_packets")
+
+
 class ScannerRun(Base):
     """One execution of the market scanner: fetch -> rank -> persist."""
 
@@ -200,5 +234,8 @@ class ScannerRun(Base):
         back_populates="scanner_run"
     )
     detail_enrichments: Mapped[list[MarketDetailEnrichment]] = relationship(
+        back_populates="scanner_run"
+    )
+    research_packets: Mapped[list[MarketResearchPacket]] = relationship(
         back_populates="scanner_run"
     )

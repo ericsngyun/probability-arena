@@ -152,12 +152,12 @@ def latest_enrichment_for(session: Session, ticker: str) -> MarketDetailEnrichme
     ).scalars().first()
 
 
-def apply_latest_enrichment(session: Session, market_data: MarketData) -> MarketData:
-    """Overlay the latest persisted enrichment onto a MarketData: enriched
-    rules_text and settlement_source win over list-level fields; list-level
-    values remain the fallback when no enrichment exists. Pure/deterministic
-    given the DB state."""
-    enrichment = latest_enrichment_for(session, market_data.ticker)
+def apply_enrichment(
+    market_data: MarketData, enrichment: MarketDetailEnrichment | None
+) -> MarketData:
+    """Overlay one enrichment row onto a MarketData: enriched rules_text and
+    settlement_source win over list-level fields; list-level values remain the
+    fallback. Pure function."""
     if enrichment is None:
         return market_data
     return market_data.model_copy(
@@ -168,3 +168,9 @@ def apply_latest_enrichment(session: Session, market_data: MarketData) -> Market
             "category": enrichment.category or market_data.category,
         }
     )
+
+
+def apply_latest_enrichment(session: Session, market_data: MarketData) -> MarketData:
+    """Overlay the latest persisted enrichment (if any) onto a MarketData.
+    Deterministic given the DB state."""
+    return apply_enrichment(market_data, latest_enrichment_for(session, market_data.ticker))

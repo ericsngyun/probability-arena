@@ -8,13 +8,14 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.db import get_db
-from app.models import Market, MarketResolutionAssessment
+from app.models import Market, MarketResearchPacket, MarketResolutionAssessment
 from app.schemas import (
     CandidateOut,
     CandidatesResponse,
     MarketData,
     MarketDetailEnrichmentOut,
     RejectedMarketOut,
+    ResearchPacketOut,
     ResolutionAssessmentOut,
     ScoreComponents,
 )
@@ -24,6 +25,7 @@ from app.services.enrichment import (
     MarketDetailEnrichmentService,
     apply_latest_enrichment,
 )
+from app.services.research import create_research_packet
 from app.services.resolution import get_judge, persist_assessment
 from app.services.scanner import ScanResult, run_scan
 
@@ -222,3 +224,49 @@ async def enrich_market_details(
     except EnrichmentError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return MarketDetailEnrichmentOut.model_validate(row)
+
+
+def _require_market(db: Session, ticker: str) -> Market:
+    market = db.execute(select(Market).where(Market.ticker == ticker)).scalar_one_or_none()
+    if market is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Market {ticker!r} not found; run a scan first so its metadata is stored",
+        )
+    return market
+
+
+@router.post(
+    "/{ticker}/research-packet",
+    response_model=ResearchPacketOut,
+    status_code=201,
+)
+async def create_market_research_packet(
+    ticker: str,
+    db: Session = Depends(get_db),
+) -> ResearchPacketOut:
+    """Build and persist a research packet for one known market, using the
+    latest enrichment and resolution assessment where they exist. A market
+    whose latest resolution says 'avoid' still gets a packet, but always at
+    research_risk=high. Evidence only — no forecasts, no trade advice."""
+    market = _require_market(db, ticker)
+    row = await create_research_packet(db, market, scanner_run_id=None)
+    return ResearchPacketOut.model_validate(row)
+
+
+@router.get("/{ticker}/research-packets", response_model=list[ResearchPacketOut])
+async def list_market_research_packets(
+    ticker: str,
+    limit: int = Query(default=10, ge=1, le=100),
+    db: Session = Depends(get_db),
+) -> list[ResearchPacketOut]:
+    """Recent persisted research packets for one market, newest first.
+    raw_response stays DB-only."""
+    _require_market(db, ticker)
+    rows = db.execute(
+        select(MarketResearchPacket)
+        .where(MarketResearchPacket.market_ticker == ticker)
+        .order_by(MarketResearchPacket.created_at.desc(), MarketResearchPacket.id.desc())
+        .limit(limit)
+    ).scalars().all()
+    return [ResearchPacketOut.model_validate(row) for row in rows]

@@ -332,6 +332,18 @@ def get_judge(settings: Settings | None = None):
     )
 
 
+def latest_assessment_for(session: Session, ticker: str) -> MarketResolutionAssessment | None:
+    from sqlalchemy import select
+
+    return session.execute(
+        select(MarketResolutionAssessment)
+        .where(MarketResolutionAssessment.market_ticker == ticker)
+        .order_by(
+            MarketResolutionAssessment.created_at.desc(), MarketResolutionAssessment.id.desc()
+        )
+    ).scalars().first()
+
+
 def persist_assessment(
     session: Session,
     market_ticker: str,

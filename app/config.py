@@ -31,6 +31,12 @@ class Settings(BaseSettings):
     resolution_prompt_version: str = "v1"
     min_clarity_score: float = 0.70
 
+    # Research packet collection (MVP-004A)
+    enable_external_research: bool = False
+    research_collector_name: str = "template"
+    research_collector_version: str = "v1"
+    research_model_name: str = "claude-opus-4-8"
+
     # Candidate hygiene / eligibility gating (MVP-003A)
     require_two_sided_quote: bool = True
     exclude_zero_quote_markets: bool = True

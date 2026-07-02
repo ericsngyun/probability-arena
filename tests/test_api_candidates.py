@@ -210,6 +210,52 @@ def test_resolution_assessment_uses_persisted_enrichment(client):
     assert "unclear_settlement_source" not in body["ambiguity_flags"]
 
 
+def test_post_research_packet_creates_and_persists(client):
+    test_client, session = client
+    test_client.get("/markets/candidates")
+    test_client.post("/markets/GOOD-MKT/enrich-details")
+    test_client.post("/markets/GOOD-MKT/resolution-assessment")
+
+    response = test_client.post("/markets/GOOD-MKT/research-packet")
+    assert response.status_code == 201
+    body = response.json()
+    assert body["market_ticker"] == "GOOD-MKT"
+    assert body["collector_name"] == "template"
+    assert body["domain"] == "sports_baseball"  # via enriched KXMLBHRR series metadata
+    assert body["enrichment_id"] is not None
+    assert body["resolution_assessment_id"] is not None
+    assert any("settles via" in f["fact"].lower() for f in body["key_facts"])
+    assert body["research_risk"] in ("low", "medium")
+    assert "raw_response" not in body
+
+    from app.models import MarketResearchPacket
+
+    row = session.execute(select(MarketResearchPacket)).scalar_one()
+    assert row.raw_response is not None
+
+
+def test_get_research_packets_returns_recent_without_raw(client):
+    test_client, _ = client
+    test_client.get("/markets/candidates")
+    test_client.post("/markets/GOOD-MKT/research-packet")
+    test_client.post("/markets/GOOD-MKT/research-packet")
+
+    response = test_client.get("/markets/GOOD-MKT/research-packets?limit=1")
+    assert response.status_code == 200
+    packets = response.json()
+    assert len(packets) == 1
+    assert packets[0]["market_ticker"] == "GOOD-MKT"
+    assert "raw_response" not in packets[0]
+
+    assert len(test_client.get("/markets/GOOD-MKT/research-packets").json()) == 2
+
+
+def test_research_packet_endpoints_unknown_ticker_404(client):
+    test_client, _ = client
+    assert test_client.post("/markets/NOPE-MKT/research-packet").status_code == 404
+    assert test_client.get("/markets/NOPE-MKT/research-packets").status_code == 404
+
+
 def test_scan_persists_eligibility_assessments_linked_to_run(client):
     test_client, session = client
     body = test_client.get("/markets/candidates").json()
