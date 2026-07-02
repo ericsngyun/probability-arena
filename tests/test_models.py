@@ -80,6 +80,31 @@ def test_persist_scan_writes_run_markets_and_snapshots(session):
     assert all(s.score is not None for s in snapshots)
 
 
+def test_persist_scan_records_audit_fields(session):
+    started_at = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
+    run = persist_scan(session, rank_markets([make_market()]), source="cli", started_at=started_at)
+
+    assert run.source == "cli"
+    assert run.duration_ms is not None and run.duration_ms >= 0
+    # SQLite returns naive datetimes; compare in UTC wall-clock terms
+    assert run.started_at.replace(tzinfo=timezone.utc) == started_at
+    assert run.error_type is None and run.error_message is None
+
+
+def test_persist_scan_defaults_to_api_source(session):
+    run = persist_scan(session, rank_markets([make_market()]))
+    assert run.source == "api"
+
+
+def test_persist_scan_stores_raw_payload(session):
+    raw = {"ticker": "AAA", "yes_bid": 48, "unmapped_field": "kept for debugging"}
+    ranked = rank_markets([make_market(ticker="AAA", raw=raw)])
+    persist_scan(session, ranked)
+
+    snapshot = session.execute(select(MarketSnapshot)).scalar_one()
+    assert snapshot.raw_payload == raw
+
+
 def test_persist_scan_upserts_existing_market(session):
     first = rank_markets([make_market(ticker="AAA", title="Old title")])
     persist_scan(session, first)

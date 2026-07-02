@@ -27,6 +27,8 @@ class MarketData(BaseModel):
     close_time: datetime | None = None
     expiration_time: datetime | None = None
     rules_primary: str | None = None
+    # Original API payload, persisted to market_snapshots.raw_payload for debugging
+    raw: dict | None = None
 
     @property
     def spread(self) -> int | None:

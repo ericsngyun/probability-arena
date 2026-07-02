@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.config import get_settings
-from app.db import init_db
+from app.db import run_migrations
 from app.routers.markets import router as markets_router
 from app.services.ws_snapshots import WsSnapshotService
 
@@ -19,7 +19,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    init_db()
+    run_migrations()
     ws_service = WsSnapshotService(get_settings())
     ws_service.start()
     app.state.ws_service = ws_service

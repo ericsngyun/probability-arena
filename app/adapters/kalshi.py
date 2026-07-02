@@ -59,6 +59,7 @@ def parse_market(raw: dict) -> MarketData:
         close_time=_parse_timestamp(raw.get("close_time")),
         expiration_time=_parse_timestamp(raw.get("expiration_time")),
         rules_primary=raw.get("rules_primary"),
+        raw=raw,
     )
 
 

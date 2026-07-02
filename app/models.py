@@ -10,9 +10,13 @@ from sqlalchemy import (
     String,
     Text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
+
+# JSON on SQLite (tests), JSONB on Postgres
+RawJSON = JSON().with_variant(JSONB(), "postgresql")
 
 
 def utcnow() -> datetime:
@@ -62,6 +66,8 @@ class MarketSnapshot(Base):
 
     score: Mapped[float | None] = mapped_column(Float)
     score_components: Mapped[dict | None] = mapped_column(JSON)
+    # Raw Kalshi market object as fetched, for debugging normalization issues
+    raw_payload: Mapped[dict | None] = mapped_column(RawJSON)
 
     market: Mapped[Market] = relationship(back_populates="snapshots")
     scanner_run: Mapped["ScannerRun | None"] = relationship(back_populates="snapshots")
@@ -95,9 +101,12 @@ class ScannerRun(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(16), default="running")  # running|ok|error
+    source: Mapped[str] = mapped_column(String(16), default="api")  # api|cli
     markets_fetched: Mapped[int] = mapped_column(Integer, default=0)
     markets_ranked: Mapped[int] = mapped_column(Integer, default=0)
-    error: Mapped[str | None] = mapped_column(Text)
+    error_type: Mapped[str | None] = mapped_column(String(128))
+    error_message: Mapped[str | None] = mapped_column(Text)
 
     snapshots: Mapped[list[MarketSnapshot]] = relationship(back_populates="scanner_run")
