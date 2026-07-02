@@ -22,9 +22,11 @@ app/
   db.py                   SQLAlchemy engine/session, programmatic Alembic runner
   models.py               markets, market_snapshots, orderbook_snapshots, scanner_runs
   schemas.py              Pydantic contracts (MarketData, RankedMarket, API responses)
-  adapters/kalshi.py      REST adapter: fetch + parse active markets (cursor paging)
+  adapters/kalshi.py      REST adapter: fetch + parse active markets (cursor paging,
+                          legacy int-cent and current *_dollars/*_fp payload shapes)
+  services/eligibility.py Deterministic candidate hygiene gate (thresholds below)
   services/ranking.py     Weighted scoring: spread, liquidity, volume, expiration, clarity
-  services/scanner.py     fetch -> rank -> persist as a scanner_run
+  services/scanner.py     fetch -> assess eligibility -> rank eligible -> persist
   services/ws_snapshots.py Optional WS orderbook snapshot service (credential-gated)
   services/cache.py       Best-effort Redis cache (degrades gracefully)
   routers/markets.py      GET /markets/candidates
@@ -42,7 +44,8 @@ docker compose up --build
 The api container runs Alembic migrations automatically on startup (databases created by pre-Alembic MVP-001 are detected and stamped at revision `0001` before upgrading). Then:
 
 - `GET http://localhost:8000/health` — liveness + whether WS is enabled
-- `GET http://localhost:8000/markets/candidates?limit=25` — ranked candidates (triggers a scan, cached ~30s)
+- `GET http://localhost:8000/markets/candidates?limit=25` — top **eligible** candidates (triggers a scan, cached ~30s)
+- `GET http://localhost:8000/markets/candidates?include_rejected=true` — also returns gated-out markets with their `rejection_reasons` (debugging)
 - `http://localhost:8000/docs` — OpenAPI UI
 
 ### Live Kalshi smoke test
@@ -66,7 +69,27 @@ docker compose run --rm api python -m app.cli scan --limit 100
 python -m app.cli scan --limit 100
 ```
 
-Runs migrations, fetches up to `--limit` open markets, ranks them, persists a `scanner_runs` audit row (with `source=cli`, `duration_ms`, and error details on failure) plus per-market snapshots, and prints the top 20.
+Runs migrations, fetches up to `--limit` open markets, assesses eligibility, ranks the eligible ones, persists a `scanner_runs` audit row (with `source=cli`, `duration_ms`, and error details on failure) plus per-market snapshots and eligibility assessments, then prints the top 20 and a rejection-reason summary.
+
+## Candidate hygiene (eligibility gating)
+
+Every fetched market passes a deterministic eligibility gate **before** ranking. Ineligible markets are excluded from `/markets/candidates` by default, their snapshots persist with `score = 0.0`, and every assessment (eligible or not) is written to `market_eligibility_assessments` with machine-readable `rejection_reasons` — so "why isn't market X a candidate?" is always answerable from the DB.
+
+Thresholds (env-configurable):
+
+| Variable | Default | Gate |
+|---|---|---|
+| `REQUIRE_TWO_SIDED_QUOTE` | `true` | Reject `one_sided_quote` unless both yes bid and ask exist |
+| `EXCLUDE_ZERO_QUOTE_MARKETS` | `true` | Reject `no_quotes` when neither side is quoted |
+| `MIN_LIQUIDITY` | `100` | Reject `liquidity_below_min` under 100 cents resting liquidity |
+| `MIN_VOLUME_24H` | `25` | Reject `volume_24h_below_min` under 25 contracts/24h |
+| `MAX_SPREAD` | `0.20` | Reject `spread_too_wide` over 20 cents yes bid/ask spread |
+| `MIN_DAYS_TO_EXPIRATION` | `0.25` | Reject `expires_too_soon` (also `missing_expiration`) |
+| `MAX_DAYS_TO_EXPIRATION` | `45` | Reject `expires_too_far` |
+
+Multivariate/parlay-style markets (`KXMVE*`, combo titles) are flagged in `market_type_flags` and warned as `parlay_like_market`; additionally `KALSHI_MVE_FILTER=exclude` (default) filters Kalshi's auto-generated parlay flood server-side before it ever reaches the scanner.
+
+Liquidity note: Kalshi's list endpoint no longer populates `liquidity`; when absent, the adapter derives a deterministic proxy — the notional value (cents) resting at the top of the book on both sides.
 
 ## Local development
 
@@ -124,6 +147,7 @@ It subscribes to the `orderbook_delta` channel for those tickers, maintains book
 | `market_snapshots` | Point-in-time top-of-book + activity stats + ranking score per scan, plus `raw_payload` (raw Kalshi object, JSONB on Postgres) for debugging |
 | `orderbook_snapshots` | Full depth (`yes_levels`/`no_levels` as `[[price_cents, qty], ...]`) from WS |
 | `scanner_runs` | Audit trail of each scan: `started_at`/`finished_at`/`duration_ms`, `source` (api/cli), counts, `status`, and `error_type`/`error_message` on failure |
+| `market_eligibility_assessments` | One row per market per scan: `is_eligible`, `rejection_reasons`, `warnings`, quote/spread/liquidity/volume/expiration inputs, `market_type_flags` |
 
 Schema is managed by Alembic (`alembic/versions/`); migrations run automatically at app/CLI startup.
 

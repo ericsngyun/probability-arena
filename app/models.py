@@ -93,6 +93,30 @@ class OrderbookSnapshot(Base):
     __table_args__ = (Index("ix_orderbook_snapshots_market_captured", "market_id", "captured_at"),)
 
 
+class MarketEligibilityAssessment(Base):
+    """Audit record of the eligibility gate for one market in one scan."""
+
+    __tablename__ = "market_eligibility_assessments"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    market_ticker: Mapped[str] = mapped_column(String(64), index=True)
+    scanner_run_id: Mapped[int | None] = mapped_column(ForeignKey("scanner_runs.id"), index=True)
+    is_eligible: Mapped[bool] = mapped_column(default=False)
+    rejection_reasons: Mapped[list | None] = mapped_column(RawJSON)
+    warnings: Mapped[list | None] = mapped_column(RawJSON)
+    has_two_sided_quote: Mapped[bool] = mapped_column(default=False)
+    yes_bid: Mapped[int | None] = mapped_column(Integer)
+    yes_ask: Mapped[int | None] = mapped_column(Integer)
+    spread: Mapped[int | None] = mapped_column(Integer)
+    liquidity: Mapped[int] = mapped_column(Integer, default=0)
+    volume_24h: Mapped[int] = mapped_column(Integer, default=0)
+    expiration_days: Mapped[float | None] = mapped_column(Float)
+    market_type_flags: Mapped[dict | None] = mapped_column(RawJSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    scanner_run: Mapped["ScannerRun | None"] = relationship(back_populates="eligibility_assessments")
+
+
 class ScannerRun(Base):
     """One execution of the market scanner: fetch -> rank -> persist."""
 
@@ -110,3 +134,6 @@ class ScannerRun(Base):
     error_message: Mapped[str | None] = mapped_column(Text)
 
     snapshots: Mapped[list[MarketSnapshot]] = relationship(back_populates="scanner_run")
+    eligibility_assessments: Mapped[list[MarketEligibilityAssessment]] = relationship(
+        back_populates="scanner_run"
+    )

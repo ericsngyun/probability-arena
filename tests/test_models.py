@@ -20,9 +20,15 @@ def session():
         yield session
 
 
-def test_schema_creates_all_four_tables(session):
+def test_schema_creates_all_tables(session):
     tables = set(Base.metadata.tables)
-    assert tables == {"markets", "market_snapshots", "orderbook_snapshots", "scanner_runs"}
+    assert tables == {
+        "markets",
+        "market_snapshots",
+        "orderbook_snapshots",
+        "scanner_runs",
+        "market_eligibility_assessments",
+    }
 
 
 def test_market_snapshot_roundtrip(session):

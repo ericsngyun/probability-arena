@@ -36,18 +36,26 @@ async def scan(
         run_migrations()
         session = get_sessionmaker()()
     try:
-        run, ranked = await run_scan(session, adapter=adapter, max_markets=limit, source="cli")
+        result = await run_scan(session, adapter=adapter, max_markets=limit, source="cli")
     finally:
         if owns_session:
             session.close()
 
+    run = result.run
     print(
         f"scan run={run.id} status={run.status} source={run.source} "
-        f"fetched={run.markets_fetched} ranked={run.markets_ranked} "
-        f"duration_ms={run.duration_ms}"
+        f"fetched={run.markets_fetched} eligible={len(result.ranked)} "
+        f"rejected={len(result.rejected)} duration_ms={run.duration_ms}"
     )
-    for position, item in enumerate(ranked[:TOP_N_PRINTED], start=1):
+    for position, item in enumerate(result.ranked[:TOP_N_PRINTED], start=1):
         print(f"{position:>3}. {item.score:.4f}  {item.market.ticker:<30} {item.market.title[:60]}")
+    if result.rejected:
+        reason_counts: dict[str, int] = {}
+        for _, assessment in result.rejected:
+            for reason in assessment.rejection_reasons:
+                reason_counts[reason] = reason_counts.get(reason, 0) + 1
+        summary = ", ".join(f"{reason}={count}" for reason, count in sorted(reason_counts.items()))
+        print(f"rejections: {summary}")
     return run
 
 

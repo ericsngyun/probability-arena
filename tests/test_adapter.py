@@ -36,6 +36,68 @@ def test_parse_market_tolerates_missing_optional_fields():
     assert market.close_time is None
 
 
+class TestDollarsFpPayloadFormat:
+    """The live API migrated to '*_dollars' price strings and '*_fp'
+    fixed-point count strings; legacy integer fields are absent."""
+
+    def _raw(self, **overrides):
+        raw = {
+            "ticker": "KXFED-27APR-T4.00",
+            "event_ticker": "KXFED-27APR",
+            "title": "Fed funds above 4.00%?",
+            "status": "active",
+            "yes_bid_dollars": "0.4100",
+            "yes_ask_dollars": "0.6800",
+            "no_bid_dollars": "0.3200",
+            "no_ask_dollars": "0.5900",
+            "last_price_dollars": "0.4200",
+            "volume_fp": "14782.83",
+            "volume_24h_fp": "129.98",
+            "open_interest_fp": "1763.87",
+            "liquidity_dollars": "0.0000",
+            "yes_bid_size_fp": "500.00",
+            "yes_ask_size_fp": "200.00",
+            "close_time": "2026-07-20T19:00:00Z",
+        }
+        raw.update(overrides)
+        return raw
+
+    def test_dollar_prices_convert_to_cents(self):
+        market = parse_market(self._raw())
+        assert market.yes_bid == 41
+        assert market.yes_ask == 68
+        assert market.no_bid == 32
+        assert market.no_ask == 59
+        assert market.last_price == 42
+        assert market.spread == 27
+
+    def test_fp_counts_round_to_whole_contracts(self):
+        market = parse_market(self._raw())
+        assert market.volume == 14783
+        assert market.volume_24h == 130
+        assert market.open_interest == 1764
+
+    def test_zero_dollar_quotes_are_missing(self):
+        market = parse_market(self._raw(yes_bid_dollars="0.0000", yes_ask_dollars="0.0000"))
+        assert market.yes_bid is None
+        assert market.yes_ask is None
+
+    def test_liquidity_falls_back_to_top_of_book_notional(self):
+        market = parse_market(self._raw())
+        # bid: 41c * 500 + ask no-side: (100-68)c * 200 = 20500 + 6400
+        assert market.liquidity == 26900
+
+    def test_liquidity_dollars_used_when_populated(self):
+        market = parse_market(self._raw(liquidity_dollars="123.45"))
+        assert market.liquidity == 12345
+
+    def test_legacy_integer_fields_take_precedence(self):
+        market = parse_market(self._raw(yes_bid=43, liquidity=999, volume_24h=7))
+        assert market.yes_bid == 43
+        assert market.liquidity == 999
+        assert market.volume_24h == 7
+
+
 def test_parse_markets_response_skips_malformed_and_returns_cursor(sample_kalshi_market):
     payload = {
         "markets": [sample_kalshi_market, {"title": "no ticker -> invalid"}],
@@ -69,6 +131,7 @@ async def test_fetch_active_markets_pages_with_cursor(sample_kalshi_market):
     assert route.call_count == 2
     first_params = route.calls[0].request.url.params
     assert first_params["status"] == "open"
+    assert first_params["mve_filter"] == "exclude"
     assert "cursor" not in first_params
     assert route.calls[1].request.url.params["cursor"] == "page2"
 

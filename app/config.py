@@ -13,6 +13,9 @@ class Settings(BaseSettings):
 
     kalshi_api_base: str = "https://api.elections.kalshi.com/trade-api/v2"
     kalshi_request_timeout_seconds: float = 10.0
+    # Server-side filter for auto-generated multivariate/parlay markets;
+    # "exclude" keeps them out of scans entirely, "" fetches everything.
+    kalshi_mve_filter: str = "exclude"
 
     kalshi_api_key_id: str = ""
     kalshi_private_key_path: str = ""
@@ -21,6 +24,15 @@ class Settings(BaseSettings):
 
     scanner_max_markets: int = 500
     candidates_default_limit: int = 25
+
+    # Candidate hygiene / eligibility gating (MVP-003A)
+    require_two_sided_quote: bool = True
+    exclude_zero_quote_markets: bool = True
+    min_liquidity: int = 100
+    min_volume_24h: int = 25
+    max_spread: float = 0.20  # dollars; 0.20 = 20 cents
+    min_days_to_expiration: float = 0.25
+    max_days_to_expiration: float = 45.0
 
     @property
     def ws_enabled(self) -> bool:

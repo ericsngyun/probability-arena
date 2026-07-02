@@ -66,10 +66,36 @@ class CandidateOut(BaseModel):
     close_time: datetime | None
     score: float
     components: ScoreComponents
+    is_eligible: bool = True
+    warnings: list[str] = []
+
+
+class RejectedMarketOut(BaseModel):
+    """Debug view of a market that failed the eligibility gate."""
+
+    ticker: str
+    title: str
+    status: str
+    is_eligible: bool = False
+    score: float = 0.0
+    rejection_reasons: list[str]
+    warnings: list[str] = []
+    yes_bid: int | None = None
+    yes_ask: int | None = None
+    spread: int | None = None
+    liquidity: int = 0
+    volume_24h: int = 0
+    expiration_days: float | None = None
+    market_type_flags: dict[str, bool] = {}
 
 
 class CandidatesResponse(BaseModel):
     scanner_run_id: int | None
     as_of: datetime
     cached: bool = False
+    markets_assessed: int = 0
+    eligible_count: int = 0
+    rejected_count: int = 0
     candidates: list[CandidateOut]
+    # Populated only when include_rejected=true
+    rejected: list[RejectedMarketOut] = []

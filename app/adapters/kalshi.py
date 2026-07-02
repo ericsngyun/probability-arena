@@ -39,23 +39,74 @@ def _parse_price(value) -> int | None:
     return price if price > 0 else None
 
 
+def _dollars_to_cents(value) -> int | None:
+    """Convert a '0.4100'-style dollar string to integer cents; 0/None -> None."""
+    if value in (None, ""):
+        return None
+    cents = round(float(value) * 100)
+    return cents if cents > 0 else None
+
+
+def _price_from(raw: dict, field: str) -> int | None:
+    """Read a price: legacy integer-cent field, else the '<field>_dollars'
+    string the API returns since the dollars/fp migration."""
+    if raw.get(field) is not None:
+        return _parse_price(raw[field])
+    return _dollars_to_cents(raw.get(f"{field}_dollars"))
+
+
+def _count_from(raw: dict, field: str) -> int:
+    """Read a contract count: legacy integer field, else '<field>_fp'
+    fixed-point string (fractional trading), rounded to whole contracts."""
+    if raw.get(field) is not None:
+        return int(raw[field])
+    fp = raw.get(f"{field}_fp")
+    if fp in (None, ""):
+        return 0
+    return round(float(fp))
+
+
+def _parse_liquidity(raw: dict) -> int:
+    """Liquidity in cents. The list endpoint no longer populates
+    liquidity/liquidity_dollars, so fall back to a deterministic proxy: the
+    notional value (cents) resting at the top of the book on both sides."""
+    if raw.get("liquidity") is not None:
+        return int(raw["liquidity"])
+    direct = _dollars_to_cents(raw.get("liquidity_dollars"))
+    if direct:
+        return direct
+    notional = 0
+    yes_bid = _price_from(raw, "yes_bid")
+    yes_ask = _price_from(raw, "yes_ask")
+    if yes_bid:
+        notional += yes_bid * _count_from(raw, "yes_bid_size")
+    if yes_ask:
+        # A resting yes ask is a no-side commitment of (100 - ask) per contract
+        notional += (100 - yes_ask) * _count_from(raw, "yes_ask_size")
+    return notional
+
+
 def parse_market(raw: dict) -> MarketData:
-    """Normalize one raw Kalshi market object into MarketData."""
+    """Normalize one raw Kalshi market object into MarketData.
+
+    Handles both the legacy integer-cent payload shape and the current
+    '*_dollars' / '*_fp' string shape.
+    """
     return MarketData(
         ticker=raw["ticker"],
         event_ticker=raw.get("event_ticker"),
         title=raw.get("title") or "",
         category=raw.get("category"),
         status=raw.get("status") or "unknown",
-        yes_bid=_parse_price(raw.get("yes_bid")),
-        yes_ask=_parse_price(raw.get("yes_ask")),
-        no_bid=_parse_price(raw.get("no_bid")),
-        no_ask=_parse_price(raw.get("no_ask")),
-        last_price=_parse_price(raw.get("last_price")),
-        volume=int(raw.get("volume") or 0),
-        volume_24h=int(raw.get("volume_24h") or 0),
-        open_interest=int(raw.get("open_interest") or 0),
-        liquidity=int(raw.get("liquidity") or 0),
+        yes_bid=_price_from(raw, "yes_bid"),
+        yes_ask=_price_from(raw, "yes_ask"),
+        no_bid=_price_from(raw, "no_bid"),
+        no_ask=_price_from(raw, "no_ask"),
+        last_price=_price_from(raw, "last_price"),
+        volume=_count_from(raw, "volume"),
+        volume_24h=_count_from(raw, "volume_24h"),
+        open_interest=_count_from(raw, "open_interest"),
+        liquidity=_parse_liquidity(raw),
         close_time=_parse_timestamp(raw.get("close_time")),
         expiration_time=_parse_timestamp(raw.get("expiration_time")),
         rules_primary=raw.get("rules_primary"),
@@ -86,9 +137,12 @@ class KalshiRestAdapter:
         results: list[MarketData] = []
         cursor: str | None = None
 
+        mve_filter = get_settings().kalshi_mve_filter
         async with httpx.AsyncClient(base_url=self.base_url, timeout=self.timeout) as client:
             while len(results) < limit:
                 params = {"status": "open", "limit": min(PAGE_SIZE, limit - len(results))}
+                if mve_filter:
+                    params["mve_filter"] = mve_filter
                 if cursor:
                     params["cursor"] = cursor
                 response = await client.get(MARKETS_PATH, params=params)
