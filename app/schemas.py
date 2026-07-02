@@ -185,6 +185,73 @@ class MarketForecastOut(MarketForecast):
     created_at: datetime
 
 
+class MarketOutcome(BaseModel):
+    """Settlement state for one market as observed via read-only endpoints."""
+
+    outcome_status: Literal["open", "closed", "settled", "canceled", "unknown"]
+    resolved_probability: float | None = Field(default=None, ge=0.0, le=1.0)
+    winning_side: Literal["yes", "no", "void", "unknown"] | None = None
+    settlement_price: float | None = None
+    close_time: datetime | None = None
+    settled_time: datetime | None = None
+    source: str = "kalshi_rest"
+    # Raw API payload persisted for audit; never serialized in API responses
+    raw_payload: dict | None = Field(default=None, exclude=True, repr=False)
+
+
+class MarketOutcomeOut(MarketOutcome):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    market_ticker: str
+    created_at: datetime
+
+
+class ForecastScore(BaseModel):
+    """Calibration score of one forecast against one outcome state."""
+
+    brier_score: float | None = None
+    log_loss: float | None = None
+    absolute_error: float | None = None
+    was_resolved: bool = False
+    score_status: Literal["scored", "pending_outcome", "unscorable"]
+    score_notes: str | None = None
+    score_tags: list[str] = []
+
+
+class ForecastScoreOut(ForecastScore):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    forecast_id: int
+    market_ticker: str
+    outcome_id: int | None = None
+    created_at: datetime
+
+
+class CohortStats(BaseModel):
+    count: int
+    mean_brier: float | None = None
+    mean_log_loss: float | None = None
+    mean_absolute_error: float | None = None
+
+
+class CalibrationSummary(BaseModel):
+    """Aggregate calibration over the latest score per forecast. Read-only
+    scoring output — carries no EV or trade metrics."""
+
+    total_scores: int = 0
+    resolved: int = 0
+    pending_outcome: int = 0
+    unscorable: int = 0
+    overall: CohortStats | None = None
+    by_evidence_depth: dict[str, CohortStats] = {}
+    by_forecast_risk: dict[str, CohortStats] = {}
+    by_forecaster: dict[str, CohortStats] = {}
+    by_domain: dict[str, CohortStats] = {}
+    by_tag: dict[str, CohortStats] = {}
+
+
 class MarketDetailEnrichmentOut(BaseModel):
     """A persisted detail enrichment, without the large raw_* payloads
     (those stay DB-only for audit)."""

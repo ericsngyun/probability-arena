@@ -11,7 +11,7 @@ from datetime import datetime
 import httpx
 
 from app.config import get_settings
-from app.schemas import MarketData
+from app.schemas import MarketData, MarketOutcome
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +111,71 @@ def parse_market(raw: dict) -> MarketData:
         expiration_time=_parse_timestamp(raw.get("expiration_time")),
         rules_primary=raw.get("rules_primary"),
         raw=raw,
+    )
+
+
+SETTLED_STATUSES = ("settled", "finalized", "determined")
+CLOSED_STATUSES = ("closed", "expired")
+OPEN_STATUSES = ("open", "active", "initialized", "unopened", "paused")
+CANCELED_STATUSES = ("canceled", "cancelled", "voided", "deactivated")
+VOID_RESULTS = ("void", "canceled", "cancelled", "invalid", "scratch")
+
+
+def _parse_settlement_price(raw: dict) -> float | None:
+    """Settlement value in dollars per contract, tolerating both the legacy
+    integer-cent field and the current dollar-string field."""
+    dollars = raw.get("settlement_value_dollars")
+    if dollars not in (None, ""):
+        try:
+            return float(dollars)
+        except (TypeError, ValueError):
+            return None
+    cents = raw.get("settlement_value")
+    if cents is None:
+        return None
+    try:
+        return int(cents) / 100
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_market_outcome(raw: dict) -> MarketOutcome:
+    """Infer outcome state from a market detail payload, tolerating missing
+    fields and API shape drift (unrecognized statuses map to 'unknown').
+
+    Read-only settlement observation — no trading semantics."""
+    status = (raw.get("status") or "").strip().lower()
+    result = (raw.get("result") or "").strip().lower()
+
+    winning_side: str | None = None
+    resolved_probability: float | None = None
+    if result in ("yes", "no"):
+        outcome_status = "settled"
+        winning_side = result
+        resolved_probability = 1.0 if result == "yes" else 0.0
+    elif result in VOID_RESULTS or status in CANCELED_STATUSES:
+        outcome_status = "canceled"
+        winning_side = "void"
+    elif status in SETTLED_STATUSES:
+        # Settled per status but no readable result field
+        outcome_status = "settled"
+        winning_side = "unknown"
+    elif status in CLOSED_STATUSES:
+        outcome_status = "closed"
+    elif status in OPEN_STATUSES:
+        outcome_status = "open"
+    else:
+        outcome_status = "unknown"
+
+    return MarketOutcome(
+        outcome_status=outcome_status,
+        resolved_probability=resolved_probability,
+        winning_side=winning_side,
+        settlement_price=_parse_settlement_price(raw),
+        close_time=_parse_timestamp(raw.get("close_time")),
+        settled_time=_parse_timestamp(raw.get("settled_time") or raw.get("settlement_time")),
+        source="kalshi_rest",
+        raw_payload=raw,
     )
 
 

@@ -61,11 +61,17 @@ def client(monkeypatch):
         yield session
 
     from app.services import enrichment as enrichment_module
+    from app.services import outcomes as outcomes_module
     from tests.test_enrichment import FakeDetailAdapter
+
+    class SettledYesOutcomeAdapter:
+        async def get_market_detail(self, ticker):
+            return {"ticker": ticker, "status": "settled", "result": "yes"}
 
     app.dependency_overrides[get_db] = override_get_db
     monkeypatch.setattr(scanner_module, "KalshiRestAdapter", lambda: FakeAdapter([GOOD, PARLAY]))
     monkeypatch.setattr(enrichment_module, "KalshiRestAdapter", FakeDetailAdapter)
+    monkeypatch.setattr(outcomes_module, "KalshiRestAdapter", SettledYesOutcomeAdapter)
     monkeypatch.setattr(cache, "get_cached", lambda key: None)
     monkeypatch.setattr(cache, "set_cached", lambda key, value, ttl: None)
 
@@ -344,6 +350,80 @@ def test_include_forecast_attaches_latest_without_creating(client):
 
     # And the default response omits forecasts entirely
     assert test_client.get("/markets/candidates").json()["candidates"][0]["forecast"] is None
+
+
+def test_outcome_endpoints_sync_then_get(client):
+    test_client, session = client
+    test_client.get("/markets/candidates")
+
+    # Not synced yet -> 404
+    assert test_client.get("/markets/GOOD-MKT/outcome").status_code == 404
+
+    created = test_client.post("/markets/GOOD-MKT/sync-outcome")
+    assert created.status_code == 201
+    body = created.json()
+    assert body["market_ticker"] == "GOOD-MKT"
+    assert body["outcome_status"] == "settled"
+    assert body["winning_side"] == "yes"
+    assert body["resolved_probability"] == 1.0
+    assert "raw_payload" not in body
+
+    fetched = test_client.get("/markets/GOOD-MKT/outcome").json()
+    assert fetched["id"] == body["id"]
+
+    from app.models import MarketOutcomeRecord
+
+    row = session.execute(select(MarketOutcomeRecord)).scalar_one()
+    assert row.raw_payload is not None
+
+    # Unknown ticker -> 404 on both
+    assert test_client.get("/markets/NOPE-MKT/outcome").status_code == 404
+    assert test_client.post("/markets/NOPE-MKT/sync-outcome").status_code == 404
+
+
+def test_forecast_scores_endpoint_with_filters(client):
+    test_client, session = client
+    test_client.get("/markets/candidates")
+    test_client.post("/markets/GOOD-MKT/forecast?prepare=true")
+    test_client.post("/markets/GOOD-MKT/sync-outcome")
+
+    from app.services.calibration import CalibrationService
+
+    CalibrationService().score_unscored(session)
+
+    scores = test_client.get("/forecasts/scores").json()
+    assert len(scores) == 1
+    assert scores[0]["score_status"] == "scored"
+    assert scores[0]["market_ticker"] == "GOOD-MKT"
+    assert scores[0]["brier_score"] is not None
+
+    assert test_client.get("/forecasts/scores?score_status=scored").json()
+    assert test_client.get("/forecasts/scores?score_status=pending_outcome").json() == []
+    assert test_client.get("/forecasts/scores?market_ticker=GOOD-MKT").json()
+    assert test_client.get("/forecasts/scores?market_ticker=OTHER").json() == []
+    assert test_client.get("/forecasts/scores?forecaster_name=template_baseline").json()
+    assert test_client.get("/forecasts/scores?forecaster_name=nope").json() == []
+    assert test_client.get("/forecasts/scores?evidence_depth=template_only").json()
+    assert test_client.get("/forecasts/scores?evidence_depth=source_backed").json() == []
+
+
+def test_calibration_summary_endpoint(client):
+    test_client, session = client
+    test_client.get("/markets/candidates")
+    test_client.post("/markets/GOOD-MKT/forecast?prepare=true")
+    test_client.post("/markets/GOOD-MKT/sync-outcome")
+
+    from app.services.calibration import CalibrationService
+
+    CalibrationService().score_unscored(session)
+
+    body = test_client.get("/calibration/summary").json()
+    assert body["total_scores"] == 1
+    assert body["resolved"] == 1
+    assert body["overall"]["count"] == 1
+    assert body["overall"]["mean_brier"] is not None
+    assert "template_only" in body["by_evidence_depth"]
+    assert "template_baseline" in body["by_forecaster"]
 
 
 def test_scan_persists_eligibility_assessments_linked_to_run(client):

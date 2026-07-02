@@ -11,6 +11,7 @@ from fastapi import FastAPI
 
 from app.config import get_settings
 from app.db import run_migrations
+from app.routers.calibration import router as calibration_router
 from app.routers.markets import router as markets_router
 from app.services.ws_snapshots import WsSnapshotService
 
@@ -35,6 +36,7 @@ app = FastAPI(
 )
 
 app.include_router(markets_router)
+app.include_router(calibration_router)
 
 
 @app.get("/health", tags=["ops"])

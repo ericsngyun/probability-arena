@@ -1,13 +1,14 @@
 # Probability Arena
 
-**Kalshi read-only market intelligence** (MVP-004B: gating + enrichment + resolution assessment + research packets + capped-confidence forecasts).
+**Kalshi read-only market intelligence** (MVP-004C: the full read-only loop — gating, enrichment, resolution assessment, research packets, capped-confidence forecasts, outcome tracking, and calibration scoring).
 
 Scans active Kalshi markets over the public REST API, ranks them on tradability signals (spread, liquidity, volume, time to expiration, resolution clarity), and stores time-series snapshots in Postgres. Optionally maintains live orderbook snapshots over WebSocket when API credentials are configured.
 
 ## Safety notes
 
 - **Read-only by design. No order placement exists.** There is no trading, betting, order placement, wallet, execution, portfolio-sizing, or paper-trading code anywhere in this repo — the REST adapter only issues GETs (market list, market/event/series detail), the WebSocket client only sends channel subscriptions, and the CLI commands (`scan`, `enrich-details`, `assess-resolution`, `collect-research`) only read market data and write to our own database.
-- **Forecasts are probabilities and reasoning artifacts only.** MVP-004B adds structured probability forecasts, and stops there: no EV calculation, no position sizing, no paper trading, no trade recommendations, no execution. The forecast schema deliberately has no trade/EV/sizing fields, and tests assert the absence of trading language in forecast output.
+- **Forecasts are probabilities and reasoning artifacts only.** No EV calculation, no position sizing, no paper trading, no trade recommendations, no execution. The forecast schema deliberately has no trade/EV/sizing fields, and tests assert the absence of trading language in forecast output.
+- **Calibration is read-only scoring.** MVP-004C syncs settlement outcomes (plain detail GETs — no trading permissions needed) and scores forecasts with Brier / log loss / absolute error. It does not calculate EV, recommend trades, paper trade, or execute orders.
 - **LLM resolution judgment is OFF by default** (`ENABLE_LLM_RESOLUTION=false`). The deterministic rule-based judge needs no credentials or network beyond Kalshi; tests never call an LLM. When enabled, the LLM only *reads* rules text and returns a structured quality verdict — it has no tools and no trading capability.
 - Public market data requires **no credentials**. The Kalshi API key is only needed for the optional WebSocket orderbook feed, and even then the client only sends channel subscriptions.
 - Keep your Kalshi private key **outside the repo** (it is `.gitignore`d by extension, but store it elsewhere, e.g. `~/.kalshi/`). Never commit `.env`.
@@ -31,6 +32,8 @@ app/
   services/resolution.py  Resolution-criteria judges (rule-based / mock / optional LLM)
   services/research.py    Research packet collectors (template / mock / optional LLM+web)
   services/forecasting.py Forecast engine (template baseline / mock / optional LLM)
+  services/outcomes.py    Outcome sync (read-only settlement state per market)
+  services/calibration.py Forecast scoring (Brier / log loss) + cohort summaries
   services/ranking.py     Weighted scoring: spread, liquidity, volume, expiration, clarity
   services/scanner.py     fetch -> assess eligibility -> rank eligible -> persist
   services/ws_snapshots.py Optional WS orderbook snapshot service (credential-gated)
@@ -59,6 +62,9 @@ The api container runs Alembic migrations automatically on startup (databases cr
 - `GET http://localhost:8000/markets/{ticker}/research-packets?limit=10` — recent packets for a ticker, newest first (raw collector output stays DB-only)
 - `POST http://localhost:8000/markets/{ticker}/forecast` — build and persist a forecast from the latest research packet (409 if none exists; pass `?prepare=true` to create one first)
 - `GET http://localhost:8000/markets/{ticker}/forecasts?limit=10` — recent forecasts, newest first; `GET /markets/candidates?include_forecast=true` attaches each candidate's latest forecast. **GETs never create forecasts or call models.**
+- `POST http://localhost:8000/markets/{ticker}/sync-outcome` — sync a market's settlement state (read-only detail GET); `GET /markets/{ticker}/outcome` returns the latest persisted outcome (404 if never synced)
+- `GET http://localhost:8000/forecasts/scores` — recent forecast scores, filterable by `score_status`, `market_ticker`, `forecaster_name`, `evidence_depth`
+- `GET http://localhost:8000/calibration/summary` — aggregate Brier / log-loss / absolute-error by evidence depth, risk, forecaster, domain, and tag
 - `http://localhost:8000/docs` — OpenAPI UI
 
 ### Live Kalshi smoke test
@@ -108,7 +114,21 @@ python -m app.cli forecast --limit 10
 
 Creates forecasts for the top eligible candidates that already have research packets (markets without packets are skipped unless `--prepare` is passed), preferring enriched + researchable markets, and prints per-market lines plus domain/evidence-depth/risk summaries.
 
-**Recommended sequence:** `scan` → `enrich-details` → `assess-resolution` → `collect-research` → `forecast`. Each stage automatically prefers the previous stage's output when it exists.
+```bash
+python -m app.cli sync-outcomes --limit 100      # settlement state for known markets (forecasted first)
+python -m app.cli score-forecasts --limit 500    # Brier/log-loss/abs-error where outcomes are settled
+python -m app.cli calibration-report             # aggregate summary by cohort
+```
+
+**Recommended sequence:** `scan` → `enrich-details` → `assess-resolution` → `collect-research` → `forecast` → `sync-outcomes` → `score-forecasts` → `calibration-report`. Each stage automatically prefers the previous stage's output when it exists.
+
+## Outcome tracking & calibration
+
+**Outcome sync** re-reads each market's detail payload (read-only GET, no trading permissions) and upserts one `market_outcomes` row per ticker: `outcome_status` (open/closed/settled/canceled/unknown), `winning_side` (yes/no/void/unknown), `resolved_probability` (1.0/0.0/null), settlement price, and the raw payload for audit. Parsing tolerates missing fields and API shape drift — unrecognized statuses map to `unknown`, never a crash.
+
+**Forecast scoring** compares each forecast's `estimated_probability` against the resolved outcome: Brier score `(p − y)²`, binary log loss with an ε-clamp (`1e-6`, so p = 0/1 stays finite), and absolute error. Unresolved outcomes produce `pending_outcome` scores; canceled/void/unknown outcomes produce `unscorable`. Scoring is append-only for audit but never duplicates: a forecast is re-scored only when its outcome state changes (e.g. pending → settled).
+
+**Calibration reports** aggregate over the latest score per forecast, grouped by evidence depth, forecast risk, forecaster, domain, and calibration tag. This is the ground-truth loop the template baseline exists for: the market-mid-anchored baseline should score close to the market's own calibration, so any future forecaster (e.g. `ENABLE_LLM_FORECASTING=true` with external research) has a measurable bar to beat — before any EV or trading conversation happens.
 
 ## Forecast engine
 
@@ -247,6 +267,8 @@ It subscribes to the `orderbook_delta` channel for those tickers, maintains book
 | `market_detail_enrichments` | One row per enrichment: normalized `rules_text`/`settlement_source`/title/category plus raw market/event/series payloads for audit; `scanner_run_id` null for ad-hoc enrichments |
 | `market_research_packets` | One row per packet: collector identity, domain, queries/sources/facts/gaps, completeness score, risk, raw collector output; links to scan, enrichment, and resolution assessment |
 | `market_forecasts` | One row per forecast: forecaster identity, probability, capped confidence, evidence depth, risk, bull/bear/skeptic reasoning, assumptions, change triggers, calibration tags, raw output; links to scan, packet, and assessment |
+| `market_outcomes` | One row per ticker (upserted): settlement status, winning side, resolved probability, settlement price, raw payload |
+| `forecast_scores` | Append-only calibration scores: Brier, log loss, absolute error, status (scored/pending_outcome/unscorable), cohort tags; links to forecast and outcome |
 
 Schema is managed by Alembic (`alembic/versions/`); migrations run automatically at app/CLI startup.
 

@@ -31,7 +31,9 @@ from app.services.enrichment import (
     MarketDetailEnrichmentService,
     apply_latest_enrichment,
 )
+from app.schemas import MarketOutcomeOut
 from app.services.forecasting import ForecastingService, MissingResearchPacketError
+from app.services.outcomes import OutcomeService, OutcomeSyncError, latest_outcome_for
 from app.services.research import create_research_packet, latest_packet_for
 from app.services.resolution import get_judge, persist_assessment
 from app.services.scanner import ScanResult, run_scan
@@ -336,6 +338,38 @@ async def list_market_forecasts(
         .limit(limit)
     ).scalars().all()
     return [MarketForecastOut.model_validate(row) for row in rows]
+
+
+@router.get("/{ticker}/outcome", response_model=MarketOutcomeOut)
+async def get_market_outcome(
+    ticker: str,
+    db: Session = Depends(get_db),
+) -> MarketOutcomeOut:
+    """Latest persisted outcome for one market; 404 when never synced."""
+    _require_market(db, ticker)
+    row = latest_outcome_for(db, ticker)
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No outcome synced for {ticker!r}; POST /markets/{{ticker}}/sync-outcome first",
+        )
+    return MarketOutcomeOut.model_validate(row)
+
+
+@router.post("/{ticker}/sync-outcome", response_model=MarketOutcomeOut, status_code=201)
+async def sync_market_outcome(
+    ticker: str,
+    db: Session = Depends(get_db),
+) -> MarketOutcomeOut:
+    """Sync one market's settlement state from Kalshi (read-only detail GET)
+    and upsert the outcome row. Raw payload stays DB-only."""
+    _require_market(db, ticker)
+    service = OutcomeService()
+    try:
+        row = await service.sync_ticker(db, ticker)
+    except OutcomeSyncError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return MarketOutcomeOut.model_validate(row)
 
 
 @router.get("/{ticker}/research-packets", response_model=list[ResearchPacketOut])

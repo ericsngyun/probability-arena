@@ -250,6 +250,47 @@ class MarketForecastRecord(Base):
     scanner_run: Mapped["ScannerRun | None"] = relationship(back_populates="forecasts")
 
 
+class MarketOutcomeRecord(Base):
+    """Latest known outcome/settlement state for one market, synced read-only
+    from the Kalshi detail endpoint. One row per ticker, updated in place as
+    the market moves open -> closed -> settled."""
+
+    __tablename__ = "market_outcomes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    market_ticker: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    outcome_status: Mapped[str] = mapped_column(String(16))  # open|closed|settled|canceled|unknown
+    resolved_probability: Mapped[float | None] = mapped_column(Float)  # 1.0 yes / 0.0 no / null
+    winning_side: Mapped[str | None] = mapped_column(String(8))  # yes|no|void|unknown
+    settlement_price: Mapped[float | None] = mapped_column(Float)  # dollars per contract
+    close_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    settled_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    source: Mapped[str] = mapped_column(String(32), default="kalshi_rest")
+    raw_payload: Mapped[dict | None] = mapped_column(RawJSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ForecastScoreRecord(Base):
+    """Calibration score of one forecast against one outcome state. Append-
+    only: re-scoring after an outcome change creates a new row, preserving
+    the audit trail. Read-only scoring — no EV, no trade metrics."""
+
+    __tablename__ = "forecast_scores"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    forecast_id: Mapped[int] = mapped_column(ForeignKey("market_forecasts.id"), index=True)
+    market_ticker: Mapped[str] = mapped_column(String(64), index=True)
+    outcome_id: Mapped[int | None] = mapped_column(ForeignKey("market_outcomes.id"))
+    brier_score: Mapped[float | None] = mapped_column(Float)
+    log_loss: Mapped[float | None] = mapped_column(Float)
+    absolute_error: Mapped[float | None] = mapped_column(Float)
+    was_resolved: Mapped[bool] = mapped_column(default=False)
+    score_status: Mapped[str] = mapped_column(String(16), index=True)  # scored|pending_outcome|unscorable
+    score_notes: Mapped[str | None] = mapped_column(Text)
+    score_tags: Mapped[list | None] = mapped_column(RawJSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class ScannerRun(Base):
     """One execution of the market scanner: fetch -> rank -> persist."""
 

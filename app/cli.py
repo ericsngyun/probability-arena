@@ -6,6 +6,9 @@ Usage:
     python -m app.cli assess-resolution --limit 20
     python -m app.cli collect-research --limit 10
     python -m app.cli forecast --limit 10
+    python -m app.cli sync-outcomes --limit 100
+    python -m app.cli score-forecasts --limit 500
+    python -m app.cli calibration-report
 
 Read-only: `scan` fetches public Kalshi market data, ranks it, and persists
 snapshots; `enrich-details` fetches detail/event/series metadata for top
@@ -13,9 +16,10 @@ eligible candidates; `assess-resolution` scores resolution clarity (using
 enriched metadata where available); `collect-research` builds structured
 evidence packets; `forecast` turns packets into probability forecasts with
 capped confidence. Recommended sequence:
-scan -> enrich-details -> assess-resolution -> collect-research -> forecast.
-Forecasts are probabilities and reasoning artifacts only; there are no
-trading commands.
+scan -> enrich-details -> assess-resolution -> collect-research -> forecast
+-> sync-outcomes -> score-forecasts -> calibration-report.
+Forecasts are probabilities and reasoning artifacts only; calibration is
+read-only scoring against observed outcomes. There are no trading commands.
 """
 
 import argparse
@@ -399,6 +403,103 @@ async def forecast(
             session.close()
 
 
+async def sync_outcomes(
+    limit: int = 100,
+    adapter=None,
+    session=None,
+) -> int:
+    """Sync settlement state for known markets (forecasted tickers first).
+    Returns the number of outcomes synced."""
+    from app.services.outcomes import OutcomeService
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        service = OutcomeService(adapter=adapter)
+        synced = await service.sync_known_markets(session, limit=limit)
+        status_counts: dict[str, int] = {}
+        for row in synced:
+            status_counts[row.outcome_status] = status_counts.get(row.outcome_status, 0) + 1
+        print(f"synced {len(synced)} outcomes")
+        if status_counts:
+            print("status: " + ", ".join(f"{s}={n}" for s, n in sorted(status_counts.items())))
+        return len(synced)
+    finally:
+        if owns_session:
+            session.close()
+
+
+async def score_forecasts(
+    limit: int = 500,
+    session=None,
+) -> int:
+    """Score forecasts against synced outcomes. Returns rows created."""
+    from app.services.calibration import CalibrationService
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        counts = CalibrationService().score_unscored(session, limit=limit)
+        created = counts["scored"] + counts["pending_outcome"] + counts["unscorable"]
+        print(
+            f"scored={counts['scored']} pending_outcome={counts['pending_outcome']} "
+            f"unscorable={counts['unscorable']} skipped={counts['skipped']}"
+        )
+        return created
+    finally:
+        if owns_session:
+            session.close()
+
+
+async def calibration_report(session=None) -> int:
+    """Print the aggregate calibration summary by cohort. Returns the number
+    of forecasts covered by the latest-score summary."""
+    from app.services.calibration import CalibrationService
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        summary = CalibrationService().summary(session)
+        print(
+            f"calibration: total={summary.total_scores} resolved={summary.resolved} "
+            f"pending={summary.pending_outcome} unscorable={summary.unscorable}"
+        )
+        if summary.overall:
+            print(
+                f"overall: brier={summary.overall.mean_brier} "
+                f"log_loss={summary.overall.mean_log_loss} "
+                f"abs_error={summary.overall.mean_absolute_error} "
+                f"(n={summary.overall.count})"
+            )
+        for label, cohorts in (
+            ("evidence", summary.by_evidence_depth),
+            ("risk", summary.by_forecast_risk),
+            ("forecaster", summary.by_forecaster),
+            ("domain", summary.by_domain),
+        ):
+            for name, stats in sorted(cohorts.items()):
+                print(
+                    f"  {label}={name:<20} n={stats.count:<4} brier={stats.mean_brier} "
+                    f"log_loss={stats.mean_log_loss} abs_error={stats.mean_absolute_error}"
+                )
+        return summary.total_scores
+    finally:
+        if owns_session:
+            session.close()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m app.cli",
@@ -447,6 +548,21 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Create missing research packets first (off by default)",
     )
+    sync_parser = subparsers.add_parser(
+        "sync-outcomes", help="Sync settlement state for known markets (read-only)"
+    )
+    sync_parser.add_argument(
+        "--limit", type=int, default=100, help="Max markets to sync (default: 100)"
+    )
+    score_parser = subparsers.add_parser(
+        "score-forecasts", help="Score forecasts against synced outcomes"
+    )
+    score_parser.add_argument(
+        "--limit", type=int, default=500, help="Max forecasts to consider (default: 500)"
+    )
+    subparsers.add_parser(
+        "calibration-report", help="Print aggregate calibration summary by cohort"
+    )
     return parser
 
 
@@ -467,6 +583,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "forecast":
         forecasted = asyncio.run(forecast(limit=args.limit, prepare=args.prepare))
         return 0 if forecasted >= 0 else 1
+    if args.command == "sync-outcomes":
+        synced = asyncio.run(sync_outcomes(limit=args.limit))
+        return 0 if synced >= 0 else 1
+    if args.command == "score-forecasts":
+        scored = asyncio.run(score_forecasts(limit=args.limit))
+        return 0 if scored >= 0 else 1
+    if args.command == "calibration-report":
+        total = asyncio.run(calibration_report())
+        return 0 if total >= 0 else 1
     return 2
 
 
