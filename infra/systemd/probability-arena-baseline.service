@@ -1,0 +1,28 @@
+# Probability Arena — baseline measurement pipeline (read-only).
+# Runs one audited pipeline: scan -> enrich -> assess -> research ->
+# forecast -> sync-outcomes -> score-forecasts -> calibration-report.
+# Overlap-safe: a concurrent invocation exits as 'skipped'.
+#
+# NOT auto-installed. See README "Scheduled operation" for install commands.
+# Adjust paths/user to your deployment before enabling.
+
+[Unit]
+Description=Probability Arena baseline measurement pipeline (read-only)
+Wants=network-online.target
+After=network-online.target postgresql.service
+
+[Service]
+Type=oneshot
+User=arena
+WorkingDirectory=/opt/probability-arena
+EnvironmentFile=/opt/probability-arena/.env
+ExecStart=/opt/probability-arena/.venv/bin/python -m app.cli run-baseline
+# Read-only pipeline; keep the unit unprivileged
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/probability-arena
+TimeoutStartSec=30min
+
+[Install]
+WantedBy=multi-user.target

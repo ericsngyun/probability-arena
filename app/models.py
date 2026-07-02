@@ -291,6 +291,55 @@ class ForecastScoreRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class PipelineRun(Base):
+    """One execution of the baseline measurement pipeline. The read-only
+    loop's audit spine: config in, per-stage children, final status/summary.
+
+    A status='running' row doubles as the overlap lock."""
+
+    __tablename__ = "pipeline_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_type: Mapped[str] = mapped_column(String(32), default="baseline", index=True)
+    # running|completed|completed_with_errors|failed|skipped|dry_run
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+    config: Mapped[dict | None] = mapped_column(RawJSON)
+    summary: Mapped[dict | None] = mapped_column(RawJSON)
+    error_type: Mapped[str | None] = mapped_column(String(128))
+    error_message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    stages: Mapped[list["PipelineStageRun"]] = relationship(
+        back_populates="pipeline_run", order_by="PipelineStageRun.id"
+    )
+
+
+class PipelineStageRun(Base):
+    """One stage of one pipeline run: timing, item counts, and error capture."""
+
+    __tablename__ = "pipeline_stage_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    pipeline_run_id: Mapped[int] = mapped_column(ForeignKey("pipeline_runs.id"), index=True)
+    stage_name: Mapped[str] = mapped_column(String(32))
+    status: Mapped[str] = mapped_column(String(32))  # running|completed|failed|skipped
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+    items_attempted: Mapped[int] = mapped_column(Integer, default=0)
+    items_succeeded: Mapped[int] = mapped_column(Integer, default=0)
+    items_failed: Mapped[int] = mapped_column(Integer, default=0)
+    summary: Mapped[dict | None] = mapped_column(RawJSON)
+    error_type: Mapped[str | None] = mapped_column(String(128))
+    error_message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    pipeline_run: Mapped[PipelineRun] = relationship(back_populates="stages")
+
+
 class ScannerRun(Base):
     """One execution of the market scanner: fetch -> rank -> persist."""
 

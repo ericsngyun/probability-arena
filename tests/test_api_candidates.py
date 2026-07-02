@@ -426,6 +426,33 @@ def test_calibration_summary_endpoint(client):
     assert "template_baseline" in body["by_forecaster"]
 
 
+def test_pipeline_runs_endpoints(client):
+    test_client, session = client
+    # No runs yet
+    assert test_client.get("/pipeline/runs").json() == []
+    assert test_client.get("/pipeline/runs/999").status_code == 404
+
+    import asyncio
+
+    from tests.test_pipeline import CFG, make_runner
+
+    run = asyncio.run(make_runner().run_baseline_pipeline(session, CFG))
+
+    runs = test_client.get("/pipeline/runs").json()
+    assert len(runs) == 1
+    assert runs[0]["id"] == run.id
+    assert runs[0]["status"] == "completed"
+    assert "stages" not in runs[0]
+
+    detail = test_client.get(f"/pipeline/runs/{run.id}").json()
+    assert detail["id"] == run.id
+    assert len(detail["stages"]) == 8
+    assert detail["stages"][0]["stage_name"] == "scan"
+    assert all(s["status"] == "completed" for s in detail["stages"])
+
+    assert test_client.get("/pipeline/runs?status=failed").json() == []
+
+
 def test_scan_persists_eligibility_assessments_linked_to_run(client):
     test_client, session = client
     body = test_client.get("/markets/candidates").json()

@@ -1,0 +1,23 @@
+# Probability Arena — baseline pipeline timer.
+# Recommended cadence: every 4 hours (data accumulation for calibration
+# baselines). Switch OnCalendar to "daily" for a lighter footprint.
+#
+# NOT auto-installed. Install:
+#   sudo cp infra/systemd/probability-arena-baseline.{service,timer} /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now probability-arena-baseline.timer
+# Inspect:
+#   systemctl list-timers probability-arena-baseline.timer
+#   journalctl -u probability-arena-baseline.service -f
+
+[Unit]
+Description=Run Probability Arena baseline pipeline every 4 hours
+
+[Timer]
+OnCalendar=*-*-* 00/4:00:00
+RandomizedDelaySec=300
+Persistent=true
+Unit=probability-arena-baseline.service
+
+[Install]
+WantedBy=timers.target

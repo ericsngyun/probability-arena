@@ -9,6 +9,8 @@ Usage:
     python -m app.cli sync-outcomes --limit 100
     python -m app.cli score-forecasts --limit 500
     python -m app.cli calibration-report
+    python -m app.cli run-baseline
+    python -m app.cli pipeline-status
 
 Read-only: `scan` fetches public Kalshi market data, ranks it, and persists
 snapshots; `enrich-details` fetches detail/event/series metadata for top
@@ -500,6 +502,95 @@ async def calibration_report(session=None) -> int:
             session.close()
 
 
+async def run_baseline(
+    scan_limit: int | None = None,
+    candidate_limit: int | None = None,
+    sync_outcome_limit: int | None = None,
+    score_limit: int | None = None,
+    fail_fast: bool | None = None,
+    dry_run: bool = False,
+    runner=None,
+    session=None,
+):
+    """Execute the full read-only measurement loop as one audited pipeline
+    run and print a compact stage summary. Returns the PipelineRun row."""
+    from app.services.pipeline import BaselineConfig, PipelineRunner
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        config = BaselineConfig.from_settings(
+            scan_limit=scan_limit,
+            candidate_limit=candidate_limit,
+            sync_outcome_limit=sync_outcome_limit,
+            score_limit=score_limit,
+            fail_fast=fail_fast,
+        )
+        config.dry_run = dry_run
+        runner = runner or PipelineRunner()
+        run = await runner.run_baseline_pipeline(session, config)
+
+        print(f"pipeline run={run.id} status={run.status} duration_ms={run.duration_ms}")
+        if run.status == "skipped":
+            print(f"  reason: {run.summary.get('reason')} (run {run.summary.get('active_run_id')})")
+            return run
+        for stage in run.stages:
+            error = f" error={stage.error_type}" if stage.error_type else ""
+            print(
+                f"  {stage.stage_name:<20} {stage.status:<22} "
+                f"ok={stage.items_succeeded}/{stage.items_attempted} "
+                f"failed={stage.items_failed} {stage.duration_ms or 0}ms{error}"
+            )
+        return run
+    finally:
+        if owns_session:
+            session.close()
+
+
+async def pipeline_status(limit: int = 5, session=None) -> int:
+    """Print recent pipeline runs and the latest run's stage table. Returns
+    the number of runs printed."""
+    from sqlalchemy import select
+
+    from app.models import PipelineRun
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        runs = session.execute(
+            select(PipelineRun).order_by(PipelineRun.id.desc()).limit(limit)
+        ).scalars().all()
+        if not runs:
+            print("no pipeline runs recorded")
+            return 0
+        for run in runs:
+            print(
+                f"run={run.id} type={run.run_type} status={run.status} "
+                f"started={run.started_at} duration_ms={run.duration_ms}"
+            )
+        latest = runs[0]
+        if latest.stages:
+            print(f"stages of run {latest.id}:")
+            for stage in latest.stages:
+                error = f" error={stage.error_type}" if stage.error_type else ""
+                print(
+                    f"  {stage.stage_name:<20} {stage.status:<22} "
+                    f"ok={stage.items_succeeded}/{stage.items_attempted}{error}"
+                )
+        return len(runs)
+    finally:
+        if owns_session:
+            session.close()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m app.cli",
@@ -563,6 +654,25 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         "calibration-report", help="Print aggregate calibration summary by cohort"
     )
+    baseline_parser = subparsers.add_parser(
+        "run-baseline", help="Run the full read-only measurement loop as one audited pipeline"
+    )
+    baseline_parser.add_argument("--scan-limit", type=int, default=None)
+    baseline_parser.add_argument("--candidate-limit", type=int, default=None)
+    baseline_parser.add_argument("--sync-outcome-limit", type=int, default=None)
+    baseline_parser.add_argument("--score-limit", type=int, default=None)
+    baseline_parser.add_argument(
+        "--fail-fast", action="store_true", default=None, help="Stop at the first failed stage"
+    )
+    baseline_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Record the pipeline audit row without executing any stage",
+    )
+    status_parser = subparsers.add_parser(
+        "pipeline-status", help="Show recent pipeline runs and latest stage summaries"
+    )
+    status_parser.add_argument("--limit", type=int, default=5)
     return parser
 
 
@@ -592,6 +702,21 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "calibration-report":
         total = asyncio.run(calibration_report())
         return 0 if total >= 0 else 1
+    if args.command == "run-baseline":
+        run = asyncio.run(
+            run_baseline(
+                scan_limit=args.scan_limit,
+                candidate_limit=args.candidate_limit,
+                sync_outcome_limit=args.sync_outcome_limit,
+                score_limit=args.score_limit,
+                fail_fast=args.fail_fast,
+                dry_run=args.dry_run,
+            )
+        )
+        return 0 if run.status != "failed" else 1
+    if args.command == "pipeline-status":
+        count = asyncio.run(pipeline_status(limit=args.limit))
+        return 0 if count >= 0 else 1
     return 2
 
 

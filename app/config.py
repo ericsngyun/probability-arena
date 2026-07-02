@@ -37,6 +37,13 @@ class Settings(BaseSettings):
     research_collector_version: str = "v1"
     research_model_name: str = "claude-opus-4-8"
 
+    # Baseline pipeline runner (MVP-004D) — scheduled read-only measurement loop
+    baseline_scan_limit: int = 500
+    baseline_candidate_limit: int = 20
+    baseline_fail_fast: bool = False
+    baseline_sync_outcome_limit: int = 200
+    baseline_score_limit: int = 1000
+
     # Forecast engine (MVP-004B) — probabilities and reasoning artifacts only
     enable_llm_forecasting: bool = False
     forecaster_name: str = "template_baseline"

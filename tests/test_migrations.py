@@ -202,6 +202,48 @@ def test_0008_0009_create_and_drop_outcome_and_score_tables(tmp_path):
     assert "market_outcomes" not in _tables(url)
 
 
+def test_0010_0011_create_and_drop_pipeline_tables(tmp_path):
+    url = f"sqlite:///{tmp_path}/pipeline.db"
+    run_migrations(url)
+
+    assert {"pipeline_runs", "pipeline_stage_runs"} <= _tables(url)
+    assert {
+        "id",
+        "run_type",
+        "status",
+        "started_at",
+        "finished_at",
+        "duration_ms",
+        "config",
+        "summary",
+        "error_type",
+        "error_message",
+        "created_at",
+    } <= _columns(url, "pipeline_runs")
+    assert {
+        "id",
+        "pipeline_run_id",
+        "stage_name",
+        "status",
+        "started_at",
+        "finished_at",
+        "duration_ms",
+        "items_attempted",
+        "items_succeeded",
+        "items_failed",
+        "summary",
+        "error_type",
+        "error_message",
+        "created_at",
+    } <= _columns(url, "pipeline_stage_runs")
+
+    command.downgrade(_config(url), "0010")
+    assert "pipeline_stage_runs" not in _tables(url)
+    assert "pipeline_runs" in _tables(url)
+    command.downgrade(_config(url), "0009")
+    assert "pipeline_runs" not in _tables(url)
+
+
 def test_migrated_schema_matches_orm_metadata(tmp_path):
     """Every ORM-mapped column must exist in the migrated schema."""
     url = f"sqlite:///{tmp_path}/parity.db"

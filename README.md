@@ -1,6 +1,6 @@
 # Probability Arena
 
-**Kalshi read-only market intelligence** (MVP-004C: the full read-only loop — gating, enrichment, resolution assessment, research packets, capped-confidence forecasts, outcome tracking, and calibration scoring).
+**Kalshi read-only market intelligence** (MVP-004D: the full read-only measurement loop — gating, enrichment, resolution assessment, research packets, capped-confidence forecasts, outcome tracking, calibration scoring — plus a scheduled, audited baseline runner).
 
 Scans active Kalshi markets over the public REST API, ranks them on tradability signals (spread, liquidity, volume, time to expiration, resolution clarity), and stores time-series snapshots in Postgres. Optionally maintains live orderbook snapshots over WebSocket when API credentials are configured.
 
@@ -8,7 +8,8 @@ Scans active Kalshi markets over the public REST API, ranks them on tradability 
 
 - **Read-only by design. No order placement exists.** There is no trading, betting, order placement, wallet, execution, portfolio-sizing, or paper-trading code anywhere in this repo — the REST adapter only issues GETs (market list, market/event/series detail), the WebSocket client only sends channel subscriptions, and the CLI commands (`scan`, `enrich-details`, `assess-resolution`, `collect-research`) only read market data and write to our own database.
 - **Forecasts are probabilities and reasoning artifacts only.** No EV calculation, no position sizing, no paper trading, no trade recommendations, no execution. The forecast schema deliberately has no trade/EV/sizing fields, and tests assert the absence of trading language in forecast output.
-- **Calibration is read-only scoring.** MVP-004C syncs settlement outcomes (plain detail GETs — no trading permissions needed) and scores forecasts with Brier / log loss / absolute error. It does not calculate EV, recommend trades, paper trade, or execute orders.
+- **Calibration is read-only scoring.** Settlement outcomes are synced via plain detail GETs (no trading permissions needed) and forecasts are scored with Brier / log loss / absolute error. Nothing here calculates EV, recommends trades, paper trades, or executes orders.
+- **The baseline runner is still read-only.** MVP-004D schedules the measurement loop and records audit rows; it exists to *accumulate calibration data* — the evidence base needed before any EV or paper-trading milestone can even be evaluated. It adds no trading capability of any kind.
 - **LLM resolution judgment is OFF by default** (`ENABLE_LLM_RESOLUTION=false`). The deterministic rule-based judge needs no credentials or network beyond Kalshi; tests never call an LLM. When enabled, the LLM only *reads* rules text and returns a structured quality verdict — it has no tools and no trading capability.
 - Public market data requires **no credentials**. The Kalshi API key is only needed for the optional WebSocket orderbook feed, and even then the client only sends channel subscriptions.
 - Keep your Kalshi private key **outside the repo** (it is `.gitignore`d by extension, but store it elsewhere, e.g. `~/.kalshi/`). Never commit `.env`.
@@ -34,6 +35,7 @@ app/
   services/forecasting.py Forecast engine (template baseline / mock / optional LLM)
   services/outcomes.py    Outcome sync (read-only settlement state per market)
   services/calibration.py Forecast scoring (Brier / log loss) + cohort summaries
+  services/pipeline.py    Baseline runner: 8-stage audited loop + overlap lock
   services/ranking.py     Weighted scoring: spread, liquidity, volume, expiration, clarity
   services/scanner.py     fetch -> assess eligibility -> rank eligible -> persist
   services/ws_snapshots.py Optional WS orderbook snapshot service (credential-gated)
@@ -65,6 +67,7 @@ The api container runs Alembic migrations automatically on startup (databases cr
 - `POST http://localhost:8000/markets/{ticker}/sync-outcome` — sync a market's settlement state (read-only detail GET); `GET /markets/{ticker}/outcome` returns the latest persisted outcome (404 if never synced)
 - `GET http://localhost:8000/forecasts/scores` — recent forecast scores, filterable by `score_status`, `market_ticker`, `forecaster_name`, `evidence_depth`
 - `GET http://localhost:8000/calibration/summary` — aggregate Brier / log-loss / absolute-error by evidence depth, risk, forecaster, domain, and tag
+- `GET http://localhost:8000/pipeline/runs` and `GET /pipeline/runs/{id}` — pipeline audit records (runs and per-stage details)
 - `http://localhost:8000/docs` — OpenAPI UI
 
 ### Live Kalshi smoke test
@@ -121,6 +124,30 @@ python -m app.cli calibration-report             # aggregate summary by cohort
 ```
 
 **Recommended sequence:** `scan` → `enrich-details` → `assess-resolution` → `collect-research` → `forecast` → `sync-outcomes` → `score-forecasts` → `calibration-report`. Each stage automatically prefers the previous stage's output when it exists.
+
+## Baseline runner (scheduled operation)
+
+```bash
+python -m app.cli run-baseline        # the whole sequence above as ONE audited pipeline run
+python -m app.cli pipeline-status     # recent runs + latest stage table
+```
+
+`run-baseline` executes all eight stages in order, recording a `pipeline_runs` row plus one `pipeline_stage_runs` row per stage (timing, item counts, error type/message). Options: `--scan-limit`, `--candidate-limit`, `--sync-outcome-limit`, `--score-limit` (defaults from `BASELINE_*` env vars), `--fail-fast` (default off — a failed stage is recorded and later stages still run where safe, e.g. off the previous successful scan), and `--dry-run` (records the audit row only; executes nothing).
+
+**Overlap lock:** a `running` pipeline row acts as the lock — a second invocation exits gracefully as `skipped` with a pointer to the active run. Crashed leftovers older than 6 hours are treated as stale and ignored.
+
+**Scheduled operation (systemd):** timer artifacts live in `infra/systemd/` and are deliberately **not** auto-installed. Recommended cadence is every 4 hours for data accumulation (edit `OnCalendar` to `daily` for a lighter footprint):
+
+```bash
+sudo cp infra/systemd/probability-arena-baseline.{service,timer} /etc/systemd/system/
+# edit paths/user in the .service file for your deployment first
+sudo systemctl daemon-reload
+sudo systemctl enable --now probability-arena-baseline.timer
+systemctl list-timers probability-arena-baseline.timer
+journalctl -u probability-arena-baseline.service -f
+```
+
+**Why this exists:** the template baseline forecaster is anchored to the market midpoint, so its accumulated Brier/log-loss over many settlements approximates the market's own calibration. That dataset is the bar any future forecaster (`ENABLE_LLM_FORECASTING`, `ENABLE_EXTERNAL_RESEARCH`) must beat — and it must exist **before** EV or paper trading is worth discussing. Let the timer run for a few weeks, then compare cohorts in `calibration-report`.
 
 ## Outcome tracking & calibration
 
@@ -269,6 +296,8 @@ It subscribes to the `orderbook_delta` channel for those tickers, maintains book
 | `market_forecasts` | One row per forecast: forecaster identity, probability, capped confidence, evidence depth, risk, bull/bear/skeptic reasoning, assumptions, change triggers, calibration tags, raw output; links to scan, packet, and assessment |
 | `market_outcomes` | One row per ticker (upserted): settlement status, winning side, resolved probability, settlement price, raw payload |
 | `forecast_scores` | Append-only calibration scores: Brier, log loss, absolute error, status (scored/pending_outcome/unscorable), cohort tags; links to forecast and outcome |
+| `pipeline_runs` | One row per baseline pipeline execution: status, timing, config, summary; a `running` row doubles as the overlap lock |
+| `pipeline_stage_runs` | One row per stage per run: status, timing, item counts, error capture |
 
 Schema is managed by Alembic (`alembic/versions/`); migrations run automatically at app/CLI startup.
 

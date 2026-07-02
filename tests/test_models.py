@@ -34,6 +34,8 @@ def test_schema_creates_all_tables(session):
         "market_forecasts",
         "market_outcomes",
         "forecast_scores",
+        "pipeline_runs",
+        "pipeline_stage_runs",
     }
 
 

@@ -252,6 +252,44 @@ class CalibrationSummary(BaseModel):
     by_tag: dict[str, CohortStats] = {}
 
 
+class PipelineStageRunOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    stage_name: str
+    status: str
+    started_at: datetime
+    finished_at: datetime | None = None
+    duration_ms: int | None = None
+    items_attempted: int = 0
+    items_succeeded: int = 0
+    items_failed: int = 0
+    summary: dict | None = None
+    error_type: str | None = None
+    error_message: str | None = None
+    created_at: datetime
+
+
+class PipelineRunOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    run_type: str
+    status: str
+    started_at: datetime
+    finished_at: datetime | None = None
+    duration_ms: int | None = None
+    config: dict | None = None
+    summary: dict | None = None
+    error_type: str | None = None
+    error_message: str | None = None
+    created_at: datetime
+
+
+class PipelineRunDetailOut(PipelineRunOut):
+    stages: list[PipelineStageRunOut] = []
+
+
 class MarketDetailEnrichmentOut(BaseModel):
     """A persisted detail enrichment, without the large raw_* payloads
     (those stay DB-only for audit)."""
