@@ -45,6 +45,7 @@ STAGE_FORECAST = "forecast"
 STAGE_SYNC_OUTCOMES = "sync_outcomes"
 STAGE_SCORE = "score_forecasts"
 STAGE_REPORT = "calibration_report"
+STAGE_RETENTION = "retention"  # optional; appended when run_retention is on
 
 BASELINE_STAGES = (
     STAGE_SCAN,
@@ -66,6 +67,7 @@ class BaselineConfig:
     score_limit: int = 1000
     fail_fast: bool = False
     dry_run: bool = False
+    run_retention: bool = False  # append a retention stage at the end
 
     @classmethod
     def from_settings(cls, settings: Settings | None = None, **overrides) -> "BaselineConfig":
@@ -76,6 +78,7 @@ class BaselineConfig:
             "sync_outcome_limit": settings.baseline_sync_outcome_limit,
             "score_limit": settings.baseline_score_limit,
             "fail_fast": settings.baseline_fail_fast,
+            "run_retention": settings.enable_pipeline_retention,
         }
         values.update({key: value for key, value in overrides.items() if value is not None})
         return cls(**values)
@@ -254,6 +257,13 @@ class PipelineRunner:
             },
         )
 
+    async def _stage_retention(self, session: Session, cfg: BaselineConfig) -> StageResult:
+        from app.services.retention import RetentionService
+
+        counts = RetentionService().prune(session)
+        deleted = sum(counts.values())
+        return StageResult(attempted=deleted, succeeded=deleted, summary=counts)
+
     # --- orchestration ----------------------------------------------------
 
     def _active_run(self, session: Session) -> PipelineRun | None:
@@ -355,7 +365,7 @@ class PipelineRunner:
             session.commit()
             return run
 
-        stage_fns = (
+        stage_fns = [
             (STAGE_SCAN, self._stage_scan),
             (STAGE_ENRICH, self._stage_enrich),
             (STAGE_ASSESS, self._stage_assess),
@@ -364,7 +374,9 @@ class PipelineRunner:
             (STAGE_SYNC_OUTCOMES, self._stage_sync_outcomes),
             (STAGE_SCORE, self._stage_score),
             (STAGE_REPORT, self._stage_report),
-        )
+        ]
+        if cfg.run_retention:
+            stage_fns.append((STAGE_RETENTION, self._stage_retention))
         stage_statuses: dict[str, str] = {}
         any_failed = False
         try:

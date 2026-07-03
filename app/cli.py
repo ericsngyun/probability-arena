@@ -13,6 +13,8 @@ Usage:
     python -m app.cli pipeline-status
     python -m app.cli watch-once --limit 100
     python -m app.cli watch-loop --interval 60 --limit 100
+    python -m app.cli prune-retention [--dry-run]
+    python -m app.cli db-stats
 
 Read-only: `scan` fetches public Kalshi market data, ranks it, and persists
 snapshots; `enrich-details` fetches detail/event/series metadata for top
@@ -709,6 +711,118 @@ async def watch_loop(
     return iterations
 
 
+async def prune_retention(
+    dry_run: bool = False,
+    tick_days: int | None = None,
+    watcher_run_days: int | None = None,
+    pipeline_run_days: int | None = None,
+    signal_days: int | None = None,
+    batch_size: int | None = None,
+    session=None,
+) -> int:
+    """Prune operational tables per retention windows (intelligence and
+    calibration tables are never touched). Returns total rows deleted (or
+    that would be deleted, when dry_run)."""
+    from app.services.retention import RetentionConfig, RetentionService
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        config = RetentionConfig.from_settings(
+            tick_days=tick_days,
+            watcher_run_days=watcher_run_days,
+            pipeline_run_days=pipeline_run_days,
+            signal_days=signal_days,
+            batch_size=batch_size,
+        )
+        counts = RetentionService(config).prune(session, dry_run=dry_run)
+        mode = "DRY RUN — would delete" if dry_run else "deleted"
+        print(f"retention ({mode}):")
+        for table, count in counts.items():
+            note = " (retention disabled)" if table == "opportunity_signals" and config.signal_days == 0 else ""
+            print(f"  {table:<24} {count}{note}")
+        return sum(counts.values())
+    finally:
+        if owns_session:
+            session.close()
+
+
+async def db_stats(session=None) -> int:
+    """Print database overview: redacted URL, table row counts, size (SQLite),
+    latest watcher/pipeline runs, signal counts. Returns total rows counted."""
+    from sqlalchemy import func, select
+    from sqlalchemy.engine.url import make_url
+
+    from app.config import get_settings
+    from app.db import Base
+    from app.models import OpportunitySignal, PipelineRun, WatcherRun
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        url = make_url(get_settings().database_url)
+        print(f"database: {url.render_as_string(hide_password=True)}")
+        if url.get_backend_name() == "sqlite" and url.database:
+            import os
+
+            if os.path.exists(url.database):
+                size_mb = os.path.getsize(url.database) / (1024 * 1024)
+                print(f"sqlite size: {size_mb:.2f} MiB")
+
+        total = 0
+        print("row counts:")
+        for table in sorted(Base.metadata.tables):
+            count = session.execute(
+                select(func.count()).select_from(Base.metadata.tables[table])
+            ).scalar() or 0
+            total += count
+            print(f"  {table:<36} {count}")
+
+        latest_watcher = session.execute(
+            select(WatcherRun).order_by(WatcherRun.id.desc())
+        ).scalars().first()
+        if latest_watcher:
+            print(
+                f"latest watcher run: id={latest_watcher.id} status={latest_watcher.status} "
+                f"markets={latest_watcher.markets_checked} signals={latest_watcher.signals_created} "
+                f"started={latest_watcher.started_at}"
+            )
+        latest_pipeline = session.execute(
+            select(PipelineRun).order_by(PipelineRun.id.desc())
+        ).scalars().first()
+        if latest_pipeline:
+            print(
+                f"latest pipeline run: id={latest_pipeline.id} status={latest_pipeline.status} "
+                f"started={latest_pipeline.started_at}"
+            )
+        by_status = session.execute(
+            select(OpportunitySignal.signal_status, func.count()).group_by(
+                OpportunitySignal.signal_status
+            )
+        ).all()
+        by_type = session.execute(
+            select(OpportunitySignal.signal_type, func.count()).group_by(
+                OpportunitySignal.signal_type
+            )
+        ).all()
+        if by_status:
+            print("signals by status: " + ", ".join(f"{s}={n}" for s, n in sorted(by_status)))
+        if by_type:
+            print("signals by type: " + ", ".join(f"{t}={n}" for t, n in sorted(by_type)))
+        return total
+    finally:
+        if owns_session:
+            session.close()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m app.cli",
@@ -800,6 +914,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     watch_loop_parser.add_argument("--interval", type=int, default=None)
     watch_loop_parser.add_argument("--limit", type=int, default=None)
+    prune_parser = subparsers.add_parser(
+        "prune-retention", help="Prune operational tables per retention windows"
+    )
+    prune_parser.add_argument("--dry-run", action="store_true")
+    prune_parser.add_argument("--tick-days", type=int, default=None)
+    prune_parser.add_argument("--watcher-run-days", type=int, default=None)
+    prune_parser.add_argument("--pipeline-run-days", type=int, default=None)
+    prune_parser.add_argument("--signal-days", type=int, default=None)
+    prune_parser.add_argument("--batch-size", type=int, default=None)
+    subparsers.add_parser("db-stats", help="Print database overview and row counts")
     return parser
 
 
@@ -850,6 +974,21 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "watch-loop":
         iterations = asyncio.run(watch_loop(interval=args.interval, limit=args.limit))
         return 0 if iterations >= 0 else 1
+    if args.command == "prune-retention":
+        deleted = asyncio.run(
+            prune_retention(
+                dry_run=args.dry_run,
+                tick_days=args.tick_days,
+                watcher_run_days=args.watcher_run_days,
+                pipeline_run_days=args.pipeline_run_days,
+                signal_days=args.signal_days,
+                batch_size=args.batch_size,
+            )
+        )
+        return 0 if deleted >= 0 else 1
+    if args.command == "db-stats":
+        total = asyncio.run(db_stats())
+        return 0 if total >= 0 else 1
     return 2
 
 

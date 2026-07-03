@@ -55,6 +55,7 @@ class WatcherConfig:
     max_spread_cents: int = 15
     min_liquidity_proxy: int = 100
     signal_cooldown_seconds: int = 900
+    enable_retention: bool = False  # prune at most once/day from the loop
 
     @classmethod
     def from_settings(cls, settings: Settings | None = None) -> "WatcherConfig":
@@ -65,6 +66,7 @@ class WatcherConfig:
             max_spread_cents=round(s.watcher_max_spread * 100),
             min_liquidity_proxy=s.watcher_min_liquidity_proxy,
             signal_cooldown_seconds=s.watcher_signal_cooldown_seconds,
+            enable_retention=s.enable_watcher_retention,
         )
 
 
@@ -108,6 +110,26 @@ class RealtimeWatcher:
     def __init__(self, adapter: KalshiRestAdapter | None = None, config: WatcherConfig | None = None):
         self.adapter = adapter or KalshiRestAdapter()
         self.config = config or WatcherConfig.from_settings()
+        self._last_prune_at: datetime | None = None
+
+    def _maybe_prune(self, session: Session) -> None:
+        """When watcher retention is enabled, prune at most once per day per
+        process — never on every 60s iteration. Prune failures are logged and
+        never fail the watch pass."""
+        if not self.config.enable_retention:
+            return
+        now = _now()
+        if self._last_prune_at is not None and (now - self._last_prune_at) < timedelta(days=1):
+            return
+        try:
+            from app.services.retention import RetentionService
+
+            counts = RetentionService().prune(session)
+            logger.info("Watcher retention pass: %s", counts)
+        except Exception:
+            logger.exception("Watcher retention pass failed (pass continues)")
+        finally:
+            self._last_prune_at = now
 
     def _universe_tickers(self, session: Session, limit: int) -> list[str]:
         """Eligible candidates of the latest successful scan (top by score);
@@ -295,6 +317,7 @@ class RealtimeWatcher:
             run.finished_at = _now()
             run.duration_ms = max(0, int((run.finished_at - started_at).total_seconds() * 1000))
             session.commit()
+            self._maybe_prune(session)
             return run
         except Exception as exc:
             session.rollback()

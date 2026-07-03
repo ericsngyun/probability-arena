@@ -37,6 +37,16 @@ class Settings(BaseSettings):
     research_collector_version: str = "v1"
     research_model_name: str = "claude-opus-4-8"
 
+    # Retention / pruning (OPS-003) — operational tables only; intelligence
+    # and calibration tables are never pruned
+    tick_retention_days: int = 7
+    watcher_run_retention_days: int = 30
+    pipeline_run_retention_days: int = 90
+    signal_retention_days: int = 0  # 0 = keep signals indefinitely
+    retention_batch_size: int = 5000
+    enable_pipeline_retention: bool = False
+    enable_watcher_retention: bool = False
+
     # Real-time opportunity watcher (OPS-002) — informational signals only
     enable_realtime_watcher: bool = False
     watcher_poll_interval_seconds: int = 60

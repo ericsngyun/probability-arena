@@ -1,0 +1,19 @@
+# Probability Arena — retention/pruning of operational tables (read-only
+# project; deletes only our own audit/telemetry rows: price ticks, watcher
+# runs, pipeline audit). Intelligence/calibration tables are never pruned.
+# NOT auto-installed. See the .timer file for install commands.
+
+[Unit]
+Description=Probability Arena retention pruning (operational tables only)
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/projects/probability-arena
+EnvironmentFile=%h/projects/probability-arena/.env
+ExecStart=%h/projects/probability-arena/.venv/bin/python -m app.cli prune-retention
+NoNewPrivileges=true
+TimeoutStartSec=15min
+
+[Install]
+WantedBy=default.target

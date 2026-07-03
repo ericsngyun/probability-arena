@@ -1,0 +1,20 @@
+# Probability Arena — daily retention timer (USER unit).
+# NOT auto-installed. Install:
+#   cp infra/systemd/user/probability-arena-retention.{service,timer} ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now probability-arena-retention.timer
+# Inspect:
+#   systemctl --user list-timers | grep retention
+#   journalctl --user -u probability-arena-retention.service -n 50 --no-pager
+
+[Unit]
+Description=Run Probability Arena retention pruning daily
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=600
+Persistent=true
+Unit=probability-arena-retention.service
+
+[Install]
+WantedBy=timers.target

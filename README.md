@@ -1,6 +1,6 @@
 # Probability Arena
 
-**Kalshi read-only market intelligence** (OPS-002: the full read-only measurement loop, a scheduled audited baseline runner, and a real-time opportunity watcher with informational-only signals).
+**Kalshi read-only market intelligence** (OPS-003: the full read-only measurement loop, scheduled audited baseline runner, real-time opportunity watcher with informational-only signals, and retention/pruning for operational tables).
 
 Scans active Kalshi markets over the public REST API, ranks them on tradability signals (spread, liquidity, volume, time to expiration, resolution clarity), and stores time-series snapshots in Postgres. Optionally maintains live orderbook snapshots over WebSocket when API credentials are configured.
 
@@ -174,6 +174,49 @@ python -m app.cli watch-loop --interval 60  # continuous; requires ENABLE_REALTI
 `watch-loop` exits cleanly on SIGINT/SIGTERM and survives per-pass errors. An optional systemd user unit exists at `infra/systemd/user/probability-arena-watcher.service` — **separate from the 4-hour baseline timer**, not auto-installed, and inert unless `ENABLE_REALTIME_WATCHER=true`.
 
 Review signals via the API (`GET /signals`, `PATCH /signals/{id}/status`). `promoted_to_research` marks a signal as worth a research packet/forecast refresh — a human decision; nothing automates beyond that, and nothing trades.
+
+## Retention & database stats
+
+**Tick growth is the reason retention exists:** at `WATCHER_MARKET_LIMIT=100` and a 60 s interval, the watcher writes ~100 tick rows/minute (~144 k/day) while it runs. Retention prunes **operational tables only**:
+
+| Table | Default window (env var) |
+|---|---|
+| `market_price_ticks` | 7 days (`TICK_RETENTION_DAYS`) |
+| `watcher_runs` | 30 days (`WATCHER_RUN_RETENTION_DAYS`) |
+| `pipeline_runs` + `pipeline_stage_runs` | 90 days (`PIPELINE_RUN_RETENTION_DAYS`; a `running` row is never pruned) |
+| `opportunity_signals` | keep forever by default (`SIGNAL_RETENTION_DAYS=0`; set > 0 to prune) |
+
+Intelligence and calibration tables — markets, snapshots, scanner runs, eligibility assessments, enrichments, resolution assessments, research packets, forecasts, **outcomes, forecast scores** — are **never pruned** (enforced in code and tests). Deletes run in `RETENTION_BATCH_SIZE` batches to keep transactions short. This deletes only our own telemetry rows; the project remains read-only toward the outside world.
+
+```bash
+python -m app.cli prune-retention --dry-run   # counts only, deletes nothing
+python -m app.cli prune-retention             # prune per configured windows
+python -m app.cli db-stats                    # redacted DB URL, row counts, size, latest runs, signal counts
+```
+
+Hooks (both **off** by default): `ENABLE_PIPELINE_RETENTION=true` appends a `retention` stage to each baseline run; `ENABLE_WATCHER_RETENTION=true` lets the watcher loop prune at most once per day (never on every iteration). The recommended production setup is neither — install the dedicated daily timer instead (`infra/systemd/user/probability-arena-retention.{service,timer}`, not auto-installed).
+
+### Safe EVO-X2 deployment sequence (watcher + retention)
+
+Still read-only end to end. On EVO-X2:
+
+```bash
+cd ~/projects/probability-arena
+git pull --ff-only
+.venv/bin/pip install -q -r requirements-dev.txt      # if deps changed
+.venv/bin/python -m app.cli run-baseline --dry-run    # applies migrations, audit-only
+.venv/bin/python -m app.cli watch-once --limit 50     # one manual watcher pass
+.venv/bin/python -m app.cli db-stats                  # verify tick/signal counts look sane
+# install the daily retention timer BEFORE any permanent watcher:
+cp infra/systemd/user/probability-arena-retention.{service,timer} ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now probability-arena-retention.timer
+# only after watch-once + db-stats validation, enable the watcher loop:
+#   set ENABLE_REALTIME_WATCHER=true in .env, then
+cp infra/systemd/user/probability-arena-watcher.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now probability-arena-watcher.service
+```
 
 ## Outcome tracking & calibration
 
