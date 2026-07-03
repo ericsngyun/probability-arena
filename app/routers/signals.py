@@ -16,6 +16,7 @@ from app.services.signal_workflow import (
     SignalProcessingService,
     SignalPromotionService,
     build_signal_report,
+    refreshed_packet_summary,
 )
 
 SIGNAL_STATUSES = ALL_STATUSES
@@ -56,7 +57,12 @@ async def process_promoted_signals(
     (oldest promotion first; previously-failed signals are skipped). Uses
     template services unless the ENABLE_* env flags are true."""
     processed = await SignalProcessingService().process_promoted(db, limit=limit)
-    return [OpportunitySignalOut.model_validate(row) for row in processed]
+    out = []
+    for row in processed:
+        item = OpportunitySignalOut.model_validate(row)
+        item.refreshed_packet = refreshed_packet_summary(db, row)
+        out.append(item)
+    return out
 
 
 @router.post("/{signal_id}/promote", response_model=OpportunitySignalOut)
@@ -99,7 +105,9 @@ async def get_signal(signal_id: int, db: Session = Depends(get_db)) -> Opportuni
     row = db.get(OpportunitySignal, signal_id)
     if row is None:
         raise HTTPException(status_code=404, detail=f"Signal {signal_id} not found")
-    return OpportunitySignalOut.model_validate(row)
+    item = OpportunitySignalOut.model_validate(row)
+    item.refreshed_packet = refreshed_packet_summary(db, row)
+    return item
 
 
 @router.patch("/{signal_id}/status", response_model=OpportunitySignalOut)

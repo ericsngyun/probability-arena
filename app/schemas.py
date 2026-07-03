@@ -90,6 +90,11 @@ class ResearchSource(BaseModel):
     url: str | None = None
     source_type: str = "web"  # settlement_source|stats_provider|official|news|web
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+    # External-evidence provenance (MVP-004E): human-readable title,
+    # credibility band, and fetch freshness (ISO timestamp string, JSON-safe)
+    title: str | None = None
+    credibility: Literal["official", "high", "medium", "unknown"] = "unknown"
+    fetched_at: str | None = None
 
 
 class ResearchFact(BaseModel):
@@ -264,6 +269,17 @@ SignalStatus = Literal[
 ]
 
 
+class RefreshedPacketSummary(BaseModel):
+    """Compact view of a signal's refreshed research packet (no raw payloads)."""
+
+    packet_id: int
+    collector_name: str
+    collector_version: str
+    domain: str
+    research_completeness_score: float
+    evidence_depth: str  # computed via forecasting.determine_evidence_depth
+
+
 class OpportunitySignalOut(BaseModel):
     """A persisted opportunity signal (informational only; raw payload stays
     DB-only)."""
@@ -291,6 +307,9 @@ class OpportunitySignalOut(BaseModel):
     processing_error_type: str | None = None
     processing_error_message: str | None = None
     created_at: datetime
+    # Populated by processing/detail endpoints (not an ORM column):
+    # collector/evidence-depth/completeness of the refreshed packet
+    refreshed_packet: RefreshedPacketSummary | None = None
 
 
 class SignalStatusUpdate(BaseModel):
@@ -307,6 +326,23 @@ class RefreshedSignalSummary(BaseModel):
     processed_at: datetime | None = None
 
 
+class CollectorStats(BaseModel):
+    count: int = 0
+    mean_completeness: float | None = None
+    by_evidence_depth: dict[str, int] = {}
+
+
+class ResearchCanaryReport(BaseModel):
+    """External-research canary metrics over persisted research packets."""
+
+    total_packets: int = 0
+    by_collector: dict[str, CollectorStats] = {}
+    by_domain: dict[str, int] = {}
+    # external collector ran but produced template-only content (fetch failed,
+    # game not found, ticker unparseable, ...)
+    external_fallbacks: int = 0
+
+
 class SignalReport(BaseModel):
     """Aggregate signal-workflow view. Informational only — no EV, no trade
     metrics."""
@@ -317,6 +353,7 @@ class SignalReport(BaseModel):
     promoted_awaiting_processing: int = 0
     processed_with_errors: int = 0
     recent_refreshed: list[RefreshedSignalSummary] = []
+    research_canary: ResearchCanaryReport | None = None
 
 
 class WatcherRunOut(BaseModel):

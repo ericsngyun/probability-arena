@@ -1,6 +1,6 @@
 # Probability Arena
 
-**Kalshi read-only market intelligence** (OPS-004: measurement loop, baseline runner, real-time watcher, retention, and a signal promotion → intelligence-refresh workflow).
+**Kalshi read-only market intelligence** (MVP-004E: measurement loop, baseline runner, real-time watcher, retention, signal workflow, and an external-research canary for baseball).
 
 Scans active Kalshi markets over the public REST API, ranks them on tradability signals (spread, liquidity, volume, time to expiration, resolution clarity), and stores time-series snapshots in Postgres. Optionally maintains live orderbook snapshots over WebSocket when API credentials are configured.
 
@@ -200,6 +200,40 @@ python -m app.cli signal-report                        # workflow overview
 **Processing** (`process-promoted-signals`, `POST /signals/process-promoted`) handles promoted signals oldest-first: fresh detail enrichment → fresh resolution assessment → fresh research packet → fresh forecast, then links `refreshed_research_packet_id`/`refreshed_forecast_id` onto the signal and marks it `forecast_refreshed`. Failures are captured on the signal (`processing_error_type`/`message`) and leave it at the last completed stage; errored signals are skipped on later runs until the error is cleared. **Conservative by design:** whichever services the existing env flags select are used — template research and template baseline forecasts unless `ENABLE_EXTERNAL_RESEARCH` / `ENABLE_LLM_FORECASTING` are true. This is workflow plumbing, not alpha: a refreshed template forecast still carries no independent edge.
 
 `GET /signals/recent`, `GET /signals/report`, and the new statuses (`research_refreshed`, `forecast_refreshed`, `paper_candidate_pending`) complete the review loop. Nothing beyond `paper_candidate_pending` exists — no paper trading, no EV, no positions, no orders.
+
+## Baseball external research canary
+
+**This is not global external research.** `ENABLE_EXTERNAL_RESEARCH` stays `false`; the canary is a separate, narrow flag:
+
+- `ENABLE_BASEBALL_EXTERNAL_RESEARCH=false` (default) — plus `BASEBALL_RESEARCH_TIMEOUT_SECONDS=15`, `BASEBALL_RESEARCH_MAX_SOURCES=8`, `BASEBALL_RESEARCH_COLLECTOR_VERSION=v1`.
+
+When the flag is on, signal processing uses `BaseballExternalResearchCollector` **only** when all four conditions hold: the signal is promoted, its domain is `sports_baseball`, its fresh resolution assessment is `researchable`, and the flag is true. Everything else (other domains, flag off, non-researchable markets, explicitly injected collectors) uses the template collector.
+
+Evidence comes from the **public MLB Stats API** (`statsapi.mlb.com` — official league data, read-only GETs, no credentials): live game state (score/inning/outs/bases), probable pitchers, confirmed lineups, weather/venue. The Kalshi ticker is parsed for game date + matchup and matched against the MLB schedule. Every fact carries a source reference; every source persists url/title/source_type/credibility/freshness. Facts fill template gaps (lineups/pitchers/weather drop out of `missing_info`) and boost `research_completeness_score` above the 0.65 template ceiling — making the packet `source_backed` downstream, which raises the forecast confidence cap from 0.55 to 0.75. If the game can't be identified or fetched, the collector **falls back to template content honestly**: evidence depth stays `template_only`, the reason lands in `missing_info` and `raw_response`, and the canary report counts it as a fallback.
+
+```bash
+python -m app.cli process-promoted-signals --limit 5   # per-signal line shows research=<collector>/<depth>
+python -m app.cli research-canary-report               # packets by collector/domain/depth + fallbacks
+```
+
+`GET /signals/report` includes the same canary metrics (`research_canary`), and processed signals carry a `refreshed_packet` summary (collector, evidence depth, completeness).
+
+**Safe rollout on EVO-X2:**
+
+```bash
+cd ~/projects/probability-arena && git pull --ff-only
+.venv/bin/python -m app.cli run-baseline --dry-run           # migrations (none new) + sanity
+# 1. keep the flag false; verify template mode still works:
+.venv/bin/python -m app.cli promote-signals --limit 3
+.venv/bin/python -m app.cli process-promoted-signals --limit 3
+# 2. flip the canary on: set ENABLE_BASEBALL_EXTERNAL_RESEARCH=true in .env
+# 3. process 1-3 promoted baseball signals and inspect:
+.venv/bin/python -m app.cli process-promoted-signals --limit 3
+.venv/bin/python -m app.cli research-canary-report
+.venv/bin/python -m app.cli signal-report                    # review the refreshed forecasts
+```
+
+Still read-only end to end: no EV calculation, no trade recommendations, no paper trading, no sizing, no orders, no wallets, no execution.
 
 ## Retention & database stats
 

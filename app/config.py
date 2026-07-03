@@ -37,6 +37,13 @@ class Settings(BaseSettings):
     research_collector_version: str = "v1"
     research_model_name: str = "claude-opus-4-8"
 
+    # Baseball external research canary (MVP-004E) — narrow scope: promoted
+    # sports_baseball signals only; everything else stays on templates
+    enable_baseball_external_research: bool = False
+    baseball_research_timeout_seconds: float = 15.0
+    baseball_research_max_sources: int = 8
+    baseball_research_collector_version: str = "v1"
+
     # Retention / pruning (OPS-003) — operational tables only; intelligence
     # and calibration tables are never pruned
     tick_retention_days: int = 7

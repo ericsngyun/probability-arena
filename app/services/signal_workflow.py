@@ -19,8 +19,8 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Market, OpportunitySignal
-from app.schemas import SignalReport, RefreshedSignalSummary
+from app.models import Market, MarketResearchPacket, OpportunitySignal
+from app.schemas import RefreshedSignalSummary, SignalReport
 
 logger = logging.getLogger(__name__)
 
@@ -128,13 +128,46 @@ class SignalPromotionService:
 class SignalProcessingService:
     """Refreshes intelligence for promoted signals. All collaborators are
     injectable; defaults follow the env flags (template-only unless the
-    ENABLE_LLM_*/ENABLE_EXTERNAL_RESEARCH flags are true)."""
+    ENABLE_LLM_*/ENABLE_EXTERNAL_RESEARCH flags are true).
 
-    def __init__(self, enrichment_adapter=None, judge=None, collector=None, forecaster=None):
+    Baseball canary (MVP-004E): when no collector is injected, the external
+    baseball collector is selected ONLY for promoted signals whose domain is
+    sports_baseball with a researchable fresh resolution AND
+    ENABLE_BASEBALL_EXTERNAL_RESEARCH=true. Everything else uses the
+    configured default collector (template unless global flags say more)."""
+
+    def __init__(
+        self,
+        enrichment_adapter=None,
+        judge=None,
+        collector=None,
+        forecaster=None,
+        baseball_fetcher=None,
+    ):
         self.enrichment_adapter = enrichment_adapter
         self.judge = judge
         self.collector = collector
         self.forecaster = forecaster
+        self.baseball_fetcher = baseball_fetcher
+
+    def _collector_for(self, domain: str, resolution_tradeability: str | None):
+        """Per-signal collector selection (canary gate). An explicitly
+        injected collector always wins (tests, overrides)."""
+        from app.config import get_settings
+        from app.services.research import DOMAIN_SPORTS_BASEBALL, get_collector
+
+        if self.collector is not None:
+            return self.collector
+        settings = get_settings()
+        if (
+            settings.enable_baseball_external_research
+            and domain == DOMAIN_SPORTS_BASEBALL
+            and resolution_tradeability == "researchable"
+        ):
+            from app.services.baseball_research import BaseballExternalResearchCollector
+
+            return BaseballExternalResearchCollector(fetcher=self.baseball_fetcher)
+        return get_collector()
 
     async def process(self, session: Session, signal: OpportunitySignal) -> OpportunitySignal:
         """Fresh enrichment -> resolution assessment -> research packet ->
@@ -144,7 +177,7 @@ class SignalProcessingService:
         from app.schemas import MarketData
         from app.services.enrichment import MarketDetailEnrichmentService, apply_latest_enrichment
         from app.services.forecasting import ForecastingService
-        from app.services.research import create_research_packet, get_collector
+        from app.services.research import classify_domain, create_research_packet
         from app.services.resolution import get_judge, persist_assessment
 
         try:
@@ -178,8 +211,10 @@ class SignalProcessingService:
             assessment = await judge.assess(market_data)
             persist_assessment(session, market.ticker, assessment, judge, scanner_run_id=None)
 
-            # 3. Fresh research packet
-            collector = self.collector or get_collector()
+            # 3. Fresh research packet (baseball canary gate lives here)
+            collector = self._collector_for(
+                classify_domain(market_data), assessment.tradeability
+            )
             packet = await create_research_packet(
                 session, market, collector=collector, scanner_run_id=None
             )
@@ -275,6 +310,8 @@ def build_signal_report(session: Session, recent_limit: int = 10) -> SignalRepor
         for signal, forecast in refreshed_rows
     ]
 
+    from app.services.baseball_research import build_research_canary_report
+
     return SignalReport(
         total=sum(by_status.values()),
         by_status=by_status,
@@ -282,4 +319,25 @@ def build_signal_report(session: Session, recent_limit: int = 10) -> SignalRepor
         promoted_awaiting_processing=awaiting,
         processed_with_errors=errored,
         recent_refreshed=recent_refreshed,
+        research_canary=build_research_canary_report(session),
+    )
+
+
+def refreshed_packet_summary(session: Session, signal: OpportunitySignal):
+    """RefreshedPacketSummary for a signal's refreshed packet, or None."""
+    from app.schemas import RefreshedPacketSummary
+    from app.services.forecasting import determine_evidence_depth
+
+    if signal.refreshed_research_packet_id is None:
+        return None
+    packet = session.get(MarketResearchPacket, signal.refreshed_research_packet_id)
+    if packet is None:
+        return None
+    return RefreshedPacketSummary(
+        packet_id=packet.id,
+        collector_name=packet.collector_name,
+        collector_version=packet.collector_version,
+        domain=packet.domain,
+        research_completeness_score=packet.research_completeness_score,
+        evidence_depth=determine_evidence_depth(packet),
     )

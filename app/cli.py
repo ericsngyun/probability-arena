@@ -19,6 +19,7 @@ Usage:
     python -m app.cli promote-signals --limit 5
     python -m app.cli process-promoted-signals --limit 5
     python -m app.cli signal-report
+    python -m app.cli research-canary-report
 
 Read-only: `scan` fetches public Kalshi market data, ranks it, and persists
 snapshots; `enrich-details` fetches detail/event/series metadata for top
@@ -891,6 +892,8 @@ async def process_promoted_signals(limit: int = 5, services=None, session=None) 
         run_migrations()
         session = get_sessionmaker()()
     try:
+        from app.services.signal_workflow import refreshed_packet_summary
+
         service = services or SignalProcessingService()
         processed = await service.process_promoted(session, limit=limit)
         print(f"processed {len(processed)} promoted signal(s)")
@@ -901,10 +904,17 @@ async def process_promoted_signals(limit: int = 5, services=None, session=None) 
                     f"{signal.processing_error_type}: {signal.processing_error_message}"
                 )
             else:
+                summary = refreshed_packet_summary(session, signal)
+                research = (
+                    f" research={summary.collector_name}/{summary.evidence_depth} "
+                    f"completeness={summary.research_completeness_score:.2f}"
+                    if summary
+                    else ""
+                )
                 print(
                     f"  #{signal.id} {signal.market_ticker}: {signal.signal_status} "
                     f"packet={signal.refreshed_research_packet_id} "
-                    f"forecast={signal.refreshed_forecast_id}"
+                    f"forecast={signal.refreshed_forecast_id}{research}"
                 )
         return len(processed)
     finally:
@@ -939,6 +949,37 @@ async def signal_report(session=None) -> int:
                 f"conf={item.refreshed_confidence:.2f}"
             )
         return report.total
+    finally:
+        if owns_session:
+            session.close()
+
+
+async def research_canary_report(session=None) -> int:
+    """Print external-research canary metrics: packets by collector, domain,
+    completeness, evidence depth, and fallback counts. Returns total packets."""
+    from app.services.baseball_research import build_research_canary_report
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        report = build_research_canary_report(session)
+        print(
+            f"research canary: packets={report.total_packets} "
+            f"external_fallbacks={report.external_fallbacks}"
+        )
+        for name, stats in sorted(report.by_collector.items()):
+            depths = ", ".join(f"{d}={n}" for d, n in sorted(stats.by_evidence_depth.items()))
+            print(
+                f"  collector={name:<24} n={stats.count:<4} "
+                f"mean_completeness={stats.mean_completeness} depths: {depths}"
+            )
+        if report.by_domain:
+            print("by domain: " + ", ".join(f"{d}={n}" for d, n in sorted(report.by_domain.items())))
+        return report.total_packets
     finally:
         if owns_session:
             session.close()
@@ -1058,6 +1099,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     process_parser.add_argument("--limit", type=int, default=5)
     subparsers.add_parser("signal-report", help="Aggregate signal-workflow report")
+    subparsers.add_parser(
+        "research-canary-report", help="External-research canary metrics by collector"
+    )
     return parser
 
 
@@ -1134,6 +1178,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if count >= 0 else 1
     if args.command == "signal-report":
         total = asyncio.run(signal_report())
+        return 0 if total >= 0 else 1
+    if args.command == "research-canary-report":
+        total = asyncio.run(research_canary_report())
         return 0 if total >= 0 else 1
     return 2
 
