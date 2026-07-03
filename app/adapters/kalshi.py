@@ -219,6 +219,22 @@ class KalshiRestAdapter:
 
         return results[:limit]
 
+    async def fetch_markets_by_tickers(self, tickers: list[str]) -> list[MarketData]:
+        """Fresh quotes for specific tickers via GET /markets?tickers=...,
+        chunked to the page-size limit. Read-only; unknown tickers are simply
+        absent from the response."""
+        results: list[MarketData] = []
+        async with httpx.AsyncClient(base_url=self.base_url, timeout=self.timeout) as client:
+            for start in range(0, len(tickers), PAGE_SIZE):
+                chunk = tickers[start : start + PAGE_SIZE]
+                response = await client.get(
+                    MARKETS_PATH, params={"tickers": ",".join(chunk), "limit": len(chunk)}
+                )
+                response.raise_for_status()
+                markets, _ = parse_markets_response(response.json())
+                results.extend(markets)
+        return results
+
     async def _get_json(self, path: str) -> dict | None:
         """GET a detail endpoint; None on any HTTP/network error (detail
         enrichment is best-effort and must never break the pipeline)."""

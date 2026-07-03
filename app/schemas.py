@@ -252,6 +252,49 @@ class CalibrationSummary(BaseModel):
     by_tag: dict[str, CohortStats] = {}
 
 
+class OpportunitySignalOut(BaseModel):
+    """A persisted opportunity signal (informational only; raw payload stays
+    DB-only)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    market_ticker: str
+    signal_type: str
+    signal_status: Literal["new", "reviewed", "dismissed", "promoted_to_research"]
+    observed_at: datetime
+    old_midpoint: float | None = None
+    new_midpoint: float | None = None
+    price_change: float | None = None
+    spread: int | None = None
+    liquidity_proxy: int | None = None
+    latest_forecast_id: int | None = None
+    latest_forecast_probability: float | None = None
+    reason: str = ""
+    evidence: dict | None = None
+    created_at: datetime
+
+
+class SignalStatusUpdate(BaseModel):
+    signal_status: Literal["new", "reviewed", "dismissed", "promoted_to_research"]
+
+
+class WatcherRunOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    status: str
+    started_at: datetime
+    finished_at: datetime | None = None
+    duration_ms: int | None = None
+    markets_checked: int = 0
+    ticks_recorded: int = 0
+    signals_created: int = 0
+    error_type: str | None = None
+    error_message: str | None = None
+    created_at: datetime
+
+
 class PipelineStageRunOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

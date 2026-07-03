@@ -1,6 +1,6 @@
 # Probability Arena
 
-**Kalshi read-only market intelligence** (MVP-004D: the full read-only measurement loop — gating, enrichment, resolution assessment, research packets, capped-confidence forecasts, outcome tracking, calibration scoring — plus a scheduled, audited baseline runner).
+**Kalshi read-only market intelligence** (OPS-002: the full read-only measurement loop, a scheduled audited baseline runner, and a real-time opportunity watcher with informational-only signals).
 
 Scans active Kalshi markets over the public REST API, ranks them on tradability signals (spread, liquidity, volume, time to expiration, resolution clarity), and stores time-series snapshots in Postgres. Optionally maintains live orderbook snapshots over WebSocket when API credentials are configured.
 
@@ -10,6 +10,7 @@ Scans active Kalshi markets over the public REST API, ranks them on tradability 
 - **Forecasts are probabilities and reasoning artifacts only.** No EV calculation, no position sizing, no paper trading, no trade recommendations, no execution. The forecast schema deliberately has no trade/EV/sizing fields, and tests assert the absence of trading language in forecast output.
 - **Calibration is read-only scoring.** Settlement outcomes are synced via plain detail GETs (no trading permissions needed) and forecasts are scored with Brier / log loss / absolute error. Nothing here calculates EV, recommends trades, paper trades, or executes orders.
 - **The baseline runner is still read-only.** MVP-004D schedules the measurement loop and records audit rows; it exists to *accumulate calibration data* — the evidence base needed before any EV or paper-trading milestone can even be evaluated. It adds no trading capability of any kind.
+- **Opportunity signals are informational only.** OPS-002's watcher records price ticks and deterministic signals (what moved, why, with evidence) for human/research review. Signals carry no EV, no sizing, no trade directives; the status workflow ends at `promoted_to_research`, not at any execution step.
 - **LLM resolution judgment is OFF by default** (`ENABLE_LLM_RESOLUTION=false`). The deterministic rule-based judge needs no credentials or network beyond Kalshi; tests never call an LLM. When enabled, the LLM only *reads* rules text and returns a structured quality verdict — it has no tools and no trading capability.
 - Public market data requires **no credentials**. The Kalshi API key is only needed for the optional WebSocket orderbook feed, and even then the client only sends channel subscriptions.
 - Keep your Kalshi private key **outside the repo** (it is `.gitignore`d by extension, but store it elsewhere, e.g. `~/.kalshi/`). Never commit `.env`.
@@ -36,6 +37,7 @@ app/
   services/outcomes.py    Outcome sync (read-only settlement state per market)
   services/calibration.py Forecast scoring (Brier / log loss) + cohort summaries
   services/pipeline.py    Baseline runner: 8-stage audited loop + overlap lock
+  services/watcher.py     Real-time watcher: price ticks + informational signals
   services/ranking.py     Weighted scoring: spread, liquidity, volume, expiration, clarity
   services/scanner.py     fetch -> assess eligibility -> rank eligible -> persist
   services/ws_snapshots.py Optional WS orderbook snapshot service (credential-gated)
@@ -68,6 +70,7 @@ The api container runs Alembic migrations automatically on startup (databases cr
 - `GET http://localhost:8000/forecasts/scores` — recent forecast scores, filterable by `score_status`, `market_ticker`, `forecaster_name`, `evidence_depth`
 - `GET http://localhost:8000/calibration/summary` — aggregate Brier / log-loss / absolute-error by evidence depth, risk, forecaster, domain, and tag
 - `GET http://localhost:8000/pipeline/runs` and `GET /pipeline/runs/{id}` — pipeline audit records (runs and per-stage details)
+- `GET http://localhost:8000/signals` (filters: `signal_status`, `signal_type`, `market_ticker`), `GET /signals/{id}`, `PATCH /signals/{id}/status` — opportunity signal review workflow (`new` → `reviewed` / `dismissed` / `promoted_to_research`)
 - `http://localhost:8000/docs` — OpenAPI UI
 
 ### Live Kalshi smoke test
@@ -148,6 +151,29 @@ journalctl -u probability-arena-baseline.service -f
 ```
 
 **Why this exists:** the template baseline forecaster is anchored to the market midpoint, so its accumulated Brier/log-loss over many settlements approximates the market's own calibration. That dataset is the bar any future forecaster (`ENABLE_LLM_FORECASTING`, `ENABLE_EXTERNAL_RESEARCH`) must beat — and it must exist **before** EV or paper trading is worth discussing. Let the timer run for a few weeks, then compare cohorts in `calibration-report`.
+
+## Real-time opportunity watcher
+
+The 4-hour baseline runner accumulates calibration data; the **watcher** is a separate, faster loop (default every 60 s) that polls fresh quotes for the latest scan's eligible candidates, records `market_price_ticks`, and emits deterministic, **informational-only** `opportunity_signals`:
+
+| Signal | Fires when |
+|---|---|
+| `price_move_threshold` | midpoint moved ≥ `WATCHER_PRICE_MOVE_THRESHOLD` (default $0.07) since the last tick |
+| `spread_tightened` | spread crossed into the ≤ `WATCHER_MAX_SPREAD` band |
+| `newly_two_sided` | market gained a two-sided quote |
+| `liquidity_appeared` | liquidity proxy crossed ≥ `WATCHER_MIN_LIQUIDITY_PROXY` |
+| `price_crossed_latest_forecast` | midpoint crossed the latest persisted forecast probability |
+
+All detectors compare the previous tick to the new one (a first observation never fires), and repeated `(ticker, signal_type)` alerts are deduped within `WATCHER_SIGNAL_COOLDOWN_SECONDS` (default 900). Every signal stores its reason, evidence, and raw payload for audit.
+
+```bash
+python -m app.cli watch-once --limit 100    # one manual pass (always available)
+python -m app.cli watch-loop --interval 60  # continuous; requires ENABLE_REALTIME_WATCHER=true
+```
+
+`watch-loop` exits cleanly on SIGINT/SIGTERM and survives per-pass errors. An optional systemd user unit exists at `infra/systemd/user/probability-arena-watcher.service` — **separate from the 4-hour baseline timer**, not auto-installed, and inert unless `ENABLE_REALTIME_WATCHER=true`.
+
+Review signals via the API (`GET /signals`, `PATCH /signals/{id}/status`). `promoted_to_research` marks a signal as worth a research packet/forecast refresh — a human decision; nothing automates beyond that, and nothing trades.
 
 ## Outcome tracking & calibration
 
@@ -298,6 +324,9 @@ It subscribes to the `orderbook_delta` channel for those tickers, maintains book
 | `forecast_scores` | Append-only calibration scores: Brier, log loss, absolute error, status (scored/pending_outcome/unscorable), cohort tags; links to forecast and outcome |
 | `pipeline_runs` | One row per baseline pipeline execution: status, timing, config, summary; a `running` row doubles as the overlap lock |
 | `pipeline_stage_runs` | One row per stage per run: status, timing, item counts, error capture |
+| `market_price_ticks` | One row per market per watcher pass: quotes, midpoint, spread, liquidity proxy, raw payload |
+| `opportunity_signals` | Informational signals: type, review status, old/new midpoints, reason, evidence, optional forecast link |
+| `watcher_runs` | One row per watcher pass: status, timing, markets/ticks/signals counts, error capture |
 
 Schema is managed by Alembic (`alembic/versions/`); migrations run automatically at app/CLI startup.
 

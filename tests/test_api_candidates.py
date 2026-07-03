@@ -453,6 +453,70 @@ def test_pipeline_runs_endpoints(client):
     assert test_client.get("/pipeline/runs?status=failed").json() == []
 
 
+def _seed_signal(session, **overrides):
+    from datetime import datetime, timezone
+
+    from app.models import OpportunitySignal
+
+    now = datetime.now(timezone.utc)
+    fields = dict(
+        market_ticker="GOOD-MKT",
+        signal_type="price_move_threshold",
+        signal_status="new",
+        observed_at=now,
+        old_midpoint=0.5,
+        new_midpoint=0.6,
+        price_change=0.1,
+        reason="Midpoint moved +0.10",
+        evidence={"threshold": 0.07},
+        raw_payload={"kept": "db-only"},
+        created_at=now,
+    )
+    fields.update(overrides)
+    row = OpportunitySignal(**fields)
+    session.add(row)
+    session.commit()
+    return row
+
+
+def test_signals_list_detail_and_filters(client):
+    test_client, session = client
+    assert test_client.get("/signals").json() == []
+
+    first = _seed_signal(session)
+    second = _seed_signal(session, signal_type="spread_tightened", market_ticker="OTHER-MKT")
+
+    signals = test_client.get("/signals").json()
+    assert [s["id"] for s in signals] == [second.id, first.id]  # newest first
+    assert all("raw_payload" not in s for s in signals)
+
+    assert len(test_client.get("/signals?signal_type=price_move_threshold").json()) == 1
+    assert len(test_client.get("/signals?market_ticker=OTHER-MKT").json()) == 1
+    assert len(test_client.get("/signals?signal_status=new").json()) == 2
+    assert test_client.get("/signals?signal_status=bogus").status_code == 422
+
+    detail = test_client.get(f"/signals/{first.id}").json()
+    assert detail["reason"] == "Midpoint moved +0.10"
+    assert detail["evidence"] == {"threshold": 0.07}
+    assert test_client.get("/signals/9999").status_code == 404
+
+
+def test_signal_status_update_workflow(client):
+    test_client, session = client
+    signal = _seed_signal(session)
+
+    updated = test_client.patch(
+        f"/signals/{signal.id}/status", json={"signal_status": "promoted_to_research"}
+    )
+    assert updated.status_code == 200
+    assert updated.json()["signal_status"] == "promoted_to_research"
+    assert test_client.get(f"/signals/{signal.id}").json()["signal_status"] == "promoted_to_research"
+
+    invalid = test_client.patch(f"/signals/{signal.id}/status", json={"signal_status": "executed"})
+    assert invalid.status_code == 422
+    assert test_client.patch("/signals/9999/status", json={"signal_status": "reviewed"}).status_code == 404
+
+
 def test_scan_persists_eligibility_assessments_linked_to_run(client):
     test_client, session = client
     body = test_client.get("/markets/candidates").json()

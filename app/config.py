@@ -37,6 +37,15 @@ class Settings(BaseSettings):
     research_collector_version: str = "v1"
     research_model_name: str = "claude-opus-4-8"
 
+    # Real-time opportunity watcher (OPS-002) — informational signals only
+    enable_realtime_watcher: bool = False
+    watcher_poll_interval_seconds: int = 60
+    watcher_market_limit: int = 100
+    watcher_price_move_threshold: float = 0.07  # dollars of midpoint move
+    watcher_max_spread: float = 0.15  # dollars; spread_tightened crosses into this band
+    watcher_min_liquidity_proxy: int = 100  # cents of resting notional
+    watcher_signal_cooldown_seconds: int = 900
+
     # Baseline pipeline runner (MVP-004D) — scheduled read-only measurement loop
     baseline_scan_limit: int = 500
     baseline_candidate_limit: int = 20

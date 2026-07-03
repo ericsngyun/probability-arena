@@ -244,6 +244,32 @@ def test_0010_0011_create_and_drop_pipeline_tables(tmp_path):
     assert "pipeline_runs" not in _tables(url)
 
 
+def test_0012_creates_and_drops_watcher_tables(tmp_path):
+    url = f"sqlite:///{tmp_path}/watcher.db"
+    run_migrations(url)
+
+    assert {"market_price_ticks", "opportunity_signals", "watcher_runs"} <= _tables(url)
+    assert {
+        "id", "market_ticker", "observed_at", "yes_bid", "yes_ask", "midpoint",
+        "spread", "volume_24h", "liquidity_proxy", "raw_payload", "created_at",
+    } <= _columns(url, "market_price_ticks")
+    assert {
+        "id", "market_ticker", "signal_type", "signal_status", "observed_at",
+        "old_midpoint", "new_midpoint", "price_change", "spread", "liquidity_proxy",
+        "latest_forecast_id", "latest_forecast_probability", "reason", "evidence",
+        "raw_payload", "created_at",
+    } <= _columns(url, "opportunity_signals")
+    assert {
+        "id", "status", "started_at", "finished_at", "duration_ms",
+        "markets_checked", "ticks_recorded", "signals_created",
+        "error_type", "error_message", "created_at",
+    } <= _columns(url, "watcher_runs")
+
+    command.downgrade(_config(url), "0011")
+    for table in ("market_price_ticks", "opportunity_signals", "watcher_runs"):
+        assert table not in _tables(url)
+
+
 def test_migrated_schema_matches_orm_metadata(tmp_path):
     """Every ORM-mapped column must exist in the migrated schema."""
     url = f"sqlite:///{tmp_path}/parity.db"

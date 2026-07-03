@@ -36,6 +36,9 @@ def test_schema_creates_all_tables(session):
         "forecast_scores",
         "pipeline_runs",
         "pipeline_stage_runs",
+        "market_price_ticks",
+        "opportunity_signals",
+        "watcher_runs",
     }
 
 

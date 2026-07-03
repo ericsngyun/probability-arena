@@ -291,6 +291,74 @@ class ForecastScoreRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class MarketPriceTick(Base):
+    """One observed quote snapshot from the real-time watcher. Midpoint is in
+    dollars (0..1); bid/ask/spread in integer cents; liquidity_proxy in cents
+    of resting top-of-book notional."""
+
+    __tablename__ = "market_price_ticks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    market_ticker: Mapped[str] = mapped_column(String(64), index=True)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    yes_bid: Mapped[int | None] = mapped_column(Integer)
+    yes_ask: Mapped[int | None] = mapped_column(Integer)
+    midpoint: Mapped[float | None] = mapped_column(Float)
+    spread: Mapped[int | None] = mapped_column(Integer)
+    volume_24h: Mapped[int] = mapped_column(Integer, default=0)
+    liquidity_proxy: Mapped[int] = mapped_column(Integer, default=0)
+    raw_payload: Mapped[dict | None] = mapped_column(RawJSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (
+        Index("ix_market_price_ticks_ticker_observed", "market_ticker", "observed_at"),
+    )
+
+
+class OpportunitySignal(Base):
+    """Informational-only opportunity signal detected by the watcher.
+    Signals record what moved and why, for later human/research review —
+    they carry no EV, no sizing, and no trade directives."""
+
+    __tablename__ = "opportunity_signals"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    market_ticker: Mapped[str] = mapped_column(String(64), index=True)
+    signal_type: Mapped[str] = mapped_column(String(48), index=True)
+    # new|reviewed|dismissed|promoted_to_research
+    signal_status: Mapped[str] = mapped_column(String(32), default="new", index=True)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    old_midpoint: Mapped[float | None] = mapped_column(Float)
+    new_midpoint: Mapped[float | None] = mapped_column(Float)
+    price_change: Mapped[float | None] = mapped_column(Float)
+    spread: Mapped[int | None] = mapped_column(Integer)
+    liquidity_proxy: Mapped[int | None] = mapped_column(Integer)
+    latest_forecast_id: Mapped[int | None] = mapped_column(ForeignKey("market_forecasts.id"))
+    latest_forecast_probability: Mapped[float | None] = mapped_column(Float)
+    reason: Mapped[str] = mapped_column(Text, default="")
+    evidence: Mapped[dict | None] = mapped_column(RawJSON)
+    raw_payload: Mapped[dict | None] = mapped_column(RawJSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class WatcherRun(Base):
+    """One polling pass of the real-time watcher."""
+
+    __tablename__ = "watcher_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    status: Mapped[str] = mapped_column(String(16), default="running")  # running|ok|error
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+    markets_checked: Mapped[int] = mapped_column(Integer, default=0)
+    ticks_recorded: Mapped[int] = mapped_column(Integer, default=0)
+    signals_created: Mapped[int] = mapped_column(Integer, default=0)
+    error_type: Mapped[str | None] = mapped_column(String(128))
+    error_message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class PipelineRun(Base):
     """One execution of the baseline measurement pipeline. The read-only
     loop's audit spine: config in, per-stage children, final status/summary.

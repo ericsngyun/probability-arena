@@ -1,0 +1,29 @@
+# Probability Arena — real-time opportunity watcher loop (read-only), USER unit.
+# SEPARATE from the 4-hour baseline timer: this is a long-running poller
+# (default every 60s) recording price ticks and informational-only signals.
+# NOT auto-installed. Requires ENABLE_REALTIME_WATCHER=true in .env, else the
+# loop exits immediately by design.
+#
+# Install (optional):
+#   cp infra/systemd/user/probability-arena-watcher.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now probability-arena-watcher.service
+# Stop/disable:
+#   systemctl --user disable --now probability-arena-watcher.service
+
+[Unit]
+Description=Probability Arena real-time opportunity watcher (read-only)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/projects/probability-arena
+EnvironmentFile=%h/projects/probability-arena/.env
+ExecStart=%h/projects/probability-arena/.venv/bin/python -m app.cli watch-loop
+Restart=on-failure
+RestartSec=30
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

@@ -11,6 +11,8 @@ Usage:
     python -m app.cli calibration-report
     python -m app.cli run-baseline
     python -m app.cli pipeline-status
+    python -m app.cli watch-once --limit 100
+    python -m app.cli watch-loop --interval 60 --limit 100
 
 Read-only: `scan` fetches public Kalshi market data, ranks it, and persists
 snapshots; `enrich-details` fetches detail/event/series metadata for top
@@ -591,6 +593,122 @@ async def pipeline_status(limit: int = 5, session=None) -> int:
             session.close()
 
 
+async def watch_once(
+    limit: int | None = None,
+    adapter=None,
+    session=None,
+):
+    """One read-only watcher pass: record price ticks and informational
+    opportunity signals for the candidate universe. Returns the WatcherRun."""
+    from app.services.watcher import RealtimeWatcher
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        watcher = RealtimeWatcher(adapter=adapter)
+        run = await watcher.watch_once(session, limit=limit)
+        print(
+            f"watcher run={run.id} status={run.status} markets={run.markets_checked} "
+            f"ticks={run.ticks_recorded} signals={run.signals_created} "
+            f"duration_ms={run.duration_ms}"
+        )
+        if run.signals_created:
+            from sqlalchemy import select
+
+            from app.models import OpportunitySignal
+
+            signals = session.execute(
+                select(OpportunitySignal)
+                .order_by(OpportunitySignal.id.desc())
+                .limit(run.signals_created)
+            ).scalars().all()
+            for signal in reversed(signals):
+                print(f"  [{signal.signal_type}] {signal.market_ticker}: {signal.reason}")
+        return run
+    finally:
+        if owns_session:
+            session.close()
+
+
+async def watch_loop(
+    interval: int | None = None,
+    limit: int | None = None,
+    adapter=None,
+    session=None,
+    max_iterations: int | None = None,
+) -> int:
+    """Run watcher passes on an interval until SIGINT/SIGTERM (or
+    max_iterations, for tests). Requires ENABLE_REALTIME_WATCHER=true.
+    Per-pass errors are printed and the loop continues. Returns iterations."""
+    import asyncio as aio
+    import signal as os_signal
+
+    from app.config import get_settings
+    from app.services.watcher import RealtimeWatcher
+
+    settings = get_settings()
+    if not settings.enable_realtime_watcher:
+        print("ENABLE_REALTIME_WATCHER=false; set it to true in .env to run the loop")
+        return 0
+    if interval is None:
+        interval = settings.watcher_poll_interval_seconds
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+
+    stop = aio.Event()
+    loop = aio.get_running_loop()
+    installed_handlers = []
+    for sig in (os_signal.SIGINT, os_signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, stop.set)
+            installed_handlers.append(sig)
+        except (NotImplementedError, RuntimeError):
+            pass
+
+    watcher = RealtimeWatcher(adapter=adapter)
+    iterations = 0
+    print(f"watcher loop started (interval={interval}s); Ctrl-C to stop")
+    try:
+        while not stop.is_set():
+            if owns_session:
+                from app.db import get_sessionmaker
+
+                iteration_session = get_sessionmaker()()
+            else:
+                iteration_session = session
+            try:
+                run = await watcher.watch_once(iteration_session, limit=limit)
+                print(
+                    f"watcher run={run.id} status={run.status} markets={run.markets_checked} "
+                    f"signals={run.signals_created}"
+                )
+            except Exception as exc:
+                print(f"watcher pass failed: {type(exc).__name__}: {exc}")
+            finally:
+                if owns_session:
+                    iteration_session.close()
+            iterations += 1
+            if max_iterations is not None and iterations >= max_iterations:
+                break
+            try:
+                await aio.wait_for(stop.wait(), timeout=interval)
+            except aio.TimeoutError:
+                pass
+    finally:
+        for sig in installed_handlers:
+            loop.remove_signal_handler(sig)
+    print(f"watcher loop stopped after {iterations} iteration(s)")
+    return iterations
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m app.cli",
@@ -673,6 +791,15 @@ def build_parser() -> argparse.ArgumentParser:
         "pipeline-status", help="Show recent pipeline runs and latest stage summaries"
     )
     status_parser.add_argument("--limit", type=int, default=5)
+    watch_once_parser = subparsers.add_parser(
+        "watch-once", help="One read-only watcher pass (ticks + informational signals)"
+    )
+    watch_once_parser.add_argument("--limit", type=int, default=None)
+    watch_loop_parser = subparsers.add_parser(
+        "watch-loop", help="Poll the watcher on an interval (requires ENABLE_REALTIME_WATCHER)"
+    )
+    watch_loop_parser.add_argument("--interval", type=int, default=None)
+    watch_loop_parser.add_argument("--limit", type=int, default=None)
     return parser
 
 
@@ -717,6 +844,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "pipeline-status":
         count = asyncio.run(pipeline_status(limit=args.limit))
         return 0 if count >= 0 else 1
+    if args.command == "watch-once":
+        run = asyncio.run(watch_once(limit=args.limit))
+        return 0 if run.status == "ok" else 1
+    if args.command == "watch-loop":
+        iterations = asyncio.run(watch_loop(interval=args.interval, limit=args.limit))
+        return 0 if iterations >= 0 else 1
     return 2
 
 
