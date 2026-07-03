@@ -252,6 +252,18 @@ class CalibrationSummary(BaseModel):
     by_tag: dict[str, CohortStats] = {}
 
 
+SignalStatus = Literal[
+    "new",
+    "reviewed",
+    "dismissed",
+    "promoted_to_research",
+    "research_refreshed",
+    "forecast_refreshed",
+    # review label only — no paper trading exists anywhere in this codebase
+    "paper_candidate_pending",
+]
+
+
 class OpportunitySignalOut(BaseModel):
     """A persisted opportunity signal (informational only; raw payload stays
     DB-only)."""
@@ -261,7 +273,7 @@ class OpportunitySignalOut(BaseModel):
     id: int
     market_ticker: str
     signal_type: str
-    signal_status: Literal["new", "reviewed", "dismissed", "promoted_to_research"]
+    signal_status: SignalStatus
     observed_at: datetime
     old_midpoint: float | None = None
     new_midpoint: float | None = None
@@ -272,11 +284,39 @@ class OpportunitySignalOut(BaseModel):
     latest_forecast_probability: float | None = None
     reason: str = ""
     evidence: dict | None = None
+    promoted_at: datetime | None = None
+    processed_at: datetime | None = None
+    refreshed_research_packet_id: int | None = None
+    refreshed_forecast_id: int | None = None
+    processing_error_type: str | None = None
+    processing_error_message: str | None = None
     created_at: datetime
 
 
 class SignalStatusUpdate(BaseModel):
-    signal_status: Literal["new", "reviewed", "dismissed", "promoted_to_research"]
+    signal_status: SignalStatus
+
+
+class RefreshedSignalSummary(BaseModel):
+    signal_id: int
+    market_ticker: str
+    signal_type: str
+    refreshed_forecast_id: int
+    refreshed_probability: float
+    refreshed_confidence: float
+    processed_at: datetime | None = None
+
+
+class SignalReport(BaseModel):
+    """Aggregate signal-workflow view. Informational only — no EV, no trade
+    metrics."""
+
+    total: int = 0
+    by_status: dict[str, int] = {}
+    by_type: dict[str, int] = {}
+    promoted_awaiting_processing: int = 0
+    processed_with_errors: int = 0
+    recent_refreshed: list[RefreshedSignalSummary] = []
 
 
 class WatcherRunOut(BaseModel):

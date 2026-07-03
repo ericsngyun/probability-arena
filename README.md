@@ -1,6 +1,6 @@
 # Probability Arena
 
-**Kalshi read-only market intelligence** (OPS-003: the full read-only measurement loop, scheduled audited baseline runner, real-time opportunity watcher with informational-only signals, and retention/pruning for operational tables).
+**Kalshi read-only market intelligence** (OPS-004: measurement loop, baseline runner, real-time watcher, retention, and a signal promotion → intelligence-refresh workflow).
 
 Scans active Kalshi markets over the public REST API, ranks them on tradability signals (spread, liquidity, volume, time to expiration, resolution clarity), and stores time-series snapshots in Postgres. Optionally maintains live orderbook snapshots over WebSocket when API credentials are configured.
 
@@ -10,7 +10,8 @@ Scans active Kalshi markets over the public REST API, ranks them on tradability 
 - **Forecasts are probabilities and reasoning artifacts only.** No EV calculation, no position sizing, no paper trading, no trade recommendations, no execution. The forecast schema deliberately has no trade/EV/sizing fields, and tests assert the absence of trading language in forecast output.
 - **Calibration is read-only scoring.** Settlement outcomes are synced via plain detail GETs (no trading permissions needed) and forecasts are scored with Brier / log loss / absolute error. Nothing here calculates EV, recommends trades, paper trades, or executes orders.
 - **The baseline runner is still read-only.** MVP-004D schedules the measurement loop and records audit rows; it exists to *accumulate calibration data* — the evidence base needed before any EV or paper-trading milestone can even be evaluated. It adds no trading capability of any kind.
-- **Opportunity signals are informational only.** OPS-002's watcher records price ticks and deterministic signals (what moved, why, with evidence) for human/research review. Signals carry no EV, no sizing, no trade directives; the status workflow ends at `promoted_to_research`, not at any execution step.
+- **Opportunity signals are informational only.** OPS-002's watcher records price ticks and deterministic signals (what moved, why, with evidence) for human/research review. Signals carry no EV, no sizing, no trade directives.
+- **Signal processing refreshes intelligence, nothing else.** OPS-004's workflow promotes selected signals and refreshes enrichment/assessment/research/forecast for their markets — the same read-only artifacts the pipeline already produces, just on demand. `paper_candidate_pending` is a human review label; **no paper trading, EV calculation, trade recommendation, or execution exists anywhere.**
 - **LLM resolution judgment is OFF by default** (`ENABLE_LLM_RESOLUTION=false`). The deterministic rule-based judge needs no credentials or network beyond Kalshi; tests never call an LLM. When enabled, the LLM only *reads* rules text and returns a structured quality verdict — it has no tools and no trading capability.
 - Public market data requires **no credentials**. The Kalshi API key is only needed for the optional WebSocket orderbook feed, and even then the client only sends channel subscriptions.
 - Keep your Kalshi private key **outside the repo** (it is `.gitignore`d by extension, but store it elsewhere, e.g. `~/.kalshi/`). Never commit `.env`.
@@ -38,6 +39,7 @@ app/
   services/calibration.py Forecast scoring (Brier / log loss) + cohort summaries
   services/pipeline.py    Baseline runner: 8-stage audited loop + overlap lock
   services/watcher.py     Real-time watcher: price ticks + informational signals
+  services/signal_workflow.py Signal promotion + signal-triggered intelligence refresh
   services/ranking.py     Weighted scoring: spread, liquidity, volume, expiration, clarity
   services/scanner.py     fetch -> assess eligibility -> rank eligible -> persist
   services/ws_snapshots.py Optional WS orderbook snapshot service (credential-gated)
@@ -173,7 +175,31 @@ python -m app.cli watch-loop --interval 60  # continuous; requires ENABLE_REALTI
 
 `watch-loop` exits cleanly on SIGINT/SIGTERM and survives per-pass errors. An optional systemd user unit exists at `infra/systemd/user/probability-arena-watcher.service` — **separate from the 4-hour baseline timer**, not auto-installed, and inert unless `ENABLE_REALTIME_WATCHER=true`.
 
-Review signals via the API (`GET /signals`, `PATCH /signals/{id}/status`). `promoted_to_research` marks a signal as worth a research packet/forecast refresh — a human decision; nothing automates beyond that, and nothing trades.
+Review signals via the API (`GET /signals`, `PATCH /signals/{id}/status`).
+
+## Signal workflow (promotion → intelligence refresh)
+
+The recommended live sequence once a signal lands:
+
+```
+watcher catches signal (new)
+  → promote signal            (promoted_to_research)
+  → process promoted signal   (research_refreshed → forecast_refreshed)
+  → review the refreshed forecast (optionally label paper_candidate_pending)
+```
+
+```bash
+python -m app.cli signals-recent --limit 20            # what did the watcher catch?
+python -m app.cli promote-signals --limit 5            # promote top-N new signals
+python -m app.cli process-promoted-signals --limit 5   # refresh enrichment/assessment/packet/forecast
+python -m app.cli signal-report                        # workflow overview
+```
+
+**Promotion** (`promote-signals`, `POST /signals/{id}/promote`) only accepts `new` signals (promoting an already-promoted signal is a no-op; dismissed/reviewed/processed → 409). Batch promotion is deterministic: priority order `price_move_threshold` → `price_crossed_latest_forecast` → `spread_tightened` → `liquidity_appeared` → `newly_two_sided`, newest first within a type, at most one signal per market per batch.
+
+**Processing** (`process-promoted-signals`, `POST /signals/process-promoted`) handles promoted signals oldest-first: fresh detail enrichment → fresh resolution assessment → fresh research packet → fresh forecast, then links `refreshed_research_packet_id`/`refreshed_forecast_id` onto the signal and marks it `forecast_refreshed`. Failures are captured on the signal (`processing_error_type`/`message`) and leave it at the last completed stage; errored signals are skipped on later runs until the error is cleared. **Conservative by design:** whichever services the existing env flags select are used — template research and template baseline forecasts unless `ENABLE_EXTERNAL_RESEARCH` / `ENABLE_LLM_FORECASTING` are true. This is workflow plumbing, not alpha: a refreshed template forecast still carries no independent edge.
+
+`GET /signals/recent`, `GET /signals/report`, and the new statuses (`research_refreshed`, `forecast_refreshed`, `paper_candidate_pending`) complete the review loop. Nothing beyond `paper_candidate_pending` exists — no paper trading, no EV, no positions, no orders.
 
 ## Retention & database stats
 

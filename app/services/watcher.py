@@ -45,7 +45,7 @@ SIGNAL_NEWLY_TWO_SIDED = "newly_two_sided"
 SIGNAL_LIQUIDITY_APPEARED = "liquidity_appeared"
 SIGNAL_PRICE_CROSSED_FORECAST = "price_crossed_latest_forecast"
 
-SIGNAL_STATUSES = ("new", "reviewed", "dismissed", "promoted_to_research")
+# Signal statuses are owned by app.services.signal_workflow (ALL_STATUSES)
 
 
 @dataclass

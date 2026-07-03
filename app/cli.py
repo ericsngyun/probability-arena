@@ -15,6 +15,10 @@ Usage:
     python -m app.cli watch-loop --interval 60 --limit 100
     python -m app.cli prune-retention [--dry-run]
     python -m app.cli db-stats
+    python -m app.cli signals-recent --limit 20
+    python -m app.cli promote-signals --limit 5
+    python -m app.cli process-promoted-signals --limit 5
+    python -m app.cli signal-report
 
 Read-only: `scan` fetches public Kalshi market data, ranks it, and persists
 snapshots; `enrich-details` fetches detail/event/series metadata for top
@@ -823,6 +827,123 @@ async def db_stats(session=None) -> int:
             session.close()
 
 
+async def signals_recent(limit: int = 20, signal_status: str | None = None, session=None) -> int:
+    """Print recent signals, newest first. Returns the number printed."""
+    from app.services.signal_workflow import SignalPromotionService
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        rows = SignalPromotionService().list_recent(session, limit=limit, signal_status=signal_status)
+        if not rows:
+            print("no signals recorded")
+            return 0
+        for signal in rows:
+            mids = ""
+            if signal.old_midpoint is not None and signal.new_midpoint is not None:
+                mids = f" {signal.old_midpoint:.2f}->{signal.new_midpoint:.2f}"
+            print(
+                f"  #{signal.id:<5} [{signal.signal_status:<22}] {signal.signal_type:<28} "
+                f"{signal.market_ticker}{mids}"
+            )
+        return len(rows)
+    finally:
+        if owns_session:
+            session.close()
+
+
+async def promote_signals(limit: int = 5, session=None) -> int:
+    """Promote top-N 'new' signals by deterministic priority. Returns the
+    number promoted."""
+    from app.services.signal_workflow import SignalPromotionService
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        promoted = SignalPromotionService().promote_top(session, limit=limit)
+        print(f"promoted {len(promoted)} signal(s)")
+        for signal in promoted:
+            print(f"  #{signal.id} {signal.signal_type:<28} {signal.market_ticker}")
+        return len(promoted)
+    finally:
+        if owns_session:
+            session.close()
+
+
+async def process_promoted_signals(limit: int = 5, services=None, session=None) -> int:
+    """Refresh enrichment/assessment/research/forecast for promoted signals.
+    Returns the number processed (including failures, which are recorded on
+    the signal)."""
+    from app.services.signal_workflow import SignalProcessingService
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        service = services or SignalProcessingService()
+        processed = await service.process_promoted(session, limit=limit)
+        print(f"processed {len(processed)} promoted signal(s)")
+        for signal in processed:
+            if signal.processing_error_type:
+                print(
+                    f"  #{signal.id} {signal.market_ticker}: FAILED "
+                    f"{signal.processing_error_type}: {signal.processing_error_message}"
+                )
+            else:
+                print(
+                    f"  #{signal.id} {signal.market_ticker}: {signal.signal_status} "
+                    f"packet={signal.refreshed_research_packet_id} "
+                    f"forecast={signal.refreshed_forecast_id}"
+                )
+        return len(processed)
+    finally:
+        if owns_session:
+            session.close()
+
+
+async def signal_report(session=None) -> int:
+    """Print the aggregate signal-workflow report. Returns total signals."""
+    from app.services.signal_workflow import build_signal_report
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        report = build_signal_report(session)
+        print(
+            f"signals: total={report.total} awaiting_processing="
+            f"{report.promoted_awaiting_processing} errors={report.processed_with_errors}"
+        )
+        if report.by_status:
+            print("by status: " + ", ".join(f"{s}={n}" for s, n in sorted(report.by_status.items())))
+        if report.by_type:
+            print("by type: " + ", ".join(f"{t}={n}" for t, n in sorted(report.by_type.items())))
+        for item in report.recent_refreshed:
+            print(
+                f"  refreshed #{item.signal_id} {item.market_ticker} ({item.signal_type}) "
+                f"forecast={item.refreshed_forecast_id} p={item.refreshed_probability:.2f} "
+                f"conf={item.refreshed_confidence:.2f}"
+            )
+        return report.total
+    finally:
+        if owns_session:
+            session.close()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m app.cli",
@@ -924,6 +1045,19 @@ def build_parser() -> argparse.ArgumentParser:
     prune_parser.add_argument("--signal-days", type=int, default=None)
     prune_parser.add_argument("--batch-size", type=int, default=None)
     subparsers.add_parser("db-stats", help="Print database overview and row counts")
+    recent_parser = subparsers.add_parser("signals-recent", help="List recent signals")
+    recent_parser.add_argument("--limit", type=int, default=20)
+    recent_parser.add_argument("--status", type=str, default=None)
+    promote_parser = subparsers.add_parser(
+        "promote-signals", help="Promote top-N new signals by priority"
+    )
+    promote_parser.add_argument("--limit", type=int, default=5)
+    process_parser = subparsers.add_parser(
+        "process-promoted-signals",
+        help="Refresh enrichment/research/forecast for promoted signals",
+    )
+    process_parser.add_argument("--limit", type=int, default=5)
+    subparsers.add_parser("signal-report", help="Aggregate signal-workflow report")
     return parser
 
 
@@ -988,6 +1122,18 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if deleted >= 0 else 1
     if args.command == "db-stats":
         total = asyncio.run(db_stats())
+        return 0 if total >= 0 else 1
+    if args.command == "signals-recent":
+        count = asyncio.run(signals_recent(limit=args.limit, signal_status=args.status))
+        return 0 if count >= 0 else 1
+    if args.command == "promote-signals":
+        count = asyncio.run(promote_signals(limit=args.limit))
+        return 0 if count >= 0 else 1
+    if args.command == "process-promoted-signals":
+        count = asyncio.run(process_promoted_signals(limit=args.limit))
+        return 0 if count >= 0 else 1
+    if args.command == "signal-report":
+        total = asyncio.run(signal_report())
         return 0 if total >= 0 else 1
     return 2
 

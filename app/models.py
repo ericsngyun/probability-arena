@@ -325,7 +325,9 @@ class OpportunitySignal(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     market_ticker: Mapped[str] = mapped_column(String(64), index=True)
     signal_type: Mapped[str] = mapped_column(String(48), index=True)
-    # new|reviewed|dismissed|promoted_to_research
+    # new|reviewed|dismissed|promoted_to_research|research_refreshed|
+    # forecast_refreshed|paper_candidate_pending (a review label only —
+    # no paper trading exists)
     signal_status: Mapped[str] = mapped_column(String(32), default="new", index=True)
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     old_midpoint: Mapped[float | None] = mapped_column(Float)
@@ -338,6 +340,17 @@ class OpportunitySignal(Base):
     reason: Mapped[str] = mapped_column(Text, default="")
     evidence: Mapped[dict | None] = mapped_column(RawJSON)
     raw_payload: Mapped[dict | None] = mapped_column(RawJSON)
+    # Signal workflow (OPS-004): promotion + refresh audit trail
+    promoted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    refreshed_research_packet_id: Mapped[int | None] = mapped_column(
+        ForeignKey("market_research_packets.id")
+    )
+    refreshed_forecast_id: Mapped[int | None] = mapped_column(
+        ForeignKey("market_forecasts.id")
+    )
+    processing_error_type: Mapped[str | None] = mapped_column(String(128))
+    processing_error_message: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

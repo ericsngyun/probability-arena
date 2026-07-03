@@ -270,6 +270,26 @@ def test_0012_creates_and_drops_watcher_tables(tmp_path):
         assert table not in _tables(url)
 
 
+def test_0013_adds_signal_workflow_fields(tmp_path):
+    url = f"sqlite:///{tmp_path}/signal_workflow.db"
+    run_migrations(url)
+
+    columns = _columns(url, "opportunity_signals")
+    assert {
+        "promoted_at",
+        "processed_at",
+        "refreshed_research_packet_id",
+        "refreshed_forecast_id",
+        "processing_error_type",
+        "processing_error_message",
+    } <= columns
+
+    command.downgrade(_config(url), "0012")
+    downgraded = _columns(url, "opportunity_signals")
+    assert "promoted_at" not in downgraded
+    assert "refreshed_forecast_id" not in downgraded
+
+
 def test_migrated_schema_matches_orm_metadata(tmp_path):
     """Every ORM-mapped column must exist in the migrated schema."""
     url = f"sqlite:///{tmp_path}/parity.db"

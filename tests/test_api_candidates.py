@@ -517,6 +517,65 @@ def test_signal_status_update_workflow(client):
     assert test_client.patch("/signals/9999/status", json={"signal_status": "reviewed"}).status_code == 404
 
 
+def test_signal_workflow_api_promote_and_process(client, monkeypatch):
+    test_client, session = client
+    from app.services import enrichment as enrichment_module
+    from tests.test_enrichment import FakeDetailAdapter
+
+    # processing builds its own enrichment service; adapter already patched in
+    # the fixture, but be explicit for this flow
+    monkeypatch.setattr(enrichment_module, "KalshiRestAdapter", FakeDetailAdapter)
+
+    test_client.get("/markets/candidates")  # store GOOD-MKT metadata
+    signal = _seed_signal(session)  # GOOD-MKT, price_move_threshold, new
+
+    # GET /signals/recent
+    recent = test_client.get("/signals/recent").json()
+    assert [s["id"] for s in recent] == [signal.id]
+    assert recent[0]["signal_status"] == "new"
+
+    # POST /signals/{id}/promote
+    promoted = test_client.post(f"/signals/{signal.id}/promote")
+    assert promoted.status_code == 200
+    assert promoted.json()["signal_status"] == "promoted_to_research"
+    assert promoted.json()["promoted_at"] is not None
+    # idempotent
+    assert test_client.post(f"/signals/{signal.id}/promote").status_code == 200
+    assert test_client.post("/signals/9999/promote").status_code == 404
+
+    # dismissed signal -> 409
+    dismissed = _seed_signal(session, signal_status="dismissed", market_ticker="OTHER-MKT")
+    assert test_client.post(f"/signals/{dismissed.id}/promote").status_code == 409
+
+    # POST /signals/process-promoted
+    processed = test_client.post("/signals/process-promoted?limit=5")
+    assert processed.status_code == 200
+    body = processed.json()
+    assert len(body) == 1
+    assert body[0]["signal_status"] == "forecast_refreshed"
+    assert body[0]["refreshed_research_packet_id"] is not None
+    assert body[0]["refreshed_forecast_id"] is not None
+    assert body[0]["processing_error_type"] is None
+
+    # GET /signals/report
+    report = test_client.get("/signals/report").json()
+    assert report["total"] == 2
+    assert report["by_status"]["forecast_refreshed"] == 1
+    assert report["promoted_awaiting_processing"] == 0
+    assert len(report["recent_refreshed"]) == 1
+    assert report["recent_refreshed"][0]["market_ticker"] == "GOOD-MKT"
+
+
+def test_signal_status_patch_accepts_new_workflow_statuses(client):
+    test_client, session = client
+    signal = _seed_signal(session)
+    response = test_client.patch(
+        f"/signals/{signal.id}/status", json={"signal_status": "paper_candidate_pending"}
+    )
+    assert response.status_code == 200
+    assert response.json()["signal_status"] == "paper_candidate_pending"
+
+
 def test_scan_persists_eligibility_assessments_linked_to_run(client):
     test_client, session = client
     body = test_client.get("/markets/candidates").json()
