@@ -2,6 +2,7 @@
 
 Date: 2026-07-03 (UTC) · Status: **deployed, timer enabled and scheduled**
 Companion: `DEPLOYMENT_AUDIT_EVO_X2.md` (Phase 1 audit and path rationale)
+**Updated 2026-07-03: OPS-003 deployed — see "OPS-003 update" section at the end.**
 
 ## Deployment summary
 
@@ -59,3 +60,30 @@ git pull --ff-only
 .venv/bin/pip install -q -r requirements-dev.txt   # if deps changed
 .venv/bin/python -m app.cli run-baseline --dry-run # migrations + audit sanity
 ```
+
+---
+
+## OPS-003 update (2026-07-03): watcher + retention live
+
+Deployed `27a4501` (OPS-002 watcher + OPS-003 retention) following the README sequence: pull → deps → migrations via dry-run (now at Alembic **`0012`**) → two manual `watch-once` passes (36 candidates, clean) → `db-stats` sanity → **retention timer installed first** → `ENABLE_REALTIME_WATCHER=true` appended to `.env` (key predated OPS-002, so it was added rather than edited) → watcher service enabled.
+
+| Unit | State | Schedule |
+|---|---|---|
+| `probability-arena-baseline.timer` | active/enabled (unchanged) | every 4 h |
+| `probability-arena-retention.timer` | active/enabled (**new**) | daily (defaults: ticks 7 d, watcher runs 30 d, pipeline 90 d, signals kept forever) |
+| `probability-arena-watcher.service` | active/enabled (**new**) | continuous 60 s loop over the latest scan's eligible candidates |
+
+First-minutes verification: 11 watcher runs, 396 ticks, and **6 real signals** (3 `price_move_threshold`, 3 `spread_tightened`) from live MLB/WNBA markets — e.g. `KXMLBTOTAL-26JUL021915STLATL-17` midpoint 0.10 → 0.245. Retention dry-run on the live DB counted 0 (nothing old enough yet), as expected.
+
+**Fix applied during deployment:** the long-running watcher's `print()` summaries were block-buffered under systemd (journal showed only stderr logging; DB rows proved the loop was healthy). Added `Environment=PYTHONUNBUFFERED=1` to the watcher unit (repo + installed copy); per-pass summaries now stream to journald.
+
+Watcher ops:
+```bash
+systemctl --user status probability-arena-watcher.service
+journalctl --user -u probability-arena-watcher.service -n 50 --no-pager
+systemctl --user disable --now probability-arena-watcher.service   # stop the loop
+systemctl --user disable --now probability-arena-retention.timer   # stop daily pruning
+cd ~/projects/probability-arena && .venv/bin/python -m app.cli db-stats
+```
+
+Still read-only end to end: signals are informational; no EV, trading, orders, wallets, sizing, or execution surface exists.

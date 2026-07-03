@@ -20,6 +20,8 @@ After=network-online.target
 Type=simple
 WorkingDirectory=%h/projects/probability-arena
 EnvironmentFile=%h/projects/probability-arena/.env
+# Long-running process: unbuffered stdout so per-pass summaries reach journald
+Environment=PYTHONUNBUFFERED=1
 ExecStart=%h/projects/probability-arena/.venv/bin/python -m app.cli watch-loop
 Restart=on-failure
 RestartSec=30
