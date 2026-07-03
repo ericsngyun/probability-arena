@@ -2,7 +2,8 @@
 
 Date: 2026-07-03 (UTC) · Status: **deployed, timer enabled and scheduled**
 Companion: `DEPLOYMENT_AUDIT_EVO_X2.md` (Phase 1 audit and path rationale)
-**Updated 2026-07-03: OPS-003 deployed — see "OPS-003 update" section at the end.**
+**Updated 2026-07-03: OPS-003 deployed — see "OPS-003 update" section.**
+**Updated 2026-07-03 (later): OPS-005 + baseball canary rollout — see final section.**
 
 ## Deployment summary
 
@@ -87,3 +88,53 @@ cd ~/projects/probability-arena && .venv/bin/python -m app.cli db-stats
 ```
 
 Still read-only end to end: signals are informational; no EV, trading, orders, wallets, sizing, or execution surface exists.
+
+---
+
+## OPS-005 + baseball canary rollout (2026-07-03, ~04:20 UTC)
+
+Deployed **`eeb799d` → `c35e704`** (OPS-004 signal workflow, MVP-004E baseball external research, MVP-004F evidence-aware baseball forecaster, OPS-005 canon/agent-context). Alembic **`0012` → `0013`** via `run-baseline --dry-run`. `agent-context` verified on-host (phase, redacted SQLite URL, flags, boundaries, doc paths; no secrets printed).
+
+**Flags before → after** (one-flag-discipline, appended to `.env` which predates these keys):
+
+| Flag | Before | After |
+|---|---|---|
+| `ENABLE_BASEBALL_EXTERNAL_RESEARCH` | absent (false) | **true** |
+| `ENABLE_BASEBALL_EVIDENCE_FORECASTING` | absent (false) | **true** |
+| `ENABLE_EXTERNAL_RESEARCH` / `ENABLE_LLM_FORECASTING` / `ENABLE_LLM_RESOLUTION` | false | false (unchanged — **no global LLM/external research**) |
+| `ENABLE_REALTIME_WATCHER` | true | true |
+
+**Verification sequence and results**
+
+- Pre-rollout data intact: 392 outcomes, 48 forecasts / 57 scores (**9 resolved — template baseline Brier 0.1471, log-loss 0.4465**), 286 signals, 7.7k ticks, 38 MiB SQLite. All three units active; watcher journal clean.
+- Default-mode control (flags false): promoted+processed signal #284 → `research=template/template_only completeness=0.65`, forecaster `template_baseline`. Correct.
+- Canary mode: promoted 3 MLB total signals (SD@LAD, live at 6–10 through the middle 6th); **all 3 produced `baseball-external` source-backed packets at completeness 1.00 (0 fallbacks)** with official MLB Stats API provenance (url/title/credibility/fetched_at persisted), and **all 3 forecasts used `baseball_evidence` v1** with tags `[sports_baseball, source_backed, baseball_evidence_v1, market_type_total, early_game, live_game_state, evidence_adjusted]`. Coherent ladder: line 18 p 0.70→0.7773, line 19 p 0.59→0.6471, line 20 p 0.495→0.5238 (evidence estimates 0.84/0.69/0.55), confidence 0.60 (< 0.70 cap).
+- Post-rollout: watcher restarted onto new code + env, polling cleanly (0 errors); baseline/retention timers active; canary flags visible in `agent-context`; `forecasts by forecaster: baseball_evidence=3, template_baseline=49`.
+- Safety grep (incl. swap/Jupiter/wallet/EV/paper/order terms): no implementation surface. Only nuanced hit: `app/services/ws_snapshots.py` — the dormant MVP-001 read-only WebSocket *market-data* client, which signs channel subscriptions with a Kalshi API key (data-feed auth, not wallet/custody); no key configured on this host, service disabled.
+
+**Caveats**
+
+1. EVO-X2 cannot `git push` (anonymous HTTPS clone); this report is committed/pushed from the dev machine and pulled on the host.
+2. The processed SDLAD signals were slightly stale (game had progressed since signal creation) — expected; evidence reflects packet-creation time and forecasts state that.
+3. `market_price_ticks` now ~7.9k rows; the daily retention timer (first firing tonight) bounds growth at the 7-day window.
+4. Calibration cohorts: `baseball_evidence` forecasts now accumulate alongside `template_baseline`; comparisons need those markets to settle first.
+
+**Rollback (baseball canary only)**
+
+```bash
+cd ~/projects/probability-arena
+sed -i 's/^ENABLE_BASEBALL_EXTERNAL_RESEARCH=.*/ENABLE_BASEBALL_EXTERNAL_RESEARCH=false/' .env
+sed -i 's/^ENABLE_BASEBALL_EVIDENCE_FORECASTING=.*/ENABLE_BASEBALL_EVIDENCE_FORECASTING=false/' .env
+systemctl --user restart probability-arena-watcher.service
+systemctl --user status probability-arena-watcher.service
+```
+
+**Log inspection**
+
+```bash
+journalctl --user -u probability-arena-watcher.service   -n 200 --no-pager
+journalctl --user -u probability-arena-baseline.service  -n 100 --no-pager
+journalctl --user -u probability-arena-retention.service -n 50  --no-pager
+cd ~/projects/probability-arena && .venv/bin/python -m app.cli research-canary-report
+cd ~/projects/probability-arena && .venv/bin/python -m app.cli calibration-report
+```
