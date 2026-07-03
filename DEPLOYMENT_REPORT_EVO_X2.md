@@ -3,7 +3,8 @@
 Date: 2026-07-03 (UTC) · Status: **deployed, timer enabled and scheduled**
 Companion: `DEPLOYMENT_AUDIT_EVO_X2.md` (Phase 1 audit and path rationale)
 **Updated 2026-07-03: OPS-003 deployed — see "OPS-003 update" section.**
-**Updated 2026-07-03 (later): OPS-005 + baseball canary rollout — see final section.**
+**Updated 2026-07-03 (later): OPS-005 + baseball canary rollout — see below.**
+**Updated 2026-07-03 (later still): MVP-004G champion/challenger deployed — see final section.**
 
 ## Deployment summary
 
@@ -138,3 +139,25 @@ journalctl --user -u probability-arena-retention.service -n 50  --no-pager
 cd ~/projects/probability-arena && .venv/bin/python -m app.cli research-canary-report
 cd ~/projects/probability-arena && .venv/bin/python -m app.cli calibration-report
 ```
+
+---
+
+## MVP-004G champion/challenger deployed (2026-07-03, ~04:50 UTC)
+
+Deployed **`71dab1d` → `918b9de`** (no migration required; Alembic stays at `0013`). `agent-context` confirms the new commit; flags unchanged (baseball canaries **true**, all global LLM/external flags **false**).
+
+**Verification on the live DB**
+
+- Ran the standard sweep first: `sync-outcomes --limit 60` (18 settled) → `score-forecasts` (17 newly scored, 4 pending, 31 skipped).
+- `champion-challenger-report --domain sports_baseball`: **baseline n=17 scored** (Brier 0.0518, log-loss 0.2208 — many easy settlements landed this pass), **challenger n=0 scored** (coverage 3, all `pending_outcome` — the SD@LAD canary markets are for the in-progress July-2 22:10 ET game and settle within hours). Paired section correctly reports "no same-market pairs yet"; the insufficient-sample warning is displayed prominently.
+- `--paired-only` variant: cleanly reports n=0/n=0 with the warning — no crash, no false signal, exactly the honest low-pair behavior required.
+- Optional canary refresh: promoted + processed 2 fresh MLB total signals → 2 more source-backed packets (completeness 1.00) and `baseball_evidence` forecasts. Canary totals: **5 baseball_evidence forecasts, 5/5 source-backed packets, 0 fallbacks**; `forecasts by forecaster: baseball_evidence=5, template_baseline=49`.
+- Services: baseline timer active (next fire 08:03 UTC), watcher active (run 249, zero errors in last 100 lines), retention timer active (first firing tonight 00:07 UTC Jul 4). DB 39.5 MiB, ticks ~8.5k (bounded by retention window).
+
+**Caveats**
+
+1. Challenger scored n is still 0 — its markets simply haven't settled; the 08:00 UTC baseline run will sync outcomes and score them, which should create the **first paired samples** (both forecasters have scored the same SDLAD tickers).
+2. Baseline's Brier 0.0518 on n=17 reflects easy settlements (heavily-favored outcomes); expect it to drift toward the earlier ~0.15 as harder markets resolve. Do not compare across different resolution sets — that is exactly what the paired mode is for.
+3. Retention has not yet had its first firing; glance at its journal after 00:07 UTC Jul 4.
+
+**Next recommended step:** no code work — read `champion-challenger-report --domain sports_baseball --paired-only` daily (or after each baseline run). MVP-005A's gate opens only on negative paired deltas at ≥ `early_signal` scale.
