@@ -234,6 +234,83 @@ class ForecastScoreOut(ForecastScore):
     created_at: datetime
 
 
+class ComparisonMetric(BaseModel):
+    """Scored-forecast metrics for one forecaster side within one slice."""
+
+    count_scored: int = 0
+    mean_brier: float | None = None
+    mean_log_loss: float | None = None
+    mean_absolute_error: float | None = None
+
+
+class ForecasterSideSummary(BaseModel):
+    forecaster: str
+    scored: ComparisonMetric
+    coverage: int = 0  # latest-scored rows considered, any status
+    pending: int = 0
+    unscorable: int = 0
+
+
+class ForecasterPairComparison(BaseModel):
+    """Same-market pairing: baseline vs challenger scored against the SAME
+    ticker and outcome. Stronger evidence than unpaired aggregates."""
+
+    pair_count: int = 0
+    wins: int = 0  # challenger had strictly lower Brier
+    losses: int = 0
+    ties: int = 0
+    win_rate_by_market: float | None = None
+    mean_delta_brier: float | None = None  # challenger - baseline; < 0 favors challenger
+    mean_delta_log_loss: float | None = None
+    mean_delta_absolute_error: float | None = None
+    sample_label: str = "insufficient_sample"
+
+
+class ForecasterCohortComparison(BaseModel):
+    """Unpaired side-by-side within one cohort (market type, signal type,
+    confidence bucket, ...). Less reliable than paired comparison."""
+
+    cohort: str
+    baseline: ComparisonMetric
+    challenger: ComparisonMetric
+    delta_brier: float | None = None  # challenger - baseline; < 0 favors challenger
+    delta_log_loss: float | None = None
+    delta_absolute_error: float | None = None
+    sample_label: str = "insufficient_sample"
+    paired: bool = False
+
+
+class ForecasterComparisonSummary(BaseModel):
+    """Champion/challenger comparison. Read-only measurement — carries no EV
+    and no trade semantics; exists to gate whether a challenger forecaster
+    demonstrably beats the market-anchored baseline."""
+
+    baseline_forecaster: str
+    challenger_forecaster: str
+    filters: dict = {}
+    comparison_basis: Literal["paired", "unpaired"] = "unpaired"
+    baseline: ForecasterSideSummary
+    challenger: ForecasterSideSummary
+    delta_brier: float | None = None  # challenger - baseline; < 0 favors challenger
+    delta_log_loss: float | None = None
+    delta_absolute_error: float | None = None
+    paired: ForecasterPairComparison | None = None
+    sample_label: str = "insufficient_sample"
+    warning: str | None = None
+    interpretation: str = (
+        "delta_brier < 0 and delta_log_loss < 0 favor the challenger; paired "
+        "comparisons are stronger than unpaired; do not infer edge below a "
+        "useful sample size."
+    )
+    by_market_type: list[ForecasterCohortComparison] = []
+    by_signal_type: list[ForecasterCohortComparison] = []
+    by_confidence_bucket: list[ForecasterCohortComparison] = []
+    by_evidence_depth: list[ForecasterCohortComparison] = []
+    by_forecast_risk: list[ForecasterCohortComparison] = []
+    by_domain: list[ForecasterCohortComparison] = []
+    by_game_stage: list[ForecasterCohortComparison] = []
+
+
 class CohortStats(BaseModel):
     count: int
     mean_brier: float | None = None

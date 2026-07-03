@@ -44,8 +44,10 @@ EXPECTED_SERVICES_EVO_X2 = (
 )
 
 NEXT_MILESTONES = (
-    "MVP-004G champion/challenger forecaster comparison (calibration-gated)",
-    "MVP-005A EV precheck (design + safety review only; requires calibration evidence)",
+    "Accumulate resolved outcomes; read champion-challenger-report until the "
+    "sample supports a verdict (MVP-004G shipped the comparison layer)",
+    "MVP-005A EV precheck (design + safety review only; requires paired "
+    "champion/challenger evidence of edge)",
     "MVP-005B paper simulator (requires MVP-005A acceptance)",
     "CRYPTO-001 read-only crypto scout (separate track, read-only)",
 )

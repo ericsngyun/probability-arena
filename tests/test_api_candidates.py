@@ -576,6 +576,39 @@ def test_signal_status_patch_accepts_new_workflow_statuses(client):
     assert response.json()["signal_status"] == "paper_candidate_pending"
 
 
+def test_champion_challenger_endpoint(client):
+    test_client, session = client
+    from tests.test_champion_challenger import seed_pair
+
+    seed_pair(session, "CC-API-1", base_brier=0.30, chal_brier=0.10)
+
+    body = test_client.get("/calibration/champion-challenger").json()
+    assert body["baseline_forecaster"] == "template_baseline"
+    assert body["challenger_forecaster"] == "baseball_evidence_v1"
+    assert body["comparison_basis"] == "unpaired"
+    assert body["baseline"]["scored"]["count_scored"] == 1
+    assert body["challenger"]["scored"]["count_scored"] == 1
+    assert body["delta_brier"] == pytest.approx(-0.20)
+    assert body["paired"]["pair_count"] == 1
+    assert body["sample_label"] == "insufficient_sample"
+    assert "do NOT infer edge" in body["warning"]
+    assert body["by_market_type"]
+
+    # filters
+    filtered = test_client.get(
+        "/calibration/champion-challenger?domain=sports_tennis"
+    ).json()
+    assert filtered["challenger"]["scored"]["count_scored"] == 0
+    paired_only = test_client.get(
+        "/calibration/champion-challenger?paired_only=true"
+    ).json()
+    assert paired_only["comparison_basis"] == "paired"
+    custom = test_client.get(
+        "/calibration/champion-challenger?challenger_forecaster=baseball_evidence"
+    ).json()
+    assert custom["challenger"]["scored"]["count_scored"] == 1  # bare-name match
+
+
 def test_scan_persists_eligibility_assessments_linked_to_run(client):
     test_client, session = client
     body = test_client.get("/markets/candidates").json()

@@ -267,6 +267,25 @@ cd ~/projects/probability-arena && git pull --ff-only
 
 No EV calculation, no trade recommendations, no paper trading, no sizing, no orders, no wallets, no execution — forecasts remain auditable reasoning artifacts that calibration will judge.
 
+## Champion/challenger comparison
+
+**Why this exists:** per ADR-004, no EV or paper-trading work may even be designed until a challenger forecaster demonstrably beats the market-anchored baseline. This layer is that gate, made concrete:
+
+```bash
+python -m app.cli champion-challenger-report --domain sports_baseball
+# options: --baseline template_baseline --challenger baseball_evidence_v1 --paired-only --min-count 30
+```
+
+`GET /calibration/champion-challenger` serves the same comparison (filters: forecasters, `domain`, `market_type`, `signal_type`, `min/max_created_at`, `paired_only`).
+
+**Method:** the latest score per forecast, then the latest *scored* forecast per (forecaster, ticker) as that side's representative. **Paired** comparison (same ticker, same outcome — per-market win rate and mean deltas) is the stronger evidence; **unpaired** aggregates and all cohort tables (market type, signal type, confidence bucket, evidence depth, risk, domain, game stage) are labeled as less reliable. Comparisons are computed on demand and deliberately **not persisted** — they are deterministic functions of the append-only `forecast_scores`/`market_forecasts` tables, so a stored copy would only be a cache that can drift.
+
+**Interpretation:**
+- `delta_brier < 0` and `delta_log_loss < 0` favor the challenger (deltas are challenger − baseline).
+- Paired comparisons beat unpaired; cohort tables are always unpaired.
+- Sample-size labels gate everything: `insufficient_sample` (n<30) → the report attaches an explicit "do NOT infer edge" warning; `early_signal` (30–99); `useful_sample` (100–299); `stronger_sample` (≥300).
+- A challenger that only *sounds* smarter shows up here as delta ≥ 0 — the whole point.
+
 ## Retention & database stats
 
 **Tick growth is the reason retention exists:** at `WATCHER_MARKET_LIMIT=100` and a 60 s interval, the watcher writes ~100 tick rows/minute (~144 k/day) while it runs. Retention prunes **operational tables only**:

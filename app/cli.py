@@ -20,6 +20,7 @@ Usage:
     python -m app.cli process-promoted-signals --limit 5
     python -m app.cli signal-report
     python -m app.cli research-canary-report
+    python -m app.cli champion-challenger-report
 
 Read-only: `scan` fetches public Kalshi market data, ranks it, and persists
 snapshots; `enrich-details` fetches detail/event/series metadata for top
@@ -505,6 +506,8 @@ async def calibration_report(session=None) -> int:
                     f"  {label}={name:<20} n={stats.count:<4} brier={stats.mean_brier} "
                     f"log_loss={stats.mean_log_loss} abs_error={stats.mean_absolute_error}"
                 )
+        if len(summary.by_forecaster) > 1:
+            print("hint: run `champion-challenger-report` for head-to-head forecaster comparison")
         return summary.total_scores
     finally:
         if owns_session:
@@ -1053,6 +1056,95 @@ async def agent_context() -> int:
     return 0
 
 
+async def champion_challenger_report(
+    baseline: str = "template_baseline",
+    challenger: str = "baseball_evidence_v1",
+    domain: str | None = None,
+    paired_only: bool = False,
+    min_count: int = 30,
+    session=None,
+) -> int:
+    """Print the champion/challenger comparison. Returns the smaller side's
+    scored count (the effective sample size)."""
+    from app.services.champion_challenger import ChampionChallengerService
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        summary = ChampionChallengerService().compare(
+            session,
+            baseline=baseline,
+            challenger=challenger,
+            domain=domain,
+            paired_only=paired_only,
+            min_count=min_count,
+        )
+
+        def metric_line(side):
+            m = side.scored
+            return (
+                f"n={m.count_scored:<4} brier={m.mean_brier} log_loss={m.mean_log_loss} "
+                f"abs_err={m.mean_absolute_error} (coverage={side.coverage}, "
+                f"pending={side.pending}, unscorable={side.unscorable})"
+            )
+
+        print(
+            f"champion/challenger: {summary.baseline_forecaster} vs "
+            f"{summary.challenger_forecaster} [{summary.comparison_basis}] "
+            f"sample={summary.sample_label}"
+        )
+        if summary.filters:
+            print(f"filters: {summary.filters}")
+        print(f"  baseline   {metric_line(summary.baseline)}")
+        print(f"  challenger {metric_line(summary.challenger)}")
+        print(
+            f"  deltas (challenger-baseline; <0 favors challenger): "
+            f"brier={summary.delta_brier} log_loss={summary.delta_log_loss} "
+            f"abs_err={summary.delta_absolute_error}"
+        )
+        if summary.paired:
+            p = summary.paired
+            print(
+                f"  PAIRED (same market+outcome): pairs={p.pair_count} "
+                f"wins={p.wins} losses={p.losses} ties={p.ties} "
+                f"win_rate={p.win_rate_by_market} "
+                f"d_brier={p.mean_delta_brier} d_log_loss={p.mean_delta_log_loss} "
+                f"[{p.sample_label}]"
+            )
+        else:
+            print("  PAIRED: no same-market pairs yet — unpaired aggregates only (less reliable)")
+        if summary.warning:
+            print(f"  !! WARNING: {summary.warning}")
+
+        for title, cohorts in (
+            ("by market_type", summary.by_market_type),
+            ("by signal_type", summary.by_signal_type),
+            ("by confidence bucket", summary.by_confidence_bucket),
+            ("by game stage", summary.by_game_stage),
+        ):
+            if not cohorts:
+                continue
+            print(f"  {title} (unpaired):")
+            for row in cohorts:
+                print(
+                    f"    {row.cohort:<28} base n={row.baseline.count_scored:<3} "
+                    f"brier={row.baseline.mean_brier}  chal n={row.challenger.count_scored:<3} "
+                    f"brier={row.challenger.mean_brier}  d_brier={row.delta_brier} "
+                    f"[{row.sample_label}]"
+                )
+        print(f"  note: {summary.interpretation}")
+        return min(
+            summary.baseline.scored.count_scored, summary.challenger.scored.count_scored
+        )
+    finally:
+        if owns_session:
+            session.close()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m app.cli",
@@ -1173,6 +1265,15 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         "agent-context", help="Print the project canon for coding/ops agents"
     )
+    cc_parser = subparsers.add_parser(
+        "champion-challenger-report",
+        help="Compare a challenger forecaster against the baseline on resolved markets",
+    )
+    cc_parser.add_argument("--baseline", type=str, default="template_baseline")
+    cc_parser.add_argument("--challenger", type=str, default="baseball_evidence_v1")
+    cc_parser.add_argument("--domain", type=str, default=None)
+    cc_parser.add_argument("--paired-only", action="store_true")
+    cc_parser.add_argument("--min-count", type=int, default=30)
     return parser
 
 
@@ -1255,6 +1356,17 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if total >= 0 else 1
     if args.command == "agent-context":
         return asyncio.run(agent_context())
+    if args.command == "champion-challenger-report":
+        count = asyncio.run(
+            champion_challenger_report(
+                baseline=args.baseline,
+                challenger=args.challenger,
+                domain=args.domain,
+                paired_only=args.paired_only,
+                min_count=args.min_count,
+            )
+        )
+        return 0 if count >= 0 else 1
     return 2
 
 

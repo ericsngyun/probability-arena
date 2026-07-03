@@ -19,18 +19,17 @@
 | OPS-004 | `f9fda96` | Signal promotion + signal-triggered intelligence refresh |
 | MVP-004E | `9b46911` | Baseball external research canary (MLB Stats API, source-backed packets) |
 | MVP-004F | `20d4fda` | Evidence-aware baseball forecaster (capped non-midpoint forecasts) |
-| OPS-005 | (this) | Project canon + agent operating framework |
+| OPS-005 | `c35e704` | Project canon + agent operating framework; deployed to EVO-X2 with baseball canaries enabled (`71dab1d`) |
+| MVP-004G | (this) | Champion/challenger comparison (paired + cohort, sample-size gated) |
 
 ## Immediate next steps
 
-1. Deploy OPS-004 → MVP-004F to EVO-X2 (host is on `eeb799d`; follow `docs/EVO_X2_RUNBOOK.md`).
-2. Roll out the two baseball canary flags per the documented sequence; let live games flow through promote → process.
-3. Accumulate resolved outcomes; watch `calibration-report` `by_forecaster` cohorts (`template_baseline` vs `baseball_evidence`).
+1. Deploy MVP-004G to EVO-X2; keep both baseball canaries running on live games.
+2. Accumulate resolved outcomes; read `champion-challenger-report --domain sports_baseball` weekly — the sample-size label must reach at least `early_signal`/`useful_sample` with negative paired deltas before MVP-005A is considered.
 
 ## Gated future steps (in order; each requires explicit acceptance)
 
-- **MVP-004G — champion/challenger**: systematic side-by-side forecaster comparison on identical inputs; promotion criteria defined by calibration, not vibes.
-- **MVP-005A — EV precheck**: *design + safety review only.* Requires calibration evidence that a challenger beats the market baseline over a meaningful resolved sample. No trading surface.
+- **MVP-005A — EV precheck**: *design + safety review only.* Requires champion/challenger evidence (paired, adequate sample) that a challenger beats the market baseline. No trading surface.
 - **MVP-005B — paper simulator**: gated on MVP-005A acceptance. Simulation only; still no orders.
 - **CRYPTO-001 — read-only crypto scout**: separate track; same read-only doctrine as the Kalshi scanner.
 - **Wallet milestones**: later only, behind dedicated custody/security review — see `docs/SAFETY_BOUNDARIES.md` and ADR-002.
