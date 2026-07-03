@@ -4,6 +4,10 @@
 
 Scans active Kalshi markets over the public REST API, ranks them on tradability signals (spread, liquidity, volume, time to expiration, resolution clarity), and stores time-series snapshots in Postgres. Optionally maintains live orderbook snapshots over WebSocket when API credentials are configured.
 
+## For coding agents
+
+Start with **[`AGENTS.md`](AGENTS.md)** and run `python -m app.cli agent-context` — together they give the project phase, architecture canon, feature-flag state, allowed/forbidden capabilities, and the testing/deployment policies. The full canon lives under [`docs/`](docs/) (PROJECT_CANON, SAFETY_BOUNDARIES, CAPABILITY_MATRIX, ROADMAP, EVO_X2_RUNBOOK, FEATURE_FLAGS, TESTING_POLICY, ADRs).
+
 ## Safety notes
 
 - **Read-only by design. No order placement exists.** There is no trading, betting, order placement, wallet, execution, portfolio-sizing, or paper-trading code anywhere in this repo — the REST adapter only issues GETs (market list, market/event/series detail), the WebSocket client only sends channel subscriptions, and the CLI commands (`scan`, `enrich-details`, `assess-resolution`, `collect-research`) only read market data and write to our own database.

@@ -990,6 +990,69 @@ async def research_canary_report(session=None) -> int:
             session.close()
 
 
+async def agent_context() -> int:
+    """Print the project canon for coding/ops agents: phase, state, flags,
+    allowed/forbidden capabilities, and where the docs live. Read-only —
+    runs no migrations and mutates nothing. Returns 0."""
+    import subprocess
+    from pathlib import Path
+
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.engine.url import make_url
+
+    from app import canon
+    from app.config import get_settings
+
+    repo_root = Path(__file__).resolve().parents[1]
+    settings = get_settings()
+
+    print(f"project: {canon.PROJECT_NAME}")
+    print(f"phase:   {canon.CURRENT_PHASE}")
+
+    try:
+        commit = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=repo_root, capture_output=True, text=True, timeout=5,
+        ).stdout.strip()
+        print(f"commit:  {commit or 'unavailable'}")
+    except Exception:
+        print("commit:  unavailable")
+
+    url = make_url(settings.database_url)
+    print(f"database: {url.render_as_string(hide_password=True)}")
+    try:
+        connect_args = {} if url.get_backend_name() == "sqlite" else {"connect_timeout": 3}
+        engine = create_engine(settings.database_url, connect_args=connect_args)
+        with engine.connect() as conn:
+            revision = conn.execute(text("select version_num from alembic_version")).scalar()
+        engine.dispose()
+        print(f"alembic revision: {revision}")
+    except Exception:
+        print("alembic revision: unavailable (database not initialized or unreachable)")
+
+    print("feature flags:")
+    for flag in canon.KEY_FEATURE_FLAGS:
+        print(f"  {flag.upper():<42} {getattr(settings, flag, 'n/a')}")
+
+    print("allowed capabilities:")
+    for capability in canon.ALLOWED_CAPABILITIES:
+        print(f"  + {capability}")
+    print("forbidden capabilities (see docs/SAFETY_BOUNDARIES.md):")
+    for capability in canon.FORBIDDEN_CAPABILITIES:
+        print(f"  - {capability}")
+
+    print("expected services (EVO-X2):")
+    for service in canon.EXPECTED_SERVICES_EVO_X2:
+        print(f"  * {service}")
+    print("safe next milestones:")
+    for milestone in canon.NEXT_MILESTONES:
+        print(f"  > {milestone}")
+    print("canon docs (read AGENTS.md first):")
+    for doc in canon.CANON_DOCS:
+        print(f"  {repo_root / doc}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m app.cli",
@@ -1107,6 +1170,9 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         "research-canary-report", help="External-research canary metrics by collector"
     )
+    subparsers.add_parser(
+        "agent-context", help="Print the project canon for coding/ops agents"
+    )
     return parser
 
 
@@ -1187,6 +1253,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "research-canary-report":
         total = asyncio.run(research_canary_report())
         return 0 if total >= 0 else 1
+    if args.command == "agent-context":
+        return asyncio.run(agent_context())
     return 2
 
 
