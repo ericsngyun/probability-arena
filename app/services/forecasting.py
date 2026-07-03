@@ -524,7 +524,31 @@ def get_forecaster(settings: Settings | None = None):
 class ForecastingService:
     def __init__(self, forecaster=None, settings: Settings | None = None):
         self.settings = settings or get_settings()
+        self._explicit_forecaster = forecaster is not None
         self.forecaster = forecaster or get_forecaster(self.settings)
+
+    def _forecaster_for(self, inp: ForecastInput):
+        """Per-market forecaster selection. An explicitly injected forecaster
+        always wins. The baseball evidence canary
+        (ENABLE_BASEBALL_EVIDENCE_FORECASTING) applies only to
+        sports_baseball inputs with a source-backed, sufficiently complete
+        packet and a researchable resolution; everything else keeps the
+        configured default."""
+        if self._explicit_forecaster:
+            return self.forecaster
+        if (
+            self.settings.enable_baseball_evidence_forecasting
+            and inp.domain == "sports_baseball"
+            and determine_evidence_depth(inp.packet) == EVIDENCE_SOURCE_BACKED
+            and (inp.packet.research_completeness_score or 0.0)
+            >= self.settings.baseball_forecast_min_completeness
+            and inp.resolution is not None
+            and inp.resolution.tradeability == "researchable"
+        ):
+            from app.services.baseball_forecasting import BaseballEvidenceAwareForecaster
+
+            return BaseballEvidenceAwareForecaster(self.settings)
+        return self.forecaster
 
     async def forecast_market(
         self,
@@ -550,7 +574,8 @@ class ForecastingService:
         market_data = _apply_latest_snapshot(session, market, market_data)
 
         inp = ForecastInput(market=market_data, packet=packet, resolution=resolution)
-        forecast = await self.forecaster.forecast(inp)
+        forecaster = self._forecaster_for(inp)
+        forecast = await forecaster.forecast(inp)
 
         evidence_depth = determine_evidence_depth(packet)
         critical_missing = is_critical_info_missing(packet, resolution)
@@ -568,10 +593,10 @@ class ForecastingService:
             scanner_run_id=scanner_run_id,
             research_packet_id=packet.id,
             resolution_assessment_id=resolution.id if resolution else None,
-            forecaster_name=self.forecaster.name,
-            forecaster_version=self.forecaster.version,
-            model_name=self.forecaster.model_name,
-            prompt_version=getattr(self.forecaster, "prompt_version", "v1"),
+            forecaster_name=forecaster.name,
+            forecaster_version=forecaster.version,
+            model_name=forecaster.model_name,
+            prompt_version=getattr(forecaster, "prompt_version", "v1"),
             estimated_probability=forecast.estimated_probability,
             confidence=forecast.confidence,
             evidence_depth=forecast.evidence_depth,

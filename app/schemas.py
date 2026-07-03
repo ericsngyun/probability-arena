@@ -341,6 +341,9 @@ class ResearchCanaryReport(BaseModel):
     # external collector ran but produced template-only content (fetch failed,
     # game not found, ticker unparseable, ...)
     external_fallbacks: int = 0
+    # forecast counts by forecaster identity (template_baseline vs
+    # baseball_evidence, ...) so calibration cohorts can be compared
+    forecasts_by_forecaster: dict[str, int] = {}
 
 
 class SignalReport(BaseModel):

@@ -44,6 +44,13 @@ class Settings(BaseSettings):
     baseball_research_max_sources: int = 8
     baseball_research_collector_version: str = "v1"
 
+    # Baseball evidence-aware forecasting canary (MVP-004F) — consumes
+    # source-backed MLB packets; no external calls of its own
+    enable_baseball_evidence_forecasting: bool = False
+    baseball_forecaster_version: str = "v1"
+    baseball_forecast_max_confidence: float = 0.70
+    baseball_forecast_min_completeness: float = 0.75
+
     # Retention / pruning (OPS-003) — operational tables only; intelligence
     # and calibration tables are never pruned
     tick_retention_days: int = 7

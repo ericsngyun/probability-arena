@@ -979,6 +979,11 @@ async def research_canary_report(session=None) -> int:
             )
         if report.by_domain:
             print("by domain: " + ", ".join(f"{d}={n}" for d, n in sorted(report.by_domain.items())))
+        if report.forecasts_by_forecaster:
+            print(
+                "forecasts by forecaster: "
+                + ", ".join(f"{f}={n}" for f, n in sorted(report.forecasts_by_forecaster.items()))
+            )
         return report.total_packets
     finally:
         if owns_session:

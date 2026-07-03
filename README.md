@@ -1,6 +1,6 @@
 # Probability Arena
 
-**Kalshi read-only market intelligence** (MVP-004E: measurement loop, baseline runner, real-time watcher, retention, signal workflow, and an external-research canary for baseball).
+**Kalshi read-only market intelligence** (MVP-004F: measurement loop, baseline runner, real-time watcher, retention, signal workflow, baseball external research, and an evidence-aware baseball forecaster).
 
 Scans active Kalshi markets over the public REST API, ranks them on tradability signals (spread, liquidity, volume, time to expiration, resolution clarity), and stores time-series snapshots in Postgres. Optionally maintains live orderbook snapshots over WebSocket when API credentials are configured.
 
@@ -234,6 +234,34 @@ cd ~/projects/probability-arena && git pull --ff-only
 ```
 
 Still read-only end to end: no EV calculation, no trade recommendations, no paper trading, no sizing, no orders, no wallets, no execution.
+
+## Baseball evidence-aware forecaster
+
+The first non-midpoint forecaster — behind its own flag, consuming only persisted packets:
+
+- `ENABLE_BASEBALL_EVIDENCE_FORECASTING=false` (default) — plus `BASEBALL_FORECASTER_VERSION=v1`, `BASEBALL_FORECAST_MAX_CONFIDENCE=0.70`, `BASEBALL_FORECAST_MIN_COMPLETENESS=0.75`.
+
+`ForecastingService` selects `BaseballEvidenceAwareForecaster` only when **all** conditions pass: flag on, domain `sports_baseball`, packet `source_backed`, completeness ≥ 0.75, resolution `researchable`. Everything else — and any explicitly injected forecaster — keeps the template baseline. **It makes no external calls itself**: evidence (score, inning/half/outs, base runners, probable pitchers, lineups, weather) is parsed from the persisted packet's facts and raw payload.
+
+**Model (deterministic v1, fully stated in each forecast's output):** the market midpoint is the prior; recognized market types get an evidence estimate — pace-projected totals (`KXMLBTOTAL`, line parsed from the ticker), current margin vs required margin for spreads (`KXMLBSPREAD`), current margin for game winners (`KXMLBGAME`). The blend weight and slope grow with game progress (late-game evidence moves the needle more than early-game), and the total shift away from the prior is hard-capped at ±0.25. Player props, first-5-innings markets, and anything unrecognized fall back to the template baseline with a `market_type_unknown` tag and a skeptic note. Missing critical facts cap confidence at 0.50 and force high risk.
+
+Every forecast populates bull/bear cases, skeptic notes (including the assumed-line caveat), key assumptions, change triggers, and calibration tags — `baseball_evidence_v1`, `market_type_total|spread|winner|unknown`, `late_game`/`early_game`, `live_game_state`, `evidence_adjusted`/`anchored_to_market_mid` — so `calibration-report` and `research-canary-report` (now with a `forecasts by forecaster` breakdown) can compare `template_baseline` vs `baseball_evidence` cohorts as outcomes settle.
+
+**Safe rollout on EVO-X2:**
+
+```bash
+cd ~/projects/probability-arena && git pull --ff-only
+.venv/bin/python -m app.cli run-baseline --dry-run          # sanity (no new migrations)
+# 1. flags false: process a promoted signal in template mode, verify unchanged
+# 2. set ENABLE_BASEBALL_EXTERNAL_RESEARCH=true in .env
+# 3. set ENABLE_BASEBALL_EVIDENCE_FORECASTING=true in .env
+# 4. process 1-3 promoted baseball signals and inspect:
+.venv/bin/python -m app.cli process-promoted-signals --limit 3
+.venv/bin/python -m app.cli research-canary-report          # forecaster breakdown
+.venv/bin/python -m app.cli signal-report                   # refreshed forecasts + tags
+```
+
+No EV calculation, no trade recommendations, no paper trading, no sizing, no orders, no wallets, no execution — forecasts remain auditable reasoning artifacts that calibration will judge.
 
 ## Retention & database stats
 

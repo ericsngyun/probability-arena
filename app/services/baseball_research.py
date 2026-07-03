@@ -333,6 +333,18 @@ def build_research_canary_report(session: Session) -> ResearchCanaryReport:
         if packet.collector_name.startswith("baseball-external") and depth == "template_only":
             fallbacks += 1
 
+    from sqlalchemy import func
+
+    from app.models import MarketForecastRecord
+
+    forecasts_by_forecaster = dict(
+        session.execute(
+            select(MarketForecastRecord.forecaster_name, func.count()).group_by(
+                MarketForecastRecord.forecaster_name
+            )
+        ).all()
+    )
+
     return ResearchCanaryReport(
         total_packets=len(packets),
         by_collector={
@@ -345,4 +357,5 @@ def build_research_canary_report(session: Session) -> ResearchCanaryReport:
         },
         by_domain=by_domain,
         external_fallbacks=fallbacks,
+        forecasts_by_forecaster=forecasts_by_forecaster,
     )
