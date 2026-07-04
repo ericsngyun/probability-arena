@@ -510,3 +510,20 @@ Host commit `ebb560a` (flags-only change). **Flags before → after:** `ENABLE_S
 **Rollback:** `sed -i 's/^ENABLE_SOCCER_EVIDENCE_FORECASTING=.*/ENABLE_SOCCER_EVIDENCE_FORECASTING=false/' ~/projects/probability-arena/.env` — soccer reverts to template-baseline forecasts; nothing else changes.
 
 Safety greps clean (boundary docstrings only). All four services active throughout.
+
+---
+
+## EVAL-001 deployed — first live frontier evaluation (2026-07-04, ~07:50 UTC)
+
+Deployed **`b928a24` → `57e8369`**; migration `0018` applied on first command; `--save-run` persisted eval run #1. No flags (EVAL-001 is always-available read-only evaluation).
+
+**Verdict: `not_ready` — exactly the conservative call the design requires** (0 watchlist rows in 24h; 187 gap measurements, all honestly invalid, invalid_explainable_rate=1.0). The harness refused to inflate anything.
+
+**Real findings from the first report (this is why EVAL-001 exists):**
+1. **Champion/challenger window view:** baseball paired n=36, d_brier −0.0493 (unpaired in-window: baseline 0.165 vs challenger 0.092 Brier). The `soccer_evidence_v1` cohort has begun: paired n=1.
+2. **Microstructure by domain:** two-sided rates — general 98%, baseball 79.6%, soccer 69.7%, tennis 42.8%. Sports books are the hard part; the spread p50 is only 2¢ where books exist.
+3. **Latency:** MarketOps p50 38.3s / p90 42.0s (**under the 60s automation threshold**) / p99 108.5s (the SolanaTracker-attempt cycles). Watcher tick age 22s.
+4. **Signal freshness insight:** signal age at promotion p50 ≈ **5 hours** — the autopilot's 24h promotion window plus per-ticker cooldowns mean it often promotes stale signals, which then produce forecasts for already-moved game states. **Tuning candidate: tighten MARKETOPS_MAX_SIGNAL_AGE_HOURS (e.g. 2–4h) so fresh forecasts chase fresh signals.**
+5. **Crypto insight:** post-risk-signal liquidity change averages **+40%** across 24 samples — liquidity often *returns* after `liquidity_removed` fires (pull/re-add patterns), a CRYPTO-002 threshold-tuning datapoint. Provider error rate 19.3% (GoPlus keyless misses + the SolanaTracker window).
+
+All four services active; journal clean. Tests at EVAL-001: 606 passing; AST safety scan clean across 47 app files (live, part of the report).
