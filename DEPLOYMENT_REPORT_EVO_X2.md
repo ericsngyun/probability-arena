@@ -239,6 +239,7 @@ Host commit `a1d4393` (current main; no code change in this step — flags + tim
 |---|---|---|---|---|---|---|---|---|
 | #3 | timer (first firing) | 409 | 5 | 5 | 35/6 | 100 | 4 | 5 |
 | #4 | manual run-once | 404 | 5 | 5 | 35/3 | 100 | 5 | 6 |
+| #5 | timer (steady-state, fired 02:31:44 as scheduled) | 397 | 5 | 5 | 35/6 | 100 | 5 | 6 |
 
 Journal clean: 0 error/traceback lines across all marketops service runs. Existing units unaffected: baseline timer (next 04:02 UTC), watcher (active, running since 01:17), retention timer (next 00:00 UTC Jul 5) — all active.
 
