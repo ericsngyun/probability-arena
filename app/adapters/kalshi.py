@@ -5,6 +5,7 @@ required for public market data, and this module deliberately contains no
 order-placement capability.
 """
 
+import asyncio
 import logging
 from datetime import datetime
 
@@ -17,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 MARKETS_PATH = "/markets"
 PAGE_SIZE = 200  # Kalshi max per-page limit
+RATE_LIMIT_RETRIES = 3  # bounded 429 retries for targeted series fetches
 
 
 def _parse_timestamp(value) -> datetime | None:
@@ -217,6 +219,69 @@ class KalshiRestAdapter:
                 if not cursor or not markets:
                     break
 
+        return results[:limit]
+
+    async def _get_with_retry(
+        self, client: httpx.AsyncClient, path: str, params: dict
+    ) -> httpx.Response:
+        """GET with bounded, deterministic 429 handling: honor Retry-After
+        (capped) or back off linearly, then give up and raise. All other
+        HTTP errors raise immediately."""
+        last_response: httpx.Response | None = None
+        for attempt in range(RATE_LIMIT_RETRIES + 1):
+            response = await client.get(path, params=params)
+            if response.status_code != 429:
+                response.raise_for_status()
+                return response
+            last_response = response
+            if attempt == RATE_LIMIT_RETRIES:
+                break
+            retry_after = response.headers.get("Retry-After")
+            try:
+                delay = min(10.0, float(retry_after)) if retry_after else 1.0 + attempt
+            except ValueError:
+                delay = 1.0 + attempt
+            logger.warning(
+                "Kalshi rate limit (429) on %s attempt %d/%d; retrying in %.1fs",
+                path, attempt + 1, RATE_LIMIT_RETRIES, delay,
+            )
+            await asyncio.sleep(delay)
+        assert last_response is not None
+        last_response.raise_for_status()
+        return last_response  # pragma: no cover — raise_for_status always raises on 429
+
+    async def fetch_markets_by_series(
+        self,
+        series_ticker: str,
+        max_markets: int | None = None,
+        active_only: bool = True,
+    ) -> list[MarketData]:
+        """Targeted read-only fetch of one series' markets via
+        GET /markets?series_ticker=... (SCANNER-002). Pages with cursors up to
+        max_markets and applies the same MVE filter as the generic scan.
+        Public market data only — this adapter deliberately contains no
+        order/trade capability."""
+        limit = max_markets or get_settings().targeted_market_scan_limit_per_series
+        results: list[MarketData] = []
+        cursor: str | None = None
+        mve_filter = get_settings().kalshi_mve_filter
+        async with httpx.AsyncClient(base_url=self.base_url, timeout=self.timeout) as client:
+            while len(results) < limit:
+                params: dict = {
+                    "series_ticker": series_ticker,
+                    "limit": min(PAGE_SIZE, limit - len(results)),
+                }
+                if active_only:
+                    params["status"] = "open"
+                if mve_filter:
+                    params["mve_filter"] = mve_filter
+                if cursor:
+                    params["cursor"] = cursor
+                response = await self._get_with_retry(client, MARKETS_PATH, params)
+                markets, cursor = parse_markets_response(response.json())
+                results.extend(markets)
+                if not cursor or not markets:
+                    break
         return results[:limit]
 
     async def fetch_markets_by_tickers(self, tickers: list[str]) -> list[MarketData]:

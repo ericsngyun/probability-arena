@@ -123,6 +123,26 @@ are never pruned).
 `BASELINE_SCAN_LIMIT=500`, `BASELINE_CANDIDATE_LIMIT=20`, `BASELINE_FAIL_FAST=false`,
 `BASELINE_SYNC_OUTCOME_LIMIT=200`, `BASELINE_SCORE_LIMIT=1000`.
 
+## Targeted game-level market scans (SCANNER-002/OPS-010 — coverage only, never advice)
+
+| Flag | Default | Gates |
+|---|---|---|
+| `ENABLE_TARGETED_MARKET_SCANS` | **true** | Per-series supplement to the generic scan (same read-only GET /markets, filtered by `series_ticker`); `false` restores the exact pre-SCANNER-002 scan |
+
+Knobs: `TARGETED_MARKET_SERIES=KXWCGAME,KXWCTOTAL,KXWCSPREAD,KXMLBGAME,KXMLBTOTAL,KXMLBSPREAD`
+(comma-separated; unknown series simply return empty), `TARGETED_MARKET_SCAN_LIMIT_PER_SERIES=250`,
+`TARGETED_MARKET_SCAN_ACTIVE_ONLY=true` (status=open), `TARGETED_MARKET_SCAN_DEDUP=true`
+(drop targeted tickers already in the generic page). Per-series failures (incl. bounded-429
+exhaustion) are recorded in scan output and never fail the scan. Targeted markets pass the
+same eligibility gate and ranking as everything else — nothing is forced into candidates.
+
+`WATCHER_SUPPORTED_UNIVERSE_LIMIT=50` bounds the watcher's supported-universe supplement:
+game-level baseball/soccer markets (spread/total/winner/advance) from the latest scan with a
+two-sided quote and an unexpired close, included even at score 0 so live-window volume can be
+observed as it appears. Player props never enter via the supplement. `0` disables it.
+This is scanner/watcher **coverage**: it calculates no EV, recommends no trades, does no paper
+trading, sizes no positions, places no orders, and touches no wallets/keys/swaps/execution.
+
 ## Retention windows
 
 `TICK_RETENTION_DAYS=7`, `WATCHER_RUN_RETENTION_DAYS=30`,

@@ -74,6 +74,17 @@ async def scan(
         f"fetched={run.markets_fetched} eligible={len(result.ranked)} "
         f"rejected={len(result.rejected)} duration_ms={run.duration_ms}"
     )
+    if result.targeted is not None:
+        t = result.targeted
+        by_series = ", ".join(f"{s}={n}" for s, n in sorted(t.by_series.items())) or "none"
+        print(
+            f"targeted scan (SCANNER-002): generic={t.generic_fetched} "
+            f"targeted_fetched={t.targeted_fetched} added_after_dedupe={t.targeted_added}"
+        )
+        print(f"  by series: {by_series}")
+        if t.failed_series:
+            failed = ", ".join(f"{s}({e})" for s, e in sorted(t.failed_series.items()))
+            print(f"  failed series (scan continued): {failed}")
     for position, item in enumerate(result.ranked[:TOP_N_PRINTED], start=1):
         print(f"{position:>3}. {item.score:.4f}  {item.market.ticker:<30} {item.market.title[:60]}")
     if result.rejected:

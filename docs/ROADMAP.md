@@ -31,13 +31,15 @@
 | MVP-005A.1 | `5324046` | Targeted edge-precheck modes: explicit forecast ids, MarketOps-cycle scoping, recent-refreshed-signals; dedupe window; MarketOps stage now strictly cycle-scoped (broad sweeps stay manual-diagnostic) |
 | SOCCER-002 | `2d2cf10` | Soccer evidence-aware forecaster (goal-margin/pace model, red-card + penalty handling, capped ±0.25 shift) — makes soccer forecasts measurable by edge-precheck |
 | EVAL-001 | `57e8369` | Frontier evaluation harness: 8 quality sections (signal/forecast/edge/follow-through/microstructure/crypto/latency/safety) + conservative readiness scorecard; evaluation only — readiness labels never authorize live capital |
-| OPS-009 | (this) | Promotion quality: minute-level domain-aware freshness windows + measurement-readiness scoring (market-type/book-quality/source-backed priority; player props deprioritized); promotion stats in run summaries |
+| OPS-009 | `7746ef9` | Promotion quality: minute-level domain-aware freshness windows + measurement-readiness scoring (market-type/book-quality/source-backed priority; player props deprioritized); promotion stats in run summaries |
+| SCANNER-002 / OPS-010 | (this) | Targeted game-level market scan coverage: per-series read-only fetches (`KXWCGAME`/`KXWCTOTAL`/`KXWCSPREAD`/`KXMLBGAME`/`KXMLBTOTAL`/`KXMLBSPREAD`) supplement the generic scan (deduped, partial-failure tolerant); watcher supported-universe supplement (game-level baseball/soccer with two-sided quotes, bounded, never props). Motivated by `docs/VALIDATION_PAR_FRA_2026_07_04.md` |
 
 ## Immediate next steps
 
-1. Roll out SOCCER-002 on EVO-X2 (`ENABLE_SOCCER_EVIDENCE_FORECASTING=true` as its own step) so World Cup windows produce measurable `soccer_evidence` forecasts.
-2. Run targeted `edge-precheck --latest-marketops-run` sessions during prime live windows (World Cup afternoon UTC / MLB evening ET); on sane watchlist behavior, consider `MARKETOPS_INCLUDE_EDGE_PRECHECK=true`.
+1. Roll out SCANNER-002/OPS-010 on EVO-X2 and validate during the next live game-level window (POR–ESP Jul 6 / ARG–EGY Jul 7 / MLB evenings): game-level markets in the scan, watcher ticking them, signals → `soccer_evidence`/`baseball_evidence` forecasts at ≥0.60 confidence → first valid watchlist rows.
+2. Run targeted `edge-precheck --latest-marketops-run` sessions during those windows; on sane watchlist behavior, consider `MARKETOPS_INCLUDE_EDGE_PRECHECK=true`.
 3. Keep accumulating champion/challenger pairs toward `useful_sample` (n≥100) for both `baseball_evidence_v1` and (as data arrives) `soccer_evidence_v1` cohorts.
+4. Consider the remaining CAN–MAR promotion-tuning ideas (harder player-prop deprioritization; KXWCAST/KXWCSOA classification) once game-level supply exists to compare against.
 
 ## Gated future steps (in order; each requires explicit acceptance)
 

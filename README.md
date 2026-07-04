@@ -21,6 +21,7 @@ Start with **[`AGENTS.md`](AGENTS.md)** and run `python -m app.cli agent-context
 - Keep your Kalshi private key **outside the repo** (it is `.gitignore`d by extension, but store it elsewhere, e.g. `~/.kalshi/`). Never commit `.env`.
 - The `resolution_clarity` ranking component is a **placeholder** (constant 0.5). Do not treat scores as trading advice; they measure market microstructure quality, not edge.
 - Respect Kalshi's [API terms and rate limits](https://trading-api.readme.io/). The scanner caps fetches via `SCANNER_MAX_MARKETS` and results are cached in Redis for `CANDIDATES_CACHE_TTL_SECONDS`.
+- **Targeted game-level scans (SCANNER-002/OPS-010)** supplement the generic scan with per-series fetches (`TARGETED_MARKET_SERIES`, e.g. `KXWCGAME`, `KXMLBTOTAL`) so measurable game-level markets aren't crowded out of the first page by props. This is scanner **coverage** only: it calculates no EV, recommends no trades, does no paper trading, sizes no positions, places no orders, and touches no wallets/keys/swaps/execution.
 
 ## Architecture
 
@@ -100,7 +101,7 @@ docker compose run --rm api python -m app.cli scan --limit 100
 python -m app.cli scan --limit 100
 ```
 
-Runs migrations, fetches up to `--limit` open markets, assesses eligibility, ranks the eligible ones, persists a `scanner_runs` audit row (with `source=cli`, `duration_ms`, and error details on failure) plus per-market snapshots and eligibility assessments, then prints the top 20 and a rejection-reason summary.
+Runs migrations, fetches up to `--limit` open markets plus the configured targeted series (SCANNER-002; deduped by ticker, per-series failures reported but never fatal), assesses eligibility, ranks the eligible ones, persists a `scanner_runs` audit row (with `source=cli`, `duration_ms`, and error details on failure) plus per-market snapshots and eligibility assessments, then prints the top 20, targeted-scan counts, and a rejection-reason summary.
 
 ```bash
 python -m app.cli enrich-details --limit 20

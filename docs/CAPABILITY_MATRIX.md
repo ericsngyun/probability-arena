@@ -2,7 +2,7 @@
 
 | Capability | Current status | Allowed? | Required milestone before enabling/extending | Safety notes |
 |---|---|---|---|---|
-| Market scanning | Live (baseline timer, EVO-X2) | ✅ | — | Read-only Kalshi GETs; MVE filter server-side; rate-bounded by limits |
+| Market scanning | Live (baseline timer, EVO-X2); generic first-N + targeted supported game-level series behind `ENABLE_TARGETED_MARKET_SCANS` (SCANNER-002/OPS-010) | ✅ | — | Read-only Kalshi GETs; MVE filter server-side; rate-bounded by limits + bounded 429 retries; coverage only — no EV/advice/trading surface |
 | Signal detection (watcher) | Live (60s loop, EVO-X2) | ✅ | — | Informational signals only; cooldown dedup; retention bounds tick growth |
 | External research | Canaries only: baseball via MLB Stats API behind `ENABLE_BASEBALL_EXTERNAL_RESEARCH`; soccer via provider-gated ESPN API behind `ENABLE_SOCCER_EXTERNAL_RESEARCH` + `SOCCER_RESEARCH_PROVIDER` (all default off/template). General `ENABLE_EXTERNAL_RESEARCH` (LLM+web) exists but off | ✅ behind flags | Per-domain canary review before widening further | Official sources preferred; honest template fallback; provenance persisted |
 | Forecasting | Template baseline default; baseball evidence canary behind `ENABLE_BASEBALL_EVIDENCE_FORECASTING`; LLM forecaster off | ✅ behind flags | Champion/challenger (MVP-004G) before broader rollout | Central confidence caps; capped ±0.25 prior shift; deterministic fallbacks |

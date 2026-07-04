@@ -146,14 +146,17 @@ class PipelineRunner:
         result = await run_scan(
             session, adapter=self.scan_adapter, max_markets=cfg.scan_limit, source="pipeline"
         )
+        summary = {
+            "scanner_run_id": result.run.id,
+            "eligible": len(result.ranked),
+            "rejected": len(result.rejected),
+        }
+        if result.targeted is not None:
+            summary.update(result.targeted.as_summary())
         return StageResult(
             attempted=result.run.markets_fetched,
             succeeded=result.run.markets_fetched,
-            summary={
-                "scanner_run_id": result.run.id,
-                "eligible": len(result.ranked),
-                "rejected": len(result.rejected),
-            },
+            summary=summary,
         )
 
     async def _stage_enrich(self, session: Session, cfg: BaselineConfig) -> StageResult:

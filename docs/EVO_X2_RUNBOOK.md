@@ -121,6 +121,18 @@ cycle-scoped (≤5 forecasts/cycle, the ones it just refreshed; never a
 sweep). All outputs are gaps and labels; nothing here is a trade
 instruction, and no downstream behavior branches on the results.
 
+## Targeted game-level scans (SCANNER-002/OPS-010) rollout
+
+Defaults ship enabled (`ENABLE_TARGETED_MARKET_SCANS=true` — same read-only GETs).
+After `git pull`: run `.venv/bin/python -m app.cli scan --limit 500` manually once and
+inspect the new `targeted scan (SCANNER-002)` output line (generic/targeted/added counts,
+per-series breakdown, failed series). Confirm game-level rows exist
+(`KXWCGAME`/`KXMLBTOTAL`-class tickers in `markets`), then restart the watcher
+(`systemctl --user restart probability-arena-watcher.service`) and check its journal for
+the `Watcher universe: N tickers (...)` composition line — game-level soccer/baseball
+markets should appear even before their volume qualifies them as candidates. Rollback:
+`ENABLE_TARGETED_MARKET_SCANS=false` in `.env` (exact old behavior), restart watcher.
+
 ## Promotion freshness (OPS-009)
 
 Minute-level windows govern promotion (sports 20m / general 60m by default;

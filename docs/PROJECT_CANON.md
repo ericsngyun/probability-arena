@@ -21,16 +21,17 @@ Services (app/services/)  — scanner, eligibility, enrichment, resolution, rese
                             marketops (Autopilot: read-only coordination + alerts),
                             edge_precheck (MVP-005A: gap measurement, never advice),
                             frontier_eval (EVAL-001: desk-wide evaluation + readiness)
-Adapter (app/adapters/kalshi.py) — list/detail/event/series/by-tickers GETs,
-                            legacy + dollars/fp payload shapes, outcome parsing
+Adapter (app/adapters/kalshi.py) — list/detail/event/series/by-tickers/by-series GETs,
+                            legacy + dollars/fp payload shapes, outcome parsing,
+                            bounded 429 retries on targeted series fetches
 DB: SQLAlchemy + Alembic (rev 0018) — SQLite on EVO-X2, Postgres-ready (JSONB variants)
 ```
 
 ## Pipeline stages (baseline runner order)
 
-scan → *(eligibility gate inside scan)* → enrich_details → assess_resolution → collect_research → forecast → sync_outcomes → score_forecasts → calibration_report *(+ optional retention stage)*
+scan *(generic first-N + targeted supported series, deduped — SCANNER-002)* → *(eligibility gate inside scan)* → enrich_details → assess_resolution → collect_research → forecast → sync_outcomes → score_forecasts → calibration_report *(+ optional retention stage)*
 
-Parallel to that: watcher (60s ticks + signals) → promote-signals → process-promoted-signals (fresh enrichment/assessment/packet/forecast per signal).
+Parallel to that: watcher (60s ticks + signals; universe = top-scored candidates of the latest scan **plus a bounded supported-universe supplement** — game-level baseball/soccer markets with two-sided quotes, even at score 0, never props — SCANNER-002) → promote-signals → process-promoted-signals (fresh enrichment/assessment/packet/forecast per signal).
 
 ## Key tables (15 + alembic_version)
 
@@ -63,7 +64,7 @@ See `docs/FEATURE_FLAGS.md`. All model/external flags default **false**; deploye
 
 ## Latest accepted milestones
 
-MVP-001…005A.1, OPS-001…007, SOCCER-001…002, CRYPTO-001…002, and EVAL-001 — full list with commits in `docs/ROADMAP.md`. Tests at OPS-009: 623+ passing, 2 gated live tests skipped by default.
+MVP-001…005A.1, OPS-001…007, OPS-009, SOCCER-001…002, CRYPTO-001…002, EVAL-001, and SCANNER-002/OPS-010 — full list with commits in `docs/ROADMAP.md`. Tests at SCANNER-002: 647 passing, 2 gated live tests skipped by default.
 
 ## Current known limitations
 
@@ -71,5 +72,6 @@ MVP-001…005A.1, OPS-001…007, SOCCER-001…002, CRYPTO-001…002, and EVAL-00
 - Baseball evidence model v1 is naive (league-average pace, no simulations, assumed ticker-line semantics — stated in every forecast's skeptic notes).
 - Market-type support: totals/spreads/game-winner only; player props fall back to template.
 - Calibration cohorts are still small; resolved-outcome sample accumulates via the 4h baseline timer.
+- Generic scan order is the API's default paging; targeted series scans (SCANNER-002) cover supported game-level families, but unsupported domains can still be crowded out of the first page.
 - EVO-X2 deployment lags main when milestones haven't been rolled out yet — always check the runbook/host before assuming.
 - SQLite on EVO-X2 (deliberate); Postgres migration path documented in the deployment report.

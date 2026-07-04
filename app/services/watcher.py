@@ -21,7 +21,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.adapters.kalshi import KalshiRestAdapter
@@ -47,6 +47,34 @@ SIGNAL_PRICE_CROSSED_FORECAST = "price_crossed_latest_forecast"
 
 # Signal statuses are owned by app.services.signal_workflow (ALL_STATUSES)
 
+# SCANNER-002/OPS-010 supported-universe supplement: game-level market types
+# the evidence forecasters can price (player props are structurally capped at
+# 0.50 confidence and are deliberately NOT included here).
+SUPPORTED_GAME_LEVEL_TYPES = ("spread", "total", "winner", "advance")
+# Ticker prefixes of the source-backed-capable domains (mirrors
+# research.classify_domain / marketops.SOURCE_BACKED_CAPABLE_DOMAINS)
+SOCCER_TICKER_PREFIXES = ("KXWC", "KXUCL", "KXEPL", "KXMLS")
+BASEBALL_TICKER_PREFIX = "KXMLB"
+
+
+def supported_game_level_market_type(ticker: str) -> str | None:
+    """The market type (spread/total/winner/advance) when `ticker` is a
+    supported game-level baseball/soccer market; None for props, unknowns,
+    and unsupported domains. Conservative watcher-universe inclusion only —
+    never a value/EV/trade judgment."""
+    upper = ticker.upper()
+    if upper.startswith(SOCCER_TICKER_PREFIXES):
+        from app.services.soccer_forecasting import parse_soccer_market_spec
+
+        market_type = parse_soccer_market_spec(upper).market_type
+        return market_type if market_type in SUPPORTED_GAME_LEVEL_TYPES else None
+    if upper.startswith(BASEBALL_TICKER_PREFIX):
+        from app.services.baseball_forecasting import parse_market_spec
+
+        market_type = parse_market_spec(upper).market_type
+        return market_type if market_type in SUPPORTED_GAME_LEVEL_TYPES else None
+    return None
+
 
 @dataclass
 class WatcherConfig:
@@ -56,6 +84,7 @@ class WatcherConfig:
     min_liquidity_proxy: int = 100
     signal_cooldown_seconds: int = 900
     enable_retention: bool = False  # prune at most once/day from the loop
+    supported_universe_limit: int = 50  # SCANNER-002 game-level supplement bound
 
     @classmethod
     def from_settings(cls, settings: Settings | None = None) -> "WatcherConfig":
@@ -67,6 +96,7 @@ class WatcherConfig:
             min_liquidity_proxy=s.watcher_min_liquidity_proxy,
             signal_cooldown_seconds=s.watcher_signal_cooldown_seconds,
             enable_retention=s.enable_watcher_retention,
+            supported_universe_limit=s.watcher_supported_universe_limit,
         )
 
 
@@ -132,8 +162,12 @@ class RealtimeWatcher:
             self._last_prune_at = now
 
     def _universe_tickers(self, session: Session, limit: int) -> list[str]:
-        """Eligible candidates of the latest successful scan (top by score);
-        empty when no scan exists yet."""
+        """Eligible candidates of the latest successful scan (top by score),
+        plus a bounded supported-universe supplement (SCANNER-002): game-level
+        baseball/soccer markets from the same scan that had a two-sided quote
+        and have not expired, even when their eligibility score is 0 (e.g.
+        volume warms up only once a match goes live). Player props are never
+        supplemented. Empty when no scan exists yet."""
         run = session.execute(
             select(ScannerRun).where(ScannerRun.status == "ok").order_by(ScannerRun.id.desc())
         ).scalars().first()
@@ -146,7 +180,67 @@ class RealtimeWatcher:
             .order_by(MarketSnapshot.score.desc())
             .limit(limit)
         ).all()
-        return [ticker for (ticker,) in rows]
+        tickers = [ticker for (ticker,) in rows]
+        supplement = self._supported_universe_tickers(session, run.id, exclude=set(tickers))
+        universe = tickers + supplement
+        self._log_universe_composition(universe)
+        return universe
+
+    def _supported_universe_tickers(
+        self, session: Session, run_id: int, exclude: set[str]
+    ) -> list[str]:
+        """Conservative game-level supplement: source-backed-capable domain
+        (ticker prefix), supported market type, two-sided scan quote, not
+        expired. Bounded by supported_universe_limit; ordered by scan score
+        then liquidity (deterministic)."""
+        cap = self.config.supported_universe_limit
+        if cap <= 0:
+            return []
+        prefix_filters = [
+            Market.ticker.like(f"{prefix}%")
+            for prefix in (*SOCCER_TICKER_PREFIXES, BASEBALL_TICKER_PREFIX)
+        ]
+        rows = session.execute(
+            select(Market.ticker, Market.close_time, Market.expiration_time)
+            .join(MarketSnapshot, MarketSnapshot.market_id == Market.id)
+            .where(
+                MarketSnapshot.scanner_run_id == run_id,
+                MarketSnapshot.yes_bid.isnot(None),
+                MarketSnapshot.yes_ask.isnot(None),
+                or_(*prefix_filters),
+            )
+            .order_by(MarketSnapshot.score.desc(), MarketSnapshot.liquidity.desc())
+        ).all()
+        now = _now()
+        supplement: list[str] = []
+        for ticker, close_time, expiration_time in rows:
+            if len(supplement) >= cap:
+                break
+            if ticker in exclude:
+                continue
+            close = _aware(close_time) or _aware(expiration_time)
+            if close is not None and close <= now:
+                continue  # expired/closed
+            if supported_game_level_market_type(ticker) is None:
+                continue  # props and unknowns never enter via the supplement
+            supplement.append(ticker)
+        return supplement
+
+    def _log_universe_composition(self, tickers: list[str]) -> None:
+        """Informational universe breakdown by domain / market type."""
+        counts: dict[str, int] = {}
+        for ticker in tickers:
+            upper = ticker.upper()
+            if upper.startswith(SOCCER_TICKER_PREFIXES):
+                domain = "soccer"
+            elif upper.startswith(BASEBALL_TICKER_PREFIX):
+                domain = "baseball"
+            else:
+                domain = "other"
+            market_type = supported_game_level_market_type(ticker) or "other"
+            key = f"{domain}:{market_type}"
+            counts[key] = counts.get(key, 0) + 1
+        logger.info("Watcher universe: %d tickers (%s)", len(tickers), counts)
 
     def _detect_signals(
         self,

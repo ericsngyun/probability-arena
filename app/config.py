@@ -25,6 +25,22 @@ class Settings(BaseSettings):
     scanner_max_markets: int = 500
     candidates_default_limit: int = 25
 
+    # Targeted game-level market scans (SCANNER-002/OPS-010) — read-only
+    # supplement to the generic scan: fetch supported, measurable series
+    # (game winner / totals / spreads) directly by series_ticker so they are
+    # never crowded out of the first `scanner_max_markets` page by props.
+    # Coverage only: no EV, no advice, no trading capability of any kind.
+    enable_targeted_market_scans: bool = True
+    targeted_market_series: str = (
+        "KXWCGAME,KXWCTOTAL,KXWCSPREAD,KXMLBGAME,KXMLBTOTAL,KXMLBSPREAD"
+    )
+    targeted_market_scan_limit_per_series: int = 250
+    targeted_market_scan_active_only: bool = True
+    targeted_market_scan_dedup: bool = True
+    # Watcher supported-universe supplement bound (game-level baseball/soccer
+    # markets only; player props are excluded by market type, never unlimited)
+    watcher_supported_universe_limit: int = 50
+
     # Resolution-criteria assessment (MVP-003B)
     enable_llm_resolution: bool = False
     resolution_model_name: str = "claude-opus-4-8"
