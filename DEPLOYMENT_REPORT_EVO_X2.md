@@ -527,3 +527,22 @@ Deployed **`b928a24` → `57e8369`**; migration `0018` applied on first command;
 5. **Crypto insight:** post-risk-signal liquidity change averages **+40%** across 24 samples — liquidity often *returns* after `liquidity_removed` fires (pull/re-add patterns), a CRYPTO-002 threshold-tuning datapoint. Provider error rate 19.3% (GoPlus keyless misses + the SolanaTracker window).
 
 All four services active; journal clean. Tests at EVAL-001: 606 passing; AST safety scan clean across 47 app files (live, part of the report).
+
+---
+
+## OPS-008 — signal freshness tuning applied (2026-07-04, ~08:00 UTC)
+
+**EVAL-001 finding applied:** signal age at promotion had p50 ≈ 5 hours — the autopilot's 24h promotion window meant it routinely promoted stale signals whose game states had already moved, producing forecasts that could never pass edge-precheck freshness.
+
+**Flag before → after:** `MARKETOPS_MAX_SIGNAL_AGE_HOURS` default 24 → **1** (config is integer-typed, so the optional 0.5 variant is not supported — 1h is the floor without a code change). Unchanged and verified: `ENABLE_EDGE_PRECHECK=true`, `MARKETOPS_INCLUDE_EDGE_PRECHECK=false`, `ENABLE_SOCCER_EVIDENCE_FORECASTING=true`, all crypto/safety flags.
+
+**Validation (dead-zone hour, ~4am ET — which is itself the proof):**
+- Manual cycle #66 and scheduled cycle #68: `signals seen=0, promoted=0, processed=0` — the 1h window correctly **starves promotion of stale signals** (previous cycles were promoting 5/cycle from a pool of 150–380 stale ones). Crypto lane unaffected (scans/sync/score normal); durations 34–38s.
+- `edge-precheck --latest-marketops-run`: 0 targeted — no noise rows created from nothing.
+- 6h frontier report: `not_ready` (correct), MarketOps p90 42s, all services active, no journal errors.
+
+**Expected effect in live windows (CAN–MAR 17:00 UTC / PAR–FRA 21:00 UTC):** signals promoted will be <1h old (typically minutes — the watcher emits them within 60s of a move), so refreshed forecasts describe *current* game state and can pass the 300s live-sports freshness gate at measurement time. The scheduled 17:17 UTC validation session will observe this directly.
+
+**Caveats:** (1) during quiet hours the probability lane now idles — by design; the `no_recent_signals` health alert may fire on long dead stretches with the watcher running (informational); (2) if live-window sessions show the 1h window is still too loose (or too tight for slower markets), the knob is one line in `.env`.
+
+**Rollback:** `sed -i 's/^MARKETOPS_MAX_SIGNAL_AGE_HOURS=.*/MARKETOPS_MAX_SIGNAL_AGE_HOURS=24/' ~/projects/probability-arena/.env` (or remove the key).
