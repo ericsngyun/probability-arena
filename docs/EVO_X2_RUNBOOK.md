@@ -91,6 +91,15 @@ false (it only reserves future loop/timer use); a crypto timer would be its own
 deliberate rollout step in a later milestone. Read-only DEX Screener GETs; no
 wallets/swaps/execution exist anywhere.
 
+## Soccer evidence forecasting (SOCCER-002) rollout
+
+One flag: `ENABLE_SOCCER_EVIDENCE_FORECASTING=true` (soccer research canary
+must already be on with `provider=espn`). Validate during a World Cup window:
+promote/process 1–3 soccer signals, check `signal-report` /
+`research-canary-report` for `soccer_evidence` forecasts, then run
+`edge-precheck --latest-marketops-run` — soccer forecasts (confidence ≥0.60)
+are now measurable. Forecasts remain measurement inputs only.
+
 ## Edge precheck (MVP-005A) rollout
 
 Dark first: deploy with `ENABLE_EDGE_PRECHECK=false`, run one manual

@@ -54,6 +54,14 @@ class Settings(BaseSettings):
     soccer_research_max_sources: int = 8
     soccer_research_collector_version: str = "v1"
 
+    # Soccer evidence-aware forecasting canary (SOCCER-002) — consumes
+    # source-backed soccer packets; no external calls of its own. Forecasts
+    # are measurement inputs only: no EV, no trade semantics.
+    enable_soccer_evidence_forecasting: bool = False
+    soccer_forecaster_version: str = "v1"
+    soccer_forecast_max_confidence: float = 0.70
+    soccer_forecast_min_completeness: float = 0.75
+
     # Baseball evidence-aware forecasting canary (MVP-004F) — consumes
     # source-backed MLB packets; no external calls of its own
     enable_baseball_evidence_forecasting: bool = False

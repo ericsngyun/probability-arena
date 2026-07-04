@@ -7,9 +7,9 @@ Update this file (and docs/PROJECT_CANON.md) when a milestone lands."""
 PROJECT_NAME = "probability-arena"
 
 CURRENT_PHASE = (
-    "Read-only intelligence + calibration accumulation (through MVP-005A). "
+    "Read-only intelligence + calibration accumulation (through SOCCER-002). "
     "No EV, no trading of any kind. Canary flags exist for baseball external "
-    "research, evidence-aware baseball forecasting, and soccer external research. "
+    "research, evidence-aware baseball and soccer forecasting, and soccer external research. "
     "Crypto Arena adds read-only Solana memecoin surveillance plus a risk "
     "engine (a risk score is an avoid/flag verdict, never a trade "
     "recommendation); MarketOps Autopilot coordinates it all behind flags."
@@ -85,6 +85,7 @@ KEY_FEATURE_FLAGS = (
     "enable_llm_resolution",
     "enable_llm_forecasting",
     "enable_baseball_evidence_forecasting",
+    "enable_soccer_evidence_forecasting",
     "enable_realtime_watcher",
     "enable_watcher_retention",
     "enable_pipeline_retention",

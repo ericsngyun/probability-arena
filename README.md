@@ -396,6 +396,18 @@ python -m app.cli verify-db-backup data/backups/backup-<stamp>.db.gz   # integri
 
 `BACKUP_DIR=data/backups`, `BACKUP_RETENTION_DAYS=30`. Non-SQLite databases get safe `pg_dump` guidance instead (never executed). Optional daily timer artifacts: `infra/systemd/user/probability-arena-backup.{service,timer}` (not auto-installed). `db-stats` reports backup count/size.
 
+## Soccer evidence-aware forecaster (SOCCER-002)
+
+The soccer counterpart of the baseball evidence forecaster — behind its own flag, consuming only persisted source-backed soccer packets (SOCCER-001), making no external calls itself:
+
+- `ENABLE_SOCCER_EVIDENCE_FORECASTING=false` (default) — plus `SOCCER_FORECASTER_VERSION=v1`, `SOCCER_FORECAST_MAX_CONFIDENCE=0.70`, `SOCCER_FORECAST_MIN_COMPLETENESS=0.75`.
+
+`ForecastingService` selects `SoccerEvidenceAwareForecaster` only when **all** conditions pass: flag on, domain `sports_soccer`, packet `source_backed`, completeness ≥ 0.75, resolution `researchable`. Everything else — and any explicitly injected forecaster — keeps the template baseline; the baseball gate is untouched.
+
+**Model (deterministic v1, fully stated in each output):** market midpoint is the prior; goal margin (winner/advance/spread) or pace-projected totals produce an evidence estimate; the blend weight grows with match progress and extra time; a level match decays a must-WIN market toward the draw; **penalty shootouts are treated as near-coin-flips (confidence capped at 0.50) except team-to-advance markets, which use the shootout score**; **red cards reduce confidence and add context but never inflate the estimate**; **player-goal markets fall back to template — team-level data must not price a specific player**; the shift from the prior is hard-capped at ±0.25. Tags: `soccer_evidence_v1`, `market_type_winner|total|advance|spread|player_goal|unknown`, `early_match`/`late_match`, `extra_time`, `penalty_context`, `red_card_context`, `live_match_state`, `evidence_adjusted`/`anchored_to_market_mid`.
+
+Soccer evidence forecasts (confidence up to 0.65–0.70) clear the edge-precheck confidence gate (0.60), making World Cup markets measurable; and `champion-challenger-report --domain sports_soccer --challenger soccer_evidence_v1` compares them against the baseline as outcomes settle. **Forecasts are measurement inputs only — no dollar EV, no trade recommendations, no paper trading, no sizing, no orders, no wallets, no execution.**
+
 ## Champion/challenger comparison
 
 **Why this exists:** per ADR-004, no EV or paper-trading work may even be designed until a challenger forecaster demonstrably beats the market-anchored baseline. This layer is that gate, made concrete:

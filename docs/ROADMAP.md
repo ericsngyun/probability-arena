@@ -28,12 +28,14 @@
 | OPS-007 | `a1d4ff6` | Operational hardening: MarketOps overlap guard (skipped/already_running + stale-lock recovery), SQLite busy timeout, DB backup/verify/retention CLI + optional daily timer; deployed + validated live (`19370c2`) |
 | MVP-005A-design | `cd6760a` | Edge-precheck design + safety review (`docs/MVP_005A_EDGE_PRECHECK_DESIGN.md`) — gate crossed at paired n=36, d_brier=−0.049, d_log_loss=−0.152 (early_signal) |
 | MVP-005A | `1bd134a` | Edge precheck implementation: probability-gap measurement (10 statuses, deterministic precedence, persistence counting), edge_precheck_snapshots audit rows, CLI/API, double-gated MarketOps stage; live on EVO-X2 for manual measurement (`fa0ac34`) |
-| MVP-005A.1 | (this) | Targeted edge-precheck modes: explicit forecast ids, MarketOps-cycle scoping, recent-refreshed-signals; dedupe window; MarketOps stage now strictly cycle-scoped (broad sweeps stay manual-diagnostic) |
+| MVP-005A.1 | `5324046` | Targeted edge-precheck modes: explicit forecast ids, MarketOps-cycle scoping, recent-refreshed-signals; dedupe window; MarketOps stage now strictly cycle-scoped (broad sweeps stay manual-diagnostic) |
+| SOCCER-002 | (this) | Soccer evidence-aware forecaster (goal-margin/pace model, red-card + penalty handling, capped ±0.25 shift) — makes soccer forecasts measurable by edge-precheck |
 
 ## Immediate next steps
 
-1. Deploy SOCCER-001 to EVO-X2 dark; roll out per the README sequence (flag → provider) while keeping both baseball canaries running on live games.
-2. Accumulate resolved outcomes; read `champion-challenger-report --domain sports_baseball` weekly — the sample-size label must reach at least `early_signal`/`useful_sample` with negative paired deltas before MVP-005A is considered.
+1. Roll out SOCCER-002 on EVO-X2 (`ENABLE_SOCCER_EVIDENCE_FORECASTING=true` as its own step) so World Cup windows produce measurable `soccer_evidence` forecasts.
+2. Run targeted `edge-precheck --latest-marketops-run` sessions during prime live windows (World Cup afternoon UTC / MLB evening ET); on sane watchlist behavior, consider `MARKETOPS_INCLUDE_EDGE_PRECHECK=true`.
+3. Keep accumulating champion/challenger pairs toward `useful_sample` (n≥100) for both `baseball_evidence_v1` and (as data arrives) `soccer_evidence_v1` cohorts.
 
 ## Gated future steps (in order; each requires explicit acceptance)
 

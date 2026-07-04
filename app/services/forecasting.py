@@ -529,11 +529,11 @@ class ForecastingService:
 
     def _forecaster_for(self, inp: ForecastInput):
         """Per-market forecaster selection. An explicitly injected forecaster
-        always wins. The baseball evidence canary
-        (ENABLE_BASEBALL_EVIDENCE_FORECASTING) applies only to
-        sports_baseball inputs with a source-backed, sufficiently complete
-        packet and a researchable resolution; everything else keeps the
-        configured default."""
+        always wins. The evidence canaries
+        (ENABLE_BASEBALL_EVIDENCE_FORECASTING / SOCCER-002's
+        ENABLE_SOCCER_EVIDENCE_FORECASTING) apply only to their domain with a
+        source-backed, sufficiently complete packet and a researchable
+        resolution; everything else keeps the configured default."""
         if self._explicit_forecaster:
             return self.forecaster
         if (
@@ -548,6 +548,18 @@ class ForecastingService:
             from app.services.baseball_forecasting import BaseballEvidenceAwareForecaster
 
             return BaseballEvidenceAwareForecaster(self.settings)
+        if (
+            self.settings.enable_soccer_evidence_forecasting
+            and inp.domain == "sports_soccer"
+            and determine_evidence_depth(inp.packet) == EVIDENCE_SOURCE_BACKED
+            and (inp.packet.research_completeness_score or 0.0)
+            >= self.settings.soccer_forecast_min_completeness
+            and inp.resolution is not None
+            and inp.resolution.tradeability == "researchable"
+        ):
+            from app.services.soccer_forecasting import SoccerEvidenceAwareForecaster
+
+            return SoccerEvidenceAwareForecaster(self.settings)
         return self.forecaster
 
     async def forecast_market(

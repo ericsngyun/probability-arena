@@ -30,5 +30,5 @@ require crossing one must stop and report back instead of building.
 - Crypto Arena (CRYPTO-001) is read-only surveillance: public DEX data in, auditable rows out. Its signals are telemetry — no wallet code, no private keys, no swaps, no Jupiter/transaction construction, no signing, no execution, and no EV/paper-trading semantics may attach to them before the gated milestones above.
 - The crypto risk engine (CRYPTO-002) produces **risk intelligence, not trade advice**: a composite risk score/level is an avoid/flag verdict for human review. "Severe" means avoid/flag — never short/sell/buy. Provider API keys are optional, header-only, and never printed or logged.
 - No secrets in code, logs, or committed files; `.env` is gitignored.
-- Forecast confidence is capped centrally by evidence depth; forecasters cannot self-declare certainty.
+- Forecast confidence is capped centrally by evidence depth; forecasters cannot self-declare certainty. Evidence-aware forecasts (baseball, soccer) are measurement inputs only — never advice, never sized, never actionable.
 - Every model-assisted path has a deterministic fallback and honest degradation (template content stays labeled template).

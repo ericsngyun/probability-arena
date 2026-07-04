@@ -13,6 +13,7 @@ Rollout discipline: one flag at a time, per `docs/EVO_X2_RUNBOOK.md`.
 | `ENABLE_SOCCER_EXTERNAL_RESEARCH` | Soccer canary collector for **promoted sports_soccer signals with researchable resolution only** | Live source gated by `SOCCER_RESEARCH_PROVIDER` (`template` = honest fallback even when flag on; `espn` = public ESPN soccer API); `SOCCER_RESEARCH_TIMEOUT_SECONDS=15`, `SOCCER_RESEARCH_MAX_SOURCES=8`, `SOCCER_RESEARCH_COLLECTOR_VERSION=v1` |
 | `ENABLE_LLM_FORECASTING` | `LLMForecaster` | Central confidence caps still apply; template fallback |
 | `ENABLE_BASEBALL_EVIDENCE_FORECASTING` | `BaseballEvidenceAwareForecaster` for source-backed baseball packets (completeness ≥ `BASEBALL_FORECAST_MIN_COMPLETENESS`) | No external calls; capped ±0.25 shift; `BASEBALL_FORECAST_MAX_CONFIDENCE` |
+| `ENABLE_SOCCER_EVIDENCE_FORECASTING` | `SoccerEvidenceAwareForecaster` for source-backed soccer packets (completeness ≥ `SOCCER_FORECAST_MIN_COMPLETENESS=0.75`) | No external calls; goal-margin/pace model; red cards reduce confidence, never boost estimates; shootouts capped at 0.50 except team-to-advance; player-goal markets fall back; capped ±0.25 shift; `SOCCER_FORECAST_MAX_CONFIDENCE=0.70`; forecasts are measurement inputs only |
 
 ## Operational flags
 

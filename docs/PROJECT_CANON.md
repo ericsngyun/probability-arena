@@ -13,7 +13,8 @@ FastAPI app (app/main.py) — read-only API over the same services the CLI uses
 CLI (app/cli.py)          — one command per operation; every command owns its session
 Services (app/services/)  — scanner, eligibility, enrichment, resolution, research,
                             baseball_research, soccer_research, forecasting,
-                            baseball_forecasting, outcomes, calibration, watcher,
+                            baseball_forecasting, soccer_forecasting, outcomes,
+                            calibration, watcher,
                             signal_workflow, pipeline (baseline runner), retention,
                             crypto_scout + crypto_risk + crypto_risk_engine
                             (Crypto Arena, read-only; risk = avoid/flag verdicts),
@@ -51,7 +52,7 @@ Parallel to that: watcher (60s ticks + signals) → promote-signals → process-
 
 - Judges: `RuleBasedResolutionJudge` (default), `MockResolutionJudge`, `LLMResolutionJudge` (flag).
 - Collectors: `TemplateResearchCollector` (default), `MockResearchCollector`, `LLMWebResearchCollector` (flag), `BaseballExternalResearchCollector` (canary flag; MLB Stats API), `SoccerExternalResearchCollector` (canary flag + provider; ESPN soccer API).
-- Forecasters: `TemplateBaselineForecaster` (default; midpoint prior), `MockForecaster`, `LLMForecaster` (flag), `BaseballEvidenceAwareForecaster` (canary flag; consumes source-backed packets, capped ±0.25 shift).
+- Forecasters: `TemplateBaselineForecaster` (default; midpoint prior), `MockForecaster`, `LLMForecaster` (flag), `BaseballEvidenceAwareForecaster` (canary flag; capped ±0.25 shift), `SoccerEvidenceAwareForecaster` (SOCCER-002 canary flag; goal-margin/pace model, red-card/penalty-aware, capped ±0.25 shift).
 - Central guarantees regardless of provider: evidence-depth recomputation, confidence caps (template_only 0.55 / source_backed 0.75 / critical-missing 0.50), avoid→high-risk forcing.
 
 ## Feature flags
@@ -60,7 +61,7 @@ See `docs/FEATURE_FLAGS.md`. All model/external flags default **false**; deploye
 
 ## Latest accepted milestones
 
-MVP-001…005A, OPS-001…007, SOCCER-001, and CRYPTO-001…002 — full list with commits in `docs/ROADMAP.md`. Tests at MVP-005A: 548+ passing, 2 gated live tests skipped by default.
+MVP-001…005A.1, OPS-001…007, SOCCER-001…002, and CRYPTO-001…002 — full list with commits in `docs/ROADMAP.md`. Tests at SOCCER-002: 583+ passing, 2 gated live tests skipped by default.
 
 ## Current known limitations
 
