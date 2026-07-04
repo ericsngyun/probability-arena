@@ -607,3 +607,34 @@ Persistence: all rows persist=1 (invalid rows never accrue — correct). Watchli
 - **PAR–FRA 21:00 UTC is the main-market soccer shot** — a follow-up session is armed for 21:25 UTC (in-session scheduler; machine must be awake). Its question: do KXWCGAME/KXWCTOTAL-style PARFRA markets fire fresh signals that produce 0.65-confidence soccer_evidence forecasts and the first valid watchlist rows?
 
 Safety greps clean. All four services active throughout; `MARKETOPS_INCLUDE_EDGE_PRECHECK=false` unchanged.
+
+---
+
+## PAR–FRA prime-window validation session — main-market soccer never reached the scanner universe (2026-07-04, 21:23–21:40 UTC)
+
+**Window honesty:** this session ran genuinely live — PAR–FRA kicked off 21:00 UTC; passes ran at 19'–36' of the first half (0–0 throughout). Host healthy (load 0.04, 79G free), all four units active, host and local clean on `d7f21b9`. No code, no flag changes; `MARKETOPS_INCLUDE_EDGE_PRECHECK=false` verified before and after.
+
+**The armed question is answered, and the answer is upstream of promotion.** Do KXWCGAME/KXWCTOTAL PARFRA markets fire fresh signals → 0.65-confidence soccer_evidence forecasts → first watchlist rows? **No — they never had the chance.** The main markets exist and are ideal measurement targets: `KXWCGAME-26JUL04PARFRA-{FRA,PAR,TIE}` verified live on Kalshi at 82/83¢ (1¢ spread) with **3.5M contracts** of in-play 24h volume. But:
+
+- The scanner's single sweep (`scanner_max_markets=500`, API default page order) is saturated by prop series — the first 500 open markets included **182 `KXWCSTART` lineup props** plus MLB player props. The 20:01 UTC scan ingested **90 PARFRA markets, all props** (`KXWCAST`/`KXWCFIRSTGOAL`/`KXWCGOAL`/`KXWCSOA`/`KXWCTEAMFIRSTGOAL`); `KXWCGAME`/`KXWCTOTAL` sit past the cutoff. Verified **not** the `mve_filter` (PARFRA GAME returns fine with `mve_filter=exclude`).
+- All 90 ingested PARFRA props carried `volume_24h=0` pre-match (some one-sided books) → eligibility score 0 → excluded from the watcher universe (score>0 required).
+- The 20:01 rotation left a **19-ticker universe** (11 `KXMLBHRR` TOR–SEA props, 4 ATP, 4 soccer props for the *Jul 6–7* matches), frozen until the 00:01 UTC scan — after full time. Confirmed live during the match: **0 PARFRA ticks, 0 PARFRA signals ever** (the 4 future-match soccer props ticked every 60s; the watcher itself is fine).
+
+**Measurement passes (cycle-scoped, seconds after scheduled marketops timer cycles, ~5–6 min apart, PAR–FRA live):**
+
+| Pass | Cycle | Timing | Targeted | Result |
+|---|---|---|---|---|
+| A | #209 (21:27) | 37s after finish | 0 | 10 seen, 0 promoted (refresh-cooldown after #208) → no noise rows |
+| B | #210 (21:33) | 36s after promotion | 3 | 23 seen, 3 promoted — all `KXMLBHRR` player props (live TOR–SEA). Two on **1¢-spread books, ~59,000¢ liquidity, gaps −0.665 / −0.480, fresh snapshots** — sole failure `invalid_low_confidence` (0.5 prop cap). One book one-sided → +`wide_spread`. persist=1 all |
+| C | #211 (21:39) | 1s after finish | 0 | 15 seen, 0 promoted (cooldown anti-thrash, as in CAN–MAR) → no noise rows |
+
+Watchlist=0, candidate_labels=0 in every pass. Earlier same-evening manual cycles (#187 19:30, #194 20:08, #208 21:23) match the pattern: every targeted row `baseball_evidence`, source-backed, confidence 0.5, only-blocker confidence except where books were one-sided or the 20:01 universe rotation orphaned MIN–NYY tickers (`invalid_stale_market_snapshot` — promoted signals referencing tickers the watcher had just stopped ticking).
+
+**Everything below the confidence gate is now proven live:** promotion freshness (p50 358s in the 6h window; promotion→measurement 36s in pass B — `forecast_to_edge_precheck_s_p50` fell 349s → **79.6s** during the session), honest invalidation (`invalid_explainable_rate` 1.0), cooldown/noise discipline (0-promoted cycles produce 0 rows), source-backed targeting (tennis template refreshes correctly excluded). And the 0.60 gate **is reachable**: `KXMLBSPREAD-26JUL041105PITWSH` game-level forecasts hit **0.60/0.65 confidence** today — but via the 4-hourly baseline pipeline, not signals, so they were stale by measurement time. Champion/challenger meanwhile: paired n=50, d_brier −0.0432. Safety audit clean (48 files, `safety_ok: true`).
+
+**Recommendations (recommend-only, per rules):**
+- **`MARKETOPS_INCLUDE_EDGE_PRECHECK`: keep OFF.** Zero valid rows exist; automation would only inscribe invalid measurements on a cadence.
+- **OPS-010 is warranted — but the CAN–MAR scope is necessary, not sufficient.** Player-prop exclusion + the KXWCAST/KXWCSOA classification fix would today leave soccer with *zero* promotable markets, because the main markets never enter the scan. OPS-010 should add **scanner coverage for supported-domain main markets** (targeted `series_ticker` sweeps for KXWCGAME/KXWCTOTAL-class series, or deeper paging / domain-aware universe injection), and consider cycle-scoped measurement of baseline-refreshed **game-level** forecasts (the 0.65-confidence PIT–WSH spreads were measurable tonight; nothing measured them within 300s).
+- Verdict on watchlist evidence: **observe-more after OPS-010 lands.** Enable is not on the table until valid rows exist.
+
+Outputs remain gaps and labels — measurement only, never advice. No EV, no sides, no sizes, no actions.
