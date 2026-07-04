@@ -121,6 +121,14 @@ cycle-scoped (≤5 forecasts/cycle, the ones it just refreshed; never a
 sweep). All outputs are gaps and labels; nothing here is a trade
 instruction, and no downstream behavior branches on the results.
 
+## Promotion freshness (OPS-009)
+
+Minute-level windows govern promotion (sports 20m / general 60m by default;
+`min(minutes, hours*60)` for compat). During quiet hours the probability lane
+idles by design (`signals seen=0`); during live windows promoted ages should
+be minutes, visible in `marketops-report` ("promotion (OPS-009)" line) and
+`frontier-eval-report` latency metrics.
+
 ## Frontier evaluation (EVAL-001)
 
 `.venv/bin/python -m app.cli frontier-eval-report --hours 24 --include-crypto

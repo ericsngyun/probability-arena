@@ -63,7 +63,7 @@ See `docs/FEATURE_FLAGS.md`. All model/external flags default **false**; deploye
 
 ## Latest accepted milestones
 
-MVP-001…005A.1, OPS-001…007, SOCCER-001…002, CRYPTO-001…002, and EVAL-001 — full list with commits in `docs/ROADMAP.md`. Tests at EVAL-001: 606+ passing, 2 gated live tests skipped by default.
+MVP-001…005A.1, OPS-001…007, SOCCER-001…002, CRYPTO-001…002, and EVAL-001 — full list with commits in `docs/ROADMAP.md`. Tests at OPS-009: 623+ passing, 2 gated live tests skipped by default.
 
 ## Current known limitations
 

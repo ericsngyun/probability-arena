@@ -117,6 +117,17 @@ class Settings(BaseSettings):
     marketops_score_limit: int = 1000
     marketops_min_signal_age_seconds: int = 30
     marketops_max_signal_age_hours: int = 24
+    # OPS-009 minute-level, domain-aware freshness. Minutes supersede the
+    # hour knob (which is kept as a coarse upper bound for compatibility:
+    # the effective window is min(domain minutes, hours*60)).
+    marketops_max_signal_age_minutes: int = 60
+    marketops_live_sports_max_signal_age_minutes: int = 20
+    marketops_soccer_max_signal_age_minutes: int = 20
+    marketops_baseball_max_signal_age_minutes: int = 20
+    marketops_general_max_signal_age_minutes: int = 60
+    # Reserved: crypto signals are NOT governed by marketops promotion; this
+    # key exists for a possible later milestone and is unused in OPS-009.
+    marketops_crypto_signal_age_minutes: int = 60
     marketops_include_crypto: bool = True
     marketops_include_probability_markets: bool = True
     marketops_fail_fast: bool = False

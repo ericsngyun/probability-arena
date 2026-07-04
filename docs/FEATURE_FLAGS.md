@@ -38,6 +38,19 @@ Rollout discipline: one flag at a time, per `docs/EVO_X2_RUNBOOK.md`.
 `MARKETOPS_LOCK_STALE_AFTER_MINUTES=30` (a 'running' cycle older than this is
 treated as crashed and no longer blocks new cycles).
 
+OPS-009 minute-level, domain-aware promotion freshness (minutes supersede the
+hour knob, which survives as a coarse upper bound —
+`min(domain_minutes, hours*60)`): `MARKETOPS_MAX_SIGNAL_AGE_MINUTES=60`,
+`MARKETOPS_LIVE_SPORTS_MAX_SIGNAL_AGE_MINUTES=20`,
+`MARKETOPS_SOCCER_MAX_SIGNAL_AGE_MINUTES=20`,
+`MARKETOPS_BASEBALL_MAX_SIGNAL_AGE_MINUTES=20`,
+`MARKETOPS_GENERAL_MAX_SIGNAL_AGE_MINUTES=60`
+(`MARKETOPS_CRYPTO_SIGNAL_AGE_MINUTES` is reserved/unused). Promotion is
+ordered by a deterministic **measurement-readiness score** (freshness,
+source-backed capability, market-type measurability — player props lowest,
+signal-type priority, live book quality). The score orders promotion only;
+it is never an EV/value/trade quantity.
+
 ## Edge precheck (MVP-005A — probability-gap MEASUREMENT; never advice)
 
 | Flag | Default | Gates |

@@ -1566,6 +1566,22 @@ async def marketops_report(session=None) -> int:
             )
         else:
             print("last run: none")
+        promo = (
+            (report.latest_run.summary or {}).get("promotion")
+            if report.latest_run
+            else None
+        )
+        if promo:
+            print(
+                f"promotion (OPS-009): age mean={promo.get('promoted_signal_age_s_mean')}s "
+                f"max={promo.get('promoted_signal_age_s_max')}s "
+                f"skipped_stale={promo.get('skipped_stale_count')} "
+                f"unmeasurable={promo.get('unmeasurable_candidates')}"
+            )
+            if promo.get("promoted_by_domain"):
+                print(f"  promoted by domain: {promo['promoted_by_domain']}")
+            if promo.get("promoted_by_market_type"):
+                print(f"  promoted by market type: {promo['promoted_by_market_type']}")
         print(f"runs total: {report.runs_total}")
         print(f"source-backed packets: {report.source_backed_packets}")
         if report.forecasts_by_forecaster:

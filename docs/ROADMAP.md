@@ -30,7 +30,8 @@
 | MVP-005A | `1bd134a` | Edge precheck implementation: probability-gap measurement (10 statuses, deterministic precedence, persistence counting), edge_precheck_snapshots audit rows, CLI/API, double-gated MarketOps stage; live on EVO-X2 for manual measurement (`fa0ac34`) |
 | MVP-005A.1 | `5324046` | Targeted edge-precheck modes: explicit forecast ids, MarketOps-cycle scoping, recent-refreshed-signals; dedupe window; MarketOps stage now strictly cycle-scoped (broad sweeps stay manual-diagnostic) |
 | SOCCER-002 | `2d2cf10` | Soccer evidence-aware forecaster (goal-margin/pace model, red-card + penalty handling, capped ±0.25 shift) — makes soccer forecasts measurable by edge-precheck |
-| EVAL-001 | (this) | Frontier evaluation harness: 8 quality sections (signal/forecast/edge/follow-through/microstructure/crypto/latency/safety) + conservative readiness scorecard; evaluation only — readiness labels never authorize live capital |
+| EVAL-001 | `57e8369` | Frontier evaluation harness: 8 quality sections (signal/forecast/edge/follow-through/microstructure/crypto/latency/safety) + conservative readiness scorecard; evaluation only — readiness labels never authorize live capital |
+| OPS-009 | (this) | Promotion quality: minute-level domain-aware freshness windows + measurement-readiness scoring (market-type/book-quality/source-backed priority; player props deprioritized); promotion stats in run summaries |
 
 ## Immediate next steps
 

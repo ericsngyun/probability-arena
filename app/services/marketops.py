@@ -67,6 +67,67 @@ TICKER_REFRESH_COOLDOWN_SECONDS = 3600  # don't re-promote a just-refreshed tick
 # Domains whose promoted signals can currently become source-backed packets
 SOURCE_BACKED_CAPABLE_DOMAINS = ("sports_baseball", "sports_soccer")
 
+# OPS-009 promotion priority (measurement/promotion ordering ONLY — this is
+# never an EV, value, or trade quantity):
+MEASURABLE_MARKET_TYPES = ("spread", "total", "winner", "advance")
+MARKET_TYPE_PLAYER = "player"
+MARKET_TYPE_UNKNOWN = "unknown"
+# Readiness-score weights (deterministic; sum bounds the score at ~100)
+SCORE_FRESHNESS_MAX = 30.0
+SCORE_SOURCE_BACKED_DOMAIN = 25.0
+SCORE_MEASURABLE_MARKET_TYPE = 20.0
+SCORE_UNKNOWN_MARKET_TYPE = 5.0
+SCORE_SIGNAL_TYPE_STEP = 2.0  # (len(PROMOTION_PRIORITY) - index) * step
+SCORE_BOOK_TWO_SIDED = 5.0
+SCORE_BOOK_SPREAD_OK = 4.0
+SCORE_BOOK_LIQUIDITY_OK = 4.0
+SCORE_BOOK_FRESH_TICK = 2.0
+
+# Player-code ticker segments look like ARGNGONZA11 / SEALRALEY20
+_PLAYER_SEGMENT_RE = None  # compiled lazily
+
+
+def _market_type_for_promotion(ticker: str, domain: str) -> str:
+    """Deterministic market-type classification for promotion ordering:
+    measurable types (spread/total/winner/advance) rank highest, unknown
+    lower, player-prop markets lowest (team-level evidence cannot price a
+    player — see SOCCER-002/MVP-004F)."""
+    global _PLAYER_SEGMENT_RE
+    import re as _re
+
+    if _PLAYER_SEGMENT_RE is None:
+        _PLAYER_SEGMENT_RE = _re.compile(r"^[A-Z]{4,}\d+$")
+
+    if domain == "sports_soccer":
+        from app.services.soccer_forecasting import parse_soccer_market_spec
+
+        market_type = parse_soccer_market_spec(ticker).market_type
+        if market_type == "player_goal":
+            return MARKET_TYPE_PLAYER
+        return market_type
+    if domain == "sports_baseball":
+        from app.services.baseball_forecasting import parse_market_spec
+
+        market_type = parse_market_spec(ticker).market_type
+        if market_type != "unknown":
+            return market_type
+    # player-code segment anywhere in the ticker => player market
+    for segment in ticker.upper().split("-"):
+        if _PLAYER_SEGMENT_RE.match(segment):
+            return MARKET_TYPE_PLAYER
+    if domain == "sports_baseball":
+        return MARKET_TYPE_UNKNOWN
+    series = ticker.upper().split("-", 1)[0]
+    for market_type, markers in (
+        ("total", ("TOTAL",)),
+        ("spread", ("SPREAD", "HANDICAP")),
+        ("winner", ("GAME", "MATCH", "WIN")),
+        ("advance", ("ADVANCE",)),
+    ):
+        if any(marker in series for marker in markers):
+            return market_type
+    return MARKET_TYPE_UNKNOWN
+
 
 @dataclass
 class MarketOpsConfig:
@@ -77,6 +138,13 @@ class MarketOpsConfig:
     score_limit: int = 1000
     min_signal_age_seconds: int = 30
     max_signal_age_hours: int = 24
+    # OPS-009: minute-level, domain-aware freshness (supersedes the hour
+    # knob; hours remain a coarse upper bound for compatibility)
+    max_signal_age_minutes: int = 60
+    live_sports_max_signal_age_minutes: int = 20
+    soccer_max_signal_age_minutes: int = 20
+    baseball_max_signal_age_minutes: int = 20
+    general_max_signal_age_minutes: int = 60
     include_crypto: bool = True
     include_probability_markets: bool = True
     # MVP-005A: edge-precheck stage is DOUBLE-gated (this AND
@@ -95,6 +163,13 @@ class MarketOpsConfig:
             score_limit=s.marketops_score_limit,
             min_signal_age_seconds=s.marketops_min_signal_age_seconds,
             max_signal_age_hours=s.marketops_max_signal_age_hours,
+            max_signal_age_minutes=s.marketops_max_signal_age_minutes,
+            live_sports_max_signal_age_minutes=(
+                s.marketops_live_sports_max_signal_age_minutes
+            ),
+            soccer_max_signal_age_minutes=s.marketops_soccer_max_signal_age_minutes,
+            baseball_max_signal_age_minutes=s.marketops_baseball_max_signal_age_minutes,
+            general_max_signal_age_minutes=s.marketops_general_max_signal_age_minutes,
             include_crypto=s.marketops_include_crypto,
             include_probability_markets=s.marketops_include_probability_markets,
             include_edge_precheck=s.marketops_include_edge_precheck,
@@ -214,21 +289,123 @@ class MarketOpsAutopilotService:
 
     # --- stage helpers -----------------------------------------------------
 
-    def _eligible_signals(self, session: Session, now: datetime) -> list[OpportunitySignal]:
-        """Fresh 'new' signals inside the [min_age, max_age] window. Dismissed/
-        reviewed/errored signals are excluded by the status filter."""
+    def _age_window_minutes(self, domain: str) -> float:
+        """Effective per-domain freshness window (OPS-009): minutes supersede
+        the hour knob, which survives only as a coarse upper bound."""
+        cfg = self.config
+        hour_bound = cfg.max_signal_age_hours * 60
+        if domain == "sports_baseball":
+            return min(cfg.baseball_max_signal_age_minutes, hour_bound)
+        if domain == "sports_soccer":
+            return min(cfg.soccer_max_signal_age_minutes, hour_bound)
+        if domain.startswith("sports_"):
+            return min(cfg.live_sports_max_signal_age_minutes, hour_bound)
+        return min(
+            cfg.general_max_signal_age_minutes, cfg.max_signal_age_minutes, hour_bound
+        )
+
+    def _eligible_signals(
+        self, session: Session, now: datetime
+    ) -> tuple[list[OpportunitySignal], int]:
+        """(fresh 'new' signals inside their DOMAIN-SPECIFIC age window,
+        stale-skipped count). Dismissed/reviewed/errored signals are excluded
+        by the status filter."""
         cfg = self.config
         newest = now - timedelta(seconds=cfg.min_signal_age_seconds)
-        oldest = now - timedelta(hours=cfg.max_signal_age_hours)
+        widest = now - timedelta(
+            minutes=max(
+                cfg.max_signal_age_minutes,
+                cfg.general_max_signal_age_minutes,
+                cfg.live_sports_max_signal_age_minutes,
+                cfg.soccer_max_signal_age_minutes,
+                cfg.baseball_max_signal_age_minutes,
+            )
+        )
         rows = session.execute(
             select(OpportunitySignal).where(
                 OpportunitySignal.signal_status == STATUS_NEW,
                 OpportunitySignal.processing_error_type.is_(None),
                 OpportunitySignal.observed_at <= newest,
-                OpportunitySignal.observed_at >= oldest,
+                OpportunitySignal.observed_at >= widest,
             )
         ).scalars().all()
-        return list(rows)
+        eligible: list[OpportunitySignal] = []
+        skipped_stale = 0
+        for signal in rows:
+            domain = _ticker_domain(signal.market_ticker)
+            window = timedelta(minutes=self._age_window_minutes(domain))
+            observed = _aware(signal.observed_at)
+            if observed is not None and (now - observed) <= window:
+                eligible.append(signal)
+            else:
+                skipped_stale += 1
+        return eligible, skipped_stale
+
+    def _measurement_readiness_score(
+        self,
+        session: Session,
+        signal: OpportunitySignal,
+        domain: str,
+        market_type: str,
+        now: datetime,
+    ) -> tuple[float, dict]:
+        """Deterministic promotion-ordering score (0..~100). Measurement
+        readiness ONLY: how likely this signal's refresh is to produce a
+        source-backed forecast that edge-precheck can validly measure. Never
+        an EV/value/trade quantity."""
+        from app.services.watcher import latest_tick_for
+
+        cfg = self.config
+        settings = get_settings()
+        parts: dict = {}
+
+        window_s = self._age_window_minutes(domain) * 60
+        observed = _aware(signal.observed_at)
+        age_s = (now - observed).total_seconds() if observed else window_s
+        parts["freshness"] = round(
+            SCORE_FRESHNESS_MAX * max(0.0, 1 - age_s / window_s), 2
+        )
+
+        parts["source_backed_domain"] = (
+            SCORE_SOURCE_BACKED_DOMAIN if domain in SOURCE_BACKED_CAPABLE_DOMAINS else 0.0
+        )
+
+        if market_type in MEASURABLE_MARKET_TYPES:
+            parts["market_type"] = SCORE_MEASURABLE_MARKET_TYPE
+        elif market_type == MARKET_TYPE_PLAYER:
+            parts["market_type"] = 0.0  # player props: lowest unless
+            # player-specific evidence exists (none does in v1)
+        else:
+            parts["market_type"] = SCORE_UNKNOWN_MARKET_TYPE
+
+        parts["signal_type"] = (
+            len(PROMOTION_PRIORITY) - _priority_index(signal.signal_type)
+        ) * SCORE_SIGNAL_TYPE_STEP
+
+        book = 0.0
+        tick = latest_tick_for(session, signal.market_ticker)
+        if tick is not None:
+            if tick.midpoint is not None:
+                book += SCORE_BOOK_TWO_SIDED
+            if (
+                tick.spread is not None
+                and tick.spread <= settings.edge_precheck_max_spread_cents
+            ):
+                book += SCORE_BOOK_SPREAD_OK
+            if (
+                tick.liquidity_proxy is not None
+                and tick.liquidity_proxy >= settings.edge_precheck_min_liquidity_cents
+            ):
+                book += SCORE_BOOK_LIQUIDITY_OK
+            tick_observed = _aware(tick.observed_at)
+            if tick_observed is not None and (
+                (now - tick_observed).total_seconds()
+                <= settings.edge_precheck_max_market_snapshot_age_seconds
+            ):
+                book += SCORE_BOOK_FRESH_TICK
+        parts["book_quality"] = book
+
+        return round(sum(parts.values()), 2), parts
 
     def _recently_refreshed_tickers(self, session: Session, now: datetime) -> set[str]:
         cutoff = now - timedelta(seconds=TICKER_REFRESH_COOLDOWN_SECONDS)
@@ -251,35 +428,73 @@ class MarketOpsAutopilotService:
 
     def select_signals_for_promotion(
         self, session: Session, now: datetime | None = None
-    ) -> tuple[list[OpportunitySignal], int]:
-        """Deterministic auto-promotion selection: source-backed-capable
-        domains (baseball/soccer) first, then signal-type priority, then
-        newest; at most one signal per ticker per cycle; tickers refreshed
-        within the last hour or already awaiting processing are skipped.
-        Returns (selected, total_seen)."""
+    ) -> tuple[list[OpportunitySignal], int, dict]:
+        """Deterministic auto-promotion (OPS-009): candidates inside their
+        domain-specific freshness window are ranked by a measurement-
+        readiness score (freshness, source-backed capability, market-type
+        measurability, signal-type priority, live book quality); at most one
+        signal per ticker per cycle; tickers refreshed within the last hour
+        or already awaiting processing are skipped. Returns
+        (selected, total_seen, promotion_stats). The score orders promotion
+        only — it is never an EV/value/trade quantity."""
         now = now or _now()
-        candidates = self._eligible_signals(session, now)
+        candidates, skipped_stale = self._eligible_signals(session, now)
         seen = len(candidates)
         skip_tickers = self._recently_refreshed_tickers(session, now)
         skip_tickers |= self._tickers_awaiting_processing(session)
 
-        candidates.sort(
-            key=lambda s: (
-                0 if _ticker_domain(s.market_ticker) in SOURCE_BACKED_CAPABLE_DOMAINS else 1,
-                _priority_index(s.signal_type),
-                -s.id,
-            )
-        )
-        selected: list[OpportunitySignal] = []
-        used_tickers: set[str] = set()
+        # one candidate per ticker: best signal type, then newest
+        best_per_ticker: dict[str, OpportunitySignal] = {}
         for signal in candidates:
-            if len(selected) >= self.config.promote_limit:
-                break
-            if signal.market_ticker in skip_tickers or signal.market_ticker in used_tickers:
+            if signal.market_ticker in skip_tickers:
                 continue
-            used_tickers.add(signal.market_ticker)
-            selected.append(signal)
-        return selected, seen
+            current = best_per_ticker.get(signal.market_ticker)
+            key = (_priority_index(signal.signal_type), -signal.id)
+            if current is None or key < (
+                _priority_index(current.signal_type), -current.id
+            ):
+                best_per_ticker[signal.market_ticker] = signal
+
+        scored: list[tuple[float, dict, str, str, OpportunitySignal]] = []
+        unmeasurable = 0
+        for signal in best_per_ticker.values():
+            domain = _ticker_domain(signal.market_ticker)
+            market_type = _market_type_for_promotion(signal.market_ticker, domain)
+            score, parts = self._measurement_readiness_score(
+                session, signal, domain, market_type, now
+            )
+            if parts["book_quality"] == 0.0:
+                unmeasurable += 1
+            scored.append((score, parts, domain, market_type, signal))
+        scored.sort(key=lambda item: (-item[0], -item[4].id))
+
+        selected = scored[: self.config.promote_limit]
+        ages = [
+            (now - _aware(item[4].observed_at)).total_seconds()
+            for item in selected
+            if item[4].observed_at is not None
+        ]
+        stats = {
+            "skipped_stale_count": skipped_stale,
+            "unmeasurable_candidates": unmeasurable,
+            "promoted_signal_age_s_mean": round(sum(ages) / len(ages), 1) if ages else None,
+            "promoted_signal_age_s_max": round(max(ages), 1) if ages else None,
+            "promoted_by_domain": {},
+            "promoted_by_market_type": {},
+            "promoted_by_signal_type": {},
+            "readiness_scores": [item[0] for item in selected],
+        }
+        for score, _parts, domain, market_type, signal in selected:
+            stats["promoted_by_domain"][domain] = (
+                stats["promoted_by_domain"].get(domain, 0) + 1
+            )
+            stats["promoted_by_market_type"][market_type] = (
+                stats["promoted_by_market_type"].get(market_type, 0) + 1
+            )
+            stats["promoted_by_signal_type"][signal.signal_type] = (
+                stats["promoted_by_signal_type"].get(signal.signal_type, 0) + 1
+            )
+        return [item[4] for item in selected], seen, stats
 
     # --- lazily-built default collaborators --------------------------------
 
@@ -404,8 +619,11 @@ class MarketOpsAutopilotService:
             if cfg.include_probability_markets:
 
                 async def promote():
-                    selected, seen = self.select_signals_for_promotion(session, now)
+                    selected, seen, promo_stats = self.select_signals_for_promotion(
+                        session, now
+                    )
                     run.signals_seen = seen
+                    summary["promotion"] = promo_stats
                     promoted = [
                         self.promotion_service.promote(session, signal.id)
                         for signal in selected

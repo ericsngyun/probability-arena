@@ -242,7 +242,7 @@ class TestAutoPromotion:
         seed_signal(session, ticker="KXWCGAME-26JUN14USAWAL",
                     signal_type="liquidity_appeared")
         service = autopilot(cfg=MarketOpsConfig(promote_limit=2))
-        selected, seen = service.select_signals_for_promotion(session, NOW)
+        selected, seen, _stats = service.select_signals_for_promotion(session, NOW)
         assert seen == 3
         # baseball + soccer beat the generic ticker despite its stronger type
         assert [s.market_ticker[:4] for s in selected] == ["KXML", "KXWC"]
@@ -251,14 +251,14 @@ class TestAutoPromotion:
         seed_signal(session, ticker="KXMLB-A", signal_type="price_move_threshold")
         seed_signal(session, ticker="KXMLB-A", signal_type="spread_tightened")
         seed_signal(session, ticker="KXMLB-B", signal_type="liquidity_appeared")
-        selected, _ = autopilot().select_signals_for_promotion(session, NOW)
+        selected, _, _stats = autopilot().select_signals_for_promotion(session, NOW)
         assert len(selected) == 2
         assert {s.market_ticker for s in selected} == {"KXMLB-A", "KXMLB-B"}
 
     def test_promote_limit_cap(self, session):
         for i in range(8):
             seed_signal(session, ticker=f"KXMLB-{i}")
-        selected, seen = autopilot(
+        selected, seen, _stats = autopilot(
             cfg=MarketOpsConfig(promote_limit=3)
         ).select_signals_for_promotion(session, NOW)
         assert seen == 8
@@ -268,7 +268,7 @@ class TestAutoPromotion:
         seed_signal(session, ticker="YOUNG", age_minutes=0.1)  # < 30s old
         seed_signal(session, ticker="OLD", age_minutes=60 * 25)  # > 24h old
         seed_signal(session, ticker="RIGHT", age_minutes=10)
-        selected, seen = autopilot().select_signals_for_promotion(session, NOW)
+        selected, seen, _stats = autopilot().select_signals_for_promotion(session, NOW)
         assert seen == 1
         assert [s.market_ticker for s in selected] == ["RIGHT"]
 
@@ -278,7 +278,7 @@ class TestAutoPromotion:
         errored = seed_signal(session, ticker="ERRORED")
         errored.processing_error_type = "RuntimeError"
         session.commit()
-        selected, seen = autopilot().select_signals_for_promotion(session, NOW)
+        selected, seen, _stats = autopilot().select_signals_for_promotion(session, NOW)
         assert seen == 0 and selected == []
 
     def test_skips_recently_refreshed_and_pending_tickers(self, session):
@@ -289,7 +289,7 @@ class TestAutoPromotion:
         seed_signal(session, ticker="FRESH")   # same ticker, refreshed 5min ago
         seed_signal(session, ticker="PENDING")  # same ticker, already awaiting
         seed_signal(session, ticker="OK-1")
-        selected, _ = autopilot().select_signals_for_promotion(session, NOW)
+        selected, _, _stats = autopilot().select_signals_for_promotion(session, NOW)
         assert [s.market_ticker for s in selected] == ["OK-1"]
 
 
