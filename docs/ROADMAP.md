@@ -20,11 +20,12 @@
 | MVP-004E | `9b46911` | Baseball external research canary (MLB Stats API, source-backed packets) |
 | MVP-004F | `20d4fda` | Evidence-aware baseball forecaster (capped non-midpoint forecasts) |
 | OPS-005 | `c35e704` | Project canon + agent operating framework; deployed to EVO-X2 with baseball canaries enabled (`71dab1d`) |
-| MVP-004G | (this) | Champion/challenger comparison (paired + cohort, sample-size gated) |
+| MVP-004G | `918b9de` | Champion/challenger comparison (paired + cohort, sample-size gated) |
+| SOCCER-001 | (this) | Soccer/World Cup external research canary (provider-gated, source-backed packets) |
 
 ## Immediate next steps
 
-1. Deploy MVP-004G to EVO-X2; keep both baseball canaries running on live games.
+1. Deploy SOCCER-001 to EVO-X2 dark; roll out per the README sequence (flag → provider) while keeping both baseball canaries running on live games.
 2. Accumulate resolved outcomes; read `champion-challenger-report --domain sports_baseball` weekly — the sample-size label must reach at least `early_signal`/`useful_sample` with negative paired deltas before MVP-005A is considered.
 
 ## Gated future steps (in order; each requires explicit acceptance)

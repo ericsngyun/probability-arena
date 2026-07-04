@@ -1,6 +1,6 @@
 # Probability Arena
 
-**Kalshi read-only market intelligence** (MVP-004F: measurement loop, baseline runner, real-time watcher, retention, signal workflow, baseball external research, and an evidence-aware baseball forecaster).
+**Kalshi read-only market intelligence** (SOCCER-001: measurement loop, baseline runner, real-time watcher, retention, signal workflow, baseball + soccer external research canaries, and an evidence-aware baseball forecaster).
 
 Scans active Kalshi markets over the public REST API, ranks them on tradability signals (spread, liquidity, volume, time to expiration, resolution clarity), and stores time-series snapshots in Postgres. Optionally maintains live orderbook snapshots over WebSocket when API credentials are configured.
 
@@ -238,6 +238,40 @@ cd ~/projects/probability-arena && git pull --ff-only
 ```
 
 Still read-only end to end: no EV calculation, no trade recommendations, no paper trading, no sizing, no orders, no wallets, no execution.
+
+## Soccer / World Cup external research canary
+
+The second external-research canary (SOCCER-001), mirroring the baseball pattern for `sports_soccer` markets (World Cup, Champions League, EPL, MLS). `ENABLE_EXTERNAL_RESEARCH` stays `false`; the canary has its own flags:
+
+- `ENABLE_SOCCER_EXTERNAL_RESEARCH=false` (default) — plus `SOCCER_RESEARCH_PROVIDER=template`, `SOCCER_RESEARCH_TIMEOUT_SECONDS=15`, `SOCCER_RESEARCH_MAX_SOURCES=8`, `SOCCER_RESEARCH_COLLECTOR_VERSION=v1`.
+
+Signal processing uses `SoccerExternalResearchCollector` **only** when all four conditions hold: the signal is promoted, its domain is `sports_soccer`, its fresh resolution assessment is `researchable`, and the flag is true. Everything else (other domains, flag off, non-researchable markets, explicitly injected collectors) uses the template collector; the baseball canary keeps its own independent gate.
+
+The live data source is selected by `SOCCER_RESEARCH_PROVIDER`. `template` (the default) configures no fetcher, so even with the flag on the collector produces honest template-depth packets with the reason recorded — a deliberate dark-launch mode that makes the collector visible in reports before any external call happens. `espn` enables the **public ESPN soccer API** (`site.api.espn.com` — read-only GETs, no credentials), with the league slug (`fifa.world`, `uefa.champions`, `eng.1`, `usa.1`) mapped from the Kalshi ticker prefix (`KXWC`, `KXUCL`, `KXEPL`, `KXMLS`).
+
+The ticker is parsed for event date, teams, market type (winner/total/spread where detectable), and line/threshold when present — and **degrades honestly** (template fallback with reason) on unknown shapes. Evidence gathered when available: live score, match clock/period, red cards, penalty-shootout state, confirmed lineups, and basic match stats (possession/shots). Every fact carries a source reference; every source persists url/title/source_type/credibility/freshness. Confirmed lineups close that template gap; unfetched facts (pre-match team news, recent form) stay listed in `missing_info`. Evidence boosts `research_completeness_score` above the 0.65 template ceiling, making the packet `source_backed` downstream. Fallbacks (no fetcher, unparseable ticker, no scoreboard match, fetch failure) keep `template_only` depth and are counted by `research-canary-report`.
+
+```bash
+python -m app.cli process-promoted-signals --limit 5   # per-signal line shows research=<collector>/<depth>
+python -m app.cli research-canary-report               # soccer-external rows alongside baseball-external
+```
+
+**Safe rollout on EVO-X2:**
+
+```bash
+cd ~/projects/probability-arena && git pull --ff-only
+.venv/bin/python -m app.cli run-baseline --dry-run           # migrations (none new) + sanity
+# 1. deploy dark (both knobs at defaults); verify template mode still works:
+.venv/bin/python -m app.cli process-promoted-signals --limit 3
+# 2. set ENABLE_SOCCER_EXTERNAL_RESEARCH=true, keep SOCCER_RESEARCH_PROVIDER=template:
+#    promoted soccer signals now use soccer-external but fall back honestly (observable, no external calls)
+# 3. set SOCCER_RESEARCH_PROVIDER=espn; process 1-3 promoted soccer signals and inspect:
+.venv/bin/python -m app.cli process-promoted-signals --limit 3
+.venv/bin/python -m app.cli research-canary-report
+.venv/bin/python -m app.cli signal-report
+```
+
+This canary **does not trade, paper trade, calculate EV, or recommend positions** — it only upgrades research packets from template to source-backed evidence. No sizing, no orders, no wallets, no execution.
 
 ## Baseball evidence-aware forecaster
 

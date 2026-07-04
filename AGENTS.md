@@ -8,7 +8,7 @@ Probability Arena is a **read-only market intelligence and calibration system** 
 
 ## Current phase
 
-Through **MVP-004F / OPS-004** (see `docs/ROADMAP.md`): the full read-only loop runs scheduled on EVO-X2, a real-time watcher emits informational signals, promoted signals trigger intelligence refreshes, and two narrow baseball canaries (external research, evidence-aware forecasting) exist behind default-off flags. **No EV, no trading of any kind exists — anywhere.**
+Through **SOCCER-001** (see `docs/ROADMAP.md`): the full read-only loop runs scheduled on EVO-X2, a real-time watcher emits informational signals, promoted signals trigger intelligence refreshes, and three narrow sport canaries (baseball external research, evidence-aware baseball forecasting, soccer external research) exist behind default-off flags. **No EV, no trading of any kind exists — anywhere.**
 
 ## Agent roles
 

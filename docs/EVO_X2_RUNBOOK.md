@@ -66,6 +66,8 @@ systemctl --user restart probability-arena-watcher.service
 5. Restart the watcher service if the flag affects it (`systemctl --user restart probability-arena-watcher.service` — oneshot timers pick up `.env` next run automatically).
 6. Roll back = flip the flag back; no code change needed.
 
+Soccer canary (SOCCER-001) is a two-step rollout: flip `ENABLE_SOCCER_EXTERNAL_RESEARCH=true` first with `SOCCER_RESEARCH_PROVIDER=template` (collector selected, honest fallbacks, zero external calls), inspect `research-canary-report`, then set `SOCCER_RESEARCH_PROVIDER=espn` as its own step.
+
 ## DB backup (placeholder — formalize in a later OPS milestone)
 
 SQLite single file; a consistent snapshot while services run:

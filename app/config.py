@@ -44,6 +44,16 @@ class Settings(BaseSettings):
     baseball_research_max_sources: int = 8
     baseball_research_collector_version: str = "v1"
 
+    # Soccer external research canary (SOCCER-001) — narrow scope: promoted
+    # sports_soccer signals only; everything else stays on templates.
+    # Provider "template" keeps the collector fallback-only even when the
+    # flag is on; "espn" enables the read-only public ESPN soccer API.
+    enable_soccer_external_research: bool = False
+    soccer_research_provider: str = "template"
+    soccer_research_timeout_seconds: float = 15.0
+    soccer_research_max_sources: int = 8
+    soccer_research_collector_version: str = "v1"
+
     # Baseball evidence-aware forecasting canary (MVP-004F) — consumes
     # source-backed MLB packets; no external calls of its own
     enable_baseball_evidence_forecasting: bool = False

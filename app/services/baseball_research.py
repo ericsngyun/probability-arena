@@ -330,7 +330,9 @@ def build_research_canary_report(session: Session) -> ResearchCanaryReport:
         bucket["count"] += 1
         bucket["scores"].append(packet.research_completeness_score or 0.0)
         bucket["depths"][depth] = bucket["depths"].get(depth, 0) + 1
-        if packet.collector_name.startswith("baseball-external") and depth == "template_only":
+        # Any external canary collector (baseball-external, soccer-external)
+        # that landed at template depth counts as a fallback
+        if packet.collector_name.endswith("-external") and depth == "template_only":
             fallbacks += 1
 
     from sqlalchemy import func

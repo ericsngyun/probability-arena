@@ -4,7 +4,7 @@
 |---|---|---|---|---|
 | Market scanning | Live (baseline timer, EVO-X2) | ✅ | — | Read-only Kalshi GETs; MVE filter server-side; rate-bounded by limits |
 | Signal detection (watcher) | Live (60s loop, EVO-X2) | ✅ | — | Informational signals only; cooldown dedup; retention bounds tick growth |
-| External research | Canary only: baseball via MLB Stats API behind `ENABLE_BASEBALL_EXTERNAL_RESEARCH` (deployed code may lag; flag default false). General `ENABLE_EXTERNAL_RESEARCH` (LLM+web) exists but off | ✅ behind flags | MVP-004G-era review before widening domains | Official sources preferred; honest template fallback; provenance persisted |
+| External research | Canaries only: baseball via MLB Stats API behind `ENABLE_BASEBALL_EXTERNAL_RESEARCH`; soccer via provider-gated ESPN API behind `ENABLE_SOCCER_EXTERNAL_RESEARCH` + `SOCCER_RESEARCH_PROVIDER` (all default off/template). General `ENABLE_EXTERNAL_RESEARCH` (LLM+web) exists but off | ✅ behind flags | Per-domain canary review before widening further | Official sources preferred; honest template fallback; provenance persisted |
 | Forecasting | Template baseline default; baseball evidence canary behind `ENABLE_BASEBALL_EVIDENCE_FORECASTING`; LLM forecaster off | ✅ behind flags | Champion/challenger (MVP-004G) before broader rollout | Central confidence caps; capped ±0.25 prior shift; deterministic fallbacks |
 | Calibration | Live (outcome sync + scoring in baseline runner) | ✅ | — | Read-only scoring; append-only audit; the gate for everything below |
 | **EV calculation** | **Does not exist** | ❌ | MVP-005A (design + safety review), itself gated on calibration evidence of edge | See SAFETY_BOUNDARIES; no placeholder surface allowed |

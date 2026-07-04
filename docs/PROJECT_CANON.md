@@ -12,9 +12,9 @@ A read-only Kalshi market-intelligence system that measures its own forecasting 
 FastAPI app (app/main.py) — read-only API over the same services the CLI uses
 CLI (app/cli.py)          — one command per operation; every command owns its session
 Services (app/services/)  — scanner, eligibility, enrichment, resolution, research,
-                            baseball_research, forecasting, baseball_forecasting,
-                            outcomes, calibration, watcher, signal_workflow,
-                            pipeline (baseline runner), retention
+                            baseball_research, soccer_research, forecasting,
+                            baseball_forecasting, outcomes, calibration, watcher,
+                            signal_workflow, pipeline (baseline runner), retention
 Adapter (app/adapters/kalshi.py) — list/detail/event/series/by-tickers GETs,
                             legacy + dollars/fp payload shapes, outcome parsing
 DB: SQLAlchemy + Alembic (rev 0013) — SQLite on EVO-X2, Postgres-ready (JSONB variants)
@@ -43,7 +43,7 @@ Parallel to that: watcher (60s ticks + signals) → promote-signals → process-
 ## Current services / collectors / forecasters / judges
 
 - Judges: `RuleBasedResolutionJudge` (default), `MockResolutionJudge`, `LLMResolutionJudge` (flag).
-- Collectors: `TemplateResearchCollector` (default), `MockResearchCollector`, `LLMWebResearchCollector` (flag), `BaseballExternalResearchCollector` (canary flag; MLB Stats API).
+- Collectors: `TemplateResearchCollector` (default), `MockResearchCollector`, `LLMWebResearchCollector` (flag), `BaseballExternalResearchCollector` (canary flag; MLB Stats API), `SoccerExternalResearchCollector` (canary flag + provider; ESPN soccer API).
 - Forecasters: `TemplateBaselineForecaster` (default; midpoint prior), `MockForecaster`, `LLMForecaster` (flag), `BaseballEvidenceAwareForecaster` (canary flag; consumes source-backed packets, capped ±0.25 shift).
 - Central guarantees regardless of provider: evidence-depth recomputation, confidence caps (template_only 0.55 / source_backed 0.75 / critical-missing 0.50), avoid→high-risk forcing.
 
@@ -53,7 +53,7 @@ See `docs/FEATURE_FLAGS.md`. All model/external flags default **false**; deploye
 
 ## Latest accepted milestones
 
-MVP-001…004F and OPS-001…004 — full list with commits in `docs/ROADMAP.md`. Tests at OPS-005: 312+ passing, 2 gated live tests skipped by default.
+MVP-001…004G, OPS-001…005, and SOCCER-001 — full list with commits in `docs/ROADMAP.md`. Tests at SOCCER-001: 385+ passing, 2 gated live tests skipped by default.
 
 ## Current known limitations
 

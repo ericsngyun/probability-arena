@@ -7,9 +7,9 @@ Update this file (and docs/PROJECT_CANON.md) when a milestone lands."""
 PROJECT_NAME = "probability-arena"
 
 CURRENT_PHASE = (
-    "Read-only intelligence + calibration accumulation (through MVP-004F / OPS-004). "
+    "Read-only intelligence + calibration accumulation (through SOCCER-001). "
     "No EV, no trading of any kind. Canary flags exist for baseball external "
-    "research and evidence-aware baseball forecasting."
+    "research, evidence-aware baseball forecasting, and soccer external research."
 )
 
 ALLOWED_CAPABILITIES = (
@@ -17,7 +17,7 @@ ALLOWED_CAPABILITIES = (
     "eligibility gating (deterministic)",
     "detail enrichment (market/event/series GETs)",
     "resolution assessment (rule-based; LLM behind flag)",
-    "research packets (template; baseball external canary behind flag)",
+    "research packets (template; baseball + soccer external canaries behind flags)",
     "probability forecasting (template baseline; baseball evidence canary behind flag)",
     "outcome sync + calibration scoring (Brier / log loss)",
     "real-time watching + informational opportunity signals",
@@ -67,6 +67,7 @@ CANON_DOCS = (
 KEY_FEATURE_FLAGS = (
     "enable_external_research",
     "enable_baseball_external_research",
+    "enable_soccer_external_research",
     "enable_llm_resolution",
     "enable_llm_forecasting",
     "enable_baseball_evidence_forecasting",

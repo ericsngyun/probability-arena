@@ -130,11 +130,13 @@ class SignalProcessingService:
     injectable; defaults follow the env flags (template-only unless the
     ENABLE_LLM_*/ENABLE_EXTERNAL_RESEARCH flags are true).
 
-    Baseball canary (MVP-004E): when no collector is injected, the external
-    baseball collector is selected ONLY for promoted signals whose domain is
-    sports_baseball with a researchable fresh resolution AND
-    ENABLE_BASEBALL_EXTERNAL_RESEARCH=true. Everything else uses the
-    configured default collector (template unless global flags say more)."""
+    Sport canaries (MVP-004E baseball, SOCCER-001 soccer): when no collector
+    is injected, an external collector is selected ONLY for promoted signals
+    whose domain matches the canary (sports_baseball / sports_soccer) with a
+    researchable fresh resolution AND the matching flag on
+    (ENABLE_BASEBALL_EXTERNAL_RESEARCH / ENABLE_SOCCER_EXTERNAL_RESEARCH).
+    Everything else uses the configured default collector (template unless
+    global flags say more)."""
 
     def __init__(
         self,
@@ -143,18 +145,24 @@ class SignalProcessingService:
         collector=None,
         forecaster=None,
         baseball_fetcher=None,
+        soccer_fetcher=None,
     ):
         self.enrichment_adapter = enrichment_adapter
         self.judge = judge
         self.collector = collector
         self.forecaster = forecaster
         self.baseball_fetcher = baseball_fetcher
+        self.soccer_fetcher = soccer_fetcher
 
     def _collector_for(self, domain: str, resolution_tradeability: str | None):
-        """Per-signal collector selection (canary gate). An explicitly
+        """Per-signal collector selection (canary gates). An explicitly
         injected collector always wins (tests, overrides)."""
         from app.config import get_settings
-        from app.services.research import DOMAIN_SPORTS_BASEBALL, get_collector
+        from app.services.research import (
+            DOMAIN_SPORTS_BASEBALL,
+            DOMAIN_SPORTS_SOCCER,
+            get_collector,
+        )
 
         if self.collector is not None:
             return self.collector
@@ -167,6 +175,14 @@ class SignalProcessingService:
             from app.services.baseball_research import BaseballExternalResearchCollector
 
             return BaseballExternalResearchCollector(fetcher=self.baseball_fetcher)
+        if (
+            settings.enable_soccer_external_research
+            and domain == DOMAIN_SPORTS_SOCCER
+            and resolution_tradeability == "researchable"
+        ):
+            from app.services.soccer_research import SoccerExternalResearchCollector
+
+            return SoccerExternalResearchCollector(fetcher=self.soccer_fetcher)
         return get_collector()
 
     async def process(self, session: Session, signal: OpportunitySignal) -> OpportunitySignal:
