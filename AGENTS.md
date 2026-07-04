@@ -40,7 +40,7 @@ EV calculation · trade recommendations · paper trading · portfolio sizing · 
 grep -rinE "expected_value|kelly|position_siz|paper_trad|place_order|submit_order|create_order|wallet|recommended_side|trade_recommend|execute_trade" app/ --include="*.py"
 ```
 
-Expected result: no implementation surface (docstrings stating the boundary are fine).
+Expected result: no implementation surface. Acceptable hits: boundary-statement docstrings, `app/canon.py` declarations, the pre-existing Kalshi WS auth (`ws_snapshots.py` / `kalshi_private_key_path`), and the EVAL-001 scanner's own vocabulary constants in `app/services/frontier_eval.py` (string literals the AST-based safety audit uses to detect banned identifiers — `frontier-eval-report --include-safety` runs that stricter identifier-level check).
 
 ## Deployment expectations
 
