@@ -47,6 +47,9 @@ def test_schema_creates_all_tables(session):
         "crypto_price_ticks",
         "crypto_opportunity_signals",
         "crypto_watcher_runs",
+        # MarketOps Autopilot (OPS-006) — coordination audit
+        "marketops_runs",
+        "marketops_alerts",
     }
 
 

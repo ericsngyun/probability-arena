@@ -97,6 +97,23 @@ class Settings(BaseSettings):
     source_backed_max_confidence: float = 0.75
     missing_critical_info_max_confidence: float = 0.50
 
+    # MarketOps Autopilot (OPS-006) — read-only coordination of existing
+    # services: promote -> process -> crypto scan -> sync/score -> compare ->
+    # report -> local DB alerts. No EV, no trading, no execution of any kind.
+    # The flag gates ONLY the loop/timer; marketops-run-once is always allowed.
+    enable_marketops_autopilot: bool = False
+    marketops_promote_limit: int = 5
+    marketops_process_limit: int = 5
+    marketops_crypto_scan_limit: int = 100
+    marketops_sync_outcome_limit: int = 500
+    marketops_score_limit: int = 1000
+    marketops_min_signal_age_seconds: int = 30
+    marketops_max_signal_age_hours: int = 24
+    marketops_include_crypto: bool = True
+    marketops_include_probability_markets: bool = True
+    marketops_fail_fast: bool = False
+    marketops_loop_interval_seconds: int = 300
+
     # Crypto Arena scout (CRYPTO-001) — read-only Solana memecoin
     # surveillance: discovery, price/liquidity ticks, deterministic risk
     # signals. NO wallets, NO swaps, NO transaction building/signing, NO

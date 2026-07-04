@@ -377,3 +377,19 @@ def test_0014_creates_and_drops_crypto_arena_tables(tmp_path):
 
     command.downgrade(_config(url), "0013")
     assert not (crypto_tables & _tables(url))
+
+
+def test_0015_creates_and_drops_marketops_tables(tmp_path):
+    url = f"sqlite:///{tmp_path}/marketops.db"
+    run_migrations(url)
+
+    assert {"marketops_runs", "marketops_alerts"} <= _tables(url)
+    assert {"status", "config", "summary", "signals_seen", "signals_promoted",
+            "signals_processed", "crypto_tokens_seen", "crypto_signals_created",
+            "outcomes_synced", "forecasts_scored", "alerts_created", "error_type",
+            "error_message"} <= _columns(url, "marketops_runs")
+    assert {"alert_type", "severity", "status", "title", "message", "evidence",
+            "resolved_at"} <= _columns(url, "marketops_alerts")
+
+    command.downgrade(_config(url), "0014")
+    assert not ({"marketops_runs", "marketops_alerts"} & _tables(url))

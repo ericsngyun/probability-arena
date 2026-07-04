@@ -1101,6 +1101,209 @@ async def crypto_report(session=None) -> int:
             session.close()
 
 
+async def marketops_run_once(services=None, session=None) -> int:
+    """One MarketOps Autopilot cycle (read-only coordination of existing
+    services). Manual invocation is always allowed — ENABLE_MARKETOPS_AUTOPILOT
+    only gates the loop/timer. Returns 0 for ok/partial, 1 for error."""
+    from app.services.marketops import MarketOpsAutopilotService
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        service = services or MarketOpsAutopilotService()
+        run = await service.run_once(session)
+        print(
+            f"marketops run #{run.id}: {run.status} "
+            f"signals seen={run.signals_seen} promoted={run.signals_promoted} "
+            f"processed={run.signals_processed} crypto tokens={run.crypto_tokens_seen} "
+            f"crypto signals={run.crypto_signals_created} synced={run.outcomes_synced} "
+            f"scored={run.forecasts_scored} alerts={run.alerts_created} "
+            f"in {run.duration_ms}ms"
+        )
+        stage_errors = (run.summary or {}).get("stage_errors") or {}
+        for name, error in stage_errors.items():
+            print(f"  stage {name}: {error}")
+        if run.error_type:
+            print(f"  run error: {run.error_type}: {run.error_message}")
+        return 0 if run.status in ("ok", "partial") else 1
+    finally:
+        if owns_session:
+            session.close()
+
+
+async def marketops_report(session=None) -> int:
+    """Print the aggregate MarketOps report. Returns total runs."""
+    from app.services.marketops import MarketOpsReportService
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        report = MarketOpsReportService().build(session)
+        if report.latest_run:
+            run = report.latest_run
+            print(
+                f"last run: #{run.id} {run.status} at {run.started_at:%Y-%m-%d %H:%M} — "
+                f"signals seen={run.signals_seen} promoted={run.signals_promoted} "
+                f"processed={run.signals_processed}, crypto tokens={run.crypto_tokens_seen} "
+                f"signals={run.crypto_signals_created}, synced={run.outcomes_synced} "
+                f"scored={run.forecasts_scored}"
+            )
+        else:
+            print("last run: none")
+        print(f"runs total: {report.runs_total}")
+        print(f"source-backed packets: {report.source_backed_packets}")
+        if report.forecasts_by_forecaster:
+            print(
+                "forecasts by forecaster: "
+                + ", ".join(f"{f}={n}" for f, n in sorted(report.forecasts_by_forecaster.items()))
+            )
+        if report.champion_challenger:
+            cc = report.champion_challenger
+            print(
+                f"champion/challenger: pairs={cc.get('pair_count')} "
+                f"({cc.get('sample_label')}) mean_delta_brier={cc.get('mean_delta_brier')}"
+            )
+        print(
+            "crypto totals: "
+            + ", ".join(f"{k}={v}" for k, v in sorted(report.crypto_totals.items()))
+        )
+        if report.database_size_mb is not None:
+            print(f"db size: {report.database_size_mb} MiB")
+        print(f"open alerts: {len(report.open_alerts)}")
+        for alert in report.open_alerts:
+            print(f"  #{alert.id} [{alert.severity}] {alert.alert_type}: {alert.title}")
+        print(f"recommended action: {report.recommended_action}")
+        return report.runs_total
+    finally:
+        if owns_session:
+            session.close()
+
+
+async def marketops_alerts(limit: int = 20, alert_status: str | None = None, session=None) -> int:
+    """List recent MarketOps alerts, newest first. Returns the count printed."""
+    from app.services.marketops import MarketOpsAlertService
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        rows = MarketOpsAlertService().list_recent(session, limit=limit, status=alert_status)
+        print(f"{len(rows)} alert(s)")
+        for alert in rows:
+            resolved = f" resolved={alert.resolved_at:%Y-%m-%d %H:%M}" if alert.resolved_at else ""
+            print(
+                f"  #{alert.id} [{alert.severity}] {alert.alert_type} ({alert.status}) "
+                f"{alert.title} — {alert.message[:120]}{resolved}"
+            )
+        return len(rows)
+    finally:
+        if owns_session:
+            session.close()
+
+
+async def marketops_resolve_alert(alert_id: int, session=None) -> int:
+    """Resolve one alert by id. Returns 0 on success, 1 when not found."""
+    from app.services.marketops import MarketOpsAlertService
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        try:
+            alert = MarketOpsAlertService().resolve(session, alert_id)
+        except LookupError as exc:
+            print(str(exc))
+            return 1
+        print(f"alert #{alert.id} resolved ({alert.alert_type}: {alert.title})")
+        return 0
+    finally:
+        if owns_session:
+            session.close()
+
+
+async def marketops_loop(
+    interval: int | None = None,
+    services=None,
+    session=None,
+    max_iterations: int | None = None,
+) -> int:
+    """Run autopilot cycles on an interval until SIGINT/SIGTERM (or
+    max_iterations, for tests). Requires ENABLE_MARKETOPS_AUTOPILOT=true.
+    Per-cycle errors are printed and the loop continues. Returns iterations."""
+    import asyncio as aio
+    import signal as os_signal
+
+    from app.config import get_settings
+    from app.services.marketops import MarketOpsAutopilotService
+
+    settings = get_settings()
+    if not settings.enable_marketops_autopilot:
+        print("ENABLE_MARKETOPS_AUTOPILOT=false; set it to true in .env to run the loop")
+        return 0
+    if interval is None:
+        interval = settings.marketops_loop_interval_seconds
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+
+    stop = aio.Event()
+    loop = aio.get_running_loop()
+    for sig in (os_signal.SIGINT, os_signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, stop.set)
+        except (NotImplementedError, RuntimeError):
+            pass
+
+    service = services or MarketOpsAutopilotService()
+    iterations = 0
+    print(f"marketops loop started (interval={interval}s); Ctrl-C to stop")
+    while not stop.is_set():
+        if owns_session:
+            from app.db import get_sessionmaker
+
+            iteration_session = get_sessionmaker()()
+        else:
+            iteration_session = session
+        try:
+            run = await service.run_once(iteration_session)
+            print(
+                f"marketops run={run.id} status={run.status} "
+                f"promoted={run.signals_promoted} processed={run.signals_processed} "
+                f"alerts={run.alerts_created}"
+            )
+        except Exception as exc:
+            print(f"marketops cycle failed: {type(exc).__name__}: {exc}")
+        finally:
+            if owns_session:
+                iteration_session.close()
+        iterations += 1
+        if max_iterations is not None and iterations >= max_iterations:
+            break
+        try:
+            await aio.wait_for(stop.wait(), timeout=interval)
+        except aio.TimeoutError:
+            pass
+    print(f"marketops loop stopped after {iterations} iteration(s)")
+    return iterations
+
+
 async def agent_context() -> int:
     """Print the project canon for coding/ops agents: phase, state, flags,
     allowed/forbidden capabilities, and where the docs live. Read-only —
@@ -1394,6 +1597,25 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         "crypto-report", help="Aggregate crypto surveillance report"
     )
+    subparsers.add_parser(
+        "marketops-run-once",
+        help="One MarketOps Autopilot cycle (read-only coordination)",
+    )
+    subparsers.add_parser("marketops-report", help="Aggregate MarketOps report")
+    mo_alerts_parser = subparsers.add_parser(
+        "marketops-alerts", help="List recent MarketOps alerts"
+    )
+    mo_alerts_parser.add_argument("--limit", type=int, default=20)
+    mo_alerts_parser.add_argument("--status", type=str, default=None)
+    mo_resolve_parser = subparsers.add_parser(
+        "marketops-resolve-alert", help="Resolve one MarketOps alert by id"
+    )
+    mo_resolve_parser.add_argument("alert_id", type=int)
+    mo_loop_parser = subparsers.add_parser(
+        "marketops-loop",
+        help="Autopilot loop (requires ENABLE_MARKETOPS_AUTOPILOT=true)",
+    )
+    mo_loop_parser.add_argument("--interval", type=int, default=None)
     return parser
 
 
@@ -1495,6 +1717,19 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "crypto-report":
         total = asyncio.run(crypto_report())
         return 0 if total >= 0 else 1
+    if args.command == "marketops-run-once":
+        return asyncio.run(marketops_run_once())
+    if args.command == "marketops-report":
+        total = asyncio.run(marketops_report())
+        return 0 if total >= 0 else 1
+    if args.command == "marketops-alerts":
+        count = asyncio.run(marketops_alerts(limit=args.limit, alert_status=args.status))
+        return 0 if count >= 0 else 1
+    if args.command == "marketops-resolve-alert":
+        return asyncio.run(marketops_resolve_alert(alert_id=args.alert_id))
+    if args.command == "marketops-loop":
+        iterations = asyncio.run(marketops_loop(interval=args.interval))
+        return 0 if iterations >= 0 else 1
     return 2
 
 

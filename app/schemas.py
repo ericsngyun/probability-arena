@@ -652,3 +652,62 @@ class CryptoReport(BaseModel):
     recent_tokens: list[CryptoTokenOut]
     latest_run: CryptoRunSummary | None = None
     provider_errors: list[CryptoRunSummary] = []
+
+
+# --- MarketOps Autopilot (OPS-006) — read-only coordination outputs ---
+
+
+class MarketOpsRunOut(BaseModel):
+    """One autopilot cycle (coordination audit only)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    status: str
+    started_at: datetime
+    finished_at: datetime | None = None
+    duration_ms: int | None = None
+    config: dict | None = None
+    summary: dict | None = None
+    signals_seen: int = 0
+    signals_promoted: int = 0
+    signals_processed: int = 0
+    crypto_tokens_seen: int = 0
+    crypto_signals_created: int = 0
+    outcomes_synced: int = 0
+    forecasts_scored: int = 0
+    alerts_created: int = 0
+    error_type: str | None = None
+    error_message: str | None = None
+    created_at: datetime
+
+
+class MarketOpsAlertOut(BaseModel):
+    """One local MarketOps alert (operator telemetry only)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    alert_type: str
+    severity: str
+    status: str
+    title: str
+    message: str
+    evidence: dict | None = None
+    created_at: datetime
+    resolved_at: datetime | None = None
+
+
+class MarketOpsReport(BaseModel):
+    """Aggregate MarketOps view. Informational only — no EV, no trade
+    semantics; the recommended action is operator guidance, never a trade."""
+
+    runs_total: int
+    latest_run: MarketOpsRunOut | None = None
+    open_alerts: list[MarketOpsAlertOut] = []
+    source_backed_packets: int = 0
+    forecasts_by_forecaster: dict[str, int] = {}
+    champion_challenger: dict | None = None
+    crypto_totals: dict[str, int] = {}
+    database_size_mb: float | None = None
+    recommended_action: str = ""

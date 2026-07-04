@@ -1,6 +1,6 @@
 # Probability Arena
 
-**Kalshi read-only market intelligence** (CRYPTO-001: measurement loop, baseline runner, real-time watcher, retention, signal workflow, baseball + soccer external research canaries, an evidence-aware baseball forecaster, and Crypto Arena — a read-only Solana memecoin surveillance lane).
+**Kalshi read-only market intelligence** (OPS-006: measurement loop, baseline runner, real-time watcher, retention, signal workflow, baseball + soccer external research canaries, an evidence-aware baseball forecaster, Crypto Arena — a read-only Solana memecoin surveillance lane — and a MarketOps Autopilot coordinating all of it, still strictly read-only).
 
 Scans active Kalshi markets over the public REST API, ranks them on tradability signals (spread, liquidity, volume, time to expiration, resolution clarity), and stores time-series snapshots in Postgres. Optionally maintains live orderbook snapshots over WebSocket when API credentials are configured.
 
@@ -318,6 +318,26 @@ python -m app.cli crypto-report                  # totals, signals by type/statu
 `GET /crypto/signals` · `GET /crypto/tokens` · `GET /crypto/pairs` · `GET /crypto/report` serve the same data (raw provider payloads stay DB-only). `ENABLE_CRYPTO_SCOUT=false` reserves future loop/timer use — no crypto watch-loop exists in CRYPTO-001. Retention prunes only `crypto_price_ticks`/`crypto_watcher_runs` (`CRYPTO_RETENTION_DAYS=7`); tokens, pairs, events, risk assessments, and signals are kept.
 
 **Future (each explicitly gated):** CRYPTO-002 risk engine (real read-only providers) → CRYPTO-003 paper simulator (gated like MVP-005B) → WALLET-001 policy-controlled transaction *proposal* gateway only (no signing, no keys), much later.
+
+## MarketOps Autopilot (OPS-006)
+
+**Read-only coordination, not new capability.** One autopilot cycle sequences the existing services: inspect fresh signals → auto-promote top-N → process promoted (fresh enrichment/assessment/research/forecast via whatever the env flags select) → crypto scan → outcome sync → forecast scoring → champion/challenger snapshot → local DB alerts → one `marketops_runs` audit row. Every stage is individually guarded — a failing stage records its error in the run summary plus a `provider_error` alert and the cycle continues (`MARKETOPS_FAIL_FAST=false`). The autopilot can promote, process, research, forecast, score, and report; it **cannot trade, paper trade, calculate EV, size positions, place orders, or move money** — those capabilities do not exist anywhere in this codebase.
+
+**Auto-promotion is deterministic:** only `new`, non-errored signals aged between `MARKETOPS_MIN_SIGNAL_AGE_SECONDS` and `MARKETOPS_MAX_SIGNAL_AGE_HOURS`; source-backed-capable domains (`sports_baseball`, `sports_soccer`) first, then watcher signal-type priority, then newest; at most one signal per ticker per cycle, capped at `MARKETOPS_PROMOTE_LIMIT`; tickers already awaiting processing or refreshed within the last hour are skipped.
+
+**Alerts** are local DB rows only (no Slack/Discord yet), deduped while open: `service_health_warning`, `too_many_signals`, `no_recent_signals`, `crypto_signal_spike`, `source_backed_forecast_created`, `champion_challenger_sample_update`, `provider_error`, `db_growth_warning`.
+
+```bash
+python -m app.cli marketops-run-once            # one cycle (always allowed manually)
+python -m app.cli marketops-report              # last run, canary/forecaster/crypto/cc snapshot, open alerts, recommended action
+python -m app.cli marketops-alerts --limit 20   # newest alerts (--status open|resolved)
+python -m app.cli marketops-resolve-alert 3
+python -m app.cli marketops-loop --interval 300 # refuses to start unless ENABLE_MARKETOPS_AUTOPILOT=true; clean SIGINT/SIGTERM
+```
+
+`GET /marketops/runs`, `GET /marketops/runs/{id}`, `GET /marketops/report`, `GET /marketops/alerts`, `PATCH /marketops/alerts/{id}/resolve` serve the same data.
+
+**Rollout (EVO-X2): dark → run-once → optional timer.** Deploy with the flag false, run `marketops-run-once` manually and inspect the report/alerts, then optionally install `infra/systemd/user/probability-arena-marketops.{service,timer}` (5-minute cadence; **not auto-installed** — install commands are in the timer file).
 
 ## Champion/challenger comparison
 

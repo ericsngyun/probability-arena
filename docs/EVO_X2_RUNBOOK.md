@@ -68,6 +68,15 @@ systemctl --user restart probability-arena-watcher.service
 
 Soccer canary (SOCCER-001) is a two-step rollout: flip `ENABLE_SOCCER_EXTERNAL_RESEARCH=true` first with `SOCCER_RESEARCH_PROVIDER=template` (collector selected, honest fallbacks, zero external calls), inspect `research-canary-report`, then set `SOCCER_RESEARCH_PROVIDER=espn` as its own step.
 
+MarketOps Autopilot (OPS-006) rollout is **dark → run-once → optional timer**:
+deploy with `ENABLE_MARKETOPS_AUTOPILOT=false`, run `marketops-run-once`
+manually 1–3 times and inspect `marketops-report` / `marketops-alerts`, then —
+only if wanted — install `infra/systemd/user/probability-arena-marketops.{service,timer}`
+(5-min cadence, NOT auto-installed; install commands are in the timer file).
+The `marketops-loop` CLI additionally refuses to start unless the flag is true.
+It coordinates existing read-only services only — it cannot trade, paper
+trade, calculate EV, or move money.
+
 Crypto Arena (CRYPTO-001) has **no service/timer** — validate with manual passes only:
 `crypto-scan-once --limit 25` → `crypto-report` → `crypto-signals-recent`. The
 migration (`0014`) applies on the first command. `ENABLE_CRYPTO_SCOUT` stays

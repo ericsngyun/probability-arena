@@ -7,10 +7,11 @@ Update this file (and docs/PROJECT_CANON.md) when a milestone lands."""
 PROJECT_NAME = "probability-arena"
 
 CURRENT_PHASE = (
-    "Read-only intelligence + calibration accumulation (through CRYPTO-001). "
+    "Read-only intelligence + calibration accumulation (through OPS-006). "
     "No EV, no trading of any kind. Canary flags exist for baseball external "
     "research, evidence-aware baseball forecasting, and soccer external research. "
-    "Crypto Arena adds read-only Solana memecoin surveillance behind its own flags."
+    "Crypto Arena adds read-only Solana memecoin surveillance; MarketOps "
+    "Autopilot coordinates the existing read-only services behind its own flag."
 )
 
 ALLOWED_CAPABILITIES = (
@@ -25,6 +26,7 @@ ALLOWED_CAPABILITIES = (
     "signal promotion + intelligence refresh workflow",
     "retention pruning of our own operational tables",
     "crypto scouting (read-only Solana token/pair surveillance + risk telemetry)",
+    "marketops autopilot (read-only coordination: promote/process/scan/score/report/alert)",
 )
 
 FORBIDDEN_CAPABILITIES = (
@@ -74,6 +76,7 @@ KEY_FEATURE_FLAGS = (
     "enable_external_research",
     "enable_crypto_scout",
     "enable_crypto_risk_provider",
+    "enable_marketops_autopilot",
     "enable_baseball_external_research",
     "enable_soccer_external_research",
     "enable_llm_resolution",

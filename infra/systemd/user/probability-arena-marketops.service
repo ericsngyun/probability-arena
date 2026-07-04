@@ -1,0 +1,20 @@
+# Probability Arena — MarketOps Autopilot cycle (read-only coordination of
+# existing services: promote/process signals, crypto scan, outcome sync,
+# scoring, champion/challenger snapshot, local DB alerts). No EV, no trading,
+# no wallets, no execution of any kind exists in this project.
+# NOT auto-installed. See the .timer file for install commands.
+
+[Unit]
+Description=Probability Arena MarketOps Autopilot cycle (read-only coordination)
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/projects/probability-arena
+EnvironmentFile=%h/projects/probability-arena/.env
+ExecStart=%h/projects/probability-arena/.venv/bin/python -m app.cli marketops-run-once
+NoNewPrivileges=true
+TimeoutStartSec=10min
+
+[Install]
+WantedBy=default.target

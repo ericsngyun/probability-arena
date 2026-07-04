@@ -1,0 +1,22 @@
+# Probability Arena — MarketOps Autopilot timer (USER unit), every 5 minutes.
+# NOT auto-installed. Deploy dark first, validate `marketops-run-once`
+# manually, then install:
+#   cp infra/systemd/user/probability-arena-marketops.{service,timer} ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now probability-arena-marketops.timer
+# Inspect:
+#   systemctl --user list-timers | grep marketops
+#   journalctl --user -u probability-arena-marketops.service -n 50 --no-pager
+
+[Unit]
+Description=Run Probability Arena MarketOps Autopilot every 5 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+RandomizedDelaySec=30
+Persistent=false
+Unit=probability-arena-marketops.service
+
+[Install]
+WantedBy=timers.target

@@ -15,10 +15,11 @@ Services (app/services/)  — scanner, eligibility, enrichment, resolution, rese
                             baseball_research, soccer_research, forecasting,
                             baseball_forecasting, outcomes, calibration, watcher,
                             signal_workflow, pipeline (baseline runner), retention,
-                            crypto_scout + crypto_risk (Crypto Arena, read-only)
+                            crypto_scout + crypto_risk (Crypto Arena, read-only),
+                            marketops (Autopilot: read-only coordination + alerts)
 Adapter (app/adapters/kalshi.py) — list/detail/event/series/by-tickers GETs,
                             legacy + dollars/fp payload shapes, outcome parsing
-DB: SQLAlchemy + Alembic (rev 0014) — SQLite on EVO-X2, Postgres-ready (JSONB variants)
+DB: SQLAlchemy + Alembic (rev 0015) — SQLite on EVO-X2, Postgres-ready (JSONB variants)
 ```
 
 ## Pipeline stages (baseline runner order)
@@ -41,6 +42,7 @@ Parallel to that: watcher (60s ticks + signals) → promote-signals → process-
 | pipeline_runs, pipeline_stage_runs | baseline runner audit + overlap lock |
 | market_price_ticks, opportunity_signals, watcher_runs | watcher telemetry + signal workflow |
 | crypto_tokens, crypto_pairs, crypto_token_discovery_events, crypto_token_risk_assessments, crypto_price_ticks, crypto_opportunity_signals, crypto_watcher_runs | Crypto Arena read-only surveillance (CRYPTO-001) |
+| marketops_runs, marketops_alerts | MarketOps Autopilot coordination audit + local alerts (OPS-006) |
 
 ## Current services / collectors / forecasters / judges
 
@@ -55,7 +57,7 @@ See `docs/FEATURE_FLAGS.md`. All model/external flags default **false**; deploye
 
 ## Latest accepted milestones
 
-MVP-001…004G, OPS-001…005, SOCCER-001, and CRYPTO-001 — full list with commits in `docs/ROADMAP.md`. Tests at CRYPTO-001: 425+ passing, 2 gated live tests skipped by default.
+MVP-001…004G, OPS-001…006, SOCCER-001, and CRYPTO-001 — full list with commits in `docs/ROADMAP.md`. Tests at OPS-006: 461+ passing, 2 gated live tests skipped by default.
 
 ## Current known limitations
 

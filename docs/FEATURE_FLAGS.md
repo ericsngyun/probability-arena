@@ -24,6 +24,16 @@ Rollout discipline: one flag at a time, per `docs/EVO_X2_RUNBOOK.md`.
 | `ENABLE_CRYPTO_SCOUT` | false | Reserved for crypto loop/timer use (none exists in CRYPTO-001); manual `crypto-scan-once` is always allowed |
 | `ENABLE_CRYPTO_RISK_PROVIDER` | false | Token risk assessments + risk signals (holder_risk/rug_risk/suspicious_supply_control); provider `CRYPTO_RISK_PROVIDER=mock` is the only CRYPTO-001 implementation |
 | `ENABLE_HELIUS` | false | **Reserved only** — no Helius adapter exists in CRYPTO-001 |
+| `ENABLE_MARKETOPS_AUTOPILOT` | false | The `marketops-loop` / timer only; `marketops-run-once` is always allowed manually. Read-only coordination — cannot trade, paper trade, calculate EV, or move money |
+
+## MarketOps Autopilot tuning (OPS-006)
+
+`MARKETOPS_PROMOTE_LIMIT=5`, `MARKETOPS_PROCESS_LIMIT=5`,
+`MARKETOPS_CRYPTO_SCAN_LIMIT=100`, `MARKETOPS_SYNC_OUTCOME_LIMIT=500`,
+`MARKETOPS_SCORE_LIMIT=1000`, `MARKETOPS_MIN_SIGNAL_AGE_SECONDS=30`,
+`MARKETOPS_MAX_SIGNAL_AGE_HOURS=24`, `MARKETOPS_INCLUDE_CRYPTO=true`,
+`MARKETOPS_INCLUDE_PROBABILITY_MARKETS=true`, `MARKETOPS_FAIL_FAST=false`,
+`MARKETOPS_LOOP_INTERVAL_SECONDS=300`.
 
 ## Crypto Arena tuning (CRYPTO-001 — read-only surveillance; no wallets/swaps/execution)
 

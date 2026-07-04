@@ -22,7 +22,8 @@
 | OPS-005 | `c35e704` | Project canon + agent operating framework; deployed to EVO-X2 with baseball canaries enabled (`71dab1d`) |
 | MVP-004G | `918b9de` | Champion/challenger comparison (paired + cohort, sample-size gated) |
 | SOCCER-001 | `e1d3b7b` | Soccer/World Cup external research canary (provider-gated, source-backed packets); rolled out to EVO-X2 (`f76baaa`) |
-| CRYPTO-001 | (this) | Crypto Arena: read-only Solana memecoin discovery + risk surveillance (DEX Screener, 7 tables, 9 deterministic signal types, CLI/API reports) |
+| CRYPTO-001 | `9d72237` | Crypto Arena: read-only Solana memecoin discovery + risk surveillance (DEX Screener, 7 tables, 9 deterministic signal types, CLI/API reports); deployed dark to EVO-X2 (`7606ca6`) |
+| OPS-006 | (this) | MarketOps Autopilot: read-only 24/7 coordination (auto-promote/process, crypto scan, sync/score, champion/challenger snapshot, local DB alerts, optional 5-min timer) |
 
 ## Immediate next steps
 

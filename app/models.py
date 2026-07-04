@@ -598,3 +598,51 @@ class CryptoWatcherRun(Base):
     error_type: Mapped[str | None] = mapped_column(String(128))
     error_message: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+# --- MarketOps Autopilot (OPS-006) — read-only coordination audit ---
+# One run row per autopilot cycle; local DB alerts only. No EV, trade,
+# order, wallet, or execution fields exist.
+
+
+class MarketOpsRun(Base):
+    """One MarketOps Autopilot cycle: which stages ran, what they touched,
+    and what went wrong. Coordination audit only."""
+
+    __tablename__ = "marketops_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    status: Mapped[str] = mapped_column(String(16), default="running")  # running|ok|partial|error
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+    config: Mapped[dict | None] = mapped_column(RawJSON)
+    summary: Mapped[dict | None] = mapped_column(RawJSON)
+    signals_seen: Mapped[int] = mapped_column(Integer, default=0)
+    signals_promoted: Mapped[int] = mapped_column(Integer, default=0)
+    signals_processed: Mapped[int] = mapped_column(Integer, default=0)
+    crypto_tokens_seen: Mapped[int] = mapped_column(Integer, default=0)
+    crypto_signals_created: Mapped[int] = mapped_column(Integer, default=0)
+    outcomes_synced: Mapped[int] = mapped_column(Integer, default=0)
+    forecasts_scored: Mapped[int] = mapped_column(Integer, default=0)
+    alerts_created: Mapped[int] = mapped_column(Integer, default=0)
+    error_type: Mapped[str | None] = mapped_column(String(128))
+    error_message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class MarketOpsAlert(Base):
+    """Local DB alert raised by the autopilot (no external delivery in
+    OPS-006). Informational operator telemetry only."""
+
+    __tablename__ = "marketops_alerts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    alert_type: Mapped[str] = mapped_column(String(48), index=True)
+    severity: Mapped[str] = mapped_column(String(16), default="info")  # info|warning|critical
+    status: Mapped[str] = mapped_column(String(16), default="open", index=True)  # open|resolved
+    title: Mapped[str] = mapped_column(String(256))
+    message: Mapped[str] = mapped_column(Text, default="")
+    evidence: Mapped[dict | None] = mapped_column(RawJSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
