@@ -221,3 +221,70 @@ systemctl --user daemon-reload && systemctl --user enable --now probability-aren
 1. Cycle duration ~110s fits the 5-min cadence, but most of it is `sync_outcomes` over 500 markets; consider `MARKETOPS_SYNC_OUTCOME_LIMIT=100` in `.env` before installing the timer (the 4h baseline already does deep syncs).
 2. The autopilot promotes aggressively while World Cup/MLB games are live — the per-ticker/hour cooldowns held in testing, but watch the first timered day via `marketops-report`.
 3. DB at ~190 MiB (growth driven by watcher ticks + new crypto lane; retention windows apply). `db_growth_warning` fires at 512 MiB.
+
+---
+
+## OPS-006 LIVE ENABLEMENT — MarketOps Autopilot timer active (2026-07-04, ~02:27 UTC)
+
+Host commit `a1d4393` (current main; no code change in this step — flags + timer only).
+
+**Flags before → after** (`.env`): no `MARKETOPS_*`/`ENABLE_MARKETOPS_AUTOPILOT` keys → conservative live block:
+`ENABLE_MARKETOPS_AUTOPILOT=true`, `MARKETOPS_SYNC_OUTCOME_LIMIT=100` (down from default 500 — the 4h baseline still does deep syncs), `MARKETOPS_PROMOTE_LIMIT=5`, `MARKETOPS_PROCESS_LIMIT=5`, `MARKETOPS_CRYPTO_SCAN_LIMIT=100`, `MARKETOPS_SCORE_LIMIT=1000`, `MARKETOPS_INCLUDE_CRYPTO=true`, `MARKETOPS_INCLUDE_PROBABILITY_MARKETS=true`, `MARKETOPS_FAIL_FAST=false`. All other flags unchanged (baseball canaries true, soccer canary true + espn, crypto lane dark, global LLM/external false).
+
+**Timer installed + enabled** (`probability-arena-marketops.{service,timer}` copied to `~/.config/systemd/user/`, daemon-reload, `enable --now`): active/waiting, 5-min cadence (`OnBootSec=2min`, `OnUnitActiveSec=5min`, `RandomizedDelaySec=30`).
+
+**Cycles observed this session (all ok, ~27–28s each — sync-limit change cut duration from 110s):**
+
+| Run | Trigger | Seen | Promoted | Processed | Crypto tok/sig | Synced | Scored | Alerts |
+|---|---|---|---|---|---|---|---|---|
+| #3 | timer (first firing) | 409 | 5 | 5 | 35/6 | 100 | 4 | 5 |
+| #4 | manual run-once | 404 | 5 | 5 | 35/3 | 100 | 5 | 6 |
+
+Journal clean: 0 error/traceback lines across all marketops service runs. Existing units unaffected: baseline timer (next 04:02 UTC), watcher (active, running since 01:17), retention timer (next 00:00 UTC Jul 5) — all active.
+
+**State snapshots at enablement:**
+- DB: 191.3 MiB, 44.2k market ticks, 568 opportunity signals, 147 forecasts/packets, 1311 outcomes, marketops_runs=4.
+- Champion/challenger: **9 paired samples, mean_delta_brier −0.0703** (challenger ahead; `insufficient_sample` — no conclusions until ≥30 pairs).
+- Crypto lane: 40 tokens, 121 pairs, 425 ticks, 66 signals across all 5 active detector types (`new_pair=38, price_momentum=12, boost_detected=10, volume_spike=4, liquidity_removed=2`); risk detectors inactive (provider off, by design).
+- Open alerts: all `info` (source-backed refreshes + cc sample updates) — the autopilot is generating exactly the audit trail intended; safe to resolve in bulk during review.
+- Safety grep re-run at enablement: no implementation surface for wallet/private_key/swap/signing/order/EV/paper/sizing/trade-recommendation terms (boundary docstrings only).
+
+**Rollback (any of, least → most):**
+
+```bash
+# stop the cadence only:
+systemctl --user disable --now probability-arena-marketops.timer
+# and/or turn the autopilot dark again:
+sed -i 's/^ENABLE_MARKETOPS_AUTOPILOT=.*/ENABLE_MARKETOPS_AUTOPILOT=false/' ~/projects/probability-arena/.env
+# full removal of the units:
+rm ~/.config/systemd/user/probability-arena-marketops.{service,timer} && systemctl --user daemon-reload
+```
+
+## 24-hour readiness report — TEMPLATE (fill ~2026-07-05 02:30 UTC)
+
+Run these and record results:
+
+```bash
+cd ~/projects/probability-arena
+.venv/bin/python -m app.cli marketops-report
+.venv/bin/python -m app.cli marketops-alerts --limit 50 --status open
+.venv/bin/python -m app.cli db-stats
+.venv/bin/python -m app.cli champion-challenger-report --domain sports_baseball --paired-only
+journalctl --user -u probability-arena-marketops.service --since "-24h" --no-pager | grep -cE "status=error|Traceback"
+systemctl --user list-timers | grep probability
+```
+
+| Check | Target | Actual | Pass? |
+|---|---|---|---|
+| Cycles completed in 24h | ~288 (5-min cadence), ≥95% status ok | | |
+| Cycle duration p95 | < 60s (headroom under the 5-min window) | | |
+| Stage errors / provider_error alerts | 0 sustained (transient API blips acceptable) | | |
+| Signals promoted per cycle | ≤ 5, distinct tickers, no ticker >1×/hour | | |
+| Source-backed packet share of processed | > 50% during live game windows | | |
+| Crypto signals per cycle (steady state) | < 25 (spike alert threshold) | | |
+| Open warning/critical alerts | 0 unexplained | | |
+| Champion/challenger paired n | growing toward 30 (`early_signal` gate) | | |
+| DB growth in 24h | < 30 MiB/day (else tighten retention) | | |
+| Baseline/watcher/retention units | all still active, journals clean | | |
+
+**Decision after 24h:** all pass → leave enabled, review weekly via `marketops-report`. Any fail → apply the matching rollback above, capture the journal, and file the finding in this report before re-enabling.
