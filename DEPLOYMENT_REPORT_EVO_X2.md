@@ -562,3 +562,19 @@ Deployed **`35890e9` → `7746ef9`** (no migration; no `.env` changes — the ne
 **Champion/challenger meanwhile:** paired n=44, d_brier −0.0498, d_log_loss −0.1448 (`early_signal`) — steadily strengthening.
 
 **Rollback:** the minute knobs are defaults in code; to revert behavior set all `MARKETOPS_*_MAX_SIGNAL_AGE_MINUTES` keys high (e.g. 1440) in `.env`, or revert the commit.
+
+---
+
+## OPS-009 live-supply validation — promoted signal age collapses to ~4 minutes (2026-07-04, 08:49–09:00 UTC)
+
+**Window honesty first:** the specified prime windows (CAN–MAR 17:00 UTC, PAR–FRA 21:00 UTC, MLB evening) had not opened. However, **live ITF tennis was genuinely trading** (overnight tournaments), providing real fresh-signal supply — enough to validate the OPS-009 promotion mechanics live, though NOT the watchlist outcome (tennis has no evidence forecaster, so source-backed forecasts are structurally impossible in this window).
+
+**Session 1 (run #77, 08:49):** 2 seen → **1 promoted at age 266.5s (~4.4 min)** — sports_tennis, market type `winner`, `skipped_stale=0`, `unmeasurable=0` (the tennis book was live). One-per-ticker dedupe collapsed the two same-ticker signals correctly. Processed=1 → template forecast (tennis has no evidence path) → cycle-scoped edge-precheck targeted **0 rows** (source-backed filter): no noise row was created for an unmeasurable forecast. Duration 33.4s.
+
+**Session 2 (run #80, 08:58, after intermediate timer cycles):** 1 seen → **0 promoted** — the refresh-cooldown correctly refused to re-promote the just-processed ticker. Zero stale promotions, zero measurement noise.
+
+**The freshness trajectory, now measured live:** promoted signal age p50 ≈ **5 hours** (pre-OPS-008) → ≈ **67 minutes** (post-OPS-008) → **~4.4 minutes** (OPS-009, live). This is the number that had to move for edge-precheck's 300s live-sports freshness gate to be reachable, and it moved.
+
+**Frontier readiness:** `not_ready` — blocked solely on watchlist rows, which require a source-backed domain (baseball/soccer) live window. Champion/challenger: paired n=44, d_brier −0.0498 (early_signal). Safety audit clean (in-report AST scan). All four services active.
+
+**Decision per the validation rules:** rule 3/insufficient-supply variant applies to the watchlist question (the live supply was tennis-only — measurable-domain supply was insufficient); **do NOT loosen freshness**, and **keep `MARKETOPS_INCLUDE_EDGE_PRECHECK=false`**. The 17:00/21:00 UTC World Cup sessions (scheduled agent at 17:17 UTC) are the real watchlist test — every upstream mechanism they depend on has now been validated live, including the 4-minute promotion ages they'll inherit.
