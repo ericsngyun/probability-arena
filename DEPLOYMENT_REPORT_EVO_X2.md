@@ -474,3 +474,19 @@ journalctl --user -u probability-arena-marketops.service -n 3 --no-pager | grep 
 ```
 
 If watchlist rows appear with correct persistence accrual, cycle-scoped automation (≤5 rows/cycle) can be enabled as a one-flag step. **No change and no rollback required from this session.**
+
+---
+
+## SOCCER-002 deployed dark — soccer evidence-aware forecaster (2026-07-04, ~07:20 UTC)
+
+Deployed **`bd47715` → `2d2cf10`** (no migration; `ENABLE_SOCCER_EVIDENCE_FORECASTING` not in host `.env` — defaults false, behavior unchanged). MarketOps timer and watcher stayed active through the deploy.
+
+**Why this matters for the measurement track:** soccer source-backed packets previously fed the template baseline (confidence < 0.60), so World Cup markets could never pass edge-precheck. `soccer_evidence` forecasts carry 0.65–0.70 confidence — once the flag is flipped, World Cup windows become measurable.
+
+**Rollout (one flag, during a World Cup window — next window ~14:00 UTC today):**
+1. `ENABLE_SOCCER_EVIDENCE_FORECASTING=true` in `.env` (soccer research canary already on with `espn`).
+2. Let the autopilot process 1–3 live soccer signals; verify `soccer_evidence` in `research-canary-report` forecaster breakdown.
+3. `edge-precheck --latest-marketops-run` within ~2 min of a cycle — first measurable soccer watchlist rows.
+4. As outcomes settle: `champion-challenger-report --domain sports_soccer --challenger soccer_evidence_v1`.
+
+Boundary restated: forecasts are measurement inputs only — no dollar EV, no advice, no actions. Tests at SOCCER-002: 583 passing; safety greps clean.
