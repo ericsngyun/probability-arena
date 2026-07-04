@@ -490,3 +490,23 @@ Deployed **`bd47715` → `2d2cf10`** (no migration; `ENABLE_SOCCER_EVIDENCE_FORE
 4. As outcomes settle: `champion-challenger-report --domain sports_soccer --challenger soccer_evidence_v1`.
 
 Boundary restated: forecasts are measurement inputs only — no dollar EV, no advice, no actions. Tests at SOCCER-002: 583 passing; safety greps clean.
+
+---
+
+## SOCCER-002 LIVE ENABLEMENT — flag on; pipeline validated end-to-end; watchlist validation scheduled for today's matches (2026-07-04, ~07:15 UTC)
+
+Host commit `ebb560a` (flags-only change). **Flags before → after:** `ENABLE_SOCCER_EVIDENCE_FORECASTING` absent → **true**. Confirmed unchanged: `ENABLE_SOCCER_EXTERNAL_RESEARCH=true`, `SOCCER_RESEARCH_PROVIDER=espn`, `ENABLE_EDGE_PRECHECK=true`, `MARKETOPS_INCLUDE_EDGE_PRECHECK=false`. Nothing forbidden enabled.
+
+**Session timing, honestly:** 07:15 UTC is a dead zone — zero promotable soccer signals remain (the autopilot consumed yesterday's within its cooldowns) and no live books exist. Full watchlist validation therefore could not run; the **pipeline itself was validated end-to-end live** instead:
+
+- **Forecaster selection live:** a real source-backed soccer packet (`KXWCGOAL-…ARGNGONZA11-1`, completeness 1.0) put through `ForecastingService` selected `soccer_evidence` (forecast #428 persisted — forecaster breakdown now shows `soccer_evidence=1`).
+- **Player-goal conservatism live:** the market is a player-goal type, and the forecaster correctly refused to price it from team data — internal fallback with `market_type_player_goal` tag, confidence 0.5, anchored to mid. Exactly the designed behavior.
+- **Edge-precheck measured the soccer_evidence forecast** (explicit `--forecast-id` mode): honestly invalid — `invalid_stale_market_snapshot` + low_confidence/wide_spread/low_liquidity (yesterday's finished match, dead book). Watchlist=0, candidates=0, persistence=1 — no manufactured edge.
+
+**Today's World Cup window (from the live ESPN scoreboard): CAN–MAR 17:00 UTC and PAR–FRA 21:00 UTC.** Validation runbook for that window (operator or agent): during a live half, wait for an autopilot cycle to finish, then within ~2 minutes run `edge-precheck --latest-marketops-run`, 2–3 times minutes apart. Winner/total soccer markets processed in those cycles should now produce `soccer_evidence` forecasts at 0.65 confidence → the first valid soccer watchlist rows if books are two-sided.
+
+**Recommendation: keep `MARKETOPS_INCLUDE_EDGE_PRECHECK=false`** until the 17:00/21:00 UTC sessions produce watchlist rows with sane persistence. Everything upstream of that is now proven live.
+
+**Rollback:** `sed -i 's/^ENABLE_SOCCER_EVIDENCE_FORECASTING=.*/ENABLE_SOCCER_EVIDENCE_FORECASTING=false/' ~/projects/probability-arena/.env` — soccer reverts to template-baseline forecasts; nothing else changes.
+
+Safety greps clean (boundary docstrings only). All four services active throughout.
