@@ -519,7 +519,10 @@ class CryptoTokenDiscoveryEvent(Base):
 
 
 class CryptoTokenRiskAssessment(Base):
-    """One provider risk read for a token (optional, mocked in tests)."""
+    """One risk read for a token: a raw provider read (CRYPTO-001 mock) or a
+    CRYPTO-002 risk-engine evaluation with normalized sub-scores. Risk
+    intelligence only — a score is an avoid/flag verdict for review, never a
+    trade recommendation."""
 
     __tablename__ = "crypto_token_risk_assessments"
 
@@ -528,9 +531,21 @@ class CryptoTokenRiskAssessment(Base):
     token_address: Mapped[str] = mapped_column(String(128), index=True)
     provider: Mapped[str] = mapped_column(String(64))
     risk_score: Mapped[float | None] = mapped_column(Float)
-    risk_level: Mapped[str | None] = mapped_column(String(16))  # low|medium|high|critical
+    risk_level: Mapped[str | None] = mapped_column(String(16))  # low|medium|high|severe|unknown
     flags: Mapped[dict | None] = mapped_column(RawJSON)
     raw_payload: Mapped[dict | None] = mapped_column(RawJSON)
+    # CRYPTO-002 normalized engine fields (nullable: CRYPTO-001 rows lack them)
+    liquidity_risk_score: Mapped[float | None] = mapped_column(Float)
+    holder_risk_score: Mapped[float | None] = mapped_column(Float)
+    authority_risk_score: Mapped[float | None] = mapped_column(Float)
+    market_structure_risk_score: Mapped[float | None] = mapped_column(Float)
+    manipulation_risk_score: Mapped[float | None] = mapped_column(Float)
+    provider_risk_score: Mapped[float | None] = mapped_column(Float)
+    composite_risk_score: Mapped[float | None] = mapped_column(Float)
+    composite_risk_level: Mapped[str | None] = mapped_column(String(16))
+    risk_reasons: Mapped[list | None] = mapped_column(RawJSON)
+    provider_names: Mapped[list | None] = mapped_column(RawJSON)
+    heuristic_version: Mapped[str | None] = mapped_column(String(16))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

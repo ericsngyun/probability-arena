@@ -711,3 +711,52 @@ class MarketOpsReport(BaseModel):
     crypto_totals: dict[str, int] = {}
     database_size_mb: float | None = None
     recommended_action: str = ""
+
+
+# --- Crypto risk engine (CRYPTO-002) — read-only risk intelligence ---
+
+
+class CryptoRiskAssessmentOut(BaseModel):
+    """A persisted risk assessment. A risk score/level is an avoid/flag
+    verdict for review — never a trade recommendation (raw payload stays
+    DB-only)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    chain: str
+    token_address: str
+    provider: str
+    risk_score: float | None = None
+    risk_level: str | None = None
+    flags: dict | None = None
+    liquidity_risk_score: float | None = None
+    holder_risk_score: float | None = None
+    authority_risk_score: float | None = None
+    market_structure_risk_score: float | None = None
+    manipulation_risk_score: float | None = None
+    provider_risk_score: float | None = None
+    composite_risk_score: float | None = None
+    composite_risk_level: str | None = None
+    risk_reasons: list | None = None
+    provider_names: list | None = None
+    heuristic_version: str | None = None
+    created_at: datetime
+
+
+class CryptoRiskReport(BaseModel):
+    """Aggregate risk view: engine mode, level breakdown, worst tokens,
+    common reasons, provider health. Informational only."""
+
+    engine_mode: str  # disabled | heuristic-only | provider-backed
+    engine_version: str
+    enabled_providers: list[str] = []
+    assessments_total: int = 0
+    tokens_assessed: int = 0
+    by_level: dict[str, int] = {}
+    top_risky_tokens: list[CryptoRiskAssessmentOut] = []
+    common_reasons: dict[str, int] = {}
+    provider_use: dict[str, int] = {}
+    provider_error_counts: dict[str, int] = {}
+    risk_signals_created: dict[str, int] = {}
+    recent_assessments: list[CryptoRiskAssessmentOut] = []

@@ -35,6 +35,21 @@ Rollout discipline: one flag at a time, per `docs/EVO_X2_RUNBOOK.md`.
 `MARKETOPS_INCLUDE_PROBABILITY_MARKETS=true`, `MARKETOPS_FAIL_FAST=false`,
 `MARKETOPS_LOOP_INTERVAL_SECONDS=300`.
 
+## Crypto risk engine (CRYPTO-002 — risk intelligence, never trade advice)
+
+| Flag | Default | Gates |
+|---|---|---|
+| `ENABLE_CRYPTO_RISK_ENGINE` | false | Risk engine during crypto scans (heuristics + enabled providers); `crypto-risk-assess` works manually regardless |
+| `ENABLE_GOPLUS_RISK` | false | GoPlus Solana Token Security adapter (`GOPLUS_API_KEY` optional, header-only, never printed) |
+| `ENABLE_SOLANA_TRACKER_RISK` | false | SolanaTracker risk adapter (`SOLANA_TRACKER_API_KEY` optional, header-only, never printed) |
+| `ENABLE_RUGCHECK_RISK` | false | **Reserved only** — no RugCheck adapter exists in CRYPTO-002 |
+
+Thresholds: `CRYPTO_RISK_MIN_LIQUIDITY_USD=5000`, `CRYPTO_RISK_MAX_TOP_HOLDER_PCT=20`,
+`CRYPTO_RISK_MAX_SNIPER_PCT=20`, `CRYPTO_RISK_MAX_INSIDER_PCT=15`,
+`CRYPTO_RISK_MAX_BUNDLER_PCT=25`, `CRYPTO_RISK_MIN_PAIR_AGE_SECONDS=300`,
+`CRYPTO_RISK_PROVIDER_TIMEOUT_SECONDS=10`, `CRYPTO_RISK_ENGINE_VERSION=v1`.
+A risk level is an avoid/flag verdict for review — never a trade direction.
+
 ## Crypto Arena tuning (CRYPTO-001 — read-only surveillance; no wallets/swaps/execution)
 
 `CRYPTO_CHAIN=solana`, `CRYPTO_PROVIDER=dexscreener`,

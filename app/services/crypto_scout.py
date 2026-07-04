@@ -278,38 +278,52 @@ class CryptoSignalService:
             )
 
         if risk is not None:
+            # Risk evidence can come from a raw provider read (CRYPTO-001
+            # mock: flag keys) or the CRYPTO-002 risk engine (category codes
+            # in flags["categories"]). Absent risk data fires nothing.
+            from app.services.crypto_risk_engine import (
+                HOLDER_CATEGORIES,
+                SUPPLY_CATEGORIES,
+            )
+
             flags = risk.flags or {}
+            categories = set(flags.get("categories") or [])
             if (
-                risk.risk_level in ("high", "critical")
+                risk.risk_level in ("high", "critical", "severe")
                 or flags.get("honeypot")
                 or flags.get("rug_risk")
+                or "provider_rug_flag" in categories
+                or "provider_honeypot_flag" in categories
             ):
                 make(
                     SIGNAL_RUG_RISK,
-                    f"Provider {risk.provider} flags rug risk "
-                    f"(level={risk.risk_level}, score={risk.risk_score})",
+                    f"Risk source {risk.provider} flags rug risk "
+                    f"(level={risk.risk_level}, score={risk.risk_score}) — "
+                    "avoid/flag verdict, not a trade direction",
                     {"risk_level": risk.risk_level, "risk_score": risk.risk_score,
                      "flags": flags},
                 )
             top10 = flags.get("top10_holder_pct")
-            if flags.get("holder_risk") or (
-                isinstance(top10, (int, float)) and top10 >= HOLDER_RISK_TOP10_PCT
+            if (
+                flags.get("holder_risk")
+                or (isinstance(top10, (int, float)) and top10 >= HOLDER_RISK_TOP10_PCT)
+                or categories & HOLDER_CATEGORIES
             ):
                 make(
                     SIGNAL_HOLDER_RISK,
-                    f"Holder concentration risk (top10 holds {top10}% "
-                    f">= {HOLDER_RISK_TOP10_PCT:.0f}%)" if top10 is not None
-                    else f"Provider {risk.provider} flags holder risk",
+                    f"Holder concentration risk (top10 holds {top10}%)" if top10 is not None
+                    else f"Risk source {risk.provider} flags holder concentration",
                     {"top10_holder_pct": top10, "flags": flags},
                 )
             if (
                 flags.get("mint_authority_enabled")
                 or flags.get("freeze_authority_enabled")
                 or flags.get("suspicious_supply_control")
+                or categories & SUPPLY_CATEGORIES
             ):
                 make(
                     SIGNAL_SUSPICIOUS_SUPPLY,
-                    f"Provider {risk.provider} flags supply control "
+                    f"Risk source {risk.provider} flags supply control "
                     f"(mint_authority={flags.get('mint_authority_enabled')}, "
                     f"freeze_authority={flags.get('freeze_authority_enabled')})",
                     {"flags": flags},
@@ -344,13 +358,18 @@ class CryptoDiscoveryService:
         risk_provider: CryptoRiskProvider | None = None,
         signal_service: CryptoSignalService | None = None,
         config: CryptoScoutConfig | None = None,
+        risk_engine=None,
     ):
+        from app.services.crypto_risk_engine import get_risk_engine
+
         self.config = config or CryptoScoutConfig.from_settings()
         self.adapter = adapter or DexScreenerAdapter()
         # None means "flag off": risk detectors stay inactive
         self.risk_provider = (
             risk_provider if risk_provider is not None else get_risk_provider()
         )
+        # CRYPTO-002: engine takes precedence over the raw provider when on
+        self.risk_engine = risk_engine if risk_engine is not None else get_risk_engine()
         self.signal_service = signal_service or CryptoSignalService(self.config)
 
     def _upsert_token(
@@ -525,7 +544,7 @@ class CryptoDiscoveryService:
                 best = max(
                     (p for p in pairs), key=lambda p: p.liquidity_usd or 0, default=None
                 )
-                self._upsert_token(
+                token_row = self._upsert_token(
                     session,
                     token_address,
                     observed_at,
@@ -534,12 +553,9 @@ class CryptoDiscoveryService:
                     metadata=metadata,
                 )
 
-                risk: RiskAssessment | None = None
-                if self.risk_provider is not None:
-                    risk = await self.risk_provider.assess(token_address)
-                    if risk is not None:
-                        self._record_risk(session, risk, observed_at)
-
+                # Upsert pairs + record ticks first (capturing each pair's
+                # previous tick), so risk evaluation sees the fresh state.
+                pair_states: list[tuple] = []  # (pair_row, previous, tick, pair)
                 for pair in pairs:
                     if pairs_checked >= limit:
                         break
@@ -557,6 +573,30 @@ class CryptoDiscoveryService:
                     previous = latest_tick_for_pair(session, pair.pair_address)
                     tick = self._record_tick(session, pair, observed_at)
                     ticks_recorded += 1
+                    pair_states.append((pair_row, previous, tick, pair))
+
+                # Risk: CRYPTO-002 engine (best pair context) beats the raw
+                # CRYPTO-001 provider; neither -> risk detectors stay inactive
+                risk: RiskAssessment | None = None
+                if self.risk_engine is not None and pair_states:
+                    best_state = max(
+                        pair_states, key=lambda s: (s[2].liquidity_usd or 0)
+                    )
+                    evaluation = await self.risk_engine.evaluate(
+                        session,
+                        token=token_row,
+                        pair=best_state[0],
+                        tick=best_state[2],
+                        previous=best_state[1],
+                        pair_count=len(pairs),
+                    )
+                    risk = evaluation.as_signal_view()
+                elif self.risk_provider is not None:
+                    risk = await self.risk_provider.assess(token_address)
+                    if risk is not None:
+                        self._record_risk(session, risk, observed_at)
+
+                for pair_row, previous, tick, _pair in pair_states:
                     detected = self.signal_service.detect(
                         pair_row, previous, tick, risk, observed_at
                     )

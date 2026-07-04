@@ -23,7 +23,8 @@
 | MVP-004G | `918b9de` | Champion/challenger comparison (paired + cohort, sample-size gated) |
 | SOCCER-001 | `e1d3b7b` | Soccer/World Cup external research canary (provider-gated, source-backed packets); rolled out to EVO-X2 (`f76baaa`) |
 | CRYPTO-001 | `9d72237` | Crypto Arena: read-only Solana memecoin discovery + risk surveillance (DEX Screener, 7 tables, 9 deterministic signal types, CLI/API reports); deployed dark to EVO-X2 (`7606ca6`) |
-| OPS-006 | (this) | MarketOps Autopilot: read-only 24/7 coordination (auto-promote/process, crypto scan, sync/score, champion/challenger snapshot, local DB alerts, optional 5-min timer) |
+| OPS-006 | `b0dd1d6` | MarketOps Autopilot: read-only 24/7 coordination (auto-promote/process, crypto scan, sync/score, champion/challenger snapshot, local DB alerts); live on EVO-X2 with 5-min timer (`28b3476`) |
+| CRYPTO-002 | (this) | Crypto risk engine: heuristics + optional GoPlus/SolanaTracker providers, composite risk scores/levels, activated risk signals, risk reports (read-only risk intelligence — never trade advice) |
 
 ## Immediate next steps
 
@@ -34,6 +35,5 @@
 
 - **MVP-005A — EV precheck**: *design + safety review only.* Requires champion/challenger evidence (paired, adequate sample) that a challenger beats the market baseline. No trading surface.
 - **MVP-005B — paper simulator**: gated on MVP-005A acceptance. Simulation only; still no orders.
-- **CRYPTO-002 — crypto risk engine**: real read-only risk providers (GoPlus/RugCheck-style) replacing the mock; still surveillance only.
-- **CRYPTO-003 — crypto paper simulator**: gated like MVP-005B; simulation only, no orders, no wallets.
+- **CRYPTO-003 — crypto paper simulator**: gated like MVP-005B; simulation only, no orders, no wallets; requires CRYPTO-002 risk data to mature first.
 - **WALLET-001 — policy-controlled transaction proposal gateway**: *much later*; proposals only — no signing, no private keys, behind a dedicated custody/security review — see `docs/SAFETY_BOUNDARIES.md` and ADR-002.

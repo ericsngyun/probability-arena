@@ -15,11 +15,12 @@ Services (app/services/)  — scanner, eligibility, enrichment, resolution, rese
                             baseball_research, soccer_research, forecasting,
                             baseball_forecasting, outcomes, calibration, watcher,
                             signal_workflow, pipeline (baseline runner), retention,
-                            crypto_scout + crypto_risk (Crypto Arena, read-only),
+                            crypto_scout + crypto_risk + crypto_risk_engine
+                            (Crypto Arena, read-only; risk = avoid/flag verdicts),
                             marketops (Autopilot: read-only coordination + alerts)
 Adapter (app/adapters/kalshi.py) — list/detail/event/series/by-tickers GETs,
                             legacy + dollars/fp payload shapes, outcome parsing
-DB: SQLAlchemy + Alembic (rev 0015) — SQLite on EVO-X2, Postgres-ready (JSONB variants)
+DB: SQLAlchemy + Alembic (rev 0016) — SQLite on EVO-X2, Postgres-ready (JSONB variants)
 ```
 
 ## Pipeline stages (baseline runner order)
@@ -57,7 +58,7 @@ See `docs/FEATURE_FLAGS.md`. All model/external flags default **false**; deploye
 
 ## Latest accepted milestones
 
-MVP-001…004G, OPS-001…006, SOCCER-001, and CRYPTO-001 — full list with commits in `docs/ROADMAP.md`. Tests at OPS-006: 461+ passing, 2 gated live tests skipped by default.
+MVP-001…004G, OPS-001…006, SOCCER-001, and CRYPTO-001…002 — full list with commits in `docs/ROADMAP.md`. Tests at CRYPTO-002: 498+ passing, 2 gated live tests skipped by default.
 
 ## Current known limitations
 

@@ -131,6 +131,25 @@ class Settings(BaseSettings):
     crypto_risk_provider: str = "mock"
     crypto_retention_days: int = 7  # crypto_price_ticks + crypto_watcher_runs only
 
+    # Crypto risk engine (CRYPTO-002) — read-only risk INTELLIGENCE only.
+    # A risk score flags danger for avoidance/review; it is never a trade
+    # recommendation, and no execution capability exists anywhere. Provider
+    # API keys are optional, sent as request headers only, and never printed.
+    enable_crypto_risk_engine: bool = False
+    enable_goplus_risk: bool = False
+    goplus_api_key: str = ""
+    enable_solana_tracker_risk: bool = False
+    solana_tracker_api_key: str = ""
+    enable_rugcheck_risk: bool = False  # reserved: no RugCheck adapter in CRYPTO-002
+    crypto_risk_min_liquidity_usd: float = 5000.0
+    crypto_risk_max_top_holder_pct: float = 20.0
+    crypto_risk_max_sniper_pct: float = 20.0
+    crypto_risk_max_insider_pct: float = 15.0
+    crypto_risk_max_bundler_pct: float = 25.0
+    crypto_risk_min_pair_age_seconds: int = 300
+    crypto_risk_provider_timeout_seconds: float = 10.0
+    crypto_risk_engine_version: str = "v1"
+
     # Candidate hygiene / eligibility gating (MVP-003A)
     require_two_sided_quote: bool = True
     exclude_zero_quote_markets: bool = True

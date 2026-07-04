@@ -393,3 +393,28 @@ def test_0015_creates_and_drops_marketops_tables(tmp_path):
 
     command.downgrade(_config(url), "0014")
     assert not ({"marketops_runs", "marketops_alerts"} & _tables(url))
+
+
+def test_0016_adds_and_drops_risk_engine_columns(tmp_path):
+    url = f"sqlite:///{tmp_path}/riskengine.db"
+    run_migrations(url)
+
+    engine_columns = {
+        "liquidity_risk_score",
+        "holder_risk_score",
+        "authority_risk_score",
+        "market_structure_risk_score",
+        "manipulation_risk_score",
+        "provider_risk_score",
+        "composite_risk_score",
+        "composite_risk_level",
+        "risk_reasons",
+        "provider_names",
+        "heuristic_version",
+    }
+    assert engine_columns <= _columns(url, "crypto_token_risk_assessments")
+
+    command.downgrade(_config(url), "0015")
+    remaining = _columns(url, "crypto_token_risk_assessments")
+    assert not (engine_columns & remaining)
+    assert {"provider", "risk_score", "flags"} <= remaining  # CRYPTO-001 intact

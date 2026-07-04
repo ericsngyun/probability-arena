@@ -7,11 +7,12 @@ Update this file (and docs/PROJECT_CANON.md) when a milestone lands."""
 PROJECT_NAME = "probability-arena"
 
 CURRENT_PHASE = (
-    "Read-only intelligence + calibration accumulation (through OPS-006). "
+    "Read-only intelligence + calibration accumulation (through CRYPTO-002). "
     "No EV, no trading of any kind. Canary flags exist for baseball external "
     "research, evidence-aware baseball forecasting, and soccer external research. "
-    "Crypto Arena adds read-only Solana memecoin surveillance; MarketOps "
-    "Autopilot coordinates the existing read-only services behind its own flag."
+    "Crypto Arena adds read-only Solana memecoin surveillance plus a risk "
+    "engine (a risk score is an avoid/flag verdict, never a trade "
+    "recommendation); MarketOps Autopilot coordinates it all behind flags."
 )
 
 ALLOWED_CAPABILITIES = (
@@ -26,6 +27,7 @@ ALLOWED_CAPABILITIES = (
     "signal promotion + intelligence refresh workflow",
     "retention pruning of our own operational tables",
     "crypto scouting (read-only Solana token/pair surveillance + risk telemetry)",
+    "crypto risk engine (heuristic + provider risk scoring; avoid/flag verdicts only)",
     "marketops autopilot (read-only coordination: promote/process/scan/score/report/alert)",
 )
 
@@ -54,8 +56,8 @@ NEXT_MILESTONES = (
     "MVP-005A EV precheck (design + safety review only; requires paired "
     "champion/challenger evidence of edge)",
     "MVP-005B paper simulator (requires MVP-005A acceptance)",
-    "CRYPTO-002 crypto risk engine (read-only; real risk providers)",
-    "CRYPTO-003 crypto paper simulator (gated like MVP-005B)",
+    "CRYPTO-003 crypto paper simulator (gated like MVP-005B; requires "
+    "CRYPTO-002 risk data maturity)",
     "WALLET-001 policy-controlled transaction PROPOSAL gateway only "
     "(no signing/keys; much later, dedicated security review)",
 )
@@ -76,6 +78,7 @@ KEY_FEATURE_FLAGS = (
     "enable_external_research",
     "enable_crypto_scout",
     "enable_crypto_risk_provider",
+    "enable_crypto_risk_engine",
     "enable_marketops_autopilot",
     "enable_baseball_external_research",
     "enable_soccer_external_research",

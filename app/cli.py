@@ -1066,6 +1066,16 @@ async def crypto_report(session=None) -> int:
             "crypto report: "
             + ", ".join(f"{name}={count}" for name, count in sorted(report.totals.items()))
         )
+        from app.config import get_settings as _settings
+
+        s = _settings()
+        engine_mode = (
+            ("provider-backed" if (s.enable_goplus_risk or s.enable_solana_tracker_risk)
+             else "heuristic-only")
+            if s.enable_crypto_risk_engine
+            else "disabled"
+        )
+        print(f"risk engine: {engine_mode} (see crypto-risk-report for details)")
         if report.signals_by_type:
             print(
                 "signals by type: "
@@ -1096,6 +1106,144 @@ async def crypto_report(session=None) -> int:
                 f"last seen {token.last_seen_at:%Y-%m-%d %H:%M}"
             )
         return report.totals.get("tokens", 0)
+    finally:
+        if owns_session:
+            session.close()
+
+
+async def crypto_risk_assess(limit: int = 50, engine=None, session=None) -> int:
+    """Assess risk for recently-seen tokens from persisted Crypto Arena data
+    (heuristics always; providers when their flags are on). Read-only risk
+    intelligence — a score is an avoid/flag verdict, never a trade
+    recommendation. Returns the number of tokens assessed."""
+    from sqlalchemy import select
+
+    from app.models import CryptoPair, CryptoPriceTick, CryptoToken
+    from app.services.crypto_risk_engine import RISK_SIGNAL_TYPES, CryptoRiskEngine
+    from app.services.crypto_scout import CryptoSignalService
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        engine = engine or CryptoRiskEngine()
+        signal_service = CryptoSignalService()
+        tokens = session.execute(
+            select(CryptoToken)
+            .order_by(CryptoToken.last_seen_at.desc(), CryptoToken.id.desc())
+            .limit(limit)
+        ).scalars().all()
+        assessed = 0
+        risk_signals = 0
+        for token in tokens:
+            pairs = session.execute(
+                select(CryptoPair).where(
+                    CryptoPair.base_token_address == token.token_address
+                )
+            ).scalars().all()
+            best_pair = None
+            latest = previous = None
+            best_liquidity = -1.0
+            for pair in pairs:
+                ticks = session.execute(
+                    select(CryptoPriceTick)
+                    .where(CryptoPriceTick.pair_address == pair.pair_address)
+                    .order_by(CryptoPriceTick.observed_at.desc(), CryptoPriceTick.id.desc())
+                    .limit(2)
+                ).scalars().all()
+                if ticks and (ticks[0].liquidity_usd or 0) > best_liquidity:
+                    best_liquidity = ticks[0].liquidity_usd or 0
+                    best_pair = pair
+                    latest = ticks[0]
+                    previous = ticks[1] if len(ticks) > 1 else None
+            evaluation = await engine.evaluate(
+                session,
+                token=token,
+                pair=best_pair,
+                tick=latest,
+                previous=previous,
+                pair_count=len(pairs),
+            )
+            assessed += 1
+            # Risk-type signals only (market detectors belong to scans)
+            if best_pair is not None and latest is not None:
+                from datetime import datetime, timezone
+
+                now = datetime.now(timezone.utc)
+                detected = [
+                    signal
+                    for signal in signal_service.detect(
+                        best_pair, previous, latest, evaluation.as_signal_view(), now
+                    )
+                    if signal.signal_type in RISK_SIGNAL_TYPES
+                ]
+                risk_signals += signal_service.persist_deduped(session, detected, now)
+            print(
+                f"  {token.symbol or '?':<12} {token.token_address[:12]}… "
+                f"level={evaluation.composite_risk_level:<8} "
+                f"score={evaluation.composite_risk_score} "
+                f"reasons={','.join(evaluation.reasons) or 'none'}"
+            )
+        session.commit()
+        print(f"assessed {assessed} token(s), created {risk_signals} risk signal(s)")
+        return assessed
+    finally:
+        if owns_session:
+            session.close()
+
+
+async def crypto_risk_report(session=None) -> int:
+    """Print the aggregate crypto risk report. Returns tokens assessed."""
+    from app.services.crypto_risk_engine import CryptoRiskReportService
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        report = CryptoRiskReportService().build(session)
+        print(
+            f"crypto risk: engine={report.engine_mode} (heuristics {report.engine_version}) "
+            f"providers={','.join(report.enabled_providers) or 'none'}"
+        )
+        print(
+            f"assessments={report.assessments_total} tokens_assessed={report.tokens_assessed}"
+        )
+        if report.by_level:
+            print(
+                "by level: " + ", ".join(f"{lvl}={n}" for lvl, n in sorted(report.by_level.items()))
+            )
+        if report.common_reasons:
+            print(
+                "common reasons: "
+                + ", ".join(f"{r}={n}" for r, n in report.common_reasons.items())
+            )
+        if report.risk_signals_created:
+            print(
+                "risk signals created: "
+                + ", ".join(f"{t}={n}" for t, n in sorted(report.risk_signals_created.items()))
+            )
+        if report.provider_use:
+            print(
+                "provider use: "
+                + ", ".join(f"{p}={n}" for p, n in sorted(report.provider_use.items()))
+            )
+        if report.provider_error_counts:
+            print(
+                "provider errors: "
+                + ", ".join(f"{p}={n}" for p, n in sorted(report.provider_error_counts.items()))
+            )
+        for row in report.top_risky_tokens:
+            print(
+                f"  RISKY {row.token_address[:16]}… level={row.composite_risk_level} "
+                f"score={row.composite_risk_score} reasons={','.join(row.risk_reasons or [])}"
+            )
+        return report.tokens_assessed
     finally:
         if owns_session:
             session.close()
@@ -1597,6 +1745,12 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         "crypto-report", help="Aggregate crypto surveillance report"
     )
+    crypto_risk_parser = subparsers.add_parser(
+        "crypto-risk-assess",
+        help="Assess risk for recently-seen tokens (read-only risk intelligence)",
+    )
+    crypto_risk_parser.add_argument("--limit", type=int, default=50)
+    subparsers.add_parser("crypto-risk-report", help="Aggregate crypto risk report")
     subparsers.add_parser(
         "marketops-run-once",
         help="One MarketOps Autopilot cycle (read-only coordination)",
@@ -1716,6 +1870,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if count >= 0 else 1
     if args.command == "crypto-report":
         total = asyncio.run(crypto_report())
+        return 0 if total >= 0 else 1
+    if args.command == "crypto-risk-assess":
+        count = asyncio.run(crypto_risk_assess(limit=args.limit))
+        return 0 if count >= 0 else 1
+    if args.command == "crypto-risk-report":
+        total = asyncio.run(crypto_risk_report())
         return 0 if total >= 0 else 1
     if args.command == "marketops-run-once":
         return asyncio.run(marketops_run_once())

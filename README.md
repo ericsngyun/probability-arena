@@ -1,6 +1,6 @@
 # Probability Arena
 
-**Kalshi read-only market intelligence** (OPS-006: measurement loop, baseline runner, real-time watcher, retention, signal workflow, baseball + soccer external research canaries, an evidence-aware baseball forecaster, Crypto Arena — a read-only Solana memecoin surveillance lane — and a MarketOps Autopilot coordinating all of it, still strictly read-only).
+**Kalshi read-only market intelligence** (CRYPTO-002: measurement loop, baseline runner, real-time watcher, retention, signal workflow, baseball + soccer external research canaries, an evidence-aware baseball forecaster, Crypto Arena — a read-only Solana memecoin surveillance lane with a risk engine — and a MarketOps Autopilot coordinating all of it, still strictly read-only).
 
 Scans active Kalshi markets over the public REST API, ranks them on tradability signals (spread, liquidity, volume, time to expiration, resolution clarity), and stores time-series snapshots in Postgres. Optionally maintains live orderbook snapshots over WebSocket when API credentials are configured.
 
@@ -317,7 +317,28 @@ python -m app.cli crypto-report                  # totals, signals by type/statu
 
 `GET /crypto/signals` · `GET /crypto/tokens` · `GET /crypto/pairs` · `GET /crypto/report` serve the same data (raw provider payloads stay DB-only). `ENABLE_CRYPTO_SCOUT=false` reserves future loop/timer use — no crypto watch-loop exists in CRYPTO-001. Retention prunes only `crypto_price_ticks`/`crypto_watcher_runs` (`CRYPTO_RETENTION_DAYS=7`); tokens, pairs, events, risk assessments, and signals are kept.
 
-**Future (each explicitly gated):** CRYPTO-002 risk engine (real read-only providers) → CRYPTO-003 paper simulator (gated like MVP-005B) → WALLET-001 policy-controlled transaction *proposal* gateway only (no signing, no keys), much later.
+**Future (each explicitly gated):** CRYPTO-003 paper simulator (gated like MVP-005B) → WALLET-001 policy-controlled transaction *proposal* gateway only (no signing, no keys), much later.
+
+## Crypto risk engine (CRYPTO-002)
+
+**Read-only risk intelligence.** The engine upgrades Crypto Arena from discovery into harsh risk scoring — and the output is explicitly *not* trade advice: a composite risk score/level is an **avoid/flag verdict for human review; "severe" means avoid/flag, never short/sell**. No wallet, private-key, swap, or transaction-construction code exists anywhere in this project.
+
+Two layers, combined per token:
+
+- **`HeuristicRiskEngine` (always available, no credentials, no network):** deterministic categories from data CRYPTO-001 already persists — `low_liquidity`, `liquidity_removed`, `new_pair_too_young`, `extreme_price_movement`, `suspicious_volume_spike`, `fake_volume_suspected`, `boosted_token` (context weight, not automatic severity), `missing_metadata`, plus `provider_unknown` honestly recorded when no provider corroboration exists.
+- **Optional providers** (`ENABLE_GOPLUS_RISK`, `ENABLE_SOLANA_TRACKER_RISK`, both default false; API keys optional, header-only, never printed): holder/sniper/insider/bundler concentration vs configured thresholds, mint/freeze authority, rug/honeypot verdicts — categories like `high_holder_concentration`, `mint_authority_enabled`, `provider_rug_flag`. A failing provider is isolated (recorded in `provider_errors`), never fatal: the engine falls back to heuristics. `ENABLE_RUGCHECK_RISK` is reserved (no adapter yet).
+
+Six normalized sub-scores (liquidity, holder, authority, market structure, manipulation, provider) roll up into a weighted `composite_risk_score` and level (`low|medium|high|severe|unknown`); rug/honeypot/liquidity-removed evidence floors the composite at severe. Everything persists on `crypto_token_risk_assessments` with `risk_reasons` (ordered category codes) and `provider_names` — fully auditable.
+
+**Risk signals activate only on evidence:** `rug_risk`, `holder_risk`, and `suspicious_supply_control` fire when an assessment carries matching severe/high flags or categories, and stay inactive when no risk data exists (CRYPTO-001 behavior is preserved when `ENABLE_CRYPTO_RISK_ENGINE=false`).
+
+```bash
+python -m app.cli crypto-risk-assess --limit 50   # assess recent tokens from persisted data (always allowed)
+python -m app.cli crypto-risk-report              # engine mode, level breakdown, worst tokens, reasons, provider health
+python -m app.cli crypto-report                   # now shows the engine mode alongside surveillance totals
+```
+
+`GET /crypto/risk-assessments` · `GET /crypto/tokens/{token_address}/risk` · `GET /crypto/risk-report` serve the same data (raw payloads stay DB-only).
 
 ## MarketOps Autopilot (OPS-006)
 

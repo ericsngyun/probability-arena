@@ -77,6 +77,13 @@ The `marketops-loop` CLI additionally refuses to start unless the flag is true.
 It coordinates existing read-only services only — it cannot trade, paper
 trade, calculate EV, or move money.
 
+Crypto risk engine (CRYPTO-002) rollout: run `crypto-risk-assess --limit 25` +
+`crypto-risk-report` manually first (heuristic-only, no flags needed), then flip
+`ENABLE_CRYPTO_RISK_ENGINE=true` so MarketOps crypto scans assess automatically,
+then enable providers one at a time (`ENABLE_GOPLUS_RISK` / 
+`ENABLE_SOLANA_TRACKER_RISK`; keys optional, never printed). A risk level is an
+avoid/flag verdict for review — never a trade direction.
+
 Crypto Arena (CRYPTO-001) has **no service/timer** — validate with manual passes only:
 `crypto-scan-once --limit 25` → `crypto-report` → `crypto-signals-recent`. The
 migration (`0014`) applies on the first command. `ENABLE_CRYPTO_SCOUT` stays
