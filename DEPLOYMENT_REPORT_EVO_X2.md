@@ -546,3 +546,19 @@ All four services active; journal clean. Tests at EVAL-001: 606 passing; AST saf
 **Caveats:** (1) during quiet hours the probability lane now idles — by design; the `no_recent_signals` health alert may fire on long dead stretches with the watcher running (informational); (2) if live-window sessions show the 1h window is still too loose (or too tight for slower markets), the knob is one line in `.env`.
 
 **Rollback:** `sed -i 's/^MARKETOPS_MAX_SIGNAL_AGE_HOURS=.*/MARKETOPS_MAX_SIGNAL_AGE_HOURS=24/' ~/projects/probability-arena/.env` (or remove the key).
+
+---
+
+## OPS-009 deployed — promotion quality: minute windows + readiness scoring (2026-07-04, ~08:41 UTC)
+
+Deployed **`35890e9` → `7746ef9`** (no migration; no `.env` changes — the new minute knobs use defaults: sports 20m, general 60m, with the existing `MARKETOPS_MAX_SIGNAL_AGE_HOURS=1` surviving as a coarse upper bound, so nothing got looser).
+
+**What changed in promotion:** candidates now pass DOMAIN-specific minute windows (baseball/soccer/live-sports 20m, general 60m) and are ordered by a deterministic **measurement-readiness score** — freshness, source-backed capability, market-type measurability (player props lowest), signal-type priority, live book quality vs the edge-precheck thresholds. The score orders promotion only; it is never an EV/value/trade quantity. Run summaries now record promoted ages, domain/market-type/signal-type breakdowns, skipped-stale and unmeasurable counts.
+
+**Quiet-window validation (cycle #75, ~4:40am ET):** `signals seen=0, promoted=0, skipped_stale=0` — no signal in the whole DB is fresher than an hour at this dead hour, so the probability lane idles with **zero stale promotions and zero edge-precheck noise** (0 rows via `--latest-marketops-run`). Crypto/sync/score lanes normal; 33.7s duration; all four units active. The `promotion (OPS-009)` line renders in `marketops-report`.
+
+**Live-window expectations (CAN–MAR 17:00 UTC / PAR–FRA 21:00 UTC + MLB tonight):** promoted ages should drop from the pre-OPS-008 ~5h / pre-OPS-009 ~67min p50 to **minutes** (the watcher emits within 60s of a move); promoted mix should skew to spread/total/winner markets on fresh two-sided books — precisely the ones edge-precheck can validate. The scheduled 17:17 UTC session measures this directly; `marketops-report`'s promotion line and `frontier-eval-report`'s `signal_age_at_promotion_s_p50` are the before/after evidence.
+
+**Champion/challenger meanwhile:** paired n=44, d_brier −0.0498, d_log_loss −0.1448 (`early_signal`) — steadily strengthening.
+
+**Rollback:** the minute knobs are defaults in code; to revert behavior set all `MARKETOPS_*_MAX_SIGNAL_AGE_MINUTES` keys high (e.g. 1440) in `.env`, or revert the commit.
