@@ -451,3 +451,150 @@ class ScannerRun(Base):
         back_populates="scanner_run"
     )
     forecasts: Mapped[list[MarketForecastRecord]] = relationship(back_populates="scanner_run")
+
+
+# --- Crypto Arena (CRYPTO-001) — read-only Solana memecoin surveillance ---
+# These tables observe and audit public DEX data only. No wallet, key, swap,
+# transaction, order, or execution fields exist anywhere in this lane.
+
+
+class CryptoToken(Base):
+    """One observed token on a chain (upserted by discovery)."""
+
+    __tablename__ = "crypto_tokens"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    chain: Mapped[str] = mapped_column(String(32), index=True)
+    token_address: Mapped[str] = mapped_column(String(128), index=True)
+    symbol: Mapped[str | None] = mapped_column(String(64))
+    name: Mapped[str | None] = mapped_column(String(256))
+    decimals: Mapped[int | None] = mapped_column(Integer)
+    token_metadata: Mapped[dict | None] = mapped_column("metadata", RawJSON)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (
+        Index("ix_crypto_tokens_chain_address", "chain", "token_address", unique=True),
+    )
+
+
+class CryptoPair(Base):
+    """One observed DEX pair/pool for a token (upserted by discovery)."""
+
+    __tablename__ = "crypto_pairs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    chain: Mapped[str] = mapped_column(String(32), index=True)
+    pair_address: Mapped[str] = mapped_column(String(128), index=True)
+    base_token_address: Mapped[str] = mapped_column(String(128), index=True)
+    quote_token_address: Mapped[str | None] = mapped_column(String(128))
+    dex_id: Mapped[str | None] = mapped_column(String(64))
+    url: Mapped[str | None] = mapped_column(String(512))
+    pair_created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    pair_metadata: Mapped[dict | None] = mapped_column("metadata", RawJSON)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (
+        Index("ix_crypto_pairs_chain_address", "chain", "pair_address", unique=True),
+    )
+
+
+class CryptoTokenDiscoveryEvent(Base):
+    """Audit record of HOW a token surfaced (profile, boost, pair search)."""
+
+    __tablename__ = "crypto_token_discovery_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    chain: Mapped[str] = mapped_column(String(32), index=True)
+    token_address: Mapped[str] = mapped_column(String(128), index=True)
+    pair_address: Mapped[str | None] = mapped_column(String(128))
+    source: Mapped[str] = mapped_column(String(64))  # e.g. dexscreener
+    event_type: Mapped[str] = mapped_column(String(48), index=True)  # profile|boost|pair_seen
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    raw_payload: Mapped[dict | None] = mapped_column(RawJSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class CryptoTokenRiskAssessment(Base):
+    """One provider risk read for a token (optional, mocked in tests)."""
+
+    __tablename__ = "crypto_token_risk_assessments"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    chain: Mapped[str] = mapped_column(String(32), index=True)
+    token_address: Mapped[str] = mapped_column(String(128), index=True)
+    provider: Mapped[str] = mapped_column(String(64))
+    risk_score: Mapped[float | None] = mapped_column(Float)
+    risk_level: Mapped[str | None] = mapped_column(String(16))  # low|medium|high|critical
+    flags: Mapped[dict | None] = mapped_column(RawJSON)
+    raw_payload: Mapped[dict | None] = mapped_column(RawJSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class CryptoPriceTick(Base):
+    """One observed price/liquidity/volume snapshot for a token pair."""
+
+    __tablename__ = "crypto_price_ticks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    chain: Mapped[str] = mapped_column(String(32), index=True)
+    token_address: Mapped[str] = mapped_column(String(128), index=True)
+    pair_address: Mapped[str | None] = mapped_column(String(128), index=True)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    price_usd: Mapped[float | None] = mapped_column(Float)
+    liquidity_usd: Mapped[float | None] = mapped_column(Float)
+    volume_5m_usd: Mapped[float | None] = mapped_column(Float)
+    volume_1h_usd: Mapped[float | None] = mapped_column(Float)
+    volume_24h_usd: Mapped[float | None] = mapped_column(Float)
+    price_change_5m: Mapped[float | None] = mapped_column(Float)  # percent
+    price_change_1h: Mapped[float | None] = mapped_column(Float)  # percent
+    market_cap: Mapped[float | None] = mapped_column(Float)
+    fdv: Mapped[float | None] = mapped_column(Float)
+    raw_payload: Mapped[dict | None] = mapped_column(RawJSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (
+        Index("ix_crypto_price_ticks_pair_observed", "pair_address", "observed_at"),
+    )
+
+
+class CryptoOpportunitySignal(Base):
+    """Informational-only crypto signal (surveillance/risk telemetry). Like
+    opportunity_signals, this is a review record — no EV, no sizing, no trade
+    directives, no execution semantics."""
+
+    __tablename__ = "crypto_opportunity_signals"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    chain: Mapped[str] = mapped_column(String(32), index=True)
+    token_address: Mapped[str] = mapped_column(String(128), index=True)
+    pair_address: Mapped[str | None] = mapped_column(String(128))
+    signal_type: Mapped[str] = mapped_column(String(48), index=True)
+    signal_status: Mapped[str] = mapped_column(String(32), default="new", index=True)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    reason: Mapped[str] = mapped_column(Text, default="")
+    evidence: Mapped[dict | None] = mapped_column(RawJSON)
+    raw_payload: Mapped[dict | None] = mapped_column(RawJSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class CryptoWatcherRun(Base):
+    """One crypto discovery/scan pass (audit spine for the crypto lane)."""
+
+    __tablename__ = "crypto_watcher_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    status: Mapped[str] = mapped_column(String(16), default="running")  # running|ok|error
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+    tokens_checked: Mapped[int] = mapped_column(Integer, default=0)
+    pairs_checked: Mapped[int] = mapped_column(Integer, default=0)
+    ticks_recorded: Mapped[int] = mapped_column(Integer, default=0)
+    signals_created: Mapped[int] = mapped_column(Integer, default=0)
+    error_type: Mapped[str | None] = mapped_column(String(128))
+    error_message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

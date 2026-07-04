@@ -993,6 +993,114 @@ async def research_canary_report(session=None) -> int:
             session.close()
 
 
+async def crypto_scan_once(limit: int | None = None, services=None, session=None) -> int:
+    """One read-only crypto discovery pass (Crypto Arena, CRYPTO-001).
+    Manual invocation is always allowed — ENABLE_CRYPTO_SCOUT only gates
+    loop/timer use. Returns 0 on an ok pass, 1 on error."""
+    from app.services.crypto_scout import CryptoDiscoveryService
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        service = services or CryptoDiscoveryService()
+        run = await service.scan_once(session, limit=limit)
+        print(
+            f"crypto scan #{run.id}: {run.status} tokens={run.tokens_checked} "
+            f"pairs={run.pairs_checked} ticks={run.ticks_recorded} "
+            f"signals={run.signals_created} in {run.duration_ms}ms"
+        )
+        return 0 if run.status == "ok" else 1
+    finally:
+        if owns_session:
+            session.close()
+
+
+async def crypto_signals_recent(limit: int = 20, session=None) -> int:
+    """List recent crypto signals, newest first. Returns the count printed."""
+    from sqlalchemy import select
+
+    from app.models import CryptoOpportunitySignal
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        rows = session.execute(
+            select(CryptoOpportunitySignal)
+            .order_by(CryptoOpportunitySignal.id.desc())
+            .limit(limit)
+        ).scalars().all()
+        print(f"{len(rows)} crypto signal(s)")
+        for row in rows:
+            print(
+                f"  #{row.id} [{row.signal_type}] {row.token_address[:12]}… "
+                f"pair={(row.pair_address or 'n/a')[:12]} status={row.signal_status} "
+                f"at {row.observed_at:%Y-%m-%d %H:%M} — {row.reason}"
+            )
+        return len(rows)
+    finally:
+        if owns_session:
+            session.close()
+
+
+async def crypto_report(session=None) -> int:
+    """Print the aggregate crypto surveillance report. Returns total tokens."""
+    from app.services.crypto_scout import CryptoReportService
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        report = CryptoReportService().build(session)
+        print(
+            "crypto report: "
+            + ", ".join(f"{name}={count}" for name, count in sorted(report.totals.items()))
+        )
+        if report.signals_by_type:
+            print(
+                "signals by type: "
+                + ", ".join(f"{t}={n}" for t, n in sorted(report.signals_by_type.items()))
+            )
+        if report.signals_by_status:
+            print(
+                "signals by status: "
+                + ", ".join(f"{s}={n}" for s, n in sorted(report.signals_by_status.items()))
+            )
+        if report.risk_by_level:
+            print(
+                "risk by level: "
+                + ", ".join(f"{lvl}={n}" for lvl, n in sorted(report.risk_by_level.items()))
+            )
+        if report.latest_run:
+            run = report.latest_run
+            print(
+                f"latest run: #{run.id} {run.status} tokens={run.tokens_checked} "
+                f"pairs={run.pairs_checked} ticks={run.ticks_recorded} "
+                f"signals={run.signals_created}"
+            )
+        for run in report.provider_errors:
+            print(f"  provider error run #{run.id}: {run.error_type}: {run.error_message}")
+        for token in report.recent_tokens:
+            print(
+                f"  token {token.symbol or '?'} ({token.token_address[:12]}…) "
+                f"last seen {token.last_seen_at:%Y-%m-%d %H:%M}"
+            )
+        return report.totals.get("tokens", 0)
+    finally:
+        if owns_session:
+            session.close()
+
+
 async def agent_context() -> int:
     """Print the project canon for coding/ops agents: phase, state, flags,
     allowed/forbidden capabilities, and where the docs live. Read-only —
@@ -1274,6 +1382,18 @@ def build_parser() -> argparse.ArgumentParser:
     cc_parser.add_argument("--domain", type=str, default=None)
     cc_parser.add_argument("--paired-only", action="store_true")
     cc_parser.add_argument("--min-count", type=int, default=30)
+    crypto_scan_parser = subparsers.add_parser(
+        "crypto-scan-once",
+        help="One read-only crypto discovery pass (tokens/pairs/ticks/signals)",
+    )
+    crypto_scan_parser.add_argument("--limit", type=int, default=None)
+    crypto_recent_parser = subparsers.add_parser(
+        "crypto-signals-recent", help="List recent crypto signals"
+    )
+    crypto_recent_parser.add_argument("--limit", type=int, default=20)
+    subparsers.add_parser(
+        "crypto-report", help="Aggregate crypto surveillance report"
+    )
     return parser
 
 
@@ -1367,6 +1487,14 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
         return 0 if count >= 0 else 1
+    if args.command == "crypto-scan-once":
+        return asyncio.run(crypto_scan_once(limit=args.limit))
+    if args.command == "crypto-signals-recent":
+        count = asyncio.run(crypto_signals_recent(limit=args.limit))
+        return 0 if count >= 0 else 1
+    if args.command == "crypto-report":
+        total = asyncio.run(crypto_report())
+        return 0 if total >= 0 else 1
     return 2
 
 

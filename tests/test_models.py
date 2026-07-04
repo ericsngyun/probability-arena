@@ -39,6 +39,14 @@ def test_schema_creates_all_tables(session):
         "market_price_ticks",
         "opportunity_signals",
         "watcher_runs",
+        # Crypto Arena (CRYPTO-001) — read-only surveillance lane
+        "crypto_tokens",
+        "crypto_pairs",
+        "crypto_token_discovery_events",
+        "crypto_token_risk_assessments",
+        "crypto_price_ticks",
+        "crypto_opportunity_signals",
+        "crypto_watcher_runs",
     }
 
 

@@ -2,6 +2,8 @@
 
 - market_price_ticks       (watcher quote snapshots — the growth driver)
 - watcher_runs             (per-pass audit rows)
+- crypto_price_ticks       (crypto scout snapshots, CRYPTO-001)
+- crypto_watcher_runs      (crypto scan audit rows, CRYPTO-001)
 - pipeline_runs / pipeline_stage_runs (baseline audit rows)
 - opportunity_signals      (ONLY when SIGNAL_RETENTION_DAYS > 0; default keeps
                             them indefinitely)
@@ -24,6 +26,8 @@ from sqlalchemy.orm import Session
 
 from app.config import Settings, get_settings
 from app.models import (
+    CryptoPriceTick,
+    CryptoWatcherRun,
     MarketPriceTick,
     OpportunitySignal,
     PipelineRun,
@@ -46,6 +50,13 @@ PROTECTED_TABLES = (
     "market_forecasts",
     "market_outcomes",
     "forecast_scores",
+    # Crypto Arena (CRYPTO-001): tokens/pairs/events/risk/signals are audit
+    # history — only crypto ticks and run rows are ever pruned.
+    "crypto_tokens",
+    "crypto_pairs",
+    "crypto_token_discovery_events",
+    "crypto_token_risk_assessments",
+    "crypto_opportunity_signals",
 )
 
 
@@ -55,6 +66,7 @@ class RetentionConfig:
     watcher_run_days: int = 30
     pipeline_run_days: int = 90
     signal_days: int = 0  # 0 = keep forever
+    crypto_days: int = 7  # crypto_price_ticks + crypto_watcher_runs
     batch_size: int = 5000
 
     @classmethod
@@ -65,6 +77,7 @@ class RetentionConfig:
             "watcher_run_days": s.watcher_run_retention_days,
             "pipeline_run_days": s.pipeline_run_retention_days,
             "signal_days": s.signal_retention_days,
+            "crypto_days": s.crypto_retention_days,
             "batch_size": s.retention_batch_size,
         }
         values.update({key: value for key, value in overrides.items() if value is not None})
@@ -107,6 +120,16 @@ class RetentionService:
         )
         counts["watcher_runs"] = self._delete_batched(
             session, WatcherRun, WatcherRun.created_at < _cutoff(cfg.watcher_run_days), dry_run
+        )
+        counts["crypto_price_ticks"] = self._delete_batched(
+            session, CryptoPriceTick, CryptoPriceTick.created_at < _cutoff(cfg.crypto_days), dry_run
+        )
+        counts["crypto_watcher_runs"] = self._delete_batched(
+            session,
+            CryptoWatcherRun,
+            (CryptoWatcherRun.created_at < _cutoff(cfg.crypto_days))
+            & (CryptoWatcherRun.status != "running"),
+            dry_run,
         )
 
         # Pipeline: stage rows first (children), then their parent runs.

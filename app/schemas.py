@@ -563,3 +563,92 @@ class CandidatesResponse(BaseModel):
     candidates: list[CandidateOut]
     # Populated only when include_rejected=true
     rejected: list[RejectedMarketOut] = []
+
+
+# --- Crypto Arena (CRYPTO-001) — read-only surveillance outputs. Raw
+# provider payloads stay DB-only (audit), mirroring raw_response elsewhere.
+
+
+class CryptoTokenOut(BaseModel):
+    """A persisted crypto token (observation record only)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    chain: str
+    token_address: str
+    symbol: str | None = None
+    name: str | None = None
+    decimals: int | None = None
+    token_metadata: dict | None = None
+    first_seen_at: datetime
+    last_seen_at: datetime
+    created_at: datetime
+
+
+class CryptoPairOut(BaseModel):
+    """A persisted DEX pair (observation record only)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    chain: str
+    pair_address: str
+    base_token_address: str
+    quote_token_address: str | None = None
+    dex_id: str | None = None
+    url: str | None = None
+    pair_created_at: datetime | None = None
+    pair_metadata: dict | None = None
+    first_seen_at: datetime
+    last_seen_at: datetime
+    created_at: datetime
+
+
+class CryptoSignalOut(BaseModel):
+    """A persisted crypto signal (informational only; raw payload stays
+    DB-only). No EV, no sizing, no trade directives."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    chain: str
+    token_address: str
+    pair_address: str | None = None
+    signal_type: str
+    signal_status: str
+    observed_at: datetime
+    reason: str = ""
+    evidence: dict | None = None
+    created_at: datetime
+
+
+class CryptoRunSummary(BaseModel):
+    """One crypto scan pass (audit summary)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    status: str
+    started_at: datetime
+    finished_at: datetime | None = None
+    duration_ms: int | None = None
+    tokens_checked: int = 0
+    pairs_checked: int = 0
+    ticks_recorded: int = 0
+    signals_created: int = 0
+    error_type: str | None = None
+    error_message: str | None = None
+
+
+class CryptoReport(BaseModel):
+    """Aggregate crypto surveillance view. Informational only."""
+
+    totals: dict[str, int]
+    signals_by_type: dict[str, int]
+    signals_by_status: dict[str, int]
+    risk_by_level: dict[str, int]
+    recent_signals: list[CryptoSignalOut]
+    recent_tokens: list[CryptoTokenOut]
+    latest_run: CryptoRunSummary | None = None
+    provider_errors: list[CryptoRunSummary] = []

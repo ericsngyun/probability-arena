@@ -21,6 +21,18 @@ Rollout discipline: one flag at a time, per `docs/EVO_X2_RUNBOOK.md`.
 | `ENABLE_REALTIME_WATCHER` | false (true on EVO-X2 since OPS-003) | `watch-loop` refuses to start without it; `watch-once` always available |
 | `ENABLE_WATCHER_RETENTION` | false | Watcher loop prunes at most once/day (never per-iteration) |
 | `ENABLE_PIPELINE_RETENTION` | false | Appends a `retention` stage to baseline runs |
+| `ENABLE_CRYPTO_SCOUT` | false | Reserved for crypto loop/timer use (none exists in CRYPTO-001); manual `crypto-scan-once` is always allowed |
+| `ENABLE_CRYPTO_RISK_PROVIDER` | false | Token risk assessments + risk signals (holder_risk/rug_risk/suspicious_supply_control); provider `CRYPTO_RISK_PROVIDER=mock` is the only CRYPTO-001 implementation |
+| `ENABLE_HELIUS` | false | **Reserved only** — no Helius adapter exists in CRYPTO-001 |
+
+## Crypto Arena tuning (CRYPTO-001 — read-only surveillance; no wallets/swaps/execution)
+
+`CRYPTO_CHAIN=solana`, `CRYPTO_PROVIDER=dexscreener`,
+`CRYPTO_WATCHER_POLL_INTERVAL_SECONDS=60`, `CRYPTO_PAIR_LIMIT=100`,
+`CRYPTO_MIN_LIQUIDITY_USD=5000`, `CRYPTO_MIN_VOLUME_5M_USD=1000`,
+`CRYPTO_SIGNAL_COOLDOWN_SECONDS=900`, `CRYPTO_RETENTION_DAYS=7`
+(crypto_price_ticks + crypto_watcher_runs only; tokens/pairs/events/risk/signals
+are never pruned).
 
 ## Watcher tuning
 

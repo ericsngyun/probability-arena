@@ -8,7 +8,7 @@ Probability Arena is a **read-only market intelligence and calibration system** 
 
 ## Current phase
 
-Through **SOCCER-001** (see `docs/ROADMAP.md`): the full read-only loop runs scheduled on EVO-X2, a real-time watcher emits informational signals, promoted signals trigger intelligence refreshes, and three narrow sport canaries (baseball external research, evidence-aware baseball forecasting, soccer external research) exist behind default-off flags. **No EV, no trading of any kind exists — anywhere.**
+Through **CRYPTO-001** (see `docs/ROADMAP.md`): the full read-only loop runs scheduled on EVO-X2, a real-time watcher emits informational signals, promoted signals trigger intelligence refreshes, three narrow sport canaries (baseball external research, evidence-aware baseball forecasting, soccer external research) exist behind default-off flags, and Crypto Arena adds a parallel read-only Solana memecoin surveillance lane (discovery, ticks, deterministic risk signals) behind its own default-off flags. **No EV, no trading of any kind exists — anywhere.** In the crypto lane specifically: no wallets, no private keys, no swaps, no Jupiter/transaction construction, no signing.
 
 ## Agent roles
 
@@ -30,7 +30,7 @@ Everything currently in the repo (see `docs/CAPABILITY_MATRIX.md`): read-only sc
 
 ## Forbidden capabilities (hard boundary — do not implement, scaffold, or "prepare")
 
-EV calculation · trade recommendations · paper trading · portfolio sizing · order placement · wallet/private-key handling · live trading/execution · autonomous trading · crypto wallets. `docs/SAFETY_BOUNDARIES.md` states what milestone would have to be explicitly accepted before each could exist. If a task appears to require one of these, **stop and report back instead of building it**.
+EV calculation · trade recommendations · paper trading · portfolio sizing · order placement · wallet/private-key handling · live trading/execution · autonomous trading · crypto wallets · swaps/transaction construction/signing (Jupiter or any DEX). `docs/SAFETY_BOUNDARIES.md` states what milestone would have to be explicitly accepted before each could exist. If a task appears to require one of these, **stop and report back instead of building it**.
 
 ## Testing expectations
 

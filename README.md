@@ -1,6 +1,6 @@
 # Probability Arena
 
-**Kalshi read-only market intelligence** (SOCCER-001: measurement loop, baseline runner, real-time watcher, retention, signal workflow, baseball + soccer external research canaries, and an evidence-aware baseball forecaster).
+**Kalshi read-only market intelligence** (CRYPTO-001: measurement loop, baseline runner, real-time watcher, retention, signal workflow, baseball + soccer external research canaries, an evidence-aware baseball forecaster, and Crypto Arena — a read-only Solana memecoin surveillance lane).
 
 Scans active Kalshi markets over the public REST API, ranks them on tradability signals (spread, liquidity, volume, time to expiration, resolution clarity), and stores time-series snapshots in Postgres. Optionally maintains live orderbook snapshots over WebSocket when API credentials are configured.
 
@@ -300,6 +300,24 @@ cd ~/projects/probability-arena && git pull --ff-only
 ```
 
 No EV calculation, no trade recommendations, no paper trading, no sizing, no orders, no wallets, no execution — forecasts remain auditable reasoning artifacts that calibration will judge.
+
+## Crypto Arena — read-only Solana memecoin surveillance (CRYPTO-001)
+
+A parallel, isolated crypto lane that observes Solana token/pair activity and persists auditable surveillance data. **Read-only in CRYPTO-001, full stop:** it does not trade, paper trade, calculate EV, size positions, or recommend positions. Wallet/private-key handling is forbidden (ADR-002); Jupiter/swap/transaction construction and signing are out of scope and gated far behind future milestones (`docs/SAFETY_BOUNDARIES.md`).
+
+**Discovery** (`DexScreenerAdapter`, public `api.dexscreener.com`, no credentials): latest token profiles + boosted tokens (Solana-filtered), pairs per token with price/liquidity/volume/age/boost metadata. Rate limits, HTTP errors, and schema drift all degrade to empty results, recorded on the scan's audit row. `CryptoDiscoveryService` upserts `crypto_tokens`/`crypto_pairs`, records discovery events (`profile`/`boost`/`pair_seen`), price ticks, and — when `ENABLE_CRYPTO_RISK_PROVIDER=true` — provider risk assessments (`CRYPTO_RISK_PROVIDER=mock` is the only CRYPTO-001 implementation; real providers are CRYPTO-002).
+
+**Signals** (`CryptoSignalService`, deterministic, latest tick vs previous, deduped per token+type within `CRYPTO_SIGNAL_COOLDOWN_SECONDS`): `new_pair`, `liquidity_appeared`, `volume_spike`, `price_momentum`, `boost_detected`, `liquidity_removed`, plus provider-dependent `holder_risk`, `rug_risk`, `suspicious_supply_control` (inactive without a risk provider). Signals are informational telemetry with reason + evidence for later human review and — after gated milestones — paper simulation.
+
+```bash
+python -m app.cli crypto-scan-once --limit 100   # one read-only discovery pass (always allowed manually)
+python -m app.cli crypto-signals-recent --limit 20
+python -m app.cli crypto-report                  # totals, signals by type/status, risk levels, provider errors
+```
+
+`GET /crypto/signals` · `GET /crypto/tokens` · `GET /crypto/pairs` · `GET /crypto/report` serve the same data (raw provider payloads stay DB-only). `ENABLE_CRYPTO_SCOUT=false` reserves future loop/timer use — no crypto watch-loop exists in CRYPTO-001. Retention prunes only `crypto_price_ticks`/`crypto_watcher_runs` (`CRYPTO_RETENTION_DAYS=7`); tokens, pairs, events, risk assessments, and signals are kept.
+
+**Future (each explicitly gated):** CRYPTO-002 risk engine (real read-only providers) → CRYPTO-003 paper simulator (gated like MVP-005B) → WALLET-001 policy-controlled transaction *proposal* gateway only (no signing, no keys), much later.
 
 ## Champion/challenger comparison
 

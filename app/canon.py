@@ -7,9 +7,10 @@ Update this file (and docs/PROJECT_CANON.md) when a milestone lands."""
 PROJECT_NAME = "probability-arena"
 
 CURRENT_PHASE = (
-    "Read-only intelligence + calibration accumulation (through SOCCER-001). "
+    "Read-only intelligence + calibration accumulation (through CRYPTO-001). "
     "No EV, no trading of any kind. Canary flags exist for baseball external "
-    "research, evidence-aware baseball forecasting, and soccer external research."
+    "research, evidence-aware baseball forecasting, and soccer external research. "
+    "Crypto Arena adds read-only Solana memecoin surveillance behind its own flags."
 )
 
 ALLOWED_CAPABILITIES = (
@@ -23,6 +24,7 @@ ALLOWED_CAPABILITIES = (
     "real-time watching + informational opportunity signals",
     "signal promotion + intelligence refresh workflow",
     "retention pruning of our own operational tables",
+    "crypto scouting (read-only Solana token/pair surveillance + risk telemetry)",
 )
 
 FORBIDDEN_CAPABILITIES = (
@@ -35,6 +37,7 @@ FORBIDDEN_CAPABILITIES = (
     "live trading / execution",
     "autonomous trading",
     "crypto wallets",
+    "swaps / transaction construction / signing (Jupiter or any DEX)",
 )
 
 EXPECTED_SERVICES_EVO_X2 = (
@@ -49,7 +52,10 @@ NEXT_MILESTONES = (
     "MVP-005A EV precheck (design + safety review only; requires paired "
     "champion/challenger evidence of edge)",
     "MVP-005B paper simulator (requires MVP-005A acceptance)",
-    "CRYPTO-001 read-only crypto scout (separate track, read-only)",
+    "CRYPTO-002 crypto risk engine (read-only; real risk providers)",
+    "CRYPTO-003 crypto paper simulator (gated like MVP-005B)",
+    "WALLET-001 policy-controlled transaction PROPOSAL gateway only "
+    "(no signing/keys; much later, dedicated security review)",
 )
 
 CANON_DOCS = (
@@ -66,6 +72,8 @@ CANON_DOCS = (
 
 KEY_FEATURE_FLAGS = (
     "enable_external_research",
+    "enable_crypto_scout",
+    "enable_crypto_risk_provider",
     "enable_baseball_external_research",
     "enable_soccer_external_research",
     "enable_llm_resolution",

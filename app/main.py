@@ -12,6 +12,7 @@ from fastapi import FastAPI
 from app.config import get_settings
 from app.db import run_migrations
 from app.routers.calibration import router as calibration_router
+from app.routers.crypto import router as crypto_router
 from app.routers.markets import router as markets_router
 from app.routers.pipeline import router as pipeline_router
 from app.routers.signals import router as signals_router
@@ -41,6 +42,7 @@ app.include_router(markets_router)
 app.include_router(calibration_router)
 app.include_router(pipeline_router)
 app.include_router(signals_router)
+app.include_router(crypto_router)
 
 
 @app.get("/health", tags=["ops"])

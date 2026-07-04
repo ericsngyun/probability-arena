@@ -68,6 +68,13 @@ systemctl --user restart probability-arena-watcher.service
 
 Soccer canary (SOCCER-001) is a two-step rollout: flip `ENABLE_SOCCER_EXTERNAL_RESEARCH=true` first with `SOCCER_RESEARCH_PROVIDER=template` (collector selected, honest fallbacks, zero external calls), inspect `research-canary-report`, then set `SOCCER_RESEARCH_PROVIDER=espn` as its own step.
 
+Crypto Arena (CRYPTO-001) has **no service/timer** — validate with manual passes only:
+`crypto-scan-once --limit 25` → `crypto-report` → `crypto-signals-recent`. The
+migration (`0014`) applies on the first command. `ENABLE_CRYPTO_SCOUT` stays
+false (it only reserves future loop/timer use); a crypto timer would be its own
+deliberate rollout step in a later milestone. Read-only DEX Screener GETs; no
+wallets/swaps/execution exist anywhere.
+
 ## DB backup (placeholder — formalize in a later OPS milestone)
 
 SQLite single file; a consistent snapshot while services run:

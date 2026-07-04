@@ -15,7 +15,8 @@ require crossing one must stop and report back instead of building.
 | **Wallet / private-key handling** | ❌ none exists (ADR-002) | A dedicated custody design + security review milestone; keys would never live in this repo/DB regardless |
 | **Live trading / execution** | ❌ none exists | Same as order placement; also requires operational controls (limits, kill switches) designed first |
 | **Autonomous trading** | ❌ none exists | Not planned; would require all of the above plus standing human-in-the-loop controls |
-| **Crypto wallets** | ❌ none exists | CRYPTO-001 is read-only scouting only; wallet milestones explicitly deferred |
+| **Crypto wallets** | ❌ none exists | CRYPTO-001 shipped read-only scouting only; wallet milestones explicitly deferred |
+| **Swaps / transaction construction / signing (Jupiter or any DEX)** | ❌ none exists | WALLET-001 (policy-controlled transaction *proposal* gateway only — no signing/keys), itself gated on CRYPTO-002 (risk engine) + CRYPTO-003 (paper simulator) acceptance; much later |
 
 ## What "no implementation surface" means
 
@@ -26,6 +27,7 @@ require crossing one must stop and report back instead of building.
 ## Always true, phase-independent
 
 - All external interaction is read-only (GETs); Kalshi credentials are not required and not stored; the optional WS client sends channel subscriptions only.
+- Crypto Arena (CRYPTO-001) is read-only surveillance: public DEX data in, auditable rows out. Its signals are telemetry — no wallet code, no private keys, no swaps, no Jupiter/transaction construction, no signing, no execution, and no EV/paper-trading semantics may attach to them before the gated milestones above.
 - No secrets in code, logs, or committed files; `.env` is gitignored.
 - Forecast confidence is capped centrally by evidence depth; forecasters cannot self-declare certainty.
 - Every model-assisted path has a deterministic fallback and honest degradation (template content stays labeled template).

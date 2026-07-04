@@ -21,7 +21,8 @@
 | MVP-004F | `20d4fda` | Evidence-aware baseball forecaster (capped non-midpoint forecasts) |
 | OPS-005 | `c35e704` | Project canon + agent operating framework; deployed to EVO-X2 with baseball canaries enabled (`71dab1d`) |
 | MVP-004G | `918b9de` | Champion/challenger comparison (paired + cohort, sample-size gated) |
-| SOCCER-001 | (this) | Soccer/World Cup external research canary (provider-gated, source-backed packets) |
+| SOCCER-001 | `e1d3b7b` | Soccer/World Cup external research canary (provider-gated, source-backed packets); rolled out to EVO-X2 (`f76baaa`) |
+| CRYPTO-001 | (this) | Crypto Arena: read-only Solana memecoin discovery + risk surveillance (DEX Screener, 7 tables, 9 deterministic signal types, CLI/API reports) |
 
 ## Immediate next steps
 
@@ -32,5 +33,6 @@
 
 - **MVP-005A — EV precheck**: *design + safety review only.* Requires champion/challenger evidence (paired, adequate sample) that a challenger beats the market baseline. No trading surface.
 - **MVP-005B — paper simulator**: gated on MVP-005A acceptance. Simulation only; still no orders.
-- **CRYPTO-001 — read-only crypto scout**: separate track; same read-only doctrine as the Kalshi scanner.
-- **Wallet milestones**: later only, behind dedicated custody/security review — see `docs/SAFETY_BOUNDARIES.md` and ADR-002.
+- **CRYPTO-002 — crypto risk engine**: real read-only risk providers (GoPlus/RugCheck-style) replacing the mock; still surveillance only.
+- **CRYPTO-003 — crypto paper simulator**: gated like MVP-005B; simulation only, no orders, no wallets.
+- **WALLET-001 — policy-controlled transaction proposal gateway**: *much later*; proposals only — no signing, no private keys, behind a dedicated custody/security review — see `docs/SAFETY_BOUNDARIES.md` and ADR-002.

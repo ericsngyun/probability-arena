@@ -97,6 +97,23 @@ class Settings(BaseSettings):
     source_backed_max_confidence: float = 0.75
     missing_critical_info_max_confidence: float = 0.50
 
+    # Crypto Arena scout (CRYPTO-001) — read-only Solana memecoin
+    # surveillance: discovery, price/liquidity ticks, deterministic risk
+    # signals. NO wallets, NO swaps, NO transaction building/signing, NO
+    # execution of any kind (see docs/SAFETY_BOUNDARIES.md).
+    enable_crypto_scout: bool = False  # gates loop/timer use; manual scan always allowed
+    crypto_chain: str = "solana"
+    crypto_provider: str = "dexscreener"
+    crypto_watcher_poll_interval_seconds: int = 60
+    crypto_pair_limit: int = 100
+    crypto_min_liquidity_usd: float = 5000.0
+    crypto_min_volume_5m_usd: float = 1000.0
+    crypto_signal_cooldown_seconds: int = 900
+    enable_helius: bool = False  # reserved: no Helius adapter exists in CRYPTO-001
+    enable_crypto_risk_provider: bool = False
+    crypto_risk_provider: str = "mock"
+    crypto_retention_days: int = 7  # crypto_price_ticks + crypto_watcher_runs only
+
     # Candidate hygiene / eligibility gating (MVP-003A)
     require_two_sided_quote: bool = True
     exclude_zero_quote_markets: bool = True

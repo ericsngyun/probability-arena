@@ -342,3 +342,38 @@ def test_run_migrations_is_idempotent(tmp_path):
     run_migrations(url)
     run_migrations(url)
     assert "duration_ms" in _columns(url, "scanner_runs")
+
+
+def test_0014_creates_and_drops_crypto_arena_tables(tmp_path):
+    url = f"sqlite:///{tmp_path}/crypto.db"
+    run_migrations(url)
+
+    crypto_tables = {
+        "crypto_tokens",
+        "crypto_pairs",
+        "crypto_token_discovery_events",
+        "crypto_token_risk_assessments",
+        "crypto_price_ticks",
+        "crypto_opportunity_signals",
+        "crypto_watcher_runs",
+    }
+    assert crypto_tables <= _tables(url)
+
+    assert {"chain", "token_address", "symbol", "name", "decimals", "metadata",
+            "first_seen_at", "last_seen_at"} <= _columns(url, "crypto_tokens")
+    assert {"pair_address", "base_token_address", "quote_token_address", "dex_id",
+            "url", "pair_created_at"} <= _columns(url, "crypto_pairs")
+    assert {"price_usd", "liquidity_usd", "volume_5m_usd", "volume_1h_usd",
+            "volume_24h_usd", "price_change_5m", "price_change_1h", "market_cap",
+            "fdv"} <= _columns(url, "crypto_price_ticks")
+    assert {"signal_type", "signal_status", "reason", "evidence"} <= _columns(
+        url, "crypto_opportunity_signals"
+    )
+    assert {"risk_score", "risk_level", "flags", "provider"} <= _columns(
+        url, "crypto_token_risk_assessments"
+    )
+    assert {"tokens_checked", "pairs_checked", "ticks_recorded",
+            "signals_created"} <= _columns(url, "crypto_watcher_runs")
+
+    command.downgrade(_config(url), "0013")
+    assert not (crypto_tables & _tables(url))

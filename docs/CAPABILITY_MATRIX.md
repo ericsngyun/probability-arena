@@ -11,7 +11,7 @@
 | **Paper trading** | **Does not exist** | ❌ | MVP-005B, gated on MVP-005A acceptance | Simulation only, still no orders; explicit human acceptance |
 | **Live trading** | **Does not exist** | ❌ | Dedicated milestone, not on roadmap | Requires limits/kill-switch design first |
 | **Wallet execution** | **Does not exist** | ❌ | Dedicated custody + security review milestone | ADR-002: no private keys in this repo/DB ever |
-| Crypto scouting | **Does not exist yet** | 🔜 planned read-only | CRYPTO-001 | Read-only market data only; same boundaries as Kalshi track |
+| Crypto scouting | Read-only Solana surveillance (CRYPTO-001): DEX Screener discovery, ticks, deterministic risk signals, reports; loop/timer use behind `ENABLE_CRYPTO_SCOUT` (default false), mock risk provider behind `ENABLE_CRYPTO_RISK_PROVIDER` | ✅ behind flags | CRYPTO-002 (risk engine) before real risk providers; CRYPTO-003 (paper sim) gated like MVP-005B | Public read-only GETs only; no wallets/keys/swaps/Jupiter/tx construction/signing — see SAFETY_BOUNDARIES |
 | **Crypto wallet** | **Does not exist** | ❌ | Explicitly deferred ("wallet milestones later only") | Same as wallet execution |
 | **Autonomous execution** | **Does not exist** | ❌ | Not planned | Would require every gate above plus standing human-in-the-loop controls |
 
