@@ -1118,14 +1118,23 @@ async def crypto_report(session=None) -> int:
 
 
 async def edge_precheck(
-    limit: int = 50, force_readonly: bool = False, service=None, session=None
+    limit: int = 50,
+    force_readonly: bool = False,
+    forecast_ids: list[int] | None = None,
+    marketops_run_id: int | None = None,
+    latest_marketops_run: bool = False,
+    recent_refreshed_signals: bool = False,
+    service=None,
+    session=None,
 ) -> int:
-    """Create probability-gap MEASUREMENT snapshots for recent forecasts.
-    Refuses unless ENABLE_EDGE_PRECHECK=true or --force-readonly is passed
-    (either way only measurement rows are created — no advice, no actions).
-    Returns the number of snapshots created, or -1 when refused."""
+    """Create probability-gap MEASUREMENT snapshots. Targeted modes
+    (forecast ids / MarketOps cycle / recently refreshed signals) measure
+    exactly the fresh forecasts; the broad latest-N sweep remains for manual
+    diagnostics. Refuses unless ENABLE_EDGE_PRECHECK=true or
+    --force-readonly is passed (either way only measurement rows are
+    created — no advice, no actions). Returns snapshots created."""
     from app.config import get_settings
-    from app.services.edge_precheck import EdgePrecheckService
+    from app.services.edge_precheck import EdgePrecheckService, summarize_snapshots
 
     if not get_settings().enable_edge_precheck and not force_readonly:
         print(
@@ -1141,8 +1150,30 @@ async def edge_precheck(
         run_migrations()
         session = get_sessionmaker()()
     try:
-        snapshots = (service or EdgePrecheckService()).run_batch(session, limit=limit)
-        print(f"measured {len(snapshots)} forecast gap(s) — measurement only, not advice")
+        svc = service or EdgePrecheckService()
+        if forecast_ids:
+            snapshots = svc.create_for_forecast_ids(session, forecast_ids)
+            mode = f"forecast ids {forecast_ids}"
+        elif marketops_run_id is not None:
+            snapshots = svc.create_for_marketops_run(session, run_id=marketops_run_id)
+            mode = f"marketops run #{marketops_run_id}"
+        elif latest_marketops_run:
+            snapshots = svc.create_for_marketops_run(session)
+            mode = "latest marketops run"
+        elif recent_refreshed_signals:
+            snapshots = svc.create_for_recent_refreshed_signals(session, limit=limit)
+            mode = f"recent refreshed signals (limit {limit})"
+        else:
+            snapshots = svc.run_batch(session, limit=limit)
+            mode = f"broad sweep (limit {limit}; diagnostic)"
+        summary = summarize_snapshots(snapshots)
+        print(
+            f"measured {len(snapshots)} forecast gap(s) via {mode} — measurement only, "
+            f"not advice (watchlist={summary['edge_prechecks_watchlist']} "
+            f"candidate_labels={summary['edge_prechecks_candidate_labels']} "
+            f"no_gap={summary['edge_prechecks_no_gap']} "
+            f"invalid={summary['edge_prechecks_invalid']})"
+        )
         for row in snapshots:
             gap = f"{row.probability_gap:+.4f}" if row.probability_gap is not None else "n/a"
             print(
@@ -1919,6 +1950,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     edge_parser.add_argument("--limit", type=int, default=50)
     edge_parser.add_argument("--force-readonly", action="store_true")
+    edge_parser.add_argument("--forecast-id", type=int, default=None)
+    edge_parser.add_argument(
+        "--forecast-ids", type=str, default=None, help="comma-separated forecast ids"
+    )
+    edge_parser.add_argument("--latest-marketops-run", action="store_true")
+    edge_parser.add_argument("--marketops-run-id", type=int, default=None)
+    edge_parser.add_argument("--recent-refreshed-signals", action="store_true")
     subparsers.add_parser(
         "edge-precheck-report", help="Aggregate gap-measurement report"
     )
@@ -2051,8 +2089,20 @@ def main(argv: list[str] | None = None) -> int:
         iterations = asyncio.run(marketops_loop(interval=args.interval))
         return 0 if iterations >= 0 else 1
     if args.command == "edge-precheck":
+        ids: list[int] | None = None
+        if args.forecast_id is not None:
+            ids = [args.forecast_id]
+        elif args.forecast_ids:
+            ids = [int(part) for part in args.forecast_ids.split(",") if part.strip()]
         count = asyncio.run(
-            edge_precheck(limit=args.limit, force_readonly=args.force_readonly)
+            edge_precheck(
+                limit=args.limit,
+                force_readonly=args.force_readonly,
+                forecast_ids=ids,
+                marketops_run_id=args.marketops_run_id,
+                latest_marketops_run=args.latest_marketops_run,
+                recent_refreshed_signals=args.recent_refreshed_signals,
+            )
         )
         return 0 if count >= 0 else 1
     if args.command == "edge-precheck-report":

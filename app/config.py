@@ -138,6 +138,12 @@ class Settings(BaseSettings):
     edge_precheck_require_source_backed: bool = True
     edge_precheck_require_researchable: bool = True
     edge_precheck_required_persistence_snapshots: int = 3
+    # MVP-005A.1: targeted modes skip a forecast measured within this window
+    edge_precheck_dedupe_seconds: int = 120
+    # Window/signal-based targeting selects only source-backed forecasts
+    # (explicit --forecast-id requests are honored regardless — the
+    # not-source-backed status records the gap honestly)
+    edge_precheck_target_only_source_backed: bool = True
     marketops_include_edge_precheck: bool = False
 
     # Crypto Arena scout (CRYPTO-001) — read-only Solana memecoin

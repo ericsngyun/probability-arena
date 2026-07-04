@@ -27,7 +27,8 @@
 | CRYPTO-002 | `6450194` | Crypto risk engine: heuristics + optional GoPlus/SolanaTracker providers, composite risk scores/levels, activated risk signals, risk reports (read-only risk intelligence — never trade advice); live on EVO-X2 GoPlus-backed (`ad79fde`; SolanaTracker needs an API key — `e2d8ae9`) |
 | OPS-007 | `a1d4ff6` | Operational hardening: MarketOps overlap guard (skipped/already_running + stale-lock recovery), SQLite busy timeout, DB backup/verify/retention CLI + optional daily timer; deployed + validated live (`19370c2`) |
 | MVP-005A-design | `cd6760a` | Edge-precheck design + safety review (`docs/MVP_005A_EDGE_PRECHECK_DESIGN.md`) — gate crossed at paired n=36, d_brier=−0.049, d_log_loss=−0.152 (early_signal) |
-| MVP-005A | (this) | Edge precheck implementation: probability-gap measurement (10 statuses, deterministic precedence, persistence counting), edge_precheck_snapshots audit rows, CLI/API, double-gated MarketOps stage — measurement only; no dollar EV, no advice, no actions |
+| MVP-005A | `1bd134a` | Edge precheck implementation: probability-gap measurement (10 statuses, deterministic precedence, persistence counting), edge_precheck_snapshots audit rows, CLI/API, double-gated MarketOps stage; live on EVO-X2 for manual measurement (`fa0ac34`) |
+| MVP-005A.1 | (this) | Targeted edge-precheck modes: explicit forecast ids, MarketOps-cycle scoping, recent-refreshed-signals; dedupe window; MarketOps stage now strictly cycle-scoped (broad sweeps stay manual-diagnostic) |
 
 ## Immediate next steps
 

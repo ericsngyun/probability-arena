@@ -16,7 +16,7 @@ calls external APIs.
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -83,6 +83,9 @@ class EdgePrecheckConfig:
     require_source_backed: bool = True
     require_researchable: bool = True
     required_persistence_snapshots: int = 3
+    # MVP-005A.1 targeted modes
+    dedupe_seconds: int = 120
+    target_only_source_backed: bool = True
 
     @classmethod
     def from_settings(cls, settings: Settings | None = None) -> "EdgePrecheckConfig":
@@ -100,6 +103,8 @@ class EdgePrecheckConfig:
             require_source_backed=s.edge_precheck_require_source_backed,
             require_researchable=s.edge_precheck_require_researchable,
             required_persistence_snapshots=s.edge_precheck_required_persistence_snapshots,
+            dedupe_seconds=s.edge_precheck_dedupe_seconds,
+            target_only_source_backed=s.edge_precheck_target_only_source_backed,
         )
 
     def as_dict(self) -> dict:
@@ -308,11 +313,137 @@ class EdgePrecheckService:
         session.flush()
         return row
 
+    # --- targeted modes (MVP-005A.1) ---------------------------------------
+    # Broad run_batch sweeps are for manual diagnostics; targeted modes
+    # measure exactly the forecasts a MarketOps cycle just refreshed, which
+    # is the only selection automation should ever use.
+
+    def _measured_recently(
+        self, session: Session, forecast_id: int, now: datetime
+    ) -> bool:
+        cutoff = now - timedelta(seconds=self.config.dedupe_seconds)
+        recent = session.execute(
+            select(EdgePrecheckSnapshot.id)
+            .where(
+                EdgePrecheckSnapshot.forecast_id == forecast_id,
+                EdgePrecheckSnapshot.created_at >= cutoff,
+            )
+            .limit(1)
+        ).scalars().first()
+        return recent is not None
+
+    def create_for_forecast_ids(
+        self,
+        session: Session,
+        forecast_ids: list[int],
+        now: datetime | None = None,
+    ) -> list[EdgePrecheckSnapshot]:
+        """Measure explicit forecasts. Explicit requests are honored
+        regardless of evidence depth (the not-source-backed status records
+        that honestly); forecasts measured within dedupe_seconds are
+        skipped."""
+        now = now or _now()
+        snapshots: list[EdgePrecheckSnapshot] = []
+        for forecast_id in forecast_ids:
+            forecast = session.get(MarketForecastRecord, forecast_id)
+            if forecast is None:
+                logger.warning("edge precheck: forecast %s not found; skipped", forecast_id)
+                continue
+            if self._measured_recently(session, forecast_id, now):
+                logger.debug("edge precheck: forecast %s measured recently; skipped", forecast_id)
+                continue
+            snapshots.append(self.precheck_forecast(session, forecast, now=now))
+        session.commit()
+        return snapshots
+
+    def _forecast_ids_for_marketops_run(self, session: Session, run) -> list[int]:
+        """Forecasts refreshed by one MarketOps run: primarily via the
+        signal linkage (refreshed_forecast_id, processed within the run
+        window); fallback to a created_at window when no linkage exists."""
+        started = _aware(run.started_at)
+        finished = _aware(run.finished_at) or _now()
+
+        linked = session.execute(
+            select(OpportunitySignal.refreshed_forecast_id)
+            .where(
+                OpportunitySignal.refreshed_forecast_id.is_not(None),
+                OpportunitySignal.processed_at.is_not(None),
+                OpportunitySignal.processed_at >= started,
+                OpportunitySignal.processed_at <= finished,
+            )
+        ).scalars().all()
+        ids = [forecast_id for forecast_id in linked if forecast_id is not None]
+        if ids:
+            forecast_query = select(MarketForecastRecord).where(
+                MarketForecastRecord.id.in_(ids)
+            )
+        else:
+            forecast_query = select(MarketForecastRecord).where(
+                MarketForecastRecord.created_at >= started,
+                MarketForecastRecord.created_at <= finished,
+            )
+        forecasts = session.execute(forecast_query).scalars().all()
+        if self.config.target_only_source_backed:
+            forecasts = [f for f in forecasts if f.evidence_depth == "source_backed"]
+        return [forecast.id for forecast in forecasts]
+
+    def create_for_marketops_run(
+        self,
+        session: Session,
+        run_id: int | None = None,
+        now: datetime | None = None,
+    ) -> list[EdgePrecheckSnapshot]:
+        """Measure the forecasts refreshed by one MarketOps cycle (the
+        latest completed cycle when run_id is None)."""
+        from app.models import MarketOpsRun
+
+        if run_id is not None:
+            run = session.get(MarketOpsRun, run_id)
+        else:
+            run = session.execute(
+                select(MarketOpsRun)
+                .where(MarketOpsRun.status.in_(("ok", "partial")))
+                .order_by(MarketOpsRun.id.desc())
+            ).scalars().first()
+        if run is None:
+            logger.info("edge precheck: no MarketOps run found; nothing to measure")
+            return []
+        forecast_ids = self._forecast_ids_for_marketops_run(session, run)
+        return self.create_for_forecast_ids(session, forecast_ids, now=now)
+
+    def create_for_recent_refreshed_signals(
+        self,
+        session: Session,
+        limit: int = 10,
+        now: datetime | None = None,
+    ) -> list[EdgePrecheckSnapshot]:
+        """Measure forecasts linked to the most recently processed
+        forecast_refreshed signals."""
+        rows = session.execute(
+            select(OpportunitySignal.refreshed_forecast_id)
+            .where(
+                OpportunitySignal.signal_status == "forecast_refreshed",
+                OpportunitySignal.refreshed_forecast_id.is_not(None),
+            )
+            .order_by(OpportunitySignal.processed_at.desc(), OpportunitySignal.id.desc())
+            .limit(limit)
+        ).scalars().all()
+        forecast_ids = list(dict.fromkeys(rows))  # dedupe, preserve recency order
+        if self.config.target_only_source_backed:
+            forecasts = session.execute(
+                select(MarketForecastRecord).where(MarketForecastRecord.id.in_(forecast_ids))
+            ).scalars().all()
+            keep = {f.id for f in forecasts if f.evidence_depth == "source_backed"}
+            forecast_ids = [fid for fid in forecast_ids if fid in keep]
+        return self.create_for_forecast_ids(session, forecast_ids, now=now)
+
+
     def run_batch(
         self, session: Session, limit: int = 50, now: datetime | None = None
     ) -> list[EdgePrecheckSnapshot]:
-        """Measure the latest forecast per ticker across the most recent
-        `limit` forecasts. Persists one snapshot per forecast evaluated."""
+        """Broad diagnostic sweep (manual use only — automation must use the
+        targeted modes above): measure the latest forecast per ticker across
+        the most recent `limit` forecasts."""
         recent = session.execute(
             select(MarketForecastRecord)
             .order_by(MarketForecastRecord.id.desc())
@@ -325,6 +456,22 @@ class EdgePrecheckService:
         snapshots = [self.precheck_forecast(session, forecast, now=now) for forecast in selected]
         session.commit()
         return snapshots
+
+
+def summarize_snapshots(snapshots: list) -> dict:
+    """Measurement batch summary: created/watchlist/candidate-label/invalid
+    counts (candidate labels are review labels, never actions)."""
+    watchlist = sum(1 for s in snapshots if s.status == STATUS_WATCHLIST)
+    candidates = sum(1 for s in snapshots if s.status == STATUS_PAPER_CANDIDATE_LATER)
+    no_gap = sum(1 for s in snapshots if s.status == STATUS_NO_GAP)
+    return {
+        "edge_prechecks_created": len(snapshots),
+        "edge_prechecks_watchlist": watchlist,
+        "edge_prechecks_candidate_labels": candidates,
+        "edge_prechecks_invalid": len(snapshots) - watchlist - candidates - no_gap,
+        "edge_prechecks_no_gap": no_gap,
+    }
+
 
 
 class EdgePrecheckReportService:

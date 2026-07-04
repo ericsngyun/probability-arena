@@ -96,11 +96,21 @@ wallets/swaps/execution exist anywhere.
 Dark first: deploy with `ENABLE_EDGE_PRECHECK=false`, run one manual
 measurement pass (`edge-precheck --limit 25 --force-readonly` — still
 read-only, creates measurement rows only), inspect `edge-precheck-report`.
-Then flip `ENABLE_EDGE_PRECHECK=true` as its own step, and only later —
-after the measurement distribution looks sane — set
-`MARKETOPS_INCLUDE_EDGE_PRECHECK=true` so the 5-min autopilot measures each
-cycle (double-gated). All outputs are gaps and labels; nothing here is a
-trade instruction, and no downstream behavior branches on the results.
+Then flip `ENABLE_EDGE_PRECHECK=true` as its own step.
+
+**Prefer targeted runs during live windows** (MVP-005A.1):
+`edge-precheck --latest-marketops-run` measures exactly the forecasts the
+last autopilot cycle refreshed — run it within ~2 minutes of a cycle
+finishing (`journalctl --user -u probability-arena-marketops.service -n 3`)
+so freshness checks can pass. Broad `--limit` sweeps are diagnostics only
+and will be dominated by stale-forecast noise by design.
+
+Only after targeted manual sessions during prime live windows (World Cup
+afternoon UTC / MLB evening ET) produce sane watchlist behavior, consider
+`MARKETOPS_INCLUDE_EDGE_PRECHECK=true` — the autopilot stage is strictly
+cycle-scoped (≤5 forecasts/cycle, the ones it just refreshed; never a
+sweep). All outputs are gaps and labels; nothing here is a trade
+instruction, and no downstream behavior branches on the results.
 
 ## DB backup (OPS-007)
 

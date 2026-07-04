@@ -423,7 +423,20 @@ class TestCli:
         monkeypatch.setattr(cli, "edge_precheck_report", fake)
         assert cli.main(["edge-precheck", "--limit", "5", "--force-readonly"]) == 0
         assert cli.main(["edge-precheck-report"]) == 0
-        assert captured[0] == {"limit": 5, "force_readonly": True}
+        assert captured[0]["limit"] == 5
+        assert captured[0]["force_readonly"] is True
+        assert captured[0]["forecast_ids"] is None
+        # targeted-mode arg plumbing
+        assert cli.main(["edge-precheck", "--forecast-id", "7"]) == 0
+        assert captured[-1]["forecast_ids"] == [7]
+        assert cli.main(["edge-precheck", "--forecast-ids", "3,4,5"]) == 0
+        assert captured[-1]["forecast_ids"] == [3, 4, 5]
+        assert cli.main(["edge-precheck", "--latest-marketops-run"]) == 0
+        assert captured[-1]["latest_marketops_run"] is True
+        assert cli.main(["edge-precheck", "--marketops-run-id", "9"]) == 0
+        assert captured[-1]["marketops_run_id"] == 9
+        assert cli.main(["edge-precheck", "--recent-refreshed-signals", "--limit", "10"]) == 0
+        assert captured[-1]["recent_refreshed_signals"] is True
 
 
 @pytest.fixture
@@ -489,19 +502,36 @@ class TestMarketOpsIntegration:
         assert "edge_precheck" not in run.summary["stages"]
         assert session.execute(select(EdgePrecheckSnapshot)).scalars().all() == []
 
-    async def test_runs_only_when_both_flags_true(self, session, monkeypatch):
+    async def test_runs_only_when_both_flags_true_and_is_cycle_scoped(
+        self, session, monkeypatch
+    ):
         from app.services.marketops import MarketOpsConfig
         from tests.test_marketops import autopilot
+        from tests.test_marketops import seed_market as mo_seed_market
+        from tests.test_marketops import seed_signal as mo_seed_signal
 
-        seed_all(session)
         monkeypatch.setattr(get_settings(), "enable_edge_precheck", True)
+        # a pre-existing forecast that must NOT be swept (not from this cycle)
+        seed_all(session, ticker="PRE-EXISTING-MKT")
+        # a signal this cycle will process into a fresh forecast
+        mo_seed_market(session, "CYCLE-MKT")
+        mo_seed_signal(session, ticker="CYCLE-MKT")
+
         run = await autopilot(
             cfg=MarketOpsConfig(include_edge_precheck=True),
             edge_precheck_service=EdgePrecheckService(EdgePrecheckConfig()),
         ).run_once(session)
         assert run.summary["stages"]["edge_precheck"] == "ok"
-        assert run.summary["edge_precheck"]["snapshots"] == 1
-        assert len(session.execute(select(EdgePrecheckSnapshot)).scalars().all()) == 1
+        assert run.summary["edge_precheck"]["edge_prechecks_created"] == 1
+        assert set(run.summary["edge_precheck"]) >= {
+            "edge_prechecks_created",
+            "edge_prechecks_watchlist",
+            "edge_prechecks_candidate_labels",
+            "edge_prechecks_invalid",
+        }
+        rows = session.execute(select(EdgePrecheckSnapshot)).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].market_ticker == "CYCLE-MKT"  # cycle-scoped, no sweep
 
     async def test_engine_flag_false_skips_even_when_included(self, session, monkeypatch):
         from app.services.marketops import MarketOpsConfig
@@ -513,3 +543,157 @@ class TestMarketOpsIntegration:
         ).run_once(session)
         assert run.summary["stages"]["edge_precheck"] == "skipped"
         assert session.execute(select(EdgePrecheckSnapshot)).scalars().all() == []
+
+
+class TestTargetedModes:
+    def test_explicit_forecast_ids(self, session):
+        seed_resolution(session)
+        seed_tick(session)
+        first = seed_forecast(session)
+        second = seed_forecast(session, ticker="OTHER-MKT", evidence_depth="template_only")
+        seed_tick(session, ticker="OTHER-MKT")
+        seed_resolution(session, ticker="OTHER-MKT")
+
+        snapshots = service().create_for_forecast_ids(
+            session, [first.id, second.id, 9999], now=NOW
+        )
+        # explicit requests honored regardless of depth; unknown id skipped
+        assert len(snapshots) == 2
+        assert {s.forecast_id for s in snapshots} == {first.id, second.id}
+        template_row = next(s for s in snapshots if s.forecast_id == second.id)
+        assert template_row.status == STATUS_INVALID_NOT_SOURCE_BACKED  # honest
+
+    def test_dedupe_window_prevents_remeasurement(self, session):
+        forecast = seed_all(session)
+        svc = service(dedupe_seconds=120)
+        assert len(svc.create_for_forecast_ids(session, [forecast.id], now=NOW)) == 1
+        assert svc.create_for_forecast_ids(session, [forecast.id], now=NOW) == []
+        # outside the window it measures again
+        later = NOW + timedelta(seconds=121)
+        assert len(svc.create_for_forecast_ids(session, [forecast.id], now=later)) == 1
+
+    def _seed_marketops_run(self, session, started_minutes_ago=5.0, finished_minutes_ago=4.0):
+        from app.models import MarketOpsRun
+
+        run = MarketOpsRun(
+            status="ok",
+            started_at=NOW - timedelta(minutes=started_minutes_ago),
+            finished_at=NOW - timedelta(minutes=finished_minutes_ago),
+            created_at=NOW - timedelta(minutes=started_minutes_ago),
+        )
+        session.add(run)
+        session.commit()
+        return run
+
+    def _link_signal(self, session, forecast, processed_minutes_ago=4.5):
+        from app.models import OpportunitySignal
+
+        signal = OpportunitySignal(
+            market_ticker=forecast.market_ticker,
+            signal_type="price_move_threshold",
+            signal_status="forecast_refreshed",
+            observed_at=NOW,
+            reason="seeded",
+            refreshed_forecast_id=forecast.id,
+            processed_at=NOW - timedelta(minutes=processed_minutes_ago),
+            created_at=NOW,
+        )
+        session.add(signal)
+        session.commit()
+        return signal
+
+    def test_marketops_run_mode_selects_linked_forecasts_only(self, session):
+        seed_resolution(session)
+        seed_tick(session)
+        run = self._seed_marketops_run(session)
+        in_run = seed_forecast(session, age_seconds=270)  # within run window
+        self._link_signal(session, in_run, processed_minutes_ago=4.5)
+        outside = seed_forecast(session, ticker="OUTSIDE-MKT", age_seconds=10)
+        self._link_signal(session, outside, processed_minutes_ago=0.1)  # after run finished
+
+        snapshots = service().create_for_marketops_run(session, run_id=run.id, now=NOW)
+        assert [s.forecast_id for s in snapshots] == [in_run.id]
+
+    def test_marketops_run_mode_window_fallback_and_source_filter(self, session):
+        seed_resolution(session)
+        seed_tick(session)
+        run = self._seed_marketops_run(session)
+        in_window_backed = seed_forecast(session, age_seconds=270)
+        seed_resolution(session, ticker="TPL-MKT")
+        seed_tick(session, ticker="TPL-MKT")
+        seed_forecast(
+            session, ticker="TPL-MKT", evidence_depth="template_only", age_seconds=270
+        )
+        seed_forecast(session, ticker="LATE-MKT", age_seconds=10)  # outside window
+
+        snapshots = service().create_for_marketops_run(session, run_id=run.id, now=NOW)
+        # no signal linkage -> created_at window; template filtered by
+        # target_only_source_backed=true
+        assert [s.forecast_id for s in snapshots] == [in_window_backed.id]
+
+    def test_latest_marketops_run_mode(self, session):
+        seed_resolution(session)
+        seed_tick(session)
+        self._seed_marketops_run(session, started_minutes_ago=60, finished_minutes_ago=59)
+        latest = self._seed_marketops_run(session)
+        forecast = seed_forecast(session, age_seconds=270)
+        self._link_signal(session, forecast)
+
+        snapshots = service().create_for_marketops_run(session, now=NOW)  # run_id=None
+        assert len(snapshots) == 1
+        assert snapshots[0].forecast_id == forecast.id
+        assert latest.id is not None
+
+    def test_no_marketops_run_yields_nothing(self, session):
+        assert service().create_for_marketops_run(session, now=NOW) == []
+
+    def test_recent_refreshed_signals_mode(self, session):
+        seed_resolution(session)
+        seed_tick(session)
+        backed = seed_forecast(session)
+        self._link_signal(session, backed)
+        seed_resolution(session, ticker="TPL-MKT")
+        seed_tick(session, ticker="TPL-MKT")
+        template = seed_forecast(session, ticker="TPL-MKT", evidence_depth="template_only")
+        self._link_signal(session, template)
+
+        snapshots = service().create_for_recent_refreshed_signals(session, limit=10, now=NOW)
+        # template filtered by target_only_source_backed
+        assert [s.forecast_id for s in snapshots] == [backed.id]
+
+        loose = service(target_only_source_backed=False)
+        more = loose.create_for_recent_refreshed_signals(session, limit=10, now=NOW)
+        assert len(more) == 1  # backed deduped (just measured); template now included
+        assert more[0].forecast_id == template.id
+
+    def test_summarize_counts(self, session):
+        seed_resolution(session)
+        seed_tick(session)
+        svc = service(required_persistence_snapshots=1)
+        rows = [
+            svc.precheck_forecast(session, seed_forecast(session), now=NOW),  # candidate
+            svc.precheck_forecast(
+                session, seed_forecast(session, probability=0.51), now=NOW
+            ),  # no_gap
+            svc.precheck_forecast(
+                session, seed_forecast(session, confidence=0.3), now=NOW
+            ),  # invalid
+        ]
+        from app.services.edge_precheck import summarize_snapshots
+
+        summary = summarize_snapshots(rows)
+        assert summary == {
+            "edge_prechecks_created": 3,
+            "edge_prechecks_watchlist": 0,
+            "edge_prechecks_candidate_labels": 1,
+            "edge_prechecks_invalid": 1,
+            "edge_prechecks_no_gap": 1,
+        }
+
+    def test_broad_sweep_unchanged(self, session):
+        seed_resolution(session)
+        seed_tick(session)
+        seed_forecast(session)
+        seed_forecast(session)  # same ticker: latest-per-ticker dedup
+        snapshots = service().run_batch(session, limit=10, now=NOW)
+        assert len(snapshots) == 1

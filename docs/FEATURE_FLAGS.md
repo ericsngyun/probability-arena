@@ -52,9 +52,14 @@ Provisional thresholds (design §6): `EDGE_PRECHECK_MIN_ABS_GAP=0.05`,
 `EDGE_PRECHECK_MAX_MARKET_SNAPSHOT_AGE_SECONDS=120`,
 `EDGE_PRECHECK_REQUIRE_SOURCE_BACKED=true`,
 `EDGE_PRECHECK_REQUIRE_RESEARCHABLE=true`,
-`EDGE_PRECHECK_REQUIRED_PERSISTENCE_SNAPSHOTS=3`.
+`EDGE_PRECHECK_REQUIRED_PERSISTENCE_SNAPSHOTS=3`,
+`EDGE_PRECHECK_DEDUPE_SECONDS=120` (targeted modes skip forecasts measured
+within this window), `EDGE_PRECHECK_TARGET_ONLY_SOURCE_BACKED=true`
+(window/signal-based targeting selects source-backed forecasts only).
 No dollar EV, no advice — `paper_candidate_later` is a review label with zero
-attached behavior.
+attached behavior. Broad `--limit` sweeps are manual diagnostics; targeted
+modes (`--latest-marketops-run` etc.) are what automation uses, and the
+MarketOps stage is strictly cycle-scoped.
 
 ## Operational hardening (OPS-007)
 

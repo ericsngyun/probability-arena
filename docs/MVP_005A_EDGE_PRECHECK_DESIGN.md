@@ -173,3 +173,26 @@ acceptance of this design first, then its own review.
   other row (including any invalid measurement) breaks the streak.
 - §10 checklist accepted 2026-07-04 (implementation authorized by the
   MVP-005A implementation directive).
+
+## MVP-005A.1 addendum — targeted measurement modes
+
+Live enablement showed broad latest-N sweeps are diagnostics at best: most
+of the batch is stale forecasts for ended markets (microstructure noise).
+MVP-005A.1 adds targeted selection so measurement lands inside the valid
+window (~5 minutes after a forecast refresh, while books are two-sided):
+
+- `create_for_forecast_ids` — explicit ids (honored regardless of evidence
+  depth; the not-source-backed status records honesty).
+- `create_for_marketops_run` — forecasts refreshed by one autopilot cycle,
+  primarily via the signal linkage (`refreshed_forecast_id` + processed_at
+  inside the run window), falling back to a created_at window; filtered to
+  source-backed when `EDGE_PRECHECK_TARGET_ONLY_SOURCE_BACKED=true`.
+- `create_for_recent_refreshed_signals` — forecasts linked to the most
+  recently processed forecast_refreshed signals.
+- Dedupe: a forecast measured within `EDGE_PRECHECK_DEDUPE_SECONDS=120` is
+  skipped (targeted modes only; broad sweeps unchanged).
+- The MarketOps stage (still double-gated, still default-off) is now
+  strictly CYCLE-SCOPED: it measures only the forecasts refreshed by that
+  same cycle's processed signals — never a sweep — and reports
+  edge_prechecks_created/watchlist/candidate_labels/invalid in the run
+  summary. Nothing branches on the results.

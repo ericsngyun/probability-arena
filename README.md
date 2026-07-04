@@ -369,10 +369,20 @@ python -m app.cli marketops-loop --interval 300 # refuses to start unless ENABLE
 Statuses (deterministic precedence, all failures recorded in `invalidation_reasons`): `invalid_resolution_risk` → `invalid_not_source_backed` → `invalid_stale_forecast` → `invalid_stale_market_snapshot` → `invalid_low_confidence` → `invalid_wide_spread` → `invalid_low_liquidity` → `no_gap` → `watchlist` → `paper_candidate_later`. A gap must persist across `EDGE_PRECHECK_REQUIRED_PERSISTENCE_SNAPSHOTS=3` same-direction valid measurements before earning `paper_candidate_later` — which is **a review label for a possible future, separately-gated MVP-005B; it is not an instruction and triggers no behavior**.
 
 ```bash
+# Targeted modes (MVP-005A.1) — what automation should use: measure exactly
+# the fresh forecasts, not a broad sweep
+python -m app.cli edge-precheck --latest-marketops-run          # forecasts refreshed by the latest cycle
+python -m app.cli edge-precheck --marketops-run-id 47
+python -m app.cli edge-precheck --recent-refreshed-signals --limit 10
+python -m app.cli edge-precheck --forecast-id 123               # or --forecast-ids 1,2,3
+
+# Broad sweep — manual diagnostics only (stale-forecast noise by design)
 python -m app.cli edge-precheck --limit 50            # requires ENABLE_EDGE_PRECHECK=true…
 python -m app.cli edge-precheck --force-readonly      # …or an explicit one-off (still measurement rows only)
 python -m app.cli edge-precheck-report                # statuses, cohorts, gap stats — labeled measurement-only
 ```
+
+Targeted modes skip forecasts measured within `EDGE_PRECHECK_DEDUPE_SECONDS=120` and (except explicit `--forecast-id`) select only source-backed forecasts (`EDGE_PRECHECK_TARGET_ONLY_SOURCE_BACKED=true`). If MarketOps integration is ever enabled it is strictly **cycle-scoped**: only forecasts refreshed by that same cycle's processed signals are measured — never a latest-N sweep.
 
 `GET /edge-precheck/snapshots`, `GET /edge-precheck/report`, `POST /edge-precheck/run` (flag-gated, or `force_readonly=true`). MarketOps can run a measurement pass per cycle only when **both** `MARKETOPS_INCLUDE_EDGE_PRECHECK=true` and `ENABLE_EDGE_PRECHECK=true` (both default false). No orders, paper trades, position sizes, wallets, swaps, or execution exist anywhere; MVP-005B (paper simulator) remains a separate, explicitly-gated future milestone.
 

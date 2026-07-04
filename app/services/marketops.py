@@ -398,6 +398,7 @@ class MarketOpsAutopilotService:
 
         try:
             now = _now()
+            processed: list = []  # this cycle's refreshed signals
 
             # 1-3. Probability-market lane: inspect -> promote -> process
             if cfg.include_probability_markets:
@@ -493,23 +494,29 @@ class MarketOpsAutopilotService:
 
             run.forecasts_scored = await stage("score_forecasts", score) or 0
 
-            # 5b. Edge precheck (MVP-005A) — measurement only, DOUBLE-gated:
-            # both MARKETOPS_INCLUDE_EDGE_PRECHECK and ENABLE_EDGE_PRECHECK
-            # must be true. Nothing downstream branches on the results.
+            # 5b. Edge precheck (MVP-005A.1) — measurement only, DOUBLE-gated
+            # (MARKETOPS_INCLUDE_EDGE_PRECHECK AND ENABLE_EDGE_PRECHECK) and
+            # strictly CYCLE-SCOPED: only forecasts refreshed by THIS cycle's
+            # processed signals are measured — never a broad sweep. Nothing
+            # downstream branches on the results.
             if cfg.include_edge_precheck and get_settings().enable_edge_precheck:
 
                 async def edge():
-                    from app.services.edge_precheck import EdgePrecheckService
+                    from app.services.edge_precheck import (
+                        EdgePrecheckService,
+                        summarize_snapshots,
+                    )
 
+                    cycle_forecast_ids = [
+                        signal.refreshed_forecast_id
+                        for signal in processed
+                        if signal.refreshed_forecast_id is not None
+                    ]
                     service = self._edge_service or EdgePrecheckService()
-                    snapshots = service.run_batch(session)
-                    by_status: dict[str, int] = {}
-                    for snapshot in snapshots:
-                        by_status[snapshot.status] = by_status.get(snapshot.status, 0) + 1
-                    summary["edge_precheck"] = {
-                        "snapshots": len(snapshots),
-                        "by_status": by_status,
-                    }
+                    snapshots = service.create_for_forecast_ids(
+                        session, cycle_forecast_ids
+                    )
+                    summary["edge_precheck"] = summarize_snapshots(snapshots)
                     return len(snapshots)
 
                 await stage("edge_precheck", edge)
