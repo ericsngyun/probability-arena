@@ -1,0 +1,19 @@
+# Probability Arena — daily SQLite backup (consistent snapshot via the
+# sqlite3 online backup API, gzipped + retention-pruned). Read-only project;
+# this only copies our own database file.
+# NOT auto-installed. See the .timer file for install commands.
+
+[Unit]
+Description=Probability Arena database backup (SQLite snapshot + retention)
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/projects/probability-arena
+EnvironmentFile=%h/projects/probability-arena/.env
+ExecStart=%h/projects/probability-arena/.venv/bin/python -m app.cli backup-db
+NoNewPrivileges=true
+TimeoutStartSec=10min
+
+[Install]
+WantedBy=default.target

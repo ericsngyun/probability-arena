@@ -113,6 +113,14 @@ class Settings(BaseSettings):
     marketops_include_probability_markets: bool = True
     marketops_fail_fast: bool = False
     marketops_loop_interval_seconds: int = 300
+    # OPS-007: a 'running' marketops run older than this is treated as stale
+    # (crashed) and no longer blocks new cycles
+    marketops_lock_stale_after_minutes: int = 30
+
+    # OPS-007 operational hardening
+    sqlite_busy_timeout_ms: int = 30000  # applied to SQLite connections only
+    backup_retention_days: int = 30
+    backup_dir: str = "data/backups"
 
     # Crypto Arena scout (CRYPTO-001) — read-only Solana memecoin
     # surveillance: discovery, price/liquidity ticks, deterministic risk

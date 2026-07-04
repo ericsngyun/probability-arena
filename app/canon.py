@@ -7,7 +7,7 @@ Update this file (and docs/PROJECT_CANON.md) when a milestone lands."""
 PROJECT_NAME = "probability-arena"
 
 CURRENT_PHASE = (
-    "Read-only intelligence + calibration accumulation (through CRYPTO-002). "
+    "Read-only intelligence + calibration accumulation (through OPS-007). "
     "No EV, no trading of any kind. Canary flags exist for baseball external "
     "research, evidence-aware baseball forecasting, and soccer external research. "
     "Crypto Arena adds read-only Solana memecoin surveillance plus a risk "

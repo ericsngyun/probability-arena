@@ -91,13 +91,31 @@ false (it only reserves future loop/timer use); a crypto timer would be its own
 deliberate rollout step in a later milestone. Read-only DEX Screener GETs; no
 wallets/swaps/execution exist anywhere.
 
-## DB backup (placeholder — formalize in a later OPS milestone)
+## DB backup (OPS-007)
 
-SQLite single file; a consistent snapshot while services run:
+Consistent snapshots via the sqlite3 online backup API (safe while all
+services run), gzipped into `data/backups/` with `BACKUP_RETENTION_DAYS`
+pruning:
 
 ```bash
 cd ~/projects/probability-arena
-sqlite3 data/probability_arena.db ".backup data/backup-$(date -u +%Y%m%dT%H%M%SZ).db"
+.venv/bin/python -m app.cli backup-db
+.venv/bin/python -m app.cli list-db-backups
+.venv/bin/python -m app.cli verify-db-backup data/backups/backup-<stamp>.db.gz
 ```
 
-TODO: scheduled off-host copies, retention for backups, restore drill.
+Optional daily timer (NOT auto-installed; install commands in the unit file):
+`infra/systemd/user/probability-arena-backup.{service,timer}`.
+
+Restore drill: `gunzip -k backup-<stamp>.db.gz`, point a scratch
+`DATABASE_URL` at the extracted file, run `db-stats` against it.
+TODO (later OPS milestone): scheduled off-host copies.
+
+## MarketOps overlap guard (OPS-007)
+
+Concurrent cycles cannot collide anymore: a second `marketops-run-once` (or a
+timer firing during a manual run) records a graceful `skipped`
+(`already_running`) run instead of a SQLite lock error, and a 'running' row
+older than `MARKETOPS_LOCK_STALE_AFTER_MINUTES` is treated as crashed. SQLite
+connections also carry a `SQLITE_BUSY_TIMEOUT_MS` wait. Manual cycles no
+longer need to dodge timer firings.

@@ -311,12 +311,49 @@ class MarketOpsAutopilotService:
 
     # --- the cycle ----------------------------------------------------------
 
+    def _active_run(self, session: Session) -> MarketOpsRun | None:
+        """The current non-stale 'running' cycle, if any (OPS-007 overlap
+        lock, mirroring the baseline pipeline). Runs stuck in 'running'
+        longer than MARKETOPS_LOCK_STALE_AFTER_MINUTES are treated as stale
+        (crashed) and never wedge the system."""
+        stale_cutoff = _now() - timedelta(
+            minutes=get_settings().marketops_lock_stale_after_minutes
+        )
+        candidates = session.execute(
+            select(MarketOpsRun)
+            .where(MarketOpsRun.status == "running")
+            .order_by(MarketOpsRun.id.desc())
+        ).scalars().all()
+        for row in candidates:
+            started = _aware(row.started_at)
+            if started is not None and started >= stale_cutoff:
+                return row
+        return None
+
     async def run_once(self, session: Session) -> MarketOpsRun:
         """One autopilot cycle. Stage failures are captured per stage in the
         run summary and the cycle continues (unless fail_fast); only setup
-        failures mark the whole run as error."""
+        failures mark the whole run as error. A concurrent active cycle
+        (e.g. the timer firing during a manual run) yields a graceful
+        'skipped' run instead of a lock collision."""
         cfg = self.config
         started_at = _now()
+
+        active = self._active_run(session)
+        if active is not None:
+            skipped = MarketOpsRun(
+                status="skipped",
+                started_at=started_at,
+                finished_at=started_at,
+                duration_ms=0,
+                config=asdict(cfg),
+                summary={"reason": "already_running", "active_run_id": active.id},
+                created_at=started_at,
+            )
+            session.add(skipped)
+            session.commit()
+            return skipped
+
         run = MarketOpsRun(
             status="running",
             started_at=started_at,
@@ -471,18 +508,20 @@ class MarketOpsAutopilotService:
 
             cc_snapshot = await stage("champion_challenger", compare)
             if cc_snapshot is not None:
-                previous = session.execute(
-                    select(MarketOpsRun)
+                # compare against the last run that actually carried a
+                # snapshot (skipped/errored runs don't)
+                previous_rows = session.execute(
+                    select(MarketOpsRun.summary)
                     .where(MarketOpsRun.id != run.id, MarketOpsRun.summary.is_not(None))
                     .order_by(MarketOpsRun.id.desc())
-                ).scalars().first()
-                previous_pairs = (
-                    ((previous.summary or {}).get("champion_challenger") or {}).get(
-                        "pair_count", 0
-                    )
-                    if previous
-                    else 0
-                )
+                    .limit(20)
+                ).scalars().all()
+                previous_pairs = 0
+                for prev_summary in previous_rows:
+                    snapshot = (prev_summary or {}).get("champion_challenger")
+                    if snapshot is not None:
+                        previous_pairs = snapshot.get("pair_count", 0)
+                        break
                 if cc_snapshot["pair_count"] != previous_pairs:
                     alert = self.alert_service.create(
                         session,

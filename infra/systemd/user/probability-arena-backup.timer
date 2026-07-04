@@ -1,0 +1,21 @@
+# Probability Arena — daily DB backup timer (USER unit).
+# NOT auto-installed. Install:
+#   cp infra/systemd/user/probability-arena-backup.{service,timer} ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now probability-arena-backup.timer
+# Inspect:
+#   systemctl --user list-timers | grep backup
+#   journalctl --user -u probability-arena-backup.service -n 20 --no-pager
+#   python -m app.cli list-db-backups
+
+[Unit]
+Description=Run Probability Arena database backup daily
+
+[Timer]
+OnCalendar=*-*-* 01:30:00
+RandomizedDelaySec=600
+Persistent=true
+Unit=probability-arena-backup.service
+
+[Install]
+WantedBy=timers.target

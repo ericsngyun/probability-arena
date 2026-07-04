@@ -360,6 +360,18 @@ python -m app.cli marketops-loop --interval 300 # refuses to start unless ENABLE
 
 **Rollout (EVO-X2): dark → run-once → optional timer.** Deploy with the flag false, run `marketops-run-once` manually and inspect the report/alerts, then optionally install `infra/systemd/user/probability-arena-marketops.{service,timer}` (5-minute cadence; **not auto-installed** — install commands are in the timer file).
 
+**Overlap guard (OPS-007):** concurrent cycles are impossible — a second invocation (manual run during a timer firing, or vice versa) records a graceful `skipped` (`already_running`) run; a `running` row older than `MARKETOPS_LOCK_STALE_AFTER_MINUTES=30` is treated as crashed and never wedges the system. SQLite connections carry a `SQLITE_BUSY_TIMEOUT_MS=30000` write-lock wait (Postgres unaffected).
+
+## Database backups (OPS-007)
+
+```bash
+python -m app.cli backup-db          # consistent gzipped snapshot (sqlite3 online backup API) + retention pruning
+python -m app.cli list-db-backups
+python -m app.cli verify-db-backup data/backups/backup-<stamp>.db.gz   # integrity_check + expected tables
+```
+
+`BACKUP_DIR=data/backups`, `BACKUP_RETENTION_DAYS=30`. Non-SQLite databases get safe `pg_dump` guidance instead (never executed). Optional daily timer artifacts: `infra/systemd/user/probability-arena-backup.{service,timer}` (not auto-installed). `db-stats` reports backup count/size.
+
 ## Champion/challenger comparison
 
 **Why this exists:** per ADR-004, no EV or paper-trading work may even be designed until a challenger forecaster demonstrably beats the market-anchored baseline. This layer is that gate, made concrete:

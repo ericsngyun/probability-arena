@@ -784,6 +784,12 @@ async def db_stats(session=None) -> int:
             if os.path.exists(url.database):
                 size_mb = os.path.getsize(url.database) / (1024 * 1024)
                 print(f"sqlite size: {size_mb:.2f} MiB")
+        from app.services.backup import backup_dir_stats
+
+        stats = backup_dir_stats()
+        if stats is not None:
+            count, total_mb = stats
+            print(f"backups: {count} file(s), {total_mb:.2f} MiB")
 
         total = 0
         print("row counts:")
@@ -1111,6 +1117,44 @@ async def crypto_report(session=None) -> int:
             session.close()
 
 
+async def backup_db() -> int:
+    """Create a compressed, timestamped SQLite backup (consistent snapshot
+    via the online backup API) and prune old ones. Returns 0 on success."""
+    from app.services.backup import BackupResult, backup_database
+
+    result = backup_database()
+    if isinstance(result, str):
+        print(result)  # non-SQLite guidance; nothing executed
+        return 1
+    assert isinstance(result, BackupResult)
+    print(f"backup written: {result.path} ({result.size_bytes / (1024 * 1024):.2f} MiB)")
+    for name in result.pruned:
+        print(f"  pruned old backup: {name}")
+    return 0
+
+
+async def list_db_backups() -> int:
+    """List existing backups, newest first. Returns the count."""
+    from app.services.backup import list_backups
+
+    backups = list_backups()
+    print(f"{len(backups)} backup(s)")
+    for path in backups:
+        size_mb = path.stat().st_size / (1024 * 1024)
+        print(f"  {path.name}  {size_mb:.2f} MiB")
+    return len(backups)
+
+
+async def verify_db_backup(path: str) -> int:
+    """Verify a backup is readable, passes integrity_check, and contains the
+    expected core tables. Returns 0 when ok."""
+    from app.services.backup import verify_backup
+
+    result = verify_backup(path)
+    print(f"{'OK' if result.ok else 'FAILED'}: {result.detail}")
+    return 0 if result.ok else 1
+
+
 async def crypto_risk_assess(limit: int = 50, engine=None, session=None) -> int:
     """Assess risk for recently-seen tokens from persisted Crypto Arena data
     (heuristics always; providers when their flags are on). Read-only risk
@@ -1264,6 +1308,14 @@ async def marketops_run_once(services=None, session=None) -> int:
     try:
         service = services or MarketOpsAutopilotService()
         run = await service.run_once(session)
+        if run.status == "skipped":
+            reason = (run.summary or {}).get("reason", "already_running")
+            active_id = (run.summary or {}).get("active_run_id")
+            print(
+                f"marketops run #{run.id}: skipped ({reason}, active run "
+                f"#{active_id}) — try again after the current cycle finishes"
+            )
+            return 0
         print(
             f"marketops run #{run.id}: {run.status} "
             f"signals seen={run.signals_seen} promoted={run.signals_promoted} "
@@ -1770,6 +1822,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Autopilot loop (requires ENABLE_MARKETOPS_AUTOPILOT=true)",
     )
     mo_loop_parser.add_argument("--interval", type=int, default=None)
+    subparsers.add_parser(
+        "backup-db", help="Compressed timestamped SQLite backup (+retention pruning)"
+    )
+    subparsers.add_parser("list-db-backups", help="List existing DB backups")
+    verify_backup_parser = subparsers.add_parser(
+        "verify-db-backup", help="Verify a backup is readable and complete"
+    )
+    verify_backup_parser.add_argument("path", type=str)
     return parser
 
 
@@ -1890,6 +1950,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "marketops-loop":
         iterations = asyncio.run(marketops_loop(interval=args.interval))
         return 0 if iterations >= 0 else 1
+    if args.command == "backup-db":
+        return asyncio.run(backup_db())
+    if args.command == "list-db-backups":
+        count = asyncio.run(list_db_backups())
+        return 0 if count >= 0 else 1
+    if args.command == "verify-db-backup":
+        return asyncio.run(verify_db_backup(path=args.path))
     return 2
 
 

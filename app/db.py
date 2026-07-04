@@ -19,10 +19,20 @@ _engine = None
 _SessionLocal: sessionmaker | None = None
 
 
+def connect_args_for(url: str) -> dict:
+    """SQLite gets a busy timeout (seconds) so concurrent writers wait for
+    the lock instead of failing immediately (OPS-007 — the marketops timer
+    and a manual CLI run share one file). Other backends get no extra args."""
+    if url.startswith("sqlite"):
+        return {"timeout": get_settings().sqlite_busy_timeout_ms / 1000}
+    return {}
+
+
 def get_engine():
     global _engine
     if _engine is None:
-        _engine = create_engine(get_settings().database_url, pool_pre_ping=True)
+        url = get_settings().database_url
+        _engine = create_engine(url, pool_pre_ping=True, connect_args=connect_args_for(url))
     return _engine
 
 

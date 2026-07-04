@@ -33,7 +33,15 @@ Rollout discipline: one flag at a time, per `docs/EVO_X2_RUNBOOK.md`.
 `MARKETOPS_SCORE_LIMIT=1000`, `MARKETOPS_MIN_SIGNAL_AGE_SECONDS=30`,
 `MARKETOPS_MAX_SIGNAL_AGE_HOURS=24`, `MARKETOPS_INCLUDE_CRYPTO=true`,
 `MARKETOPS_INCLUDE_PROBABILITY_MARKETS=true`, `MARKETOPS_FAIL_FAST=false`,
-`MARKETOPS_LOOP_INTERVAL_SECONDS=300`.
+`MARKETOPS_LOOP_INTERVAL_SECONDS=300`,
+`MARKETOPS_LOCK_STALE_AFTER_MINUTES=30` (a 'running' cycle older than this is
+treated as crashed and no longer blocks new cycles).
+
+## Operational hardening (OPS-007)
+
+`SQLITE_BUSY_TIMEOUT_MS=30000` (SQLite connections wait for write locks
+instead of failing; Postgres unaffected), `BACKUP_RETENTION_DAYS=30`,
+`BACKUP_DIR=data/backups` (relative paths anchor next to the data directory).
 
 ## Crypto risk engine (CRYPTO-002 — risk intelligence, never trade advice)
 
