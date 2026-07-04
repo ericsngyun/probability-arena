@@ -17,10 +17,11 @@ Services (app/services/)  — scanner, eligibility, enrichment, resolution, rese
                             signal_workflow, pipeline (baseline runner), retention,
                             crypto_scout + crypto_risk + crypto_risk_engine
                             (Crypto Arena, read-only; risk = avoid/flag verdicts),
-                            marketops (Autopilot: read-only coordination + alerts)
+                            marketops (Autopilot: read-only coordination + alerts),
+                            edge_precheck (MVP-005A: gap measurement, never advice)
 Adapter (app/adapters/kalshi.py) — list/detail/event/series/by-tickers GETs,
                             legacy + dollars/fp payload shapes, outcome parsing
-DB: SQLAlchemy + Alembic (rev 0016) — SQLite on EVO-X2, Postgres-ready (JSONB variants)
+DB: SQLAlchemy + Alembic (rev 0017) — SQLite on EVO-X2, Postgres-ready (JSONB variants)
 ```
 
 ## Pipeline stages (baseline runner order)
@@ -44,6 +45,7 @@ Parallel to that: watcher (60s ticks + signals) → promote-signals → process-
 | market_price_ticks, opportunity_signals, watcher_runs | watcher telemetry + signal workflow |
 | crypto_tokens, crypto_pairs, crypto_token_discovery_events, crypto_token_risk_assessments, crypto_price_ticks, crypto_opportunity_signals, crypto_watcher_runs | Crypto Arena read-only surveillance (CRYPTO-001) |
 | marketops_runs, marketops_alerts | MarketOps Autopilot coordination audit + local alerts (OPS-006) |
+| edge_precheck_snapshots | probability-gap measurement audit (MVP-005A; no EV/side/size fields) |
 
 ## Current services / collectors / forecasters / judges
 
@@ -58,7 +60,7 @@ See `docs/FEATURE_FLAGS.md`. All model/external flags default **false**; deploye
 
 ## Latest accepted milestones
 
-MVP-001…004G, OPS-001…006, SOCCER-001, and CRYPTO-001…002 — full list with commits in `docs/ROADMAP.md`. Tests at CRYPTO-002: 498+ passing, 2 gated live tests skipped by default.
+MVP-001…005A, OPS-001…007, SOCCER-001, and CRYPTO-001…002 — full list with commits in `docs/ROADMAP.md`. Tests at MVP-005A: 548+ passing, 2 gated live tests skipped by default.
 
 ## Current known limitations
 

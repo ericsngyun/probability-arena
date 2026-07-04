@@ -661,3 +661,47 @@ class MarketOpsAlert(Base):
     evidence: Mapped[dict | None] = mapped_column(RawJSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class EdgePrecheckSnapshot(Base):
+    """One probability-gap MEASUREMENT (MVP-005A): forecast probability vs
+    market midpoint with validity checks. Append-only audit rows.
+
+    Hard boundary: no dollar EV, no side, no direction, no size, no order or
+    execution semantics exist here — by design there is no column where they
+    could live. 'paper_candidate_later' is a review label for a possible
+    future, separately-gated MVP-005B; it triggers no behavior."""
+
+    __tablename__ = "edge_precheck_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    market_ticker: Mapped[str] = mapped_column(String(64), index=True)
+    signal_id: Mapped[int | None] = mapped_column(ForeignKey("opportunity_signals.id"))
+    forecast_id: Mapped[int] = mapped_column(ForeignKey("market_forecasts.id"), index=True)
+    market_snapshot_id: Mapped[int | None] = mapped_column(
+        ForeignKey("market_price_ticks.id")  # watcher quote used as the price source
+    )
+    resolution_assessment_id: Mapped[int | None] = mapped_column(
+        ForeignKey("market_resolution_assessments.id")
+    )
+    forecaster_name: Mapped[str] = mapped_column(String(64), index=True)
+    evidence_depth: Mapped[str] = mapped_column(String(16))
+    forecast_probability: Mapped[float] = mapped_column(Float)
+    forecast_confidence: Mapped[float] = mapped_column(Float)
+    forecast_risk: Mapped[str | None] = mapped_column(String(16))
+    market_midpoint: Mapped[float | None] = mapped_column(Float)
+    yes_bid: Mapped[int | None] = mapped_column(Integer)
+    yes_ask: Mapped[int | None] = mapped_column(Integer)
+    spread_cents: Mapped[int | None] = mapped_column(Integer)
+    liquidity_proxy_cents: Mapped[int | None] = mapped_column(Integer)
+    probability_gap: Mapped[float | None] = mapped_column(Float)  # signed
+    abs_probability_gap: Mapped[float | None] = mapped_column(Float)
+    status: Mapped[str] = mapped_column(String(40), index=True)
+    invalidation_reasons: Mapped[list | None] = mapped_column(RawJSON)
+    forecast_age_seconds: Mapped[int | None] = mapped_column(Integer)
+    market_snapshot_age_seconds: Mapped[int | None] = mapped_column(Integer)
+    persistence_count: Mapped[int] = mapped_column(Integer, default=1)
+    thresholds: Mapped[dict | None] = mapped_column(RawJSON)
+    tags: Mapped[list | None] = mapped_column(RawJSON)
+    raw_context: Mapped[dict | None] = mapped_column(RawJSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

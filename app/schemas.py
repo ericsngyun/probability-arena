@@ -760,3 +760,55 @@ class CryptoRiskReport(BaseModel):
     provider_error_counts: dict[str, int] = {}
     risk_signals_created: dict[str, int] = {}
     recent_assessments: list[CryptoRiskAssessmentOut] = []
+
+
+# --- Edge precheck (MVP-005A) — probability-gap MEASUREMENT only ---
+
+
+class EdgePrecheckSnapshotOut(BaseModel):
+    """One persisted gap measurement. No side/size/EV fields exist —
+    paper_candidate_later is a review label, not an instruction."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    market_ticker: str
+    signal_id: int | None = None
+    forecast_id: int
+    market_snapshot_id: int | None = None
+    resolution_assessment_id: int | None = None
+    forecaster_name: str
+    evidence_depth: str
+    forecast_probability: float
+    forecast_confidence: float
+    forecast_risk: str | None = None
+    market_midpoint: float | None = None
+    yes_bid: int | None = None
+    yes_ask: int | None = None
+    spread_cents: int | None = None
+    liquidity_proxy_cents: int | None = None
+    probability_gap: float | None = None
+    abs_probability_gap: float | None = None
+    status: str
+    invalidation_reasons: list | None = None
+    forecast_age_seconds: int | None = None
+    market_snapshot_age_seconds: int | None = None
+    persistence_count: int = 1
+    tags: list | None = None
+    created_at: datetime
+
+
+class EdgePrecheckReport(BaseModel):
+    """Aggregate gap-measurement view. Measurement only — never advice."""
+
+    note: str
+    total_snapshots: int = 0
+    by_status: dict[str, int] = {}
+    by_forecaster: dict[str, int] = {}
+    by_domain: dict[str, int] = {}
+    by_market_type: dict[str, int] = {}
+    mean_gap: float | None = None
+    mean_abs_gap: float | None = None
+    paper_candidate_later_count: int = 0
+    invalidation_reason_counts: dict[str, int] = {}
+    recent_largest_gaps: list[EdgePrecheckSnapshotOut] = []

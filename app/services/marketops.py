@@ -79,6 +79,9 @@ class MarketOpsConfig:
     max_signal_age_hours: int = 24
     include_crypto: bool = True
     include_probability_markets: bool = True
+    # MVP-005A: edge-precheck stage is DOUBLE-gated (this AND
+    # ENABLE_EDGE_PRECHECK); both default false. Measurement only.
+    include_edge_precheck: bool = False
     fail_fast: bool = False
 
     @classmethod
@@ -94,6 +97,7 @@ class MarketOpsConfig:
             max_signal_age_hours=s.marketops_max_signal_age_hours,
             include_crypto=s.marketops_include_crypto,
             include_probability_markets=s.marketops_include_probability_markets,
+            include_edge_precheck=s.marketops_include_edge_precheck,
             fail_fast=s.marketops_fail_fast,
         )
 
@@ -196,6 +200,7 @@ class MarketOpsAutopilotService:
         calibration_service=None,
         champion_challenger_service=None,
         alert_service: MarketOpsAlertService | None = None,
+        edge_precheck_service=None,
     ):
         self.config = config or MarketOpsConfig.from_settings()
         self.promotion_service = promotion_service or SignalPromotionService()
@@ -204,6 +209,7 @@ class MarketOpsAutopilotService:
         self._outcome_service = outcome_service
         self._calibration_service = calibration_service
         self._cc_service = champion_challenger_service
+        self._edge_service = edge_precheck_service
         self.alert_service = alert_service or MarketOpsAlertService()
 
     # --- stage helpers -----------------------------------------------------
@@ -486,6 +492,29 @@ class MarketOpsAutopilotService:
                 return counts["scored"]
 
             run.forecasts_scored = await stage("score_forecasts", score) or 0
+
+            # 5b. Edge precheck (MVP-005A) — measurement only, DOUBLE-gated:
+            # both MARKETOPS_INCLUDE_EDGE_PRECHECK and ENABLE_EDGE_PRECHECK
+            # must be true. Nothing downstream branches on the results.
+            if cfg.include_edge_precheck and get_settings().enable_edge_precheck:
+
+                async def edge():
+                    from app.services.edge_precheck import EdgePrecheckService
+
+                    service = self._edge_service or EdgePrecheckService()
+                    snapshots = service.run_batch(session)
+                    by_status: dict[str, int] = {}
+                    for snapshot in snapshots:
+                        by_status[snapshot.status] = by_status.get(snapshot.status, 0) + 1
+                    summary["edge_precheck"] = {
+                        "snapshots": len(snapshots),
+                        "by_status": by_status,
+                    }
+                    return len(snapshots)
+
+                await stage("edge_precheck", edge)
+            elif cfg.include_edge_precheck:
+                summary["stages"]["edge_precheck"] = "skipped"  # engine flag off
 
             # 6. Champion/challenger snapshot (+ sample-update alert)
             async def compare():

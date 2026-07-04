@@ -13,6 +13,7 @@ from app.config import get_settings
 from app.db import run_migrations
 from app.routers.calibration import router as calibration_router
 from app.routers.crypto import router as crypto_router
+from app.routers.edge_precheck import router as edge_precheck_router
 from app.routers.marketops import router as marketops_router
 from app.routers.markets import router as markets_router
 from app.routers.pipeline import router as pipeline_router
@@ -45,6 +46,7 @@ app.include_router(pipeline_router)
 app.include_router(signals_router)
 app.include_router(crypto_router)
 app.include_router(marketops_router)
+app.include_router(edge_precheck_router)
 
 
 @app.get("/health", tags=["ops"])

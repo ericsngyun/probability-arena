@@ -50,6 +50,8 @@ def test_schema_creates_all_tables(session):
         # MarketOps Autopilot (OPS-006) — coordination audit
         "marketops_runs",
         "marketops_alerts",
+        # Edge precheck (MVP-005A) — probability-gap measurement only
+        "edge_precheck_snapshots",
     }
 
 

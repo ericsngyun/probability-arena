@@ -91,6 +91,17 @@ false (it only reserves future loop/timer use); a crypto timer would be its own
 deliberate rollout step in a later milestone. Read-only DEX Screener GETs; no
 wallets/swaps/execution exist anywhere.
 
+## Edge precheck (MVP-005A) rollout
+
+Dark first: deploy with `ENABLE_EDGE_PRECHECK=false`, run one manual
+measurement pass (`edge-precheck --limit 25 --force-readonly` — still
+read-only, creates measurement rows only), inspect `edge-precheck-report`.
+Then flip `ENABLE_EDGE_PRECHECK=true` as its own step, and only later —
+after the measurement distribution looks sane — set
+`MARKETOPS_INCLUDE_EDGE_PRECHECK=true` so the 5-min autopilot measures each
+cycle (double-gated). All outputs are gaps and labels; nothing here is a
+trade instruction, and no downstream behavior branches on the results.
+
 ## DB backup (OPS-007)
 
 Consistent snapshots via the sqlite3 online backup API (safe while all

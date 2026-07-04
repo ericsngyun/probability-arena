@@ -122,6 +122,24 @@ class Settings(BaseSettings):
     backup_retention_days: int = 30
     backup_dir: str = "data/backups"
 
+    # Edge precheck (MVP-005A) — probability-gap MEASUREMENT only. Records
+    # forecast_probability - market_midpoint with validity checks. No dollar
+    # EV, no trade recommendations, no sizing, no orders, no execution;
+    # paper_candidate_later is a review label with zero attached behavior.
+    # Thresholds are PROVISIONAL (design doc §6) pending precheck data.
+    enable_edge_precheck: bool = False
+    edge_precheck_min_abs_gap: float = 0.05
+    edge_precheck_max_spread_cents: int = 10
+    edge_precheck_min_liquidity_cents: int = 500
+    edge_precheck_min_confidence: float = 0.60
+    edge_precheck_max_forecast_age_seconds: int = 900
+    edge_precheck_max_live_sports_forecast_age_seconds: int = 300
+    edge_precheck_max_market_snapshot_age_seconds: int = 120
+    edge_precheck_require_source_backed: bool = True
+    edge_precheck_require_researchable: bool = True
+    edge_precheck_required_persistence_snapshots: int = 3
+    marketops_include_edge_precheck: bool = False
+
     # Crypto Arena scout (CRYPTO-001) — read-only Solana memecoin
     # surveillance: discovery, price/liquidity ticks, deterministic risk
     # signals. NO wallets, NO swaps, NO transaction building/signing, NO

@@ -418,3 +418,21 @@ def test_0016_adds_and_drops_risk_engine_columns(tmp_path):
     remaining = _columns(url, "crypto_token_risk_assessments")
     assert not (engine_columns & remaining)
     assert {"provider", "risk_score", "flags"} <= remaining  # CRYPTO-001 intact
+
+
+def test_0017_creates_and_drops_edge_precheck_snapshots(tmp_path):
+    url = f"sqlite:///{tmp_path}/edge.db"
+    run_migrations(url)
+
+    assert "edge_precheck_snapshots" in _tables(url)
+    assert {"market_ticker", "forecast_id", "signal_id", "market_snapshot_id",
+            "resolution_assessment_id", "forecaster_name", "evidence_depth",
+            "forecast_probability", "forecast_confidence", "forecast_risk",
+            "market_midpoint", "yes_bid", "yes_ask", "spread_cents",
+            "liquidity_proxy_cents", "probability_gap", "abs_probability_gap",
+            "status", "invalidation_reasons", "forecast_age_seconds",
+            "market_snapshot_age_seconds", "persistence_count", "thresholds",
+            "tags", "raw_context"} <= _columns(url, "edge_precheck_snapshots")
+
+    command.downgrade(_config(url), "0016")
+    assert "edge_precheck_snapshots" not in _tables(url)

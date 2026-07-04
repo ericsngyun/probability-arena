@@ -7,7 +7,7 @@ require crossing one must stop and report back instead of building.
 
 | Boundary | Status | Gate: what must be explicitly accepted first |
 |---|---|---|
-| **EV calculation** | ❌ none exists | The MVP-005A gate crossed (paired n=36, both deltas negative, early_signal — 2026-07-04) and produced a **design only**: `docs/MVP_005A_EDGE_PRECHECK_DESIGN.md`. The designed edge precheck measures **probability gaps** (forecast − midpoint), never dollar EV; implementation requires explicit acceptance of that design (§10 checklist). Dollar EV remains forbidden with no unlocking milestone defined |
+| **EV calculation** | ❌ none exists | The MVP-005A gate crossed (paired n=36, both deltas negative — 2026-07-04); the accepted design was implemented as the **edge precheck**: probability-gap measurement (forecast − midpoint) with validity checks, behind `ENABLE_EDGE_PRECHECK=false`. It has no dollar-EV, side, size, or action fields by construction, and `paper_candidate_later` is a review label with zero behavior. **Dollar EV remains forbidden with no unlocking milestone defined** |
 | **Trade recommendations** | ❌ none exists | Post-MVP-005B review; never from a forecaster directly — forecasts are reasoning artifacts |
 | **Paper trading / simulation** | ❌ none exists | MVP-005B, gated on MVP-005A acceptance |
 | **Portfolio sizing** | ❌ none exists | Post-paper-trading milestone with explicit human acceptance |

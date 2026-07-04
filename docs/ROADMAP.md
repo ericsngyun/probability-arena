@@ -26,7 +26,8 @@
 | OPS-006 | `b0dd1d6` | MarketOps Autopilot: read-only 24/7 coordination (auto-promote/process, crypto scan, sync/score, champion/challenger snapshot, local DB alerts); live on EVO-X2 with 5-min timer (`28b3476`) |
 | CRYPTO-002 | `6450194` | Crypto risk engine: heuristics + optional GoPlus/SolanaTracker providers, composite risk scores/levels, activated risk signals, risk reports (read-only risk intelligence — never trade advice); live on EVO-X2 GoPlus-backed (`ad79fde`; SolanaTracker needs an API key — `e2d8ae9`) |
 | OPS-007 | `a1d4ff6` | Operational hardening: MarketOps overlap guard (skipped/already_running + stale-lock recovery), SQLite busy timeout, DB backup/verify/retention CLI + optional daily timer; deployed + validated live (`19370c2`) |
-| MVP-005A-design | (this) | Edge-precheck design + safety review (`docs/MVP_005A_EDGE_PRECHECK_DESIGN.md`) — gate crossed at paired n=36, d_brier=−0.049, d_log_loss=−0.152 (early_signal). Design only: probability gaps + validity checks; no EV, no recommendations, no sizing, no simulation |
+| MVP-005A-design | `cd6760a` | Edge-precheck design + safety review (`docs/MVP_005A_EDGE_PRECHECK_DESIGN.md`) — gate crossed at paired n=36, d_brier=−0.049, d_log_loss=−0.152 (early_signal) |
+| MVP-005A | (this) | Edge precheck implementation: probability-gap measurement (10 statuses, deterministic precedence, persistence counting), edge_precheck_snapshots audit rows, CLI/API, double-gated MarketOps stage — measurement only; no dollar EV, no advice, no actions |
 
 ## Immediate next steps
 
@@ -35,7 +36,6 @@
 
 ## Gated future steps (in order; each requires explicit acceptance)
 
-- **MVP-005A — edge precheck implementation**: gated on explicit human acceptance of `docs/MVP_005A_EDGE_PRECHECK_DESIGN.md` (checklist in §10). Probability-gap measurement + validity checks only — no dollar EV, no recommendations, no sizing.
-- **MVP-005B — paper simulator**: gated on MVP-005A implementation + its own acceptance. Simulation only; still no orders.
+- **MVP-005B — paper simulator**: gated on accumulated edge-precheck measurement data (watchlist/paper_candidate_later precision over time) + its own explicit acceptance. Simulation only; still no orders.
 - **CRYPTO-003 — crypto paper simulator**: gated like MVP-005B; simulation only, no orders, no wallets; requires CRYPTO-002 risk data to mature first.
 - **WALLET-001 — policy-controlled transaction proposal gateway**: *much later*; proposals only — no signing, no private keys, behind a dedicated custody/security review — see `docs/SAFETY_BOUNDARIES.md` and ADR-002.

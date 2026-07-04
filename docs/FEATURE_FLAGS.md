@@ -37,6 +37,25 @@ Rollout discipline: one flag at a time, per `docs/EVO_X2_RUNBOOK.md`.
 `MARKETOPS_LOCK_STALE_AFTER_MINUTES=30` (a 'running' cycle older than this is
 treated as crashed and no longer blocks new cycles).
 
+## Edge precheck (MVP-005A — probability-gap MEASUREMENT; never advice)
+
+| Flag | Default | Gates |
+|---|---|---|
+| `ENABLE_EDGE_PRECHECK` | false | `edge-precheck` CLI (without `--force-readonly`), `POST /edge-precheck/run` (without `force_readonly=true`), and the MarketOps stage |
+| `MARKETOPS_INCLUDE_EDGE_PRECHECK` | false | The MarketOps stage additionally requires `ENABLE_EDGE_PRECHECK=true` (double-gated) |
+
+Provisional thresholds (design §6): `EDGE_PRECHECK_MIN_ABS_GAP=0.05`,
+`EDGE_PRECHECK_MAX_SPREAD_CENTS=10`, `EDGE_PRECHECK_MIN_LIQUIDITY_CENTS=500`,
+`EDGE_PRECHECK_MIN_CONFIDENCE=0.60`,
+`EDGE_PRECHECK_MAX_FORECAST_AGE_SECONDS=900` (300 for live sports via
+`EDGE_PRECHECK_MAX_LIVE_SPORTS_FORECAST_AGE_SECONDS`),
+`EDGE_PRECHECK_MAX_MARKET_SNAPSHOT_AGE_SECONDS=120`,
+`EDGE_PRECHECK_REQUIRE_SOURCE_BACKED=true`,
+`EDGE_PRECHECK_REQUIRE_RESEARCHABLE=true`,
+`EDGE_PRECHECK_REQUIRED_PERSISTENCE_SNAPSHOTS=3`.
+No dollar EV, no advice — `paper_candidate_later` is a review label with zero
+attached behavior.
+
 ## Operational hardening (OPS-007)
 
 `SQLITE_BUSY_TIMEOUT_MS=30000` (SQLite connections wait for write locks

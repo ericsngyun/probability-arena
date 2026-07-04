@@ -362,6 +362,20 @@ python -m app.cli marketops-loop --interval 300 # refuses to start unless ENABLE
 
 **Overlap guard (OPS-007):** concurrent cycles are impossible — a second invocation (manual run during a timer firing, or vice versa) records a graceful `skipped` (`already_running`) run; a `running` row older than `MARKETOPS_LOCK_STALE_AFTER_MINUTES=30` is treated as crashed and never wedges the system. SQLite connections carry a `SQLITE_BUSY_TIMEOUT_MS=30000` write-lock wait (Postgres unaffected).
 
+## Edge precheck (MVP-005A) — probability-gap measurement
+
+**Measurement, never advice.** The gate ADR-004 defined has crossed (paired champion/challenger n=36, both deltas negative), so the accepted design (`docs/MVP_005A_EDGE_PRECHECK_DESIGN.md`) is now implemented: for recent forecasts, record `probability_gap = forecast_probability − market_midpoint` (signed, probability units — **not dollar EV**) with validity checks, into append-only `edge_precheck_snapshots` rows. By construction the table has no side, size, EV, or action fields.
+
+Statuses (deterministic precedence, all failures recorded in `invalidation_reasons`): `invalid_resolution_risk` → `invalid_not_source_backed` → `invalid_stale_forecast` → `invalid_stale_market_snapshot` → `invalid_low_confidence` → `invalid_wide_spread` → `invalid_low_liquidity` → `no_gap` → `watchlist` → `paper_candidate_later`. A gap must persist across `EDGE_PRECHECK_REQUIRED_PERSISTENCE_SNAPSHOTS=3` same-direction valid measurements before earning `paper_candidate_later` — which is **a review label for a possible future, separately-gated MVP-005B; it is not an instruction and triggers no behavior**.
+
+```bash
+python -m app.cli edge-precheck --limit 50            # requires ENABLE_EDGE_PRECHECK=true…
+python -m app.cli edge-precheck --force-readonly      # …or an explicit one-off (still measurement rows only)
+python -m app.cli edge-precheck-report                # statuses, cohorts, gap stats — labeled measurement-only
+```
+
+`GET /edge-precheck/snapshots`, `GET /edge-precheck/report`, `POST /edge-precheck/run` (flag-gated, or `force_readonly=true`). MarketOps can run a measurement pass per cycle only when **both** `MARKETOPS_INCLUDE_EDGE_PRECHECK=true` and `ENABLE_EDGE_PRECHECK=true` (both default false). No orders, paper trades, position sizes, wallets, swaps, or execution exist anywhere; MVP-005B (paper simulator) remains a separate, explicitly-gated future milestone.
+
 ## Database backups (OPS-007)
 
 ```bash

@@ -1,10 +1,9 @@
 # MVP-005A — Edge Precheck: Design + Safety Review
 
-**Status:** DESIGN ONLY — nothing in this document is implemented. Per
-ADR-004 and `docs/SAFETY_BOUNDARIES.md`, MVP-005A is a design + safety
-review; implementation requires explicit acceptance of this document first,
-and paper simulation (MVP-005B) requires acceptance of *that* milestone
-separately after implementation.
+**Status:** ACCEPTED + IMPLEMENTED (MVP-005A, 2026-07-04) — see
+"Implementation notes" at the end for the deltas between this design and
+the shipped implementation. Paper simulation (MVP-005B) remains a separate,
+explicitly-gated future milestone.
 
 **Gate evidence (verified 2026-07-04 on EVO-X2 live data):** baseball
 champion/challenger paired comparison crossed the required gate —
@@ -153,3 +152,24 @@ acceptance of this design first, then its own review.
 - [ ] Agreement that `paper_candidate_later` semantics are label-only
 - [ ] Agreement on the deterministic invalidation precedence
 - [ ] Sign-off recorded in ROADMAP before an implementation milestone is cut
+
+---
+
+## Implementation notes (MVP-005A, implemented)
+
+- Statuses extended from this design per the implementation spec: added
+  `invalid_stale_market_snapshot` and `invalid_not_source_backed` as their
+  own statuses (the design had folded them into other checks); precedence
+  as implemented: resolution → not_source_backed → stale_forecast →
+  stale_market_snapshot → low_confidence → wide_spread → low_liquidity →
+  no_gap → watchlist → paper_candidate_later.
+- `market_snapshot_id` references `market_price_ticks` (the watcher's 60s
+  quote stream) — much fresher than the 4h scanner snapshots and the right
+  price source for the 120s snapshot-age threshold.
+- Live-sports forecasts (domains sports_*) use the tighter
+  `EDGE_PRECHECK_MAX_LIVE_SPORTS_FORECAST_AGE_SECONDS=300`.
+- Persistence: 1 + streak of immediately-prior watchlist/candidate
+  snapshots for the same (ticker, forecaster) with the same gap sign; any
+  other row (including any invalid measurement) breaks the streak.
+- §10 checklist accepted 2026-07-04 (implementation authorized by the
+  MVP-005A implementation directive).

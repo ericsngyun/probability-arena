@@ -7,7 +7,7 @@ Update this file (and docs/PROJECT_CANON.md) when a milestone lands."""
 PROJECT_NAME = "probability-arena"
 
 CURRENT_PHASE = (
-    "Read-only intelligence + calibration accumulation (through OPS-007). "
+    "Read-only intelligence + calibration accumulation (through MVP-005A). "
     "No EV, no trading of any kind. Canary flags exist for baseball external "
     "research, evidence-aware baseball forecasting, and soccer external research. "
     "Crypto Arena adds read-only Solana memecoin surveillance plus a risk "
@@ -29,6 +29,7 @@ ALLOWED_CAPABILITIES = (
     "crypto scouting (read-only Solana token/pair surveillance + risk telemetry)",
     "crypto risk engine (heuristic + provider risk scoring; avoid/flag verdicts only)",
     "marketops autopilot (read-only coordination: promote/process/scan/score/report/alert)",
+    "edge precheck (probability-gap measurement only; no EV, no advice, no actions)",
 )
 
 FORBIDDEN_CAPABILITIES = (
@@ -51,10 +52,8 @@ EXPECTED_SERVICES_EVO_X2 = (
 )
 
 NEXT_MILESTONES = (
-    "Accumulate resolved outcomes; read champion-challenger-report until the "
-    "sample supports a verdict (MVP-004G shipped the comparison layer)",
-    "MVP-005A EV precheck (design + safety review only; requires paired "
-    "champion/challenger evidence of edge)",
+    "Accumulate paired outcomes toward useful_sample (n>=100) and edge-precheck "
+    "measurement data (MVP-005A shipped; gate crossed at paired n=36)",
     "MVP-005B paper simulator (requires MVP-005A acceptance)",
     "CRYPTO-003 crypto paper simulator (gated like MVP-005B; requires "
     "CRYPTO-002 risk data maturity)",
@@ -80,6 +79,7 @@ KEY_FEATURE_FLAGS = (
     "enable_crypto_risk_provider",
     "enable_crypto_risk_engine",
     "enable_marketops_autopilot",
+    "enable_edge_precheck",
     "enable_baseball_external_research",
     "enable_soccer_external_research",
     "enable_llm_resolution",

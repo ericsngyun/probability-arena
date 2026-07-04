@@ -1117,6 +1117,97 @@ async def crypto_report(session=None) -> int:
             session.close()
 
 
+async def edge_precheck(
+    limit: int = 50, force_readonly: bool = False, service=None, session=None
+) -> int:
+    """Create probability-gap MEASUREMENT snapshots for recent forecasts.
+    Refuses unless ENABLE_EDGE_PRECHECK=true or --force-readonly is passed
+    (either way only measurement rows are created — no advice, no actions).
+    Returns the number of snapshots created, or -1 when refused."""
+    from app.config import get_settings
+    from app.services.edge_precheck import EdgePrecheckService
+
+    if not get_settings().enable_edge_precheck and not force_readonly:
+        print(
+            "ENABLE_EDGE_PRECHECK=false; pass --force-readonly for a one-off "
+            "measurement pass (still read-only, measurement rows only)"
+        )
+        return 0
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        snapshots = (service or EdgePrecheckService()).run_batch(session, limit=limit)
+        print(f"measured {len(snapshots)} forecast gap(s) — measurement only, not advice")
+        for row in snapshots:
+            gap = f"{row.probability_gap:+.4f}" if row.probability_gap is not None else "n/a"
+            print(
+                f"  {row.market_ticker[:40]:<40} gap={gap} status={row.status} "
+                f"persist={row.persistence_count} "
+                f"reasons={','.join(row.invalidation_reasons or []) or 'none'}"
+            )
+        return len(snapshots)
+    finally:
+        if owns_session:
+            session.close()
+
+
+async def edge_precheck_report(session=None) -> int:
+    """Print the aggregate gap-measurement report. Returns total snapshots."""
+    from app.services.edge_precheck import EdgePrecheckReportService
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        report = EdgePrecheckReportService().build(session)
+        print(f"edge precheck (measurement only): snapshots={report.total_snapshots}")
+        if report.by_status:
+            print(
+                "by status: "
+                + ", ".join(f"{s}={n}" for s, n in sorted(report.by_status.items()))
+            )
+        if report.by_forecaster:
+            print(
+                "by forecaster: "
+                + ", ".join(f"{f}={n}" for f, n in sorted(report.by_forecaster.items()))
+            )
+        if report.by_domain:
+            print(
+                "by domain: "
+                + ", ".join(f"{d}={n}" for d, n in sorted(report.by_domain.items()))
+            )
+        if report.by_market_type:
+            print(
+                "by market type: "
+                + ", ".join(f"{t}={n}" for t, n in sorted(report.by_market_type.items()))
+            )
+        if report.mean_gap is not None:
+            print(f"mean gap: {report.mean_gap:+.4f}  mean |gap|: {report.mean_abs_gap:.4f}")
+        print(f"paper_candidate_later (review label, no behavior): {report.paper_candidate_later_count}")
+        if report.invalidation_reason_counts:
+            print(
+                "invalidation reasons: "
+                + ", ".join(
+                    f"{r}={n}" for r, n in report.invalidation_reason_counts.items()
+                )
+            )
+        for row in report.recent_largest_gaps[:5]:
+            gap = f"{row.probability_gap:+.4f}" if row.probability_gap is not None else "n/a"
+            print(f"  largest: {row.market_ticker[:40]} gap={gap} status={row.status}")
+        return report.total_snapshots
+    finally:
+        if owns_session:
+            session.close()
+
+
 async def backup_db() -> int:
     """Create a compressed, timestamped SQLite backup (consistent snapshot
     via the online backup API) and prune old ones. Returns 0 on success."""
@@ -1822,6 +1913,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Autopilot loop (requires ENABLE_MARKETOPS_AUTOPILOT=true)",
     )
     mo_loop_parser.add_argument("--interval", type=int, default=None)
+    edge_parser = subparsers.add_parser(
+        "edge-precheck",
+        help="Probability-gap measurement snapshots (measurement only, not advice)",
+    )
+    edge_parser.add_argument("--limit", type=int, default=50)
+    edge_parser.add_argument("--force-readonly", action="store_true")
+    subparsers.add_parser(
+        "edge-precheck-report", help="Aggregate gap-measurement report"
+    )
     subparsers.add_parser(
         "backup-db", help="Compressed timestamped SQLite backup (+retention pruning)"
     )
@@ -1950,6 +2050,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "marketops-loop":
         iterations = asyncio.run(marketops_loop(interval=args.interval))
         return 0 if iterations >= 0 else 1
+    if args.command == "edge-precheck":
+        count = asyncio.run(
+            edge_precheck(limit=args.limit, force_readonly=args.force_readonly)
+        )
+        return 0 if count >= 0 else 1
+    if args.command == "edge-precheck-report":
+        total = asyncio.run(edge_precheck_report())
+        return 0 if total >= 0 else 1
     if args.command == "backup-db":
         return asyncio.run(backup_db())
     if args.command == "list-db-backups":
