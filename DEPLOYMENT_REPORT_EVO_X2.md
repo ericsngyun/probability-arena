@@ -578,3 +578,32 @@ Deployed **`35890e9` → `7746ef9`** (no migration; no `.env` changes — the ne
 **Frontier readiness:** `not_ready` — blocked solely on watchlist rows, which require a source-backed domain (baseball/soccer) live window. Champion/challenger: paired n=44, d_brier −0.0498 (early_signal). Safety audit clean (in-report AST scan). All four services active.
 
 **Decision per the validation rules:** rule 3/insufficient-supply variant applies to the watchlist question (the live supply was tennis-only — measurable-domain supply was insufficient); **do NOT loosen freshness**, and **keep `MARKETOPS_INCLUDE_EDGE_PRECHECK=false`**. The 17:00/21:00 UTC World Cup sessions (scheduled agent at 17:17 UTC) are the real watchlist test — every upstream mechanism they depend on has now been validated live, including the 4-minute promotion ages they'll inherit.
+
+---
+
+## SOCCER-002 prime-window validation session — CAN–MAR (ran late, 19:02–19:20 UTC; kickoff window mostly missed) + live MLB passes (2026-07-04)
+
+**Timing honesty:** the scheduled 17:17 UTC session fired at ~19:02 UTC (host machine asleep at trigger time); CAN–MAR was at 90'+8' (0–2) on arrival. However the autopilot worked the window autonomously all day, and a live MLB window (MIN–NYY, July-4 afternoon slate) was open — three measurement passes ran against it.
+
+**What the autopilot did with CAN–MAR unattended:** `soccer_evidence` forecasts 1 → **18**; source-backed packets 199 → 262; promotion metrics live and healthy (cycle #181: 46 seen, 4 promoted at **age mean 541s ≈ 9 min**, skipped_stale=78 — OPS-009 working in a real window).
+
+**Measurement passes (MLB live):**
+
+| Pass | Cycle | Timing | Targeted | Result |
+|---|---|---|---|---|
+| 1 | #181 | ~7 min after cycle | 4 | all invalid: `stale_forecast` (pass timing) + `low_confidence` (player props); **real gaps measured on two-sided books** (+0.145…+0.205) |
+| 2 | #183 | seconds after | 0 | 0 promoted that cycle — all 23 candidates in ticker refresh-cooldown (anti-thrash during signal flood; correct) |
+| 3 | #184 | seconds after | 2 | **`stale_forecast` eliminated** — only `low_confidence` (+`wide_spread` on thin player books) remains |
+
+Persistence: all rows persist=1 (invalid rows never accrue — correct). Watchlist=0, candidates=0.
+
+**The decisive finding (decision rules 4+5):** the remaining blocker is a single structural fact — **the live signal supply is overwhelmingly player-prop markets**. Every CAN–MAR soccer promotion was a player series (`KXWCAST` assists, `KXWCSOA` shots-on-target, `KXWCTEAMFIRSTGOAL` first scorer): all 18 soccer_evidence forecasts correctly fell back (12 `unknown`, 6 `player_goal`, all 0.5 confidence). Same in MLB: HR/hit/TB props dominate. Evidence forecasters correctly refuse to price players from team data → 0.5 confidence → `invalid_low_confidence`, always. Additionally discovered: **KXWCAST/KXWCSOA classify as `unknown` (+5) rather than `player` (0)** in the OPS-009 promotion scorer — soccer's spec parser runs before the generic player-segment check. Tuning gap recorded, NOT fixed (no code this session).
+
+**Session verdicts:**
+- Freshness chain: **fully proven live** (9-min promotion ages; stale_forecast vanishes with cycle-timed passes).
+- Books: main markets two-sided with measurable gaps; player books thin/wide.
+- Watchlist: still 0 — structurally blocked by player-prop dominance, not by any mechanism failure.
+- **Recommendation: keep `MARKETOPS_INCLUDE_EDGE_PRECHECK=false`** (rule 5: player props dominate → promotion-tuning pass warranted later, not now). Proposed **OPS-010** scope for operator review: exclude player markets from promotion (or zero them harder), fix the KXWCAST/KXWCSOA classification, and consider watcher attention on main-market series.
+- **PAR–FRA 21:00 UTC is the main-market soccer shot** — a follow-up session is armed for 21:25 UTC (in-session scheduler; machine must be awake). Its question: do KXWCGAME/KXWCTOTAL-style PARFRA markets fire fresh signals that produce 0.65-confidence soccer_evidence forecasts and the first valid watchlist rows?
+
+Safety greps clean. All four services active throughout; `MARKETOPS_INCLUDE_EDGE_PRECHECK=false` unchanged.
