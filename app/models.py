@@ -705,3 +705,22 @@ class EdgePrecheckSnapshot(Base):
     tags: Mapped[list | None] = mapped_column(RawJSON)
     raw_context: Mapped[dict | None] = mapped_column(RawJSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class FrontierEvalRun(Base):
+    """One persisted frontier-evaluation run (EVAL-001). Evaluation audit
+    only: summarizes measurement quality over a time window. No EV, trade,
+    order, or execution semantics exist in this system."""
+
+    __tablename__ = "frontier_eval_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    status: Mapped[str] = mapped_column(String(16), default="ok")
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+    window_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    window_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    summary: Mapped[dict | None] = mapped_column(RawJSON)
+    warnings: Mapped[list | None] = mapped_column(RawJSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

@@ -52,6 +52,8 @@ def test_schema_creates_all_tables(session):
         "marketops_alerts",
         # Edge precheck (MVP-005A) — probability-gap measurement only
         "edge_precheck_snapshots",
+        # Frontier evaluation (EVAL-001) — evaluation audit only
+        "frontier_eval_runs",
     }
 
 

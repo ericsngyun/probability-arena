@@ -32,3 +32,4 @@ require crossing one must stop and report back instead of building.
 - No secrets in code, logs, or committed files; `.env` is gitignored.
 - Forecast confidence is capped centrally by evidence depth; forecasters cannot self-declare certainty. Evidence-aware forecasts (baseball, soccer) are measurement inputs only — never advice, never sized, never actionable.
 - Every model-assisted path has a deterministic fallback and honest degradation (template content stays labeled template).
+- The frontier evaluation harness (EVAL-001) is evaluation only: gap follow-through is market-movement analysis, not PnL; no fills or positions are simulated; readiness labels (`not_ready` … `ready_for_paper_design`) gate further MEASUREMENT milestones and never authorize live capital — no live/autonomous readiness label exists by design.

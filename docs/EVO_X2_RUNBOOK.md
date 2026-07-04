@@ -121,6 +121,13 @@ cycle-scoped (≤5 forecasts/cycle, the ones it just refreshed; never a
 sweep). All outputs are gaps and labels; nothing here is a trade
 instruction, and no downstream behavior branches on the results.
 
+## Frontier evaluation (EVAL-001)
+
+`.venv/bin/python -m app.cli frontier-eval-report --hours 24 --include-crypto
+--include-safety [--save-run]` — desk-wide quality + readiness over the
+window. Run after live sessions and before considering any flag escalation;
+the scorecard is deliberately conservative (no watchlist rows → not_ready).
+
 ## DB backup (OPS-007)
 
 Consistent snapshots via the sqlite3 online backup API (safe while all

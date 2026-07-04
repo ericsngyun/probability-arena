@@ -812,3 +812,28 @@ class EdgePrecheckReport(BaseModel):
     paper_candidate_later_count: int = 0
     invalidation_reason_counts: dict[str, int] = {}
     recent_largest_gaps: list[EdgePrecheckSnapshotOut] = []
+
+
+# --- Frontier evaluation (EVAL-001) — evaluation/measurement only ---
+
+
+class FrontierEvalReport(BaseModel):
+    """Full-desk evaluation over a time window. Evaluation only: no EV, no
+    trades, no positions, no recommendations to act — gap follow-through is
+    market-movement analysis (not PnL) and readiness labels never authorize
+    live capital."""
+
+    generated_at: datetime
+    window_hours: int
+    domains: list[str] | None = None
+    executive_summary: str
+    readiness: dict
+    signal_quality: dict
+    forecast_quality: dict
+    edge_precheck_quality: dict
+    gap_follow_through: dict
+    microstructure_quality: dict
+    crypto_risk_quality: dict | None = None
+    latency_quality: dict
+    safety_audit: dict | None = None
+    recommended_next_action: str

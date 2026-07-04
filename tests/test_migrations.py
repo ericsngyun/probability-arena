@@ -436,3 +436,13 @@ def test_0017_creates_and_drops_edge_precheck_snapshots(tmp_path):
 
     command.downgrade(_config(url), "0016")
     assert "edge_precheck_snapshots" not in _tables(url)
+
+
+def test_0018_creates_and_drops_frontier_eval_runs(tmp_path):
+    url = f"sqlite:///{tmp_path}/eval.db"
+    run_migrations(url)
+    assert "frontier_eval_runs" in _tables(url)
+    assert {"status", "started_at", "finished_at", "duration_ms", "window_start",
+            "window_end", "summary", "warnings"} <= _columns(url, "frontier_eval_runs")
+    command.downgrade(_config(url), "0017")
+    assert "frontier_eval_runs" not in _tables(url)

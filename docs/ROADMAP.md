@@ -29,7 +29,8 @@
 | MVP-005A-design | `cd6760a` | Edge-precheck design + safety review (`docs/MVP_005A_EDGE_PRECHECK_DESIGN.md`) — gate crossed at paired n=36, d_brier=−0.049, d_log_loss=−0.152 (early_signal) |
 | MVP-005A | `1bd134a` | Edge precheck implementation: probability-gap measurement (10 statuses, deterministic precedence, persistence counting), edge_precheck_snapshots audit rows, CLI/API, double-gated MarketOps stage; live on EVO-X2 for manual measurement (`fa0ac34`) |
 | MVP-005A.1 | `5324046` | Targeted edge-precheck modes: explicit forecast ids, MarketOps-cycle scoping, recent-refreshed-signals; dedupe window; MarketOps stage now strictly cycle-scoped (broad sweeps stay manual-diagnostic) |
-| SOCCER-002 | (this) | Soccer evidence-aware forecaster (goal-margin/pace model, red-card + penalty handling, capped ±0.25 shift) — makes soccer forecasts measurable by edge-precheck |
+| SOCCER-002 | `2d2cf10` | Soccer evidence-aware forecaster (goal-margin/pace model, red-card + penalty handling, capped ±0.25 shift) — makes soccer forecasts measurable by edge-precheck |
+| EVAL-001 | (this) | Frontier evaluation harness: 8 quality sections (signal/forecast/edge/follow-through/microstructure/crypto/latency/safety) + conservative readiness scorecard; evaluation only — readiness labels never authorize live capital |
 
 ## Immediate next steps
 

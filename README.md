@@ -386,6 +386,16 @@ Targeted modes skip forecasts measured within `EDGE_PRECHECK_DEDUPE_SECONDS=120`
 
 `GET /edge-precheck/snapshots`, `GET /edge-precheck/report`, `POST /edge-precheck/run` (flag-gated, or `force_readonly=true`). MarketOps can run a measurement pass per cycle only when **both** `MARKETOPS_INCLUDE_EDGE_PRECHECK=true` and `ENABLE_EDGE_PRECHECK=true` (both default false). No orders, paper trades, position sizes, wallets, swaps, or execution exist anywhere; MVP-005B (paper simulator) remains a separate, explicitly-gated future milestone.
 
+## Frontier evaluation (EVAL-001)
+
+**Evaluation only — it measures the desk, it never acts.** One report covers the full read-only pipeline over a time window: signal quality (seen/promoted/processed rates, by type and domain), forecast quality (champion/challenger paired metrics, forecaster/market-type/confidence breakdowns), edge-precheck quality (statuses, reasons, persistence and gap-direction distributions, valid-measurement rate), **gap follow-through** (did later midpoints move toward the forecast — market-movement analysis at 5/15/30/60-minute horizons, explicitly *not PnL*, no fills, no positions), microstructure validity (two-sided rate, spread/liquidity percentiles), crypto risk quality (levels, provider health, post-risk-signal liquidity movement), latency (MarketOps p50/p90/p99, signal→forecast→measurement lags), and a **safety audit** (AST-level identifier scan: banned trading vocabulary must not exist as code identifiers; boundary docstrings pass).
+
+```bash
+python -m app.cli frontier-eval-report --hours 24 --domain sports_baseball --include-crypto --include-safety --save-run
+```
+
+`GET /eval/frontier-report` serves the same report. The **readiness scorecard** is deliberately conservative: `not_ready` → `observe_more` → `ready_for_manual_edge_measurement` → `ready_for_cycle_scoped_edge_automation` → `ready_for_paper_design`. No watchlist rows means `not_ready`, full stop. **There is no live- or autonomous-trading label by design, and no readiness label ever authorizes live capital** — the ladder gates further *measurement* milestones only. `--save-run` persists a `frontier_eval_runs` audit row.
+
 ## Database backups (OPS-007)
 
 ```bash

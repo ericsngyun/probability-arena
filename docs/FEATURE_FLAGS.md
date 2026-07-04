@@ -62,6 +62,13 @@ attached behavior. Broad `--limit` sweeps are manual diagnostics; targeted
 modes (`--latest-marketops-run` etc.) are what automation uses, and the
 MarketOps stage is strictly cycle-scoped.
 
+## Frontier evaluation (EVAL-001)
+
+No flags — `frontier-eval-report` (CLI) and `GET /eval/frontier-report` are
+always-available read-only evaluation over persisted data. `--save-run`
+persists a frontier_eval_runs audit row. Readiness labels gate further
+measurement milestones only and never authorize live capital.
+
 ## Operational hardening (OPS-007)
 
 `SQLITE_BUSY_TIMEOUT_MS=30000` (SQLite connections wait for write locks

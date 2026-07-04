@@ -1239,6 +1239,92 @@ async def edge_precheck_report(session=None) -> int:
             session.close()
 
 
+async def frontier_eval_report(
+    hours: int = 24,
+    domains: list[str] | None = None,
+    include_crypto: bool = False,
+    include_safety: bool = False,
+    save_run: bool = False,
+    session=None,
+) -> int:
+    """Print the frontier evaluation report (evaluation only — no EV, no
+    trades, no positions; readiness labels never authorize live capital).
+    Returns 0."""
+    from datetime import datetime, timezone
+
+    from app.services.frontier_eval import FrontierEvalService
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        started_at = datetime.now(timezone.utc)
+        service = FrontierEvalService()
+        report = service.build(
+            session,
+            hours=hours,
+            domains=domains,
+            include_crypto=include_crypto,
+            include_safety=include_safety,
+        )
+
+        def section(title: str) -> None:
+            print(f"\n== {title} ==")
+
+        print(f"frontier eval (window {report.window_hours}h"
+              + (f", domains {','.join(report.domains)}" if report.domains else "")
+              + ") — evaluation only, never advice")
+        section("executive summary")
+        print(report.executive_summary)
+        section("readiness scorecard")
+        print(f"label: {report.readiness['label']}")
+        for reason in report.readiness["reasons"]:
+            print(f"  - {reason}")
+        print(f"  note: {report.readiness['note']}")
+        section("signal quality")
+        for key, value in report.signal_quality.items():
+            print(f"  {key}: {value}")
+        section("forecast quality")
+        for key, value in report.forecast_quality.items():
+            print(f"  {key}: {value}")
+        section("edge-precheck quality")
+        for key, value in report.edge_precheck_quality.items():
+            print(f"  {key}: {value}")
+        section("gap follow-through (market movement, not PnL)")
+        print(f"  rows analyzed: {report.gap_follow_through['watchlist_rows_analyzed']}")
+        for horizon, stats in report.gap_follow_through["horizons"].items():
+            print(f"  {horizon}: {stats}")
+        section("microstructure quality")
+        for key, value in report.microstructure_quality.items():
+            print(f"  {key}: {value}")
+        if report.crypto_risk_quality is not None:
+            section("crypto risk quality")
+            for key, value in report.crypto_risk_quality.items():
+                print(f"  {key}: {value}")
+        section("latency quality")
+        for key, value in report.latency_quality.items():
+            print(f"  {key}: {value}")
+        if report.safety_audit is not None:
+            section("safety audit")
+            print(f"  files_scanned: {report.safety_audit['files_scanned']}")
+            print(f"  safety_ok: {report.safety_audit['safety_ok']}")
+            for violation in report.safety_audit["violations"]:
+                print(f"  VIOLATION: {violation}")
+        section("recommended next action")
+        print(report.recommended_next_action)
+
+        if save_run:
+            row = service.persist_run(session, report, started_at, hours)
+            print(f"\nsaved eval run #{row.id}")
+        return 0
+    finally:
+        if owns_session:
+            session.close()
+
+
 async def backup_db() -> int:
     """Create a compressed, timestamped SQLite backup (consistent snapshot
     via the online backup API) and prune old ones. Returns 0 on success."""
@@ -1960,6 +2046,15 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         "edge-precheck-report", help="Aggregate gap-measurement report"
     )
+    eval_parser = subparsers.add_parser(
+        "frontier-eval-report",
+        help="Full-desk evaluation report (evaluation only, never advice)",
+    )
+    eval_parser.add_argument("--hours", type=int, default=24)
+    eval_parser.add_argument("--domain", action="append", default=None)
+    eval_parser.add_argument("--include-crypto", action="store_true")
+    eval_parser.add_argument("--include-safety", action="store_true")
+    eval_parser.add_argument("--save-run", action="store_true")
     subparsers.add_parser(
         "backup-db", help="Compressed timestamped SQLite backup (+retention pruning)"
     )
@@ -2108,6 +2203,16 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "edge-precheck-report":
         total = asyncio.run(edge_precheck_report())
         return 0 if total >= 0 else 1
+    if args.command == "frontier-eval-report":
+        return asyncio.run(
+            frontier_eval_report(
+                hours=args.hours,
+                domains=args.domain,
+                include_crypto=args.include_crypto,
+                include_safety=args.include_safety,
+                save_run=args.save_run,
+            )
+        )
     if args.command == "backup-db":
         return asyncio.run(backup_db())
     if args.command == "list-db-backups":
