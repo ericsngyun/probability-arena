@@ -1476,6 +1476,88 @@ async def edge_cohort_report(hours: int = 24, session=None) -> int:
             session.close()
 
 
+async def edge_policy_report(hours: int = 24, session=None) -> int:
+    """Print the edge shadow-policy analysis (read-only — simulates cohort
+    filters over existing rows; no EV, no trades, no live-gate change,
+    authorizes nothing). Returns 0."""
+    from app.services.edge_policy import EdgePolicyReportService
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        report = EdgePolicyReportService().build(session, hours=hours)
+
+        def section(title: str) -> None:
+            print(f"\n== {title} ==")
+
+        print(
+            f"edge shadow-policy analysis (window {report.window_hours}h) — "
+            "read-only, never advice"
+        )
+        print(report.note)
+        print(
+            f"measurement population (watchlist+candidate): {report.population}  "
+            f"settlement_available={report.settlement_available}"
+        )
+
+        for p in report.policies:
+            ft = p["follow_through"]
+            rates = " ".join(
+                f"{h}={ft[h]['moved_toward_rate']}" for h in ("5m", "15m", "30m", "60m")
+            )
+            section(f"policy: {p['name']}")
+            print(
+                f"  included={p['included']} wl={p['watchlist']} "
+                f"cand={p['paper_candidate_later']} no_gap={p['no_gap']} "
+                f"invalid={p['invalid']} invalid_rate={p['invalid_rate']}"
+            )
+            print(
+                f"  follow_samples={p['follow_samples']} "
+                f"blended_toward={p['blended_toward_rate']} toward[{rates}]"
+            )
+            closures = " ".join(
+                f"{h}={ft[h]['mean_gap_closure_pct']}" for h in ("5m", "15m", "30m", "60m")
+            )
+            print(f"  gap_closure[{closures}]")
+            print(f"  market_type={p['market_type_dist']} domain={p['domain_dist']}")
+            print(
+                f"  gap_bucket={p['gap_bucket_dist']} confidence={p['confidence_dist']} "
+                f"persistence={p['persistence_dist']}"
+            )
+            s = p["settlement"]
+            print(
+                f"  settlement: resolved_n={s['resolved_samples']} "
+                f"forecast_brier={s['forecast_brier']} market_brier={s['market_midpoint_brier']} "
+                f"delta={s['forecast_minus_market_brier']} "
+                f"log_loss={s['forecast_log_loss']} beats_market={s['forecast_beats_market_rate']}"
+            )
+            print(f"  -> {p['recommendation']}")
+
+        section("decision")
+        print("  clears follow-through gate (n>=20 & moved-toward>=0.55 @30m/60m):")
+        for item in report.any_clears_follow_gate or ["(none)"]:
+            print(f"    + {item}")
+        print("  improves meaningfully over baseline:")
+        for item in report.any_improves_over_baseline or ["(none)"]:
+            print(f"    + {item}")
+        print("  preserves enough sample (n>=20):")
+        for item in report.any_preserves_sample or ["(none)"]:
+            print(f"    ~ {item}")
+        print(f"  settlement vs follow-through: {report.settlement_disagreement}")
+
+        section("MVP-005B-design gate")
+        print(f"  blocked: {report.mvp_005b_blocked}")
+        print(f"  {report.mvp_005b_reason}")
+        return 0
+    finally:
+        if owns_session:
+            session.close()
+
+
 async def backup_db() -> int:
     """Create a compressed, timestamped SQLite backup (consistent snapshot
     via the online backup API) and prune old ones. Returns 0 on success."""
@@ -2232,6 +2314,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Edge-precheck cohort follow-through analysis (analysis only, never advice)",
     )
     cohort_parser.add_argument("--hours", type=int, default=24)
+    policy_parser = subparsers.add_parser(
+        "edge-policy-report",
+        help="Edge shadow-policy analysis (read-only cohort-filter simulation; never advice)",
+    )
+    policy_parser.add_argument("--hours", type=int, default=24)
     subparsers.add_parser(
         "backup-db", help="Compressed timestamped SQLite backup (+retention pruning)"
     )
@@ -2395,6 +2482,8 @@ def main(argv: list[str] | None = None) -> int:
         )
     if args.command == "edge-cohort-report":
         return asyncio.run(edge_cohort_report(hours=args.hours))
+    if args.command == "edge-policy-report":
+        return asyncio.run(edge_policy_report(hours=args.hours))
     if args.command == "backup-db":
         return asyncio.run(backup_db())
     if args.command == "list-db-backups":
