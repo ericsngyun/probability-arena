@@ -148,6 +148,29 @@ be minutes, visible in `marketops-report` ("promotion (OPS-009)" line) and
 window. Run after live sessions and before considering any flag escalation;
 the scorecard is deliberately conservative (no watchlist rows → not_ready).
 
+## DB growth & alert calibration (OPS-011)
+
+`db-growth-report` is the read-only storage view: file size, per-table row
+counts + est MiB (SQLite `dbstat` when compiled in), largest tables, tick age
+buckets, ticks-by-domain, edge-precheck/crypto growth, backups, retention
+windows, and the calibrated alert thresholds. `prune-retention --dry-run` now
+also prints a per-table projection (window, total, eligible, remaining,
+oldest/newest ticks) — run it before adjusting any retention window.
+
+```bash
+cd ~/projects/probability-arena
+.venv/bin/python -m app.cli db-growth-report
+.venv/bin/python -m app.cli prune-retention --dry-run
+```
+
+Alert thresholds were raised after SCANNER-002 (the 512 MiB / 150-signals-per-
+hour advisories tripped on normal live-slate volume). Defaults:
+`DB_GROWTH_WARNING_MB=1536` / `DB_GROWTH_CRITICAL_MB=3072`,
+`MARKETOPS_SIGNAL_FLOOD_WARNING_PER_HOUR=400` /
+`..._CRITICAL_PER_HOUR=800`. To re-tune, edit `.env` (oneshot timer picks up
+next run; restart the watcher only if a watcher-affecting flag changed). This
+is ops/observability only — no forecasting, edge, or trading behavior changes.
+
 ## DB backup (OPS-007)
 
 Consistent snapshots via the sqlite3 online backup API (safe while all

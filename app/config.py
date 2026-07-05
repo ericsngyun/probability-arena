@@ -92,6 +92,19 @@ class Settings(BaseSettings):
     pipeline_run_retention_days: int = 90
     signal_retention_days: int = 0  # 0 = keep signals indefinitely
     retention_batch_size: int = 5000
+
+    # OPS-011 alert calibration — advisory operational alerts only; NOT trading
+    # logic. Static thresholds raised after SCANNER-002 grew the watcher/tick
+    # universe (512 MiB / 150 signals-per-hour were chronically tripped by
+    # normal live-slate volume). warning/critical are the active alert gates;
+    # daily-rate + window are observability knobs surfaced by db-growth-report
+    # (rate-based ALERTING is documented as future work — see docs/ROADMAP.md).
+    db_growth_warning_mb: float = 1536.0
+    db_growth_critical_mb: float = 3072.0
+    db_growth_warning_daily_mb: float = 1024.0  # observability/proposed
+    db_growth_window_hours: int = 24  # observability/proposed
+    marketops_signal_flood_warning_per_hour: int = 400
+    marketops_signal_flood_critical_per_hour: int = 800
     enable_pipeline_retention: bool = False
     enable_watcher_retention: bool = False
 

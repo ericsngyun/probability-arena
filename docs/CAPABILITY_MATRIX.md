@@ -19,4 +19,6 @@
 | **Crypto wallet** | **Does not exist** | ❌ | Explicitly deferred ("wallet milestones later only") | Same as wallet execution |
 | **Autonomous execution** | **Does not exist** | ❌ | Not planned | Would require every gate above plus standing human-in-the-loop controls |
 
+| Operational observability | OPS-011: `db-growth-report` (size, table rows/MiB, tick age+domain buckets, edge/crypto growth, retention windows), retention dry-run detail, calibrated DB-growth/signal-flood alerts (configurable warning/critical) | ✅ | — | Read-only measurement/tuning only; changes no forecasting/edge/promotion logic; no EV/paper/sizing/orders/wallets/swaps/execution |
+
 Legend: ✅ allowed now (within documented flags/limits) · 🔜 planned, not yet built · ❌ forbidden — do not implement, scaffold, or "prepare".

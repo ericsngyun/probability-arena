@@ -32,7 +32,9 @@
 | SOCCER-002 | `2d2cf10` | Soccer evidence-aware forecaster (goal-margin/pace model, red-card + penalty handling, capped ±0.25 shift) — makes soccer forecasts measurable by edge-precheck |
 | EVAL-001 | `57e8369` | Frontier evaluation harness: 8 quality sections (signal/forecast/edge/follow-through/microstructure/crypto/latency/safety) + conservative readiness scorecard; evaluation only — readiness labels never authorize live capital |
 | OPS-009 | `7746ef9` | Promotion quality: minute-level domain-aware freshness windows + measurement-readiness scoring (market-type/book-quality/source-backed priority; player props deprioritized); promotion stats in run summaries |
-| SCANNER-002 / OPS-010 | (this) | Targeted game-level market scan coverage: per-series read-only fetches (`KXWCGAME`/`KXWCTOTAL`/`KXWCSPREAD`/`KXMLBGAME`/`KXMLBTOTAL`/`KXMLBSPREAD`) supplement the generic scan (deduped, partial-failure tolerant); watcher supported-universe supplement (game-level baseball/soccer with two-sided quotes, bounded, never props). Motivated by `docs/VALIDATION_PAR_FRA_2026_07_04.md` |
+| SCANNER-002 / OPS-010 | `00e169b` | Targeted game-level market scan coverage: per-series read-only fetches (`KXWCGAME`/`KXWCTOTAL`/`KXWCSPREAD`/`KXMLBGAME`/`KXMLBTOTAL`/`KXMLBSPREAD`) supplement the generic scan (deduped, partial-failure tolerant); watcher supported-universe supplement (game-level baseball/soccer with two-sided quotes, bounded, never props). Motivated by `docs/VALIDATION_PAR_FRA_2026_07_04.md` |
+| MVP-005A.2 / EDGE-AUTO-001 | `134e401` (deploy) | Enabled cycle-scoped edge-precheck inside MarketOps (`MARKETOPS_INCLUDE_EDGE_PRECHECK=true`) after readiness crossed `ready_for_cycle_scoped_edge_automation`; measurement automation only |
+| OPS-011 | (this) | DB growth/retention observability + alert calibration: `db-growth-report` CLI, retention dry-run detail, configurable warning/critical tiers for DB-growth (1536/3072 MiB) and signal-flood (400/800 per hour) alerts. Ops-only; no alpha/edge/trading change |
 
 ## Immediate next steps
 
@@ -45,4 +47,5 @@
 
 - **MVP-005B — paper simulator**: gated on accumulated edge-precheck measurement data (watchlist/paper_candidate_later precision over time) + its own explicit acceptance. Simulation only; still no orders.
 - **CRYPTO-003 — crypto paper simulator**: gated like MVP-005B; simulation only, no orders, no wallets; requires CRYPTO-002 risk data to mature first.
+- **OPS-012 — tick aggregation (proposed)**: `market_price_ticks` is the dominant storage growth source. Future milestone: roll raw ticks into hourly OHLC/spread/liquidity aggregates, retain raw ticks shorter (e.g. 3d) and aggregates longer, and move DB-growth alerting from absolute-size gates to a rate-based (MiB/day over a window) signal. Read-only/ops; no alpha change. Build only when small and explicitly safe.
 - **WALLET-001 — policy-controlled transaction proposal gateway**: *much later*; proposals only — no signing, no private keys, behind a dedicated custody/security review — see `docs/SAFETY_BOUNDARIES.md` and ADR-002.

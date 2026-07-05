@@ -56,12 +56,12 @@ ALERT_DB_GROWTH = "db_growth_warning"
 ALERT_STATUS_OPEN = "open"
 ALERT_STATUS_RESOLVED = "resolved"
 
-# Deterministic thresholds (shape of each rule; operational limits live in config)
-TOO_MANY_SIGNALS_PER_HOUR = 150
+# Deterministic thresholds (shape of each rule; operational limits live in config).
+# Signal-flood and DB-growth limits moved to config in OPS-011 (the values below
+# are the pre-OPS-011 defaults, kept only as documentation of the old behavior).
 NO_SIGNAL_WINDOW_HOURS = 6
 WATCHER_STALE_MINUTES = 30
 CRYPTO_SIGNAL_SPIKE_PER_CYCLE = 25
-DB_GROWTH_WARNING_MB = 512.0
 TICKER_REFRESH_COOLDOWN_SECONDS = 3600  # don't re-promote a just-refreshed ticker
 
 # Domains whose promoted signals can currently become source-backed packets
@@ -827,14 +827,26 @@ class MarketOpsAutopilotService:
                 OpportunitySignal.created_at >= hour_ago
             )
         ).scalar() or 0
-        if signals_last_hour > TOO_MANY_SIGNALS_PER_HOUR:
+        flood_warn = settings.marketops_signal_flood_warning_per_hour
+        flood_crit = settings.marketops_signal_flood_critical_per_hour
+        if signals_last_hour > flood_crit:
+            if self.alert_service.create(
+                session,
+                ALERT_TOO_MANY_SIGNALS,
+                "critical",
+                f"Signal flood (critical): {signals_last_hour} signals in the last hour",
+                f"Above critical {flood_crit}/h — verify the watcher isn't looping/mis-deduping",
+                evidence={"signals_last_hour": signals_last_hour, "threshold": flood_crit},
+            ):
+                created += 1
+        elif signals_last_hour > flood_warn:
             if self.alert_service.create(
                 session,
                 ALERT_TOO_MANY_SIGNALS,
                 "warning",
                 f"Signal flood: {signals_last_hour} signals in the last hour",
-                f"Threshold {TOO_MANY_SIGNALS_PER_HOUR}/h — check watcher thresholds/cooldowns",
-                evidence={"signals_last_hour": signals_last_hour},
+                f"Above warning {flood_warn}/h — normal for busy live slates; check cooldowns if sustained",
+                evidence={"signals_last_hour": signals_last_hour, "threshold": flood_warn},
             ):
                 created += 1
 
@@ -883,14 +895,26 @@ class MarketOpsAutopilotService:
                     created += 1
 
         size_mb = database_size_mb()
-        if size_mb is not None and size_mb >= DB_GROWTH_WARNING_MB:
+        warn_mb = settings.db_growth_warning_mb
+        crit_mb = settings.db_growth_critical_mb
+        if size_mb is not None and size_mb >= crit_mb:
+            if self.alert_service.create(
+                session,
+                ALERT_DB_GROWTH,
+                "critical",
+                f"Database at {size_mb:.0f} MiB (critical)",
+                f"SQLite file exceeds critical {crit_mb:.0f} MiB — prune/retention or disk pressure risk",
+                evidence={"size_mb": round(size_mb, 2), "threshold_mb": crit_mb},
+            ):
+                created += 1
+        elif size_mb is not None and size_mb >= warn_mb:
             if self.alert_service.create(
                 session,
                 ALERT_DB_GROWTH,
                 "warning",
                 f"Database at {size_mb:.0f} MiB",
-                f"SQLite file exceeds {DB_GROWTH_WARNING_MB:.0f} MiB — review retention windows",
-                evidence={"size_mb": round(size_mb, 2)},
+                f"SQLite file exceeds warning {warn_mb:.0f} MiB — review retention windows (db-growth-report)",
+                evidence={"size_mb": round(size_mb, 2), "threshold_mb": warn_mb},
             ):
                 created += 1
 

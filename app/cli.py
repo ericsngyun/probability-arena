@@ -758,12 +758,24 @@ async def prune_retention(
             signal_days=signal_days,
             batch_size=batch_size,
         )
-        counts = RetentionService(config).prune(session, dry_run=dry_run)
+        service = RetentionService(config)
+        counts = service.prune(session, dry_run=dry_run)
         mode = "DRY RUN — would delete" if dry_run else "deleted"
         print(f"retention ({mode}):")
         for table, count in counts.items():
             note = " (retention disabled)" if table == "opportunity_signals" and config.signal_days == 0 else ""
             print(f"  {table:<24} {count}{note}")
+        if dry_run:
+            print("\nretention detail (OPS-011; dry-run projection, nothing deleted):")
+            for r in service.prune_report(session):
+                window = "keep forever" if r.window_days is None else f"{r.window_days}d window"
+                line = (
+                    f"  {r.table:<24} {window:<14} total={r.total_rows} "
+                    f"eligible={r.eligible_rows} remaining={r.remaining_rows}"
+                )
+                if r.oldest is not None or r.newest is not None:
+                    line += f" oldest={r.oldest} newest={r.newest}"
+                print(line)
         return sum(counts.values())
     finally:
         if owns_session:
@@ -843,6 +855,68 @@ async def db_stats(session=None) -> int:
         if by_type:
             print("signals by type: " + ", ".join(f"{t}={n}" for t, n in sorted(by_type)))
         return total
+    finally:
+        if owns_session:
+            session.close()
+
+
+async def db_growth_report(top: int = 12, session=None) -> int:
+    """OPS-011 read-only DB growth/retention observability: size, table row
+    counts + est MiB (dbstat when available), largest tables, tick age
+    buckets, ticks-by-domain, edge-precheck/crypto row growth, backups,
+    retention windows, and calibrated alert thresholds. Returns total rows."""
+    from app.services.db_growth import build_growth_report
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        r = build_growth_report(session)
+        print(f"database: {r.database_url}")
+        if r.size_mib is not None:
+            print(f"sqlite size: {r.size_mib:.2f} MiB")
+        if r.backups is not None:
+            print(f"backups: {r.backups[0]} file(s), {r.backups[1]:.2f} MiB")
+
+        total_rows = sum(t.rows for t in r.tables)
+        has_size = any(t.est_mib is not None for t in r.tables)
+        print(f"\nlargest tables (of {len(r.tables)}; total {total_rows} rows"
+              f"{'' if has_size else '; est MiB unavailable — dbstat not compiled in'}):")
+        for t in r.largest_tables[:top]:
+            size = f"  {t.est_mib:>8.2f} MiB" if t.est_mib is not None else ""
+            print(f"  {t.name:<36} {t.rows:>9} rows{size}")
+
+        print(f"\nmarket_price_ticks: {r.tick_total} rows"
+              f" (oldest={r.tick_oldest} newest={r.tick_newest})")
+        print("  by age:    " + ", ".join(f"{k}={v}" for k, v in r.tick_by_age.items()))
+        print("  by domain: " + ", ".join(f"{k}={v}" for k, v in r.tick_by_domain.items()))
+        print(f"  last hour: {r.tick_last_hour} ticks"
+              + (f"  (~{r.tick_est_daily_mib} MiB/day est)"
+                 if r.tick_est_daily_mib is not None else ""))
+
+        print(f"\nedge_precheck_snapshots: {r.edge_total} total"
+              f"  (+{r.edge_last_hour}/h, +{r.edge_last_24h}/24h)")
+        print(f"crypto_price_ticks: {r.crypto_tick_total} total (+{r.crypto_tick_last_hour}/h)"
+              f"   crypto_token_risk_assessments: {r.crypto_risk_total} total")
+
+        rc = r.retention
+        print("\nretention windows: "
+              f"ticks={rc.tick_days}d, crypto={rc.crypto_days}d, "
+              f"watcher_runs={rc.watcher_run_days}d, pipeline_runs={rc.pipeline_run_days}d, "
+              f"signals={'keep forever' if rc.signal_days == 0 else str(rc.signal_days) + 'd'}, "
+              "edge_precheck_snapshots=keep forever")
+        th = r.thresholds
+        print("alert thresholds (OPS-011): "
+              f"db_growth warn={th['db_growth_warning_mb']:.0f}MiB "
+              f"crit={th['db_growth_critical_mb']:.0f}MiB "
+              f"(rate obs: {th['db_growth_warning_daily_mb']:.0f}MiB/day over "
+              f"{th['db_growth_window_hours']}h); "
+              f"signal_flood warn={th['signal_flood_warning_per_hour']}/h "
+              f"crit={th['signal_flood_critical_per_hour']}/h")
+        return total_rows
     finally:
         if owns_session:
             session.close()
@@ -1992,6 +2066,11 @@ def build_parser() -> argparse.ArgumentParser:
     prune_parser.add_argument("--signal-days", type=int, default=None)
     prune_parser.add_argument("--batch-size", type=int, default=None)
     subparsers.add_parser("db-stats", help="Print database overview and row counts")
+    growth_parser = subparsers.add_parser(
+        "db-growth-report",
+        help="OPS-011: DB size/growth, tick age+domain buckets, retention windows, alert thresholds",
+    )
+    growth_parser.add_argument("--top", type=int, default=12, help="largest N tables to list")
     recent_parser = subparsers.add_parser("signals-recent", help="List recent signals")
     recent_parser.add_argument("--limit", type=int, default=20)
     recent_parser.add_argument("--status", type=str, default=None)
@@ -2154,6 +2233,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if deleted >= 0 else 1
     if args.command == "db-stats":
         total = asyncio.run(db_stats())
+        return 0 if total >= 0 else 1
+    if args.command == "db-growth-report":
+        total = asyncio.run(db_growth_report(top=args.top))
         return 0 if total >= 0 else 1
     if args.command == "signals-recent":
         count = asyncio.run(signals_recent(limit=args.limit, signal_status=args.status))

@@ -147,7 +147,35 @@ trading, sizes no positions, places no orders, and touches no wallets/keys/swaps
 
 `TICK_RETENTION_DAYS=7`, `WATCHER_RUN_RETENTION_DAYS=30`,
 `PIPELINE_RUN_RETENTION_DAYS=90`, `SIGNAL_RETENTION_DAYS=0` (keep forever),
-`RETENTION_BATCH_SIZE=5000`. Intelligence/calibration tables are never pruned.
+`CRYPTO_RETENTION_DAYS=7` (crypto_price_ticks + crypto_watcher_runs only),
+`RETENTION_BATCH_SIZE=5000`. Intelligence/calibration tables are never pruned
+(`edge_precheck_snapshots` is audit history — kept forever). `market_price_ticks`
+is the dominant growth driver; `prune-retention --dry-run` prints an OPS-011
+per-table projection (window, total, eligible, remaining, oldest/newest ticks).
+
+## OPS-011 — DB growth & alert calibration (ops/observability only)
+
+Advisory operational alerts, not trading logic. Static thresholds were raised
+after SCANNER-002 expanded the watcher/tick universe (the old 512 MiB / 150
+signals-per-hour tripped on normal live-slate volume). Both alert types now
+have configurable warning **and** critical tiers:
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `DB_GROWTH_WARNING_MB` | 1536 | `db_growth_warning` alert (severity warning) at/above this file size |
+| `DB_GROWTH_CRITICAL_MB` | 3072 | same alert at severity critical (disk-pressure risk) |
+| `DB_GROWTH_WARNING_DAILY_MB` | 1024 | observability/proposed — surfaced by `db-growth-report` as an estimated raw-tick MiB/day rate |
+| `DB_GROWTH_WINDOW_HOURS` | 24 | observability/proposed — rate window |
+| `MARKETOPS_SIGNAL_FLOOD_WARNING_PER_HOUR` | 400 | `too_many_signals` at severity warning (busy live slates are ~200/h — normal) |
+| `MARKETOPS_SIGNAL_FLOOD_CRITICAL_PER_HOUR` | 800 | same alert at severity critical (watcher looping / mis-dedup) |
+
+`db-growth-report` (read-only CLI) reports DB size, per-table row counts + est
+MiB (via SQLite `dbstat` when compiled in), largest tables, tick age buckets,
+ticks-by-domain, edge-precheck/crypto row growth, backups, retention windows,
+and these thresholds. Rate-based *alerting* (vs the current absolute-size gates)
+is documented as future work — see `docs/ROADMAP.md`. OPS-011 changes no
+forecasting, edge, or promotion logic and adds no EV/paper-trading/sizing/
+orders/wallets/swaps/execution.
 
 ## Related non-flag knobs
 

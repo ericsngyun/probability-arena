@@ -20,7 +20,8 @@ Services (app/services/)  — scanner, eligibility, enrichment, resolution, rese
                             (Crypto Arena, read-only; risk = avoid/flag verdicts),
                             marketops (Autopilot: read-only coordination + alerts),
                             edge_precheck (MVP-005A: gap measurement, never advice),
-                            frontier_eval (EVAL-001: desk-wide evaluation + readiness)
+                            frontier_eval (EVAL-001: desk-wide evaluation + readiness),
+                            db_growth (OPS-011: read-only storage/retention observability)
 Adapter (app/adapters/kalshi.py) — list/detail/event/series/by-tickers/by-series GETs,
                             legacy + dollars/fp payload shapes, outcome parsing,
                             bounded 429 retries on targeted series fetches
@@ -75,3 +76,4 @@ MVP-001…005A.1, OPS-001…007, OPS-009, SOCCER-001…002, CRYPTO-001…002, EV
 - Generic scan order is the API's default paging; targeted series scans (SCANNER-002) cover supported game-level families, but unsupported domains can still be crowded out of the first page.
 - EVO-X2 deployment lags main when milestones haven't been rolled out yet — always check the runbook/host before assuming.
 - SQLite on EVO-X2 (deliberate); Postgres migration path documented in the deployment report.
+- `market_price_ticks` is the dominant growth driver (SCANNER-002's 150-ticker universe); `db-growth-report` measures it and OPS-011 calibrated the DB-growth/signal-flood alerts to the larger steady state. Tick aggregation (hourly OHLC + shorter raw retention) is a documented future milestone in `docs/ROADMAP.md`.

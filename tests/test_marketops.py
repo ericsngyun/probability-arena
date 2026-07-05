@@ -295,7 +295,8 @@ class TestAutoPromotion:
 
 class TestAlerts:
     async def test_too_many_signals_alert(self, session, monkeypatch):
-        monkeypatch.setattr(marketops_module, "TOO_MANY_SIGNALS_PER_HOUR", 2)
+        monkeypatch.setattr(get_settings(), "marketops_signal_flood_warning_per_hour", 2)
+        monkeypatch.setattr(get_settings(), "marketops_signal_flood_critical_per_hour", 800)
         for i in range(4):
             seed_signal(session, ticker=f"T-{i}", age_minutes=1000)  # outside promo window
         for i in range(3):
@@ -307,6 +308,19 @@ class TestAlerts:
         ]
         assert len(alerts) == 1
         assert alerts[0].severity == "warning"
+
+    async def test_signal_flood_critical_alert(self, session, monkeypatch):
+        monkeypatch.setattr(get_settings(), "marketops_signal_flood_warning_per_hour", 2)
+        monkeypatch.setattr(get_settings(), "marketops_signal_flood_critical_per_hour", 4)
+        for i in range(6):
+            seed_signal(session, ticker=f"C-{i}", age_minutes=5)
+        await autopilot(cfg=MarketOpsConfig(promote_limit=0)).run_once(session)
+        alerts = [
+            a for a in session.execute(select(MarketOpsAlert)).scalars().all()
+            if a.alert_type == ALERT_TOO_MANY_SIGNALS
+        ]
+        assert len(alerts) == 1
+        assert alerts[0].severity == "critical"
 
     async def test_no_recent_signals_alert_when_watcher_enabled(self, session, monkeypatch):
         monkeypatch.setattr(get_settings(), "enable_realtime_watcher", True)
@@ -350,6 +364,8 @@ class TestAlerts:
         assert len(alerts) == 1
 
     async def test_db_growth_alert(self, session, monkeypatch):
+        monkeypatch.setattr(get_settings(), "db_growth_warning_mb", 512.0)
+        monkeypatch.setattr(get_settings(), "db_growth_critical_mb", 3072.0)
         monkeypatch.setattr(marketops_module, "database_size_mb", lambda *a, **k: 600.0)
         await autopilot().run_once(session)
         alerts = [
@@ -357,6 +373,19 @@ class TestAlerts:
             if a.alert_type == "db_growth_warning"
         ]
         assert len(alerts) == 1
+        assert alerts[0].severity == "warning"
+
+    async def test_db_growth_critical_alert(self, session, monkeypatch):
+        monkeypatch.setattr(get_settings(), "db_growth_warning_mb", 512.0)
+        monkeypatch.setattr(get_settings(), "db_growth_critical_mb", 3072.0)
+        monkeypatch.setattr(marketops_module, "database_size_mb", lambda *a, **k: 4000.0)
+        await autopilot().run_once(session)
+        alerts = [
+            a for a in session.execute(select(MarketOpsAlert)).scalars().all()
+            if a.alert_type == "db_growth_warning"
+        ]
+        assert len(alerts) == 1
+        assert alerts[0].severity == "critical"
 
     async def test_cc_sample_update_alert_on_change_only(self, session):
         service = autopilot(champion_challenger_service=FakeCCService(pair_count=3,

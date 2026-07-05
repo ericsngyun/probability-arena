@@ -88,9 +88,99 @@ def _cutoff(days: int) -> datetime:
     return datetime.now(timezone.utc) - timedelta(days=days)
 
 
+@dataclass
+class TableRetention:
+    """Per-table dry-run projection (OPS-011): window, totals, and what a
+    prune would remove/keep. Counts only — nothing is deleted."""
+
+    table: str
+    window_days: int | None  # None => retained indefinitely (not pruned)
+    total_rows: int
+    eligible_rows: int
+    remaining_rows: int
+    oldest: datetime | None = None
+    newest: datetime | None = None
+
+
 class RetentionService:
     def __init__(self, config: RetentionConfig | None = None):
         self.config = config or RetentionConfig.from_settings()
+
+    def prune_report(self, session: Session) -> list[TableRetention]:
+        """Detailed, read-only dry-run projection per pruned table: retention
+        window, total rows, rows eligible for pruning, rows that would remain,
+        plus oldest/newest timestamps for the tick tables. Deletes nothing."""
+        cfg = self.config
+
+        def project(model, condition, window_days, timestamps=False) -> TableRetention:
+            total = session.execute(select(func.count()).select_from(model)).scalar() or 0
+            eligible = session.execute(
+                select(func.count()).select_from(model).where(condition)
+            ).scalar() or 0
+            oldest = newest = None
+            if timestamps:
+                oldest, newest = session.execute(
+                    select(func.min(model.created_at), func.max(model.created_at))
+                ).one()
+            name = model.__tablename__
+            return TableRetention(
+                table=name,
+                window_days=window_days,
+                total_rows=total,
+                eligible_rows=eligible,
+                remaining_rows=total - eligible,
+                oldest=oldest,
+                newest=newest,
+            )
+
+        reports = [
+            project(
+                MarketPriceTick,
+                MarketPriceTick.created_at < _cutoff(cfg.tick_days),
+                cfg.tick_days,
+                timestamps=True,
+            ),
+            project(
+                CryptoPriceTick,
+                CryptoPriceTick.created_at < _cutoff(cfg.crypto_days),
+                cfg.crypto_days,
+                timestamps=True,
+            ),
+            project(
+                WatcherRun,
+                WatcherRun.created_at < _cutoff(cfg.watcher_run_days),
+                cfg.watcher_run_days,
+            ),
+            project(
+                CryptoWatcherRun,
+                (CryptoWatcherRun.created_at < _cutoff(cfg.crypto_days))
+                & (CryptoWatcherRun.status != "running"),
+                cfg.crypto_days,
+            ),
+            project(
+                PipelineRun,
+                (PipelineRun.created_at < _cutoff(cfg.pipeline_run_days))
+                & (PipelineRun.status != "running"),
+                cfg.pipeline_run_days,
+            ),
+        ]
+        # opportunity_signals: pruned only when signal_days > 0; else indefinite
+        if cfg.signal_days > 0:
+            reports.append(
+                project(
+                    OpportunitySignal,
+                    OpportunitySignal.created_at < _cutoff(cfg.signal_days),
+                    cfg.signal_days,
+                )
+            )
+        else:
+            total = session.execute(
+                select(func.count()).select_from(OpportunitySignal)
+            ).scalar() or 0
+            reports.append(
+                TableRetention("opportunity_signals", None, total, 0, total)
+            )
+        return reports
 
     def _delete_batched(self, session: Session, model, condition, dry_run: bool) -> int:
         if dry_run:
