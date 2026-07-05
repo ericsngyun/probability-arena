@@ -737,3 +737,27 @@ Deployed **`134e401` → `36aa08a`** (no migration). Ops/observability only — 
 **Follow-up (OPS-012, proposed):** roll raw ticks into hourly OHLC/spread/liquidity aggregates, retain raw ticks shorter + aggregates longer, and move DB-growth alerting from absolute-size gates to a rate-based (MiB/day) signal. Build only when small and explicitly safe.
 
 No EV, no paper trading, no recommendations, no sizing, no orders, no wallets, no swaps, no execution, no autonomy — OPS-011 is storage/alert measurement and tuning only.
+
+## EDGE-ANALYSIS-001 — edge cohort follow-through analysis deployed (2026-07-05, ~23:00 UTC)
+
+Deployed **`dd99146` → `d20ca56`** by `git pull --ff-only` (clean fast-forward; **no migration** — no alembic/model changes, only a new service + CLI command + tests + docs). Read-only **reporting only**: no flag, threshold, promotion, edge, forecast, or service change. `MARKETOPS_INCLUDE_EDGE_PRECHECK` stays **true**; `ENABLE_EDGE_PRECHECK` stays **true**. **No services restarted** (a read-only CLI needs none; oneshot timers already run the new code from disk). All four units remain active.
+
+**New capability:** `edge-cohort-report --hours N` — slices watchlist / `paper_candidate_later` snapshots into 10 cohort dimensions and measures per-cohort gap follow-through (market movement, not PnL), labelling each `too_thin` / `promising` / `neutral` / `weak` / `exclude_candidate`.
+
+**Live output summary (host, `--hours 24`):** 348 snapshots, 222 follow-through rows. Overall moved-toward rate **0.464 / 0.432 / 0.369 / 0.324** at 5/15/30/60m (cross-checks the frontier-eval follow-through exactly). Cohort labels:
+- **exclude_candidate** (deprioritize in future gating): `market_type=winner`, `confidence=0.65+`, `game_phase=late`, `persistence=2`, `abs_gap>0.15`, `liquidity=1M-10M`.
+- **weak**: `total`, `spread`, both gap signs, baseball overall, `spread=1`, `game_phase=early`, `persistence=1`, `price_move_threshold`.
+- **neutral** (observe more): small-gap buckets (0.05–0.10), `spread=2–5c`, `liquidity<100k`.
+- **too_thin**: soccer (n=8), non-`price_move_threshold` signal types, `persistence=3+` (n=7).
+
+**Any cohort promising?** **No** — zero cohorts cleared the `promising` bar; several are actively `exclude_candidate`.
+
+**MVP-005B-design gate:** **BLOCKED** — no cohort clears both the sample floor (n≥20) and toward-rate (≥0.55); overall toward-rate **0.398** over n=222. The report unlocks nothing; advancing would still require explicit human acceptance.
+
+**Health post-deploy:** readiness `ready_for_cycle_scoped_edge_automation` (unchanged); safety audit **50 files, safety_ok true** (new module scanned, 0 violations); MarketOps p90 **38.5 s** (< 60 s); run #471 ok. DB **1137.8 MiB** (< 1536 warn); `market_price_ticks` still dominant (~308k rows, oldest 2026-07-03 — 3d retention not yet matured, `3-7d`=0). No new `db_growth`/`signal_flood` alerts.
+
+**Rollback:** none needed operationally (read-only, no flag/service change). To remove the command: `git revert d20ca56` (or `git reset --hard dd99146` on host) — no state to unwind.
+
+**Next recommendation:** **keep collecting.** Follow-through remains neutral-to-negative across every cohort; MVP-005B stays blocked. Use `edge-cohort-report` to track whether any cohort (e.g. the small-gap/tighter-spread `neutral` buckets) firms up as samples grow, and to justify future edge-gating deprioritization (winner markets, 0.65+ confidence, late-game, persistence-2). Do not start MVP-005B-design. OPS-012 tick aggregation remains the standing roadmap item once the 3d retention plateau is observed.
+
+No EV, no paper trading, no recommendations, no sizing, no orders, no wallets, no swaps, no signing, no execution, no autonomy — EDGE-ANALYSIS-001 is measurement/reporting only.
