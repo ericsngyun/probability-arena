@@ -712,3 +712,28 @@ No EV, no paper trading, no recommendations-to-trade, no sizing, no orders, no w
 **Rollback (one line):** `sed -i 's/^MARKETOPS_INCLUDE_EDGE_PRECHECK=true/MARKETOPS_INCLUDE_EDGE_PRECHECK=false/' ~/projects/probability-arena/.env` then `marketops-run-once` + `marketops-report`/`edge-precheck-report` to confirm the stage is gone.
 
 No EV, no paper trading, no trade recommendations, no sizing, no orders, no wallets/keys, no swaps, no signing, no execution, no autonomy — the autopilot gained one measurement stage, strictly cycle-scoped (≤5 same-cycle forecasts), and nothing else.
+
+---
+
+## OPS-011 — DB growth observability + alert calibration (2026-07-05, ~21:00 UTC)
+
+Deployed **`134e401` → `36aa08a`** (no migration). Ops/observability only — no forecasting, edge, promotion, or trading logic changed; `MARKETOPS_INCLUDE_EDGE_PRECHECK` stays **true**.
+
+**Live DB breakdown (`db-growth-report`, dbstat compiled in on host):** file **1086.9 MiB**; `market_price_ticks` is **903 MiB / 83%** of the DB at 291,992 rows (next: market_snapshots 43.5 MiB, crypto_token_discovery_events 24.9 MiB, opportunity_signals 13.6 MiB, crypto_price_ticks 11.5 MiB). Ticks by domain: baseball 173,919 / soccer 81,439 / general 27,591 / tennis 9,043. Age buckets: `<1d`=187,918, `1-3d`=104,074, `3-7d`=0, `>7d`=0 — **the 7d window had not yet pruned anything** (oldest tick 2026-07-03). Observed raw-tick rate ≈ **317 MiB/day** average (peak live-slate ≈ 645 MiB/day est).
+
+**Growth estimate → retention decision:** at 7d retention, tick steady-state ≈ 2.2 GB (~2.4 GB total DB), which would chronically trip even a raised warning. Raw ticks are pure telemetry (the watcher only compares consecutive ticks; edge-precheck freshness is ≤120s; follow-through uses ≤60m). **Applied `TICK_RETENTION_DAYS` 7 → 3** on the host (reversible; prunes 0 rows right now since the oldest tick is 2.85d — a purely forward-looking cap). At 3d, tick steady-state ≈ 0.95 GB → total ~1.15 GB, safely under the 1536 MiB warning. Note: the SQLite file won't shrink from the current 1087 MiB without a `VACUUM` (locks the DB — deferred to a maintenance window; freed pages are reused so growth stays capped meanwhile).
+
+**Alert calibration (config-driven, warning + critical tiers):**
+- `DB_GROWTH_WARNING_MB` 512 → **1536**, `DB_GROWTH_CRITICAL_MB` → **3072**.
+- `MARKETOPS_SIGNAL_FLOOD_WARNING_PER_HOUR` 150 → **400**, `..._CRITICAL_PER_HOUR` → **800**.
+- Verified live: last `db_growth_warning` fired 03:20 UTC at the old 512 gate ("578 MiB"); DB is now 1087 MiB but **no new db_growth alert fires** (< 1536). Last `too_many_signals` fired 03:14 UTC at old 150 ("153"); signal volume is now 237/h but **no new alert fires** (< 400). Chronic advisories silenced; genuine anomalies (critical tiers, watcher-stale, no-signal) still fire.
+
+**New observability:** `db-growth-report` (size, per-table rows + est MiB, largest tables, tick age/domain buckets, edge/crypto growth, backups, retention windows, thresholds) and `prune-retention --dry-run` now prints a per-table projection (window, total, eligible, remaining, oldest/newest ticks).
+
+**Health post-deploy (cycles #451, #452, +manual):** edge-precheck batches all **5 rows (≤5, strictly cycle-scoped — no sweep)**; MarketOps p50/p90/p99 **32.4 / 38.2 / 40.4 s** (unchanged); readiness `ready_for_cycle_scoped_edge_automation`; safety audit **49 files, safety_ok true**. All four units active.
+
+**Rollback:** `sed -i 's/^TICK_RETENTION_DAYS=3/TICK_RETENTION_DAYS=7/' .env` (retention); remove the `DB_GROWTH_*` / `MARKETOPS_SIGNAL_FLOOD_*` keys to fall back to config defaults (which are the same calibrated values). No code rollback needed for the alert change.
+
+**Follow-up (OPS-012, proposed):** roll raw ticks into hourly OHLC/spread/liquidity aggregates, retain raw ticks shorter + aggregates longer, and move DB-growth alerting from absolute-size gates to a rate-based (MiB/day) signal. Build only when small and explicitly safe.
+
+No EV, no paper trading, no recommendations, no sizing, no orders, no wallets, no swaps, no execution, no autonomy — OPS-011 is storage/alert measurement and tuning only.
