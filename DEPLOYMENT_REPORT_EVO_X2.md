@@ -761,3 +761,27 @@ Deployed **`dd99146` → `d20ca56`** by `git pull --ff-only` (clean fast-forward
 **Next recommendation:** **keep collecting.** Follow-through remains neutral-to-negative across every cohort; MVP-005B stays blocked. Use `edge-cohort-report` to track whether any cohort (e.g. the small-gap/tighter-spread `neutral` buckets) firms up as samples grow, and to justify future edge-gating deprioritization (winner markets, 0.65+ confidence, late-game, persistence-2). Do not start MVP-005B-design. OPS-012 tick aggregation remains the standing roadmap item once the 3d retention plateau is observed.
 
 No EV, no paper trading, no recommendations, no sizing, no orders, no wallets, no swaps, no signing, no execution, no autonomy — EDGE-ANALYSIS-001 is measurement/reporting only.
+
+## EDGE-POLICY-001 — read-only shadow cohort-filter policy analysis deployed (2026-07-06, ~00:00 UTC)
+
+Deployed **`447e7ae` → `debdfda`** by `git pull --ff-only` (clean fast-forward; **no migration** — new service + CLI command + tests + docs only). Read-only **shadow analysis**: it re-slices existing rows and changes **no** flag, threshold, promotion, forecaster, edge-precheck, MarketOps, or service behavior. `MARKETOPS_INCLUDE_EDGE_PRECHECK` stays **true**; `ENABLE_EDGE_PRECHECK` stays **true**. **No services restarted.** All four units active. (First on-host invocation hit a transient SQLite `database is locked` — a concurrent MarketOps/watcher write; retried immediately and succeeded. Expected on this single-writer SQLite host; harmless for a read-only report.)
+
+**New capability:** `edge-policy-report --hours N` — simulates 13 candidate cohort filters over the watchlist / `paper_candidate_later` population, with per-policy follow-through, distributions, and a settlement-conditioned forecast-vs-market Brier block on resolved outcomes. Analysis only (not PnL, not EV, not a trade).
+
+**Live output summary (host, `--hours 24`):** population 233, **52 resolved markets** for settlement. Every policy labels **neutral** — none reaches `promising_shadow`. Blended moved-toward rate by policy (baseline **0.388**):
+- `exclude_all_current_bad_cohorts` **0.561** (n=45, 30m=0.51, 60m=0.49) and `conservative_candidate_policy` **0.583** (n=15, 30m=0.47) are the strongest lifts but **neither clears** the gate (30m/60m ≥ 0.55 at n≥20).
+- Mild improvers over baseline: `spread_2_5c_only` 0.484, `small_gap_only_005_010` 0.474, `liquidity_lt_100k_only` 0.471, the single-exclusions ~0.42–0.44.
+
+**Any shadow policy promising?** **No.** Zero policies clear n≥20 with moved-toward ≥0.55 at 30m or 60m while improving over baseline. `exclude_all_current_bad_cohorts` is the closest (30m 0.51) but still short.
+
+**Settlement — any narrow cohort worth tracking?** **Yes, one:** `small_gap_only_005_010` — short-horizon follow-through is weak (blended 0.474) yet on **n=12 resolved** the forecast Brier **beats** the market midpoint by **0.017** (forecast 0.252 vs market 0.269). This is the only resolved-outcome disagreement flagged; worth continued tracking. Context: the **baseline** forecast is *worse* than market at settlement (Brier 0.202 vs 0.120; beats-market only 0.115 over 52 resolved), so any edge is narrow and cohort-specific — calibration only, **not** EV/PnL/trade.
+
+**MVP-005B-design gate:** **BLOCKED** — no shadow policy clears the gate; the filters re-slice the same weak population. The report unlocks nothing; advancing would still require explicit human acceptance.
+
+**Health post-deploy:** readiness `ready_for_cycle_scoped_edge_automation` (unchanged); safety audit **51 files, safety_ok true** (new module scanned, 0 violations); MarketOps p90 **38.6 s** (< 60 s); run #481 ok. DB **1163.8 MiB** (< 1536 warn); `market_price_ticks` ~317k rows, oldest 2026-07-03 (3d retention not yet matured, `3-7d`=0). No new `db_growth`/`signal_flood` alerts. Champion/challenger baseball paired n=91 (early_signal).
+
+**Rollback:** none needed operationally (read-only, no flag/service change). To remove the command: `git revert debdfda` (or `git reset --hard 447e7ae` on host) — no state to unwind.
+
+**Next recommendation:** **keep collecting.** The interesting threads — `exclude_all_current_bad_cohorts` lifting follow-through toward ~0.56, and the small-gap cohort narrowly beating market at settlement — are suggestive but sub-gate and thin. Re-run `edge-policy-report` as samples grow to see whether either firms up past the 30m/60m ≥ 0.55 gate at n≥20. Do not start MVP-005B-design. OPS-012 tick aggregation remains the standing roadmap item once the 3d retention plateau is observed.
+
+No EV, no paper trading, no recommendations, no sizing, no orders, no wallets/private keys, no swaps, no signing, no execution, no autonomy — EDGE-POLICY-001 is shadow measurement/reporting only.
