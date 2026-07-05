@@ -664,3 +664,27 @@ Deployed **`c2c562a` → `00e169b`** (no migration, no `.env` changes — target
 **Boundaries unchanged:** `MARKETOPS_INCLUDE_EDGE_PRECHECK=false` (all measurement remains manual/cycle-scoped); no EV, no advice, no trading surface anywhere — this milestone is scanner/watcher coverage only.
 
 **Next:** accumulate watchlist samples during live windows (MLB nightly; POR–ESP Jul 6 ~19:00 UTC, ARG–EGY Jul 7 — KXWCGAME markets for both are already in the universe). At watchlist n≥10 with sane behavior, revisit `MARKETOPS_INCLUDE_EDGE_PRECHECK` per the runbook. Soccer-side confidence ≥0.60 still needs a live soccer window to prove (props are gone from promotion, but a live KXWCGAME signal hasn't occurred yet this deploy).
+
+---
+
+## Watchlist accumulation validation — decision-rule thresholds met (2026-07-05, 00:10–00:45 UTC, live MLB night slate)
+
+Three manual cycle-scoped sessions (no code, no flag changes; `MARKETOPS_INCLUDE_EDGE_PRECHECK=false` throughout):
+
+| Session | Cycles | Seen → promoted | Measured | watchlist | no_gap (valid) | invalid |
+|---|---|---|---|---|---|---|
+| 1 (00:10) | #239 manual (0 promoted, cooldown) + timer #238 measured in-freshness | 9→5 (#238) | 5 | 3 | 1 | 1 stale_snapshot |
+| 2 (00:25) | #242 manual | 29→3 | 3 | 0 | 2 | 1 wide_spread |
+| 3 (00:38) | timer #245 + #246 manual | 32→1, 46→5 | 6 | 5 | 1 | 0 |
+
+All promotions game-level baseball (winner/total/spread across TB–HOU, BAL–CIN, CWS–CLE, PHI–KC, NYM–ATL); promoted age mean fell to **81 s** in #246. Every promoted forecast measured within seconds-to-~70s (`forecast_to_edge_precheck_s_p50` = **36.3 s**).
+
+**Cumulative (6h window): watchlist = 10, no_gap = 11, valid_measurement_rate = 0.55, invalid_explainable_rate = 1.0, persistence all 1 (correct — 1h ticker refresh-cooldown means no forecast re-measured yet; invalid rows never accrue), paper_candidate_later = 0 (requires persistence ≥ 3).** Confidence-0.6 bucket: 36 forecasts (was 4 pre-SCANNER-002).
+
+**Gap follow-through (market movement, not PnL; n=10):** 5m toward-rate 0.3, 15m 0.4, **30m 0.7, 60m 0.7** with mean gap closure ≈ 100% at 30–60m. Small sample; not clearly negative — clears the decision rule.
+
+**Frontier readiness moved again: `observe_more` → `ready_for_cycle_scoped_edge_automation`** ("valid + watchlist rows exist, invalid rows fully explainable, MarketOps p90 37.6s < 60s, safety clean").
+
+**Decision-rule status (all five met):** watchlist ≥ 10 ✓ · follow-through not clearly negative ✓ · persistence correct ✓ · safety audit clean (48 files) ✓ · p90 37.6 s < 60 s ✓. **Recommendation: `MARKETOPS_INCLUDE_EDGE_PRECHECK=true` is now justified as its own deliberate one-flag rollout step** (cycle-scoped stage only, ≤5 forecasts/cycle). Caveats for the operator: follow-through n=10 is early; soccer confidence ≥0.60 remains unproven (all 10 watchlist rows are baseball — POR–ESP Jul 6 ~19:00 UTC is the soccer proof window, KXWCGAME markets already in the universe).
+
+No EV, no paper trading, no recommendations-to-trade, no sizing, no orders, no wallets, no swaps, no execution — outputs remain gaps and labels.
