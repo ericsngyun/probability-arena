@@ -688,3 +688,27 @@ All promotions game-level baseball (winner/total/spread across TB–HOU, BAL–C
 **Decision-rule status (all five met):** watchlist ≥ 10 ✓ · follow-through not clearly negative ✓ · persistence correct ✓ · safety audit clean (48 files) ✓ · p90 37.6 s < 60 s ✓. **Recommendation: `MARKETOPS_INCLUDE_EDGE_PRECHECK=true` is now justified as its own deliberate one-flag rollout step** (cycle-scoped stage only, ≤5 forecasts/cycle). Caveats for the operator: follow-through n=10 is early; soccer confidence ≥0.60 remains unproven (all 10 watchlist rows are baseball — POR–ESP Jul 6 ~19:00 UTC is the soccer proof window, KXWCGAME markets already in the universe).
 
 No EV, no paper trading, no recommendations-to-trade, no sizing, no orders, no wallets, no swaps, no execution — outputs remain gaps and labels.
+
+---
+
+## MVP-005A.2 / EDGE-AUTO-001 — MARKETOPS_INCLUDE_EDGE_PRECHECK flipped true (2026-07-05, 01:40–01:50 UTC)
+
+**Readiness evidence (before flip):** frontier label `ready_for_cycle_scoped_edge_automation`; watchlist=10, valid-measurement rate 0.55, invalid rows 100% explainable, follow-through n=10 (30m/60m toward-rate 0.7), MarketOps p90 38.9s < 60s, safety audit clean, all four units active, repo clean on `f05f5cf`.
+
+**Flag change (the only change):** `MARKETOPS_INCLUDE_EDGE_PRECHECK` **false → true** (`sed` on `.env`; oneshot timer picks it up per-run, no restarts). Unchanged and verified: `ENABLE_EDGE_PRECHECK=true`, `ENABLE_SOCCER_EVIDENCE_FORECASTING=true`, `ENABLE_SOCCER_EXTERNAL_RESEARCH=true`, `ENABLE_CRYPTO_RISK_ENGINE=true`, `ENABLE_GOPLUS_RISK=true`. Nothing else touched.
+
+**Validation cycles (live MLB night slate):**
+- **#257 (manual, 01:40):** 51 seen → 5 promoted/processed (all game-level) → stage summary `edge_prechecks_created=5, watchlist=4, candidate_labels=0, invalid=0, no_gap=1`; 38.0s. Exactly the cycle's own refreshed forecasts — no sweep.
+- **#258 (scheduled timer, 01:44):** 44 seen → 3 promoted (all `total`) → `created=3, watchlist=1, candidate_labels=0, invalid=1, no_gap=1`; 38.4s. First fully-autonomous measurement cycle.
+
+**Post-rollout state (6h window):** watchlist **15**, no_gap 13, paper_candidate_later **0** (still requires persistence ≥3 — correct), valid-measurement rate **0.72**, invalid_explainable_rate 1.0. **First persistence increment observed and correct:** `KXMLBSPREAD-26JUL042008NYMATL-ATL3` re-measured watchlist with the same gap direction → persist=2 (distribution `{1: 38, 2: 1}`). Invalidation reasons in-window: low_confidence 7, wide_spread 5, stale_snapshot 4, low_liquidity 1 — all expected classes.
+
+**Gap follow-through (market movement, not PnL; n=14):** 5m 0.50 → 15m 0.57 → **30m 0.786 / 60m 0.786** toward-rate, mean gap closure 78–88% at 30–60m. Directionally positive; still an early sample.
+
+**Service health:** all four units active; 0 errors in the last 250 marketops journal lines; durations p50 34.2s / p90 38.9s / p99 40.4s (no measurable stage cost). DB 530.1 → 532.7 MiB across the rollout window (tick growth from the 150-ticker universe; `db_growth_warning` alerts are the 512 MiB advisory — retention prunes ticks at 7 days; consider raising `DB_GROWTH_WARNING_MB` or accepting the larger steady-state in a later OPS pass). Safety audit: 48 files, `safety_ok: true`; canonical + expanded greps on host: boundary docstrings only.
+
+**Caveats:** (1) all 15 watchlist rows are baseball — soccer ≥0.60 confidence remains unproven until a live soccer window (POR–ESP Jul 6 ~19:00 UTC; KXWCGAME markets already in the universe); (2) follow-through n=14 is early — keep reading it as market-movement telemetry, never as PnL; (3) `paper_candidate_later` remains a zero-behavior filing label; MVP-005B stays gated on explicit acceptance.
+
+**Rollback (one line):** `sed -i 's/^MARKETOPS_INCLUDE_EDGE_PRECHECK=true/MARKETOPS_INCLUDE_EDGE_PRECHECK=false/' ~/projects/probability-arena/.env` then `marketops-run-once` + `marketops-report`/`edge-precheck-report` to confirm the stage is gone.
+
+No EV, no paper trading, no trade recommendations, no sizing, no orders, no wallets/keys, no swaps, no signing, no execution, no autonomy — the autopilot gained one measurement stage, strictly cycle-scoped (≤5 same-cycle forecasts), and nothing else.
