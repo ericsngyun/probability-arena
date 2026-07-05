@@ -638,3 +638,29 @@ Watchlist=0, candidate_labels=0 in every pass. Earlier same-evening manual cycle
 - Verdict on watchlist evidence: **observe-more after OPS-010 lands.** Enable is not on the table until valid rows exist.
 
 Outputs remain gaps and labels — measurement only, never advice. No EV, no sides, no sizes, no actions.
+
+---
+
+## SCANNER-002/OPS-010 deployed — first valid watchlist row (2026-07-04 23:56 – 2026-07-05 00:05 UTC)
+
+Deployed **`c2c562a` → `00e169b`** (no migration, no `.env` changes — targeted scans ship enabled by default; `ENABLE_TARGETED_MARKET_SCANS=false` is the one-line rollback). Watcher restarted; baseline/retention/marketops timers untouched.
+
+**Smoke scan (manual, 23:56 UTC):** `generic=500 targeted_fetched=560 added_after_dedupe=546`, all six series returned (`KXMLBTOTAL=250, KXMLBSPREAD=140, KXMLBGAME=92, KXWCTOTAL=36, KXWCSPREAD=24, KXWCGAME=18`), zero failed series, 2.6 s duration. Eligible candidates jumped **19 → 357**, now dominated by game-level series; the ranking top became live MLB `KXMLBGAME` winner markets at 0.947. KXWCGAME rows now exist for every upcoming World Cup match with 0.92–0.947 scores (tight books, `volume_24h` correctly parsed from `_fp` fields).
+
+**Watcher:** universe is now **150 tickers** (100 top-score + 50 supported-universe supplement), composition logged each pass: `soccer:winner=11 soccer:total=15 soccer:spread=13 baseball:winner=34 baseball:total=44 baseball:spread=28 soccer:other=5`. 450 ticks in the first 3 minutes across all six game-level series. Signals immediately shifted from props to game-level: first 3 minutes produced `KXMLBGAME=4, KXMLBTOTAL=3, KXMLBSPREAD=3` and zero prop signals.
+
+**The chain, end to end (timer cycle #235, 00:02 UTC, live MLB night games):** 11 seen → 5 promoted, **all game-level** (2 winner, 1 total, 2 spread) → 5 `baseball_evidence` refreshes → cycle-scoped `edge-precheck --latest-marketops-run` 66 s later measured all 5:
+
+| Ticker | Status | Gap | Confidence | Spread |
+|---|---|---|---|---|
+| KXMLBTOTAL-26JUL041910TBHOU-12 | **watchlist** | +0.054 | 0.60 | 1¢ |
+| KXMLBSPREAD-…TBHOU-TB3 | no_gap (valid) | −0.003 | 0.60 | 1¢ |
+| KXMLBGAME-…BALCIN-BAL | no_gap (valid) | −0.019 | 0.60 | 1¢ |
+| KXMLBGAME-…BALCIN-CIN | no_gap (valid) | −0.020 | 0.60 | 2¢ |
+| KXMLBSPREAD-…TBHOU-TB4 | invalid_stale_market_snapshot | — | — | — |
+
+**That watchlist row is the first valid one in project history** — every gate passed on a live market: source-backed, confidence 0.60, 1¢ spread, 132,253¢ liquidity proxy, fresh forecast + snapshot, |gap| ≥ 0.05. The three `no_gap` rows are equally important: fully valid measurements whose gaps were honestly below the 0.05 floor. Frontier readiness moved for the first time: `not_ready` → **`observe_more`** ("watchlist sample too thin (1 < 10)"). Safety audit on deployed code: 48 files, `safety_ok: true`.
+
+**Boundaries unchanged:** `MARKETOPS_INCLUDE_EDGE_PRECHECK=false` (all measurement remains manual/cycle-scoped); no EV, no advice, no trading surface anywhere — this milestone is scanner/watcher coverage only.
+
+**Next:** accumulate watchlist samples during live windows (MLB nightly; POR–ESP Jul 6 ~19:00 UTC, ARG–EGY Jul 7 — KXWCGAME markets for both are already in the universe). At watchlist n≥10 with sane behavior, revisit `MARKETOPS_INCLUDE_EDGE_PRECHECK` per the runbook. Soccer-side confidence ≥0.60 still needs a live soccer window to prove (props are gone from promotion, but a live KXWCGAME signal hasn't occurred yet this deploy).
