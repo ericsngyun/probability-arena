@@ -1410,6 +1410,72 @@ async def frontier_eval_report(
             session.close()
 
 
+async def edge_cohort_report(hours: int = 24, session=None) -> int:
+    """Print the edge-precheck cohort analysis (analysis only — no EV, no
+    trades, no positions; cohort labels authorize nothing). Returns 0."""
+    from app.services.edge_cohort import EdgeCohortReportService
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        report = EdgeCohortReportService().build(session, hours=hours)
+
+        def section(title: str) -> None:
+            print(f"\n== {title} ==")
+
+        print(
+            f"edge cohort analysis (window {report.window_hours}h) — analysis only, "
+            "never advice"
+        )
+        print(report.note)
+        print(
+            f"snapshots={report.total_snapshots} "
+            f"follow_through_rows={report.follow_through_rows}"
+        )
+
+        section("overall follow-through (market movement, not PnL)")
+        for horizon, stats in report.overall_follow_through.items():
+            print(f"  {horizon}: {stats}")
+
+        for dim, cohorts in report.dimensions.items():
+            section(f"cohort: {dim}")
+            for c in cohorts:
+                ft = c["follow_through"]
+                rates = " ".join(
+                    f"{h}={ft[h]['moved_toward_rate']}" for h in ("5m", "15m", "30m", "60m")
+                )
+                print(
+                    f"  {c['key']:<22} n={c['sample']:<4} wl={c['watchlist']:<3} "
+                    f"cand={c['paper_candidate_later']:<2} inv={c['invalid']:<3} "
+                    f"|gap|={c['mean_abs_gap']} conf={c['confidence_avg']} "
+                    f"ft_n={c['follow_through_samples']:<3} toward[{rates}] "
+                    f"-> {c['recommendation']}"
+                )
+
+        section("conservative recommendation (no trading, no paper trading)")
+        print("  promising (observe more — signal only, authorizes nothing):")
+        for item in report.promising or ["(none)"]:
+            print(f"    + {item}")
+        print("  observe more (promising or neutral — needs more data):")
+        for item in report.observe_more or ["(none)"]:
+            print(f"    ~ {item}")
+        print("  deprioritize in future gating (weak / exclude_candidate):")
+        for item in report.deprioritize or ["(none)"]:
+            print(f"    - {item}")
+
+        section("MVP-005B-design gate")
+        print(f"  blocked: {report.mvp_005b_blocked}")
+        print(f"  {report.mvp_005b_reason}")
+        return 0
+    finally:
+        if owns_session:
+            session.close()
+
+
 async def backup_db() -> int:
     """Create a compressed, timestamped SQLite backup (consistent snapshot
     via the online backup API) and prune old ones. Returns 0 on success."""
@@ -2161,6 +2227,11 @@ def build_parser() -> argparse.ArgumentParser:
     eval_parser.add_argument("--include-crypto", action="store_true")
     eval_parser.add_argument("--include-safety", action="store_true")
     eval_parser.add_argument("--save-run", action="store_true")
+    cohort_parser = subparsers.add_parser(
+        "edge-cohort-report",
+        help="Edge-precheck cohort follow-through analysis (analysis only, never advice)",
+    )
+    cohort_parser.add_argument("--hours", type=int, default=24)
     subparsers.add_parser(
         "backup-db", help="Compressed timestamped SQLite backup (+retention pruning)"
     )
@@ -2322,6 +2393,8 @@ def main(argv: list[str] | None = None) -> int:
                 save_run=args.save_run,
             )
         )
+    if args.command == "edge-cohort-report":
+        return asyncio.run(edge_cohort_report(hours=args.hours))
     if args.command == "backup-db":
         return asyncio.run(backup_db())
     if args.command == "list-db-backups":

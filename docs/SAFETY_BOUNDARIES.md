@@ -9,7 +9,7 @@ require crossing one must stop and report back instead of building.
 |---|---|---|
 | **EV calculation** | ❌ none exists | The MVP-005A gate crossed (paired n=36, both deltas negative — 2026-07-04); the accepted design was implemented as the **edge precheck**: probability-gap measurement (forecast − midpoint) with validity checks, behind `ENABLE_EDGE_PRECHECK=false`. It has no dollar-EV, side, size, or action fields by construction, and `paper_candidate_later` is a review label with zero behavior. **Dollar EV remains forbidden with no unlocking milestone defined** |
 | **Trade recommendations** | ❌ none exists | Post-MVP-005B review; never from a forecaster directly — forecasts are reasoning artifacts |
-| **Paper trading / simulation** | ❌ none exists | MVP-005B, gated on MVP-005A acceptance |
+| **Paper trading / simulation** | ❌ none exists | MVP-005B, gated on MVP-005A acceptance. EDGE-ANALYSIS-001 (`edge-cohort-report`) only *measures* per-cohort gap follow-through and *reports* whether the MVP-005B gate is met — it is analysis, unlocks nothing, and advancing still requires explicit human acceptance |
 | **Portfolio sizing** | ❌ none exists | Post-paper-trading milestone with explicit human acceptance |
 | **Order placement** | ❌ none exists | A dedicated, explicitly-accepted live-trading milestone (not currently on the roadmap) |
 | **Wallet / private-key handling** | ❌ none exists (ADR-002) | A dedicated custody design + security review milestone; keys would never live in this repo/DB regardless |

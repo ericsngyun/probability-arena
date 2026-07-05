@@ -148,6 +148,15 @@ be minutes, visible in `marketops-report` ("promotion (OPS-009)" line) and
 window. Run after live sessions and before considering any flag escalation;
 the scorecard is deliberately conservative (no watchlist rows → not_ready).
 
+## Edge cohort analysis (EDGE-ANALYSIS-001)
+
+`.venv/bin/python -m app.cli edge-cohort-report --hours 24` — read-only cohort
+follow-through slicing of the watchlist/candidate population (which market
+types/conditions show the midpoint moving toward the forecast). Analysis only:
+no flag, no threshold, no logic change; use it to decide which cohorts warrant
+more observation and whether the MVP-005B-design gate is met (it reports
+`blocked: True/False` and never unlocks anything itself). Safe to run anytime.
+
 ## DB growth & alert calibration (OPS-011)
 
 `db-growth-report` is the read-only storage view: file size, per-table row

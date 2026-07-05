@@ -388,6 +388,16 @@ Targeted modes skip forecasts measured within `EDGE_PRECHECK_DEDUPE_SECONDS=120`
 
 `GET /edge-precheck/snapshots`, `GET /edge-precheck/report`, `POST /edge-precheck/run` (flag-gated, or `force_readonly=true`). MarketOps can run a measurement pass per cycle only when **both** `MARKETOPS_INCLUDE_EDGE_PRECHECK=true` and `ENABLE_EDGE_PRECHECK=true` (both default false). No orders, paper trades, position sizes, wallets, swaps, or execution exist anywhere; MVP-005B (paper simulator) remains a separate, explicitly-gated future milestone.
 
+### Edge cohort analysis (EDGE-ANALYSIS-001)
+
+**Analysis only — no advice, no PnL.** Slices the accumulated `edge_precheck_snapshots` watchlist/`paper_candidate_later` population into cohorts and measures **gap follow-through per cohort** (did the midpoint later move toward the forecast at 5/15/30/60-minute horizons — market-movement measurement, *not* fills/positions/PnL), so a human can see which market types and conditions actually show follow-through and which should be deprioritized in future gating.
+
+```bash
+python -m app.cli edge-cohort-report --hours 24
+```
+
+Cohort dimensions: market type · domain · gap sign · absolute-gap bucket · confidence bucket · signal type · liquidity bucket · spread bucket · game phase · persistence count. Per cohort it reports sample/watchlist/candidate/invalid counts, mean |gap|, average confidence, per-horizon moved-toward rate + gap-closure, and a conservative **label**: `too_thin` (below the sample floor), `promising`, `neutral`, `weak`, or `exclude_candidate`. `promising` requires a minimum follow-through sample count — a high rate on a handful of rows stays `too_thin`. The report's recommendation section lists cohorts to observe more vs. deprioritize and states explicitly whether **MVP-005B-design remains blocked** (it stays blocked unless a cohort clears both a strict sample floor and toward-rate bar *and* overall follow-through does too — and even then advancing requires explicit human acceptance; this report unlocks nothing). It changes no flag, threshold, promotion, forecast, or edge logic.
+
 ## Frontier evaluation (EVAL-001)
 
 **Evaluation only — it measures the desk, it never acts.** One report covers the full read-only pipeline over a time window: signal quality (seen/promoted/processed rates, by type and domain), forecast quality (champion/challenger paired metrics, forecaster/market-type/confidence breakdowns), edge-precheck quality (statuses, reasons, persistence and gap-direction distributions, valid-measurement rate), **gap follow-through** (did later midpoints move toward the forecast — market-movement analysis at 5/15/30/60-minute horizons, explicitly *not PnL*, no fills, no positions), microstructure validity (two-sided rate, spread/liquidity percentiles), crypto risk quality (levels, provider health, post-risk-signal liquidity movement), latency (MarketOps p50/p90/p99, signal→forecast→measurement lags), and a **safety audit** (AST-level identifier scan: banned trading vocabulary must not exist as code identifiers; boundary docstrings pass).
