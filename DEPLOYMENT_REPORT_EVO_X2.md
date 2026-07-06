@@ -828,3 +828,45 @@ Deployed **`efd7e2d` → `8239510`** by `git pull --ff-only`; **migration 0018 �
 **Next recommendation:** **keep collecting.** The domain scout gives a concrete, data-backed signal: **`sports_tennis` is the strongest next-canary candidate** (real two-sided supply + clear resolution + public data source + no forecaster). A future **docs-only tennis-canary design** could be justified — but that is a separate, explicitly-accepted milestone; nothing here builds a forecaster or changes live behavior. `meme-scan-once` is manual-only for now (no timer enabled per instructions). OPS-012 tick aggregation remains the standing item once the 3-day retention plateau is observed.
 
 No EV, no paper trading, no recommendations, no sizing, no orders, no wallets/private keys, no swaps, no signing, no execution, no autonomy — MEME-NEWS-001 is read-only discovery/scouting only.
+
+## MEME-NEWS-002 — scheduled read-only discovery lane deployed + ENABLED (2026-07-06, ~06:06 UTC)
+
+Deployed **`778469c` → `eb3e103`** by `git pull --ff-only`; **no migration** (reuses MEME-NEWS-001 schema `0019` — alembic revision unchanged). Then enabled as a controlled 10-minute `systemd --user` timer. Read-only scheduled discovery: **existing MarketOps/EDGE-AUTO behavior unchanged**, no API added, `MARKETOPS_INCLUDE_EDGE_PRECHECK` / `ENABLE_EDGE_PRECHECK` still true.
+
+| item | value |
+|---|---|
+| 1. pushed commit | `eb3e103` |
+| 2. deployed commit | `778469c` → `eb3e103` |
+| 3. flag before/after | absent (default **false**) → **`ENABLE_MEME_NEWS_SCOUT=true`** |
+| 4. migration | **none** — alembic `0019` unchanged (no migration/model files in diff) |
+
+**5. Manual run (flag still off):** `meme-news-run-once` → run #3 ok, 29 profiles + 30 boosts, **30 scored, 63 catalysts** (manual path works flag-independent). `meme-news-report`/`meme-news-alerts`/`db-growth-report` all worked.
+
+**6. Scheduled guard while disabled:** `meme-news-run-once --scheduled` → `ENABLE_MEME_NEWS_SCOUT=false; scheduled meme-news cycle skipped` (correct no-op).
+
+**7. Timer status:** `probability-arena-meme-news.timer` **active (waiting)**, next trigger 06:16:13 UTC, 10-min cadence, Triggers the service. Service is a oneshot (`disabled`/TriggeredBy the timer — the correct shape, mirroring marketops).
+
+**8. Forced scheduled service run:** `systemctl --user start probability-arena-meme-news.service` → **Result=success, exit 0/SUCCESS**, journal `meme-news run #5: ok profiles=29 boosts=30 scored=30 catalysts=63`, clean finish, 1.3s CPU. (After the flag flip the `--scheduled` command runs instead of skipping.)
+
+**9. meme-news-report (post-enable):** 5 runs (**0 errors**), 150 attention snapshots, 317 catalysts, attention **p50 0.357 / p90 0.465 / max 0.745**, `provider_confidence_avg=0.985` (host crypto-lane risk data present), `missing_holder_coverage=3`.
+
+**10. meme-news-alerts:** informational notable events firing correctly — observed `high_attention` (×2, ≥0.6), `attention_jump` (×2), and a `severe_risk` **warn** (avoid/flag verdict — never a trade direction). Local, derived, no push, no recommendation.
+
+**11. DB size/growth:** 1335.70 → **1336.87 MiB** (+~1 MiB). `meme_attention_snapshots` 150 rows; at the 10-min cadence (~30 snapshots + ~60 catalysts per run) growth is modest and bounded by `MEME_NEWS_RETENTION_DAYS=14` (prunes runs/snapshots/catalysts; domain inventory kept). Under the 1536 MiB warn.
+
+**12. MarketOps/EDGE-AUTO health (unchanged):** MarketOps run #543 ok; readiness `ready_for_cycle_scoped_edge_automation`; no marketops journal errors; all four prior units active + the new meme-news timer active. The lane is a separate oneshot unit and cannot affect MarketOps.
+
+**13. Safety:** canonical grep clean (only a boundary docstring in `meme_news.py`); frontier-eval AST audit **54 files, safety_ok=True, 0 violations**.
+
+**14. Rollback:**
+```bash
+sed -i 's/^ENABLE_MEME_NEWS_SCOUT=true/ENABLE_MEME_NEWS_SCOUT=false/' ~/projects/probability-arena/.env
+systemctl --user disable --now probability-arena-meme-news.timer
+systemctl --user stop probability-arena-meme-news.service
+# (optional full removal) rm ~/.config/systemd/user/probability-arena-meme-news.{service,timer} && systemctl --user daemon-reload
+```
+Even the flag flip alone neutralizes it: the `--scheduled` command no-ops while false, so the timer becomes a harmless empty tick.
+
+**15. Recommendation:** **keep the timer on, observe for the first ~24h.** Watch three things via `meme-news-report`/`meme-news-alerts`/`db-growth-report`: (a) `meme_attention_snapshots`/`meme_catalyst_events` growth vs the 14-day retention plateau (confirm it caps), (b) alert volume/noise (tune `MEME_NEWS_ATTENTION_ALERT_THRESHOLD` if `high_attention` is too chatty), (c) that MarketOps p90 and the DB warn threshold stay clear. Roll back per §14 if errors, runaway growth, or noise appear.
+
+No EV, no paper trading, no recommendations, no sizing, no orders, no wallets/private keys, no swaps, no signing, no execution, no autonomy — MEME-NEWS-002 is read-only scheduled discovery only.
