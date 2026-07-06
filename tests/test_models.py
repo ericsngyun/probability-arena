@@ -54,6 +54,12 @@ def test_schema_creates_all_tables(session):
         "edge_precheck_snapshots",
         # Frontier evaluation (EVAL-001) — evaluation audit only
         "frontier_eval_runs",
+        # MEME-NEWS-001 — read-only meme/news scout + domain expansion
+        "meme_scout_runs",
+        "meme_attention_snapshots",
+        "meme_catalyst_events",
+        "domain_scout_runs",
+        "domain_market_inventory_snapshots",
     }
 
 

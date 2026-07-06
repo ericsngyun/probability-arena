@@ -230,6 +230,17 @@ class Settings(BaseSettings):
     crypto_risk_provider_timeout_seconds: float = 10.0
     crypto_risk_engine_version: str = "v1"
 
+    # MEME-NEWS-001: read-only meme/news scout + domain-expansion scout.
+    # Reserved for future loop/timer use; manual meme-scan-once /
+    # meme-scout-report / catalyst-report / domain-scout-report are always
+    # allowed. Scouting/scoring only — no EV, trade, sizing, order, wallet,
+    # swap, signing, or execution anywhere.
+    enable_meme_scout: bool = False   # gates any future loop/timer; manual always allowed
+    enable_domain_scout: bool = False  # gates any future loop/timer; manual always allowed
+    meme_scout_limit: int = 30  # max tokens scored per scan pass
+    meme_scout_version: str = "v1"
+    domain_scout_version: str = "v1"
+
     # Candidate hygiene / eligibility gating (MVP-003A)
     require_two_sided_quote: bool = True
     exclude_zero_quote_markets: bool = True

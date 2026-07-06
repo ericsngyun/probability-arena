@@ -143,6 +143,19 @@ observed as it appears. Player props never enter via the supplement. `0` disable
 This is scanner/watcher **coverage**: it calculates no EV, recommends no trades, does no paper
 trading, sizes no positions, places no orders, and touches no wallets/keys/swaps/execution.
 
+## Meme/news + domain scout (MEME-NEWS-001 — read-only discovery/scouting; no trade/EV/orders/wallets)
+
+| Flag | Default | Effect |
+|---|---|---|
+| `ENABLE_MEME_SCOUT` | false | Reserved for a future meme-scout loop/timer; manual `meme-scan-once` / `meme-scout-report` / `catalyst-report` are always allowed |
+| `ENABLE_DOMAIN_SCOUT` | false | Reserved for a future domain-scout loop/timer; manual `domain-scout-report` is always allowed |
+
+Tuning: `MEME_SCOUT_LIMIT=30` (max tokens scored per pass), `MEME_SCOUT_VERSION=v1`,
+`DOMAIN_SCOUT_VERSION=v1`. The meme scout reuses the crypto-lane DexScreener GETs
+and `CRYPTO_CHAIN=solana`. `attention_score` is an interest/velocity signal for
+human review — never a buy/trade/EV/alpha score. No new authenticated sources
+are added; rss/x/discord/telegram catalyst sources remain unconfigured placeholders.
+
 ## Retention windows
 
 `TICK_RETENTION_DAYS=7`, `WATCHER_RUN_RETENTION_DAYS=30`,

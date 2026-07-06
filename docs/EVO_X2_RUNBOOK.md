@@ -177,6 +177,23 @@ systemctl --user disable --now probability-arena-edge-observation.timer  # stop
 # fully remove: rm ~/.config/systemd/user/probability-arena-edge-observation.{service,timer} && systemctl --user daemon-reload && rm -rf ~/edge-observation
 ```
 
+## Meme/news + domain scout (MEME-NEWS-001, read-only)
+
+```bash
+.venv/bin/python -m app.cli meme-scan-once --limit 30   # read-only DexScreener attention pass
+.venv/bin/python -m app.cli meme-scout-report           # attention aggregates + top tokens
+.venv/bin/python -m app.cli catalyst-report             # catalyst-event stream
+.venv/bin/python -m app.cli domain-scout-report         # market-domain inventory + canary priority
+```
+
+All read-only discovery/scouting: `attention_score` is an interest signal, never
+a buy/trade/EV score; the domain scout adds no forecaster and changes no
+promotion/edge/forecast logic. `ENABLE_MEME_SCOUT`/`ENABLE_DOMAIN_SCOUT` (default
+false) are reserved for future loop/timer use — the manual commands are always
+allowed. `meme-scan-once` hits the public DexScreener GETs already in scope; no
+new authenticated sources. No EV/paper/sizing/orders/wallets/keys/swaps/signing/
+execution anywhere.
+
 ## DB growth & alert calibration (OPS-011)
 
 `db-growth-report` is the read-only storage view: file size, per-table row

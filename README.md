@@ -364,6 +364,25 @@ python -m app.cli marketops-loop --interval 300 # refuses to start unless ENABLE
 
 **Overlap guard (OPS-007):** concurrent cycles are impossible — a second invocation (manual run during a timer firing, or vice versa) records a graceful `skipped` (`already_running`) run; a `running` row older than `MARKETOPS_LOCK_STALE_AFTER_MINUTES=30` is treated as crashed and never wedges the system. SQLite connections carry a `SQLITE_BUSY_TIMEOUT_MS=30000` write-lock wait (Postgres unaffected).
 
+## Meme/news scout + domain expansion (MEME-NEWS-001)
+
+**Read-only discovery and scouting — it does not trade, paper trade, compute EV, recommend trades, size positions, place orders, or use wallets/keys/swaps/signing/execution.**
+
+*Part A — meme attention scout* (`meme-scan-once`, `meme-scout-report`): over the newest DexScreener token profiles + boosted tokens (public read-only GETs already in scope) it records a per-token **`attention_score`** (0–1) into `meme_attention_snapshots`. The score combines freshness, liquidity growth, volume growth, boost velocity, profile/metadata completeness, and social/catalyst presence, then applies the existing read-only risk overlay as a penalty and dampens by provider confidence (missing provider data — the holder/sniper/insider/`provider_unknown` gap — lowers confidence). **`attention_score` is an interest/velocity signal for human review — explicitly not a buy score, trade score, EV, alpha score, or recommendation, and it triggers no behavior.**
+
+*Part B — generic catalyst abstraction* (`catalyst-report`): a source-agnostic `meme_catalyst_events` table (source · subject · catalyst_type · magnitude). Today only public read-only dexscreener sources populate it (`profile_seen`, `boost`, `boost_increase`, `social_present`); rss/x/discord/telegram are schema placeholders added later **only if explicitly configured** — no authenticated scraping.
+
+*Part C — domain-expansion scout* (`domain-scout-report`): a read-only inventory over the probability markets we have already scanned, grouped by domain/series prefix (`domain_market_inventory_snapshots`). Per domain: market/active counts, two-sided rate, volume/liquidity proxy, resolution-clarity proxy, whether an evidence forecaster already exists, public data-source notes, and a **`canary_priority`** ranking candidate expansion domains (weather, tennis, basketball, golf, esports, …). It **adds no forecaster and changes no promotion/forecast/edge logic** — planning intelligence only.
+
+```bash
+python -m app.cli meme-scan-once --limit 30   # read-only DexScreener pass → attention snapshots + catalysts
+python -m app.cli meme-scout-report           # attention aggregates, top tokens (interest only)
+python -m app.cli catalyst-report             # catalyst-event stream by type/source
+python -m app.cli domain-scout-report         # market-domain inventory + canary priority
+```
+
+Flags `ENABLE_MEME_SCOUT` / `ENABLE_DOMAIN_SCOUT` (default false) are reserved for any future loop/timer; the manual commands above are always allowed (mirroring the crypto lane). No EV, paper trading, recommendation, sizing, order, wallet/key, swap, signing, or execution exists anywhere in this milestone.
+
 ## Edge precheck (MVP-005A) — probability-gap measurement
 
 **Measurement, never advice.** The gate ADR-004 defined has crossed (paired champion/challenger n=36, both deltas negative), so the accepted design (`docs/MVP_005A_EDGE_PRECHECK_DESIGN.md`) is now implemented: for recent forecasts, record `probability_gap = forecast_probability − market_midpoint` (signed, probability units — **not dollar EV**) with validity checks, into append-only `edge_precheck_snapshots` rows. By construction the table has no side, size, EV, or action fields.

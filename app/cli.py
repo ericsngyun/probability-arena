@@ -1558,6 +1558,131 @@ async def edge_policy_report(hours: int = 24, session=None) -> int:
             session.close()
 
 
+async def meme_scan_once(limit: int | None = None, service=None, session=None) -> int:
+    """One read-only meme/news attention scan pass (MEME-NEWS-001). Scores the
+    newest/boosted tokens and records catalysts — no EV, no trade, no advice.
+    Returns tokens scored, or -1 on error."""
+    from app.services.meme_scout import MemeScoutService
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        service = service or MemeScoutService()
+        run = await service.scan_once(session, limit=limit)
+        print(
+            f"meme scan run #{run.id}: {run.status} profiles={run.profiles_seen} "
+            f"boosts={run.boosts_seen} scored={run.tokens_scored} "
+            f"catalysts={run.catalysts_created} (attention/interest only — not advice)"
+        )
+        return run.tokens_scored
+    except Exception as exc:  # pragma: no cover - defensive
+        print(f"meme scan failed: {type(exc).__name__}: {exc}")
+        return -1
+    finally:
+        if owns_session:
+            session.close()
+
+
+async def meme_scout_report(session=None) -> int:
+    """Aggregate meme attention report (read-only). Returns total snapshots."""
+    from app.services.meme_scout import MemeScoutReportService
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        report = MemeScoutReportService().build(session)
+        print(f"meme scout (attention/interest only — not advice): snapshots={report.total_snapshots}")
+        print(report.note)
+        print(f"runs={report.total_runs}  latest_run={report.latest_run}")
+        print(
+            f"attention p50={report.attention_p50} p90={report.attention_p90}  "
+            f"provider_confidence_avg={report.provider_confidence_avg}"
+        )
+        print(f"by risk level: {report.by_risk_level}")
+        print("top attention (interest signal, no action):")
+        for row in report.top_attention:
+            print(
+                f"  {str(row['symbol'])[:12]:<12} {row['token']:<16} "
+                f"attention={row['attention_score']} age_s={row['age_seconds']} "
+                f"boost={row['boost_amount']} liq={row['liquidity_usd']} "
+                f"risk={row['risk_level']} conf={row['provider_confidence']}"
+            )
+        return report.total_snapshots
+    finally:
+        if owns_session:
+            session.close()
+
+
+async def catalyst_report(session=None) -> int:
+    """Aggregate catalyst-event report (read-only). Returns total events."""
+    from app.services.meme_scout import CatalystReportService
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        report = CatalystReportService().build(session)
+        print(f"catalyst events (informational, never a trade trigger): total={report.total}")
+        print(report.note)
+        print(f"by type: {report.by_type}")
+        print(f"by source: {report.by_source}  by subject: {report.by_subject_type}")
+        print("recent:")
+        for r in report.recent:
+            print(f"  {r['type']:<16} src={r['source']} subj={r['subject']} mag={r['magnitude']}")
+        return report.total
+    finally:
+        if owns_session:
+            session.close()
+
+
+async def domain_scout_report(session=None) -> int:
+    """Read-only market-domain inventory + candidate canary priority
+    (MEME-NEWS-001, Part C). Adds no forecaster, changes no live logic.
+    Returns domains seen."""
+    from app.services.domain_scout import DomainScoutService
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        report = DomainScoutService().build(session, persist=True)
+        print(
+            f"domain scout (inventory + canary priority — never advice): "
+            f"markets={report.markets_scanned} domains={len(report.domains)} run={report.run_id}"
+        )
+        print(report.note)
+        print(
+            f"{'domain':<16} {'mkts':>5} {'act':>5} {'2side':>6} {'liq_$c':>12} "
+            f"{'clarity':>7} {'fcaster':>7} {'priority':>8}  data_source"
+        )
+        for d in report.domains:
+            print(
+                f"{d['domain']:<16} {d['market_count']:>5} {d['active_count']:>5} "
+                f"{str(d['two_sided_rate']):>6} {d['liquidity_proxy_cents']:>12} "
+                f"{str(d['resolution_clarity_proxy']):>7} "
+                f"{('yes' if d['has_evidence_forecaster'] else 'NO'):>7} "
+                f"{str(d['canary_priority']):>8}  {d['data_source_notes']}"
+            )
+        return len(report.domains)
+    finally:
+        if owns_session:
+            session.close()
+
+
 async def backup_db() -> int:
     """Create a compressed, timestamped SQLite backup (consistent snapshot
     via the online backup API) and prune old ones. Returns 0 on success."""
@@ -2319,6 +2444,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="Edge shadow-policy analysis (read-only cohort-filter simulation; never advice)",
     )
     policy_parser.add_argument("--hours", type=int, default=24)
+    meme_scan_parser = subparsers.add_parser(
+        "meme-scan-once",
+        help="One read-only meme/news attention scan (MEME-NEWS-001; never advice)",
+    )
+    meme_scan_parser.add_argument("--limit", type=int, default=None)
+    subparsers.add_parser(
+        "meme-scout-report", help="Aggregate meme attention report (read-only)"
+    )
+    subparsers.add_parser(
+        "catalyst-report", help="Aggregate catalyst-event report (read-only)"
+    )
+    subparsers.add_parser(
+        "domain-scout-report",
+        help="Read-only market-domain inventory + candidate canary priority",
+    )
     subparsers.add_parser(
         "backup-db", help="Compressed timestamped SQLite backup (+retention pruning)"
     )
@@ -2484,6 +2624,18 @@ def main(argv: list[str] | None = None) -> int:
         return asyncio.run(edge_cohort_report(hours=args.hours))
     if args.command == "edge-policy-report":
         return asyncio.run(edge_policy_report(hours=args.hours))
+    if args.command == "meme-scan-once":
+        scored = asyncio.run(meme_scan_once(limit=args.limit))
+        return 0 if scored >= 0 else 1
+    if args.command == "meme-scout-report":
+        total = asyncio.run(meme_scout_report())
+        return 0 if total >= 0 else 1
+    if args.command == "catalyst-report":
+        total = asyncio.run(catalyst_report())
+        return 0 if total >= 0 else 1
+    if args.command == "domain-scout-report":
+        n = asyncio.run(domain_scout_report())
+        return 0 if n >= 0 else 1
     if args.command == "backup-db":
         return asyncio.run(backup_db())
     if args.command == "list-db-backups":

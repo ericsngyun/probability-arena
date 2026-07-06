@@ -724,3 +724,141 @@ class FrontierEvalRun(Base):
     summary: Mapped[dict | None] = mapped_column(RawJSON)
     warnings: Mapped[list | None] = mapped_column(RawJSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+# --- MEME-NEWS-001: read-only meme/news scout + domain expansion -------------
+# Discovery, attention scoring, catalyst abstraction, and market-domain
+# inventory. All read-only intelligence: no EV, no trade advice, no sizing, no
+# orders, no wallets/keys/swaps/signing/execution. An attention_score is an
+# interest/velocity signal for human review — never a buy/trade/EV signal.
+
+
+class MemeScoutRun(Base):
+    """One meme-scout pass (audit spine for the attention/catalyst lane)."""
+
+    __tablename__ = "meme_scout_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    status: Mapped[str] = mapped_column(String(16), default="running")  # running|ok|error
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+    profiles_seen: Mapped[int] = mapped_column(Integer, default=0)
+    boosts_seen: Mapped[int] = mapped_column(Integer, default=0)
+    tokens_scored: Mapped[int] = mapped_column(Integer, default=0)
+    catalysts_created: Mapped[int] = mapped_column(Integer, default=0)
+    error_type: Mapped[str | None] = mapped_column(String(128))
+    error_message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class MemeAttentionSnapshot(Base):
+    """A read-only attention/velocity snapshot for one token. attention_score
+    is an interest signal for human review — NOT a buy/trade/EV/alpha score,
+    carries no action and no position."""
+
+    __tablename__ = "meme_attention_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int | None] = mapped_column(ForeignKey("meme_scout_runs.id"), index=True)
+    chain: Mapped[str] = mapped_column(String(32), index=True)
+    token_address: Mapped[str] = mapped_column(String(128), index=True)
+    pair_address: Mapped[str | None] = mapped_column(String(128))
+    symbol: Mapped[str | None] = mapped_column(String(64))
+    name: Mapped[str | None] = mapped_column(String(256))
+    first_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    token_age_seconds: Mapped[int | None] = mapped_column(Integer)
+    # trajectories (current + growth vs previous tick)
+    price_usd: Mapped[float | None] = mapped_column(Float)
+    liquidity_usd: Mapped[float | None] = mapped_column(Float)
+    volume_5m_usd: Mapped[float | None] = mapped_column(Float)
+    volume_1h_usd: Mapped[float | None] = mapped_column(Float)
+    volume_24h_usd: Mapped[float | None] = mapped_column(Float)
+    price_change_5m: Mapped[float | None] = mapped_column(Float)
+    price_change_1h: Mapped[float | None] = mapped_column(Float)
+    liquidity_growth: Mapped[float | None] = mapped_column(Float)  # fraction vs previous
+    volume_growth: Mapped[float | None] = mapped_column(Float)
+    boost_amount: Mapped[float | None] = mapped_column(Float)
+    boost_velocity: Mapped[float | None] = mapped_column(Float)  # boost delta / hour
+    # metadata / catalyst presence
+    profile_completeness: Mapped[float | None] = mapped_column(Float)  # 0..1
+    has_social: Mapped[bool] = mapped_column(default=False)
+    social_links_count: Mapped[int] = mapped_column(Integer, default=0)
+    # risk overlay (read from existing risk assessments)
+    risk_level: Mapped[str | None] = mapped_column(String(16))
+    risk_score: Mapped[float | None] = mapped_column(Float)
+    provider_confidence: Mapped[float | None] = mapped_column(Float)  # 0..1
+    # the score (read-only interest signal; never advice)
+    attention_score: Mapped[float | None] = mapped_column(Float)  # 0..1
+    score_components: Mapped[dict | None] = mapped_column(RawJSON)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (
+        Index("ix_meme_attention_token_observed", "token_address", "observed_at"),
+    )
+
+
+class MemeCatalystEvent(Base):
+    """Generic catalyst-event abstraction. Today only read-only public sources
+    already in scope (dexscreener profiles/boosts/paid-boost metadata) populate
+    it; the schema is source-agnostic so RSS/X/Discord/Telegram can be added
+    later ONLY if explicitly configured. A catalyst is an informational event,
+    never a trade trigger."""
+
+    __tablename__ = "meme_catalyst_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int | None] = mapped_column(ForeignKey("meme_scout_runs.id"), index=True)
+    source: Mapped[str] = mapped_column(String(32), index=True)  # dexscreener|rss|x|discord|telegram
+    subject_type: Mapped[str] = mapped_column(String(24), index=True)  # token|pair|news
+    subject_ref: Mapped[str] = mapped_column(String(256), index=True)  # token_address|url
+    catalyst_type: Mapped[str] = mapped_column(String(48), index=True)  # profile_seen|boost|boost_increase|paid_order|social_present
+    magnitude: Mapped[float | None] = mapped_column(Float)  # e.g. boost amount/delta
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    detail: Mapped[dict | None] = mapped_column(RawJSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class DomainScoutRun(Base):
+    """One market-domain inventory pass (audit spine for domain expansion)."""
+
+    __tablename__ = "domain_scout_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    status: Mapped[str] = mapped_column(String(16), default="running")
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+    markets_scanned: Mapped[int] = mapped_column(Integer, default=0)
+    domains_seen: Mapped[int] = mapped_column(Integer, default=0)
+    series_seen: Mapped[int] = mapped_column(Integer, default=0)
+    error_type: Mapped[str | None] = mapped_column(String(128))
+    error_message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class DomainMarketInventorySnapshot(Base):
+    """Read-only inventory of one domain/series cluster of probability markets.
+    Coverage + candidate-priority intelligence for future canary planning —
+    it adds NO forecaster, changes NO promotion logic, and is never advice."""
+
+    __tablename__ = "domain_market_inventory_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int | None] = mapped_column(ForeignKey("domain_scout_runs.id"), index=True)
+    domain: Mapped[str] = mapped_column(String(48), index=True)
+    series_prefix: Mapped[str | None] = mapped_column(String(48), index=True)
+    market_count: Mapped[int] = mapped_column(Integer, default=0)
+    active_count: Mapped[int] = mapped_column(Integer, default=0)
+    two_sided_count: Mapped[int] = mapped_column(Integer, default=0)
+    two_sided_rate: Mapped[float | None] = mapped_column(Float)
+    volume_proxy_cents: Mapped[int | None] = mapped_column(Integer)
+    liquidity_proxy_cents: Mapped[int | None] = mapped_column(Integer)
+    resolution_clarity_proxy: Mapped[float | None] = mapped_column(Float)  # 0..1
+    has_evidence_forecaster: Mapped[bool] = mapped_column(default=False)
+    data_source_notes: Mapped[str | None] = mapped_column(String(256))
+    canary_priority: Mapped[float | None] = mapped_column(Float)  # 0..1
+    priority_components: Mapped[dict | None] = mapped_column(RawJSON)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
