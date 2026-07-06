@@ -157,6 +157,26 @@ no flag, no threshold, no logic change; use it to decide which cohorts warrant
 more observation and whether the MVP-005B-design gate is met (it reports
 `blocked: True/False` and never unlocks anything itself). Safe to run anytime.
 
+## Scheduled edge-observation snapshots (read-only)
+
+A `systemd --user` timer `probability-arena-edge-observation.timer` runs
+daily at **15:00 UTC** (after overnight settlements + the 00:08 retention
+prune) and writes a timestamped report snapshot to `~/edge-observation/`.
+The runner (`~/edge-observation/run_report.sh`) and its logs live **outside**
+the git tree, so the repo stays clean. It only runs the read-only report
+suite (edge-policy/edge-cohort/frontier-eval/champion-challenger/db-growth/
+prune-retention --dry-run); it changes no flag, gate, threshold, or live
+service. Note: a cloud/routine scheduler cannot reach this private Tailscale
+host — this on-host timer is the reliable mechanism.
+
+```bash
+cat ~/edge-observation/latest.log                 # newest snapshot
+systemctl --user status probability-arena-edge-observation.timer
+systemctl --user start probability-arena-edge-observation.service   # run now
+systemctl --user disable --now probability-arena-edge-observation.timer  # stop
+# fully remove: rm ~/.config/systemd/user/probability-arena-edge-observation.{service,timer} && systemctl --user daemon-reload && rm -rf ~/edge-observation
+```
+
 ## DB growth & alert calibration (OPS-011)
 
 `db-growth-report` is the read-only storage view: file size, per-table row
