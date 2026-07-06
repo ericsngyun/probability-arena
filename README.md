@@ -472,6 +472,22 @@ The soccer counterpart of the baseball evidence forecaster — behind its own fl
 
 Soccer evidence forecasts (confidence up to 0.65–0.70) clear the edge-precheck confidence gate (0.60), making World Cup markets measurable; and `champion-challenger-report --domain sports_soccer --challenger soccer_evidence_v1` compares them against the baseline as outcomes settle. **Forecasts are measurement inputs only — no dollar EV, no trade recommendations, no paper trading, no sizing, no orders, no wallets, no execution.**
 
+## Tennis evidence canary (TENNIS-001)
+
+**Read-only evidence and forecasting — it does not trade, paper trade, compute EV, recommend bets, size positions, place orders, or use wallets/keys/swaps/signing/execution.** Adds a tennis canary so `sports_tennis` **match-winner** markets can produce source-backed research packets and evidence-aware forecasts, mirroring the soccer/baseball canaries.
+
+- **Collector** (`TennisExternalResearchCollector`, `tennis-external`): template scaffold + live match evidence (match status, set score, current-set game score, current server, winner/retirement/walkover, tournament, surface, rank/seed) with per-source provenance. Behind `ENABLE_TENNIS_EXTERNAL_RESEARCH` + `TENNIS_RESEARCH_PROVIDER`. **Provider `template` (default) keeps it fallback-only; `espn` selects a read-only public ESPN tennis client whose live payload mapping is PENDING validation** — if the shape differs it produces no usable evidence and falls back honestly (evidence stays `template_only`). Unknown/prop/non-winner tickers fall back honestly.
+- **Forecaster** (`TennisEvidenceAwareForecaster`, `tennis_evidence`): match-winner only in v1. Market midpoint is the prior; a conservative, **tightly capped (±0.20)** adjustment comes from the subject player's set/game margin, weighted up as the match progresses; retirement/walkover and completed matches resolve near-certain (still within the cap); **missing critical facts cap confidence at 0.50 with high risk**; overall confidence cap `TENNIS_FORECAST_MAX_CONFIDENCE=0.65`. Calibration tags: `tennis_evidence_v1`, `market_type_winner`, `match_state`, `source_backed`, and `evidence_adjusted`/`evidence_insufficient`.
+
+```bash
+# Both default off; enable the canary (research + forecasting) in .env:
+#   ENABLE_TENNIS_EXTERNAL_RESEARCH=true   TENNIS_RESEARCH_PROVIDER=template|espn
+#   ENABLE_TENNIS_EVIDENCE_FORECASTING=true
+python -m app.cli research-canary-report   # tennis-external collector + tennis_evidence forecaster counts appear automatically
+```
+
+`ForecastingService` selects `TennisEvidenceAwareForecaster` only when all conditions pass (flag on, domain `sports_tennis`, packet `source_backed`, completeness ≥ 0.75, resolution `researchable`); `SignalProcessingService` selects the collector under `ENABLE_TENNIS_EXTERNAL_RESEARCH` for researchable tennis signals. An explicitly injected collector/forecaster always wins (tests); the existing baseball/soccer/MarketOps/EDGE-AUTO/meme-news behavior is unchanged. **Forecasts are measurement inputs only — no EV, recommendations, sizing, orders, wallets, or execution.**
+
 ## Champion/challenger comparison
 
 **Why this exists:** per ADR-004, no EV or paper-trading work may even be designed until a challenger forecaster demonstrably beats the market-anchored baseline. This layer is that gate, made concrete:

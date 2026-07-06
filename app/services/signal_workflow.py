@@ -146,6 +146,7 @@ class SignalProcessingService:
         forecaster=None,
         baseball_fetcher=None,
         soccer_fetcher=None,
+        tennis_fetcher=None,
     ):
         self.enrichment_adapter = enrichment_adapter
         self.judge = judge
@@ -153,6 +154,7 @@ class SignalProcessingService:
         self.forecaster = forecaster
         self.baseball_fetcher = baseball_fetcher
         self.soccer_fetcher = soccer_fetcher
+        self.tennis_fetcher = tennis_fetcher
 
     def _collector_for(self, domain: str, resolution_tradeability: str | None):
         """Per-signal collector selection (canary gates). An explicitly
@@ -161,6 +163,7 @@ class SignalProcessingService:
         from app.services.research import (
             DOMAIN_SPORTS_BASEBALL,
             DOMAIN_SPORTS_SOCCER,
+            DOMAIN_SPORTS_TENNIS,
             get_collector,
         )
 
@@ -183,6 +186,14 @@ class SignalProcessingService:
             from app.services.soccer_research import SoccerExternalResearchCollector
 
             return SoccerExternalResearchCollector(fetcher=self.soccer_fetcher)
+        if (
+            settings.enable_tennis_external_research
+            and domain == DOMAIN_SPORTS_TENNIS
+            and resolution_tradeability == "researchable"
+        ):
+            from app.services.tennis_research import TennisExternalResearchCollector
+
+            return TennisExternalResearchCollector(fetcher=self.tennis_fetcher)
         return get_collector()
 
     async def process(self, session: Session, signal: OpportunitySignal) -> OpportunitySignal:

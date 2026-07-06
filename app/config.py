@@ -85,6 +85,27 @@ class Settings(BaseSettings):
     baseball_forecast_max_confidence: float = 0.70
     baseball_forecast_min_completeness: float = 0.75
 
+    # Tennis external research canary (TENNIS-001) — narrow scope: promoted
+    # sports_tennis MATCH-WINNER signals only; everything else stays on
+    # templates. Provider "template" (default) keeps the collector
+    # fallback-only even when the flag is on; "espn" selects a read-only public
+    # ESPN tennis client whose live payload mapping is PENDING validation (it
+    # degrades to honest template fallback if the shape does not match).
+    # Read-only research only: no EV, trade, sizing, order, wallet, or execution.
+    enable_tennis_external_research: bool = False
+    tennis_research_provider: str = "template"
+    tennis_research_timeout_seconds: float = 15.0
+    tennis_research_max_sources: int = 8
+    tennis_research_collector_version: str = "v1"
+
+    # Tennis evidence-aware forecasting canary (TENNIS-001) — consumes
+    # source-backed tennis packets; no external calls of its own. Match-winner
+    # markets only in v1; conservative confidence cap. Measurement inputs only.
+    enable_tennis_evidence_forecasting: bool = False
+    tennis_forecaster_version: str = "v1"
+    tennis_forecast_max_confidence: float = 0.65
+    tennis_forecast_min_completeness: float = 0.75
+
     # Retention / pruning (OPS-003) — operational tables only; intelligence
     # and calibration tables are never pruned
     tick_retention_days: int = 7

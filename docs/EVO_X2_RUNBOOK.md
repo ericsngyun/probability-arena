@@ -100,6 +100,21 @@ promote/process 1–3 soccer signals, check `signal-report` /
 `edge-precheck --latest-marketops-run` — soccer forecasts (confidence ≥0.60)
 are now measurable. Forecasts remain measurement inputs only.
 
+## Tennis evidence canary (TENNIS-001) rollout
+
+Two-step, dark-first (mirrors the soccer canary). **Research:** flip
+`ENABLE_TENNIS_EXTERNAL_RESEARCH=true` first with `TENNIS_RESEARCH_PROVIDER=template`
+(collector selected, honest fallbacks, zero external calls), inspect
+`research-canary-report` for the `tennis-external` collector, then — only after
+validating the ESPN tennis payload mapping against real responses — set
+`TENNIS_RESEARCH_PROVIDER=espn` as its own step. **Forecasting:** flip
+`ENABLE_TENNIS_EVIDENCE_FORECASTING=true` (research canary must be on and
+producing source-backed match-winner packets); promote/process 1–3 tennis
+signals, check `research-canary-report` for `tennis_evidence` forecasts, then
+`edge-precheck --latest-marketops-run`. v1 handles MATCH-WINNER markets only
+(everything else falls back honestly); tightly-capped ±0.20 shift, conf cap
+0.65. Read-only measurement — no EV/trade/paper/sizing/orders/wallets/execution.
+
 ## Edge precheck (MVP-005A) rollout
 
 Dark first: deploy with `ENABLE_EDGE_PRECHECK=false`, run one manual

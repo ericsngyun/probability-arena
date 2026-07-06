@@ -560,6 +560,18 @@ class ForecastingService:
             from app.services.soccer_forecasting import SoccerEvidenceAwareForecaster
 
             return SoccerEvidenceAwareForecaster(self.settings)
+        if (
+            self.settings.enable_tennis_evidence_forecasting
+            and inp.domain == "sports_tennis"
+            and determine_evidence_depth(inp.packet) == EVIDENCE_SOURCE_BACKED
+            and (inp.packet.research_completeness_score or 0.0)
+            >= self.settings.tennis_forecast_min_completeness
+            and inp.resolution is not None
+            and inp.resolution.tradeability == "researchable"
+        ):
+            from app.services.tennis_forecasting import TennisEvidenceAwareForecaster
+
+            return TennisEvidenceAwareForecaster(self.settings)
         return self.forecaster
 
     async def forecast_market(

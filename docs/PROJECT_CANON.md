@@ -55,8 +55,8 @@ Parallel to that: watcher (60s ticks + signals; universe = top-scored candidates
 ## Current services / collectors / forecasters / judges
 
 - Judges: `RuleBasedResolutionJudge` (default), `MockResolutionJudge`, `LLMResolutionJudge` (flag).
-- Collectors: `TemplateResearchCollector` (default), `MockResearchCollector`, `LLMWebResearchCollector` (flag), `BaseballExternalResearchCollector` (canary flag; MLB Stats API), `SoccerExternalResearchCollector` (canary flag + provider; ESPN soccer API).
-- Forecasters: `TemplateBaselineForecaster` (default; midpoint prior), `MockForecaster`, `LLMForecaster` (flag), `BaseballEvidenceAwareForecaster` (canary flag; capped ±0.25 shift), `SoccerEvidenceAwareForecaster` (SOCCER-002 canary flag; goal-margin/pace model, red-card/penalty-aware, capped ±0.25 shift).
+- Collectors: `TemplateResearchCollector` (default), `MockResearchCollector`, `LLMWebResearchCollector` (flag), `BaseballExternalResearchCollector` (canary flag; MLB Stats API), `SoccerExternalResearchCollector` (canary flag + provider; ESPN soccer API), `TennisExternalResearchCollector` (TENNIS-001 canary flag + provider; ESPN tennis API pending validation, template fallback default).
+- Forecasters: `TemplateBaselineForecaster` (default; midpoint prior), `MockForecaster`, `LLMForecaster` (flag), `BaseballEvidenceAwareForecaster` (canary flag; capped ±0.25 shift), `SoccerEvidenceAwareForecaster` (SOCCER-002 canary flag; goal-margin/pace model, red-card/penalty-aware, capped ±0.25 shift), `TennisEvidenceAwareForecaster` (TENNIS-001 canary flag; match-winner only, set-margin model, tightly-capped ±0.20 shift, conf cap 0.65).
 - Central guarantees regardless of provider: evidence-depth recomputation, confidence caps (template_only 0.55 / source_backed 0.75 / critical-missing 0.50), avoid→high-risk forcing.
 
 ## Feature flags
