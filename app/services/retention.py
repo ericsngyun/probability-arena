@@ -7,6 +7,13 @@
 - pipeline_runs / pipeline_stage_runs (baseline audit rows)
 - opportunity_signals      (ONLY when SIGNAL_RETENTION_DAYS > 0; default keeps
                             them indefinitely)
+- meme_scout_runs / meme_attention_snapshots / meme_catalyst_events
+                           (MEME-NEWS-002 always-on lane, pruned after
+                            MEME_NEWS_RETENTION_DAYS — DOCUMENTED: the report
+                            and alerts operate on recent windows, so older
+                            attention/catalyst rows are low-value; bounding
+                            them keeps the scheduled lane's growth capped. The
+                            domain-scout inventory tables are NOT pruned.)
 
 Intelligence and calibration tables are NEVER touched by this service:
 markets, market_snapshots, scanner_runs, eligibility assessments,
@@ -29,6 +36,9 @@ from app.models import (
     CryptoPriceTick,
     CryptoWatcherRun,
     MarketPriceTick,
+    MemeAttentionSnapshot,
+    MemeCatalystEvent,
+    MemeScoutRun,
     OpportunitySignal,
     PipelineRun,
     PipelineStageRun,
@@ -57,6 +67,11 @@ PROTECTED_TABLES = (
     "crypto_token_discovery_events",
     "crypto_token_risk_assessments",
     "crypto_opportunity_signals",
+    # MEME-NEWS domain-scout inventory is low-frequency (manual report only) —
+    # kept as coverage history. The meme attention lane (runs/snapshots/
+    # catalysts) IS pruned by MEME_NEWS_RETENTION_DAYS (documented below).
+    "domain_scout_runs",
+    "domain_market_inventory_snapshots",
 )
 
 
@@ -67,6 +82,7 @@ class RetentionConfig:
     pipeline_run_days: int = 90
     signal_days: int = 0  # 0 = keep forever
     crypto_days: int = 7  # crypto_price_ticks + crypto_watcher_runs
+    meme_days: int = 14  # MEME-NEWS-002: meme_scout_runs + attention + catalysts
     batch_size: int = 5000
 
     @classmethod
@@ -78,6 +94,7 @@ class RetentionConfig:
             "pipeline_run_days": s.pipeline_run_retention_days,
             "signal_days": s.signal_retention_days,
             "crypto_days": s.crypto_retention_days,
+            "meme_days": s.meme_news_retention_days,
             "batch_size": s.retention_batch_size,
         }
         values.update({key: value for key, value in overrides.items() if value is not None})
@@ -163,6 +180,24 @@ class RetentionService:
                 & (PipelineRun.status != "running"),
                 cfg.pipeline_run_days,
             ),
+            # MEME-NEWS-002 always-on lane (documented pruning; the report /
+            # alerts operate on recent windows, so older rows are low-value).
+            project(
+                MemeAttentionSnapshot,
+                MemeAttentionSnapshot.created_at < _cutoff(cfg.meme_days),
+                cfg.meme_days,
+            ),
+            project(
+                MemeCatalystEvent,
+                MemeCatalystEvent.created_at < _cutoff(cfg.meme_days),
+                cfg.meme_days,
+            ),
+            project(
+                MemeScoutRun,
+                (MemeScoutRun.created_at < _cutoff(cfg.meme_days))
+                & (MemeScoutRun.status != "running"),
+                cfg.meme_days,
+            ),
         ]
         # opportunity_signals: pruned only when signal_days > 0; else indefinite
         if cfg.signal_days > 0:
@@ -247,6 +282,23 @@ class RetentionService:
             )
         else:
             counts["opportunity_signals"] = 0  # retention disabled: keep forever
+
+        # MEME-NEWS-002 always-on lane: prune scored snapshots + catalyst
+        # events + finished scan runs older than meme_days (documented — the
+        # domain-scout inventory tables are protected/kept as coverage history).
+        meme_cutoff = _cutoff(cfg.meme_days)
+        counts["meme_attention_snapshots"] = self._delete_batched(
+            session, MemeAttentionSnapshot, MemeAttentionSnapshot.created_at < meme_cutoff, dry_run
+        )
+        counts["meme_catalyst_events"] = self._delete_batched(
+            session, MemeCatalystEvent, MemeCatalystEvent.created_at < meme_cutoff, dry_run
+        )
+        counts["meme_scout_runs"] = self._delete_batched(
+            session,
+            MemeScoutRun,
+            (MemeScoutRun.created_at < meme_cutoff) & (MemeScoutRun.status != "running"),
+            dry_run,
+        )
 
         if not dry_run and any(counts.values()):
             logger.info("Retention pruned: %s", counts)

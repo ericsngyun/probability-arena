@@ -901,10 +901,13 @@ async def db_growth_report(top: int = 12, session=None) -> int:
               f"  (+{r.edge_last_hour}/h, +{r.edge_last_24h}/24h)")
         print(f"crypto_price_ticks: {r.crypto_tick_total} total (+{r.crypto_tick_last_hour}/h)"
               f"   crypto_token_risk_assessments: {r.crypto_risk_total} total")
+        print(f"meme_attention_snapshots: {r.meme_attention_total} total "
+              f"(+{r.meme_attention_last_hour}/h)   "
+              f"meme_catalyst_events: {r.meme_catalyst_total} total")
 
         rc = r.retention
         print("\nretention windows: "
-              f"ticks={rc.tick_days}d, crypto={rc.crypto_days}d, "
+              f"ticks={rc.tick_days}d, crypto={rc.crypto_days}d, meme={rc.meme_days}d, "
               f"watcher_runs={rc.watcher_run_days}d, pipeline_runs={rc.pipeline_run_days}d, "
               f"signals={'keep forever' if rc.signal_days == 0 else str(rc.signal_days) + 'd'}, "
               "edge_precheck_snapshots=keep forever")
@@ -1678,6 +1681,112 @@ async def domain_scout_report(session=None) -> int:
                 f"{str(d['canary_priority']):>8}  {d['data_source_notes']}"
             )
         return len(report.domains)
+    finally:
+        if owns_session:
+            session.close()
+
+
+async def meme_news_run_once(
+    scheduled: bool = False, limit: int | None = None, runner=None, session=None
+) -> int:
+    """One bounded read-only meme/news discovery cycle (MEME-NEWS-002). When
+    invoked by the systemd timer (`--scheduled`) it refuses unless
+    ENABLE_MEME_NEWS_SCOUT=true; manual invocation is always allowed. No EV,
+    no trade, no advice. Returns tokens scored, or -1 on error."""
+    from app.config import get_settings
+    from app.services.meme_news import MemeNewsScoutRunner
+
+    if scheduled and not get_settings().enable_meme_news_scout:
+        print("ENABLE_MEME_NEWS_SCOUT=false; scheduled meme-news cycle skipped (set true in .env)")
+        return 0
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        runner = runner or MemeNewsScoutRunner()
+        run = await runner.run_cycle(session, limit=limit)
+        if run is None:
+            print("meme-news cycle: no run recorded")
+            return -1
+        print(
+            f"meme-news run #{run.id}: {run.status} profiles={run.profiles_seen} "
+            f"boosts={run.boosts_seen} scored={run.tokens_scored} "
+            f"catalysts={run.catalysts_created}"
+            + (f" error={run.error_type}" if run.status == "error" else "")
+            + " (read-only discovery — not advice)"
+        )
+        return run.tokens_scored if run.status == "ok" else -1
+    finally:
+        if owns_session:
+            session.close()
+
+
+async def meme_news_report(hours: int = 24, session=None) -> int:
+    """Windowed meme/news discovery report (read-only). Returns new-token count."""
+    from app.services.meme_news import MemeNewsReportService
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        r = MemeNewsReportService().build(session, hours=hours)
+        print(f"meme-news report (window {r.window_hours}h) — read-only discovery, not advice")
+        print(r.note)
+        print(f"last_run={r.last_run}")
+        print(
+            f"runs={r.runs_in_window} (errors={r.error_runs_in_window})  "
+            f"new_tokens={r.new_tokens}  catalysts={r.catalysts_in_window}"
+        )
+        print(
+            f"attention p50={r.attention_p50} p90={r.attention_p90} max={r.attention_max}  "
+            f"provider_confidence_avg={r.provider_confidence_avg}  "
+            f"missing_holder_coverage={r.missing_holder_coverage}"
+        )
+        print(f"row counts: {r.row_counts}")
+        print("top attention (interest signal, no action):")
+        for t in r.top_attention:
+            print(
+                f"  {str(t['symbol'])[:12]:<12} {t['token']:<16} attention={t['attention_score']} "
+                f"risk={t['risk_level']} boost={t['boost_amount']} conf={t['provider_confidence']}"
+            )
+        if r.high_risk_tokens:
+            print("severe/high-risk tokens (avoid/flag for review — not a trade direction):")
+            for t in r.high_risk_tokens:
+                print(f"  {str(t['symbol'])[:12]:<12} {t['token']:<16} risk={t['risk_level']}")
+        return r.new_tokens
+    finally:
+        if owns_session:
+            session.close()
+
+
+async def meme_news_alerts(hours: int = 6, session=None) -> int:
+    """Derived notable-event report (read-only, local, informational — no push,
+    no recommendation). Returns the number of alerts."""
+    from app.services.meme_news import MemeNewsAlertService
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        alerts = MemeNewsAlertService().evaluate(session, hours=hours)
+        print(
+            f"meme-news alerts (window {hours}h): {len(alerts)} notable event(s) — "
+            "informational only, never a trade trigger"
+        )
+        for a in alerts:
+            tok = f" {a.token}" if a.token else ""
+            print(f"  [{a.severity}] {a.alert_type}{tok}: {a.detail}")
+        return len(alerts)
     finally:
         if owns_session:
             session.close()
@@ -2459,6 +2568,23 @@ def build_parser() -> argparse.ArgumentParser:
         "domain-scout-report",
         help="Read-only market-domain inventory + candidate canary priority",
     )
+    meme_news_parser = subparsers.add_parser(
+        "meme-news-run-once",
+        help="One bounded read-only meme/news discovery cycle (MEME-NEWS-002)",
+    )
+    meme_news_parser.add_argument(
+        "--scheduled", action="store_true",
+        help="timer mode: refuse unless ENABLE_MEME_NEWS_SCOUT=true",
+    )
+    meme_news_parser.add_argument("--limit", type=int, default=None)
+    mn_report_parser = subparsers.add_parser(
+        "meme-news-report", help="Windowed meme/news discovery report (read-only)"
+    )
+    mn_report_parser.add_argument("--hours", type=int, default=24)
+    mn_alerts_parser = subparsers.add_parser(
+        "meme-news-alerts", help="Derived notable-event report (read-only, informational)"
+    )
+    mn_alerts_parser.add_argument("--hours", type=int, default=6)
     subparsers.add_parser(
         "backup-db", help="Compressed timestamped SQLite backup (+retention pruning)"
     )
@@ -2635,6 +2761,15 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if total >= 0 else 1
     if args.command == "domain-scout-report":
         n = asyncio.run(domain_scout_report())
+        return 0 if n >= 0 else 1
+    if args.command == "meme-news-run-once":
+        scored = asyncio.run(meme_news_run_once(scheduled=args.scheduled, limit=args.limit))
+        return 0 if scored >= 0 else 1
+    if args.command == "meme-news-report":
+        n = asyncio.run(meme_news_report(hours=args.hours))
+        return 0 if n >= 0 else 1
+    if args.command == "meme-news-alerts":
+        n = asyncio.run(meme_news_alerts(hours=args.hours))
         return 0 if n >= 0 else 1
     if args.command == "backup-db":
         return asyncio.run(backup_db())

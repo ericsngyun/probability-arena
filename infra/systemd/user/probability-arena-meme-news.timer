@@ -1,0 +1,28 @@
+# Probability Arena — MEME-NEWS-002 discovery timer (USER unit), every 10 min.
+# Read-only scheduled discovery. NOT auto-installed. Two-step to go live:
+#   1) set ENABLE_MEME_NEWS_SCOUT=true in ~/projects/probability-arena/.env
+#      (the --scheduled command no-ops while it is false, so the timer is safe
+#       to install dark first).
+#   2) install + enable:
+#        cp infra/systemd/user/probability-arena-meme-news.{service,timer} ~/.config/systemd/user/
+#        systemctl --user daemon-reload
+#        systemctl --user enable --now probability-arena-meme-news.timer
+# Inspect / disable:
+#   systemctl --user list-timers | grep meme-news
+#   journalctl --user -u probability-arena-meme-news.service -n 50 --no-pager
+#   systemctl --user disable --now probability-arena-meme-news.timer
+# Manual run any time (always allowed, flag-independent):
+#   .venv/bin/python -m app.cli meme-news-run-once
+
+[Unit]
+Description=Run Probability Arena MEME-NEWS discovery every 10 minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=10min
+RandomizedDelaySec=45
+Persistent=false
+Unit=probability-arena-meme-news.service
+
+[Install]
+WantedBy=timers.target

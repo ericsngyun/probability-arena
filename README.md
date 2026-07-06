@@ -383,6 +383,19 @@ python -m app.cli domain-scout-report         # market-domain inventory + canary
 
 Flags `ENABLE_MEME_SCOUT` / `ENABLE_DOMAIN_SCOUT` (default false) are reserved for any future loop/timer; the manual commands above are always allowed (mirroring the crypto lane). No EV, paper trading, recommendation, sizing, order, wallet/key, swap, signing, or execution exists anywhere in this milestone.
 
+### Scheduled meme/news discovery lane (MEME-NEWS-002)
+
+**Read-only scheduled discovery — `attention_score` is not EV, not a recommendation, not an instruction, and no wallet/key/swap/order/signing/execution/sizing/paper-trading/live-trading exists.** Turns the manual scout into a bounded, always-on lane (a `systemd --user` timer firing every 10 minutes), with a windowed report and derived, local, informational alerts.
+
+```bash
+python -m app.cli meme-news-run-once            # one bounded read-only cycle (manual: always allowed)
+python -m app.cli meme-news-run-once --scheduled  # timer mode: no-ops unless ENABLE_MEME_NEWS_SCOUT=true
+python -m app.cli meme-news-report --hours 24   # last run, runs/window, new tokens, catalysts, attention p50/p90/max, top tokens, severe/high-risk, provider confidence, missing holder coverage, row counts, errors
+python -m app.cli meme-news-alerts --hours 6    # derived notable events (informational, never a trade trigger)
+```
+
+The runner (`MemeNewsScoutRunner`) wraps `MemeScoutService.scan_once` in a bounded, no-raise cycle that records the same audit spine and degrades gracefully on provider errors — it runs as its own systemd unit, independent of and unable to affect MarketOps/EDGE-AUTO. **`ENABLE_MEME_NEWS_SCOUT` (default false) gates only the `--scheduled` path**; manual `meme-news-run-once` and all reports are always allowed. Alerts cover: new token above `MEME_NEWS_ATTENTION_ALERT_THRESHOLD`, attention jump, boost increase, severe/high-risk token (an avoid/flag verdict — never a trade direction), and provider degradation (the holder/sniper/insider coverage gap) — all local DB-derived report rows, **no push notifications, no recommendations**. Systemd units live in `infra/systemd/user/probability-arena-meme-news.{service,timer}` (**not auto-installed**; install instructions in the timer comments and runbook). Retention (`MEME_NEWS_RETENTION_DAYS=14`) prunes `meme_scout_runs` / `meme_attention_snapshots` / `meme_catalyst_events` to bound the always-on lane (documented); domain-scout inventory tables are kept.
+
 ## Edge precheck (MVP-005A) — probability-gap measurement
 
 **Measurement, never advice.** The gate ADR-004 defined has crossed (paired champion/challenger n=36, both deltas negative), so the accepted design (`docs/MVP_005A_EDGE_PRECHECK_DESIGN.md`) is now implemented: for recent forecasts, record `probability_gap = forecast_probability − market_midpoint` (signed, probability units — **not dollar EV**) with validity checks, into append-only `edge_precheck_snapshots` rows. By construction the table has no side, size, EV, or action fields.

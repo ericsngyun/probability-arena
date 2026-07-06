@@ -27,6 +27,8 @@ from app.models import (
     CryptoWatcherRun,
     EdgePrecheckSnapshot,
     MarketPriceTick,
+    MemeAttentionSnapshot,
+    MemeCatalystEvent,
 )
 from app.services.backup import backup_dir_stats
 from app.services.research import DOMAIN_RULES
@@ -77,6 +79,9 @@ class GrowthReport:
     crypto_tick_total: int
     crypto_tick_last_hour: int
     crypto_risk_total: int
+    meme_attention_total: int
+    meme_attention_last_hour: int
+    meme_catalyst_total: int
     backups: tuple[int, float] | None
     retention: RetentionConfig
     thresholds: dict = field(default_factory=dict)
@@ -205,6 +210,11 @@ def build_growth_report(session: Session, settings: Settings | None = None) -> G
             session, CryptoPriceTick, CryptoPriceTick.created_at, hour_ago
         ),
         crypto_risk_total=_count(session, CryptoTokenRiskAssessment),
+        meme_attention_total=_count(session, MemeAttentionSnapshot),
+        meme_attention_last_hour=_count_since(
+            session, MemeAttentionSnapshot, MemeAttentionSnapshot.created_at, hour_ago
+        ),
+        meme_catalyst_total=_count(session, MemeCatalystEvent),
         backups=backup_dir_stats(settings),
         retention=RetentionConfig.from_settings(settings),
         thresholds={

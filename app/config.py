@@ -241,6 +241,20 @@ class Settings(BaseSettings):
     meme_scout_version: str = "v1"
     domain_scout_version: str = "v1"
 
+    # MEME-NEWS-002: scheduled, bounded, always-on read-only discovery lane.
+    # ENABLE_MEME_NEWS_SCOUT gates the SCHEDULED runner (meme-news-run-once
+    # --scheduled / the systemd timer) only; manual meme-news-run-once and all
+    # reports are always allowed. Still read-only scouting — no EV, trade,
+    # sizing, order, wallet, swap, signing, or execution.
+    enable_meme_news_scout: bool = False
+    meme_news_scout_interval_seconds: int = 300  # informational (systemd timer governs cadence)
+    meme_news_max_profiles_per_run: int = 30
+    meme_news_max_boosts_per_run: int = 30
+    meme_news_retention_days: int = 14  # prunes meme_scout_runs/attention/catalysts (documented)
+    meme_news_attention_alert_threshold: float = 0.6   # notable-event report only; no action
+    meme_news_attention_jump_threshold: float = 0.15   # per-token attention delta to flag
+    meme_news_severe_risk_alert: bool = True
+
     # Candidate hygiene / eligibility gating (MVP-003A)
     require_two_sided_quote: bool = True
     exclude_zero_quote_markets: bool = True

@@ -1,0 +1,25 @@
+# Probability Arena — MEME-NEWS-002 scheduled meme/news discovery cycle
+# (read-only). Wraps the MEME-NEWS-001 attention scout: newest DexScreener
+# token profiles + boosts -> attention_score + catalyst events. attention_score
+# is an interest/velocity signal for human review — NOT EV, a recommendation,
+# or an instruction. No wallets, keys, swaps, orders, signing, sizing, paper
+# trading, or execution exist in this project.
+#
+# --scheduled makes the command refuse unless ENABLE_MEME_NEWS_SCOUT=true, so
+# installing the timer alone does nothing until the flag is set.
+# NOT auto-installed. See the .timer file for install commands.
+
+[Unit]
+Description=Probability Arena MEME-NEWS scheduled discovery cycle (read-only)
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/projects/probability-arena
+EnvironmentFile=%h/projects/probability-arena/.env
+ExecStart=%h/projects/probability-arena/.venv/bin/python -m app.cli meme-news-run-once --scheduled
+NoNewPrivileges=true
+TimeoutStartSec=5min
+
+[Install]
+WantedBy=default.target

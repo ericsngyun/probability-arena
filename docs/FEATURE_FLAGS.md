@@ -156,6 +156,23 @@ and `CRYPTO_CHAIN=solana`. `attention_score` is an interest/velocity signal for
 human review — never a buy/trade/EV/alpha score. No new authenticated sources
 are added; rss/x/discord/telegram catalyst sources remain unconfigured placeholders.
 
+### MEME-NEWS-002 — scheduled discovery lane
+
+| Flag | Default | Effect |
+|---|---|---|
+| `ENABLE_MEME_NEWS_SCOUT` | false | Gates the **scheduled** path only (`meme-news-run-once --scheduled` / the systemd timer no-op while false). Manual `meme-news-run-once` and all reports are always allowed |
+| `MEME_NEWS_SEVERE_RISK_ALERT` | true | Emit a local `severe_risk` notable-event row for severe/high-risk tokens (avoid/flag verdict — never a trade direction) |
+
+Tuning: `MEME_NEWS_SCOUT_INTERVAL_SECONDS=300` (informational; the systemd timer
+governs cadence at 10 min), `MEME_NEWS_MAX_PROFILES_PER_RUN=30`,
+`MEME_NEWS_MAX_BOOSTS_PER_RUN=30`, `MEME_NEWS_RETENTION_DAYS=14`,
+`MEME_NEWS_ATTENTION_ALERT_THRESHOLD=0.6`, `MEME_NEWS_ATTENTION_JUMP_THRESHOLD=0.15`.
+Retention prunes `meme_scout_runs` / `meme_attention_snapshots` /
+`meme_catalyst_events` after `MEME_NEWS_RETENTION_DAYS` to bound the always-on
+lane (**documented** — the report/alerts use recent windows; the domain-scout
+inventory tables are NOT pruned). Alerts are local, derived, informational — no
+push notifications, no recommendations. Read-only discovery only.
+
 ## Retention windows
 
 `TICK_RETENTION_DAYS=7`, `WATCHER_RUN_RETENTION_DAYS=30`,

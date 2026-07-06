@@ -194,6 +194,33 @@ allowed. `meme-scan-once` hits the public DexScreener GETs already in scope; no
 new authenticated sources. No EV/paper/sizing/orders/wallets/keys/swaps/signing/
 execution anywhere.
 
+### MEME-NEWS-002 scheduled discovery lane (read-only, NOT auto-installed)
+
+```bash
+.venv/bin/python -m app.cli meme-news-run-once      # one bounded cycle (manual: always allowed)
+.venv/bin/python -m app.cli meme-news-report        # windowed report
+.venv/bin/python -m app.cli meme-news-alerts        # derived notable events (informational)
+```
+
+To go live as a timer (**dark-first, two-step**): (1) set `ENABLE_MEME_NEWS_SCOUT=true`
+in `.env` (the `--scheduled` command no-ops while false, so the timer is safe to
+install dark first); (2) install the units:
+
+```bash
+cp infra/systemd/user/probability-arena-meme-news.{service,timer} ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now probability-arena-meme-news.timer   # 10-min cadence
+# inspect: systemctl --user list-timers | grep meme-news
+# disable: systemctl --user disable --now probability-arena-meme-news.timer
+```
+
+Independent of MarketOps/EDGE-AUTO (own oneshot unit — cannot affect them).
+Retention (`MEME_NEWS_RETENTION_DAYS=14`, via the existing retention timer)
+prunes `meme_scout_runs`/`meme_attention_snapshots`/`meme_catalyst_events`;
+domain-scout inventory kept. `db-growth-report` now reports the meme row counts.
+`attention_score`/alerts are informational only — no EV/recommendation/order/
+wallet/swap/signing/execution/sizing/paper trading.
+
 ## DB growth & alert calibration (OPS-011)
 
 `db-growth-report` is the read-only storage view: file size, per-table row
