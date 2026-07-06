@@ -870,3 +870,33 @@ Even the flag flip alone neutralizes it: the `--scheduled` command no-ops while 
 **15. Recommendation:** **keep the timer on, observe for the first ~24h.** Watch three things via `meme-news-report`/`meme-news-alerts`/`db-growth-report`: (a) `meme_attention_snapshots`/`meme_catalyst_events` growth vs the 14-day retention plateau (confirm it caps), (b) alert volume/noise (tune `MEME_NEWS_ATTENTION_ALERT_THRESHOLD` if `high_attention` is too chatty), (c) that MarketOps p90 and the DB warn threshold stay clear. Roll back per §14 if errors, runaway growth, or noise appear.
 
 No EV, no paper trading, no recommendations, no sizing, no orders, no wallets/private keys, no swaps, no signing, no execution, no autonomy — MEME-NEWS-002 is read-only scheduled discovery only.
+
+## TENNIS-001 — dark-first deployment; template canary on, evidence forecasting OFF (2026-07-06, ~07:40 UTC)
+
+Deployed **`47babb5` → `7f23186`** by `git pull --ff-only`; **no migration** (alembic `0019` unchanged — no migration/model files in the diff). Dark-first rollout: read-only tennis evidence canary. Existing MarketOps/EDGE-AUTO/meme-news behavior **unchanged**; `MARKETOPS_INCLUDE_EDGE_PRECHECK` / `ENABLE_EDGE_PRECHECK` stay **true**; no services restarted (oneshot timers read `.env` next run).
+
+| | before | after |
+|---|---|---|
+| commit | `47babb5` | `7f23186` |
+| alembic revision | `0019` | `0019` (no migration) |
+| `ENABLE_TENNIS_EXTERNAL_RESEARCH` | (unset → false) | **true** (dark canary) |
+| `TENNIS_RESEARCH_PROVIDER` | (unset → template) | **template** |
+| `ENABLE_TENNIS_EVIDENCE_FORECASTING` | (unset → false) | **false** (unchanged) |
+
+**Template dark-canary result:** `marketops-run-once` #559 ok (quiet overnight window, 0 signals promoted/processed) — **no tennis packets, no `tennis_evidence` forecasts, no behavior created.** `research-canary-report` unchanged (baseball-external 750, soccer-external 70, template 499; forecasters baseball_evidence 750 / soccer_evidence 46 / template_baseline 524; no tennis yet). With `provider=template` the tennis collector, if selected for a tennis signal, wraps the template collector and falls back honestly to `template_only` — behaviorally identical to no-canary.
+
+**Real ticker + ESPN provider validation (read-only probe, forecasting left off):**
+- **Parser: 528/528 real tennis-prefixed markets parsed, 0 failures** (468 winner-markets). Handles the real Kalshi shapes `KXATPCHALLENGERMATCH-…`, `KXITFMATCH-…`, `KXITFWMATCH-…` (matchup splits to two player codes; ticker suffix identifies the subject player). **Ticker format fully validated.**
+- **ESPN provider: 0/5 winner tickers produced source-backed packets — all fell back honestly** (`no scoreboard match for <matchup>`). The ESPN tennis endpoint responds, but the currently-listed markets are all **ATP Challenger / ITF futures with lower-tier players that ESPN's tennis scoreboard does not cover** (and the Kalshi player codes don't align with ESPN athlete abbreviations). Template provider: all fell back honestly, as required.
+
+**Tennis evidence forecasting: REMAINS OFF.** Real-provider validation did not yield source-backed packets, so per the rollout gate `ENABLE_TENNIS_EVIDENCE_FORECASTING` stays false. (Even if enabled it would have nothing source-backed to act on.)
+
+**Existing health (unchanged):** all five user timers active (marketops, watcher, baseline, retention, meme-news); MarketOps run #559 ok, no journal errors; readiness `ready_for_cycle_scoped_edge_automation`; champion/challenger n=91. **MEME-NEWS-002 24h observation healthy** — meme-news runs #11–13 ok, 0 errors, 30 scored/run. DB ~1377 MiB (under the 1536 warn).
+
+**Safety:** canonical + expanded grep clean (only boundary docstrings); frontier-eval AST audit **56 files, safety_ok=True, 0 violations**.
+
+**Rollback:** `sed -i 's/^ENABLE_TENNIS_EXTERNAL_RESEARCH=true/ENABLE_TENNIS_EXTERNAL_RESEARCH=false/' .env` (or remove the TENNIS block) — read-only, no state to unwind; `git reset --hard 47babb5` on host removes the code.
+
+**Next recommendation:** **Keep the template dark canary on (harmless honest fallback); keep `ENABLE_TENNIS_EVIDENCE_FORECASTING` OFF.** The parser is fully validated, but `provider=espn` cannot serve the current market set (all Challenger/ITF). Revisit the ESPN provider only when **main-tour ATP/WTA match-winner markets** appear (ESPN covers those) — re-run the read-only probe then, and only flip `provider=espn` + `ENABLE_TENNIS_EVIDENCE_FORECASTING=true` if the probe yields source-backed packets. A future refinement to map Kalshi player codes → ESPN athlete abbreviations may also be needed.
+
+No EV, no paper trading, no recommendations, no sizing, no orders, no wallets/private keys, no swaps, no signing, no execution, no autonomy — TENNIS-001 is read-only evidence/research, deployed dark with forecasting off.
