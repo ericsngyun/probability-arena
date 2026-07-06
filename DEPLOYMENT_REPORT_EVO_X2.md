@@ -785,3 +785,46 @@ Deployed **`447e7ae` → `debdfda`** by `git pull --ff-only` (clean fast-forward
 **Next recommendation:** **keep collecting.** The interesting threads — `exclude_all_current_bad_cohorts` lifting follow-through toward ~0.56, and the small-gap cohort narrowly beating market at settlement — are suggestive but sub-gate and thin. Re-run `edge-policy-report` as samples grow to see whether either firms up past the 30m/60m ≥ 0.55 gate at n≥20. Do not start MVP-005B-design. OPS-012 tick aggregation remains the standing roadmap item once the 3d retention plateau is observed.
 
 No EV, no paper trading, no recommendations, no sizing, no orders, no wallets/private keys, no swaps, no signing, no execution, no autonomy — EDGE-POLICY-001 is shadow measurement/reporting only.
+
+## MEME-NEWS-001 — read-only meme/news + domain-expansion scout deployed (2026-07-06, ~05:36 UTC)
+
+Deployed **`efd7e2d` → `8239510`** by `git pull --ff-only`; **migration 0018 → 0019** applied via the safe path (`run-baseline --dry-run`, pipeline run #27 `status=dry_run`). **Pre-migration backup:** `data/backups/backup-20260706T053419Z.db.gz` (107.15 MiB). Read-only discovery/scouting: **no flag changed, no service restarted, no timer/loop enabled**; `MARKETOPS_INCLUDE_EDGE_PRECHECK` and `ENABLE_EDGE_PRECHECK` stay **true**; `ENABLE_MEME_SCOUT`/`ENABLE_DOMAIN_SCOUT` remain **default false** (manual commands always allowed). Migration 0019 adds 5 empty audit tables (meme_scout_runs, meme_attention_snapshots, meme_catalyst_events, domain_scout_runs, domain_market_inventory_snapshots) — no EV/trade/order/wallet/swap/execution columns.
+
+| | before | after |
+|---|---|---|
+| commit | `efd7e2d` | `8239510` |
+| alembic revision | `0018` | `0019` |
+| DB size | 1322.27 MiB | 1323.40 MiB (+~1 MiB, scan audit rows only) |
+
+**Part A — `meme-scan-once` (live DexScreener, on-host):** run #1 ok — **28 profiles + 30 boosts → 30 tokens scored, 65 catalysts.** `meme-scout-report`: attention p50 **0.346** / p90 **0.464**, `provider_confidence_avg=1.0` (host crypto-lane risk data present, unlike a cold DB), risk levels low=29 / severe=1 (the one severe token correctly penalized). Top: HAHA 0.500, DONALT 0.499, POST 0.466, LEVI 0.464. `attention_score` is an interest signal only — no action attached.
+
+**Part B — `catalyst-report`:** **65 events** — `profile_seen`=30, `social_present`=29, `boost`=6; all `source=dexscreener`, `subject=token`. rss/x/discord/telegram remain unconfigured placeholders.
+
+**Part C — `domain-scout-report`:** **10,316 markets across 8 domains.** Candidate priorities (ranked):
+
+| domain | mkts | active | 2-sided | clarity | forecaster | canary_priority |
+|---|---|---|---|---|---|---|
+| sports_baseball | 5692 | 5692 | 0.86 | 1.0 | yes | 0.866 |
+| **sports_tennis** | 528 | 528 | **1.0** | **1.0** | **NO** | **0.625** |
+| sports_soccer | 714 | 714 | 0.80 | 0.95 | yes | 0.547 |
+| general | 2965 | 2965 | 0.67 | 0.95 | NO | 0.545 |
+| politics | 9 | 9 | 1.0 | — | NO | 0.450 |
+| macro | 17 | 17 | 0.88 | — | NO | 0.421 |
+| crypto | 7 | 7 | 0.71 | — | NO | 0.379 |
+| weather | 384 | 384 | 0.57 | — | NO | 0.360 |
+
+**Top forecaster-gap expansion candidate: `sports_tennis`** — 528 fully two-sided markets, clarity 1.0, known ESPN/ATP/WTA public source, and no evidence forecaster yet. (basketball/golf/esports did not surface — no such series in the current scanned universe; they'd need targeted scan coverage first, like SCANNER-002 did for game-level markets.)
+
+**Existing EDGE-AUTO / MarketOps health (unchanged):** MarketOps run #538 ok (32.6s, clean journal, quiet overnight window promoted=0); edge-policy gate **BLOCKED** (0.4043, unchanged); readiness `ready_for_cycle_scoped_edge_automation`; champion/challenger baseball paired n=91; all four units active; no errors/warnings in the last 150 marketops journal lines.
+
+**DB growth impact:** negligible (+~1 MiB — the 5 tables hold only this run's scan audit rows). `market_price_ticks` 3-7d bucket now 9860 (3-day retention plateau maturing; first substantial prune ~Jul 7). Under the 1536 MiB warn.
+
+**Safety:** canonical + expanded grep clean (only boundary docstrings); frontier-eval AST audit **53 files, safety_ok=True, 0 violations** (new meme_scout/domain_scout modules scanned).
+
+**Flags changed:** **none.** No services restarted, no loop/timer enabled, no API endpoints added.
+
+**Rollback:** operationally none needed (read-only, no flag/service change). To remove: `git reset --hard efd7e2d` on host + `alembic downgrade 0018` (drops the 5 empty tables); backup above restores pre-migration state if ever needed.
+
+**Next recommendation:** **keep collecting.** The domain scout gives a concrete, data-backed signal: **`sports_tennis` is the strongest next-canary candidate** (real two-sided supply + clear resolution + public data source + no forecaster). A future **docs-only tennis-canary design** could be justified — but that is a separate, explicitly-accepted milestone; nothing here builds a forecaster or changes live behavior. `meme-scan-once` is manual-only for now (no timer enabled per instructions). OPS-012 tick aggregation remains the standing item once the 3-day retention plateau is observed.
+
+No EV, no paper trading, no recommendations, no sizing, no orders, no wallets/private keys, no swaps, no signing, no execution, no autonomy — MEME-NEWS-001 is read-only discovery/scouting only.
