@@ -993,3 +993,32 @@ Deployed **`02312cd` → `3f4f423`** by `git pull --ff-only`; **migration `0019`
 **Decision: KEEP DARK / MANUAL ONLY.** The observer works live (0 errors, valid payloads, useful coverage) but there is no measurement or downstream consumer yet that needs a scheduled cadence — a timer would only grow the DB. Enable a scheduled lane (`ENABLE_POLYMARKET_SCOUT=true` + a systemd timer, dark-first) **only** when POLY-002 (cross-venue linking / live WS) or a concrete measurement use gives the accumulated snapshots a purpose. Until then, manual `polymarket-*` reports on demand.
 
 **Rollback (if ever needed):** revert code with `git reset --hard 02312cd`; migration `0020` only adds isolated tables (drop via `alembic downgrade 0019` — no other table references them). Nothing to unwind operationally (read-only, flag off, no timer).
+
+## PROVIDER-BUDGET-001 — SolanaTracker request accounting + budget guardrails deployed (2026-07-07, ~23:10 UTC)
+
+Deployed **`44bfc0e` → `ccbc0cf`** by `git pull --ff-only`; **no migration** (alembic `0020` unchanged — usage is derived read-only from existing `crypto_token_risk_assessments`). Provider cost/usage observability + a request guardrail that can only **skip** optional SolanaTracker lookups when over budget (fallback: GoPlus+heuristics). SolanaTracker stays enabled, Birdeye stays disabled, GoPlus unchanged; no MarketOps/EDGE-AUTO/MEME-NEWS/Polymarket behavior changed.
+
+**Budget config set in host `.env` (conservative per-run cap 15):**
+
+| key | value |
+|---|---|
+| `SOLANA_TRACKER_PER_RUN_LOOKUP_LIMIT` | **15** (conservative — CACHE_TTL is a documented knob, not an active cache, so the cap is the live control) |
+| `SOLANA_TRACKER_MONTHLY_REQUEST_LIMIT` | 200000 |
+| `SOLANA_TRACKER_DAILY_REQUEST_BUDGET` | 5000 |
+| `SOLANA_TRACKER_HOURLY_REQUEST_BUDGET` | 200 |
+| `SOLANA_TRACKER_WARN_DAILY_REQUESTS` / `_STOP_DAILY_REQUESTS` | 4000 / 6000 |
+| `SOLANA_TRACKER_CACHE_TTL_HOURS` | 24 |
+
+`.env` backed up to `~/secure-backups/probability-arena/env/.env.bak.provider-budget.*` (600).
+
+**Per-run cap validation — `crypto-risk-assess --limit 40`:** **SolanaTracker HTTP calls = 15** (capped), **GoPlus HTTP calls = 40** (all tokens), **0 daily-STOP skips**, **40 tokens assessed**. So the cap skipped ST after 15 and the remaining 25 tokens fell back to GoPlus+heuristics with no assessment lost — exactly the intended guardrail. Today's request count moved +15 (895 → 910), confirming the cap end-to-end.
+
+**Usage (`crypto-provider-budget-report`):** requests today=**910**, hour=**88**, month=**998**; estimated monthly run-rate **≈27,300** (well under the 150k operational target and 200k plan limit); success=**899** / error=**99** → **success_rate 90.1%**; coverage-per-request 0.90; remaining_daily=4,090; WARN(4000)/STOP(6000) both False. Recommendation: **KEEP**.
+
+**Coverage impact vs pre-budget (NOT degraded):** observed `top10_holder` = **42/67 = 62.7%** (up from ~52% at PROVIDER-ROLL-001 T0; ~25.7% at first enablement). The per-run cap of 15 does **not** starve coverage because it is per-run and coverage accumulates across many 5-min scans (different tokens each pass). `holder_risk` signals = **229** (up from 13). `sniper`/`insider`/`bundler` still 0% (known SolanaTracker endpoint limitation, unrelated to budget).
+
+**System integrity (unchanged):** MarketOps last run #957 ok, champion/challenger `mean_delta_brier=-0.029173` (identical), **p90 43.8s** (<60s); GoPlus active / SolanaTracker active (key present) / **Birdeye disabled**. **DB impact negligible** — no new table; `crypto_token_risk_assessments` 32,044 rows / 13.26 MiB; DB 2302 MiB (tick-driven as before).
+
+**Safety:** frontier-eval AST audit **`safety_ok=True` (60 files)**; expanded dangerous-identifier grep on `provider_budget.py` **empty**. The guardrail only ever SKIPS SolanaTracker (never adds calls, never touches GoPlus/Birdeye); the ~$58–59/mo cost note is accounting metadata only. No EV, paper trading, recommendations, sizing, orders, wallets/keys, signing, swaps, execution, or autonomy.
+
+**Decision: KEEP at per-run=15.** Actual run-rate (~27k/mo) sits far below the 150k target with the conservative cap, and coverage is unharmed — headroom exists to relax the cap later (e.g. 20–25) if broader per-run ST coverage is ever wanted, but 15 is the safe default that matches the ≤5k/day target. **Rollback:** raise/remove the `SOLANA_TRACKER_*` keys in `.env` (defaults restore per-run=25); or `git reset --hard 44bfc0e` (no migration/state to unwind — accounting is derived, guardrail only ever reduces calls).
