@@ -900,3 +900,32 @@ Deployed **`47babb5` → `7f23186`** by `git pull --ff-only`; **no migration** (
 **Next recommendation:** **Keep the template dark canary on (harmless honest fallback); keep `ENABLE_TENNIS_EVIDENCE_FORECASTING` OFF.** The parser is fully validated, but `provider=espn` cannot serve the current market set (all Challenger/ITF). Revisit the ESPN provider only when **main-tour ATP/WTA match-winner markets** appear (ESPN covers those) — re-run the read-only probe then, and only flip `provider=espn` + `ENABLE_TENNIS_EVIDENCE_FORECASTING=true` if the probe yields source-backed packets. A future refinement to map Kalshi player codes → ESPN athlete abbreviations may also be needed.
 
 No EV, no paper trading, no recommendations, no sizing, no orders, no wallets/private keys, no swaps, no signing, no execution, no autonomy — TENNIS-001 is read-only evidence/research, deployed dark with forecasting off.
+
+## MEME-RISK-003 — holder-risk coverage reporting deployed DARK; providers OFF (2026-07-07, ~06:35 UTC)
+
+Deployed **`81ae060` → `00d5db6`** by `git pull --ff-only`; **no migration** (alembic `0019` unchanged — holder/creator percentages live in the existing `flags` JSON). Dark: the new coverage *reporting* is live, but **no risk provider was enabled**. Existing MarketOps/EDGE-AUTO/MEME-NEWS behavior unchanged; `MARKETOPS_INCLUDE_EDGE_PRECHECK`/`ENABLE_EDGE_PRECHECK` untouched.
+
+| flag | before | after |
+|---|---|---|
+| `ENABLE_CRYPTO_RISK_ENGINE` | true | true (unchanged) |
+| `ENABLE_GOPLUS_RISK` | true | true (unchanged) |
+| `ENABLE_SOLANA_TRACKER_RISK` | false | **false** (dark) |
+| `ENABLE_BIRDEYE_RISK` | (unset → false) | **unset → false** (dark) |
+
+**Provider absence is EXPLICIT (`crypto-provider-health-report`):** goplus **active** (covers top10_holder/insider/authority/rug/honeypot); solana-tracker **disabled** (would cover sniper/insider/bundler); birdeye **disabled** (would cover top10_holder/creator); helius/rugcheck **reserved**. **`COVERAGE GAPS (no active provider): sniper, bundler, creator`.** Keys reported present/absent only.
+
+**Notable finding — the gap is wider than assumed:** observed coverage over recent assessments is **0/50 for *every* holder dimension including top10_holder** — GoPlus is returning authority/rug/honeypot verdicts for these memecoins but **no holder-concentration data at all**. `meme-risk-coverage-report`: 464 tokens, 364 with goplus data, 100 missing — but 0/464 for all five holder dimensions. So closing the holder/sniper/insider/bundler/creator gap genuinely requires enabling SolanaTracker (needs key) and/or Birdeye (creator/holder; payload pending validation). MEME-RISK-003 now makes this explicit instead of silent.
+
+**GoPlus behavior unchanged:** `crypto-risk-report` still `engine=provider-backed providers=goplus`, `by level low=50`, `goplus=45` uses / 5 errors — same as pre-deploy, plus the new holder-coverage overlay + gap line.
+
+**Health:** all 6 user timers active (marketops/watcher/baseline/retention/meme-news/edge-observation); meme-news 140 runs, **0 errors**; MarketOps p90 **40.0s** (<60s); readiness `ready_for_cycle_scoped_edge_automation`. **Note: `edge-policy-report` gate flipped to `blocked: False`** — a shadow policy cleared the n≥20 & ≥0.55 @30m/60m bar over the current 24h window. This is a MEASUREMENT signal only (advancing to MVP-005B-design still needs explicit human acceptance — nothing is unlocked); flagged for review, not acted on. DB **1848 MiB** — tick-driven (`market_price_ticks` 1547 MiB), under the 3072 critical; meme footprint negligible.
+
+**Safety:** grep clean (only boundary docstrings); frontier-eval AST audit **57 files, safety_ok=True, 0 violations**.
+
+**Rollback:** none needed operationally (read-only reporting, providers off). To remove: `git reset --hard 81ae060` on host — no state to unwind.
+
+**Recommendations:**
+- **Enable a real holder-data provider next** (separate step): `ENABLE_SOLANA_TRACKER_RISK=true` with its key closes sniper/insider/bundler; `ENABLE_BIRDEYE_RISK=true` adds creator/holder — but validate the Birdeye payload against live responses first (mapping pending). Until then the reports honestly show the gap.
+- **MEME_NEWS_ATTENTION_ALERT_THRESHOLD tune (RECOMMENDATION ONLY — not applied):** raise `0.6 → 0.70`. Over 24h, `high_attention` fired 72× at 0.6 vs 44× at 0.65 and 21× at 0.70; attention p90 is 0.499, so 0.6 flags the whole top decile while 0.70 keeps only the genuinely notable ~top-2% spikes (~1/h), cutting `high_attention` volume ~70% without losing the strongest signals. Applying it is a live meme-news config change, left to explicit approval.
+
+No EV, no paper trading, no recommendations, no sizing, no orders, no wallets/private keys, no swaps, no signing, no execution, no autonomy — MEME-RISK-003 is read-only risk-coverage intelligence, deployed dark with all providers off.
