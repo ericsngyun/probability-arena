@@ -1792,6 +1792,131 @@ async def meme_news_alerts(hours: int = 6, session=None) -> int:
             session.close()
 
 
+async def polymarket_scan_once(
+    scheduled: bool = False, limit: int | None = None, runner=None, session=None
+) -> int:
+    """One bounded read-only Polymarket market-data scan (POLY-001). Fetches the
+    public Gamma market catalog + CLOB order books, persists market/orderbook/
+    domain-inventory snapshots. With `--scheduled` it refuses unless
+    ENABLE_POLYMARKET_SCOUT=true; manual invocation is always allowed. Returns
+    markets persisted, or -1 on error. Read-only observation — no EV, orders,
+    sizing, wallets, signing, or execution."""
+    from app.config import get_settings
+    from app.services.polymarket import PolymarketScoutRunner
+
+    if scheduled and not get_settings().enable_polymarket_scout:
+        print("ENABLE_POLYMARKET_SCOUT=false; scheduled polymarket cycle skipped (set true in .env)")
+        return 0
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        runner = runner or PolymarketScoutRunner()
+        run = await runner.run_cycle(session, limit=limit)
+        if run is None:
+            print("polymarket scan: no run recorded")
+            return -1
+        print(
+            f"polymarket run #{run.id}: {run.status} markets={run.markets_seen} "
+            f"orderbooks={run.orderbooks_fetched} (errors={run.orderbook_errors}) "
+            f"domains={run.domains_seen}"
+            + (f" error={run.error_type}" if run.status == "error" else "")
+            + " (read-only market-data observation — not advice)"
+        )
+        return run.markets_persisted if run.status == "ok" else -1
+    finally:
+        if owns_session:
+            session.close()
+
+
+async def polymarket_report(hours: int = 24, session=None) -> int:
+    """Windowed read-only Polymarket market-data report (POLY-001). Returns the
+    markets-seen count."""
+    from app.services.polymarket import PolymarketReportService
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        r = PolymarketReportService().build(session, hours=hours)
+        print(f"polymarket report (window {r.window_hours}h) — read-only market data, not advice")
+        print(r.note)
+        print(f"last_run={r.last_run}")
+        print(
+            f"runs={r.runs_in_window} (errors={r.error_runs_in_window})  "
+            f"markets_seen={r.markets_seen}  active={r.active_markets}  "
+            f"categories={r.categories}"
+        )
+        print(
+            f"two_sided={r.two_sided_markets} (rate={r.two_sided_rate})  "
+            f"orderbook_enabled={r.orderbook_enabled_markets}  "
+            f"orderbook_snapshots={r.orderbook_snapshots_in_window}  "
+            f"provider_errors={r.provider_errors_in_window}"
+        )
+        print(
+            f"spread p50={r.spread_p50} p90={r.spread_p90}  "
+            f"avg_book_depth={r.avg_book_total_depth}  "
+            f"avg_book_liquidity_proxy={r.avg_book_liquidity_proxy}"
+        )
+        print(f"row counts: {r.row_counts}")
+        print("newest markets (interest signal, no action):")
+        for m in r.newest_markets:
+            print(f"  {m['market_id']:<10} {str(m['question'])[:48]:<48} cat={m['category']}")
+        print("highest 24h volume:")
+        for m in r.top_volume_markets:
+            print(
+                f"  {m['market_id']:<10} vol24h=${m['volume_24h_usd']} "
+                f"liq=${m['liquidity_usd']} spread={m['spread']} two_sided={m['two_sided']}"
+            )
+        print("highest liquidity:")
+        for m in r.top_liquidity_markets:
+            print(f"  {m['market_id']:<10} liq=${m['liquidity_usd']} vol24h=${m['volume_24h_usd']}")
+        print(f"cross-venue: {r.cross_venue_note}")
+        return r.markets_seen
+    finally:
+        if owns_session:
+            session.close()
+
+
+async def polymarket_domain_report(session=None) -> int:
+    """Read-only Polymarket per-domain/category inventory from the latest scan
+    (POLY-001). Returns the number of domains."""
+    from app.services.polymarket import PolymarketDomainReportService
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        r = PolymarketDomainReportService().build(session)
+        print("polymarket domain report — read-only inventory, not advice")
+        print(r.note)
+        print(f"last_run_id={r.last_run_id}  domains={r.total_domains}")
+        print("per-domain inventory (coverage only, never advice):")
+        for d in r.domains:
+            print(
+                f"  {str(d['domain'])[:28]:<28} markets={d['market_count']} "
+                f"active={d['active_count']} two_sided={d['two_sided_count']} "
+                f"(rate={d['two_sided_rate']}) ob_enabled={d['orderbook_enabled_count']} "
+                f"liq=${d['total_liquidity_usd']} vol24h=${d['total_volume_24h_usd']} "
+                f"avg_spread={d['avg_spread']}"
+            )
+        print(f"cross-venue: {r.cross_venue_note}")
+        return r.total_domains
+    finally:
+        if owns_session:
+            session.close()
+
+
 async def backup_db() -> int:
     """Create a compressed, timestamped SQLite backup (consistent snapshot
     via the online backup API) and prune old ones. Returns 0 on success."""
@@ -2679,6 +2804,23 @@ def build_parser() -> argparse.ArgumentParser:
         "meme-news-alerts", help="Derived notable-event report (read-only, informational)"
     )
     mn_alerts_parser.add_argument("--hours", type=int, default=6)
+    pm_scan_parser = subparsers.add_parser(
+        "polymarket-scan-once",
+        help="One bounded read-only Polymarket market-data scan (POLY-001; never advice)",
+    )
+    pm_scan_parser.add_argument(
+        "--scheduled", action="store_true",
+        help="timer mode: refuse unless ENABLE_POLYMARKET_SCOUT=true",
+    )
+    pm_scan_parser.add_argument("--limit", type=int, default=None)
+    pm_report_parser = subparsers.add_parser(
+        "polymarket-report", help="Windowed Polymarket market-data report (read-only)"
+    )
+    pm_report_parser.add_argument("--hours", type=int, default=24)
+    subparsers.add_parser(
+        "polymarket-domain-report",
+        help="Read-only Polymarket per-domain/category inventory (latest scan)",
+    )
     subparsers.add_parser(
         "backup-db", help="Compressed timestamped SQLite backup (+retention pruning)"
     )
@@ -2869,6 +3011,15 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if n >= 0 else 1
     if args.command == "meme-news-alerts":
         n = asyncio.run(meme_news_alerts(hours=args.hours))
+        return 0 if n >= 0 else 1
+    if args.command == "polymarket-scan-once":
+        scored = asyncio.run(polymarket_scan_once(scheduled=args.scheduled, limit=args.limit))
+        return 0 if scored >= 0 else 1
+    if args.command == "polymarket-report":
+        n = asyncio.run(polymarket_report(hours=args.hours))
+        return 0 if n >= 0 else 1
+    if args.command == "polymarket-domain-report":
+        n = asyncio.run(polymarket_domain_report())
         return 0 if n >= 0 else 1
     if args.command == "backup-db":
         return asyncio.run(backup_db())

@@ -286,6 +286,20 @@ class Settings(BaseSettings):
     meme_news_attention_jump_threshold: float = 0.15   # per-token attention delta to flag
     meme_news_severe_risk_alert: bool = True
 
+    # POLY-001: read-only Polymarket market-DATA observer (second prediction
+    # venue). Public/no-auth GETs only — Gamma market catalog + CLOB order
+    # books. Market-data OBSERVATION only: no EV, arbitrage, trade
+    # recommendation, position sizing, order placement/cancellation, wallet /
+    # private key, signing, swap, or execution. ENABLE_POLYMARKET_SCOUT gates
+    # any future loop/timer only; manual polymarket-scan-once and all reports
+    # are always allowed (no timer is installed in POLY-001).
+    enable_polymarket_scout: bool = False
+    polymarket_market_limit: int = 50       # max markets fetched/persisted per scan
+    polymarket_orderbook_limit: int = 20    # max token order books fetched per scan
+    polymarket_timeout_seconds: float = 15.0
+    polymarket_retention_days: int = 14     # prunes markets/orderbook/scout_runs (documented)
+    polymarket_provider_version: str = "v1"
+
     # Candidate hygiene / eligibility gating (MVP-003A)
     require_two_sided_quote: bool = True
     exclude_zero_quote_markets: bool = True

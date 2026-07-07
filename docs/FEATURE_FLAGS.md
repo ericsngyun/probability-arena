@@ -179,6 +179,28 @@ lane (**documented** — the report/alerts use recent windows; the domain-scout
 inventory tables are NOT pruned). Alerts are local, derived, informational — no
 push notifications, no recommendations. Read-only discovery only.
 
+## Polymarket market-data observer (POLY-001 — read-only second venue; no EV/orders/wallets)
+
+| Flag | Default | Effect |
+|---|---|---|
+| `ENABLE_POLYMARKET_SCOUT` | false | Reserves loop/timer use (none installed in POLY-001); manual `polymarket-scan-once` and all reports are always allowed. A `--scheduled` run no-ops while false |
+
+Tuning: `POLYMARKET_MARKET_LIMIT=50` (max markets fetched/persisted per scan),
+`POLYMARKET_ORDERBOOK_LIMIT=20` (max token order books fetched per scan),
+`POLYMARKET_TIMEOUT_SECONDS=15`, `POLYMARKET_RETENTION_DAYS=14`,
+`POLYMARKET_PROVIDER_VERSION=v1`. Public/no-auth GETs only — the Gamma market
+catalog (`gamma-api.polymarket.com/markets`) + the CLOB read-only order book
+(`clob.polymarket.com/book`). No API key, wallet, or signing is used or
+required; the authenticated CLOB trading endpoints are deliberately not
+implemented. `polymarket-scan-once`/`polymarket-report`/`polymarket-domain-report`.
+Retention prunes `polymarket_markets` / `polymarket_orderbook_snapshots` /
+`polymarket_scout_runs` after `POLYMARKET_RETENTION_DAYS` (**documented** — the
+`polymarket_domain_inventory_snapshots` coverage table is NOT pruned). Prices and
+order books are informational quotes for human review — never EV, a
+recommendation, an instruction, or a trade trigger. Cross-venue semantic linking
+to Kalshi is a documented POLY-002 placeholder only (no arb/EV/trade-candidate
+labels exist). Read-only market-data observation only.
+
 ## Retention windows
 
 `TICK_RETENTION_DAYS=7`, `WATCHER_RUN_RETENTION_DAYS=30`,

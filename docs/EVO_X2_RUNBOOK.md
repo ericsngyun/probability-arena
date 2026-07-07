@@ -247,6 +247,28 @@ domain-scout inventory kept. `db-growth-report` now reports the meme row counts.
 `attention_score`/alerts are informational only — no EV/recommendation/order/
 wallet/swap/signing/execution/sizing/paper trading.
 
+### POLY-001 Polymarket market-data observer (read-only, NO timer installed)
+
+```bash
+.venv/bin/python -m app.cli polymarket-scan-once --limit 50   # one bounded read-only scan (manual: always allowed)
+.venv/bin/python -m app.cli polymarket-report                 # windowed market-data report
+.venv/bin/python -m app.cli polymarket-domain-report          # per-category inventory (latest scan)
+```
+
+Read-only SECOND venue: public/no-auth GETs against the Gamma market catalog +
+CLOB read-only order books (no API key/wallet/signing; authenticated trading
+endpoints not implemented). **No systemd timer is installed in POLY-001** — the
+lane is manual-only; `ENABLE_POLYMARKET_SCOUT` merely reserves a future
+`--scheduled` path (which no-ops while false). New tables from migration `0020`
+(`polymarket_markets`/`polymarket_orderbook_snapshots`/`polymarket_scout_runs`/
+`polymarket_domain_inventory_snapshots`). Deploy is dark-by-default and requires
+no flag flip to use the manual reports; **do not deploy unless explicitly asked.**
+Retention (`POLYMARKET_RETENTION_DAYS=14`, via the existing retention timer)
+prunes markets/orderbook/scout-run rows; the domain-inventory coverage table is
+kept. Prices/order books are informational quotes only — no EV/arbitrage/
+recommendation/order/wallet/swap/signing/execution/sizing/paper trading;
+cross-venue Kalshi linking is a documented POLY-002 placeholder (no arb/EV labels).
+
 ## DB growth & alert calibration (OPS-011)
 
 `db-growth-report` is the read-only storage view: file size, per-table row

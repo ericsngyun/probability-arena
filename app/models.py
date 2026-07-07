@@ -862,3 +862,131 @@ class DomainMarketInventorySnapshot(Base):
     priority_components: Mapped[dict | None] = mapped_column(RawJSON)
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+# --- POLY-001: read-only Polymarket market-data observer (second venue) ------
+# Read-only market-DATA telemetry only. Prices are informational quotes, order
+# books are microstructure snapshots — NOT EV, advice, sizes, or trade
+# triggers. No column here holds an order, position, wallet, key, or execution.
+
+
+class PolymarketScoutRun(Base):
+    """One Polymarket observer pass (audit spine)."""
+
+    __tablename__ = "polymarket_scout_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    status: Mapped[str] = mapped_column(String(16), default="running")  # running|ok|error
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+    markets_seen: Mapped[int] = mapped_column(Integer, default=0)
+    markets_persisted: Mapped[int] = mapped_column(Integer, default=0)
+    orderbooks_fetched: Mapped[int] = mapped_column(Integer, default=0)
+    orderbook_errors: Mapped[int] = mapped_column(Integer, default=0)
+    domains_seen: Mapped[int] = mapped_column(Integer, default=0)
+    provider: Mapped[str | None] = mapped_column(String(32))
+    provider_version: Mapped[str | None] = mapped_column(String(16))
+    error_type: Mapped[str | None] = mapped_column(String(128))
+    error_message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class PolymarketMarket(Base):
+    """One read-only Polymarket market-catalog snapshot. Metadata + price/
+    liquidity/volume proxies for human review — never EV, advice, or a trade
+    trigger."""
+
+    __tablename__ = "polymarket_markets"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int | None] = mapped_column(ForeignKey("polymarket_scout_runs.id"), index=True)
+    market_id: Mapped[str] = mapped_column(String(128), index=True)
+    condition_id: Mapped[str | None] = mapped_column(String(128))
+    question: Mapped[str | None] = mapped_column(Text)
+    slug: Mapped[str | None] = mapped_column(String(256))
+    category: Mapped[str | None] = mapped_column(String(64), index=True)
+    description: Mapped[str | None] = mapped_column(Text)
+    # status flags
+    active: Mapped[bool] = mapped_column(default=False)
+    closed: Mapped[bool] = mapped_column(default=False)
+    archived: Mapped[bool] = mapped_column(default=False)
+    restricted: Mapped[bool] = mapped_column(default=False)
+    enable_order_book: Mapped[bool] = mapped_column(default=False)
+    accepting_orders: Mapped[bool] = mapped_column(default=False)
+    # outcomes / tokens
+    outcomes: Mapped[dict | None] = mapped_column(RawJSON)  # e.g. ["Yes","No"]
+    outcome_prices: Mapped[dict | None] = mapped_column(RawJSON)
+    clob_token_ids: Mapped[dict | None] = mapped_column(RawJSON)
+    num_outcomes: Mapped[int] = mapped_column(Integer, default=0)
+    # microstructure proxies (informational quotes only)
+    best_bid: Mapped[float | None] = mapped_column(Float)
+    best_ask: Mapped[float | None] = mapped_column(Float)
+    last_trade_price: Mapped[float | None] = mapped_column(Float)
+    spread: Mapped[float | None] = mapped_column(Float)
+    two_sided: Mapped[bool] = mapped_column(default=False)
+    liquidity_usd: Mapped[float | None] = mapped_column(Float)
+    volume_24h_usd: Mapped[float | None] = mapped_column(Float)
+    volume_total_usd: Mapped[float | None] = mapped_column(Float)
+    start_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    end_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (
+        Index("ix_polymarket_market_observed", "market_id", "observed_at"),
+    )
+
+
+class PolymarketOrderbookSnapshot(Base):
+    """One read-only CLOB order-book snapshot for a token id, reduced to
+    spread/depth/liquidity proxies. Reading the book only — no order can be
+    placed, sized, or signed from this row."""
+
+    __tablename__ = "polymarket_orderbook_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int | None] = mapped_column(ForeignKey("polymarket_scout_runs.id"), index=True)
+    market_id: Mapped[str | None] = mapped_column(String(128), index=True)
+    token_id: Mapped[str] = mapped_column(String(128), index=True)
+    outcome: Mapped[str | None] = mapped_column(String(64))
+    best_bid: Mapped[float | None] = mapped_column(Float)
+    best_ask: Mapped[float | None] = mapped_column(Float)
+    mid: Mapped[float | None] = mapped_column(Float)
+    spread: Mapped[float | None] = mapped_column(Float)
+    bid_depth: Mapped[float | None] = mapped_column(Float)
+    ask_depth: Mapped[float | None] = mapped_column(Float)
+    total_depth: Mapped[float | None] = mapped_column(Float)
+    num_bids: Mapped[int] = mapped_column(Integer, default=0)
+    num_asks: Mapped[int] = mapped_column(Integer, default=0)
+    liquidity_proxy: Mapped[float | None] = mapped_column(Float)
+    tick_size: Mapped[float | None] = mapped_column(Float)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (
+        Index("ix_polymarket_book_token_observed", "token_id", "observed_at"),
+    )
+
+
+class PolymarketDomainInventorySnapshot(Base):
+    """Read-only inventory of one Polymarket category/domain cluster: market
+    counts, two-sided/orderbook availability, and liquidity/volume/spread
+    proxies. Coverage intelligence for human review — adds no forecaster,
+    changes no logic, and is never advice."""
+
+    __tablename__ = "polymarket_domain_inventory_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int | None] = mapped_column(ForeignKey("polymarket_scout_runs.id"), index=True)
+    domain: Mapped[str] = mapped_column(String(64), index=True)
+    market_count: Mapped[int] = mapped_column(Integer, default=0)
+    active_count: Mapped[int] = mapped_column(Integer, default=0)
+    two_sided_count: Mapped[int] = mapped_column(Integer, default=0)
+    orderbook_enabled_count: Mapped[int] = mapped_column(Integer, default=0)
+    two_sided_rate: Mapped[float | None] = mapped_column(Float)
+    total_liquidity_usd: Mapped[float | None] = mapped_column(Float)
+    total_volume_24h_usd: Mapped[float | None] = mapped_column(Float)
+    avg_spread: Mapped[float | None] = mapped_column(Float)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

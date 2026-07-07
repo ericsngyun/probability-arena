@@ -14,6 +14,11 @@
                             attention/catalyst rows are low-value; bounding
                             them keeps the scheduled lane's growth capped. The
                             domain-scout inventory tables are NOT pruned.)
+- polymarket_markets / polymarket_orderbook_snapshots / polymarket_scout_runs
+                           (POLY-001 always-on observer lane, pruned after
+                            POLYMARKET_RETENTION_DAYS — DOCUMENTED like the meme
+                            lane; the polymarket_domain_inventory_snapshots
+                            coverage table is NOT pruned.)
 
 Intelligence and calibration tables are NEVER touched by this service:
 markets, market_snapshots, scanner_runs, eligibility assessments,
@@ -42,6 +47,9 @@ from app.models import (
     OpportunitySignal,
     PipelineRun,
     PipelineStageRun,
+    PolymarketMarket,
+    PolymarketOrderbookSnapshot,
+    PolymarketScoutRun,
     WatcherRun,
 )
 
@@ -72,6 +80,10 @@ PROTECTED_TABLES = (
     # catalysts) IS pruned by MEME_NEWS_RETENTION_DAYS (documented below).
     "domain_scout_runs",
     "domain_market_inventory_snapshots",
+    # POLY-001 per-domain inventory is a low-frequency coverage view — kept as
+    # history. The Polymarket market/orderbook/run tables ARE pruned by
+    # POLYMARKET_RETENTION_DAYS (documented below).
+    "polymarket_domain_inventory_snapshots",
 )
 
 
@@ -83,6 +95,7 @@ class RetentionConfig:
     signal_days: int = 0  # 0 = keep forever
     crypto_days: int = 7  # crypto_price_ticks + crypto_watcher_runs
     meme_days: int = 14  # MEME-NEWS-002: meme_scout_runs + attention + catalysts
+    polymarket_days: int = 14  # POLY-001: polymarket_scout_runs + markets + orderbook snaps
     batch_size: int = 5000
 
     @classmethod
@@ -95,6 +108,7 @@ class RetentionConfig:
             "signal_days": s.signal_retention_days,
             "crypto_days": s.crypto_retention_days,
             "meme_days": s.meme_news_retention_days,
+            "polymarket_days": s.polymarket_retention_days,
             "batch_size": s.retention_batch_size,
         }
         values.update({key: value for key, value in overrides.items() if value is not None})
@@ -198,6 +212,26 @@ class RetentionService:
                 & (MemeScoutRun.status != "running"),
                 cfg.meme_days,
             ),
+            # POLY-001 always-on observer lane (documented pruning; the report /
+            # domain view operate on recent windows/the latest run, so older
+            # market/orderbook rows are low-value; the domain-inventory table is
+            # protected/kept as coverage history).
+            project(
+                PolymarketMarket,
+                PolymarketMarket.created_at < _cutoff(cfg.polymarket_days),
+                cfg.polymarket_days,
+            ),
+            project(
+                PolymarketOrderbookSnapshot,
+                PolymarketOrderbookSnapshot.created_at < _cutoff(cfg.polymarket_days),
+                cfg.polymarket_days,
+            ),
+            project(
+                PolymarketScoutRun,
+                (PolymarketScoutRun.created_at < _cutoff(cfg.polymarket_days))
+                & (PolymarketScoutRun.status != "running"),
+                cfg.polymarket_days,
+            ),
         ]
         # opportunity_signals: pruned only when signal_days > 0; else indefinite
         if cfg.signal_days > 0:
@@ -297,6 +331,27 @@ class RetentionService:
             session,
             MemeScoutRun,
             (MemeScoutRun.created_at < meme_cutoff) & (MemeScoutRun.status != "running"),
+            dry_run,
+        )
+
+        # POLY-001 always-on observer lane: prune market + orderbook snapshots +
+        # finished scan runs older than polymarket_days (documented — the
+        # per-domain inventory table is protected/kept as coverage history).
+        polymarket_cutoff = _cutoff(cfg.polymarket_days)
+        counts["polymarket_markets"] = self._delete_batched(
+            session, PolymarketMarket, PolymarketMarket.created_at < polymarket_cutoff, dry_run
+        )
+        counts["polymarket_orderbook_snapshots"] = self._delete_batched(
+            session,
+            PolymarketOrderbookSnapshot,
+            PolymarketOrderbookSnapshot.created_at < polymarket_cutoff,
+            dry_run,
+        )
+        counts["polymarket_scout_runs"] = self._delete_batched(
+            session,
+            PolymarketScoutRun,
+            (PolymarketScoutRun.created_at < polymarket_cutoff)
+            & (PolymarketScoutRun.status != "running"),
             dry_run,
         )
 

@@ -411,6 +411,37 @@ python -m app.cli meme-news-alerts --hours 6    # derived notable events (inform
 
 The runner (`MemeNewsScoutRunner`) wraps `MemeScoutService.scan_once` in a bounded, no-raise cycle that records the same audit spine and degrades gracefully on provider errors — it runs as its own systemd unit, independent of and unable to affect MarketOps/EDGE-AUTO. **`ENABLE_MEME_NEWS_SCOUT` (default false) gates only the `--scheduled` path**; manual `meme-news-run-once` and all reports are always allowed. Alerts cover: new token above `MEME_NEWS_ATTENTION_ALERT_THRESHOLD`, attention jump, boost increase, severe/high-risk token (an avoid/flag verdict — never a trade direction), and provider degradation (the holder/sniper/insider coverage gap) — all local DB-derived report rows, **no push notifications, no recommendations**. Systemd units live in `infra/systemd/user/probability-arena-meme-news.{service,timer}` (**not auto-installed**; install instructions in the timer comments and runbook). Retention (`MEME_NEWS_RETENTION_DAYS=14`) prunes `meme_scout_runs` / `meme_attention_snapshots` / `meme_catalyst_events` to bound the always-on lane (documented); domain-scout inventory tables are kept.
 
+## Polymarket market-data observer (POLY-001)
+
+A **read-only second prediction-market venue**. It observes Polymarket
+microstructure alongside Kalshi using only public, no-authentication endpoints —
+the Gamma market catalog (`gamma-api.polymarket.com/markets`) and the CLOB
+read-only order book (`clob.polymarket.com/book`). No API key, wallet, or
+signing is used or required, and the authenticated CLOB trading endpoints are
+deliberately **not implemented**.
+
+```bash
+python -m app.cli polymarket-scan-once --limit 50   # one bounded read-only scan (manual: always allowed)
+python -m app.cli polymarket-scan-once --scheduled  # timer mode: no-ops unless ENABLE_POLYMARKET_SCOUT=true
+python -m app.cli polymarket-report --hours 24      # markets seen/active/categories, two-sided + orderbook availability, spread/depth/liquidity proxies, newest + highest-volume/liquidity markets, provider health, row counts
+python -m app.cli polymarket-domain-report          # per-category inventory from the latest scan
+```
+
+`PolymarketScoutService.scan_once` fetches the market catalog, persists a
+`polymarket_markets` snapshot per market, fetches up to `POLYMARKET_ORDERBOOK_LIMIT`
+token order books into `polymarket_orderbook_snapshots` (spread/depth/liquidity
+proxies), rolls up a per-category `polymarket_domain_inventory_snapshots`, and
+records a `polymarket_scout_runs` audit row — degrading gracefully to "nothing
+observed" on any provider problem. **`ENABLE_POLYMARKET_SCOUT` (default false)
+reserves loop/timer use only** (no timer is installed in POLY-001; manual runs
+and all reports are always allowed). Retention (`POLYMARKET_RETENTION_DAYS=14`)
+prunes markets/orderbook/scout-run rows; the domain-inventory coverage table is
+kept. Prices and order books are **informational quotes for human review — never
+EV, a recommendation, an instruction, or a trade trigger**. Cross-venue semantic
+linking to Kalshi is a documented **POLY-002 placeholder only** (no arbitrage,
+EV, or trade-candidate labels exist). No sizing, orders, wallets, keys, swaps,
+signing, or execution anywhere.
+
 ## Edge precheck (MVP-005A) — probability-gap measurement
 
 **Measurement, never advice.** The gate ADR-004 defined has crossed (paired champion/challenger n=36, both deltas negative), so the accepted design (`docs/MVP_005A_EDGE_PRECHECK_DESIGN.md`) is now implemented: for recent forecasts, record `probability_gap = forecast_probability − market_midpoint` (signed, probability units — **not dollar EV**) with validity checks, into append-only `edge_precheck_snapshots` rows. By construction the table has no side, size, EV, or action fields.

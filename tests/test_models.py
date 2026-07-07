@@ -60,6 +60,11 @@ def test_schema_creates_all_tables(session):
         "meme_catalyst_events",
         "domain_scout_runs",
         "domain_market_inventory_snapshots",
+        # POLY-001 — read-only Polymarket market-data observer (second venue)
+        "polymarket_scout_runs",
+        "polymarket_markets",
+        "polymarket_orderbook_snapshots",
+        "polymarket_domain_inventory_snapshots",
     }
 
 
