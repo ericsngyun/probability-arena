@@ -84,6 +84,17 @@ then enable providers one at a time (`ENABLE_GOPLUS_RISK` /
 `ENABLE_SOLANA_TRACKER_RISK`; keys optional, never printed). A risk level is an
 avoid/flag verdict for review — never a trade direction.
 
+Holder-risk coverage (MEME-RISK-003): `crypto-provider-health-report` shows which
+providers are active, which risk dimensions they cover, and the **explicit
+coverage gaps** (GoPlus-only leaves sniper/bundler/creator uncovered);
+`meme-risk-coverage-report` shows the same for the meme-news lane. To close the
+gaps: enable `ENABLE_SOLANA_TRACKER_RISK` (sniper/insider/bundler; needs
+`SOLANA_TRACKER_API_KEY`) and/or `ENABLE_BIRDEYE_RISK` (top-holder + creator;
+`BIRDEYE_API_KEY` optional — but validate the Birdeye payload against real
+responses first, as its mapping is pending validation and will degrade to honest
+absence until confirmed). Read-only intelligence; no EV/trade/sizing/orders/
+wallets/execution. No migration.
+
 Crypto Arena (CRYPTO-001) has **no service/timer** — validate with manual passes only:
 `crypto-scan-once --limit 25` → `crypto-report` → `crypto-signals-recent`. The
 migration (`0014`) applies on the first command. `ENABLE_CRYPTO_SCOUT` stays

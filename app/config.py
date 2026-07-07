@@ -251,6 +251,16 @@ class Settings(BaseSettings):
     crypto_risk_provider_timeout_seconds: float = 10.0
     crypto_risk_engine_version: str = "v1"
 
+    # MEME-RISK-003: added holder/sniper/insider/bundler/creator coverage.
+    # Birdeye is a new read-only holder-data provider (header-only key,
+    # degrades gracefully without one; live payload mapping PENDING validation).
+    # Helius stays reserved. creator/deployer concentration is a new heuristic
+    # category (fires only when a provider supplies creator_pct). Risk
+    # intelligence only — no EV/trade/sizing/orders/wallets/execution.
+    enable_birdeye_risk: bool = False
+    birdeye_api_key: str = ""
+    crypto_risk_max_creator_pct: float = 15.0
+
     # MEME-NEWS-001: read-only meme/news scout + domain-expansion scout.
     # Reserved for future loop/timer use; manual meme-scan-once /
     # meme-scout-report / catalyst-report / domain-scout-report are always

@@ -1962,7 +1962,92 @@ async def crypto_risk_report(session=None) -> int:
                 f"  RISKY {row.token_address[:16]}… level={row.composite_risk_level} "
                 f"score={row.composite_risk_score} reasons={','.join(row.risk_reasons or [])}"
             )
+        # MEME-RISK-003 holder-risk coverage overlay (explicit absence)
+        from app.services.crypto_provider_health import (
+            HOLDER_RISK_DIMENSIONS,
+            CryptoProviderHealthReportService,
+        )
+
+        health = CryptoProviderHealthReportService().build(session)
+        cov = " ".join(
+            f"{d}={health.observed_coverage[d]['rate']}" for d in HOLDER_RISK_DIMENSIONS
+        )
+        print(f"holder-risk coverage (rate of assessments with data): {cov}")
+        if health.coverage_gaps:
+            print(
+                "  COVERAGE GAP — no active provider for: "
+                + ", ".join(health.coverage_gaps)
+                + " (see crypto-provider-health-report)"
+            )
         return report.tokens_assessed
+    finally:
+        if owns_session:
+            session.close()
+
+
+async def crypto_provider_health_report(session=None) -> int:
+    """Print crypto provider coverage/health (MEME-RISK-003, read-only). Makes
+    provider absence explicit. Returns 0."""
+    from app.services.crypto_provider_health import CryptoProviderHealthReportService
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        r = CryptoProviderHealthReportService().build(session)
+        print(f"crypto provider health — engine={r.engine_mode} (read-only risk intelligence)")
+        print(r.note)
+        print("providers:")
+        for p in r.providers:
+            print(
+                f"  {p['name']:<15} status={p['status']:<9} enabled={p['enabled']} "
+                f"key_present={p['key_present']} covers={','.join(p['dimensions']) or '-'}"
+            )
+        print(f"covered dimensions (active providers): {r.covered_dimensions}")
+        print(
+            "COVERAGE GAPS (no active provider): "
+            + (", ".join(r.coverage_gaps) if r.coverage_gaps else "(none)")
+        )
+        print("observed coverage over recent assessments:")
+        for dim, o in r.observed_coverage.items():
+            print(f"  {dim:<14} {o['covered']}/{o['total']} rate={o['rate']}")
+        print(f"provider use: {r.provider_use}  errors: {r.provider_error_counts}")
+        return 0
+    finally:
+        if owns_session:
+            session.close()
+
+
+async def meme_risk_coverage_report(hours: int = 24, session=None) -> int:
+    """Print holder-risk coverage for the meme-news lane (MEME-RISK-003,
+    read-only). Returns tokens covered in the window."""
+    from app.services.crypto_provider_health import MemeRiskCoverageReportService
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        r = MemeRiskCoverageReportService().build(session, hours=hours)
+        print(f"meme-risk coverage (window {r.window_hours}h) — read-only risk intelligence")
+        print(r.note)
+        print(
+            f"tokens={r.tokens}  with_provider_data={r.with_provider_data}  "
+            f"missing_provider_data={r.missing_provider_data}  provider_use={r.provider_use}"
+        )
+        print("holder-risk dimension coverage:")
+        for dim, o in r.by_dimension.items():
+            print(f"  {dim:<14} {o['covered']}/{r.tokens} rate={o['rate']}")
+        print(
+            "COVERAGE GAPS (no token had this dimension): "
+            + (", ".join(r.coverage_gaps) if r.coverage_gaps else "(none)")
+        )
+        return r.tokens
     finally:
         if owns_session:
             session.close()
@@ -2500,6 +2585,15 @@ def build_parser() -> argparse.ArgumentParser:
     crypto_risk_parser.add_argument("--limit", type=int, default=50)
     subparsers.add_parser("crypto-risk-report", help="Aggregate crypto risk report")
     subparsers.add_parser(
+        "crypto-provider-health-report",
+        help="Crypto risk provider coverage/health (explicit gaps; read-only)",
+    )
+    mrc_parser = subparsers.add_parser(
+        "meme-risk-coverage-report",
+        help="Holder-risk coverage for the meme-news lane (read-only)",
+    )
+    mrc_parser.add_argument("--hours", type=int, default=24)
+    subparsers.add_parser(
         "marketops-run-once",
         help="One MarketOps Autopilot cycle (read-only coordination)",
     )
@@ -2700,6 +2794,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "crypto-risk-assess":
         count = asyncio.run(crypto_risk_assess(limit=args.limit))
         return 0 if count >= 0 else 1
+    if args.command == "crypto-provider-health-report":
+        return asyncio.run(crypto_provider_health_report())
+    if args.command == "meme-risk-coverage-report":
+        n = asyncio.run(meme_risk_coverage_report(hours=args.hours))
+        return 0 if n >= 0 else 1
     if args.command == "crypto-risk-report":
         total = asyncio.run(crypto_risk_report())
         return 0 if total >= 0 else 1

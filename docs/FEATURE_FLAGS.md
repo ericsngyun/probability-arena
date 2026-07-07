@@ -96,14 +96,18 @@ instead of failing; Postgres unaffected), `BACKUP_RETENTION_DAYS=30`,
 |---|---|---|
 | `ENABLE_CRYPTO_RISK_ENGINE` | false | Risk engine during crypto scans (heuristics + enabled providers); `crypto-risk-assess` works manually regardless |
 | `ENABLE_GOPLUS_RISK` | false | GoPlus Solana Token Security adapter (`GOPLUS_API_KEY` optional, header-only, never printed) |
-| `ENABLE_SOLANA_TRACKER_RISK` | false | SolanaTracker risk adapter (`SOLANA_TRACKER_API_KEY` optional, header-only, never printed) |
-| `ENABLE_RUGCHECK_RISK` | false | **Reserved only** — no RugCheck adapter exists in CRYPTO-002 |
+| `ENABLE_SOLANA_TRACKER_RISK` | false | SolanaTracker risk adapter — full holder set: sniper/insider/bundler/top10 (`SOLANA_TRACKER_API_KEY` optional, header-only, never printed) |
+| `ENABLE_BIRDEYE_RISK` | false | **MEME-RISK-003** Birdeye holder + creator/deployer-concentration adapter (`BIRDEYE_API_KEY` optional, header-only `X-API-KEY`, never printed; live payload mapping PENDING validation — degrades to honest absence if the shape differs) |
+| `ENABLE_RUGCHECK_RISK` / `ENABLE_HELIUS` | false | **Reserved only** — no adapter exists yet |
 
 Thresholds: `CRYPTO_RISK_MIN_LIQUIDITY_USD=5000`, `CRYPTO_RISK_MAX_TOP_HOLDER_PCT=20`,
 `CRYPTO_RISK_MAX_SNIPER_PCT=20`, `CRYPTO_RISK_MAX_INSIDER_PCT=15`,
-`CRYPTO_RISK_MAX_BUNDLER_PCT=25`, `CRYPTO_RISK_MIN_PAIR_AGE_SECONDS=300`,
-`CRYPTO_RISK_PROVIDER_TIMEOUT_SECONDS=10`, `CRYPTO_RISK_ENGINE_VERSION=v1`.
-A risk level is an avoid/flag verdict for review — never a trade direction.
+`CRYPTO_RISK_MAX_BUNDLER_PCT=25`, `CRYPTO_RISK_MAX_CREATOR_PCT=15` (MEME-RISK-003),
+`CRYPTO_RISK_MIN_PAIR_AGE_SECONDS=300`, `CRYPTO_RISK_PROVIDER_TIMEOUT_SECONDS=10`,
+`CRYPTO_RISK_ENGINE_VERSION=v1`. A risk level is an avoid/flag verdict for review
+— never a trade direction. Provider coverage is explicit via
+`crypto-provider-health-report` / `meme-risk-coverage-report` (gaps are stated,
+not silent).
 
 ## Crypto Arena tuning (CRYPTO-001 — read-only surveillance; no wallets/swaps/execution)
 

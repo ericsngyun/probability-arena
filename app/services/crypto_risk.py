@@ -258,3 +258,88 @@ class SolanaTrackerRiskAdapter:
             flags=flags,
             raw=risk,
         )
+
+
+class BirdeyeRiskAdapter:
+    """Read-only client for the Birdeye token-security shape (MEME-RISK-003):
+    holder concentration + creator/deployer concentration coverage. Header-only
+    key (X-API-KEY, x-chain: solana), never logged; returns None on any failure.
+
+    PENDING: the exact Birdeye payload mapping is not yet validated against live
+    responses — until then it parses defensively and returns None (honest
+    fallback) when the shape does not match, so a missing/unrecognized payload
+    simply leaves the holder/creator dimensions uncovered rather than wrong."""
+
+    name = "birdeye"
+    API_BASE = "https://public-api.birdeye.so/defi/token_security"
+
+    def __init__(self, api_key: str = "", timeout: float = 10.0):
+        self._api_key = api_key  # optional; header-only, never logged
+        self.timeout = timeout
+
+    async def assess(self, token_address: str) -> RiskAssessment | None:
+        import httpx
+
+        headers = {"x-chain": "solana"}
+        if self._api_key:
+            headers["X-API-KEY"] = self._api_key
+        url = f"{self.API_BASE}?address={token_address}"
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.get(url, headers=headers)
+                if response.status_code == 429:
+                    logger.warning("Birdeye rate limit hit for %s", token_address)
+                    return None
+                response.raise_for_status()
+                payload = response.json()
+        except (Exception,) as exc:  # httpx/JSON errors — never raise
+            logger.warning("Birdeye fetch failed for %s: %s", token_address, type(exc).__name__)
+            return None
+        return self.parse(token_address, payload)
+
+    def parse(self, token_address: str, payload) -> RiskAssessment | None:
+        if not isinstance(payload, dict):
+            return None
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            return None
+
+        flags: dict = {}
+        top10 = _pct(
+            data.get("top10HolderPercent")
+            or data.get("top10HolderPercentage")
+            or data.get("top10_holder_percent")
+        )
+        if top10 is not None:
+            flags["top10_holder_pct"] = top10
+        creator = _pct(
+            data.get("creatorPercentage")
+            or data.get("creatorBalancePercentage")
+            or data.get("creator_percent")
+        )
+        if creator is not None:
+            flags["creator_pct"] = creator  # creator/deployer concentration
+        for src in ("mutableMetadata", "mintable", "isMintable"):
+            if src in data:
+                flags["mint_authority_enabled"] = _truthy_flag(data.get(src))
+                break
+        for src in ("freezeable", "freezable", "isFreezable"):
+            if src in data:
+                flags["freeze_authority_enabled"] = _truthy_flag(data.get(src))
+                break
+        holder_count = data.get("holderCount") or data.get("holder_count")
+        try:
+            flags["holder_count"] = int(str(holder_count).replace(",", ""))
+        except (TypeError, ValueError):
+            pass
+
+        if not flags:
+            return None  # schema drift / no coverage: honest absence
+        return RiskAssessment(
+            provider=self.name,
+            token_address=token_address,
+            risk_score=None,  # Birdeye exposes facts, not a single score
+            risk_level=None,
+            flags=flags,
+            raw=data,
+        )

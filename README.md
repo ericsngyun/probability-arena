@@ -336,9 +336,24 @@ Six normalized sub-scores (liquidity, holder, authority, market structure, manip
 
 ```bash
 python -m app.cli crypto-risk-assess --limit 50   # assess recent tokens from persisted data (always allowed)
-python -m app.cli crypto-risk-report              # engine mode, level breakdown, worst tokens, reasons, provider health
+python -m app.cli crypto-risk-report              # engine mode, level breakdown, worst tokens, reasons, provider health + holder-coverage overlay
 python -m app.cli crypto-report                   # now shows the engine mode alongside surveillance totals
 ```
+
+### Holder/sniper/insider/bundler/creator coverage (MEME-RISK-003)
+
+**Read-only risk intelligence — it does not trade, paper trade, compute EV, recommend, size, place orders, or use wallets/keys/swaps/signing/execution.** GoPlus alone leaves the sniper/bundler/creator dimensions uncovered; MEME-RISK-003 closes that and makes the gap *explicit*:
+
+- **New Birdeye provider** (`ENABLE_BIRDEYE_RISK`, key optional/header-only): top-holder + **creator/deployer concentration** coverage. Its live payload mapping is **pending validation** — it degrades to honest absence (no fabricated data) if the shape differs, exactly like the TENNIS ESPN provider.
+- **New `creator_concentration` heuristic category** (`CRYPTO_RISK_MAX_CREATOR_PCT=15`) — fires only when a provider actually supplies `creator_pct`, so GoPlus-only assessments are unchanged.
+- **Explicit coverage reporting** — provider absence is stated, never silent:
+
+```bash
+python -m app.cli crypto-provider-health-report   # per-provider status/key-present/dimensions + EXPLICIT coverage gaps + observed coverage
+python -m app.cli meme-risk-coverage-report        # holder-risk coverage for the meme-news lane (which tokens have provider data)
+```
+
+The SolanaTracker adapter (already present) supplies the full sniper/insider/bundler set once its key is configured. Keys are reported present/absent only — never their values. Existing GoPlus/SolanaTracker/MarketOps/EDGE-AUTO/MEME-NEWS behavior is unchanged; flags default off.
 
 `GET /crypto/risk-assessments` · `GET /crypto/tokens/{token_address}/risk` · `GET /crypto/risk-report` serve the same data (raw payloads stay DB-only).
 

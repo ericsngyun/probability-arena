@@ -29,6 +29,7 @@ from app.models import (
     CryptoTokenRiskAssessment,
 )
 from app.services.crypto_risk import (
+    BirdeyeRiskAdapter,
     GoPlusSolanaRiskAdapter,
     RiskAssessment,
     SolanaTrackerRiskAdapter,
@@ -56,6 +57,7 @@ CAT_HOLDER_CONCENTRATION = "high_holder_concentration"
 CAT_SNIPER = "sniper_concentration"
 CAT_INSIDER = "insider_concentration"
 CAT_BUNDLER = "bundler_concentration"
+CAT_CREATOR_CONCENTRATION = "creator_concentration"  # MEME-RISK-003: creator/deployer holdings
 CAT_MINT_AUTHORITY = "mint_authority_enabled"
 CAT_FREEZE_AUTHORITY = "freeze_authority_enabled"
 CAT_FAKE_VOLUME = "fake_volume_suspected"
@@ -69,7 +71,7 @@ SEVERE_CATEGORIES = frozenset(
 )
 # Categories the signal layer treats as holder / supply-control evidence
 HOLDER_CATEGORIES = frozenset(
-    {CAT_HOLDER_CONCENTRATION, CAT_SNIPER, CAT_INSIDER, CAT_BUNDLER}
+    {CAT_HOLDER_CONCENTRATION, CAT_SNIPER, CAT_INSIDER, CAT_BUNDLER, CAT_CREATOR_CONCENTRATION}
 )
 SUPPLY_CATEGORIES = frozenset({CAT_MINT_AUTHORITY, CAT_FREEZE_AUTHORITY})
 
@@ -118,6 +120,7 @@ class RiskEngineConfig:
     max_sniper_pct: float = 20.0
     max_insider_pct: float = 15.0
     max_bundler_pct: float = 25.0
+    max_creator_pct: float = 15.0  # MEME-RISK-003: creator/deployer concentration
     min_pair_age_seconds: int = 300
     version: str = "v1"
 
@@ -130,6 +133,7 @@ class RiskEngineConfig:
             max_sniper_pct=s.crypto_risk_max_sniper_pct,
             max_insider_pct=s.crypto_risk_max_insider_pct,
             max_bundler_pct=s.crypto_risk_max_bundler_pct,
+            max_creator_pct=s.crypto_risk_max_creator_pct,
             min_pair_age_seconds=s.crypto_risk_min_pair_age_seconds,
             version=s.crypto_risk_engine_version,
         )
@@ -182,7 +186,11 @@ class CryptoRiskProviderRegistry:
                         api_key=settings.solana_tracker_api_key, timeout=timeout
                     )
                 )
-            # enable_rugcheck_risk is reserved: no adapter exists in CRYPTO-002
+            if settings.enable_birdeye_risk:
+                self.adapters.append(
+                    BirdeyeRiskAdapter(api_key=settings.birdeye_api_key, timeout=timeout)
+                )
+            # enable_rugcheck_risk / enable_helius are reserved: no adapter yet
 
     @property
     def provider_backed(self) -> bool:
@@ -322,6 +330,7 @@ class HeuristicRiskEngine:
             ("sniper_pct", cfg.max_sniper_pct, CAT_SNIPER, 0.4),
             ("insider_pct", cfg.max_insider_pct, CAT_INSIDER, 0.4),
             ("bundler_pct", cfg.max_bundler_pct, CAT_BUNDLER, 0.4),
+            ("creator_pct", cfg.max_creator_pct, CAT_CREATOR_CONCENTRATION, 0.4),
         )
         if any(key in provider_flags for key, *_ in holder_checks):
             holder_score = 0.0
