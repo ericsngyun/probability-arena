@@ -963,3 +963,33 @@ Config-only change on the host (**no code change, no migration**, HEAD still `02
 **Decision: KEEP.** SolanaTracker is active, 95% success on the batch, one transient timeout, payload valid and usable (holder_risk signals created), and it closes the top10_holder gap. Rollback criteria (high errors / bad latency / zero coverage / unusable payload) are **not** met. Follow-up (separate step): investigate whether SolanaTracker exposes sniper/insider/bundler via additional endpoints to lift those from 0%.
 
 **Rollback (if ever needed):** `ENABLE_SOLANA_TRACKER_RISK=false` in host `.env` (key left in place, unused); reports revert to GoPlus-only next run. No state to unwind.
+
+## POLY-001 — read-only Polymarket market-data observer deployed DARK (2026-07-07, ~22:30 UTC)
+
+Deployed **`02312cd` → `3f4f423`** by `git pull --ff-only`; **migration `0019` → `0020`** (4 new read-only tables). A read-only SECOND prediction-market venue (Polymarket) observed via public/no-auth GETs — Gamma market catalog + CLOB read-only order books. **Manual-only: no timer/loop installed, no API endpoint added, flag stays OFF.** Existing Kalshi/MarketOps/EDGE-AUTO/MEME-NEWS/SolanaTracker/tennis behavior unchanged; no thresholds or provider flags touched.
+
+| item | before | after |
+|---|---|---|
+| pushed / deployed commit | — | **`3f4f423`** (origin/main + EVO-X2) |
+| alembic revision | 0019 | **0020** |
+| `ENABLE_POLYMARKET_SCOUT` | (absent) | **absent → default false** (unchanged) |
+| Polymarket timer / API endpoint | none | **none** (not installed) |
+| backup | — | `data/backups/backup-20260707T222330Z.db.gz` (194.65 MiB, pre-pull) |
+
+**Migration:** `run-baseline --dry-run` applied `0020` (all pipeline stages skipped; only the audit row recorded). `agent-context` confirms revision **0020**; the 4 tables (`polymarket_scout_runs`, `polymarket_markets`, `polymarket_orderbook_snapshots`, `polymarket_domain_inventory_snapshots`) exist.
+
+**Manual smoke (live public API from EVO-X2):**
+- `polymarket-scan-once` → run #1 **ok**: markets=**50**, order books=**20** (errors=**0**), domains=**18**, 5.3s.
+- `polymarket-report` → markets_seen=50, active=50, categories=18, two_sided=28 (rate=0.56), orderbook_enabled=50, orderbook_snapshots=20, provider_errors=0, spread p50=0.001 / p90=0.01. Top markets = live World Cup / Wimbledon / election books.
+- `polymarket-domain-report` → 18 domains with coverage/liquidity/volume/spread proxies (e.g. "World Cup Winner" 9 markets, two_sided_rate=1.0).
+- **Scheduled guard:** `polymarket-scan-once --scheduled` → `ENABLE_POLYMARKET_SCOUT=false; scheduled polymarket cycle skipped` — correct no-op.
+
+**DB impact:** negligible — 50 markets + 20 order books + 18 domain rows + 1 run; not large enough to appear in `db-growth-report`'s largest-tables list (DB 2282 MiB, tick-driven as before). Pruned by `POLYMARKET_RETENTION_DAYS=14` via the existing retention timer; the domain-inventory table is kept as coverage history.
+
+**Existing-system health (unchanged):** MarketOps last run #949 ok, champion/challenger `mean_delta_brier=-0.029173` (identical), p90 **42.6s** (<60s), readiness `ready_for_cycle_scoped_edge_automation`; meme-news 0 errors; providers goplus **active** / solana-tracker **active** (key present) / birdeye **disabled** — all unchanged. All 6 user timers/services **active** (marketops/watcher/baseline/retention/meme-news + **provider-roll-001-t24h still armed**, next fire Wed 2026-07-08 21:00:35 UTC).
+
+**Safety:** frontier-eval AST audit **`safety_ok=True` (59 files)**; expanded dangerous-identifier grep on the POLY-001 files **empty** (no wallet/key/signing/swap/order-placement/EV/sizing surface; authenticated CLOB trading endpoints deliberately not implemented). Cross-venue Kalshi linking is a documented **POLY-002 placeholder only** (no arb/EV/trade-candidate labels). No EV, paper trading, recommendations, sizing, orders, wallets/keys, signing, swaps, execution, or autonomy — POLY-001 is read-only market-data observation, deployed dark/manual-only.
+
+**Decision: KEEP DARK / MANUAL ONLY.** The observer works live (0 errors, valid payloads, useful coverage) but there is no measurement or downstream consumer yet that needs a scheduled cadence — a timer would only grow the DB. Enable a scheduled lane (`ENABLE_POLYMARKET_SCOUT=true` + a systemd timer, dark-first) **only** when POLY-002 (cross-venue linking / live WS) or a concrete measurement use gives the accumulated snapshots a purpose. Until then, manual `polymarket-*` reports on demand.
+
+**Rollback (if ever needed):** revert code with `git reset --hard 02312cd`; migration `0020` only adds isolated tables (drop via `alembic downgrade 0019` — no other table references them). Nothing to unwind operationally (read-only, flag off, no timer).
