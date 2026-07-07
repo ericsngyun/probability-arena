@@ -929,3 +929,37 @@ Deployed **`81ae060` → `00d5db6`** by `git pull --ff-only`; **no migration** (
 - **MEME_NEWS_ATTENTION_ALERT_THRESHOLD tune (RECOMMENDATION ONLY — not applied):** raise `0.6 → 0.70`. Over 24h, `high_attention` fired 72× at 0.6 vs 44× at 0.65 and 21× at 0.70; attention p90 is 0.499, so 0.6 flags the whole top decile while 0.70 keeps only the genuinely notable ~top-2% spikes (~1/h), cutting `high_attention` volume ~70% without losing the strongest signals. Applying it is a live meme-news config change, left to explicit approval.
 
 No EV, no paper trading, no recommendations, no sizing, no orders, no wallets/private keys, no swaps, no signing, no execution, no autonomy — MEME-RISK-003 is read-only risk-coverage intelligence, deployed dark with all providers off.
+
+## PROVIDER-ROLL-001 — SolanaTracker enabled (single-provider keyed rollout) (2026-07-07, ~20:45 UTC)
+
+Config-only change on the host (**no code change, no migration**, HEAD still `02312cd`). Closes the holder-data gap that MEME-RISK-003 made explicit, one provider at a time. `.env` housekeeping: an orphan **bare-value line (no key name, no `=`) was removed** — it predated this session and was silently ignored by the dotenv parser (value never printed); a mispasted `SOLANA_TRACKER_API_KEY` value was corrected to `KEY=value` form. Backups preserved (`.env.bak.*`).
+
+| flag | before | after |
+|---|---|---|
+| `ENABLE_SOLANA_TRACKER_RISK` | false | **true** |
+| `SOLANA_TRACKER_API_KEY` | absent | **present** (`key_present=True`, value never logged) |
+| `ENABLE_GOPLUS_RISK` | true | true (unchanged) |
+| `ENABLE_BIRDEYE_RISK` | (unset → false) | unset → false (**Birdeye NOT enabled**) |
+| `ENABLE_MARKETOPS_AUTOPILOT` | true | true (unchanged) |
+| `MEME_NEWS_ATTENTION_ALERT_THRESHOLD` | 0.70 | 0.70 (unchanged) |
+
+**Provider status (`crypto-provider-health-report`):** solana-tracker **disabled → active** (enabled=True, key_present=True). goplus still active; birdeye still disabled. Covered dimensions now include a second provider for top10_holder/insider/authority/rug/honeypot, and solana-tracker is the sole provider advertising sniper/bundler. `COVERAGE GAPS` narrowed **{sniper, bundler, creator} → {creator}** (creator needs Birdeye, intentionally not enabled).
+
+**Validation batch (`crypto-risk-assess --limit 20`):** SolanaTracker **19 success / 1 error** (single transient `ReadTimeout`); ~1s/token, ~20s total (the one timeout inflated wall time). Live `data.solanatracker.io/tokens/{addr}` calls returned 200 alongside GoPlus.
+
+**Observed coverage (partial win — reported honestly):**
+- `top10_holder` **0% → 25.68% (19/74)** crypto lane / **3.94% (19/482)** meme lane (only newly-assessed tokens carry SolanaTracker data; go-forward rate ≈ provider success rate).
+- `authority` 78.4% (goplus+solana-tracker).
+- `sniper` / `insider` / `bundler` **still 0%** — the `/tokens/{addr}` payload yields holder-concentration but not sniper/insider/bundler under the current parse. **Follow-up**, not a rollback trigger (likely needs additional SolanaTracker endpoints/mapping). `creator` 0% (Birdeye gap, by design).
+
+**Risk labels (`crypto-risk-report`):** by level **low=56, medium=16, severe=2** (was low=62 / medium=9 / **severe=0**) → **2 new severe** (liquidity_removed + fake_volume driven), medium up. New reason **`high_holder_concentration`=13** and new signal category **`holder_risk`=13** (SolanaTracker top-holder derived). `rug_risk` 181→188 (+7 from new assessments). **`suspicious_supply_control` UNCHANGED at 47** — no behavior drift in that signal.
+
+**MarketOps / desk health unchanged:** last run ok, champion/challenger `mean_delta_brier=-0.029173` (identical), **MarketOps p90 = 40.896s** (<60s), readiness `ready_for_cycle_scoped_edge_automation`. **DB impact negligible:** 2202 → 2238 MiB is tick-driven; crypto_token_risk_assessments +426 rows / +0.18 MiB from the batch. Pre-existing `db_growth_warning` (tick tables, 3d retention) is unrelated.
+
+**Safety:** no code changed → surface identical to `02312cd`. Canonical + expanded grep clean (only boundary docstrings; expanded dangerous-identifier grep empty outside the known Kalshi WS auth); frontier-eval AST audit **`safety_ok=True`**. No EV, paper trading, recommendations, sizing, orders, wallets/keys, swaps, jupiter/tx signing, execution, or autonomy — SolanaTracker is read-only risk intelligence only.
+
+**Recurring OpEx (accounting/ops metadata only — NOT a PnL/EV/profit feature):** SolanaTracker subscription **≈ $58–59/month USD**, recorded as a data-provider operating cost for a *future* net-profit dashboard. No profit/EV/PnL/trading capability is introduced or implied by this note.
+
+**Decision: KEEP.** SolanaTracker is active, 95% success on the batch, one transient timeout, payload valid and usable (holder_risk signals created), and it closes the top10_holder gap. Rollback criteria (high errors / bad latency / zero coverage / unusable payload) are **not** met. Follow-up (separate step): investigate whether SolanaTracker exposes sniper/insider/bundler via additional endpoints to lift those from 0%.
+
+**Rollback (if ever needed):** `ENABLE_SOLANA_TRACKER_RISK=false` in host `.env` (key left in place, unused); reports revert to GoPlus-only next run. No state to unwind.
