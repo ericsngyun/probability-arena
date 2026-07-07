@@ -96,7 +96,7 @@ instead of failing; Postgres unaffected), `BACKUP_RETENTION_DAYS=30`,
 |---|---|---|
 | `ENABLE_CRYPTO_RISK_ENGINE` | false | Risk engine during crypto scans (heuristics + enabled providers); `crypto-risk-assess` works manually regardless |
 | `ENABLE_GOPLUS_RISK` | false | GoPlus Solana Token Security adapter (`GOPLUS_API_KEY` optional, header-only, never printed) |
-| `ENABLE_SOLANA_TRACKER_RISK` | false | SolanaTracker risk adapter — full holder set: sniper/insider/bundler/top10 (`SOLANA_TRACKER_API_KEY` optional, header-only, never printed) |
+| `ENABLE_SOLANA_TRACKER_RISK` | false | SolanaTracker risk adapter — full holder set from `/tokens/{address}`: **sniper/insider/bundler**/top10 (SOLANA-TRACKER-002: all four parsed from the risk object's `totalPercentage`, one request; `SOLANA_TRACKER_API_KEY` optional, header-only, never printed) |
 | `ENABLE_BIRDEYE_RISK` | false | **MEME-RISK-003** Birdeye holder + creator/deployer-concentration adapter (`BIRDEYE_API_KEY` optional, header-only `X-API-KEY`, never printed; live payload mapping PENDING validation — degrades to honest absence if the shape differs) |
 | `ENABLE_RUGCHECK_RISK` / `ENABLE_HELIUS` | false | **Reserved only** — no adapter exists yet |
 

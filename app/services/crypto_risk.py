@@ -92,6 +92,18 @@ def _pct(value) -> float | None:
     return round(number * 100, 4) if 0 <= number <= 1 else round(number, 4)
 
 
+def _percent_direct(value) -> float | None:
+    """A value already expressed as a 0-100 percentage (e.g. SolanaTracker's
+    `totalPercentage`). Unlike `_pct` this applies NO ratio heuristic, so a low
+    percentage like 0.7 stays 0.7% (not 70%). Clamped to [0, 100]. None on
+    non-numeric input (graceful absence)."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return round(min(max(number, 0.0), 100.0), 4)
+
+
 def _truthy_flag(value) -> bool:
     """Provider booleans arrive as bool, "1"/"0", or {"status": "1"}."""
     if isinstance(value, dict):
@@ -229,15 +241,26 @@ class SolanaTrackerRiskAdapter:
             flags["mint_authority_enabled"] = True
         if any("freeze" in name for name in lowered):
             flags["freeze_authority_enabled"] = True
+        # snipers/insiders/bundlers arrive as
+        # {"count", "totalBalance", "totalPercentage", "wallets"} (SOLANA-TRACKER-002:
+        # confirmed live — the field is `totalPercentage`, a 0-100 percent, NOT the
+        # old `percentage`). top10 arrives as a bare percentage number. Missing keys
+        # stay absent (graceful) so a coverage gap is never fabricated.
         for key, flag in (
             ("snipers", "sniper_pct"),
             ("insiders", "insider_pct"),
             ("bundlers", "bundler_pct"),
             ("top10", "top10_holder_pct"),
         ):
-            value = _pct((risk.get(key) or {}).get("percentage")) if isinstance(
-                risk.get(key), dict
-            ) else _pct(risk.get(key))
+            raw = risk.get(key)
+            if isinstance(raw, dict):
+                # prefer the confirmed 0-100 `totalPercentage`; fall back to the
+                # legacy `percentage` (ratio shape) only if totalPercentage is absent
+                value = _percent_direct(raw.get("totalPercentage"))
+                if value is None:
+                    value = _pct(raw.get("percentage"))
+            else:
+                value = _pct(raw)
             if value is not None:
                 flags[flag] = value
 

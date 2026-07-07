@@ -353,7 +353,7 @@ python -m app.cli crypto-provider-health-report   # per-provider status/key-pres
 python -m app.cli meme-risk-coverage-report        # holder-risk coverage for the meme-news lane (which tokens have provider data)
 ```
 
-The SolanaTracker adapter (already present) supplies the full sniper/insider/bundler set once its key is configured. Keys are reported present/absent only — never their values. Existing GoPlus/SolanaTracker/MarketOps/EDGE-AUTO/MEME-NEWS behavior is unchanged; flags default off.
+The SolanaTracker adapter supplies the full **sniper/insider/bundler** set from the same `/tokens/{address}` risk object (SOLANA-TRACKER-002: the fields arrive as `totalPercentage`, parsed directly — no extra request, no budget impact; live coverage sniper/insider ≈ 100%, bundler ≈ 83%). Keys are reported present/absent only — never their values. Existing GoPlus/MarketOps/EDGE-AUTO/MEME-NEWS behavior is unchanged; flags default off.
 
 `GET /crypto/risk-assessments` · `GET /crypto/tokens/{token_address}/risk` · `GET /crypto/risk-report` serve the same data (raw payloads stay DB-only).
 
