@@ -109,6 +109,33 @@ Thresholds: `CRYPTO_RISK_MIN_LIQUIDITY_USD=5000`, `CRYPTO_RISK_MAX_TOP_HOLDER_PC
 `crypto-provider-health-report` / `meme-risk-coverage-report` (gaps are stated,
 not silent).
 
+### SolanaTracker request budget (PROVIDER-BUDGET-001 — cost/usage observability, never trading)
+
+Not feature flags — **budget knobs** for the SolanaTracker Advanced plan
+(**≈ $58–59/month USD** recurring data-provider OpEx, official ceiling **200,000
+requests/month**). Usage is derived read-only from `crypto_token_risk_assessments`
+(no new table). `crypto-provider-budget-report` shows plan/limit, requests
+today/hour/month, estimated monthly run-rate, remaining daily/monthly budget,
+success/error rate, coverage-per-request, and a keep/tune recommendation.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `SOLANA_TRACKER_MONTHLY_REQUEST_LIMIT` | 200000 | official plan ceiling (reported; run-rate compared against it) |
+| `SOLANA_TRACKER_DAILY_REQUEST_BUDGET` | 5000 | operational per-day target |
+| `SOLANA_TRACKER_HOURLY_REQUEST_BUDGET` | 200 | operational per-hour target (reported) |
+| `SOLANA_TRACKER_PER_RUN_LOOKUP_LIMIT` | 25 | max SolanaTracker lookups per scan run (hard per-run cap) |
+| `SOLANA_TRACKER_CACHE_TTL_HOURS` | 24 | dedupe horizon (run-rate/report context) |
+| `SOLANA_TRACKER_WARN_DAILY_REQUESTS` | 4000 | log + report a warning at/above this day total |
+| `SOLANA_TRACKER_STOP_DAILY_REQUESTS` | 6000 | at/above this, the engine **skips** optional SolanaTracker lookups for the rest of the day |
+
+The guardrail can only **skip** SolanaTracker (per-run cap or daily STOP) — a
+skipped token falls back to GoPlus + heuristics (a fully supported mode). It
+never adds calls, never changes **GoPlus/Birdeye** behavior, and carries no EV/
+trade/sizing/order/wallet/signing/execution. Defaults are far above current
+usage, so under normal load nothing is skipped; the STOP is a cost circuit
+breaker. Operational targets: ≤150k/month, ≤5k/day, ≤200/hour, ≤20–30 per
+10-minute window.
+
 ## Crypto Arena tuning (CRYPTO-001 — read-only surveillance; no wallets/swaps/execution)
 
 `CRYPTO_CHAIN=solana`, `CRYPTO_PROVIDER=dexscreener`,

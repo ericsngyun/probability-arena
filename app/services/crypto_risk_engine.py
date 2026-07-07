@@ -196,12 +196,19 @@ class CryptoRiskProviderRegistry:
     def provider_backed(self) -> bool:
         return bool(self.adapters)
 
-    async def gather(self, token_address: str) -> tuple[list[RiskAssessment], dict]:
+    async def gather(
+        self, token_address: str, skip: set[str] | None = None
+    ) -> tuple[list[RiskAssessment], dict]:
         """(successful provider reads, {provider: error-note}) — one bad
-        provider never blocks the others or the heuristics."""
+        provider never blocks the others or the heuristics. `skip` names
+        adapters to bypass this call (PROVIDER-BUDGET-001 budget guardrail);
+        a skipped adapter is simply not called — it is never an error."""
+        skip = skip or set()
         results: list[RiskAssessment] = []
         errors: dict = {}
         for adapter in self.adapters:
+            if adapter.name in skip:
+                continue
             try:
                 assessment = await adapter.assess(token_address)
                 if assessment is not None:
@@ -423,6 +430,27 @@ class CryptoRiskEngine:
         self.heuristics = heuristics or HeuristicRiskEngine(self.config)
         self.chain = chain or settings.crypto_chain
 
+        # PROVIDER-BUDGET-001: SolanaTracker request guardrail. One engine
+        # instance == one scan run (get_risk_engine() returns a fresh engine per
+        # scan, and crypto-risk-assess uses one engine per command), so the
+        # per-run counter bounds ST lookups per run. The daily-stop decision is
+        # cached briefly to avoid a DB count per token. The guardrail only ever
+        # SKIPS SolanaTracker (falling back to GoPlus+heuristics) — never GoPlus/
+        # Birdeye, never adds calls, never trades.
+        from app.services.provider_budget import (
+            SolanaTrackerBudgetConfig,
+            SolanaTrackerBudgetService,
+        )
+
+        self._budget_cfg = SolanaTrackerBudgetConfig.from_settings(settings)
+        self._budget = SolanaTrackerBudgetService(self._budget_cfg)
+        self._has_solana_tracker = any(
+            getattr(a, "name", None) == "solana-tracker" for a in self.registry.adapters
+        )
+        self._st_lookups_this_run = 0
+        self._st_daily_stop: bool | None = None
+        self._st_daily_checked_at: datetime | None = None
+
     async def evaluate(
         self,
         session: Session,
@@ -440,7 +468,13 @@ class CryptoRiskEngine:
         if address is None:
             raise ValueError("evaluate() needs a token, tick, or explicit token_address")
 
-        provider_results, provider_errors = await self.registry.gather(address)
+        skip = None
+        if self._has_solana_tracker and self._should_skip_solana_tracker(session):
+            skip = {"solana-tracker"}
+        provider_results, provider_errors = await self.registry.gather(address, skip=skip)
+        if self._has_solana_tracker and skip is None:
+            # SolanaTracker was actually attempted for this token this run.
+            self._st_lookups_this_run += 1
         provider_flags = merge_provider_flags(provider_results)
         for result in provider_results:
             if result.risk_score is not None:
@@ -472,6 +506,33 @@ class CryptoRiskEngine:
         if persist:
             self.persist(session, evaluation)
         return evaluation
+
+    def _should_skip_solana_tracker(self, session: Session) -> bool:
+        """PROVIDER-BUDGET-001 guardrail: skip the SolanaTracker lookup when
+        this run has hit its per-run lookup cap OR the day's requests have
+        reached the STOP threshold. The daily-stop count is cached briefly so a
+        multi-token scan does not run a DB count per token. Skipping is not an
+        error — the token falls back to GoPlus + heuristics (a supported mode);
+        GoPlus/Birdeye are never affected."""
+        if self._st_lookups_this_run >= self._budget_cfg.per_run_lookup_limit:
+            return True
+        now = _now()
+        stale = (
+            self._st_daily_checked_at is None
+            or (now - self._st_daily_checked_at).total_seconds() >= 60
+        )
+        if stale:
+            today = self._budget.requests_today(session, now)
+            self._st_daily_stop = today >= self._budget_cfg.stop_daily_requests
+            self._st_daily_checked_at = now
+            if self._st_daily_stop:
+                logger.warning(
+                    "SolanaTracker daily STOP threshold reached (%d >= %d); skipping "
+                    "optional lookups (fallback: GoPlus+heuristics)",
+                    today,
+                    self._budget_cfg.stop_daily_requests,
+                )
+        return bool(self._st_daily_stop)
 
     def persist(self, session: Session, evaluation: RiskEvaluation) -> CryptoTokenRiskAssessment:
         row = CryptoTokenRiskAssessment(

@@ -95,6 +95,20 @@ responses first, as its mapping is pending validation and will degrade to honest
 absence until confirmed). Read-only intelligence; no EV/trade/sizing/orders/
 wallets/execution. No migration.
 
+SolanaTracker request budget (PROVIDER-BUDGET-001): `crypto-provider-budget-report`
+shows SolanaTracker usage against its plan (SolanaTracker Advanced **≈ $58–59/month
+USD**, 200k requests/month) — requests today/hour/month, estimated monthly
+run-rate, remaining daily/monthly budget, success/error rate, coverage-per-request,
+and a keep/tune recommendation. Usage is derived read-only from existing
+assessments (**no new table, no migration**). The guardrail can only **skip**
+optional SolanaTracker lookups when a scan hits `SOLANA_TRACKER_PER_RUN_LOOKUP_LIMIT`
+(25) or the day reaches `SOLANA_TRACKER_STOP_DAILY_REQUESTS` (6000) — skipped tokens
+fall back to GoPlus+heuristics; GoPlus/Birdeye are never affected. Defaults sit far
+above current usage, so nothing is skipped under normal load (the STOP is a cost
+circuit breaker). To re-tune, edit the `SOLANA_TRACKER_*` budget keys in `.env`.
+Cost note is accounting/ops metadata only — no EV/trade/sizing/orders/wallets/
+signing/swaps/execution.
+
 Crypto Arena (CRYPTO-001) has **no service/timer** — validate with manual passes only:
 `crypto-scan-once --limit 25` → `crypto-report` → `crypto-signals-recent`. The
 migration (`0014`) applies on the first command. `ENABLE_CRYPTO_SCOUT` stays

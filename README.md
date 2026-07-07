@@ -357,6 +357,16 @@ The SolanaTracker adapter (already present) supplies the full sniper/insider/bun
 
 `GET /crypto/risk-assessments` · `GET /crypto/tokens/{token_address}/risk` · `GET /crypto/risk-report` serve the same data (raw payloads stay DB-only).
 
+### SolanaTracker request budget (PROVIDER-BUDGET-001)
+
+**Provider cost/usage observability — not trading.** The SolanaTracker Advanced plan (**≈ $58–59/month USD** recurring data-provider OpEx, official ceiling **200,000 requests/month**) gets request accounting + budget guardrails. Usage is derived read-only from the existing `crypto_token_risk_assessments` rows (no new table).
+
+```bash
+python -m app.cli crypto-provider-budget-report   # plan/limit, requests today/hour/month, run-rate, remaining budget, success/error rate, coverage-per-request, keep/tune rec
+```
+
+Operational targets: ≤150k/month, ≤5k/day, ≤200/hour, ≤20–30 lookups per 10-minute window. The guardrail can only **skip** optional SolanaTracker lookups — when a scan hits `SOLANA_TRACKER_PER_RUN_LOOKUP_LIMIT` (25) or the day reaches `SOLANA_TRACKER_STOP_DAILY_REQUESTS` (6000), further SolanaTracker calls are skipped and those tokens fall back to **GoPlus + heuristics** (a fully supported mode). It never adds calls, never changes **GoPlus/Birdeye** behavior, and defaults sit far above current usage so nothing is skipped under normal load — the STOP is a cost circuit breaker. Skips are logged and the report shows the WARN/STOP state, so the budget is never silently exceeded. No EV, paper trading, recommendations, sizing, orders, wallets/keys, signing, swaps, or execution.
+
 ## MarketOps Autopilot (OPS-006)
 
 **Read-only coordination, not new capability.** One autopilot cycle sequences the existing services: inspect fresh signals → auto-promote top-N → process promoted (fresh enrichment/assessment/research/forecast via whatever the env flags select) → crypto scan → outcome sync → forecast scoring → champion/challenger snapshot → local DB alerts → one `marketops_runs` audit row. Every stage is individually guarded — a failing stage records its error in the run summary plus a `provider_error` alert and the cycle continues (`MARKETOPS_FAIL_FAST=false`). The autopilot can promote, process, research, forecast, score, and report; it **cannot trade, paper trade, calculate EV, size positions, place orders, or move money** — those capabilities do not exist anywhere in this codebase.

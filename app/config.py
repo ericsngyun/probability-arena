@@ -241,6 +241,19 @@ class Settings(BaseSettings):
     goplus_api_key: str = ""
     enable_solana_tracker_risk: bool = False
     solana_tracker_api_key: str = ""
+    # PROVIDER-BUDGET-001: SolanaTracker Advanced request accounting + budget
+    # guardrails (cost/usage OBSERVABILITY only; plan ~$58-59/mo, 200k req/mo).
+    # The guardrails can only SKIP optional SolanaTracker lookups when over
+    # budget — tokens then fall back to GoPlus+heuristics (a supported mode).
+    # They never add calls, never touch GoPlus/Birdeye, and attach no EV/
+    # trade/sizing/order/wallet/signing/execution semantics.
+    solana_tracker_monthly_request_limit: int = 200000  # official plan ceiling
+    solana_tracker_daily_request_budget: int = 5000     # operational target/day
+    solana_tracker_hourly_request_budget: int = 200     # operational target/hour
+    solana_tracker_per_run_lookup_limit: int = 25       # max ST lookups per scan run
+    solana_tracker_cache_ttl_hours: int = 24            # dedupe horizon (report/run-rate context)
+    solana_tracker_warn_daily_requests: int = 4000      # log/report warning at/above
+    solana_tracker_stop_daily_requests: int = 6000      # skip optional ST calls at/above
     enable_rugcheck_risk: bool = False  # reserved: no RugCheck adapter in CRYPTO-002
     crypto_risk_min_liquidity_usd: float = 5000.0
     crypto_risk_max_top_holder_pct: float = 20.0

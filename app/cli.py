@@ -2146,6 +2146,50 @@ async def crypto_provider_health_report(session=None) -> int:
             session.close()
 
 
+async def crypto_provider_budget_report(session=None) -> int:
+    """Print SolanaTracker request accounting + budget status (PROVIDER-BUDGET-001,
+    read-only cost/usage observability). Returns 0."""
+    from app.services.provider_budget import SolanaTrackerBudgetService
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        r = SolanaTrackerBudgetService().status(session)
+        print(f"SolanaTracker budget — {r.plan_name} ({r.monthly_cost_usd}/month) — read-only cost/usage")
+        print(r.note)
+        print(
+            f"enabled={r.provider_enabled}  monthly_limit={r.monthly_request_limit:,}  "
+            f"daily_budget={r.daily_budget:,}  hourly_budget={r.hourly_budget}  "
+            f"per_run_lookup_limit={r.per_run_lookup_limit}  cache_ttl_hours={r.cache_ttl_hours}"
+        )
+        print(
+            f"requests: hour={r.requests_this_hour} today={r.requests_today} "
+            f"month={r.requests_this_month} rolling_24h={r.rolling_24h_requests}"
+        )
+        print(
+            f"estimated monthly run-rate={r.estimated_monthly_run_rate:,}  "
+            f"remaining_daily={r.remaining_daily_budget:,}  remaining_monthly={r.remaining_monthly_budget:,}"
+        )
+        print(
+            f"thresholds: warn_daily={r.warn_daily:,} (over={r.over_warn})  "
+            f"stop_daily={r.stop_daily:,} (over={r.over_stop})  "
+            f"hourly (over={r.over_hourly})"
+        )
+        print(
+            f"success={r.success_count} error={r.error_count} success_rate={r.success_rate}  "
+            f"coverage_per_request={r.coverage_per_request}"
+        )
+        print(f"recommendation: {r.recommendation}")
+        return 0
+    finally:
+        if owns_session:
+            session.close()
+
+
 async def meme_risk_coverage_report(hours: int = 24, session=None) -> int:
     """Print holder-risk coverage for the meme-news lane (MEME-RISK-003,
     read-only). Returns tokens covered in the window."""
@@ -2713,6 +2757,10 @@ def build_parser() -> argparse.ArgumentParser:
         "crypto-provider-health-report",
         help="Crypto risk provider coverage/health (explicit gaps; read-only)",
     )
+    subparsers.add_parser(
+        "crypto-provider-budget-report",
+        help="SolanaTracker request accounting + budget status (read-only cost/usage)",
+    )
     mrc_parser = subparsers.add_parser(
         "meme-risk-coverage-report",
         help="Holder-risk coverage for the meme-news lane (read-only)",
@@ -2938,6 +2986,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if count >= 0 else 1
     if args.command == "crypto-provider-health-report":
         return asyncio.run(crypto_provider_health_report())
+    if args.command == "crypto-provider-budget-report":
+        return asyncio.run(crypto_provider_budget_report())
     if args.command == "meme-risk-coverage-report":
         n = asyncio.run(meme_risk_coverage_report(hours=args.hours))
         return 0 if n >= 0 else 1
