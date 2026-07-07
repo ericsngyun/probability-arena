@@ -1022,3 +1022,29 @@ Deployed **`44bfc0e` → `ccbc0cf`** by `git pull --ff-only`; **no migration** (
 **Safety:** frontier-eval AST audit **`safety_ok=True` (60 files)**; expanded dangerous-identifier grep on `provider_budget.py` **empty**. The guardrail only ever SKIPS SolanaTracker (never adds calls, never touches GoPlus/Birdeye); the ~$58–59/mo cost note is accounting metadata only. No EV, paper trading, recommendations, sizing, orders, wallets/keys, signing, swaps, execution, or autonomy.
 
 **Decision: KEEP at per-run=15.** Actual run-rate (~27k/mo) sits far below the 150k target with the conservative cap, and coverage is unharmed — headroom exists to relax the cap later (e.g. 20–25) if broader per-run ST coverage is ever wanted, but 15 is the safe default that matches the ≤5k/day target. **Rollback:** raise/remove the `SOLANA_TRACKER_*` keys in `.env` (defaults restore per-run=25); or `git reset --hard 44bfc0e` (no migration/state to unwind — accounting is derived, guardrail only ever reduces calls).
+
+## SOLANA-TRACKER-002 — sniper/insider/bundler parser fix deployed (2026-07-07, ~23:35 UTC)
+
+Deployed **`ccbc0cf` → `451580f`** by `git pull --ff-only`; **no migration** (alembic `0020` unchanged). Read-only risk-intelligence field mapping: the SolanaTracker `/tokens/{address}` risk object already carried sniper/insider/bundler under `totalPercentage` (not the old `percentage` the parser read) — the fix parses it directly (new `_percent_direct`, no ratio mis-scaling of sub-1% values), keeping legacy fallbacks and staying absent on missing keys. **No new endpoint, no extra request** — same call, more coverage. SolanaTracker stays enabled, Birdeye disabled, GoPlus unchanged, budget caps unchanged (per-run 15).
+
+**No extra requests / no new endpoint (validated):** `crypto-risk-assess --limit 40` → SolanaTracker HTTP calls **15** (per-run cap, unchanged), GoPlus **40**, the only ST endpoint hit was `data.solanatracker.io/tokens` (no new pattern), 0 STOP skips. Budget today moved **970 → 985 (+15 = exactly the cap)** — the parser fix costs zero additional API calls.
+
+**Pre/post coverage (observed, latest-per-token):**
+
+| dimension | before (`ccbc0cf`) | after (`451580f`) |
+|---|---|---|
+| top10_holder | 32/62 (51.6%) | 31/61 (50.8%) |
+| **sniper** | **0/62 (0%)** | **15/61 (24.6%)** |
+| **insider** | **0/62 (0%)** | **15/61 (24.6%)** |
+| **bundler** | **0/62 (0%)** | **15/61 (24.6%)** |
+| authority | 44/62 (71.0%) | 41/61 (67.2%) |
+
+(The 15 = the tokens SolanaTracker-assessed in the validation run under the per-run cap; coverage grows as the always-on lane reassesses more tokens. meme-news lane sniper/insider/bundler likewise moved 0% → 3.2%.)
+
+**Risk-label shifts (stable, no explosion):** levels `low=43/medium=18/severe=1` → `low=41/medium=19/severe=1`. **No `sniper_concentration`/`insider_concentration`/`bundler_concentration` reasons fired** — current tokens sit under the 20/15/25 thresholds (observed bundler values ~5–19%, snipers/insiders mostly 0%), so the newly-populated flags register as coverage without tripping the categories. Signals: holder_risk 239 → 242, rug_risk 195 → 195, suspicious_supply_control 47 → 47 (unchanged). This is the expected, measured outcome — more accurate holder intelligence with no runaway labels.
+
+**Provider health / budget:** SolanaTracker success/error 974/99 → **success_rate 90.8%** (no ST errors added; GoPlus errors 18→20 pre-existing). Budget recommendation **KEEP** (today 985, run-rate comfortably under target). **MarketOps unchanged:** last run #961 ok, champion/challenger `-0.029173` (identical), **p90 44.2s** (no latency regression). **DB impact negligible:** no new table; `crypto_token_risk_assessments` 32,232 rows / 13.36 MiB; DB 2314 MiB (tick-driven).
+
+**Safety:** frontier-eval AST **`safety_ok=True` (60 files)**; canonical + expanded dangerous-identifier grep on `crypto_risk.py` **clean**. Read-only field mapping only — no EV, paper trading, recommendations, sizing, orders, wallets/keys, signing, swaps, execution, or autonomy. SolanaTracker Advanced remains **≈ $58–59/month USD** recurring data-provider OpEx (accounting metadata).
+
+**Decision: KEEP.** All KEEP criteria met — coverage increased materially (0% → 24.6% on three dimensions, at zero extra request cost), provider errors acceptable, no latency/DB regression, no safety issue, no label explosion. No rollback trigger present. **Rollback (if ever):** `git reset --hard ccbc0cf` (no migration/state; the fix only changes parsing) — SolanaTracker key/flag/budget caps stay as-is since provider behavior is not the issue.
