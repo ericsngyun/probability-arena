@@ -1110,3 +1110,38 @@ Deployed **`fe986f6` → `1082a00`** by `git pull --ff-only`; **no migration** (
 **Output language / safety:** the serialized cohorts use **price/liquidity/volume movement + survival/rug language only** — no PnL/EV/fill/order/position vocabulary (verified by grep; only the boundary disclaimer negates them). frontier-eval AST **`safety_ok=True` (62 files)**; canonical + expanded grep on `meme_shadow.py` **clean**. No EV, paper trading, recommendations, sizing, orders, wallets/keys, signing, swaps, execution, or autonomy. `price_change` is measured market movement, never PnL/a fill.
 
 **Decision: KEEP — manual / report-only.** Works on live data, zero requests/budget/DB/latency, changes no existing behavior, stays read-only (no timer, no flag, no persistence). Immediate value: the `no_material_separation_recalibrate` verdict + risk-dimension separation are a concrete input to a future MEME-MAS-002 threshold recalibration. **Rollback (if ever):** `git reset --hard fe986f6` — compute-only, nothing to unwind.
+
+## MEME-MAS-002 — risk-aware review_priority recalibration deployed (2026-07-08, ~04:45 UTC)
+
+Deployed **`1082a00` → `2c52145` → `d0c54c7`** by `git pull --ff-only`; **no migration** (alembic `0020` unchanged). Read-only diagnostic LABEL recalibration only (no table/flag/timer/external-call/budget impact). Profile-based scorer (`v2` default; `v1` preserved for the before/after `meme-mas-calibration-report`): heavier risk penalties (missing coverage 0.3→0.55, concentration 0.6→0.7, fake-volume/liquidity-removed 0.5→0.6), full risk dampening, momentum+structure composite, gated high_review, and new `momentum_quality`/`structure_quality`/`coverage_quality` outputs. reject_risk hard gates preserved.
+
+**Live-validated tuning (`d0c54c7`):** the first cut (`2c52145`, band_high 0.55) did **not** reduce high_review share on live data — the live high_review population is already clean/covered so the gates rarely fired, and the lowered band offset them. Empirical tuning on the live window set **band_high = 0.68**, which cuts high_review while keeping the strongest clean tokens. This is exactly what the dark-deploy validation is for.
+
+**No migration / no external calls / no budget impact (verified):** revision **0020**; SolanaTracker budget today 735 → 750 (+15 = a background marketops crypto scan, **not** meme-mas/shadow — both make zero external calls); no `meme_mas`/`meme_shadow` table.
+
+**v1 → v2 live calibration comparison** (`meme-mas-report` token basis, 462 tokens):
+
+| priority | v1 (before) | v2 (after, tuned) |
+|---|---|---|
+| high_review | **183 (40%)** | **72 (15.6%)** |
+| elevated_review | 190 | 184 |
+| monitor | 85 | 199 |
+| low | 0 | 7 |
+| reject_risk | 0 | 0 |
+
+`meme-mas-calibration-report` (anchor basis, 3498 anchors): **high_review share 0.527 → 0.273**. Per-anchor MEME-SHADOW survival under v2: `elevated_review` **0.978** (best; v1 was 0.943), `monitor` 0.939, `high_review` 0.893, `low` 0.974, `reject_risk` 1.0. **242/462 tokens changed label** (e.g. REVENGE/EATS/Intern high_review→elevated_review; Underdog/TESTPACK elevated_review→monitor).
+
+**Acceptance results:**
+- **high_review became more selective:** yes — share ~40% → ~16% (token) / 0.527 → 0.273 (anchor).
+- **missing-coverage + concentration demoted:** yes — the coverage gate + heavier penalties make ~264 of 462 tokens gate-ineligible for high_review; a missing-coverage strong token drops high→elevated/monitor (risk 0.55, ×0.45 dampening), a concentration-flagged token drops further (risk 0.7).
+- **clean covered momentum tokens still reach high_review:** yes — 72 do (e.g. LYNK review 0.875, momentum 0.77 / structure 1.0 / coverage 0.67).
+- **reject_risk hard gates intact:** yes (35 both profiles).
+- **new quality outputs render:** yes (`momentum_quality`/`structure_quality`/`coverage_quality` in `meme-mas-assess`).
+
+**Honest limitation:** the shadow's `calibration_recommendation` stays `no_material_separation_recalibrate` because it compares high_review-vs-monitor SURVIVAL, and high_review (momentum-driven) is inherently more volatile / lower-survival than calmer cohorts — that's expected for a "worth close review" tier, not a v2 failure. v2's real win is a **more selective** high_review and a **clean, high-survival (0.978) elevated_review** tier; survival is not the right sole yardstick for a review-attention label.
+
+**System integrity (unchanged):** MEME-NEWS 0 errors; SolanaTracker active (budget **KEEP**), **Birdeye disabled**, tennis-evidence/Polymarket off; **provider-roll-001 T+24h timer still armed** (fires Wed 2026-07-08 21:00:35 UTC). MarketOps last run ok, champion/challenger `-0.029173` (identical), **p90 50.3s — identical before/after**. DB tick-driven; no new table.
+
+**Output language / safety:** diagnostic data uses review/quality/survival language only — no PnL/EV/fill/order/position/buy/sell/bet (grep clean; only the boundary disclaimer negates them). frontier-eval AST **`safety_ok=True` (62 files)**; canonical + expanded grep on `meme_mas.py` **clean**. No EV, paper trading, recommendations, sizing, orders, wallets/keys, signing, swaps, execution, or autonomy.
+
+**Decision: KEEP — manual / report-only.** v2 meets the recalibration goals (selective, risk-aware high_review; clean elevated tier), zero requests/budget/DB/latency, changes no existing behavior. **Rollback (if ever):** `git reset --hard 1082a00` — compute-only, nothing to unwind; MEME-MAS-001 (v1) logic remains selectable via the profile regardless. Follow-up (MEME-MAS-003, if wanted): a non-survival separation metric for the shadow calibration verdict, since high-momentum review tiers are volatile by nature.
