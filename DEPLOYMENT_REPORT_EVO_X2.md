@@ -1083,3 +1083,30 @@ Provider coverage 361/464 (103 tokens missing provider risk data → surfaced as
 **Safety:** frontier-eval AST **`safety_ok=True` (61 files)**; canonical + expanded dangerous-identifier grep on `meme_mas.py` **clean**. No EV, paper trading, recommendations, sizing, orders, wallets/keys, signing, swaps, execution, or autonomy. `review_priority` is human-review triage; `reject_risk` is avoid/flag for review, never a trade direction.
 
 **Decision: KEEP — manual / report-only.** The diagnostic works on live data, adds zero requests / zero budget / zero DB / zero latency, and changes no existing behavior. It stays **manual and read-only** (no timer, no flag, no persistence). Follow-up: MEME-MAS-002 threshold calibration once review_priority is tracked over time. **Rollback (if ever):** `git reset --hard 451580f` — no migration/state/flag to unwind (compute-only).
+
+## MEME-SHADOW-001 — review_priority follow-through analysis deployed (2026-07-08, ~04:25 UTC)
+
+Deployed **`fe986f6` → `1082a00`** by `git pull --ff-only`; **no migration** (alembic `0020` unchanged). Read-only calibration MEASUREMENT: reconstructs the MEME-MAS `review_priority` at each historical attention snapshot (reusing the MEME-MAS agents, risk assessment as-of that moment) and measures the SAME token's later trajectory from its own later snapshots. **No table, no flag, no timer, no external call, no SolanaTracker budget impact** — manual `meme-shadow-report` only.
+
+**No migration / no external calls / no budget impact (verified):** revision stayed **0020**, no alembic files in the pull. SolanaTracker budget was **today=660 before AND after** running the 24h + 48h reports — the layer makes **zero** external requests (compute-on-demand). No `meme_shadow` table.
+
+**`meme-shadow-report` results (live):** 24h window = **3470 anchors** · 48h window = **6911 anchors**. Horizon coverage 24h: 15m 3443 / 1h 2581 / 6h 124 / 24h 11 (5m=0 — the ~10-min meme-news scan cadence has no snapshot near 5m). **Calibration recommendation (both windows): `no_material_separation_recalibrate`.**
+
+**Outcome by review_priority (24h):**
+
+| review_priority | n | survival | rug_incidence | price_mean 1h | attn_persist 1h |
+|---|---|---|---|---|---|
+| monitor | 485 | 0.972 | 0.025 | −5.1% | 0.41 |
+| elevated_review | 1111 | 0.942 | 0.048 | −6.9% | 0.43 |
+| high_review | 1839 | 0.915 | 0.049 | +4.4% | 0.21 |
+| reject_risk | 35 | 1.000 | 0.000 | −5.7% | 1.00 |
+
+**Survival / rug / liquidity-removed:** survival is high across all cohorts (0.91–1.0) and **mildly INVERTED vs review_priority** (monitor 0.972 > high_review 0.915) — the primary reason for the `recalibrate` verdict. Short-term price DOES separate (high_review +4.4% at 1h vs monitor/elevated negative), but 24h means are outlier-dominated (high_review 24h mean skewed by a few large movers — median is the robust read). **The risk dimensions carry the real predictive signal:** by risk reason (48h) `missing_provider_coverage` n=257 survival **0.835** / rug **0.101** (~2× baseline), `bundler_concentration` survival 0.875; by concentration bucket `top10:present|sib:flagged` survival **0.833** and `sib:present` survival 0.863 vs ~0.93 baseline. So flagged concentration + missing coverage predict lower survival / higher rug, while the velocity-weighted composite dilutes that into review_priority.
+
+**Calibration takeaway (feeds MEME-MAS-002):** review_priority does not cleanly separate SURVIVAL (mildly inverted); the composite likely over-weights attention/velocity (fresh volatile tokens) vs risk/coverage. Concrete signal to up-weight risk_penalty + missing-coverage and treat flagged concentration more severely. This is precisely the recalibration insight MEME-SHADOW exists to surface.
+
+**System integrity (unchanged):** MEME-NEWS 0 errors; SolanaTracker active (budget **KEEP**), **Birdeye disabled**, tennis-evidence/Polymarket off (Polymarket dark/manual). MarketOps last run ok, champion/challenger `-0.029173` (identical), **p90 50.3s — identical before/after** (no regression). DB tick-driven; MEME-SHADOW adds no table.
+
+**Output language / safety:** the serialized cohorts use **price/liquidity/volume movement + survival/rug language only** — no PnL/EV/fill/order/position vocabulary (verified by grep; only the boundary disclaimer negates them). frontier-eval AST **`safety_ok=True` (62 files)**; canonical + expanded grep on `meme_shadow.py` **clean**. No EV, paper trading, recommendations, sizing, orders, wallets/keys, signing, swaps, execution, or autonomy. `price_change` is measured market movement, never PnL/a fill.
+
+**Decision: KEEP — manual / report-only.** Works on live data, zero requests/budget/DB/latency, changes no existing behavior, stays read-only (no timer, no flag, no persistence). Immediate value: the `no_material_separation_recalibrate` verdict + risk-dimension separation are a concrete input to a future MEME-MAS-002 threshold recalibration. **Rollback (if ever):** `git reset --hard fe986f6` — compute-only, nothing to unwind.
