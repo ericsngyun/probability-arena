@@ -261,6 +261,22 @@ domain-scout inventory kept. `db-growth-report` now reports the meme row counts.
 `attention_score`/alerts are informational only — no EV/recommendation/order/
 wallet/swap/signing/execution/sizing/paper trading.
 
+### MEME-MAS-001 memecoin diagnostic (read-only, on-demand, NO timer)
+
+```bash
+.venv/bin/python -m app.cli meme-mas-report --hours 24 --top 10   # multi-agent review-priority triage (not advice)
+.venv/bin/python -m app.cli meme-mas-assess --limit 20            # per-token diagnostic traces
+```
+
+Five deterministic agents recompute sub-scores on demand from persisted
+`meme_attention_snapshots` / `crypto_token_risk_assessments` /
+`meme_catalyst_events` → a `review_priority` (low/monitor/elevated_review/
+high_review/reject_risk). **No table/migration, no external request, no
+SolanaTracker budget impact, no timer** — manual reports only. `review_priority`
+is human-review triage, never a trade recommendation/EV/sizing/order; `reject_risk`
+is avoid/flag for review. Deploy is code-only and dark-by-default (no flag to
+flip); **do not deploy unless explicitly asked.**
+
 ### POLY-001 Polymarket market-data observer (read-only, NO timer installed)
 
 ```bash

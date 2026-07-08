@@ -1792,6 +1792,77 @@ async def meme_news_alerts(hours: int = 6, session=None) -> int:
             session.close()
 
 
+async def meme_mas_report(hours: int = 24, top: int = 10, session=None) -> int:
+    """Read-only MEME-MAS diagnostic review (MEME-MAS-001). `review_priority`
+    triages human-review attention only — never a trade signal. Returns tokens
+    assessed."""
+    from app.services.meme_mas import MemeMasReportService
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        r = MemeMasReportService().build(session, hours=hours, top=top)
+        print(f"meme-mas diagnostic report (window {r.window_hours}h) — read-only, not advice")
+        print(r.note)
+        print(f"tokens_assessed={r.tokens_assessed}  by_priority={r.by_priority}")
+        print(
+            f"missing_provider_coverage={r.missing_coverage_tokens}  "
+            f"provider_coverage={r.provider_coverage}"
+        )
+        print(f"sub-score distributions: {r.subscore_distributions}")
+        print("top diagnostic candidates by review_priority (human-review triage, not a trade signal):")
+        for c in r.top_candidates:
+            print(
+                f"  {str(c['symbol'])[:10]:<10} {c['token']:<16} {c['review_priority']:<15} "
+                f"review={c['review_score']} S={c['structure']} V={c['velocity']} "
+                f"T={c['timing']} R={c['risk_penalty']} reasons={c['top_reasons']}"
+            )
+        if r.risk_rejects:
+            print("risk rejects (flagged for avoid/review — never a trade direction):")
+            for c in r.risk_rejects:
+                print(f"  {str(c['symbol'])[:10]:<10} {c['token']:<16} risk_reasons={c['risk_reasons']}")
+        return r.tokens_assessed
+    finally:
+        if owns_session:
+            session.close()
+
+
+async def meme_mas_assess(limit: int = 20, hours: int = 24, session=None) -> int:
+    """Per-token MEME-MAS diagnostic traces for the top `limit` tokens by
+    review_score (MEME-MAS-001, read-only). Returns tokens shown."""
+    from app.services.meme_mas import MemeMasReportService
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        results = MemeMasReportService().assess_all(session, hours=hours)
+        results = sorted(results, key=lambda x: -x.review_score)[:limit]
+        print(f"meme-mas assess (window {hours}h, top {limit}) — read-only diagnostic, not advice")
+        for r in results:
+            print(
+                f"  {str(r.symbol)[:10]:<10} {r.token_address[:16]:<16} "
+                f"{r.review_priority:<15} review={r.review_score}"
+            )
+            print(f"     scores={r.scores()}")
+            print(f"     trace={r.reasoning_trace}")
+            if r.risk_reasons:
+                print(f"     risk_reasons={r.risk_reasons}")
+            if r.missing_evidence:
+                print(f"     missing_evidence={r.missing_evidence}")
+        return len(results)
+    finally:
+        if owns_session:
+            session.close()
+
+
 async def polymarket_scan_once(
     scheduled: bool = False, limit: int | None = None, runner=None, session=None
 ) -> int:
@@ -2852,6 +2923,17 @@ def build_parser() -> argparse.ArgumentParser:
         "meme-news-alerts", help="Derived notable-event report (read-only, informational)"
     )
     mn_alerts_parser.add_argument("--hours", type=int, default=6)
+    mas_report_parser = subparsers.add_parser(
+        "meme-mas-report",
+        help="Read-only multi-agent memecoin DIAGNOSTIC review (MEME-MAS-001; not advice)",
+    )
+    mas_report_parser.add_argument("--hours", type=int, default=24)
+    mas_report_parser.add_argument("--top", type=int, default=10)
+    mas_assess_parser = subparsers.add_parser(
+        "meme-mas-assess", help="Per-token MEME-MAS diagnostic traces (read-only)"
+    )
+    mas_assess_parser.add_argument("--limit", type=int, default=20)
+    mas_assess_parser.add_argument("--hours", type=int, default=24)
     pm_scan_parser = subparsers.add_parser(
         "polymarket-scan-once",
         help="One bounded read-only Polymarket market-data scan (POLY-001; never advice)",
@@ -3061,6 +3143,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if n >= 0 else 1
     if args.command == "meme-news-alerts":
         n = asyncio.run(meme_news_alerts(hours=args.hours))
+        return 0 if n >= 0 else 1
+    if args.command == "meme-mas-report":
+        n = asyncio.run(meme_mas_report(hours=args.hours, top=args.top))
+        return 0 if n >= 0 else 1
+    if args.command == "meme-mas-assess":
+        n = asyncio.run(meme_mas_assess(limit=args.limit, hours=args.hours))
         return 0 if n >= 0 else 1
     if args.command == "polymarket-scan-once":
         scored = asyncio.run(polymarket_scan_once(scheduled=args.scheduled, limit=args.limit))

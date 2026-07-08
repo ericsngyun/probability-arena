@@ -421,6 +421,32 @@ python -m app.cli meme-news-alerts --hours 6    # derived notable events (inform
 
 The runner (`MemeNewsScoutRunner`) wraps `MemeScoutService.scan_once` in a bounded, no-raise cycle that records the same audit spine and degrades gracefully on provider errors — it runs as its own systemd unit, independent of and unable to affect MarketOps/EDGE-AUTO. **`ENABLE_MEME_NEWS_SCOUT` (default false) gates only the `--scheduled` path**; manual `meme-news-run-once` and all reports are always allowed. Alerts cover: new token above `MEME_NEWS_ATTENTION_ALERT_THRESHOLD`, attention jump, boost increase, severe/high-risk token (an avoid/flag verdict — never a trade direction), and provider degradation (the holder/sniper/insider coverage gap) — all local DB-derived report rows, **no push notifications, no recommendations**. Systemd units live in `infra/systemd/user/probability-arena-meme-news.{service,timer}` (**not auto-installed**; install instructions in the timer comments and runbook). Retention (`MEME_NEWS_RETENTION_DAYS=14`) prunes `meme_scout_runs` / `meme_attention_snapshots` / `meme_catalyst_events` to bound the always-on lane (documented); domain-scout inventory tables are kept.
 
+## Memecoin multi-agent diagnostic (MEME-MAS-001)
+
+**Read-only diagnostic intelligence — not advice.** Five deterministic "agents"
+(pure functions — no LLM, no external calls, no new providers) turn
+already-persisted data into diagnostic sub-scores and a `review_priority` that
+triages how much **human review** a token warrants:
+
+- **Coin Structure** — liquidity/volume quality, top10/sniper/insider/bundler concentration, authority/rug/honeypot, provider coverage
+- **Catalyst Velocity** — attention score + jump, boosts, social metadata, catalyst frequency, profile completeness
+- **Timing** — token age, momentum, boost recency, attention persistence
+- **Risk Auditor** — severe/high risk, concentration red flags, fake-volume / liquidity-removed, missing/unknown provider coverage
+- **Composite Review** — `review_priority`: `low` · `monitor` · `elevated_review` · `high_review` · `reject_risk`
+
+```bash
+python -m app.cli meme-mas-report --hours 24 --top 10   # top candidates by review_priority, risk rejects, missing coverage, sub-score distributions, reason traces
+python -m app.cli meme-mas-assess --limit 20            # per-token diagnostic traces
+```
+
+Inputs are `meme_attention_snapshots` + `crypto_token_risk_assessments` +
+`meme_catalyst_events` — recomputed **on demand** (no new table/migration, no
+external request, no SolanaTracker budget impact). **`review_priority` is a
+human-review triage label, NOT a trade signal** — it computes no EV, does no
+paper trading, sizes no positions, places no orders, recommends no trade/side,
+and uses no wallets/keys/swaps/signing/execution. `reject_risk` is an avoid/flag
+verdict for review, never a trade direction.
+
 ## Polymarket market-data observer (POLY-001)
 
 A **read-only second prediction-market venue**. It observes Polymarket

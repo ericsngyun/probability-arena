@@ -20,6 +20,10 @@ Services (app/services/)  — scanner, eligibility, enrichment, resolution, rese
                             (Crypto Arena, read-only; risk = avoid/flag verdicts),
                             polymarket (POLY-001: read-only SECOND-venue market-data
                             observer — catalog + order books + domain inventory),
+                            provider_budget (PROVIDER-BUDGET-001: SolanaTracker request
+                            accounting + budget guardrails, read-only observability),
+                            meme_mas (MEME-MAS-001: read-only multi-agent memecoin
+                            DIAGNOSTIC scoring → review_priority, never a trade signal),
                             marketops (Autopilot: read-only coordination + alerts),
                             edge_precheck (MVP-005A: gap measurement, never advice),
                             frontier_eval (EVAL-001: desk-wide evaluation + readiness),

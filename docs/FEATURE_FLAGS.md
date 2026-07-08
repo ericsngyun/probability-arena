@@ -206,6 +206,18 @@ lane (**documented** — the report/alerts use recent windows; the domain-scout
 inventory tables are NOT pruned). Alerts are local, derived, informational — no
 push notifications, no recommendations. Read-only discovery only.
 
+## Memecoin diagnostic (MEME-MAS-001 — read-only; no flag)
+
+**No feature flag** — `meme-mas-report` / `meme-mas-assess` are always-available
+read-only diagnostic reports (like `crypto-provider-budget-report`). Five
+deterministic agents recompute sub-scores on demand from persisted meme/risk
+rows into a `review_priority` (low/monitor/elevated_review/high_review/
+reject_risk) that triages human-review attention. No LLM, no external call, no
+new provider, no table/migration, no SolanaTracker budget impact. `review_priority`
+is NOT a trade recommendation/EV/sizing/order/buy/sell/bet; `reject_risk` is an
+avoid/flag verdict for review. Changes no MarketOps/EDGE-AUTO/MEME-NEWS/
+SolanaTracker/Polymarket behavior.
+
 ## Polymarket market-data observer (POLY-001 — read-only second venue; no EV/orders/wallets)
 
 | Flag | Default | Effect |
