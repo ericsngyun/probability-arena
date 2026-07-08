@@ -435,9 +435,22 @@ triages how much **human review** a token warrants:
 - **Composite Review** — `review_priority`: `low` · `monitor` · `elevated_review` · `high_review` · `reject_risk`
 
 ```bash
-python -m app.cli meme-mas-report --hours 24 --top 10   # top candidates by review_priority, risk rejects, missing coverage, sub-score distributions, reason traces
-python -m app.cli meme-mas-assess --limit 20            # per-token diagnostic traces
+python -m app.cli meme-mas-report --hours 24 --top 10        # top candidates by review_priority, risk rejects, missing coverage, sub-score distributions, reason traces
+python -m app.cli meme-mas-assess --limit 20                 # per-token diagnostic traces
+python -m app.cli meme-mas-calibration-report --lookback-hours 48   # MEME-MAS-002 before(v1)/after(v2) label calibration via MEME-SHADOW
 ```
+
+**MEME-MAS-002 recalibration** (informed by MEME-SHADOW-001, which showed missing
+provider coverage and concentration flags predicted worse survival while the old
+velocity-heavy composite diluted them): the scorer is now profile-based (`v2`
+default; `v1` preserved for the before/after report). v2 penalizes risk more
+heavily (missing coverage, concentration, fake-volume/liquidity-removed), dampens
+the review score fully by risk, blends **momentum + structure**, and **gates
+high_review** so it requires strong momentum, clean structure, non-missing
+provider coverage, and no concentration flags. It also emits first-class
+`momentum_quality` / `structure_quality` / `coverage_quality` outputs. `reject_risk`
+hard gates are unchanged. Still read-only diagnostic label calibration — no trade
+behavior.
 
 Inputs are `meme_attention_snapshots` + `crypto_token_risk_assessments` +
 `meme_catalyst_events` — recomputed **on demand** (no new table/migration, no

@@ -1907,6 +1907,49 @@ async def meme_shadow_report(lookback_hours: int = 48, top: int = 8, session=Non
             session.close()
 
 
+async def meme_mas_calibration_report(lookback_hours: int = 48, session=None) -> int:
+    """Before(v1)/after(v2) calibration comparison of MEME-MAS review_priority
+    labels using MEME-SHADOW follow-through (MEME-MAS-002, read-only). Shows the
+    high_review share shrinking and per-priority survival separation. Not advice."""
+    from app.services.meme_mas import PROFILE_V1, PROFILE_V2, REVIEW_PRIORITIES
+    from app.services.meme_shadow import MemeShadowReportService
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        rv1 = MemeShadowReportService(profile=PROFILE_V1).build(session, lookback_hours=lookback_hours)
+        rv2 = MemeShadowReportService(profile=PROFILE_V2).build(session, lookback_hours=lookback_hours)
+
+        def dist(r):
+            return {c["cohort"]: (c["samples"], c["survival_rate"], c["rug_incidence"]) for c in r.by_review_priority}
+
+        d1, d2 = dist(rv1), dist(rv2)
+        print("meme-mas calibration before(v1)/after(v2) — read-only label calibration, not advice")
+        print(rv2.note)
+        print(f"anchors: v1={rv1.anchors} v2={rv2.anchors}  lookback={lookback_hours}h")
+        hi1 = d1.get("high_review", (0, None, None))[0]
+        hi2 = d2.get("high_review", (0, None, None))[0]
+        sh1 = round(hi1 / rv1.anchors, 4) if rv1.anchors else None
+        sh2 = round(hi2 / rv2.anchors, 4) if rv2.anchors else None
+        print(f"high_review share: v1={sh1}  ->  v2={sh2}")
+        print(f"calibration_recommendation: v1={rv1.calibration_recommendation}  ->  v2={rv2.calibration_recommendation}")
+        print(f"{'priority':<16}{'v1_n':>7}{'v1_surv':>9}{'v1_rug':>8}   |{'v2_n':>7}{'v2_surv':>9}{'v2_rug':>8}")
+        for p in REVIEW_PRIORITIES:
+            a = d1.get(p, (0, None, None))
+            b = d2.get(p, (0, None, None))
+            print(
+                f"  {p:<14}{a[0]:>7}{str(a[1]):>9}{str(a[2]):>8}   |{b[0]:>7}{str(b[1]):>9}{str(b[2]):>8}"
+            )
+        return rv2.anchors
+    finally:
+        if owns_session:
+            session.close()
+
+
 async def polymarket_scan_once(
     scheduled: bool = False, limit: int | None = None, runner=None, session=None
 ) -> int:
@@ -2984,6 +3027,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     shadow_parser.add_argument("--lookback-hours", type=int, default=48)
     shadow_parser.add_argument("--top", type=int, default=8)
+    calib_parser = subparsers.add_parser(
+        "meme-mas-calibration-report",
+        help="Before(v1)/after(v2) MEME-MAS review_priority calibration via MEME-SHADOW (read-only)",
+    )
+    calib_parser.add_argument("--lookback-hours", type=int, default=48)
     pm_scan_parser = subparsers.add_parser(
         "polymarket-scan-once",
         help="One bounded read-only Polymarket market-data scan (POLY-001; never advice)",
@@ -3202,6 +3250,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if n >= 0 else 1
     if args.command == "meme-shadow-report":
         n = asyncio.run(meme_shadow_report(lookback_hours=args.lookback_hours, top=args.top))
+        return 0 if n >= 0 else 1
+    if args.command == "meme-mas-calibration-report":
+        n = asyncio.run(meme_mas_calibration_report(lookback_hours=args.lookback_hours))
         return 0 if n >= 0 else 1
     if args.command == "polymarket-scan-once":
         scored = asyncio.run(polymarket_scan_once(scheduled=args.scheduled, limit=args.limit))

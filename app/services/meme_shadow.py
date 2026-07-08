@@ -29,7 +29,9 @@ from app.models import (
     MemeCatalystEvent,
 )
 from app.services.meme_mas import (
+    DEFAULT_PROFILE,
     REVIEW_PRIORITIES,
+    CalibrationProfile,
     MemeMasDiagnosticService,
     TokenInputs,
 )
@@ -119,8 +121,12 @@ class MemeShadowService:
     """Reconstructs the review_priority per historical anchor and measures the
     token's later trajectory. Pure read-only analysis."""
 
-    def __init__(self, diagnostic: MemeMasDiagnosticService | None = None):
-        self.diagnostic = diagnostic or MemeMasDiagnosticService()
+    def __init__(
+        self,
+        diagnostic: MemeMasDiagnosticService | None = None,
+        profile: CalibrationProfile = DEFAULT_PROFILE,
+    ):
+        self.diagnostic = diagnostic or MemeMasDiagnosticService(profile=profile)
 
     # --- data gathering -----------------------------------------------------
 
@@ -320,8 +326,12 @@ class MemeShadowReport:
 
 
 class MemeShadowReportService:
-    def __init__(self, service: MemeShadowService | None = None):
-        self.service = service or MemeShadowService()
+    def __init__(
+        self,
+        service: MemeShadowService | None = None,
+        profile: CalibrationProfile = DEFAULT_PROFILE,
+    ):
+        self.service = service or MemeShadowService(profile=profile)
 
     def build(self, session: Session, lookback_hours: int = 48) -> MemeShadowReport:
         outs = self.service.outcomes(session, lookback_hours)

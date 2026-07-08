@@ -221,11 +221,15 @@ Polymarket behavior.
 
 ## Memecoin diagnostic (MEME-MAS-001 — read-only; no flag)
 
-**No feature flag** — `meme-mas-report` / `meme-mas-assess` are always-available
-read-only diagnostic reports (like `crypto-provider-budget-report`). Five
-deterministic agents recompute sub-scores on demand from persisted meme/risk
-rows into a `review_priority` (low/monitor/elevated_review/high_review/
-reject_risk) that triages human-review attention. No LLM, no external call, no
+**No feature flag** — `meme-mas-report` / `meme-mas-assess` /
+`meme-mas-calibration-report` are always-available read-only diagnostic reports
+(like `crypto-provider-budget-report`). Deterministic agents recompute sub-scores
+on demand from persisted meme/risk rows into a `review_priority` (low/monitor/
+elevated_review/high_review/reject_risk) plus `momentum_quality`/`structure_quality`/
+`coverage_quality`. **MEME-MAS-002** recalibrated the scorer (profile `v2` default;
+`v1` preserved for the before/after `meme-mas-calibration-report`): risk-aware,
+heavier penalties for missing coverage + concentration, and a **gated high_review**
+(clean structure + non-missing coverage + no concentration flags). No LLM, no external call, no
 new provider, no table/migration, no SolanaTracker budget impact. `review_priority`
 is NOT a trade recommendation/EV/sizing/order/buy/sell/bet; `reject_risk` is an
 avoid/flag verdict for review. Changes no MarketOps/EDGE-AUTO/MEME-NEWS/
