@@ -1863,6 +1863,50 @@ async def meme_mas_assess(limit: int = 20, hours: int = 24, session=None) -> int
             session.close()
 
 
+async def meme_shadow_report(lookback_hours: int = 48, top: int = 8, session=None) -> int:
+    """Read-only follow-through / calibration analysis of MEME-MAS review_priority
+    labels (MEME-SHADOW-001). Market-movement MEASUREMENT — not PnL, not advice.
+    Returns the number of anchors measured."""
+    from app.services.meme_shadow import MemeShadowReportService
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        r = MemeShadowReportService().build(session, lookback_hours=lookback_hours)
+        print(f"meme-shadow follow-through (lookback {r.lookback_hours}h) — read-only measurement, not advice")
+        print(r.note)
+        print(f"anchors={r.anchors}  horizons={r.horizons}  horizon_coverage={r.horizon_coverage}")
+        print(f"calibration_recommendation: {r.calibration_recommendation}")
+        print("outcome by review_priority (does the label separate later behavior?):")
+        for c in r.by_review_priority:
+            print(
+                f"  {c['cohort']:<16} n={c['samples']:<4} [{c['label']}] "
+                f"survival={c['survival_rate']} rug_incidence={c['rug_incidence']} "
+                f"price_mean(1h={c['price_change_mean'].get('1h')}, 24h={c['price_change_mean'].get('24h')}) "
+                f"attn_persist_1h={c['attention_persistence_1h']}"
+            )
+        print("outcome by review_score bucket:")
+        for c in r.by_review_score_bucket:
+            print(f"  {c['cohort']:<8} n={c['samples']:<4} survival={c['survival_rate']} price_1h={c['price_change_mean'].get('1h')}")
+        print("outcome by risk_penalty bucket:")
+        for c in r.by_risk_penalty_bucket:
+            print(f"  {c['cohort']:<8} n={c['samples']:<4} survival={c['survival_rate']} rug_incidence={c['rug_incidence']}")
+        print("outcome by risk reason (top):")
+        for c in r.by_risk_reason[:top]:
+            print(f"  {c['cohort']:<28} n={c['samples']:<4} survival={c['survival_rate']} rug_incidence={c['rug_incidence']}")
+        print("outcome by concentration bucket:")
+        for c in r.by_concentration:
+            print(f"  {c['cohort']:<28} n={c['samples']:<4} survival={c['survival_rate']} rug_incidence={c['rug_incidence']}")
+        return r.anchors
+    finally:
+        if owns_session:
+            session.close()
+
+
 async def polymarket_scan_once(
     scheduled: bool = False, limit: int | None = None, runner=None, session=None
 ) -> int:
@@ -2934,6 +2978,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     mas_assess_parser.add_argument("--limit", type=int, default=20)
     mas_assess_parser.add_argument("--hours", type=int, default=24)
+    shadow_parser = subparsers.add_parser(
+        "meme-shadow-report",
+        help="Read-only follow-through/calibration of MEME-MAS review_priority labels (MEME-SHADOW-001; measurement, not advice)",
+    )
+    shadow_parser.add_argument("--lookback-hours", type=int, default=48)
+    shadow_parser.add_argument("--top", type=int, default=8)
     pm_scan_parser = subparsers.add_parser(
         "polymarket-scan-once",
         help="One bounded read-only Polymarket market-data scan (POLY-001; never advice)",
@@ -3149,6 +3199,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if n >= 0 else 1
     if args.command == "meme-mas-assess":
         n = asyncio.run(meme_mas_assess(limit=args.limit, hours=args.hours))
+        return 0 if n >= 0 else 1
+    if args.command == "meme-shadow-report":
+        n = asyncio.run(meme_shadow_report(lookback_hours=args.lookback_hours, top=args.top))
         return 0 if n >= 0 else 1
     if args.command == "polymarket-scan-once":
         scored = asyncio.run(polymarket_scan_once(scheduled=args.scheduled, limit=args.limit))

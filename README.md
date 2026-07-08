@@ -447,6 +447,30 @@ paper trading, sizes no positions, places no orders, recommends no trade/side,
 and uses no wallets/keys/swaps/signing/execution. `reject_risk` is an avoid/flag
 verdict for review, never a trade direction.
 
+## Memecoin label follow-through (MEME-SHADOW-001)
+
+**Read-only calibration measurement — not advice, not PnL.** Does a MEME-MAS
+`review_priority` actually predict later token behavior? MEME-SHADOW reconstructs
+the label at each historical attention snapshot (reusing the MEME-MAS agents with
+the risk assessment *as-of* that moment), then measures how the **same token**
+moved afterwards from its own later snapshots.
+
+```bash
+python -m app.cli meme-shadow-report --lookback-hours 48   # outcome by review_priority / sub-score / risk reason / concentration, + calibration recommendation
+```
+
+Metrics per cohort: price/liquidity/volume change at **5m/15m/1h/6h/24h**,
+survival (no-liquidity-collapse) rate, rug/liquidity-removed incidence, attention
+persistence, risk-level transition. Cohorts are labelled `too_thin` (n < 12) or
+`measured`, and an overall recommendation reports whether the labels separate
+outcomes (`labels_separate_outcomes` / `no_material_separation_recalibrate` /
+`review_priority_inverted_recheck` / `too_thin_to_calibrate`). `price_change` is
+**measured market movement of the token, exactly like the edge follow-through
+analysis — not PnL, not a fill, not EV, not paper trading, not a trade
+recommendation, not position sizing.** It changes no label and authorizes
+nothing; computed on demand (no table, no external call, no SolanaTracker budget
+impact).
+
 ## Polymarket market-data observer (POLY-001)
 
 A **read-only second prediction-market venue**. It observes Polymarket

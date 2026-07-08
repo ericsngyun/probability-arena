@@ -261,6 +261,21 @@ domain-scout inventory kept. `db-growth-report` now reports the meme row counts.
 `attention_score`/alerts are informational only — no EV/recommendation/order/
 wallet/swap/signing/execution/sizing/paper trading.
 
+### MEME-SHADOW-001 label follow-through (read-only, on-demand, NO timer)
+
+```bash
+.venv/bin/python -m app.cli meme-shadow-report --lookback-hours 48   # does review_priority predict later behavior? (calibration measurement)
+```
+
+Reconstructs MEME-MAS `review_priority` at historical attention snapshots and
+measures each token's later trajectory (price/liq/vol at 5m/15m/1h/6h/24h,
+survival, rug incidence, attention persistence, risk transition) → outcome
+cohorts by review_priority / sub-score / risk reason / concentration + a
+calibration recommendation. **No table/migration, no external call, no
+SolanaTracker budget impact, no timer.** Market-movement MEASUREMENT (like edge
+follow-through) — never PnL/EV/paper/recommendation/sizing/order. Deploy is
+code-only, dark-by-default; **do not deploy unless explicitly asked.**
+
 ### MEME-MAS-001 memecoin diagnostic (read-only, on-demand, NO timer)
 
 ```bash

@@ -206,6 +206,19 @@ lane (**documented** — the report/alerts use recent windows; the domain-scout
 inventory tables are NOT pruned). Alerts are local, derived, informational — no
 push notifications, no recommendations. Read-only discovery only.
 
+## Memecoin label follow-through (MEME-SHADOW-001 — read-only; no flag)
+
+**No feature flag** — `meme-shadow-report` is an always-available read-only
+calibration report. It reconstructs MEME-MAS `review_priority` at historical
+attention snapshots and measures each token's later trajectory (price/liq/vol at
+5m/15m/1h/6h/24h, survival, rug incidence, attention persistence, risk
+transition), aggregated by review_priority / sub-score / risk reason /
+concentration with a conservative calibration recommendation. Market-movement
+MEASUREMENT (like edge follow-through) — NOT PnL/EV/paper/recommendation/sizing/
+orders. Compute-on-demand: no table/migration, no external call, no SolanaTracker
+budget impact; changes no label and no MarketOps/EDGE-AUTO/MEME-NEWS/SolanaTracker/
+Polymarket behavior.
+
 ## Memecoin diagnostic (MEME-MAS-001 — read-only; no flag)
 
 **No feature flag** — `meme-mas-report` / `meme-mas-assess` are always-available

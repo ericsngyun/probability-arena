@@ -24,6 +24,9 @@ Services (app/services/)  — scanner, eligibility, enrichment, resolution, rese
                             accounting + budget guardrails, read-only observability),
                             meme_mas (MEME-MAS-001: read-only multi-agent memecoin
                             DIAGNOSTIC scoring → review_priority, never a trade signal),
+                            meme_shadow (MEME-SHADOW-001: read-only follow-through /
+                            calibration of review_priority labels — market-movement
+                            measurement, not PnL),
                             marketops (Autopilot: read-only coordination + alerts),
                             edge_precheck (MVP-005A: gap measurement, never advice),
                             frontier_eval (EVAL-001: desk-wide evaluation + readiness),
