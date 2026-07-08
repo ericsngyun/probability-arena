@@ -889,6 +889,13 @@ class PolymarketScoutRun(Base):
     provider_version: Mapped[str | None] = mapped_column(String(16))
     error_type: Mapped[str | None] = mapped_column(String(128))
     error_message: Mapped[str | None] = mapped_column(Text)
+    # POLY-COVERAGE-001 scan provenance: HOW this read-only sample was obtained.
+    # Coverage counters for the audit spine — never EV/advice/trading state.
+    scan_mode: Mapped[str | None] = mapped_column(String(32))  # catalog|targeted|catalog+targeted
+    pages_fetched: Mapped[int] = mapped_column(Integer, default=0)
+    market_fetch_errors: Mapped[int] = mapped_column(Integer, default=0)
+    duplicates_dropped: Mapped[int] = mapped_column(Integer, default=0)
+    queries_used: Mapped[dict | None] = mapped_column(RawJSON)  # e.g. ["world cup","mlb"]
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

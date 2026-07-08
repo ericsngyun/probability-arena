@@ -127,15 +127,31 @@ def orderbook(token_id):
     )
 
 
-class FakeAdapter:
+class FakeAdapter(PolymarketAdapter):
+    """Subclasses the real adapter so the scan exercises the REAL bounded
+    paginator (`fetch_market_catalog`) over a fake page source. `_get` is
+    overridden to guarantee no test can reach the network."""
+
     def __init__(self, markets=None, books=None, fail_markets=False):
+        super().__init__(settings=Settings(_env_file=None))
         self._markets = markets or []
         self._books = books or {}
         self._fail_markets = fail_markets
         self.orderbook_calls = []
+        self.page_calls = []
 
-    async def fetch_markets(self, limit=50, active=True, closed=False):
-        return [] if self._fail_markets else list(self._markets)[:limit]
+    async def _get(self, base, path, params=None):  # pragma: no cover - network guard
+        raise AssertionError(f"tests must not perform live calls (attempted {base}{path})")
+
+    async def fetch_markets_page(
+        self, limit=50, active=True, closed=False, offset=0,
+        tag_id=None, end_date_min=None, end_date_max=None,
+    ):
+        if self._fail_markets:
+            return None  # provider problem
+        self.page_calls.append({"limit": limit, "offset": offset, "tag_id": tag_id,
+                                "end_date_min": end_date_min, "end_date_max": end_date_max})
+        return list(self._markets)[offset : offset + limit]
 
     async def fetch_orderbook(self, token_id):
         self.orderbook_calls.append(token_id)

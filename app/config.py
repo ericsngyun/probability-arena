@@ -313,6 +313,18 @@ class Settings(BaseSettings):
     polymarket_retention_days: int = 14     # prunes markets/orderbook/scout_runs (documented)
     polymarket_provider_version: str = "v1"
 
+    # POLY-COVERAGE-001: bounded READ-ONLY coverage expansion of the same public
+    # GETs (pagination + category/resolution-window filters + public search), so
+    # the POLY-002 cross-venue matcher has comparable supply to observe. Widening
+    # the observation sample only — still no EV, arbitrage label, trade
+    # recommendation, position sizing, order, wallet/key, signing, or execution.
+    # Defaults stay conservative; the adapter enforces hard ceilings regardless.
+    polymarket_page_size: int = 100           # Gamma caps a /markets page at 100
+    polymarket_max_pages: int = 5             # catalog pages per scan (ceiling 20)
+    polymarket_search_limit_per_type: int = 20  # /public-search rows per page
+    polymarket_search_max_pages: int = 3      # pages per search query (ceiling 5)
+    polymarket_max_targeted_queries: int = 6  # Kalshi-derived queries per scan
+
     # Candidate hygiene / eligibility gating (MVP-003A)
     require_two_sided_quote: bool = True
     exclude_zero_quote_markets: bool = True

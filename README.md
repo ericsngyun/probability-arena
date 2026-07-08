@@ -542,14 +542,74 @@ token order books into `polymarket_orderbook_snapshots` (spread/depth/liquidity
 proxies), rolls up a per-category `polymarket_domain_inventory_snapshots`, and
 records a `polymarket_scout_runs` audit row — degrading gracefully to "nothing
 observed" on any provider problem. **`ENABLE_POLYMARKET_SCOUT` (default false)
-reserves loop/timer use only** (no timer is installed in POLY-001; manual runs
+reserves loop/timer use only** (no timer is installed; manual runs
 and all reports are always allowed). Retention (`POLYMARKET_RETENTION_DAYS=14`)
 prunes markets/orderbook/scout-run rows; the domain-inventory coverage table is
 kept. Prices and order books are **informational quotes for human review — never
 EV, a recommendation, an instruction, or a trade trigger**. Cross-venue semantic
-linking to Kalshi is a documented **POLY-002 placeholder only** (no arbitrage,
-EV, or trade-candidate labels exist). No sizing, orders, wallets, keys, swaps,
-signing, or execution anywhere.
+linking to Kalshi shipped in **POLY-002** (comparability verdicts + measured
+probability-point differences; no arbitrage, EV, or trade-candidate labels exist).
+No sizing, orders, wallets, keys, swaps, signing, or execution anywhere.
+
+## Polymarket coverage expansion (POLY-COVERAGE-001)
+
+**Read-only coverage expansion + a supply census.** POLY-002 found `0`
+comparable candidates against a 50-market, tournament-winner-heavy Polymarket
+sample: the constraint was *supply*, not the matcher. This milestone broadens and
+targets WHICH public markets POLY-001 observes. It **does not identify arbitrage,
+compute EV, recommend trades, paper trade, size positions, place orders, or use
+wallets/private keys/signing/execution**, and it never forces a match.
+
+```bash
+# broader: bounded pagination (Gamma `offset`), category + resolution-window filters
+python -m app.cli polymarket-scan-once --limit 400 --orderbook-limit 20 \
+    --category 21 --end-date-min 2026-07-08T00:00:00Z --end-date-max 2026-07-22T00:00:00Z
+
+# targeted: search queries derived deterministically from persisted Kalshi titles/tickers (no LLM)
+python -m app.cli polymarket-scan-once --targeted --limit 400 \
+    --end-date-min 2026-07-08T00:00:00Z --end-date-max 2026-07-22T00:00:00Z
+python -m app.cli polymarket-scan-once --query "world cup" --query mlb   # explicit queries
+
+python -m app.cli polymarket-coverage-report --top 20   # per-domain/market-type SUPPLY census
+python -m app.cli cross-venue-match-once --polymarket-limit 600   # rerun POLY-002 on the wider sample
+```
+
+**Query-parameter contract** (verified against the live public API — Gamma returns
+HTTP 200 and *silently ignores* unknown parameters, so only parameters observed to
+change the result set are used): `/markets` honours `offset` (real pagination),
+`tag_id`, `end_date_min`/`end_date_max`, and caps a page at 100 rows.
+`/public-search` paginates by `page` (1-based) and **ignores `offset`**; it exposes
+no date parameter, so active/closed and the resolution window are filtered
+client-side. Search returns markets nested inside events, and those nested markets
+omit `endDate` and `events` — both are inherited from the parent event, without
+which every search-sourced market would lack a resolution time and could never be
+labelled comparable.
+
+`--targeted` counts evidence for a fixed topic registry across already-persisted
+Kalshi ACTIVE markets, using whole-word title terms **and prefix-anchored ticker
+series** (`KXWC*`, `KXMLB*`, `KXITF*`…). Tickers matter: Kalshi's `category` is
+empty and its titles are game-prop text, so ~1,100 active World Cup and ~1,160
+tennis markets are invisible to title-only matching. Prefix anchoring is required
+too — a substring test for `FED` matches the MLB ticker of pitcher Erick Fedde.
+Topics are emitted only when Kalshi evidences them, ranked by evidence count.
+
+Budgets are hard: targeted queries claim the market budget first, each capped at a
+**fair share of the remaining budget** so one high-yield topic (a single `mlb`
+search returns hundreds of season/draft futures) cannot starve the others; the
+catalog then fills the remainder. Skipped queries, fair-share caps, and Kalshi
+census truncation are **logged, never silent**. `polymarket_scout_runs` records the
+scan provenance (`scan_mode`, `pages_fetched`, `market_fetch_errors`,
+`duplicates_dropped`, `queries_used` — the queries actually *sent*, migration 0022).
+
+`polymarket-coverage-report` is a **supply census**, not a matcher: per-domain and
+per-market-type counts on both venues, order-book coverage, two-sided rate,
+spread/depth, domain overlap, and which domains have (or lack) the structural
+prerequisites for a comparison to be *attempted* — with the reason when they don't
+(`no_polymarket_markets`, `no_kalshi_markets`, `no_polymarket_resolution_time`,
+`no_kalshi_resolution_time`, `no_yes_scale_outcome_type_on_either_venue`).
+`comparable_supply` means **a comparison could be attempted here**, never *this is
+an opportunity*. It pairs no markets, scores no pair, and measures no price
+difference.
 
 ## Edge precheck (MVP-005A) — probability-gap measurement
 

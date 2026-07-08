@@ -258,8 +258,39 @@ Retention prunes `polymarket_markets` / `polymarket_orderbook_snapshots` /
 `polymarket_domain_inventory_snapshots` coverage table is NOT pruned). Prices and
 order books are informational quotes for human review — never EV, a
 recommendation, an instruction, or a trade trigger. Cross-venue semantic linking
-to Kalshi is a documented POLY-002 placeholder only (no arb/EV/trade-candidate
-labels exist). Read-only market-data observation only.
+to Kalshi shipped in POLY-002 (comparability verdicts + measured probability-point
+differences for human review; no arb/EV/trade-candidate labels exist). Read-only
+market-data observation only.
+
+## Polymarket coverage expansion (POLY-COVERAGE-001 — read-only; no EV/arb/orders/wallets)
+
+No new feature flag. `ENABLE_POLYMARKET_SCOUT` **remains false** and still gates
+only a future scheduled path — no timer is installed and every manual scan and
+report stays allowed.
+
+Tuning (all bounded; the adapter enforces hard ceilings regardless of the value):
+
+| Setting | Default | Effect |
+|---|---|---|
+| `POLYMARKET_PAGE_SIZE` | 100 | catalog rows per page (Gamma caps a page at 100) |
+| `POLYMARKET_MAX_PAGES` | 5 | catalog pages per scan (hard ceiling 20) |
+| `POLYMARKET_SEARCH_LIMIT_PER_TYPE` | 20 | `/public-search` rows per page |
+| `POLYMARKET_SEARCH_MAX_PAGES` | 3 | pages per search query (hard ceiling 5) |
+| `POLYMARKET_MAX_TARGETED_QUERIES` | 6 | Kalshi-derived queries per scan |
+
+`polymarket-scan-once` gains `--limit`, `--orderbook-limit`, `--category TAG_ID`,
+`--active-only`/`--no-active-only`, `--include-closed`, `--query TEXT` (repeatable),
+`--targeted`, `--end-date-min`, `--end-date-max`. `polymarket-coverage-report
+[--top --kalshi-limit]` prints a per-domain/per-market-type SUPPLY census.
+
+`--targeted` derives search queries deterministically from already-persisted
+Kalshi ACTIVE market titles/ticker series (**no LLM**, no external taxonomy, no
+new/paid provider). Targeted queries claim the market budget first and each gets
+a fair share, so one high-yield topic cannot starve the others; skipped queries
+and truncation are logged, never silent. Public/no-auth GETs only. Coverage
+expansion widens WHICH markets are observed — it identifies no arbitrage, computes
+no EV, recommends no trade, sizes nothing, places no order, uses no
+wallets/keys/signing/swaps/execution, and forces no match.
 
 ## Retention windows
 

@@ -328,7 +328,44 @@ Retention (`POLYMARKET_RETENTION_DAYS=14`, via the existing retention timer)
 prunes markets/orderbook/scout-run rows; the domain-inventory coverage table is
 kept. Prices/order books are informational quotes only — no EV/arbitrage/
 recommendation/order/wallet/swap/signing/execution/sizing/paper trading;
-cross-venue Kalshi linking is a documented POLY-002 placeholder (no arb/EV labels).
+cross-venue Kalshi linking shipped in POLY-002 (no arb/EV labels).
+
+### POLY-COVERAGE-001 Polymarket coverage expansion (read-only, NO timer)
+
+```bash
+# broader: bounded pagination + category / resolution-window filters
+.venv/bin/python -m app.cli polymarket-scan-once --limit 400 --orderbook-limit 20 \
+    --end-date-min 2026-07-08T00:00:00Z --end-date-max 2026-07-22T00:00:00Z
+
+# targeted: search queries derived deterministically from persisted Kalshi titles/tickers (no LLM)
+.venv/bin/python -m app.cli polymarket-scan-once --targeted --limit 400 --orderbook-limit 20
+
+.venv/bin/python -m app.cli polymarket-coverage-report --top 20   # per-domain SUPPLY census
+.venv/bin/python -m app.cli cross-venue-match-once --polymarket-limit 600   # rerun POLY-002
+```
+
+Read-only coverage expansion of the SAME public/no-auth GETs. Requires migration
+`0022` (additive columns on `polymarket_scout_runs`: `scan_mode`, `pages_fetched`,
+`market_fetch_errors`, `duplicates_dropped`, `queries_used`). **No systemd timer is
+installed**; `ENABLE_POLYMARKET_SCOUT` **remains false** and still gates only the
+future `--scheduled` path. **Do not deploy unless explicitly asked.**
+
+Operational notes:
+
+* A broadened scan writes up to `--limit` rows into `polymarket_markets` per run.
+  The host DB is already near the OPS-011 growth **warning** tier — check
+  `db-growth-report` before running large scans, and prefer `--limit`/
+  `--orderbook-limit` over the ceilings. Retention prunes these rows after 14 days.
+* Bounded by construction: page size ≤100 (server cap), ≤20 catalog pages, ≤5
+  search pages per query, ≤1000 markets per scan, order books capped by
+  `--orderbook-limit`. Skipped queries, fair-share caps, and Kalshi census
+  truncation are **logged, never silent**.
+* `queries_used` on the audit row records the queries actually **sent**, not the
+  queries planned — a query starved by the market budget is never claimed as coverage.
+* Coverage expansion identifies no arbitrage, computes no EV, recommends no trade,
+  paper trades nothing, sizes nothing, places no orders, and uses no
+  wallets/private keys/signing/swaps/execution. `comparable_supply` in the coverage
+  report means *a comparison could be attempted*, never *this is an opportunity*.
 
 ## DB growth & alert calibration (OPS-011)
 

@@ -123,6 +123,13 @@ def normalize_outcome(text: str | None) -> str:
 _YESISH = frozenset({_OUTCOME_YES_NO, _OUTCOME_WINNER, _OUTCOME_ADVANCE, _OUTCOME_CANDIDATE})
 
 
+def outcome_is_yes_scale(outcome_type: str) -> bool:
+    """True when the outcome type is a yes-probability question comparable on a
+    shared 0..1 midpoint scale. Exposed so coverage reporting can reuse the
+    matcher's own vocabulary rather than duplicating it."""
+    return outcome_type in _YESISH
+
+
 def outcomes_compatible(a: str, b: str) -> bool:
     if a == b:
         return True

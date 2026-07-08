@@ -2017,14 +2017,31 @@ async def meme_mas_objectives_report(lookback_hours: int = 48, session=None) -> 
 
 
 async def polymarket_scan_once(
-    scheduled: bool = False, limit: int | None = None, runner=None, session=None
+    scheduled: bool = False,
+    limit: int | None = None,
+    orderbook_limit: int | None = None,
+    category: int | None = None,
+    active_only: bool = True,
+    include_closed: bool = False,
+    query: list[str] | None = None,
+    targeted: bool = False,
+    end_date_min: str | None = None,
+    end_date_max: str | None = None,
+    runner=None,
+    session=None,
 ) -> int:
-    """One bounded read-only Polymarket market-data scan (POLY-001). Fetches the
-    public Gamma market catalog + CLOB order books, persists market/orderbook/
-    domain-inventory snapshots. With `--scheduled` it refuses unless
+    """One bounded read-only Polymarket market-data scan (POLY-001, broadened by
+    POLY-COVERAGE-001). Fetches the public Gamma market catalog (paginated) plus
+    optional public-search queries + CLOB order books, and persists market/
+    orderbook/domain-inventory snapshots. With `--scheduled` it refuses unless
     ENABLE_POLYMARKET_SCOUT=true; manual invocation is always allowed. Returns
-    markets persisted, or -1 on error. Read-only observation — no EV, orders,
-    sizing, wallets, signing, or execution."""
+    markets persisted, or -1 on error.
+
+    `--targeted` derives search queries deterministically from already-persisted
+    Kalshi active market titles (no LLM, no external taxonomy) so the two venues'
+    catalogs overlap. Read-only observation throughout — no EV, no arbitrage
+    label, no trade recommendation, no sizing, no orders, no wallets, no signing,
+    no execution."""
     from app.config import get_settings
     from app.services.polymarket import PolymarketScoutRunner
 
@@ -2040,7 +2057,18 @@ async def polymarket_scan_once(
         session = get_sessionmaker()()
     try:
         runner = runner or PolymarketScoutRunner()
-        run = await runner.run_cycle(session, limit=limit)
+        run = await runner.run_cycle(
+            session,
+            limit=limit,
+            orderbook_limit=orderbook_limit,
+            tag_id=category,
+            active_only=active_only,
+            include_closed=include_closed,
+            queries=list(query) if query else None,
+            targeted=targeted,
+            end_date_min=end_date_min,
+            end_date_max=end_date_max,
+        )
         if run is None:
             print("polymarket scan: no run recorded")
             return -1
@@ -2051,7 +2079,68 @@ async def polymarket_scan_once(
             + (f" error={run.error_type}" if run.status == "error" else "")
             + " (read-only market-data observation — not advice)"
         )
+        print(
+            f"  coverage: mode={run.scan_mode} pages={run.pages_fetched} "
+            f"market_fetch_errors={run.market_fetch_errors} "
+            f"duplicates_dropped={run.duplicates_dropped} queries={run.queries_used or []}"
+        )
         return run.markets_persisted if run.status == "ok" else -1
+    finally:
+        if owns_session:
+            session.close()
+
+
+async def polymarket_coverage_report(top: int = 30, kalshi_limit: int = 4000, session=None) -> int:
+    """Read-only Polymarket COVERAGE census (POLY-COVERAGE-001): per-domain and
+    per-market-type supply on both venues, order-book coverage, and which domains
+    have (or lack) the structural prerequisites for a cross-venue comparison to be
+    ATTEMPTED. Coverage counts only — never arbitrage, EV, a trade candidate, a
+    recommendation, sizing, orders, wallets, signing, or execution. Returns the
+    Polymarket market count."""
+    from app.services.polymarket_coverage import PolymarketCoverageReportService
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        r = PolymarketCoverageReportService().build(session, top=top, kalshi_limit=kalshi_limit)
+        print("polymarket coverage report — read-only supply census, not advice")
+        print(r.note)
+        print(
+            f"polymarket_markets={r.polymarket_markets} active={r.polymarket_active}  "
+            f"kalshi_markets={r.kalshi_markets}"
+            + (f" (TRUNCATED at --kalshi-limit={kalshi_limit}; census undercounts Kalshi)"
+               if r.kalshi_truncated else "")
+            + f"  categories={r.categories}"
+        )
+        print(
+            f"orderbook_enabled={r.orderbook_enabled} snapshots={r.orderbook_snapshots}  "
+            f"two_sided_rate={r.two_sided_rate}  spread p50={r.spread_p50} p90={r.spread_p90}  "
+            f"avg_book_depth={r.avg_book_depth}"
+        )
+        print(f"polymarket market types: {r.polymarket_market_types}")
+        print(f"kalshi market types:     {r.kalshi_market_types}")
+        print(f"overlap domains: {r.overlap_domains}")
+        print(f"domains with comparable SUPPLY (a comparison could be attempted): {r.comparable_supply_domains}")
+        print("domains with NO comparable supply:")
+        for d in r.no_comparable_supply_domains:
+            print(f"  {d['domain']:<12} reasons={d['reasons']}")
+        print("per-domain coverage (counts only, never advice):")
+        for d in r.domains:
+            print(
+                f"  {str(d['domain'])[:12]:<12} poly={d['polymarket_markets']:<4} "
+                f"active={d['polymarket_active']:<4} two_sided={d['two_sided_rate']} "
+                f"resolution={d['polymarket_with_resolution']:<4} yes_scale={d['polymarket_yes_scale']:<4} "
+                f"ob_cov={d['orderbook_coverage_rate']} kalshi={d['kalshi_markets']:<5} "
+                f"comparable_supply={d['comparable_supply']}"
+            )
+        print("top categories:")
+        for c in r.top_categories[:10]:
+            print(f"  {str(c['category'])[:44]:<44} markets={c['markets']}")
+        return r.polymarket_markets
     finally:
         if owns_session:
             session.close()
@@ -3223,13 +3312,52 @@ def build_parser() -> argparse.ArgumentParser:
     obj_parser.add_argument("--lookback-hours", type=int, default=48)
     pm_scan_parser = subparsers.add_parser(
         "polymarket-scan-once",
-        help="One bounded read-only Polymarket market-data scan (POLY-001; never advice)",
+        help="One bounded read-only Polymarket market-data scan (POLY-001/POLY-COVERAGE-001; never advice)",
     )
     pm_scan_parser.add_argument(
         "--scheduled", action="store_true",
         help="timer mode: refuse unless ENABLE_POLYMARKET_SCOUT=true",
     )
-    pm_scan_parser.add_argument("--limit", type=int, default=None)
+    pm_scan_parser.add_argument(
+        "--limit", type=int, default=None,
+        help="max markets persisted this scan (bounded; targeted queries claim budget first)",
+    )
+    pm_scan_parser.add_argument(
+        "--orderbook-limit", type=int, default=None,
+        help="max CLOB order books read this scan (hard cap; reads books, never places orders)",
+    )
+    pm_scan_parser.add_argument(
+        "--category", type=int, default=None, metavar="TAG_ID",
+        help="scope the catalog walk to a Polymarket category (Gamma tag_id)",
+    )
+    pm_scan_parser.add_argument(
+        "--active-only", dest="active_only", action="store_true", default=True,
+        help="only active markets (default)",
+    )
+    pm_scan_parser.add_argument(
+        "--no-active-only", dest="active_only", action="store_false",
+        help="do not filter to active markets",
+    )
+    pm_scan_parser.add_argument(
+        "--include-closed", dest="include_closed", action="store_true", default=False,
+        help="also observe closed/resolved markets (settled reference data; still read-only)",
+    )
+    pm_scan_parser.add_argument(
+        "--query", action="append", default=None, metavar="TEXT",
+        help="read-only public-search query (repeatable)",
+    )
+    pm_scan_parser.add_argument(
+        "--targeted", action="store_true",
+        help="derive search queries deterministically from persisted Kalshi active titles (no LLM)",
+    )
+    pm_scan_parser.add_argument(
+        "--end-date-min", type=str, default=None, metavar="ISO8601",
+        help="only markets resolving at/after this time (resolution-window coverage filter)",
+    )
+    pm_scan_parser.add_argument(
+        "--end-date-max", type=str, default=None, metavar="ISO8601",
+        help="only markets resolving at/before this time",
+    )
     pm_report_parser = subparsers.add_parser(
         "polymarket-report", help="Windowed Polymarket market-data report (read-only)"
     )
@@ -3237,6 +3365,15 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         "polymarket-domain-report",
         help="Read-only Polymarket per-domain/category inventory (latest scan)",
+    )
+    pm_coverage_parser = subparsers.add_parser(
+        "polymarket-coverage-report",
+        help="Read-only Polymarket/Kalshi coverage census (POLY-COVERAGE-001; supply counts, never advice)",
+    )
+    pm_coverage_parser.add_argument("--top", type=int, default=30)
+    pm_coverage_parser.add_argument(
+        "--kalshi-limit", type=int, default=4000,
+        help="max Kalshi markets in the census (truncation is reported, never silent)",
     )
     cv_match_parser = subparsers.add_parser(
         "cross-venue-match-once",
@@ -3460,13 +3597,29 @@ def main(argv: list[str] | None = None) -> int:
         n = asyncio.run(meme_mas_objectives_report(lookback_hours=args.lookback_hours))
         return 0 if n >= 0 else 1
     if args.command == "polymarket-scan-once":
-        scored = asyncio.run(polymarket_scan_once(scheduled=args.scheduled, limit=args.limit))
+        scored = asyncio.run(
+            polymarket_scan_once(
+                scheduled=args.scheduled,
+                limit=args.limit,
+                orderbook_limit=args.orderbook_limit,
+                category=args.category,
+                active_only=args.active_only,
+                include_closed=args.include_closed,
+                query=args.query,
+                targeted=args.targeted,
+                end_date_min=args.end_date_min,
+                end_date_max=args.end_date_max,
+            )
+        )
         return 0 if scored >= 0 else 1
     if args.command == "polymarket-report":
         n = asyncio.run(polymarket_report(hours=args.hours))
         return 0 if n >= 0 else 1
     if args.command == "polymarket-domain-report":
         n = asyncio.run(polymarket_domain_report())
+        return 0 if n >= 0 else 1
+    if args.command == "polymarket-coverage-report":
+        n = asyncio.run(polymarket_coverage_report(top=args.top, kalshi_limit=args.kalshi_limit))
         return 0 if n >= 0 else 1
     if args.command == "cross-venue-match-once":
         n = asyncio.run(cross_venue_match_once(kalshi_limit=args.kalshi_limit, polymarket_limit=args.polymarket_limit))
