@@ -1167,3 +1167,28 @@ Deployed **`d0c54c7` → `4a312ec`** by `git pull --ff-only`; **no migration** (
 **Output language / safety:** the objective data rows use momentum/survival/movement language only — no PnL/EV/fill/order/position/buy/sell/bet (grep clean; only the boundary disclaimer/headers negate them). frontier-eval AST **`safety_ok=True` (62 files)**; canonical + expanded grep on `meme_shadow.py` **clean**. No EV, paper trading, recommendations, sizing, orders, wallets/keys, signing, swaps, execution, or autonomy.
 
 **Decision: KEEP — manual / report-only.** Pure read-only analysis; zero requests/budget/DB/latency; labels and all existing behavior unchanged. **Rollback (if ever):** `git reset --hard d0c54c7` — compute-only, nothing to unwind (adds only the objectives report).
+
+## POLY-002 — Kalshi↔Polymarket cross-venue observation deployed (2026-07-08, ~17:35 UTC)
+
+Deployed **`4a312ec` → `cb6337d`** by `git pull --ff-only`; **migration `0020` → `0021`** (2 new read-only tables). Read-only semantic matching + measurement over already-persisted Kalshi markets/snapshots + POLY-001 polymarket markets. Manual-only: no timer, no API endpoint, no flag; `ENABLE_POLYMARKET_SCOUT` untouched (still false). Existing MarketOps/EDGE-AUTO/MEME-NEWS/SolanaTracker/Polymarket-scan behavior unchanged.
+
+| item | value |
+|---|---|
+| pushed / deployed commit | **`cb6337d`** (origin/main + EVO-X2) |
+| DB backup (pre-migration) | `data/backups/backup-20260708T173111Z.db.gz` (225.29 MiB) |
+| alembic revision | **0020 → 0021** (applied via `run-baseline --dry-run`, all stages skipped) |
+| new tables | `cross_venue_observation_runs`, `cross_venue_market_candidates` |
+
+**`cross-venue-match-once` (live):** run #1 (kalshi=1500 × polymarket=50) → **21 candidates**; run #2 (kalshi=8000 × polymarket=50) → **31 candidates**. Label breakdown (run #2): `incompatible_resolution` **25**, `unresolved_semantic_match` **3**, `incompatible_outcome` **2**, `low_confidence_match` **1**, **`comparable_market_candidate` 0**. All domain=sports.
+
+**Comparable count = 0 — a correct, conservative result, not a failure.** The current venue overlap is thin: the 50-market Polymarket snapshot (from the POLY-001 deploy scan) is tournament-winner / game-prop heavy, while the Kalshi active sample is game-level props (spreads, totals, player hits → over_under/spread outcomes). The matcher therefore **rejects incompatible outcomes/resolutions and refuses to force matches** (exactly the required behavior: ambiguous/missing → `unresolved_semantic_match`, never a fabricated comparable). Sample candidates: `KXWCSPREAD-26JUL07SUIC ↔ 2793883` (incompatible_outcome, title_sim 0.425 — spread vs winner); `KXMLBHIT-… ↔ 2793895/93/94` (unresolved, conf ~0.56).
+
+**Observed-difference measurement validated:** the one `low_confidence_match` produced a real **`observed_difference` = 0.0595** (measured |kalshi_mid − polymarket_mid| probability-point gap). Distribution: n=1, p50/p90/max = 0.0595. **Spread comparison:** kalshi_spread p50 **0.04** vs polymarket_spread p50 **0.001** (Polymarket books are far tighter). Freshness: observation_confidence p50 0.75. So the measurement path works on live data; more comparables will surface once Polymarket data is refreshed with markets that have Kalshi identical-outcome equivalents (the mocked WC-winner smoke confirmed comparables are produced when data overlaps).
+
+**DB impact negligible:** the two cross_venue tables hold ~52 rows (2 runs) — too small to appear in `db-growth-report`'s largest tables; DB 2555 MiB is tick-driven (grew over ~19h since the last deploy, unrelated).
+
+**System integrity (unchanged):** MEME-NEWS 0 errors; SolanaTracker active (budget **KEEP**), **Birdeye disabled**, `ENABLE_POLYMARKET_SCOUT` still false; MarketOps last cycle ok, champion/challenger `-0.029173` (identical). **MarketOps p90 56.5s** (<60s) — elevated vs the prior 50.3s only because cycle #1142 was mid-run under a busy 17:33 UTC live sports slate; POLY-002 is a separate manual command and does not run in the MarketOps timer. **provider-roll-001 T+24h SolanaTracker timer UNDISTURBED** — active (waiting), next trigger **Wed 2026-07-08 21:00:35 UTC (~3h 26m)**.
+
+**Safety:** frontier-eval AST **`safety_ok=True` (63 files)**; canonical + expanded + **arb/arbitrage** grep on `cross_venue.py` **clean** (only boundary docstrings negate them); **no forbidden columns** (`side`/`size`/`ev`/`action`/`order`/`wallet`/`arbitrage`/`arb`/`profit` all absent). No EV, arbitrage, paper trading, recommendations, sizing, orders, wallets/keys, signing, swaps, execution, or autonomy — a `match_label` is a comparability verdict for human review and `observed_difference` is a measured probability gap, never a signal/action.
+
+**Decision: KEEP — manual / report-only.** The layer works on live data (produces conservative candidates, measures observed differences, refuses forced matches), adds negligible DB and zero external calls / zero budget / zero timer, and changes no existing behavior. **Rollback (if ever):** `git reset --hard 4a312ec` on host, then `alembic downgrade 0020` (the two tables are isolated — no other table references them; nothing else to unwind).
