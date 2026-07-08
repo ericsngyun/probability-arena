@@ -292,6 +292,23 @@ expansion widens WHICH markets are observed — it identifies no arbitrage, comp
 no EV, recommends no trade, sizes nothing, places no order, uses no
 wallets/keys/signing/swaps/execution, and forces no match.
 
+## Cross-venue matcher precision (POLY-PRECISION-001 — read-only; no EV/arb/orders/wallets)
+
+**No feature flag and no new setting.** The precision fixes are unconditional matcher
+behavior; `cross-venue-match-once` / `cross-venue-report` / `cross-venue-candidates`
+are unchanged in shape. No timer, no migration, no external call.
+
+Behavioral thresholds live in `app/services/cross_venue.py`:
+`LARGE_OBSERVED_DIFFERENCE=0.35` and `HIGH_SEMANTIC_CONFIDENCE=0.85` gate the
+`large_observed_difference_requires_review` REVIEW annotation — a suspicion that the
+MATCH is wrong, never an opportunity, edge, arbitrage, or action; a large gap alone
+never rejects a pair. A Polymarket midpoint and any `observed_difference` exist only
+when the outcome side has been aligned to the Kalshi YES proposition; otherwise both
+are absent and the pair is annotated `outcome_side_uncertain` / `midpoint_side_uncertain`
+and left `unresolved_semantic_match`. It identifies no arbitrage, computes no EV,
+recommends no trade, paper trades nothing, sizes nothing, places no orders, and uses no
+wallets/private keys/signing/swaps/execution.
+
 ## Retention windows
 
 `TICK_RETENTION_DAYS=7`, `WATCHER_RUN_RETENTION_DAYS=30`,

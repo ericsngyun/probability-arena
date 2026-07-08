@@ -445,6 +445,74 @@ swaps/execution** — there is no side/size/EV/action/order/wallet field by
 construction. No external call (it matches persisted rows), no timer. Ambiguous
 data yields `unresolved_semantic_match`, never a forced match.
 
+## Cross-venue matcher precision (POLY-PRECISION-001)
+
+**Read-only semantic + midpoint CORRECTNESS work.** It identifies no arbitrage,
+computes no EV, recommends no trades, paper trades nothing, sizes nothing, places
+no orders, and uses no wallets/private keys/signing/execution.
+
+POLY-COVERAGE-001 widened the Polymarket sample and exposed two POLY-002 defects.
+
+**1. The Polymarket midpoint had no side.** A Polymarket market's book
+(`best_bid`/`best_ask`) and `outcome_prices[0]` price `outcomes[0]` — verified
+against the live API, the book midpoint equals `outcome_prices[0]` in 97/97
+sampled markets with a book. But `outcomes[0]` is `"Yes"` only ~74% of the time;
+~26% of markets name entities instead (`["Kansas City Royals","New York Mets"]`,
+`["Over","Under"]`). Kalshi, meanwhile, encodes a game market's Yes side in the
+**ticker suffix**, not the title: `KXMLBGAME-…SDLAD-SD` and `…-LAD` both read
+"San Diego vs Los Angeles D Winner?". The old code compared P(`outcomes[0]`) to
+Kalshi's P(Yes) regardless, which is what produced the large spurious gaps.
+
+A midpoint — and therefore any `observed_difference` — is now produced **only**
+when the Polymarket outcome has been explicitly aligned to the Kalshi YES
+proposition, by Yes/No labels (including reversed `["No","Yes"]` ordering),
+Over/Under direction, or a uniquely-matched named entity. Otherwise both are
+**absent**, the pair is annotated `outcome_side_uncertain` or
+`midpoint_side_uncertain`, and it stays `unresolved_semantic_match`. Nothing is
+guessed.
+
+**2. "O/U 2.5" classified as `yes_no`.** `normalize_title` strips punctuation, so
+the slash was gone before the over/under test ran — and for the same reason the
+`[+-]\d` handicap test could never fire at all. Over/under, handicap and scoreline
+signals are now read from the raw title, before stripping.
+
+On top of that, deterministic compatibility gates, each recording its own reason:
+
+| Gate | Rejects | Reason |
+|---|---|---|
+| Outcome type | `yes_no` no longer matches `winner` | `outcome_type_mismatch` |
+| Market scope | player prop vs game vs tournament future | `market_type_mismatch` |
+| Threshold | over/under line, handicap line, entity-anchored scoreline | `threshold_mismatch` |
+| Entity | disjoint named entities (generic words filtered) | `entity_mismatch` |
+| Sport | Counter-Strike 2 vs Valorant | `sport_or_game_mismatch` |
+
+Scorelines are compared **anchored on the entity**, because Kalshi writes
+"Spain wins 3-1" where Polymarket writes "Spain 1 - 3 Belgium" — the same Spain,
+contradictory scores. Sport identity comes from a prefix-anchored Kalshi ticker or
+an unambiguous title term; entity overlap ignores generic words so "Esports",
+"Gaming", "Map" and "Winner" can never be the sole evidence two markets match.
+
+A measured gap above `LARGE_OBSERVED_DIFFERENCE` (0.35) with semantic confidence
+below `HIGH_SEMANTIC_CONFIDENCE` (0.85) adds
+`large_observed_difference_requires_review`. That is a suspicion that the **match
+is wrong** (or a quote is stale) — **never an opportunity, an edge, an arbitrage,
+or an action** — and a large gap alone never rejects a pair. Ambiguity always
+degrades to `unresolved_semantic_match`, never to `comparable_market_candidate`.
+
+Measured on a scratch DB seeded with real Kalshi rows, against the same
+396-market Polymarket sample:
+
+| | before | after |
+|---|---|---|
+| candidates (audit rows) | 143 | 143 |
+| `comparable_market_candidate` | 9 | **2** |
+| measured-gap p50 | 0.39 | **0.125** |
+
+The five `KXMLBGAME` false pairs (gaps 0.37–0.49) became `outcome_side_uncertain`
+with no midpoint. The two survivors are the genuinely identical GPT-5.6 markets,
+both flagged for review — their gap is a stale Kalshi quote, which is exactly what
+the flag is for.
+
 ## Memecoin multi-agent diagnostic (MEME-MAS-001)
 
 **Read-only diagnostic intelligence — not advice.** Five deterministic "agents"

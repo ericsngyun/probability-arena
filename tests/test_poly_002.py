@@ -78,8 +78,13 @@ def test_normalize_outcome():
 
 
 def test_outcomes_compatible():
-    assert outcomes_compatible("winner", "yes_no") is True     # both yes-ish
+    # POLY-PRECISION-001 tightened this: "both yes-ish" is a SCALE statement, not
+    # a compatibility one. A yes/no prop is no longer comparable to a winner future.
+    assert outcomes_compatible("winner", "yes_no") is False
+    assert outcomes_compatible("winner", "winner") is True
+    assert outcomes_compatible("winner", "candidate_winner") is True
     assert outcomes_compatible("over_under", "winner") is False
+    assert outcomes_compatible("over_under", "over_under") is True
 
 
 def test_coarse_domain():

@@ -330,6 +330,27 @@ kept. Prices/order books are informational quotes only — no EV/arbitrage/
 recommendation/order/wallet/swap/signing/execution/sizing/paper trading;
 cross-venue Kalshi linking shipped in POLY-002 (no arb/EV labels).
 
+### POLY-PRECISION-001 cross-venue matcher precision (read-only, NO timer)
+
+No flag, no setting, no migration, no external call — the precision fixes are
+unconditional matcher behavior. **Required before POLY-COVERAGE-001 may deploy.**
+Re-run `cross-venue-match-once` after deploying; expect materially FEWER
+`comparable_market_candidate` rows (9 → 2 on the validated sample) because
+mis-aligned and cross-sport pairs now degrade to `unresolved_semantic_match` or
+`incompatible_outcome`. That drop is the fix working, not a regression.
+
+* A Polymarket midpoint and any `observed_difference` exist ONLY when the outcome
+  side is aligned to the Kalshi YES proposition; otherwise both are absent and the
+  row carries `outcome_side_uncertain` / `midpoint_side_uncertain`.
+* New mismatch reasons to expect in `cross-venue-report`: `market_type_mismatch`,
+  `threshold_mismatch`, `entity_mismatch`, `sport_or_game_mismatch`,
+  `outcome_side_uncertain`, `midpoint_side_uncertain`, and the REVIEW flag
+  `large_observed_difference_requires_review`.
+* That flag means the MATCH is suspicious (or a Kalshi quote is stale). It is
+  **never an opportunity, edge, arbitrage, or action**, and never rejects a pair.
+* Identifies no arbitrage, computes no EV, recommends no trade, paper trades
+  nothing, sizes nothing, places no orders, uses no wallets/keys/signing/execution.
+
 ### POLY-COVERAGE-001 Polymarket coverage expansion (read-only, NO timer)
 
 ```bash
