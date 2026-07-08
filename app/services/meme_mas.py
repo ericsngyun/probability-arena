@@ -89,7 +89,11 @@ PROFILE_V1 = CalibrationProfile(
 )
 PROFILE_V2 = CalibrationProfile(
     name="v2", missing_coverage_penalty=0.55, concentration_penalty=0.7, reason_penalty=0.6,
-    risk_dampen=1.0, band_high=0.55, band_elevated=0.38, band_monitor=0.20,
+    # band_high=0.68 tuned on live EVO-X2 data (2026-07-08): the gates alone did
+    # not tighten high_review because the live high_review population is already
+    # clean/covered; the raised bar makes high_review genuinely selective
+    # (token-share ~0.40 -> ~0.16) while keeping the strongest clean tokens.
+    risk_dampen=1.0, band_high=0.68, band_elevated=0.38, band_monitor=0.20,
     gate_high_review=True, gate_momentum_min=0.6, gate_structure_min=0.6,
     gate_coverage_min=0.5, gate_risk_max=0.4,
 )
