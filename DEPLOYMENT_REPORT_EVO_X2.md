@@ -1145,3 +1145,25 @@ Deployed **`1082a00` → `2c52145` → `d0c54c7`** by `git pull --ff-only`; **no
 **Output language / safety:** diagnostic data uses review/quality/survival language only — no PnL/EV/fill/order/position/buy/sell/bet (grep clean; only the boundary disclaimer negates them). frontier-eval AST **`safety_ok=True` (62 files)**; canonical + expanded grep on `meme_mas.py` **clean**. No EV, paper trading, recommendations, sizing, orders, wallets/keys, signing, swaps, execution, or autonomy.
 
 **Decision: KEEP — manual / report-only.** v2 meets the recalibration goals (selective, risk-aware high_review; clean elevated tier), zero requests/budget/DB/latency, changes no existing behavior. **Rollback (if ever):** `git reset --hard 1082a00` — compute-only, nothing to unwind; MEME-MAS-001 (v1) logic remains selectable via the profile regardless. Follow-up (MEME-MAS-003, if wanted): a non-survival separation metric for the shadow calibration verdict, since high-momentum review tiers are volatile by nature.
+
+## MEME-MAS-003 — multi-objective calibration metrics deployed (2026-07-08, ~05:30 UTC)
+
+Deployed **`d0c54c7` → `4a312ec`** by `git pull --ff-only`; **no migration** (alembic `0020`). Read-only ANALYSIS only — adds five separate calibration objectives to MEME-SHADOW and a `meme-mas-objectives-report` (v1 vs v2). **`app/services/meme_mas.py` is unchanged — no label/scoring change** (post-pull `meme-mas-report` distribution identical to pre-pull: high_review 70 / elevated 184 / monitor 199 / low 8 / reject 0 on 461 tokens). No table/flag/timer/external-call/budget impact.
+
+**No migration / no external calls / no budget impact (verified):** revision **0020**; SolanaTracker budget today 825 → 840 (+15 = a background marketops crypto scan, **not** the objectives report, which makes zero external calls); no new table.
+
+**Live `meme-mas-objectives-report` (24h = 3469 anchors, 48h = 7077 anchors), v1 vs v2:**
+
+- **momentum_followthrough** — v2 `high_review` momentum-positive rate **0.325 (24h) / 0.342 (48h)** is the HIGHEST of all tiers and above v1 (0.288 / 0.310). **high_review IS momentum-positive** even though its survival is lowest — the survival-only verdict was misleading.
+- **survival_quality** — v2 `elevated_review` survival **0.977 (24h) / ~0.96 (48h)** is the safest non-reject tier (v1 was 0.951); `high_review` survival 0.892 / 0.904 is the lowest (the concentrated high-momentum tokens are volatile by design). `reject_risk` 1.0.
+- **risk_adjusted_movement** (median move × survival — a diagnostic, never a return/PnL/EV) — all tiers are negative at 1h (most memecoins fade; winners are outliers), and v2 `high_review` is the **least-negative momentum tier** (−4.6 vs monitor −13.0). Framed and labelled as measurement only.
+- **review_queue_efficiency** — v2 `high_review` **share 0.27** (half of v1's 0.52–0.56) with **momentum-positive lift 1.20 (24h) / 1.22 (48h)** vs v1's 1.06–1.10. So v2's high_review is a **smaller, higher-signal review queue** — the clearest efficiency win.
+- **coverage_quality** (label-independent) — **MISSING provider coverage clearly predicts worse outcomes:** survival **0.857 / 0.839**, rug **0.089 / 0.100**, 1h price median **−41% / −40%** vs covered **0.943 / 0.935**, rug 0.041 / 0.048, −7% / −6%.
+
+**Interpretation:** judged on the RIGHT objectives (momentum, queue efficiency, coverage) the MEME-MAS-002 labels are working — high_review concentrates momentum-positive tokens more efficiently, elevated_review is the safe tier, and missing coverage is a strong negative. **No further label change is warranted** (the milestone was analysis-only by design).
+
+**System integrity (unchanged):** MEME-NEWS 0 errors; SolanaTracker active (budget **KEEP**), **Birdeye disabled**, tennis-evidence/Polymarket off; **provider-roll-001 T+24h timer still armed** (fires Wed 2026-07-08 21:00:35 UTC — has not yet fired). MarketOps last run ok, champion/challenger `-0.029173` (identical), **p90 50.3s — identical before/after**. DB tick-driven; no new table.
+
+**Output language / safety:** the objective data rows use momentum/survival/movement language only — no PnL/EV/fill/order/position/buy/sell/bet (grep clean; only the boundary disclaimer/headers negate them). frontier-eval AST **`safety_ok=True` (62 files)**; canonical + expanded grep on `meme_shadow.py` **clean**. No EV, paper trading, recommendations, sizing, orders, wallets/keys, signing, swaps, execution, or autonomy.
+
+**Decision: KEEP — manual / report-only.** Pure read-only analysis; zero requests/budget/DB/latency; labels and all existing behavior unchanged. **Rollback (if ever):** `git reset --hard d0c54c7` — compute-only, nothing to unwind (adds only the objectives report).
