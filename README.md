@@ -469,8 +469,20 @@ the risk assessment *as-of* that moment), then measures how the **same token**
 moved afterwards from its own later snapshots.
 
 ```bash
-python -m app.cli meme-shadow-report --lookback-hours 48   # outcome by review_priority / sub-score / risk reason / concentration, + calibration recommendation
+python -m app.cli meme-shadow-report --lookback-hours 48       # outcome by review_priority / sub-score / risk reason / concentration, + calibration recommendation
+python -m app.cli meme-mas-objectives-report --lookback-hours 48   # MEME-MAS-003 multi-objective calibration (momentum / survival / risk-adjusted / queue-efficiency / coverage), v1 vs v2
 ```
+
+**MEME-MAS-003 multi-objective calibration** — because a single survival yardstick
+misjudges volatile high-momentum review tiers, `meme-mas-objectives-report` scores
+review_priority across five separate axes (v1 vs v2): **momentum_followthrough**
+(positive-move rate + median price), **survival_quality** (survival/rug/severe-end),
+**risk_adjusted_movement** (median move × survival — a measured diagnostic, never a
+return/PnL), **review_queue_efficiency** (queue share + momentum-positive lift vs
+overall), and **coverage_quality** (label-independent covered-vs-missing outcomes).
+It shows high_review is momentum-positive even when survival-lower, elevated_review
+is safer, and missing coverage predicts worse outcomes. Measurement only — it
+changes no label.
 
 Metrics per cohort: price/liquidity/volume change at **5m/15m/1h/6h/24h**,
 survival (no-liquidity-collapse) rate, rug/liquidity-removed incidence, attention

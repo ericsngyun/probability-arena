@@ -414,3 +414,119 @@ class MemeShadowReportService:
         if delta <= -SEPARATION_SURVIVAL_DELTA:
             return "review_priority_inverted_recheck"
         return "no_material_separation_recalibrate"
+
+
+# --- MEME-MAS-003: multi-objective calibration metrics ----------------------
+# review_priority is a review-attention label, so a single survival yardstick is
+# misleading (high-momentum tiers are volatile by nature). These sections score
+# the label across SEPARATE objectives, each a read-only MEASUREMENT of market
+# movement / survival — never PnL, EV, a return, a fill, or a recommendation.
+
+OBJECTIVES_NOTE = (
+    "Read-only multi-objective calibration MEASUREMENT of MEME-MAS review_priority. "
+    "Each metric is measured market movement / survival of the token, split by "
+    "objective — NOT PnL, NOT EV, NOT a return, NOT a fill, NOT a recommendation, "
+    "NOT sizing. `risk_adjusted_movement` is a measured median move discounted by "
+    "observed survival (a label-quality diagnostic), never a return or profit."
+)
+
+
+def _positive_rate(group: list[ShadowOutcome], horizon: str) -> float | None:
+    vals = [o.price_change[horizon] for o in group if horizon in o.price_change]
+    return round(sum(1 for v in vals if v > 0) / len(vals), 4) if vals else None
+
+
+def _median_price(group: list[ShadowOutcome], horizon: str) -> float | None:
+    return _median([o.price_change[horizon] for o in group if horizon in o.price_change])
+
+
+def _severe_end_rate(group: list[ShadowOutcome]) -> float | None:
+    ends = [o.risk_level_end for o in group if o.risk_level_end is not None]
+    return round(sum(1 for e in ends if (e or "").lower() == "severe") / len(ends), 4) if ends else None
+
+
+@dataclass
+class MemeShadowObjectives:
+    note: str
+    profile: str
+    lookback_hours: int
+    anchors: int
+    overall_momentum_positive_rate: float | None
+    momentum_followthrough: list[dict] = field(default_factory=list)
+    survival_quality: list[dict] = field(default_factory=list)
+    risk_adjusted_movement: list[dict] = field(default_factory=list)
+    review_queue_efficiency: list[dict] = field(default_factory=list)
+    coverage_quality: dict = field(default_factory=dict)
+
+
+class MemeShadowObjectivesService:
+    """Scores review_priority across separate objectives (MEME-MAS-003). Reuses
+    the follow-through outcomes; adds no external call and changes no label."""
+
+    def __init__(self, profile: CalibrationProfile = DEFAULT_PROFILE):
+        self.service = MemeShadowService(profile=profile)
+        self.profile = profile
+
+    def build(self, session: Session, lookback_hours: int = 48) -> MemeShadowObjectives:
+        outs = self.service.outcomes(session, lookback_hours)
+        total = len(outs)
+        overall_pos = _positive_rate(outs, "1h")
+
+        by_priority: dict[str, list[ShadowOutcome]] = {p: [] for p in REVIEW_PRIORITIES}
+        for o in outs:
+            by_priority.setdefault(o.review_priority, []).append(o)
+
+        momentum, survival, risk_adj, queue = [], [], [], []
+        for p in REVIEW_PRIORITIES:
+            g = by_priority.get(p, [])
+            if not g:
+                continue
+            pos1h = _positive_rate(g, "1h")
+            med1h = _median_price(g, "1h")
+            surv = _rate([o.survived for o in g])
+            rug = _rate([o.rug_or_liq_removed for o in g])
+            momentum.append({
+                "priority": p, "n": len(g), "momentum_positive_rate_1h": pos1h,
+                "price_1h_median": med1h, "price_6h_median": _median_price(g, "6h"),
+                "price_24h_median": _median_price(g, "24h"),
+            })
+            survival.append({
+                "priority": p, "n": len(g), "survival_rate": surv,
+                "rug_incidence": rug, "severe_end_rate": _severe_end_rate(g),
+            })
+            risk_adj.append({
+                "priority": p, "n": len(g), "median_price_1h": med1h, "survival_rate": surv,
+                "risk_adjusted_1h": round(med1h * surv, 4) if (med1h is not None and surv is not None) else None,
+            })
+            queue.append({
+                "priority": p, "n": len(g),
+                "share": round(len(g) / total, 4) if total else None,
+                "momentum_positive_rate_1h": pos1h,
+                "lift": round(pos1h / overall_pos, 4) if (pos1h is not None and overall_pos) else None,
+            })
+
+        # coverage_quality is LABEL-INDEPENDENT (splits by provider coverage, not
+        # by review_priority): does missing coverage predict worse outcomes?
+        covered = [o for o in outs if "missing_provider_coverage" not in o.risk_reasons]
+        missing = [o for o in outs if "missing_provider_coverage" in o.risk_reasons]
+
+        def cov(g: list[ShadowOutcome]) -> dict:
+            return {
+                "n": len(g), "survival_rate": _rate([o.survived for o in g]),
+                "rug_incidence": _rate([o.rug_or_liq_removed for o in g]),
+                "momentum_positive_rate_1h": _positive_rate(g, "1h"),
+                "price_1h_median": _median_price(g, "1h"),
+            }
+
+        return MemeShadowObjectives(
+            note=OBJECTIVES_NOTE,
+            profile=self.profile.name,
+            lookback_hours=lookback_hours,
+            anchors=total,
+            overall_momentum_positive_rate=overall_pos,
+            momentum_followthrough=momentum,
+            survival_quality=survival,
+            risk_adjusted_movement=risk_adj,
+            review_queue_efficiency=queue,
+            coverage_quality={"covered": cov(covered), "missing": cov(missing)},
+        )

@@ -208,8 +208,12 @@ push notifications, no recommendations. Read-only discovery only.
 
 ## Memecoin label follow-through (MEME-SHADOW-001 — read-only; no flag)
 
-**No feature flag** — `meme-shadow-report` is an always-available read-only
-calibration report. It reconstructs MEME-MAS `review_priority` at historical
+**No feature flag** — `meme-shadow-report` and `meme-mas-objectives-report` are
+always-available read-only calibration reports. **MEME-MAS-003** adds the
+multi-objective view (`meme-mas-objectives-report`): momentum_followthrough /
+survival_quality / risk_adjusted_movement / review_queue_efficiency /
+coverage_quality per review_priority, v1 vs v2 — measurement only, no label
+change. It reconstructs MEME-MAS `review_priority` at historical
 attention snapshots and measures each token's later trajectory (price/liq/vol at
 5m/15m/1h/6h/24h, survival, rug incidence, attention persistence, risk
 transition), aggregated by review_priority / sub-score / risk reason /

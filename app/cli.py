@@ -1950,6 +1950,72 @@ async def meme_mas_calibration_report(lookback_hours: int = 48, session=None) ->
             session.close()
 
 
+async def meme_mas_objectives_report(lookback_hours: int = 48, session=None) -> int:
+    """Multi-objective calibration of MEME-MAS review_priority across separate
+    axes (MEME-MAS-003, read-only) — momentum follow-through, survival quality,
+    risk-adjusted movement, review-queue efficiency, and coverage quality — v1 vs
+    v2. Market-movement MEASUREMENT, not PnL/EV/advice. Returns anchors."""
+    from app.services.meme_mas import PROFILE_V1, PROFILE_V2, REVIEW_PRIORITIES
+    from app.services.meme_shadow import MemeShadowObjectivesService
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        o1 = MemeShadowObjectivesService(profile=PROFILE_V1).build(session, lookback_hours=lookback_hours)
+        o2 = MemeShadowObjectivesService(profile=PROFILE_V2).build(session, lookback_hours=lookback_hours)
+
+        def idx(section):
+            return {r["priority"]: r for r in section}
+
+        print("meme-mas objectives (multi-objective calibration) — read-only measurement, not advice")
+        print(o2.note)
+        print(
+            f"lookback={lookback_hours}h  anchors: v1={o1.anchors} v2={o2.anchors}  "
+            f"overall_momentum_positive_rate_1h: v1={o1.overall_momentum_positive_rate} v2={o2.overall_momentum_positive_rate}"
+        )
+
+        def section(title, s1, s2, cols):
+            print(f"\n[{title}]  (v1 | v2 by review_priority)")
+            m1, m2 = idx(s1), idx(s2)
+            for p in REVIEW_PRIORITIES:
+                a, b = m1.get(p), m2.get(p)
+                if a is None and b is None:
+                    continue
+                def fmt(r):
+                    return "  ".join(f"{c}={(r or {}).get(c)}" for c in cols)
+                print(f"  {p:<16} v1[n={(a or {}).get('n', 0)} {fmt(a)}]  |  v2[n={(b or {}).get('n', 0)} {fmt(b)}]")
+
+        section("1 momentum_followthrough (does the label predict positive movement?)",
+                o1.momentum_followthrough, o2.momentum_followthrough,
+                ["momentum_positive_rate_1h", "price_1h_median", "price_24h_median"])
+        section("2 survival_quality (is the tier safer?)",
+                o1.survival_quality, o2.survival_quality,
+                ["survival_rate", "rug_incidence", "severe_end_rate"])
+        section("3 risk_adjusted_movement (median move discounted by survival — a diagnostic, not a return)",
+                o1.risk_adjusted_movement, o2.risk_adjusted_movement,
+                ["risk_adjusted_1h", "median_price_1h", "survival_rate"])
+        section("4 review_queue_efficiency (share of queue + momentum-positive lift vs overall)",
+                o1.review_queue_efficiency, o2.review_queue_efficiency,
+                ["share", "lift", "momentum_positive_rate_1h"])
+
+        print("\n[5 coverage_quality]  (label-independent: does MISSING provider coverage predict worse outcomes?)")
+        for k in ("covered", "missing"):
+            c = o2.coverage_quality.get(k, {})
+            print(
+                f"  {k:<10} n={c.get('n')} survival={c.get('survival_rate')} "
+                f"rug_incidence={c.get('rug_incidence')} momentum_positive_1h={c.get('momentum_positive_rate_1h')} "
+                f"price_1h_median={c.get('price_1h_median')}"
+            )
+        return o2.anchors
+    finally:
+        if owns_session:
+            session.close()
+
+
 async def polymarket_scan_once(
     scheduled: bool = False, limit: int | None = None, runner=None, session=None
 ) -> int:
@@ -3032,6 +3098,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Before(v1)/after(v2) MEME-MAS review_priority calibration via MEME-SHADOW (read-only)",
     )
     calib_parser.add_argument("--lookback-hours", type=int, default=48)
+    obj_parser = subparsers.add_parser(
+        "meme-mas-objectives-report",
+        help="Multi-objective MEME-MAS review_priority calibration (momentum/survival/risk-adjusted/queue/coverage), v1 vs v2 (read-only)",
+    )
+    obj_parser.add_argument("--lookback-hours", type=int, default=48)
     pm_scan_parser = subparsers.add_parser(
         "polymarket-scan-once",
         help="One bounded read-only Polymarket market-data scan (POLY-001; never advice)",
@@ -3253,6 +3324,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if n >= 0 else 1
     if args.command == "meme-mas-calibration-report":
         n = asyncio.run(meme_mas_calibration_report(lookback_hours=args.lookback_hours))
+        return 0 if n >= 0 else 1
+    if args.command == "meme-mas-objectives-report":
+        n = asyncio.run(meme_mas_objectives_report(lookback_hours=args.lookback_hours))
         return 0 if n >= 0 else 1
     if args.command == "polymarket-scan-once":
         scored = asyncio.run(polymarket_scan_once(scheduled=args.scheduled, limit=args.limit))
