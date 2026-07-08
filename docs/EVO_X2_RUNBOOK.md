@@ -295,10 +295,20 @@ flip); **do not deploy unless explicitly asked.**
 ### POLY-002 Kalshi↔Polymarket cross-venue observation (read-only, on-demand, NO timer)
 
 ```bash
-.venv/bin/python -m app.cli cross-venue-match-once     # one read-only matching/observation pass (persists candidates; migration 0021)
+.venv/bin/python -m app.cli cross-venue-match-once     # default now recency-aware + representative (XVENUE-OPS-001: kalshi 4000 / polymarket 500, most-recently-seen first)
+.venv/bin/python -m app.cli cross-venue-match-once --recent-hours 48   # drop stale 'active' rows (host had ~12k stale-active); prints stale_skipped
+.venv/bin/python -m app.cli cross-venue-match-once --domain sports --market-type winner   # narrow the sample
 .venv/bin/python -m app.cli cross-venue-report         # comparables, midpoint-difference distribution, spread/liquidity, freshness
 .venv/bin/python -m app.cli cross-venue-candidates --label comparable_market_candidate
 ```
+
+> **XVENUE-OPS-001:** the no-arg default is now representative — it loads Kalshi
+> markets most-recently-seen first (was rowid/oldest-first, which returned
+> days-stale `active` rows) and every run prints a sample-composition report
+> (domain/market-type breakdown, stale/no-snapshot counts, overlap, low-overlap
+> note). Selection/usability only; the matcher, labels, and precision gates are
+> unchanged. The prior deploy's "default under-covers the data" follow-up is
+> resolved by this milestone.
 
 Deterministic semantic matcher over **already-persisted** Kalshi markets/snapshots
 + POLY-001 polymarket markets → candidate labels + measured `observed_difference`

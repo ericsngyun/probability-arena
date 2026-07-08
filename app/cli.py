@@ -2231,12 +2231,23 @@ async def polymarket_domain_report(session=None) -> int:
 
 
 async def cross_venue_match_once(
-    kalshi_limit: int = 1500, polymarket_limit: int = 200, session=None
+    kalshi_limit: int = 4000,
+    polymarket_limit: int = 500,
+    recent_hours: int | None = None,
+    domain: str | None = None,
+    market_type: str | None = None,
+    session=None,
 ) -> int:
     """One read-only Kalshi<->Polymarket cross-venue matching/observation pass
     (POLY-002). Identifies comparable markets + measures observable differences.
     Returns candidates created, or -1 on error. No EV, arbitrage, orders, or
-    execution."""
+    execution.
+
+    Kalshi rows are loaded most-recently-seen first (XVENUE-OPS-001) so the
+    default run considers current markets, not stale rowid-order slices.
+    `--recent-hours` drops markets not seen in that window; `--domain` /
+    `--market-type` narrow the sample. These change WHICH persisted rows are
+    considered, never how they are matched."""
     from app.services.cross_venue import CrossVenueMatchingService
 
     owns_session = session is None
@@ -2247,7 +2258,8 @@ async def cross_venue_match_once(
         session = get_sessionmaker()()
     try:
         run = CrossVenueMatchingService().match_once(
-            session, kalshi_limit=kalshi_limit, polymarket_limit=polymarket_limit
+            session, kalshi_limit=kalshi_limit, polymarket_limit=polymarket_limit,
+            recent_hours=recent_hours, domain=domain, market_type=market_type,
         )
         print(
             f"cross-venue run #{run.id}: {run.status} kalshi={run.kalshi_markets_considered} "
@@ -2256,6 +2268,29 @@ async def cross_venue_match_once(
             + (f" error={run.error_type}" if run.status == "error" else "")
             + " (read-only cross-venue observation — not advice, not arbitrage, not EV)"
         )
+        s = getattr(run, "_sample", None)
+        if s is not None:
+            print(
+                f"  sample: kalshi loaded={s.kalshi_loaded} considered={s.kalshi_considered} "
+                f"(mode={s.kalshi_load_mode}"
+                + (f", recent_hours={s.recent_hours}, stale_skipped={s.kalshi_stale_skipped}" if s.recent_hours else "")
+                + (f", no_snapshot={s.kalshi_without_snapshot}" if s.kalshi_without_snapshot else "")
+                + f")  polymarket loaded={s.polymarket_loaded} considered={s.polymarket_considered}"
+            )
+            if s.domain_filter or s.market_type_filter:
+                print(f"  filters: domain={s.domain_filter} market_type={s.market_type_filter}")
+            print(f"  kalshi by domain:     {s.kalshi_by_domain}")
+            print(f"  polymarket by domain: {s.polymarket_by_domain}")
+            print(f"  kalshi by market type:     {s.kalshi_by_market_type}")
+            print(f"  polymarket by market type: {s.polymarket_by_market_type}")
+            print(f"  domain overlap: {s.overlap_domains or '(none)'}")
+            if s.low_overlap:
+                print(
+                    "  note: low sample overlap — no comparable rows surfaced. This is an "
+                    "observation-coverage note, not a signal. Try a larger --polymarket-limit/"
+                    "--kalshi-limit, drop --recent-hours, or scan more Polymarket supply "
+                    "(polymarket-scan-once --targeted)."
+                )
         return run.candidates_created if run.status == "ok" else -1
     finally:
         if owns_session:
@@ -3379,8 +3414,20 @@ def build_parser() -> argparse.ArgumentParser:
         "cross-venue-match-once",
         help="One read-only Kalshi<->Polymarket cross-venue matching/observation pass (POLY-002; not advice/arb/EV)",
     )
-    cv_match_parser.add_argument("--kalshi-limit", type=int, default=1500)
-    cv_match_parser.add_argument("--polymarket-limit", type=int, default=200)
+    cv_match_parser.add_argument("--kalshi-limit", type=int, default=4000)
+    cv_match_parser.add_argument("--polymarket-limit", type=int, default=500)
+    cv_match_parser.add_argument(
+        "--recent-hours", type=int, default=None,
+        help="only consider Kalshi markets seen within this many hours (drops stale 'active' rows)",
+    )
+    cv_match_parser.add_argument(
+        "--domain", type=str, default=None,
+        help="narrow the sample to one coarse domain (sports/politics/crypto/economics/other)",
+    )
+    cv_match_parser.add_argument(
+        "--market-type", type=str, default=None,
+        help="narrow the sample to one outcome type (e.g. winner/over_under/yes_no/exact_score)",
+    )
     subparsers.add_parser(
         "cross-venue-report", help="Read-only cross-venue observation report (POLY-002)"
     )
@@ -3622,7 +3669,10 @@ def main(argv: list[str] | None = None) -> int:
         n = asyncio.run(polymarket_coverage_report(top=args.top, kalshi_limit=args.kalshi_limit))
         return 0 if n >= 0 else 1
     if args.command == "cross-venue-match-once":
-        n = asyncio.run(cross_venue_match_once(kalshi_limit=args.kalshi_limit, polymarket_limit=args.polymarket_limit))
+        n = asyncio.run(cross_venue_match_once(
+            kalshi_limit=args.kalshi_limit, polymarket_limit=args.polymarket_limit,
+            recent_hours=args.recent_hours, domain=args.domain, market_type=args.market_type,
+        ))
         return 0 if n >= 0 else 1
     if args.command == "cross-venue-report":
         n = asyncio.run(cross_venue_report())

@@ -309,6 +309,21 @@ and left `unresolved_semantic_match`. It identifies no arbitrage, computes no EV
 recommends no trade, paper trades nothing, sizes nothing, places no orders, and uses no
 wallets/private keys/signing/swaps/execution.
 
+## Cross-venue sample selection (XVENUE-OPS-001 — read-only usability; no EV/arb/orders/wallets)
+
+**No feature flag and no new setting.** `cross-venue-match-once` now loads Kalshi
+markets **most-recently-seen first** (`last_seen_at DESC`, was rowid/oldest-first)
+and gains sample-scoping CLI options: `--recent-hours N` (drops markets not seen
+in the window), `--domain`, `--market-type`, alongside the existing
+`--kalshi-limit` / `--polymarket-limit`. Bounded defaults were raised to be
+representative without magic limits: **`--kalshi-limit 4000`** (was 1500),
+**`--polymarket-limit 500`** (was 200). Every run prints a transient
+sample-composition report (rows loaded/considered, per-domain + per-market-type
+breakdown, stale/no-snapshot counts, domain overlap, low-overlap note). These
+change only WHICH persisted rows are considered — the matcher, labels, gates, and
+midpoint/side alignment are unchanged. No timer, migration, endpoint, or external
+call; no EV/arbitrage/opportunity/sizing/orders/wallets/keys/signing/swaps/execution.
+
 ## Retention windows
 
 `TICK_RETENTION_DAYS=7`, `WATCHER_RUN_RETENTION_DAYS=30`,

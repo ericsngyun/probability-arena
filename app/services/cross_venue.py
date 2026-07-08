@@ -619,6 +619,38 @@ def poly_yes_midpoint(p: "PolyView", k: "KalshiView") -> tuple[float | None, str
     return price, None
 
 
+@dataclass
+class MatchSampleComposition:
+    """Read-only description of WHICH persisted rows a match pass considered, so a
+    manual operator can see the sample rather than guess at limits. Pure
+    diagnostics — no scores, no advice, no action. Attached transiently to the
+    run (never persisted; no DB column)."""
+
+    kalshi_loaded: int = 0
+    polymarket_loaded: int = 0
+    kalshi_considered: int = 0
+    polymarket_considered: int = 0
+    kalshi_load_mode: str = "recent_active"
+    recent_hours: int | None = None
+    domain_filter: str | None = None
+    market_type_filter: str | None = None
+    kalshi_stale_skipped: int = 0       # active but outside the recency window
+    kalshi_without_snapshot: int = 0    # unavailable: no snapshot => no midpoint
+    kalshi_by_domain: dict = field(default_factory=dict)
+    polymarket_by_domain: dict = field(default_factory=dict)
+    kalshi_by_market_type: dict = field(default_factory=dict)
+    polymarket_by_market_type: dict = field(default_factory=dict)
+    overlap_domains: list = field(default_factory=list)
+    low_overlap: bool = False
+
+
+def _count_by(views, key) -> dict:
+    counts: dict[str, int] = {}
+    for v in views:
+        counts[key(v)] = counts.get(key(v), 0) + 1
+    return dict(sorted(counts.items(), key=lambda kv: -kv[1]))
+
+
 class CrossVenueMatchingService:
     """Deterministic Kalshi<->Polymarket matcher + observer over persisted rows."""
 
@@ -656,16 +688,50 @@ class CrossVenueMatchingService:
             ))
         return views
 
-    def _load_kalshi(self, session: Session, limit: int) -> list[KalshiView]:
-        markets = session.execute(
-            select(Market).where(Market.status == "active").limit(limit)
-        ).scalars().all()
-        if not markets:  # some datasets use "open"; fall back to most-recently-seen
-            markets = session.execute(
-                select(Market).order_by(Market.last_seen_at.desc()).limit(limit)
-            ).scalars().all()
-        views: list[KalshiView] = []
+    def _load_kalshi(
+        self, session: Session, limit: int, recent_hours: int | None = None
+    ) -> tuple[list[KalshiView], str, int]:
+        """Load a bounded, RECENCY-ORDERED slice of Kalshi markets.
+
+        Returns (views, load_mode, stale_skipped). Ordering by `last_seen_at`
+        descending is the whole point: the previous unordered `.limit()` returned
+        markets in rowid order, i.e. the OLDEST-inserted markets first — which on
+        a long-running DB are stale rows still flagged 'active' but not refreshed
+        for days, with no overlap against a freshly-scanned Polymarket sample.
+        This changes only WHICH rows are considered, never how they are matched.
+
+        `recent_hours`, when set, additionally drops markets not seen inside that
+        window (the cleanest way to exclude stale 'active' rows). Tiered fallback
+        keeps the command working on unusual datasets: recency-window -> active
+        (no window) -> any-status-by-recency."""
         now = _now()
+        order = (Market.last_seen_at.desc(), Market.id.desc())
+        stale_skipped = 0
+
+        stmt = select(Market).where(Market.status == "active")
+        if recent_hours and recent_hours > 0:
+            cutoff = now - timedelta(hours=recent_hours)
+            stale_skipped = session.execute(
+                select(func.count()).select_from(Market)
+                .where(Market.status == "active", Market.last_seen_at < cutoff)
+            ).scalar() or 0
+            stmt = stmt.where(Market.last_seen_at >= cutoff)
+        markets = session.execute(stmt.order_by(*order).limit(limit)).scalars().all()
+        load_mode = "recent_active"
+
+        if not markets and recent_hours:  # window emptied it — active, no window
+            load_mode = "recent_active_no_window"
+            markets = session.execute(
+                select(Market).where(Market.status == "active")
+                .order_by(*order).limit(limit)
+            ).scalars().all()
+        if not markets:  # some datasets use "open"/etc. — most-recently-seen, any status
+            load_mode = "any_status_recent"
+            markets = session.execute(
+                select(Market).order_by(*order).limit(limit)
+            ).scalars().all()
+
+        views: list[KalshiView] = []
         for mk in markets:
             snap = session.execute(
                 select(MarketSnapshot).where(MarketSnapshot.market_id == mk.id)
@@ -692,7 +758,7 @@ class CrossVenueMatchingService:
                 spread_line=extract_spread_line(title),
                 scoreline=score_by_entity(title),
             ))
-        return views
+        return views, load_mode, stale_skipped
 
     @staticmethod
     def _is_hard_incompatible(p: PolyView, k: KalshiView) -> bool:
@@ -887,8 +953,26 @@ class CrossVenueMatchingService:
             return LABEL_LOW_CONFIDENCE, conf, match_reasons, mismatch, poly_mid
         return LABEL_UNRESOLVED, conf, match_reasons, mismatch, poly_mid
 
+    @staticmethod
+    def _passes_filters(view, domain: str | None, market_type: str | None) -> bool:
+        """A pre-match SAMPLE filter — it narrows which persisted rows are
+        considered. It never changes a label or relaxes a precision gate."""
+        if domain and view.domain != domain:
+            return False
+        if market_type and view.outcome_type != market_type:
+            return False
+        return True
+
     def match_once(
-        self, session: Session, kalshi_limit: int = 1500, polymarket_limit: int = 200, persist: bool = True
+        self,
+        session: Session,
+        kalshi_limit: int = 4000,
+        polymarket_limit: int = 500,
+        persist: bool = True,
+        *,
+        recent_hours: int | None = None,
+        domain: str | None = None,
+        market_type: str | None = None,
     ) -> CrossVenueObservationRun:
         started = _now()
         run = CrossVenueObservationRun(status="running", started_at=started, created_at=started)
@@ -897,8 +981,16 @@ class CrossVenueMatchingService:
             session.flush()
 
         try:
-            polys = self._load_polymarket(session, polymarket_limit)
-            kalshi = self._load_kalshi(session, kalshi_limit)
+            polys_all = self._load_polymarket(session, polymarket_limit)
+            kalshi_all, load_mode, stale_skipped = self._load_kalshi(
+                session, kalshi_limit, recent_hours=recent_hours
+            )
+
+            # Optional sample narrowing (domain / market type). Pre-match filter
+            # only: the matcher and every label/gate downstream are unchanged.
+            polys = [p for p in polys_all if self._passes_filters(p, domain, market_type)]
+            kalshi = [k for k in kalshi_all if self._passes_filters(k, domain, market_type)]
+
             comparable = unresolved = 0
             candidates: list[CrossVenueMarketCandidate] = []
 
@@ -966,6 +1058,31 @@ class CrossVenueMatchingService:
             run.comparable_count = comparable
             run.unresolved_count = unresolved
             run._candidates = candidates  # attached for non-persist callers/tests
+
+            k_domains = _count_by(kalshi, lambda v: v.domain)
+            p_domains = _count_by(polys, lambda v: v.domain)
+            overlap = sorted(set(k_domains) & set(p_domains))
+            run._sample = MatchSampleComposition(
+                kalshi_loaded=len(kalshi_all),
+                polymarket_loaded=len(polys_all),
+                kalshi_considered=len(kalshi),
+                polymarket_considered=len(polys),
+                kalshi_load_mode=load_mode,
+                recent_hours=recent_hours,
+                domain_filter=domain,
+                market_type_filter=market_type,
+                kalshi_stale_skipped=stale_skipped,
+                kalshi_without_snapshot=sum(1 for k in kalshi if k.snapshot_age_seconds is None),
+                kalshi_by_domain=k_domains,
+                polymarket_by_domain=p_domains,
+                kalshi_by_market_type=_count_by(kalshi, lambda v: v.outcome_type),
+                polymarket_by_market_type=_count_by(polys, lambda v: v.outcome_type),
+                overlap_domains=overlap,
+                # A representative sample should share domains AND surface at least
+                # one candidate; flag when it does not so the operator knows to
+                # widen limits or drop the recency window — NOT an opportunity signal.
+                low_overlap=(not overlap) or len(candidates) == 0,
+            )
             if persist:
                 session.commit()
             return run

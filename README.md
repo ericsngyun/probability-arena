@@ -430,6 +430,8 @@ identify **comparable** markets and MEASURE observable differences.
 
 ```bash
 python -m app.cli cross-venue-match-once          # one read-only matching/observation pass (persists candidates)
+python -m app.cli cross-venue-match-once --recent-hours 48 --domain sports   # narrow the sample
+python -m app.cli cross-venue-match-once --kalshi-limit 8000 --polymarket-limit 600   # explicit wide pass
 python -m app.cli cross-venue-report              # candidate counts, comparables, midpoint-difference distribution, spread/liquidity, freshness
 python -m app.cli cross-venue-candidates --label comparable_market_candidate   # list candidates from the latest run
 ```
@@ -444,6 +446,20 @@ trades, paper trade, size positions, place orders, or use wallets/keys/signing/
 swaps/execution** — there is no side/size/EV/action/order/wallet field by
 construction. No external call (it matches persisted rows), no timer. Ambiguous
 data yields `unresolved_semantic_match`, never a forced match.
+
+**Sample selection (XVENUE-OPS-001).** Kalshi rows are loaded **most-recently-seen
+first** (`last_seen_at DESC`), so the default run considers current markets rather
+than the oldest-inserted rowid slice — which on a long-running DB is stale rows
+still flagged `active` but not refreshed for days (e.g. games that already
+resolved), with no overlap against a freshly-scanned Polymarket sample. Defaults
+are bounded and representative (`--kalshi-limit 4000`, `--polymarket-limit 500`);
+`--recent-hours N` drops markets not seen inside the window, and `--domain` /
+`--market-type` narrow the sample. Every run prints its **sample composition** —
+rows loaded/considered, per-domain and per-market-type breakdown on both venues,
+stale/no-snapshot counts, domain overlap, and a low-overlap coverage note when no
+comparable rows surface (a note about observation coverage, **never** a signal).
+These options change *which* persisted rows are considered; they never change a
+label, relax a precision gate, or force a match.
 
 ## Cross-venue matcher precision (POLY-PRECISION-001)
 
