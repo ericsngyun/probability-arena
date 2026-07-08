@@ -1048,3 +1048,38 @@ Deployed **`ccbc0cf` → `451580f`** by `git pull --ff-only`; **no migration** (
 **Safety:** frontier-eval AST **`safety_ok=True` (60 files)**; canonical + expanded dangerous-identifier grep on `crypto_risk.py` **clean**. Read-only field mapping only — no EV, paper trading, recommendations, sizing, orders, wallets/keys, signing, swaps, execution, or autonomy. SolanaTracker Advanced remains **≈ $58–59/month USD** recurring data-provider OpEx (accounting metadata).
 
 **Decision: KEEP.** All KEEP criteria met — coverage increased materially (0% → 24.6% on three dimensions, at zero extra request cost), provider errors acceptable, no latency/DB regression, no safety issue, no label explosion. No rollback trigger present. **Rollback (if ever):** `git reset --hard ccbc0cf` (no migration/state; the fix only changes parsing) — SolanaTracker key/flag/budget caps stay as-is since provider behavior is not the issue.
+
+## MEME-MAS-001 — read-only memecoin diagnostic layer deployed (2026-07-08, ~03:50 UTC)
+
+Deployed **`451580f` → `fe986f6`** by `git pull --ff-only`; **no migration** (alembic `0020` unchanged — the diagnostic recomputes on demand from persisted rows). Read-only multi-agent DIAGNOSTIC scoring: 5 deterministic agents (Coin Structure, Catalyst Velocity, Timing, Risk Auditor, Composite Review — **no LLM, no external calls, no new provider, no table, no flag, no timer**) turn existing meme/risk rows into a `review_priority`. Manual reports only; nothing scheduled, nothing persisted.
+
+**No migration / no external calls / no budget impact (verified):** revision stayed **0020**, no alembic files in the pull. The SolanaTracker budget count was **today=570 before AND after** running `meme-mas-report`/`meme-mas-assess` — the layer makes **zero** external requests (compute-on-demand from persisted rows). No `meme_mas` table exists (compute-on-demand, as designed).
+
+**Report output (`meme-mas-report`, 24h, live):** **464 tokens assessed.**
+
+| review_priority | count |
+|---|---|
+| high_review | 185 |
+| elevated_review | 199 |
+| monitor | 80 |
+| low | 0 |
+| **reject_risk** | **0** |
+
+Provider coverage 361/464 (103 tokens missing provider risk data → surfaced as `missing_evidence`). Sub-score distributions: structure p50 0.60 / p90 0.88, velocity p50 0.71, timing p50 0.63, risk_penalty p50 0.0 / **p90 0.50**.
+
+**Top high_review examples (with reasoning traces — human-review triage, NOT a trade signal):**
+- `LYNK` review 0.851 — `healthy_liquidity`, `frequent_catalysts`, `fresh_token`, `liquidity_momentum`
+- `HELPDAD` review 0.848 — `frequent_catalysts`, `fresh_token`, `volume_momentum`, `sustained_attention`
+- `DONALD` review 0.838 — `healthy_liquidity`, `boosted`, `frequent_catalysts`, `fresh_token`
+
+**reject_risk examples:** **none in this window** — the meme-news attention set currently holds no severe/rug/honeypot tokens (risk_penalty p90 = 0.50 = concentration/medium flags, below the reject threshold). The risk path is confirmed reachable (risk_penalty up to 0.6 observed) and forced-reject is unit-tested; `reject_risk=0` here is an honest "no severe tokens right now," not a broken path.
+
+**Distribution note (calibration follow-up, not a blocker):** the labels skew toward elevated/high_review (fresh boosted memecoins with catalysts score well on velocity/timing), and `low`/`reject_risk` are empty this window. Thresholds are a natural MEME-MAS-002 calibration target; the layer is deterministic and correct as shipped — `review_priority` is review-attention triage, not a quality/opportunity ranking.
+
+**No forbidden vocabulary:** the serialized diagnostic data (priorities, reasons, traces, risk_reasons) contains no buy/sell/trade/bet/EV/position language; the only "trade" occurrences are the boundary disclaimer ("not a trade recommendation / not a trade signal").
+
+**System integrity (unchanged):** MEME-NEWS 0 errors; SolanaTracker active (key present, budget **KEEP**), **Birdeye disabled**, tennis-evidence/Polymarket flags absent → off (Polymarket dark/manual). MarketOps last run ok, champion/challenger `-0.029173` (identical), **p90 50.3s — identical before/after** (no regression). DB 2331 MiB (tick-driven; MEME-MAS adds no table).
+
+**Safety:** frontier-eval AST **`safety_ok=True` (61 files)**; canonical + expanded dangerous-identifier grep on `meme_mas.py` **clean**. No EV, paper trading, recommendations, sizing, orders, wallets/keys, signing, swaps, execution, or autonomy. `review_priority` is human-review triage; `reject_risk` is avoid/flag for review, never a trade direction.
+
+**Decision: KEEP — manual / report-only.** The diagnostic works on live data, adds zero requests / zero budget / zero DB / zero latency, and changes no existing behavior. It stays **manual and read-only** (no timer, no flag, no persistence). Follow-up: MEME-MAS-002 threshold calibration once review_priority is tracked over time. **Rollback (if ever):** `git reset --hard 451580f` — no migration/state/flag to unwind (compute-only).
