@@ -2297,6 +2297,66 @@ async def cross_venue_match_once(
             session.close()
 
 
+async def xvenue_observation_report(top: int = 10, session=None) -> int:
+    """Read-only cross-venue observation-window report (XVENUE-OBS-001): did the
+    latest targeted Polymarket scan + match pass produce CLEAN comparable markets,
+    and if not, why not? Composes persisted rows only — no external call, no
+    persistence. Coverage intelligence for human review; never arbitrage, EV, a
+    trade candidate, a recommendation, sizing, orders, wallets, signing, or
+    execution. Returns the candidate count (0 is a valid result), or -1 on error."""
+    from app.services.xvenue_observation import XVenueObservationReportService
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        r = XVenueObservationReportService().build(session, top=top)
+        print("cross-venue observation window report — read-only coverage, not advice")
+        print(r.note)
+        print(
+            f"scan: run #{r.scan_run_id} started={r.scan_started_at} mode={r.scan_mode} "
+            f"markets={r.scan_markets_seen} queries={r.scan_queries}"
+        )
+        print(
+            f"match: run #{r.match_run_id} started={r.match_started_at} "
+            f"ran_after_scan={r.match_ran_after_scan} kalshi={r.kalshi_considered} "
+            f"polymarket={r.polymarket_considered}"
+        )
+        print(
+            f"candidates={r.candidates}  comparable: total={r.comparable_total} "
+            f"clean={r.comparable_clean} flagged_for_review={r.comparable_flagged}  "
+            f"side_uncertain={r.side_uncertain}  unresolved={r.unresolved}"
+        )
+        print(f"by label:  {r.by_label}")
+        print(f"by domain: {r.by_domain}")
+        print(f"mismatch reasons: {r.mismatch_reasons}")
+        if r.clean_candidates:
+            print("clean comparable candidates (observation only — never a trade/arb signal):")
+            for c in r.clean_candidates:
+                print(
+                    f"  {str(c['kalshi_ticker'])[:24]:<24} <-> {str(c['polymarket_market_id'])[:10]:<10} "
+                    f"[{c['domain']}] conf={c['match_confidence']} "
+                    f"k_mid={c['kalshi_midpoint']} p_mid={c['polymarket_midpoint']} "
+                    f"observed_diff={c['observed_difference']}"
+                )
+        if r.flagged_candidates:
+            print("comparable rows FLAGGED for review (suspicious match / stale quote — not opportunities):")
+            for c in r.flagged_candidates:
+                print(
+                    f"  {str(c['kalshi_ticker'])[:24]:<24} <-> {str(c['polymarket_market_id'])[:10]:<10} "
+                    f"conf={c['match_confidence']} observed_diff={c['observed_difference']}"
+                )
+        print(f"overlap assessment: {r.overlap_assessment}")
+        print(f"  {r.assessment_detail}")
+        return r.candidates
+    finally:
+        if owns_session:
+            session.close()
+
+
 async def cross_venue_report(session=None) -> int:
     """Read-only cross-venue observation report (POLY-002). Returns candidate count."""
     from app.services.cross_venue import CrossVenueReportService
@@ -3431,6 +3491,11 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         "cross-venue-report", help="Read-only cross-venue observation report (POLY-002)"
     )
+    xv_obs_parser = subparsers.add_parser(
+        "xvenue-observation-report",
+        help="Read-only observation-window report: did the latest scan+match produce clean comparables? (XVENUE-OBS-001; never advice/arb/EV)",
+    )
+    xv_obs_parser.add_argument("--top", type=int, default=10)
     cv_cand_parser = subparsers.add_parser(
         "cross-venue-candidates", help="List cross-venue candidates from the latest run (read-only)"
     )
@@ -3676,6 +3741,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if n >= 0 else 1
     if args.command == "cross-venue-report":
         n = asyncio.run(cross_venue_report())
+        return 0 if n >= 0 else 1
+    if args.command == "xvenue-observation-report":
+        n = asyncio.run(xvenue_observation_report(top=args.top))
         return 0 if n >= 0 else 1
     if args.command == "cross-venue-candidates":
         n = asyncio.run(cross_venue_candidates(label=args.label))

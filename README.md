@@ -461,6 +461,33 @@ comparable rows surface (a note about observation coverage, **never** a signal).
 These options change *which* persisted rows are considered; they never change a
 label, relax a precision gate, or force a match.
 
+## Cross-venue observation windows (XVENUE-OBS-001)
+
+**Read-only coverage reporting for high-overlap slates** (World Cup
+semifinal/final, MLB slates, election windows). The manual sequence lives in
+`docs/XVENUE_OBSERVATION_RUNBOOK.md` — targeted scan → coverage census → match →
+report → candidates-by-label — and ends with a one-screen window verdict:
+
+```bash
+python -m app.cli xvenue-observation-report   # composes the latest persisted scan + match runs
+```
+
+It reports scan provenance (window, mode, queries), rows considered on both
+venues, the comparable split **clean vs flagged-for-review** (clean = no
+`large_observed_difference_requires_review`), side-uncertain/unresolved counts,
+mismatch reasons, sample clean candidates, and an **overlap assessment**
+(`no_scan_data` / `no_match_run` / `insufficient_overlap` /
+`overlap_no_clean_comparable` / `clean_comparable_present`) — plus a warning when
+the latest match run predates the latest scan. Derived on demand from persisted
+rows: no external call, nothing persisted, no timer, no new match label. A clean
+comparable is a **coverage fact** — the venues listed the same proposition — and
+the assessment is observation language for human review, never an opportunity,
+arbitrage, EV, or trade signal. The runbook's domain guidance is grounded in
+measured live data: game-winner ↔ game-winner is the realistic clean shape for
+World Cup and MLB windows; politics is census-first (thin Kalshi supply,
+resolution gaps); crypto currently has no comparable supply; tennis counts only
+match-winner ↔ match-winner.
+
 ## Cross-venue matcher precision (POLY-PRECISION-001)
 
 **Read-only semantic + midpoint CORRECTNESS work.** It identifies no arbitrage,

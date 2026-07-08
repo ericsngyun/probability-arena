@@ -310,6 +310,20 @@ flip); **do not deploy unless explicitly asked.**
 > unchanged. The prior deploy's "default under-covers the data" follow-up is
 > resolved by this milestone.
 
+### XVENUE-OBS-001 observation windows (read-only, on-demand, NO timer)
+
+```bash
+.venv/bin/python -m app.cli xvenue-observation-report   # one-screen window verdict: clean vs flagged comparables, overlap assessment
+```
+
+For high-overlap slates (World Cup semifinal/final, MLB slates, election
+windows) follow **`docs/XVENUE_OBSERVATION_RUNBOOK.md`**: targeted scan →
+coverage census → match → report → candidates-by-label →
+`xvenue-observation-report`. The report composes persisted rows only (no
+external call, nothing persisted) and warns when the latest match run predates
+the latest scan. A clean comparable is a coverage fact for human review — never
+an opportunity/arb/EV/trade signal.
+
 Deterministic semantic matcher over **already-persisted** Kalshi markets/snapshots
 + POLY-001 polymarket markets → candidate labels + measured `observed_difference`
 (0–1 probability midpoint gap). **No external call, no timer, no flag.** New tables
