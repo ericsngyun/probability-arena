@@ -990,3 +990,72 @@ class PolymarketDomainInventorySnapshot(Base):
     avg_spread: Mapped[float | None] = mapped_column(Float)
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+# --- POLY-002: read-only Kalshi <-> Polymarket cross-venue observation --------
+# OBSERVATION only: identify comparable markets and measure observable
+# differences (midpoints/spreads/liquidity). No side, size, EV, dollar, profit,
+# action, recommendation, arbitrage/arb label, order, wallet, or execution field
+# exists here by construction — a difference is a measurement, never a signal.
+
+
+class CrossVenueObservationRun(Base):
+    """One cross-venue matching/observation pass (audit spine)."""
+
+    __tablename__ = "cross_venue_observation_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    status: Mapped[str] = mapped_column(String(16), default="running")  # running|ok|error
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+    kalshi_markets_considered: Mapped[int] = mapped_column(Integer, default=0)
+    polymarket_markets_considered: Mapped[int] = mapped_column(Integer, default=0)
+    candidates_created: Mapped[int] = mapped_column(Integer, default=0)
+    comparable_count: Mapped[int] = mapped_column(Integer, default=0)
+    unresolved_count: Mapped[int] = mapped_column(Integer, default=0)
+    error_type: Mapped[str | None] = mapped_column(String(128))
+    error_message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class CrossVenueMarketCandidate(Base):
+    """One observed Kalshi<->Polymarket candidate pairing. `match_label` is a
+    semantic-comparability verdict for human review; `observed_difference` is a
+    measured midpoint gap. NEITHER is a trade signal, an arbitrage claim, or an
+    action — no side/size/EV/dollar/order/wallet field exists."""
+
+    __tablename__ = "cross_venue_market_candidates"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int | None] = mapped_column(ForeignKey("cross_venue_observation_runs.id"), index=True)
+    kalshi_ticker: Mapped[str | None] = mapped_column(String(64), index=True)
+    kalshi_event_ticker: Mapped[str | None] = mapped_column(String(64))
+    polymarket_market_id: Mapped[str | None] = mapped_column(String(128), index=True)
+    polymarket_token_id: Mapped[str | None] = mapped_column(String(128))
+    polymarket_condition_id: Mapped[str | None] = mapped_column(String(128))
+    domain: Mapped[str | None] = mapped_column(String(64), index=True)
+    event_title_normalized: Mapped[str | None] = mapped_column(Text)
+    outcome_normalized: Mapped[str | None] = mapped_column(String(64))
+    resolution_time_kalshi: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    resolution_time_polymarket: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    match_confidence: Mapped[float | None] = mapped_column(Float)  # 0..1
+    match_label: Mapped[str] = mapped_column(String(32), index=True)
+    match_reasons: Mapped[dict | None] = mapped_column(RawJSON)
+    mismatch_reasons: Mapped[dict | None] = mapped_column(RawJSON)
+    # measurement-only microstructure (probability scale 0..1; never dollars)
+    kalshi_midpoint: Mapped[float | None] = mapped_column(Float)
+    polymarket_midpoint: Mapped[float | None] = mapped_column(Float)
+    midpoint_difference: Mapped[float | None] = mapped_column(Float)
+    kalshi_spread: Mapped[float | None] = mapped_column(Float)
+    polymarket_spread: Mapped[float | None] = mapped_column(Float)
+    kalshi_liquidity_proxy: Mapped[float | None] = mapped_column(Float)
+    polymarket_liquidity_proxy: Mapped[float | None] = mapped_column(Float)
+    observed_difference: Mapped[float | None] = mapped_column(Float)  # headline measured gap
+    observation_confidence: Mapped[float | None] = mapped_column(Float)  # data freshness/completeness
+    raw_context: Mapped[dict | None] = mapped_column(RawJSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (
+        Index("ix_cross_venue_run_label", "run_id", "match_label"),
+    )

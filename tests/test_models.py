@@ -65,6 +65,9 @@ def test_schema_creates_all_tables(session):
         "polymarket_markets",
         "polymarket_orderbook_snapshots",
         "polymarket_domain_inventory_snapshots",
+        # POLY-002 — read-only Kalshi<->Polymarket cross-venue observation
+        "cross_venue_observation_runs",
+        "cross_venue_market_candidates",
     }
 
 

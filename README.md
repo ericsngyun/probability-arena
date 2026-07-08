@@ -421,6 +421,30 @@ python -m app.cli meme-news-alerts --hours 6    # derived notable events (inform
 
 The runner (`MemeNewsScoutRunner`) wraps `MemeScoutService.scan_once` in a bounded, no-raise cycle that records the same audit spine and degrades gracefully on provider errors — it runs as its own systemd unit, independent of and unable to affect MarketOps/EDGE-AUTO. **`ENABLE_MEME_NEWS_SCOUT` (default false) gates only the `--scheduled` path**; manual `meme-news-run-once` and all reports are always allowed. Alerts cover: new token above `MEME_NEWS_ATTENTION_ALERT_THRESHOLD`, attention jump, boost increase, severe/high-risk token (an avoid/flag verdict — never a trade direction), and provider degradation (the holder/sniper/insider coverage gap) — all local DB-derived report rows, **no push notifications, no recommendations**. Systemd units live in `infra/systemd/user/probability-arena-meme-news.{service,timer}` (**not auto-installed**; install instructions in the timer comments and runbook). Retention (`MEME_NEWS_RETENTION_DAYS=14`) prunes `meme_scout_runs` / `meme_attention_snapshots` / `meme_catalyst_events` to bound the always-on lane (documented); domain-scout inventory tables are kept.
 
+## Cross-venue observation (POLY-002)
+
+**Read-only Kalshi ↔ Polymarket semantic matching + measurement — not advice, not
+arbitrage.** A deterministic normalizer (title/outcome/date) + matcher runs over
+already-persisted Kalshi markets/snapshots and POLY-001 Polymarket markets to
+identify **comparable** markets and MEASURE observable differences.
+
+```bash
+python -m app.cli cross-venue-match-once          # one read-only matching/observation pass (persists candidates)
+python -m app.cli cross-venue-report              # candidate counts, comparables, midpoint-difference distribution, spread/liquidity, freshness
+python -m app.cli cross-venue-candidates --label comparable_market_candidate   # list candidates from the latest run
+```
+
+Each candidate carries a `match_label` (`comparable_market_candidate` /
+`unresolved_semantic_match` / `incompatible_outcome` / `incompatible_resolution`
+/ `low_confidence_match`) and measurement-only fields: `kalshi_midpoint` /
+`polymarket_midpoint` on a 0–1 probability scale, spreads, liquidity proxies, and
+**`observed_difference` = |kalshi_mid − polymarket_mid|** (a measured
+probability-point gap). It **does not compute EV, label arbitrage, recommend
+trades, paper trade, size positions, place orders, or use wallets/keys/signing/
+swaps/execution** — there is no side/size/EV/action/order/wallet field by
+construction. No external call (it matches persisted rows), no timer. Ambiguous
+data yields `unresolved_semantic_match`, never a forced match.
+
 ## Memecoin multi-agent diagnostic (MEME-MAS-001)
 
 **Read-only diagnostic intelligence — not advice.** Five deterministic "agents"

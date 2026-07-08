@@ -20,6 +20,9 @@ Services (app/services/)  — scanner, eligibility, enrichment, resolution, rese
                             (Crypto Arena, read-only; risk = avoid/flag verdicts),
                             polymarket (POLY-001: read-only SECOND-venue market-data
                             observer — catalog + order books + domain inventory),
+                            cross_venue (POLY-002: read-only Kalshi<->Polymarket
+                            semantic matching + observed-difference measurement,
+                            never EV/arbitrage/trade),
                             provider_budget (PROVIDER-BUDGET-001: SolanaTracker request
                             accounting + budget guardrails, read-only observability),
                             meme_mas (MEME-MAS-001: read-only multi-agent memecoin
@@ -35,7 +38,7 @@ Adapters (app/adapters/) — kalshi.py (list/detail/event/series/by-tickers/by-s
                             legacy + dollars/fp payload shapes, outcome parsing, bounded
                             429 retries), dexscreener.py (crypto, read-only), polymarket.py
                             (POLY-001: public/no-auth Gamma catalog + CLOB read-only books)
-DB: SQLAlchemy + Alembic (rev 0020) — SQLite on EVO-X2, Postgres-ready (JSONB variants)
+DB: SQLAlchemy + Alembic (rev 0021) — SQLite on EVO-X2, Postgres-ready (JSONB variants)
 ```
 
 ## Pipeline stages (baseline runner order)
@@ -59,6 +62,7 @@ Parallel to that: watcher (60s ticks + signals; universe = top-scored candidates
 | market_price_ticks, opportunity_signals, watcher_runs | watcher telemetry + signal workflow |
 | crypto_tokens, crypto_pairs, crypto_token_discovery_events, crypto_token_risk_assessments, crypto_price_ticks, crypto_opportunity_signals, crypto_watcher_runs | Crypto Arena read-only surveillance (CRYPTO-001) |
 | polymarket_markets, polymarket_orderbook_snapshots, polymarket_scout_runs, polymarket_domain_inventory_snapshots | Polymarket read-only market-data observer (POLY-001, second venue) |
+| cross_venue_observation_runs, cross_venue_market_candidates | Kalshi<->Polymarket read-only cross-venue observation (POLY-002; measurement, never EV/arbitrage) |
 | marketops_runs, marketops_alerts | MarketOps Autopilot coordination audit + local alerts (OPS-006) |
 | edge_precheck_snapshots | probability-gap measurement audit (MVP-005A; no EV/side/size fields) |
 | frontier_eval_runs | persisted evaluation runs (EVAL-001; evaluation audit only) |

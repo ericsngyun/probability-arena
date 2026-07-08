@@ -2141,6 +2141,124 @@ async def polymarket_domain_report(session=None) -> int:
             session.close()
 
 
+async def cross_venue_match_once(
+    kalshi_limit: int = 1500, polymarket_limit: int = 200, session=None
+) -> int:
+    """One read-only Kalshi<->Polymarket cross-venue matching/observation pass
+    (POLY-002). Identifies comparable markets + measures observable differences.
+    Returns candidates created, or -1 on error. No EV, arbitrage, orders, or
+    execution."""
+    from app.services.cross_venue import CrossVenueMatchingService
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        run = CrossVenueMatchingService().match_once(
+            session, kalshi_limit=kalshi_limit, polymarket_limit=polymarket_limit
+        )
+        print(
+            f"cross-venue run #{run.id}: {run.status} kalshi={run.kalshi_markets_considered} "
+            f"polymarket={run.polymarket_markets_considered} candidates={run.candidates_created} "
+            f"comparable={run.comparable_count} unresolved={run.unresolved_count}"
+            + (f" error={run.error_type}" if run.status == "error" else "")
+            + " (read-only cross-venue observation — not advice, not arbitrage, not EV)"
+        )
+        return run.candidates_created if run.status == "ok" else -1
+    finally:
+        if owns_session:
+            session.close()
+
+
+async def cross_venue_report(session=None) -> int:
+    """Read-only cross-venue observation report (POLY-002). Returns candidate count."""
+    from app.services.cross_venue import CrossVenueReportService
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        r = CrossVenueReportService().build(session)
+        print("cross-venue observation report — read-only, not advice")
+        print(r.note)
+        print(f"last_run={r.last_run}")
+        print(f"candidates={r.candidates}  by_label={r.by_label}  by_domain={r.by_domain}")
+        print(
+            f"midpoint_difference (|kalshi_mid - polymarket_mid|, probability points, NOT EV/arb): "
+            f"n={r.midpoint_difference.get('n')} p50={r.midpoint_difference.get('abs_p50')} "
+            f"p90={r.midpoint_difference.get('abs_p90')} max={r.midpoint_difference.get('abs_max')}"
+        )
+        print(
+            f"spread comparison: kalshi_p50={r.spread_liquidity.get('kalshi_spread_p50')} "
+            f"polymarket_p50={r.spread_liquidity.get('polymarket_spread_p50')}"
+        )
+        print(
+            f"freshness/coverage: observation_confidence p50={r.freshness.get('observation_confidence_p50')} "
+            f"p90={r.freshness.get('observation_confidence_p90')}"
+        )
+        print(f"mismatch reasons: {r.mismatch_reasons}")
+        print("high-confidence comparable markets (observation only — never a trade/arb signal):")
+        for c in r.comparable:
+            print(
+                f"  {str(c['kalshi_ticker'])[:22]:<22} <-> {str(c['polymarket_market_id'])[:12]:<12} "
+                f"[{c['domain']}] conf={c['match_confidence']} k_mid={c['kalshi_midpoint']} "
+                f"p_mid={c['polymarket_midpoint']} observed_diff={c['observed_difference']}"
+            )
+        if r.unresolved:
+            print("unresolved semantic matches (ambiguous — for human review):")
+            for c in r.unresolved:
+                print(f"  {str(c['kalshi_ticker'])[:22]:<22} <-> {str(c['polymarket_market_id'])[:12]:<12} conf={c['match_confidence']}")
+        print(f"row counts: {r.row_counts}")
+        return r.candidates
+    finally:
+        if owns_session:
+            session.close()
+
+
+async def cross_venue_candidates(label: str | None = None, session=None) -> int:
+    """List cross-venue candidates from the latest run (POLY-002, read-only),
+    optionally filtered by match_label. Returns count listed."""
+    from app.services.cross_venue import CrossVenueMatchingService  # noqa: F401 (ensures models registered)
+    from app.models import CrossVenueMarketCandidate, CrossVenueObservationRun
+    from sqlalchemy import select
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        last = session.execute(
+            select(CrossVenueObservationRun).where(CrossVenueObservationRun.status == "ok")
+            .order_by(CrossVenueObservationRun.id.desc())
+        ).scalars().first()
+        if last is None:
+            print("cross-venue candidates: no completed run yet")
+            return 0
+        q = select(CrossVenueMarketCandidate).where(CrossVenueMarketCandidate.run_id == last.id)
+        if label:
+            q = q.where(CrossVenueMarketCandidate.match_label == label)
+        rows = session.execute(q.order_by(CrossVenueMarketCandidate.match_confidence.desc())).scalars().all()
+        print(f"cross-venue candidates (run #{last.id}{', label=' + label if label else ''}) — read-only observation, not advice")
+        for c in rows:
+            print(
+                f"  [{c.match_label}] {str(c.kalshi_ticker)[:22]:<22} <-> {str(c.polymarket_market_id)[:12]:<12} "
+                f"conf={c.match_confidence} observed_diff={c.observed_difference} "
+                f"reasons={(c.match_reasons or [])[:3]}"
+            )
+        return len(rows)
+    finally:
+        if owns_session:
+            session.close()
+
+
 async def backup_db() -> int:
     """Create a compressed, timestamped SQLite backup (consistent snapshot
     via the online backup API) and prune old ones. Returns 0 on success."""
@@ -3120,6 +3238,19 @@ def build_parser() -> argparse.ArgumentParser:
         "polymarket-domain-report",
         help="Read-only Polymarket per-domain/category inventory (latest scan)",
     )
+    cv_match_parser = subparsers.add_parser(
+        "cross-venue-match-once",
+        help="One read-only Kalshi<->Polymarket cross-venue matching/observation pass (POLY-002; not advice/arb/EV)",
+    )
+    cv_match_parser.add_argument("--kalshi-limit", type=int, default=1500)
+    cv_match_parser.add_argument("--polymarket-limit", type=int, default=200)
+    subparsers.add_parser(
+        "cross-venue-report", help="Read-only cross-venue observation report (POLY-002)"
+    )
+    cv_cand_parser = subparsers.add_parser(
+        "cross-venue-candidates", help="List cross-venue candidates from the latest run (read-only)"
+    )
+    cv_cand_parser.add_argument("--label", type=str, default=None)
     subparsers.add_parser(
         "backup-db", help="Compressed timestamped SQLite backup (+retention pruning)"
     )
@@ -3336,6 +3467,15 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if n >= 0 else 1
     if args.command == "polymarket-domain-report":
         n = asyncio.run(polymarket_domain_report())
+        return 0 if n >= 0 else 1
+    if args.command == "cross-venue-match-once":
+        n = asyncio.run(cross_venue_match_once(kalshi_limit=args.kalshi_limit, polymarket_limit=args.polymarket_limit))
+        return 0 if n >= 0 else 1
+    if args.command == "cross-venue-report":
+        n = asyncio.run(cross_venue_report())
+        return 0 if n >= 0 else 1
+    if args.command == "cross-venue-candidates":
+        n = asyncio.run(cross_venue_candidates(label=args.label))
         return 0 if n >= 0 else 1
     if args.command == "backup-db":
         return asyncio.run(backup_db())

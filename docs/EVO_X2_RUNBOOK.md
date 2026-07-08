@@ -292,6 +292,22 @@ is human-review triage, never a trade recommendation/EV/sizing/order; `reject_ri
 is avoid/flag for review. Deploy is code-only and dark-by-default (no flag to
 flip); **do not deploy unless explicitly asked.**
 
+### POLY-002 Kalshi↔Polymarket cross-venue observation (read-only, on-demand, NO timer)
+
+```bash
+.venv/bin/python -m app.cli cross-venue-match-once     # one read-only matching/observation pass (persists candidates; migration 0021)
+.venv/bin/python -m app.cli cross-venue-report         # comparables, midpoint-difference distribution, spread/liquidity, freshness
+.venv/bin/python -m app.cli cross-venue-candidates --label comparable_market_candidate
+```
+
+Deterministic semantic matcher over **already-persisted** Kalshi markets/snapshots
++ POLY-001 polymarket markets → candidate labels + measured `observed_difference`
+(0–1 probability midpoint gap). **No external call, no timer, no flag.** New tables
+from migration `0021` (`cross_venue_observation_runs`, `cross_venue_market_candidates`).
+Deploy needs a migration (0020→0021) but is otherwise dark/manual. OBSERVATION only
+— never EV/arbitrage/trade/side/size/order/wallet/execution; ambiguous data →
+`unresolved_semantic_match`. **Do not deploy unless explicitly asked.**
+
 ### POLY-001 Polymarket market-data observer (read-only, NO timer installed)
 
 ```bash
