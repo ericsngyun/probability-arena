@@ -1638,6 +1638,72 @@ async def edge_followthrough_diagnostic_report(hours: int = 24, top: int = 5, se
             session.close()
 
 
+async def forecast_anchor_diagnostic_report(hours: int = 24, top: int = 5, session=None) -> int:
+    """FORECAST-ANCHOR-001 read-only diagnostic: when the market moved between
+    the PRIOR forecast and this measurement, did the forecast move too? Per-row
+    adjustment ratios + anchor buckets, cohort verdicts, and interpretation —
+    all from recorded forecasts and ticks. Changes no forecast/gate/promotion/
+    automation; not PnL, not EV, never advice. Returns rows analyzed."""
+    from app.services.forecast_anchor import ForecastAnchorDiagnosticService
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        r = ForecastAnchorDiagnosticService().build(session, hours=hours, top=top)
+        print(f"forecast anchoring diagnostic (window {r['window_hours']}h) — analysis only, never advice")
+        print(r["note"])
+        o = r["overall"]
+        print(
+            f"\nrows={r['rows']}  classified={o['classified_n']}  "
+            f"unclassifiable_share={o['unclassifiable_share']}"
+        )
+        print(f"anchor buckets: {o['bucket_counts']}")
+        print(f"bucket shares (of classified): {o['bucket_shares']}")
+        print(
+            f"deltas: median_forecast={o['median_forecast_delta']} "
+            f"median_market={o['median_market_delta']} "
+            f"median_adjustment_ratio={o['median_adjustment_ratio']} "
+            f"market_moved_more_share={o['market_moved_more_share']}"
+        )
+        print("follow-through by anchor bucket (60m):")
+        for b, ft in o["follow_through_by_bucket"].items():
+            print(f"  {b:<22} n={ft['n']:<4} toward={ft['toward_rate_60m']} closure={ft['mean_closure_60m']}")
+        print(f"OVERALL VERDICT: {o['verdict']} — {o['verdict_reason']}")
+        print("\nper-dimension verdicts:")
+        for dim, cohorts in r["dimensions"].items():
+            print(f"  == {dim} ==")
+            for key, c in cohorts.items():
+                shares = c["bucket_shares"]
+                anchored = round((shares.get("anchored_static") or 0) + (shares.get("partial_adjustment") or 0), 3)
+                print(
+                    f"    {str(key)[:24]:<24} n={c['n']:<4} classified={c['classified_n']:<4} "
+                    f"anchored+partial={anchored} ratio={c['median_adjustment_ratio']} "
+                    f"toward60={c['toward_rate_60m']} -> {c['verdict']}"
+                )
+        ex = r["examples"]
+        print("\nexamples (measured values — never advice):")
+        for section, items in ex.items():
+            if not items:
+                continue
+            print(f"  {section}:")
+            for e in items[:3]:
+                print(
+                    f"    {e['ticker'][:28]:<28} [{e['bucket']}] f_delta={e['forecast_delta']} "
+                    f"m_delta={e['market_delta']} ratio={e['adjustment_ratio']} c60={e['closure_60m']}"
+                )
+        print("\ninterpretation (measurement only — never advice):")
+        for k, v in r["interpretation"].items():
+            print(f"  {k}: {v}")
+        return r["rows"]
+    finally:
+        if owns_session:
+            session.close()
+
+
 async def edge_filter_shadow_report(hours: int = 24, top: int = 5, session=None) -> int:
     """EDGE-FILTER-001 read-only SHADOW filter analysis: what would the
     watchlist's follow-through have looked like under candidate adverse-
@@ -3672,6 +3738,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ef_shadow_parser.add_argument("--hours", type=int, default=24)
     ef_shadow_parser.add_argument("--top", type=int, default=5, help="examples per policy")
+    fa_parser = subparsers.add_parser(
+        "forecast-anchor-diagnostic-report",
+        help="FORECAST-ANCHOR-001: did the forecast move when the market moved? anchor buckets/ratios/verdicts (read-only; never advice)",
+    )
+    fa_parser.add_argument("--hours", type=int, default=24)
+    fa_parser.add_argument("--top", type=int, default=5, help="examples per section")
     meme_scan_parser = subparsers.add_parser(
         "meme-scan-once",
         help="One read-only meme/news attention scan (MEME-NEWS-001; never advice)",
@@ -4013,6 +4085,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if n >= 0 else 1
     if args.command == "edge-filter-shadow-report":
         n = asyncio.run(edge_filter_shadow_report(hours=args.hours, top=args.top))
+        return 0 if n >= 0 else 1
+    if args.command == "forecast-anchor-diagnostic-report":
+        n = asyncio.run(forecast_anchor_diagnostic_report(hours=args.hours, top=args.top))
         return 0 if n >= 0 else 1
     if args.command == "meme-scan-once":
         scored = asyncio.run(meme_scan_once(limit=args.limit))

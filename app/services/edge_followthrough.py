@@ -192,6 +192,8 @@ class RowDiagnostic:
     confidence: float | None = None
     gap: float | None = None
     abs_gap: float | None = None
+    forecast_id: int | None = None           # for prior-forecast joins (FORECAST-ANCHOR-001)
+    forecast_probability: float | None = None
     spread_cents: int | None = None
     liquidity_cents: int | None = None
     # timing
@@ -329,6 +331,8 @@ class EdgeFollowthroughDiagnosticService:
                 confidence=row.forecast_confidence,
                 gap=row.probability_gap,
                 abs_gap=row.abs_probability_gap,
+                forecast_id=row.forecast_id,
+                forecast_probability=row.forecast_probability,
                 spread_cents=row.spread_cents,
                 liquidity_cents=row.liquidity_proxy_cents,
                 forecast_age_s=row.forecast_age_seconds,
