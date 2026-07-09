@@ -1423,3 +1423,37 @@ Deployed **`7ff96c0` → `5edd80d`** by `git pull --ff-only`. **No migration** (
 **Health (unchanged):** MarketOps #1374 `ok`; frontier `ready_for_cycle_scoped_edge_automation`, **`safety_ok=True`**; tick aggregation **15 clean scheduled cycles**, coverage_72h **0.8904** and climbing (OPS-014 re-check ~22:00 UTC on track); DB 2,728.14 MiB flat (nothing persisted). Safety audits (tokenize + AST, expanded vocabulary incl. buy/sell/bet/arbitrage/arb/opportunity) **NONE** on this exact tree pre-commit.
 
 **Recommendation: KEEP — manual/report-only. MVP-005B remains blocked.** The next alpha-facing milestone should be **trigger-timing shadow analysis** (e.g. simulating delayed/settlement-gated measurement or a follows-move condition at trigger time, over persisted rows) — **not a live gate change**, and not forecaster redesign except possibly for winner markets where anchoring is confirmed (also shadow-first). **Rollback (if ever):** `git reset --hard 7ff96c0` — analysis-only, nothing to unwind.
+
+## TRIGGER-TIMING-001 — trigger-timing shadow simulation deployed (2026-07-09, ~18:05 UTC)
+
+Deployed **`ac75c12` → `d62bcd6`** by `git pull --ff-only`. **No migration** (`0024 (head)`), no flag/timer/endpoint/persistence; triggers, forecasts, edge-precheck gates, promotion, MarketOps, and EDGE-AUTO unchanged. New capability: `trigger-timing-shadow-report --hours N --top N` — replays 8 alternate measurement times (immediate baseline; +2/5/10/15m cooldowns; midpoint-flat/spread-stable/gap-follows-move waits bounded at 30m) over persisted ticks per historical watchlist row, forecast held fixed, gap re-derived and follow-through measured FROM the delayed time; `gap_evaporated` counts rows mean reversion beat to the measurement.
+
+| item | value |
+|---|---|
+| pushed / deployed commit | **`d62bcd6`** (origin/main + EVO-X2) |
+| migration | **none** (alembic stays `0024`) |
+| tests / audit at commit | 1236 passed / 2 skipped; tokenize+AST vocabulary audit clean |
+| 48h live population | **263 watchlist rows** (24h: 127) |
+
+**48h live policy table (60m horizon):**
+
+| policy | n (survival) | opposes | toward / closure | label |
+|---|---|---|---|---|
+| baseline_immediate | 263 (100%) | 0.767 | 0.282 / −0.360 | neutral |
+| delay_2m | 245 (93%) | 0.810 | 0.265 / −0.282 | neutral |
+| delay_5m | 228 (87%) | 0.814 | 0.256 / −0.164 | neutral |
+| delay_10m | 227 (86%) | 0.750 | 0.238 / −0.286 | worse_than_baseline |
+| delay_15m | 235 (89%) | 0.690 | 0.242 / −0.315 | worse_than_baseline |
+| wait_until_midpoint_flat_5m | 128 (49%) | 0.860 | 0.122 / −0.104 | worse_than_baseline |
+| wait_until_spread_stable | 222 (84%) | 0.773 | 0.244 / −0.117 | worse_than_baseline |
+| wait_until_gap_follows_move | 203 (77%) | **0.000** | 0.301 / −0.180 | neutral |
+
+**Conclusion: a pure cooldown is NOT promising.** No timing policy is `promising_shadow` on either window (24h n=127 agrees). Delays soften mean closure (−0.36 → −0.16 at best, delay_5m) mostly by letting the worst continuation happen *before* measurement (gap_evaporated 17–35 rows per delay), but the **toward-rate never improves** (0.282 baseline → 0.24–0.26 delayed) and opposes-share barely moves at short delays. Even `wait_until_gap_follows_move` — which drives opposes-share to exactly 0 at 77% survival — leaves closure negative (−0.18) and toward at only 0.301. **Implication: the adverse selection lives in WHICH rows trigger, not merely WHEN they are measured** — consistent with EDGE-FILTER-001, where follows-move+quality *filters* (which change the population, not the clock) remain the only cohorts with positive closure. Caveat printed by the report: the recorded forecast is held fixed; a live forecaster could refresh during a delay.
+
+**Companion post-pull runs reconcile:** 48h follow-through diagnostic reproduces (toward 0.2824 / closure −0.365); shadow filters HOLD and strengthen (`gap_follows_move_and_tight_spread` 0.412/+0.294, `require_gap_follows_move_exclude_spreads` 0.472/+0.324, both `promising_shadow`) — and for the first time the filter report's MVP-005B line shows **`require_gap_follows_move_totals_only` clearing the shadow bar** (`blocked: False` on this window); per the report's own note and project doctrine, MVP-005B **remains gated on explicit human acceptance** and this deploy changes nothing about it.
+
+**Health (unchanged):** MarketOps #1385 `ok` (17:42 UTC); frontier `safety_ok=True`, p90 55.3s < 60s; tick aggregation coverage 48h **1.0**, readiness `not_ready` only on `coverage_72h=0.9178 < 0.98` (17 clean cycles, no errors — OPS-014 re-check on track); DB 2,728.14 MiB flat (nothing persisted; above 1536 MiB warn tier, below critical — known state). **Safety audit** (host tokenize+AST, expanded vocabulary incl. wallet/keypair/swap/jupiter/signing/order/buy/sell/bet/arbitrage/arb/opportunity, 70 files): **no hits in any TRIGGER-TIMING-001 or analysis surface**; the only two hits are the long-standing `kalshi_private_key_path` RSA request-signing auth for read-only Kalshi API/WS access (`app/config.py`, `app/services/ws_snapshots.py`) — API authentication, not wallets, pre-existing and documented.
+
+**Ops note:** `~/edge-observation/run_report.sh` (the documented daily read-only report snapshot, outside the git tree) was synced to the runbook's suite list — added `edge-followthrough-diagnostic-report`, `edge-filter-shadow-report`, `forecast-anchor-diagnostic-report` (documented but missing since their deploys) and `trigger-timing-shadow-report`, all `--hours 48 --top 10`. Bash syntax verified; **no new timer**, existing daily 15:00 UTC schedule unchanged.
+
+**Recommendation: KEEP — manual/report-only. MVP-005B remains blocked pending explicit human acceptance.** The next alpha-facing work should be **trigger row SELECTION / cohort pre-registration** (e.g. pre-register the follows-move+totals cohort and watch it accumulate out-of-sample), **not a live gate change** and not more measurement-delay tuning — the timing question is now answered in shadow. **Rollback (if ever):** `git reset --hard ac75c12` — analysis-only, nothing to unwind.
