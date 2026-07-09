@@ -1568,6 +1568,76 @@ async def frontier_eval_report(
             session.close()
 
 
+async def edge_followthrough_diagnostic_report(hours: int = 24, top: int = 5, session=None) -> int:
+    """FOLLOWTHROUGH-001 read-only diagnostic: WHY is gap follow-through
+    negative? Timing (signal/forecast/snapshot ages, pre-measurement market
+    moves, gap-vs-move relation), direction (continued away vs reverted, spread/
+    liquidity change), per-cohort verdicts, and concrete failure examples — all
+    measured market movement over persisted rows. Not PnL, not EV, not advice;
+    changes no gate/forecast/promotion/automation. Returns rows analyzed."""
+    from app.services.edge_followthrough import EdgeFollowthroughDiagnosticService
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        r = EdgeFollowthroughDiagnosticService().build(session, hours=hours, top=top)
+        print(f"edge follow-through diagnostic (window {r['window_hours']}h) — analysis only, never advice")
+        print(r["note"])
+        o = r["overall"]
+        print(
+            f"\nrows={r['rows']}  final-horizon n={o['final_n']}  "
+            f"toward_rate={o['toward_rate_final']}  mean_closure={o['mean_closure_final']}  "
+            f"continued_away={o['continued_away_rate']}  reverted_toward={o['reverted_toward_rate']}"
+        )
+        print(
+            f"timing: signal_age_p50={o['signal_age_p50_s']}s forecast_age_p50={o['forecast_age_p50_s']}s "
+            f"snapshot_age_p50={o['snapshot_age_p50_s']}s  sharp_pre_move_share={o['sharp_pre_move_share']}  "
+            f"gap_opposes_move_share={o['gap_opposes_move_share']}"
+        )
+        print(
+            f"60m microstructure drift: spread_change_mean={o['spread_change_60m_mean']} "
+            f"liquidity_change_mean={o['liquidity_change_60m_mean']}"
+        )
+        print(f"OVERALL VERDICT: {o['verdict']} — {o['verdict_reason']}")
+        print("\nper-dimension verdicts (cohorts by sample size):")
+        for dim, cohorts in r["dimensions"].items():
+            print(f"  == {dim} ==")
+            for key, c in cohorts.items():
+                print(
+                    f"    {str(key)[:26]:<26} n={c['n']:<4} final_n={c['final_n']:<4} "
+                    f"toward={c['toward_rate_final']} closure={c['mean_closure_final']} "
+                    f"opposes_move={c['gap_opposes_move_share']} -> {c['verdict']}"
+                )
+        fx = r["failure_examples"]
+        print("\nfailure examples (measured movement — not opportunities):")
+        print("  largest negative closure (final horizon):")
+        for e in fx["largest_negative_closure"]:
+            print(
+                f"    #{e['snapshot_id']} {e['ticker'][:28]:<28} gap={e['gap']} "
+                f"closure={e['closures']} pre_move={e['pre_move']} rel={e['gap_vs_pre_move']}"
+            )
+        if fx["repeated_ticker_failures"]:
+            print("  repeated ticker failures (>=3 rows, none toward):")
+            for e in fx["repeated_ticker_failures"]:
+                print(f"    {e['ticker'][:30]:<30} rows={e['rows']} mean_closure={e['mean_closure_final']}")
+        if fx["fresh_forecast_adverse"]:
+            print("  fresh forecast (<120s) but adverse movement:")
+            for e in fx["fresh_forecast_adverse"]:
+                print(f"    #{e['snapshot_id']} {e['ticker'][:28]:<28} forecast_age={e['forecast_age_s']}s closure={e['closures']}")
+        if fx["stale_snapshot_rows"]:
+            print("  stale-ish market snapshot at measurement (>60s):")
+            for e in fx["stale_snapshot_rows"]:
+                print(f"    #{e['snapshot_id']} {e['ticker'][:28]:<28} snapshot_age={e['snapshot_age_s']}s")
+        return r["rows"]
+    finally:
+        if owns_session:
+            session.close()
+
+
 async def edge_cohort_report(hours: int = 24, session=None) -> int:
     """Print the edge-precheck cohort analysis (analysis only — no EV, no
     trades, no positions; cohort labels authorize nothing). Returns 0."""
@@ -3524,6 +3594,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Edge shadow-policy analysis (read-only cohort-filter simulation; never advice)",
     )
     policy_parser.add_argument("--hours", type=int, default=24)
+    ft_diag_parser = subparsers.add_parser(
+        "edge-followthrough-diagnostic-report",
+        help="FOLLOWTHROUGH-001: WHY is gap follow-through negative? timing/direction/verdicts/examples (read-only; never advice)",
+    )
+    ft_diag_parser.add_argument("--hours", type=int, default=24)
+    ft_diag_parser.add_argument("--top", type=int, default=5, help="failure examples per section")
     meme_scan_parser = subparsers.add_parser(
         "meme-scan-once",
         help="One read-only meme/news attention scan (MEME-NEWS-001; never advice)",
@@ -3860,6 +3936,9 @@ def main(argv: list[str] | None = None) -> int:
         return asyncio.run(edge_cohort_report(hours=args.hours))
     if args.command == "edge-policy-report":
         return asyncio.run(edge_policy_report(hours=args.hours))
+    if args.command == "edge-followthrough-diagnostic-report":
+        n = asyncio.run(edge_followthrough_diagnostic_report(hours=args.hours, top=args.top))
+        return 0 if n >= 0 else 1
     if args.command == "meme-scan-once":
         scored = asyncio.run(meme_scan_once(limit=args.limit))
         return 0 if scored >= 0 else 1
