@@ -1478,3 +1478,34 @@ Deployed **`f611202` → `31434ff`** by `git pull --ff-only`. **No migration** (
 **Health (unchanged):** MarketOps #1396 `ok` / #1397 running normally; frontier `safety_ok=True`, p90 55.6s < 60s; tick aggregation 48h coverage 0.98 healthy, readiness blocked only on `coverage_72h=0.9315 < 0.98` (18 clean cycles, no errors — OPS-014 re-check on track); DB 2,728.14 MiB flat (nothing persisted). **Safety audit** (host tokenize+AST, expanded vocabulary incl. wallet/keypair/swap/jupiter/signing/order/buy/sell/bet/arbitrage/arb/opportunity, 71 files): no hits in any EDGE-SELECTION-001 or analysis surface; only the two long-standing `kalshi_private_key_path` RSA request-signing references (read-only Kalshi API auth, pre-existing, documented).
 
 **Recommendation: KEEP — manual/report-only. No live gate change. No MVP-005B.** The protocol is now armed and the lock is live; **MVP-005B remains blocked unless explicit human acceptance**, and the report prints that unconditionally. Next meaningful runs, in order: `--since 2026-07-09T19:00:00` after tonight's MLB slate settles (first post-lock rows, likely `insufficient_sample`); the first fully-post-lock 48h window from ~2026-07-11T19:00Z; the **rolling 7d window from ~2026-07-16 as the primary decision window**. All post-lock windows count — including failures. **Rollback (if ever):** `git reset --hard f611202` — analysis-only, nothing to unwind.
+
+## COST-MODEL-001 — cost-adjusted shadow measurement deployed (2026-07-09, ~20:30 UTC)
+
+Deployed **`97a34b5` → `1eb63e1`** by `git pull --ff-only`. **No migration** (`0024 (head)`), no flag/timer/endpoint/persistence; edge-precheck, forecasts, promotion, gates, MarketOps, and EDGE-AUTO unchanged. New capability: `edge-cost-shadow-report --hours N --top N` — re-measures 60m midpoint follow-through net of half-spread, a conservative Kalshi fee assumption (new config `kalshi_fee_rate_assumption=0.07`, the published taker shape rate·P·(1−P) charged at BOTH measurement ends, no rebates — analysis assumption only), and executable TOUCH prices from recorded bid/ask ticks (above-market: trigger ask → horizon bid; below-market: trigger bid → horizon ask; missing quotes counted, never guessed).
+
+| item | value |
+|---|---|
+| pushed / deployed commit | **`1eb63e1`** (origin/main + EVO-X2) |
+| migration | **none** (alembic stays `0024`) |
+| tests at commit | 1312 passed / 2 skipped; tokenize+AST audit clean |
+| 48h live | population 324, **323 measurable, 100% touch coverage** |
+| 24h live | population 183, 100% touch coverage |
+
+**48h live cohort table (60m closure: frictionless / −half-spread / −fees / executable-touch):**
+
+| cohort | n | toward | frictionless | −half-spread | −fees | touch | label |
+|---|---|---|---|---|---|---|---|
+| baseline_all_rows | 323 | 0.285 | −0.281 | −0.349 | −0.518 | −0.426 | neutral |
+| require_gap_follows_move_totals_only | 28 | 0.500 | **+0.301** | +0.200 | **−0.035** | +0.097 | **cost_killed** |
+| gap_follows_move_and_high_liquidity | 35 | 0.429 | **+0.235** | +0.179 | **−0.056** | +0.095 | **cost_killed** |
+| gap_follows_move_and_tight_spread | 59 | 0.373 | **+0.179** | +0.126 | **−0.075** | +0.011 | **cost_killed** |
+| require_gap_follows_move_exclude_spreads | 41 | 0.415 | **+0.094** | +0.008 | **−0.221** | −0.078 | **cost_killed** |
+| total_only / exclude_spreads / spread_only | 128/203/120 | 0.21–0.38 | all negative | — | — | — | neutral |
+
+**`cohorts_positive_after_costs: NONE` on BOTH 24h and 48h. Every positive-frictionless cohort is `cost_killed`.** The half-spread only dents the closures; the conservative round-trip fee (~3.5 closure points at mid-range prices against ~10-point gaps) erases them, and the executable-touch numbers were already thin (+0.01..+0.10). **Implication: the apparent shadow edge is, so far, a frictionless-measurement artifact. EDGE-SELECTION post-lock validation must be judged WITH cost-adjusted metrics alongside the frictionless prereg gates — a candidate that passes the prereg bars but stays `cost_killed` is not a real edge. MVP-005B remains blocked**, and the report prints that unconditionally.
+
+**Companion post-pull runs:** the post-lock EDGE-SELECTION window is accumulating (**29 rows post-lock at 20:27 UTC**; primary candidate n=2 `sample_collapsed`, negative control n=10 `insufficient_sample` — early, honest, nothing validated). The filter report showed ANOTHER fleeting MVP-bar clear (`totals_only_no_sharp_pre_move`, n=20+, `blocked: False` this window) — a policy that is **not** among the 8 pre-registered candidates, which is precisely the single-window churn pre-registration exists to discipline; per doctrine it changes nothing, and the cost report shows nothing survives friction anyway.
+
+**Health (unchanged):** MarketOps #1412 `ok` (20:23 UTC); frontier `safety_ok=True`, p90 55.9s < 60s; tick aggregation 19 clean cycles, `coverage_72h=0.9452` and climbing (crosses 0.98 ~22:00–23:00 UTC — OPS-014 re-check pending); DB 2,728.14 MiB flat (nothing persisted). **Safety audit** (host tokenize scan, expanded vocabulary incl. wallet/keypair/swap/jupiter/signing/order/buy/sell/bet/arbitrage/arb/opportunity, 72 files): no hits in any COST-MODEL-001 or analysis surface; only the two long-standing `kalshi_private_key_path` RSA request-signing references (read-only Kalshi API auth, pre-existing, documented).
+
+**Recommendation: KEEP — manual/report-only. No paper trading, no MVP-005B unlock.** Future EDGE-SELECTION validation runs should pair `edge-selection-validation-report` with `edge-cost-shadow-report` on the same windows; graduation talk requires a cohort that passes the pre-registered gates out-of-sample AND stays positive after fees and touch prices. **Rollback (if ever):** `git reset --hard 97a34b5` — analysis-only, nothing to unwind.
