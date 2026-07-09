@@ -123,6 +123,15 @@ class Settings(BaseSettings):
     tick_aggregation_max_rows: int = 200_000     # bounded raw rows read per invocation
     tick_bucket_retention_days: int = 90         # aggregated buckets kept much longer than raw
 
+    # COST-MODEL-001: friction assumption for the read-only cost-adjusted
+    # SHADOW report (edge-cost-shadow-report) ONLY. Conservative Kalshi
+    # taker-fee model: the published fee is ceil(0.07 * C * P * (1-P)) per
+    # contract; the report charges rate * P * (1-P) at BOTH the trigger and
+    # the horizon (full round trip, no maker rebates, no rounding down).
+    # This is a measurement assumption — it is never used to compute EV,
+    # recommend, size, or place anything.
+    kalshi_fee_rate_assumption: float = 0.07
+
     # OPS-013: production-safe aggregation. Per-sub-window commits keep the
     # SQLite write lock held for seconds (an OPS-012 full-window pass held one
     # ~49s commit and collided with a MarketOps cycle). The scheduled path is

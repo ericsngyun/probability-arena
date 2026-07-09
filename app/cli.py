@@ -1781,6 +1781,62 @@ async def edge_selection_validation_report(
             session.close()
 
 
+async def edge_cost_shadow_report(hours: int = 24, top: int = 5, session=None) -> int:
+    """COST-MODEL-001 read-only cost-adjusted SHADOW measurement: does any
+    cohort's midpoint follow-through survive half-spread, a conservative
+    Kalshi fee assumption, and executable touch prices? Changes no gate/
+    forecast/promotion/flag/automation; not EV, not PnL, never advice.
+    Returns population size."""
+    from app.services.edge_cost import EdgeCostShadowReportService
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        r = EdgeCostShadowReportService().build(session, hours=hours, top=top)
+        print("edge-cost shadow report — cost-adjusted measurement only, never advice")
+        print(r["note"])
+        print(
+            f"\nwindow={r['window_hours']}h ({r['window_type']})  "
+            f"fee_rate_assumption={r['fee_rate_assumption']} (round trip, conservative)"
+            f"\npopulation={r['population']} watchlist rows  "
+            f"measurable={r['rows_measurable']}  touch_coverage={r['touch_coverage']}"
+        )
+        print(
+            "\ncohorts (n | cover | toward | frictionless / -half-spread / "
+            "-fees / touch | label):"
+        )
+        for c in r["cohorts"]:
+            print(
+                f"  {c['name']:<44} [{c['dimension']:<20}] n={c['final_n']:<4} "
+                f"cov={c['touch_coverage']}  toward={c['toward_rate_60m']}  "
+                f"{c['frictionless_closure_60m']} / {c['net_closure_after_half_spread_60m']} / "
+                f"{c['fee_adjusted_net_closure_60m']} / {c['executable_touch_closure_60m']}"
+                f"  -> {c['label']}"
+            )
+        print("\nper-cohort detail:")
+        for c in r["cohorts"]:
+            print(f"  == {c['name']} ({c['label']}) ==")
+            print(f"     {c['label_reason']}")
+            print(
+                f"     market_type_mix={c['market_type_mix']} "
+                f"max_ticker_share={c['max_ticker_share']} "
+                f"max_game_share={c['max_game_share']}"
+            )
+        print(
+            f"\ncohorts positive after costs (fee-adjusted AND touch, n>=12): "
+            f"{r['cohorts_positive_after_costs'] or 'NONE'}"
+        )
+        print(f"\n{r['mvp_005b_note']}")
+        return r["population"]
+    finally:
+        if owns_session:
+            session.close()
+
+
 async def forecast_anchor_diagnostic_report(hours: int = 24, top: int = 5, session=None) -> int:
     """FORECAST-ANCHOR-001 read-only diagnostic: when the market moved between
     the PRIOR forecast and this measurement, did the forecast move too? Per-row
@@ -3905,6 +3961,12 @@ def build_parser() -> argparse.ArgumentParser:
     es_parser.add_argument(
         "--until", type=str, default=None, help="ISO window end (default: now)"
     )
+    ec_parser = subparsers.add_parser(
+        "edge-cost-shadow-report",
+        help="COST-MODEL-001: cost-adjusted follow-through — spread/fee/executable-touch friction over existing rows (read-only; never advice)",
+    )
+    ec_parser.add_argument("--hours", type=int, default=24)
+    ec_parser.add_argument("--top", type=int, default=5, help="series cohorts shown")
     meme_scan_parser = subparsers.add_parser(
         "meme-scan-once",
         help="One read-only meme/news attention scan (MEME-NEWS-001; never advice)",
@@ -4259,6 +4321,9 @@ def main(argv: list[str] | None = None) -> int:
                 hours=args.hours, since=args.since, until=args.until
             )
         )
+        return 0 if n >= 0 else 1
+    if args.command == "edge-cost-shadow-report":
+        n = asyncio.run(edge_cost_shadow_report(hours=args.hours, top=args.top))
         return 0 if n >= 0 else 1
     if args.command == "meme-scan-once":
         scored = asyncio.run(meme_scan_once(limit=args.limit))

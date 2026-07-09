@@ -204,7 +204,7 @@ daily at **15:00 UTC** (after overnight settlements + the 00:08 retention
 prune) and writes a timestamped report snapshot to `~/edge-observation/`.
 The runner (`~/edge-observation/run_report.sh`) and its logs live **outside**
 the git tree, so the repo stays clean. It only runs the read-only report
-suite (edge-policy/edge-cohort/edge-followthrough-diagnostic/edge-filter-shadow/forecast-anchor-diagnostic/trigger-timing-shadow/edge-selection-validation/frontier-eval/champion-challenger/db-growth/
+suite (edge-policy/edge-cohort/edge-followthrough-diagnostic/edge-filter-shadow/forecast-anchor-diagnostic/trigger-timing-shadow/edge-selection-validation/edge-cost-shadow/frontier-eval/champion-challenger/db-growth/
 prune-retention --dry-run); it changes no flag, gate, threshold, or live
 service. Note: a cloud/routine scheduler cannot reach this private Tailscale
 host — this on-host timer is the reliable mechanism.
