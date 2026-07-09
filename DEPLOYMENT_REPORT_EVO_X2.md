@@ -1509,3 +1509,22 @@ Deployed **`97a34b5` → `1eb63e1`** by `git pull --ff-only`. **No migration** (
 **Health (unchanged):** MarketOps #1412 `ok` (20:23 UTC); frontier `safety_ok=True`, p90 55.9s < 60s; tick aggregation 19 clean cycles, `coverage_72h=0.9452` and climbing (crosses 0.98 ~22:00–23:00 UTC — OPS-014 re-check pending); DB 2,728.14 MiB flat (nothing persisted). **Safety audit** (host tokenize scan, expanded vocabulary incl. wallet/keypair/swap/jupiter/signing/order/buy/sell/bet/arbitrage/arb/opportunity, 72 files): no hits in any COST-MODEL-001 or analysis surface; only the two long-standing `kalshi_private_key_path` RSA request-signing references (read-only Kalshi API auth, pre-existing, documented).
 
 **Recommendation: KEEP — manual/report-only. No paper trading, no MVP-005B unlock.** Future EDGE-SELECTION validation runs should pair `edge-selection-validation-report` with `edge-cost-shadow-report` on the same windows; graduation talk requires a cohort that passes the pre-registered gates out-of-sample AND stays positive after fees and touch prices. **Rollback (if ever):** `git reset --hard 97a34b5` — analysis-only, nothing to unwind.
+
+## LIVE-MARKET-001 — live market/state observer deployed (2026-07-09, ~21:36 UTC)
+
+Deployed **`171d292` → `5213532`** by `git pull --ff-only`. **No migration** (`0024 (head)`), no flag/timer/endpoint/persistence/external call; MarketOps, EDGE-AUTO, forecasts, gates, and promotion unchanged. New capability: `live-market-state-report --domain D --top N [--hours N]` — read-only live-state observation foundation for future in-game research: quote quality, market-update freshness, 1m/5m/10m volatility diagnostics (labels, never signals), status ladder with `stale_provider` warnings, and a tennis match-winner state scaffold that extracts score state ONLY from persisted TENNIS-001 research packets — provider gaps reported honestly, nothing fabricated, nothing fetched.
+
+| item | value |
+|---|---|
+| pushed / deployed commit | **`5213532`** (origin/main + EVO-X2) |
+| migration | **none** (alembic stays `0024`) |
+| tests at commit | 1340 passed / 2 skipped; tokenize+AST audit clean |
+| new flags / timers / external calls | **none** (compute-on-demand over persisted rows) |
+
+**Live runs (21:35 UTC):**
+- **sports_tennis (24h): 0 live candidates** — the report prints the explicit **`provider_gap`** (no validated live tennis score source; `TENNIS_RESEARCH_PROVIDER` defaults to `template`, the TENNIS-001 ESPN payload mapping is unvalidated) and **`insufficient_live_data`** (no tennis markets have ticks in the window). Honest empty — no state was invented.
+- **sports_baseball (24h): 20 live candidates**, quote quality **14 tight / 6 missing_quotes** (missing = settled markets with one-sided books), status all `observable_market_only` (market quotes fresh, no score source), **mean market freshness 42.7s** (the realtime watcher is genuinely fresh), volatility **14 calm / 0 volatile / 6 insufficient** at 21:35 UTC (pre-game window — volatile examples list empty, correctly).
+
+**Health (unchanged):** MarketOps #1423 `ok` / #1424 running normally; frontier `safety_ok=True`, p90 55.9s < 60s; tick aggregation 20 clean cycles, `coverage_72h=0.9589` (OPS-014 monitor watching for the ~23:00 UTC crossing); DB 2,728.14 MiB flat (nothing persisted). **Safety audit** (host tokenize scan, expanded vocabulary incl. wallet/keypair/swap/jupiter/signing/order/buy/sell/bet/arbitrage/arb/opportunity, 73 files): no hits in any LIVE-MARKET-001 or analysis surface; only the two long-standing `kalshi_private_key_path` RSA request-signing references (read-only Kalshi API auth, pre-existing, documented).
+
+**Recommendation: KEEP — manual/report-only, run during live slates (deliberately NOT on the daily timer). Tennis live observation is blocked by data/source coverage, not by code**: no tennis markets currently tick and no validated live score provider exists. The next live-market milestone should be **provider/data-coverage validation** (e.g. validate the TENNIS-001 ESPN payload mapping against real responses behind its existing flag, and/or add tennis series to targeted scans) — observation-lane work, **not trading**; any decision-capable step remains far beyond this foundation and separately gated. **Rollback (if ever):** `git reset --hard 171d292` — analysis-only, nothing to unwind.
