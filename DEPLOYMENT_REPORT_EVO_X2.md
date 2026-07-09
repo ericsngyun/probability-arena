@@ -1344,3 +1344,25 @@ Deployed **`dd931e2` → `dd9e439`** by `git pull --ff-only`; **migration `0023`
 **Live validation found + fixed a readiness-counter bug (hotfix `6cbb6da`, deployed):** run #3 was clean yet `clean_scheduled_cycles=0` — the SQLAlchemy JSON `none_as_null` trap: assigning Python `None` to the `failed_windows` JSON column stores JSON `'null'`, not SQL NULL, so the counter's `IS NULL` predicate could **never** match a service-written row and the readiness gate could never be satisfied. Fixed both directions: `finalize_run` now writes `sqlalchemy.null()` (SQL NULL going forward), and the counter filters in Python (`not fw`) so legacy JSON-null rows on the host also count. Regression tests added (service-written run counts; legacy form counts; failed-window run doesn't); 1,108 passed. Verified live: `clean_scheduled_cycles=1` after the hotfix.
 
 **Post-flip readiness (honest):** `not_ready` — `coverage_72h=0.6986 < 0.98` (72h view still reaches pre-aggregation Jul-6 hours, which age out naturally) and `clean_scheduled_cycles=1 < 5` (accrues hourly). A ≥5-cycle follow-up check is scheduled ~07:45 UTC; its evidence (clean cycles, coverage_72h trend, max_commit_ms across scheduled runs, MarketOps health, prune dry-run) will be appended below and determines when **OPS-014 (raw retention 3d → 24-48h)** becomes proposable. Raw retention stays unchanged until then.
+
+## OPS-013 — post-flag-flip evidence (T+4h, 5 clean scheduled cycles) (2026-07-09, ~05:35 UTC)
+
+**Verdict: KEEP the timer ON. OPS-014 is NOT ready yet — one gate remains.**
+
+| item | value |
+|---|---|
+| clean_scheduled_cycles | **5** (runs #3–#7: one manual `--scheduled` + four timer fires at 02:27/03:29/04:30/05:31) — **cycles gate PASSES** |
+| coverage_72h | **0.7534** < 0.98 — the ONLY failing gate; the 72h view still contains pre-aggregation Jul-6 hours, which age out by ~22:00 UTC |
+| coverage_48h | 1.0 (healthy) |
+| scheduled max_commit_ms | #3 **327** · #4 **3,294** · #5 **15,798** · #6 **357** · #7 **2,451** |
+| failed / oversized / retries | **0 / 0 / 0** across all five cycles |
+| MarketOps since flip | **39 cycles, 0 errors** — no lock regression |
+| DB size | 2,728.14 MiB (flat; above warn 1,536, below crit 3,072) |
+| raw ticks | 657,600 rows / **1,813.91 MiB** (dbstat) — growing normally, never reduced by aggregation |
+| buckets | 98,674 rows / **21.55 MiB** (dbstat) — ~84:1 byte ratio holds |
+| prune-retention --dry-run | raw 3d window (47,400 eligible — normal), buckets 90d (0 eligible), agg runs 30d (0 eligible) |
+| flags | `ENABLE_TICK_AGGREGATION_TIMER=true`, `TICK_RETENTION_DAYS=3` — both verified |
+
+**On run #5's `max_commit_ms=15,798`:** an outlier, not a trend — the surrounding cycles committed in 0.3–3.3s. The 03:29 fire landed in a busy MarketOps+watcher write window, so OUR commit *waited* on their locks within the 30s busy timeout (the contention design working: we wait, they work, nobody errors — MarketOps stayed clean through it). Watch-item: if a future cycle's wait exceeds the busy timeout, the bounded retry path activates loudly (it has not yet been exercised live: retries_total=0).
+
+**OPS-014 eligibility:** not yet. Missing evidence is exactly one item — `coverage_72h >= 0.98`, which is time-bound: the uncovered Jul-6 hours (pre-OPS-012 aggregation) exit the 72h window by ~22:00 UTC tonight while hourly cycles keep the front edge covered. **Re-check `tick-aggregation-report` after ~22:00 UTC** (or tomorrow morning); when it shows `ready_to_stage`, OPS-014 becomes proposable as **design only** — and per the accepted decision rule, the staged reduction should go **3d → 2d first**, not straight to 24h. Raw retention remains untouched until OPS-014 is explicitly accepted.
