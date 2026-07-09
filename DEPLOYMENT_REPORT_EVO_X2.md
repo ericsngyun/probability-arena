@@ -1278,3 +1278,31 @@ Deployed **`9b91462` → `8e54e85`** by `git pull --ff-only`. **No migration** (
 **Safety:** canonical grep on `xvenue_observation.py` → 2 hits, both boundary disclaimers; tokenize-stripped code scan and AST identifier audit → **NONE**, including the expanded vocabulary (`opportunity`, `arbitrage`, `arb`, `buy`, `sell`, `bet`, dollar-EV, paper-trading, sizing, orders, wallets/keys, signing, swaps). Every overlap-assessment label is coverage language; the flagged list is explicitly "not opportunities".
 
 **Decision: KEEP — manual / report-only.** The window verdict renders correctly on live data, persists nothing, calls nothing, and changes nothing. **Next use:** the World Cup semifinal slate (Jul 9–11) per the runbook — targeted scan with `--end-date-min/max` bracketing the games, then re-run the sequence and check whether `clean_comparable_present` appears for game-winner ↔ game-winner pairs. **Rollback (if ever):** `git reset --hard 9b91462` — code+docs only, nothing to unwind.
+
+## OPS-012 — tick aggregation deployed, first pass complete (2026-07-09, ~00:55 UTC)
+
+Deployed **`8514159` → `2cd7c63`** by `git pull --ff-only`; **migration `0022` → `0023`** (new `market_price_tick_buckets` table). Operational storage/durability only: raw ticks untouched, **raw tick retention UNCHANGED** (`TICK_RETENTION_DAYS=3` on host, verified in `.env`), no timer installed, no flag added, and no MarketOps/EDGE-AUTO/MEME-NEWS/SolanaTracker/Polymarket/MEME-MAS logic change (watcher/edge_precheck/frontier_eval/edge_cohort have zero diff).
+
+| item | value |
+|---|---|
+| pushed / deployed commit | **`2cd7c63`** (origin/main + EVO-X2) |
+| DB backup (pre-migration) | `data/backups/backup-20260709T004709Z.db.gz` (196.54 MiB) — verified OK (39 tables, integrity ok) |
+| alembic revision | **0022 → 0023** (applied via `run-baseline --dry-run`, pipeline run #48 `status=dry_run`) |
+| pre-deploy DB | **2,728.14 MiB** (warn 1,536 / crit 3,072); `market_price_ticks` **617,250 rows / 1,709.14 MiB** (~62% of file); ~8,400 ticks/h ≈ 558 MiB/day |
+
+**Aggregation sequence (all bounded, all read-only toward raw ticks):**
+- **Dry-run** (`--hours 24 --bucket-seconds 300 --dry-run`): rows_read=202,950, would-write **43,467** buckets, 18.1s, wrote nothing; the 200k row cap **reported truncation on the hour boundary** ("complete only up to 00:00 — rerun to continue"), never silent.
+- **Real pass** (same args): **43,467 buckets inserted**, 23.9s, same truncation honestly reported.
+- **Idempotency rerun** (same args): **inserted=0, updated=43,467** — exact; no duplicates, identical values.
+- **Tail pass** (`--hours 2`): +1,500 buckets covering the truncated final hour.
+- **Full-window pass** (`--hours 49 --max-rows 500000`): rows_read=421,200 → **90,124 buckets total** in 49.1s, covering the entire raw window (oldest bucket 2026-07-06 23:00).
+
+**Coverage & size (measured, not estimated):** `tick-aggregation-report` → **49/49 raw-tick hours covered (rate=1.0), `healthy=True`**; buckets by domain `{sports_baseball 61,905, sports_soccer 28,121, general 49, sports_tennis 49}`; staged recommendation now reads "A FUTURE OPS milestone may reduce raw tick retention from 3d toward 24-48h … **NOT enacted by OPS-012**". **dbstat: `market_price_tick_buckets` = 20.16 MiB vs `market_price_ticks` = 1,711.12 MiB — an ~85:1 byte ratio for the same history window.** Row compression ~4.67 raw:bucket.
+
+**Raw invariance:** raw counts only ever *increased* across every pass (617,400 → 617,550 → 617,850 → 618,000 — the live watcher writing; aggregation deleted nothing). `db-growth-report` (after) shows the new lines: heaviest tickers (WC FRA-MAR game markets, 4,120 each), **projected steady-state ~1,674.57 MiB (558.19 MiB/day × 3d)**, `aggregated buckets: 90,124 rows`, and the explicit "! DB size above warning threshold (below critical)" status. `prune-retention --dry-run` includes the bucket line (window **90d**, eligible 0) with the raw line unchanged (3d window, 6,900 eligible — normal).
+
+**One transient, honestly noted:** MarketOps cycle **#1215 errored (`PendingRollbackError`)** at 00:50, coinciding with the 49s full-window aggregation commit — an SQLite write-lock collision (busy timeout 30s < the long single commit). **#1216 recovered `ok` on the next cycle**; no data loss (the cycle's sync/score simply deferred). Operational guidance: prefer the default 200k row cap (~24s passes) for routine runs, or run large passes between MarketOps cycles. **Follow-up for OPS-013:** commit per hour-sub-window to cap lock hold at ~2s. Frontier readiness **unchanged** (`ready_for_cycle_scoped_edge_automation`), `safety_ok=True`.
+
+**Safety:** tokenize-stripped code scan + AST identifier audit on `tick_aggregation.py` / `db_growth.py` / `retention.py` → **NONE** across the expanded vocabulary (wallet/private_key/keypair/swap/jupiter/signing/send_transaction/order-placement/dollar-EV/paper-trading/sizing/trade-recommendation/buy/sell/bet/arbitrage/arb/opportunity; `OpportunitySignal` is the pre-existing OPS-002 model name). Buckets are telemetry summaries with no side/size/EV/action/order/wallet column; host scanner `safety_ok=True`.
+
+**Recommendation: KEEP OPS-012. Do NOT reduce raw retention yet.** Coverage is healthy on today's window, but the staged reduction (3d → 24-48h) is an **OPS-013 decision** to be taken only after aggregation has been run regularly and coverage stays healthy on the host — aggregation is manual-only today (no timer), so either schedule manual passes with slate deploys or make OPS-013 the milestone that adds the (explicitly accepted) timer + per-sub-window commits + the retention change. **Rollback (if ever):** `git reset --hard 8514159` + `alembic downgrade 0022` (drops only the isolated bucket table).
