@@ -341,6 +341,25 @@ retention toward 24-48h once bucket coverage is proven healthy. Aggregation neve
 raw ticks; buckets are telemetry summaries, never trading signals; no
 EV/recommendations/sizing/orders/wallets/keys/signing/swaps/execution.
 
+### OPS-013 hardening + gated timer
+
+| Flag / Setting | Default | Effect |
+|---|---|---|
+| `ENABLE_TICK_AGGREGATION_TIMER` | **false** | Gates ONLY the `--scheduled` path (the timer unit no-ops while false; manual runs always allowed) |
+| `TICK_AGGREGATION_SUBWINDOW_HOURS` | 1 | commit after each sub-window (seconds of SQLite lock hold) |
+| `TICK_AGGREGATION_BUSY_RETRIES` | 3 | bounded apply+commit retries on a locked DB (the unit re-applies its work per attempt) |
+| `TICK_AGGREGATION_BUSY_RETRY_SECONDS` | 2.0 | sleep between retries |
+| `TICK_AGGREGATION_MAX_ROWS_PER_SUBWINDOW` | 100000 | runaway guard — an oversized window is skipped LOUDLY |
+| `TICK_AGGREGATION_SCHEDULED_HOURS` | 12 | window per scheduled cycle (hourly timer; overlap-by-design so cycles self-heal) |
+
+Timer artifacts `infra/systemd/user/probability-arena-tick-aggregation.{timer,service}`
+are **NOT auto-installed** — two-step rollout like meme-news: install dark, then flip the
+flag. Failed/oversized sub-windows are recorded on the `tick_aggregation_runs` audit row
+and exit nonzero — never silent; idempotent reruns repair them. The readiness section of
+`tick-aggregation-report` (coverage_72h >= 0.98, >= 5 clean scheduled cycles, no recent
+errors, raw feed fresh) is evidence for a FUTURE raw-retention milestone and enacts
+nothing.
+
 ## Retention windows
 
 `TICK_RETENTION_DAYS=7`, `WATCHER_RUN_RETENTION_DAYS=30`,

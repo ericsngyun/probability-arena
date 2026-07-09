@@ -123,6 +123,20 @@ class Settings(BaseSettings):
     tick_aggregation_max_rows: int = 200_000     # bounded raw rows read per invocation
     tick_bucket_retention_days: int = 90         # aggregated buckets kept much longer than raw
 
+    # OPS-013: production-safe aggregation. Per-sub-window commits keep the
+    # SQLite write lock held for seconds (an OPS-012 full-window pass held one
+    # ~49s commit and collided with a MarketOps cycle). The scheduled path is
+    # gated by ENABLE_TICK_AGGREGATION_TIMER (default false — the timer unit is
+    # NOT auto-installed and no-ops while false); manual runs always allowed.
+    # Raw tick retention is UNCHANGED — reduction stays a staged, separately
+    # accepted decision informed by the readiness report.
+    enable_tick_aggregation_timer: bool = False
+    tick_aggregation_subwindow_hours: int = 1        # commit after each sub-window
+    tick_aggregation_busy_retries: int = 3           # commit retries on a locked DB
+    tick_aggregation_busy_retry_seconds: float = 2.0
+    tick_aggregation_max_rows_per_subwindow: int = 100_000  # runaway guard (loud skip)
+    tick_aggregation_scheduled_hours: int = 12       # window per scheduled cycle
+
     # OPS-011 alert calibration — advisory operational alerts only; NOT trading
     # logic. Static thresholds raised after SCANNER-002 grew the watcher/tick
     # universe (512 MiB / 150 signals-per-hour were chronically tripped by

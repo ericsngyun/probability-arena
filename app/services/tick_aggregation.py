@@ -25,14 +25,16 @@ Guarantees:
 """
 
 import logging
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from app.config import Settings, get_settings
-from app.models import MarketPriceTick, MarketPriceTickBucket
+from app.models import MarketPriceTick, MarketPriceTickBucket, TickAggregationRun
 from app.services.db_growth import domain_for_ticker
 
 logger = logging.getLogger(__name__)
@@ -64,12 +66,27 @@ def bucket_start_for(observed_at: datetime, bucket_seconds: int) -> datetime:
 
 
 @dataclass
+class SubwindowStat:
+    """One committed sub-window (OPS-013). Counters only — never advice."""
+
+    start: datetime
+    end: datetime
+    rows_read: int = 0
+    buckets_written: int = 0
+    duration_ms: int = 0
+    commit_ms: int = 0
+    commit_retries: int = 0
+    status: str = "ok"  # ok | failed | oversized_skipped
+
+
+@dataclass
 class AggregationStats:
     """What one aggregation pass did. Counters only — never advice."""
 
     window_start: datetime | None = None
     window_end: datetime | None = None
     bucket_seconds: int = 300
+    subwindow_hours: int = 1
     rows_read: int = 0
     rows_skipped_unusable: int = 0   # no midpoint AND no bid/ask/spread/liquidity
     buckets_written: int = 0
@@ -79,6 +96,14 @@ class AggregationStats:
     covered_until: datetime | None = None  # aggregation is complete up to here
     dry_run: bool = False
     duration_ms: int = 0
+    # OPS-013: per-sub-window commit accounting. A failed or oversized window is
+    # recorded LOUDLY here (and on the audit run row), never silently skipped —
+    # an idempotent rerun repairs it.
+    subwindows: list = field(default_factory=list)          # [SubwindowStat, ...]
+    failed_windows: list = field(default_factory=list)      # ISO starts, commit failed
+    oversized_windows: list = field(default_factory=list)   # ISO starts, loud runaway skip
+    max_commit_ms: int = 0
+    run_id: int | None = None                               # tick_aggregation_runs audit row
 
 
 @dataclass
@@ -98,12 +123,23 @@ class _Acc:
 
 
 class TickAggregationService:
-    """Groups raw ticks into fixed buckets and upserts them idempotently."""
+    """Groups raw ticks into fixed buckets and upserts them idempotently.
+
+    OPS-013: commits after EVERY sub-window (default 1h), so the SQLite write
+    lock is held for seconds per commit instead of one long transaction — the
+    OPS-012 full-window pass held a ~49s commit and collided with a MarketOps
+    cycle. A commit that still fails after bounded retries is rolled back,
+    recorded LOUDLY (stats + audit row), and the pass continues; the idempotent
+    rerun repairs the hole. No window is ever skipped silently."""
 
     def __init__(self, settings: Settings | None = None):
         s = settings or get_settings()
         self.default_bucket_seconds = s.tick_aggregation_bucket_seconds
         self.max_rows = s.tick_aggregation_max_rows
+        self.default_subwindow_hours = s.tick_aggregation_subwindow_hours
+        self.busy_retries = s.tick_aggregation_busy_retries
+        self.busy_retry_seconds = s.tick_aggregation_busy_retry_seconds
+        self.max_rows_per_subwindow = s.tick_aggregation_max_rows_per_subwindow
 
     def aggregate(
         self,
@@ -112,10 +148,13 @@ class TickAggregationService:
         bucket_seconds: int | None = None,
         dry_run: bool = False,
         max_rows: int | None = None,
+        subwindow_hours: int | None = None,
+        scheduled: bool = False,
     ) -> AggregationStats:
         """One bounded aggregation pass over raw ticks observed in the last
-        `hours`. Upserts buckets; NEVER deletes or modifies raw ticks. With
-        dry_run=True everything is computed and counted but nothing is written."""
+        `hours`, committed per sub-window. Upserts buckets; NEVER deletes or
+        modifies raw ticks. With dry_run=True everything is computed and
+        counted but nothing is written (no commits, no audit row)."""
         started = _now()
         bucket_seconds = int(
             self.default_bucket_seconds if bucket_seconds is None else bucket_seconds
@@ -124,21 +163,41 @@ class TickAggregationService:
             raise ValueError(
                 f"bucket_seconds must be a positive divisor of 3600, got {bucket_seconds}"
             )
+        subwindow_hours = int(
+            self.default_subwindow_hours if subwindow_hours is None else subwindow_hours
+        )
+        if subwindow_hours < 1:
+            raise ValueError(f"subwindow_hours must be >= 1, got {subwindow_hours}")
         row_cap = int(max_rows or self.max_rows)
 
         window_start = started - timedelta(hours=max(1, int(hours)))
         # hour-aligned sub-windows: bucket_seconds divides 3600, so no bucket
         # ever spans a sub-window and a row-cap stop lands on a bucket boundary.
-        hour_floor = bucket_start_for(window_start, 3600)
+        cursor = bucket_start_for(window_start, 3600)
 
         stats = AggregationStats(
             window_start=window_start, window_end=started,
-            bucket_seconds=bucket_seconds, dry_run=dry_run,
+            bucket_seconds=bucket_seconds, subwindow_hours=subwindow_hours,
+            dry_run=dry_run,
         )
 
-        cursor = hour_floor
+        run = None
+        if not dry_run:
+            run = TickAggregationRun(
+                status="running", scheduled=scheduled, started_at=started,
+                window_hours=int(hours), subwindow_hours=subwindow_hours,
+                bucket_seconds=bucket_seconds, created_at=started,
+            )
+            # tiny audit-row commit; apply_fn re-adds after any retry rollback
+            ok, _ = self._commit_unit(session, lambda: session.add(run))
+            if not ok:
+                raise RuntimeError(
+                    "tick aggregation: could not commit audit row (database locked)"
+                )
+            stats.run_id = run.id
+
         while cursor < started:
-            sub_end = cursor + timedelta(hours=1)
+            sub_end = cursor + timedelta(hours=subwindow_hours)
             if stats.rows_read >= row_cap:
                 stats.truncated = True
                 logger.info(
@@ -146,63 +205,179 @@ class TickAggregationService:
                     "(rerun to continue)", row_cap, cursor.isoformat(),
                 )
                 break
-            rows = session.execute(
-                select(MarketPriceTick)
-                .where(
-                    MarketPriceTick.observed_at >= cursor,
-                    MarketPriceTick.observed_at < sub_end,
-                )
-                .order_by(MarketPriceTick.observed_at.asc(), MarketPriceTick.id.asc())
-            ).scalars().all()
-            stats.rows_read += len(rows)
-
-            groups: dict[tuple[str, datetime], _Acc] = {}
-            for t in rows:
-                usable = any(
-                    v is not None
-                    for v in (t.midpoint, t.yes_bid, t.yes_ask, t.spread)
-                ) or bool(t.liquidity_proxy)
-                if not usable:
-                    stats.rows_skipped_unusable += 1
-                    continue
-                key = (t.market_ticker, bucket_start_for(t.observed_at, bucket_seconds))
-                acc = groups.setdefault(key, _Acc())
-                observed = _aware(t.observed_at)
-                if acc.first_at is None or observed < acc.first_at:
-                    acc.first_at = observed
-                if acc.last_at is None or observed >= acc.last_at:
-                    acc.last_at = observed
-                    acc.close_bid = t.yes_bid if t.yes_bid is not None else acc.close_bid
-                    acc.close_ask = t.yes_ask if t.yes_ask is not None else acc.close_ask
-                acc.tick_count += 1
-                if t.midpoint is not None:
-                    acc.mids.append(t.midpoint)
-                if acc.open_bid is None and t.yes_bid is not None:
-                    acc.open_bid = t.yes_bid
-                if acc.open_ask is None and t.yes_ask is not None:
-                    acc.open_ask = t.yes_ask
-                if t.spread is not None:
-                    acc.spreads.append(t.spread)
-                if t.liquidity_proxy is not None:
-                    acc.liquidity.append(t.liquidity_proxy)
-
-            for (ticker, start), acc in groups.items():
-                inserted = self._upsert_bucket(
-                    session, ticker, start, bucket_seconds, acc, dry_run
-                )
-                stats.buckets_written += 1
-                if inserted:
-                    stats.buckets_inserted += 1
-                else:
-                    stats.buckets_updated += 1
-
+            self._aggregate_subwindow(session, stats, cursor, sub_end, bucket_seconds, dry_run)
             stats.covered_until = min(sub_end, started)
             cursor = sub_end
 
-        if not dry_run:
-            session.commit()
         stats.duration_ms = int((_now() - started).total_seconds() * 1000)
+        if run is not None:
+            def finalize_run() -> None:
+                # re-applied on every retry attempt: a rollback would discard
+                # these attribute changes, so they must be part of the unit
+                run.status = "ok" if not stats.failed_windows else "error"
+                if stats.failed_windows:
+                    run.error_type = "SubwindowCommitFailed"
+                    run.error_message = f"failed windows: {stats.failed_windows}"[:500]
+                run.finished_at = _now()
+                run.duration_ms = stats.duration_ms
+                run.rows_read = stats.rows_read
+                run.buckets_written = stats.buckets_written
+                run.buckets_inserted = stats.buckets_inserted
+                run.buckets_updated = stats.buckets_updated
+                run.failed_windows = stats.failed_windows or None
+                run.oversized_windows = stats.oversized_windows or None
+                run.truncated = stats.truncated
+
+            ok, _ = self._commit_unit(session, finalize_run)
+            if not ok:  # pragma: no cover - close-commit exhaustion is a hard stop
+                raise RuntimeError(
+                    "tick aggregation: could not finalize audit row (database locked)"
+                )
         return stats
+
+    def _aggregate_subwindow(
+        self,
+        session: Session,
+        stats: AggregationStats,
+        start: datetime,
+        end: datetime,
+        bucket_seconds: int,
+        dry_run: bool,
+    ) -> None:
+        """Aggregate + COMMIT one bucket-aligned sub-window. A failed commit is
+        rolled back, recorded loudly, and the pass continues (idempotent rerun
+        repairs it). An oversized window (runaway guard) is skipped loudly."""
+        sub_started = _now()
+        sub = SubwindowStat(start=start, end=end)
+
+        row_count = session.execute(
+            select(func.count()).select_from(MarketPriceTick).where(
+                MarketPriceTick.observed_at >= start,
+                MarketPriceTick.observed_at < end,
+            )
+        ).scalar() or 0
+        if row_count > self.max_rows_per_subwindow:
+            sub.status = "oversized_skipped"
+            stats.oversized_windows.append(start.isoformat())
+            stats.subwindows.append(sub)
+            logger.warning(
+                "tick aggregation: sub-window %s has %d rows (> cap %d) — SKIPPED "
+                "loudly; rerun with a larger --max-rows-per-subwindow or smaller "
+                "--subwindow-hours", start.isoformat(), row_count, self.max_rows_per_subwindow,
+            )
+            return
+
+        rows = session.execute(
+            select(MarketPriceTick)
+            .where(
+                MarketPriceTick.observed_at >= start,
+                MarketPriceTick.observed_at < end,
+            )
+            .order_by(MarketPriceTick.observed_at.asc(), MarketPriceTick.id.asc())
+        ).scalars().all()
+        sub.rows_read = len(rows)
+        stats.rows_read += len(rows)
+
+        groups: dict[tuple[str, datetime], _Acc] = {}
+        for t in rows:
+            usable = any(
+                v is not None
+                for v in (t.midpoint, t.yes_bid, t.yes_ask, t.spread)
+            ) or bool(t.liquidity_proxy)
+            if not usable:
+                stats.rows_skipped_unusable += 1
+                continue
+            key = (t.market_ticker, bucket_start_for(t.observed_at, bucket_seconds))
+            acc = groups.setdefault(key, _Acc())
+            observed = _aware(t.observed_at)
+            if acc.first_at is None or observed < acc.first_at:
+                acc.first_at = observed
+            if acc.last_at is None or observed >= acc.last_at:
+                acc.last_at = observed
+                acc.close_bid = t.yes_bid if t.yes_bid is not None else acc.close_bid
+                acc.close_ask = t.yes_ask if t.yes_ask is not None else acc.close_ask
+            acc.tick_count += 1
+            if t.midpoint is not None:
+                acc.mids.append(t.midpoint)
+            if acc.open_bid is None and t.yes_bid is not None:
+                acc.open_bid = t.yes_bid
+            if acc.open_ask is None and t.yes_ask is not None:
+                acc.open_ask = t.yes_ask
+            if t.spread is not None:
+                acc.spreads.append(t.spread)
+            if t.liquidity_proxy is not None:
+                acc.liquidity.append(t.liquidity_proxy)
+
+        # The (upsert + commit) pair is ONE retryable unit: a rollback discards
+        # the pending upserts, so a bare commit-retry would commit an empty
+        # transaction and falsely report success while losing the window's data.
+        # apply_fn therefore re-applies every upsert on each attempt.
+        counts = {"inserted": 0, "updated": 0, "written": 0}
+
+        def apply_upserts() -> None:
+            counts["inserted"] = counts["updated"] = counts["written"] = 0
+            for (ticker, bstart), acc in groups.items():
+                inserted = self._upsert_bucket(
+                    session, ticker, bstart, bucket_seconds, acc, dry_run
+                )
+                counts["written"] += 1
+                if inserted:
+                    counts["inserted"] += 1
+                else:
+                    counts["updated"] += 1
+
+        if dry_run:
+            apply_upserts()
+            sub.buckets_written = counts["written"]
+        elif groups:
+            commit_started = _now()
+            ok, retries = self._commit_unit(session, apply_upserts)
+            sub.commit_ms = int((_now() - commit_started).total_seconds() * 1000)
+            sub.commit_retries = retries
+            sub.buckets_written = counts["written"]
+            stats.max_commit_ms = max(stats.max_commit_ms, sub.commit_ms)
+            if not ok:
+                sub.status = "failed"
+                stats.failed_windows.append(start.isoformat())
+                logger.error(
+                    "tick aggregation: commit FAILED for sub-window %s after %d "
+                    "retries — rolled back, continuing (rerun repairs it; never silent)",
+                    start.isoformat(), retries,
+                )
+                sub.duration_ms = int((_now() - sub_started).total_seconds() * 1000)
+                stats.subwindows.append(sub)
+                return
+
+        stats.buckets_written += counts["written"]
+        stats.buckets_inserted += counts["inserted"]
+        stats.buckets_updated += counts["updated"]
+        sub.duration_ms = int((_now() - sub_started).total_seconds() * 1000)
+        stats.subwindows.append(sub)
+
+    def _commit_unit(self, session: Session, apply_fn) -> tuple[bool, int]:
+        """Apply work + commit as ONE retryable unit, bounded. Returns
+        (succeeded, retries_used).
+
+        `apply_fn` is re-invoked on every attempt because an OperationalError
+        rollback discards pending state — retrying only the commit would commit
+        an empty transaction and falsely report success. On final failure the
+        session is rolled back so the pass continues with a clean transaction."""
+        retries = 0
+        while True:
+            try:
+                apply_fn()
+                session.commit()
+                return True, retries
+            except OperationalError:
+                session.rollback()
+                if retries >= self.busy_retries:
+                    return False, retries
+                retries += 1
+                logger.warning(
+                    "tick aggregation: commit hit a locked database — retry %d/%d "
+                    "in %.1fs", retries, self.busy_retries, self.busy_retry_seconds,
+                )
+                time.sleep(self.busy_retry_seconds)
 
     @staticmethod
     def _upsert_bucket(
@@ -280,9 +455,23 @@ class TickAggregationReport:
     coverage_healthy: bool = False
     retention: dict = field(default_factory=dict)
     staged_recommendation: str = ""
+    # OPS-013: raw-retention-reduction READINESS (evidence, never enactment)
+    coverage_rate_last_72h: float | None = None
+    recent_runs: list = field(default_factory=list)         # last N audit rows
+    clean_scheduled_cycles: int = 0
+    runs_with_errors_recent: int = 0
+    raw_feed_fresh: bool = False                             # watcher still writing raw
+    readiness: str = "not_ready"                             # not_ready | ready_to_stage
+    readiness_reasons: list = field(default_factory=list)
 
 
 COVERAGE_HEALTHY_RATE = 0.95
+# OPS-013 readiness gates (evidence thresholds for STAGING — never enacting —
+# a raw-retention reduction; the reduction itself is a separate, explicitly
+# accepted milestone):
+READINESS_COVERAGE_RATE = 0.98      # hour coverage over the last 72h
+READINESS_CLEAN_CYCLES = 5          # clean SCHEDULED runs required
+READINESS_RAW_FRESH_MINUTES = 15    # watcher must still be writing raw ticks
 
 
 class TickAggregationReportService:
@@ -334,30 +523,81 @@ class TickAggregationReportService:
                 ).one()
             )
 
-        # hour-granularity coverage: of the distinct raw-tick hours in the last
-        # 48h, how many have at least one bucket?
-        cutoff = _now() - timedelta(hours=48)
-        raw_hours = {
-            bucket_start_for(_aware(v), 3600)
-            for (v,) in session.execute(
-                select(MarketPriceTick.observed_at).where(
-                    MarketPriceTick.observed_at >= cutoff
-                )
-            ).all()
-        }
-        bucket_hours = {
-            bucket_start_for(_aware(v), 3600)
-            for (v,) in session.execute(
-                select(MarketPriceTickBucket.bucket_start).where(
-                    MarketPriceTickBucket.bucket_start >= cutoff
-                )
-            ).all()
-        }
-        r.raw_hours_last_48h = len(raw_hours)
-        r.covered_hours_last_48h = len(raw_hours & bucket_hours)
-        if raw_hours:
-            r.coverage_rate_last_48h = round(r.covered_hours_last_48h / len(raw_hours), 4)
+        # hour-granularity coverage: of the distinct raw-tick hours in a recent
+        # window, how many have at least one bucket?
+        def hour_coverage(hours: int) -> tuple[int, int, float | None]:
+            cutoff = _now() - timedelta(hours=hours)
+            raw_hours = {
+                bucket_start_for(_aware(v), 3600)
+                for (v,) in session.execute(
+                    select(MarketPriceTick.observed_at).where(
+                        MarketPriceTick.observed_at >= cutoff
+                    )
+                ).all()
+            }
+            bucket_hours = {
+                bucket_start_for(_aware(v), 3600)
+                for (v,) in session.execute(
+                    select(MarketPriceTickBucket.bucket_start).where(
+                        MarketPriceTickBucket.bucket_start >= cutoff
+                    )
+                ).all()
+            }
+            covered = len(raw_hours & bucket_hours)
+            rate = round(covered / len(raw_hours), 4) if raw_hours else None
+            return len(raw_hours), covered, rate
+
+        r.raw_hours_last_48h, r.covered_hours_last_48h, r.coverage_rate_last_48h = hour_coverage(48)
+        if r.coverage_rate_last_48h is not None:
             r.coverage_healthy = r.coverage_rate_last_48h >= COVERAGE_HEALTHY_RATE
+        _, _, r.coverage_rate_last_72h = hour_coverage(72)
+
+        # OPS-013 readiness evidence from the audit spine
+        runs = session.execute(
+            select(TickAggregationRun)
+            .where(TickAggregationRun.status != "running")
+            .order_by(TickAggregationRun.id.desc())
+            .limit(10)
+        ).scalars().all()
+        r.recent_runs = [
+            {
+                "id": x.id, "status": x.status, "scheduled": x.scheduled,
+                "started_at": x.started_at.isoformat() if x.started_at else None,
+                "rows_read": x.rows_read, "buckets_written": x.buckets_written,
+                "failed_windows": x.failed_windows, "truncated": x.truncated,
+            }
+            for x in runs
+        ]
+        r.runs_with_errors_recent = sum(
+            1 for x in runs if x.status != "ok" or x.failed_windows
+        )
+        r.clean_scheduled_cycles = session.execute(
+            select(func.count()).select_from(TickAggregationRun).where(
+                TickAggregationRun.scheduled.is_(True),
+                TickAggregationRun.status == "ok",
+                TickAggregationRun.failed_windows.is_(None),
+            )
+        ).scalar() or 0
+        if r.raw_newest is not None:
+            age_min = (_now() - r.raw_newest).total_seconds() / 60
+            r.raw_feed_fresh = age_min <= READINESS_RAW_FRESH_MINUTES
+
+        # readiness verdict (evidence for a FUTURE milestone; enacts nothing)
+        reasons: list[str] = []
+        if r.coverage_rate_last_72h is None or r.coverage_rate_last_72h < READINESS_COVERAGE_RATE:
+            reasons.append(
+                f"coverage_72h={r.coverage_rate_last_72h} < {READINESS_COVERAGE_RATE}"
+            )
+        if r.clean_scheduled_cycles < READINESS_CLEAN_CYCLES:
+            reasons.append(
+                f"clean_scheduled_cycles={r.clean_scheduled_cycles} < {READINESS_CLEAN_CYCLES}"
+            )
+        if r.runs_with_errors_recent:
+            reasons.append(f"recent_runs_with_errors={r.runs_with_errors_recent}")
+        if not r.raw_feed_fresh:
+            reasons.append("raw_feed_not_fresh (watcher must still write raw ticks)")
+        r.readiness_reasons = reasons
+        r.readiness = "ready_to_stage" if not reasons else "not_ready"
 
         r.retention = {
             "raw_tick_days (UNCHANGED by OPS-012)": s.tick_retention_days,

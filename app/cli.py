@@ -944,15 +944,29 @@ async def aggregate_market_ticks(
     bucket_seconds: int | None = None,
     dry_run: bool = False,
     max_rows: int | None = None,
+    subwindow_hours: int | None = None,
+    scheduled: bool = False,
     session=None,
 ) -> int:
-    """One bounded OPS-012 tick-aggregation pass: rolls raw market_price_ticks
-    into fixed-interval OHLC/spread/liquidity buckets (idempotent upsert).
-    NEVER deletes or modifies raw ticks. --dry-run computes and reports without
-    writing. Storage/telemetry plumbing only — buckets are summaries, never
-    trading signals; no EV/trade/sizing/orders/wallets/signing/execution.
-    Returns buckets written (or would-write in dry-run), -1 on error."""
+    """One bounded tick-aggregation pass (OPS-012, hardened by OPS-013): rolls
+    raw market_price_ticks into fixed-interval OHLC/spread/liquidity buckets,
+    COMMITTING PER SUB-WINDOW (default 1h) so the SQLite write lock is held for
+    seconds, with bounded retry on a locked DB. Idempotent upsert; NEVER
+    deletes or modifies raw ticks. --dry-run computes and reports without
+    writing. With --scheduled it refuses unless ENABLE_TICK_AGGREGATION_TIMER=
+    true (manual invocation always allowed). Storage/telemetry plumbing only —
+    buckets are summaries, never trading signals; no EV/trade/sizing/orders/
+    wallets/signing/execution. Returns buckets written, -1 on error/failed
+    windows."""
+    from app.config import get_settings
     from app.services.tick_aggregation import TickAggregationService
+
+    if scheduled and not get_settings().enable_tick_aggregation_timer:
+        print(
+            "ENABLE_TICK_AGGREGATION_TIMER=false; scheduled tick-aggregation cycle "
+            "skipped (set true in .env; manual runs are always allowed)"
+        )
+        return 0
 
     owns_session = session is None
     if owns_session:
@@ -964,25 +978,38 @@ async def aggregate_market_ticks(
         stats = TickAggregationService().aggregate(
             session, hours=hours, bucket_seconds=bucket_seconds,
             dry_run=dry_run, max_rows=max_rows,
+            subwindow_hours=subwindow_hours, scheduled=scheduled,
         )
         print(
-            f"tick aggregation{' (DRY RUN — nothing written)' if stats.dry_run else ''}: "
+            f"tick aggregation{' (DRY RUN — nothing written)' if stats.dry_run else ''}"
+            f"{f' run #{stats.run_id}' if stats.run_id else ''}: "
             f"window={stats.window_start:%Y-%m-%dT%H:%M}Z..{stats.window_end:%Y-%m-%dT%H:%M}Z "
-            f"bucket={stats.bucket_seconds}s"
+            f"bucket={stats.bucket_seconds}s subwindow={stats.subwindow_hours}h"
         )
         print(
             f"  rows_read={stats.rows_read} skipped_unusable={stats.rows_skipped_unusable} "
             f"buckets_written={stats.buckets_written} "
             f"(inserted={stats.buckets_inserted} updated={stats.buckets_updated}) "
-            f"duration_ms={stats.duration_ms}"
+            f"duration_ms={stats.duration_ms} max_commit_ms={stats.max_commit_ms}"
         )
+        committed = [s for s in stats.subwindows if s.status == "ok"]
+        if committed:
+            print(
+                f"  sub-windows committed={len(committed)} "
+                f"(per-window commit p_max={max(s.commit_ms for s in committed)}ms, "
+                f"retries_total={sum(s.commit_retries for s in committed)})"
+            )
         if stats.truncated:
             print(
                 f"  TRUNCATED at the row cap — aggregation complete only up to "
                 f"{stats.covered_until}; rerun to continue (never silent)."
             )
+        for iso in stats.oversized_windows:
+            print(f"  !! OVERSIZED sub-window SKIPPED (loud): {iso} — rerun with a larger cap")
+        for iso in stats.failed_windows:
+            print(f"  !! COMMIT FAILED for sub-window {iso} — rolled back; rerun repairs it")
         print("  raw ticks unchanged — aggregation never deletes them (not advice; telemetry only)")
-        return stats.buckets_written
+        return stats.buckets_written if not stats.failed_windows else -1
     finally:
         if owns_session:
             session.close()
@@ -1021,6 +1048,32 @@ async def tick_aggregation_report(session=None) -> int:
         )
         print(f"retention: {r.retention}")
         print(f"staged recommendation (NOT enacted): {r.staged_recommendation}")
+        print(
+            f"\nraw retention reduction READINESS (OPS-013 — evidence only, enacts nothing): "
+            f"{r.readiness}"
+        )
+        print(
+            f"  coverage_72h={r.coverage_rate_last_72h}  "
+            f"clean_scheduled_cycles={r.clean_scheduled_cycles}  "
+            f"recent_runs_with_errors={r.runs_with_errors_recent}  "
+            f"raw_feed_fresh={r.raw_feed_fresh}"
+        )
+        if r.readiness_reasons:
+            print(f"  not ready because: {r.readiness_reasons}")
+        else:
+            print(
+                "  all gates pass — a raw-retention reduction (3d -> 24-48h) may be "
+                "STAGED as a separate, explicitly accepted milestone. Nothing changes "
+                "automatically."
+            )
+        if r.recent_runs:
+            print("recent aggregation runs:")
+            for x in r.recent_runs[:5]:
+                print(
+                    f"  #{x['id']} {x['status']}{' [scheduled]' if x['scheduled'] else ''} "
+                    f"rows={x['rows_read']} buckets={x['buckets_written']} "
+                    f"failed_windows={x['failed_windows']} truncated={x['truncated']}"
+                )
         return r.bucket_total
     finally:
         if owns_session:
@@ -3346,6 +3399,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     agg_parser.add_argument("--dry-run", action="store_true", help="compute + report, write nothing")
     agg_parser.add_argument("--max-rows", type=int, default=None, help="raw-row cap for this pass")
+    agg_parser.add_argument(
+        "--subwindow-hours", type=int, default=None,
+        help="commit after each sub-window of this many hours (default from settings, 1)",
+    )
+    agg_parser.add_argument(
+        "--scheduled", action="store_true",
+        help="timer mode: refuse unless ENABLE_TICK_AGGREGATION_TIMER=true",
+    )
     subparsers.add_parser(
         "tick-aggregation-report",
         help="OPS-012: aggregation coverage + staged (not enacted) retention recommendation",
@@ -3697,6 +3758,7 @@ def main(argv: list[str] | None = None) -> int:
         n = asyncio.run(aggregate_market_ticks(
             hours=args.hours, bucket_seconds=args.bucket_seconds,
             dry_run=args.dry_run, max_rows=args.max_rows,
+            subwindow_hours=args.subwindow_hours, scheduled=args.scheduled,
         ))
         return 0 if n >= 0 else 1
     if args.command == "tick-aggregation-report":

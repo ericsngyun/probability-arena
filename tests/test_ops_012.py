@@ -375,7 +375,8 @@ class TestCLI:
                        "--bucket-seconds", "900", "--dry-run", "--max-rows", "500"])
         assert rc == 0
         assert captured == {"hours": 48, "bucket_seconds": 900,
-                            "dry_run": True, "max_rows": 500}
+                            "dry_run": True, "max_rows": 500,
+                            "subwindow_hours": None, "scheduled": False}
 
     def test_aggregate_cli_runs_and_prints(self, session, capsys):
         now = datetime.now(timezone.utc)

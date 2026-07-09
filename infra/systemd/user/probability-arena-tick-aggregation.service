@@ -1,0 +1,31 @@
+# Probability Arena — OPS-013 scheduled tick-aggregation cycle (storage
+# plumbing). Rolls raw market_price_ticks into fixed-interval OHLC/spread/
+# liquidity buckets with PER-SUB-WINDOW commits (seconds of lock hold, not one
+# long transaction), idempotently — reruns are safe. Aggregated buckets are
+# telemetry summaries, NEVER trading signals: no EV, no recommendations, no
+# sizing, no orders, no wallets/keys/signing/swaps/execution exist in this
+# project. Aggregation never deletes raw ticks; raw tick retention is governed
+# separately by the retention service and is UNCHANGED by this unit.
+#
+# --scheduled makes the command refuse unless ENABLE_TICK_AGGREGATION_TIMER=
+# true, so installing the timer alone does nothing until the flag is set.
+# NOT auto-installed. See the .timer file for install commands.
+#
+# The 12h window with hourly cadence is deliberate overlap: each cycle
+# re-covers recent hours (idempotent updates), so a failed or skipped cycle
+# self-heals on the next one.
+
+[Unit]
+Description=Probability Arena scheduled tick aggregation (storage plumbing)
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/projects/probability-arena
+EnvironmentFile=%h/projects/probability-arena/.env
+ExecStart=%h/projects/probability-arena/.venv/bin/python -m app.cli aggregate-market-ticks --scheduled --hours 12
+NoNewPrivileges=true
+TimeoutStartSec=10min
+
+[Install]
+WantedBy=default.target

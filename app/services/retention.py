@@ -51,6 +51,7 @@ from app.models import (
     PolymarketMarket,
     PolymarketOrderbookSnapshot,
     PolymarketScoutRun,
+    TickAggregationRun,
     WatcherRun,
 )
 
@@ -193,6 +194,13 @@ class RetentionService:
                 WatcherRun.created_at < _cutoff(cfg.watcher_run_days),
                 cfg.watcher_run_days,
             ),
+            # OPS-013 aggregation audit runs: pruned like other run tables.
+            project(
+                TickAggregationRun,
+                (TickAggregationRun.created_at < _cutoff(cfg.watcher_run_days))
+                & (TickAggregationRun.status != "running"),
+                cfg.watcher_run_days,
+            ),
             project(
                 CryptoWatcherRun,
                 (CryptoWatcherRun.created_at < _cutoff(cfg.crypto_days))
@@ -297,6 +305,13 @@ class RetentionService:
         )
         counts["watcher_runs"] = self._delete_batched(
             session, WatcherRun, WatcherRun.created_at < _cutoff(cfg.watcher_run_days), dry_run
+        )
+        counts["tick_aggregation_runs"] = self._delete_batched(
+            session,
+            TickAggregationRun,
+            (TickAggregationRun.created_at < _cutoff(cfg.watcher_run_days))
+            & (TickAggregationRun.status != "running"),
+            dry_run,
         )
         counts["crypto_price_ticks"] = self._delete_batched(
             session, CryptoPriceTick, CryptoPriceTick.created_at < _cutoff(cfg.crypto_days), dry_run

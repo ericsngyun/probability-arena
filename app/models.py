@@ -364,6 +364,35 @@ class MarketPriceTickBucket(Base):
     )
 
 
+class TickAggregationRun(Base):
+    """OPS-013: one tick-aggregation pass (audit spine). Evidence for the
+    raw-retention-readiness gates — a retention reduction may only be STAGED
+    once scheduled runs are demonstrably clean. Counters only; storage
+    plumbing, never a trading surface."""
+
+    __tablename__ = "tick_aggregation_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    status: Mapped[str] = mapped_column(String(16), default="running")  # running|ok|error
+    scheduled: Mapped[bool] = mapped_column(default=False)  # timer-invoked (--scheduled)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+    window_hours: Mapped[int] = mapped_column(Integer, default=0)
+    subwindow_hours: Mapped[int] = mapped_column(Integer, default=1)
+    bucket_seconds: Mapped[int] = mapped_column(Integer, default=300)
+    rows_read: Mapped[int] = mapped_column(Integer, default=0)
+    buckets_written: Mapped[int] = mapped_column(Integer, default=0)
+    buckets_inserted: Mapped[int] = mapped_column(Integer, default=0)
+    buckets_updated: Mapped[int] = mapped_column(Integer, default=0)
+    failed_windows: Mapped[dict | None] = mapped_column(RawJSON)     # ISO starts of failed commits
+    oversized_windows: Mapped[dict | None] = mapped_column(RawJSON)  # skipped-oversized (loud)
+    truncated: Mapped[bool] = mapped_column(default=False)
+    error_type: Mapped[str | None] = mapped_column(String(128))
+    error_message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class OpportunitySignal(Base):
     """Informational-only opportunity signal detected by the watcher.
     Signals record what moved and why, for later human/research review —

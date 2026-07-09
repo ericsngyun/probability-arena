@@ -34,8 +34,9 @@ Services (app/services/)  — scanner, eligibility, enrichment, resolution, rese
                             edge_precheck (MVP-005A: gap measurement, never advice),
                             frontier_eval (EVAL-001: desk-wide evaluation + readiness),
                             db_growth (OPS-011: read-only storage/retention observability),
-                            tick_aggregation (OPS-012: raw ticks -> OHLC bucket
-                            summaries — storage plumbing, never trading signals)
+                            tick_aggregation (OPS-012/013: raw ticks -> OHLC bucket
+                            summaries — storage plumbing, never trading signals;
+                            per-sub-window commits + gated timer, OPS-013)
 Adapters (app/adapters/) — kalshi.py (list/detail/event/series/by-tickers/by-series GETs,
                             legacy + dollars/fp payload shapes, outcome parsing, bounded
                             429 retries), dexscreener.py (crypto, read-only), polymarket.py
@@ -63,6 +64,7 @@ Parallel to that: watcher (60s ticks + signals; universe = top-scored candidates
 | pipeline_runs, pipeline_stage_runs | baseline runner audit + overlap lock |
 | market_price_ticks, opportunity_signals, watcher_runs | watcher telemetry + signal workflow |
 | market_price_tick_buckets | OPS-012 aggregated tick summaries (OHLC/spread/liquidity per fixed interval) — storage telemetry, never a trading signal |
+| tick_aggregation_runs | OPS-013 aggregation audit spine (per-pass counters, failed/oversized windows) — readiness evidence, never a trading surface |
 | crypto_tokens, crypto_pairs, crypto_token_discovery_events, crypto_token_risk_assessments, crypto_price_ticks, crypto_opportunity_signals, crypto_watcher_runs | Crypto Arena read-only surveillance (CRYPTO-001) |
 | polymarket_markets, polymarket_orderbook_snapshots, polymarket_scout_runs, polymarket_domain_inventory_snapshots | Polymarket read-only market-data observer (POLY-001, second venue) |
 | cross_venue_observation_runs, cross_venue_market_candidates | Kalshi<->Polymarket read-only cross-venue observation (POLY-002; measurement, never EV/arbitrage) |

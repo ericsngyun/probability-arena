@@ -1,0 +1,29 @@
+# Probability Arena — OPS-013 tick-aggregation timer (USER unit), hourly.
+# Storage/durability plumbing: rolls raw market_price_ticks into aggregated
+# OHLC buckets. NOT auto-installed. Two-step to go live:
+#   1) set ENABLE_TICK_AGGREGATION_TIMER=true in ~/projects/probability-arena/.env
+#      (the --scheduled command no-ops while it is false, so the timer is safe
+#       to install dark first).
+#   2) install + enable:
+#        cp infra/systemd/user/probability-arena-tick-aggregation.{service,timer} ~/.config/systemd/user/
+#        systemctl --user daemon-reload
+#        systemctl --user enable --now probability-arena-tick-aggregation.timer
+# Inspect / disable:
+#   systemctl --user list-timers | grep tick-aggregation
+#   journalctl --user -u probability-arena-tick-aggregation.service -n 50 --no-pager
+#   systemctl --user disable --now probability-arena-tick-aggregation.timer
+# Manual run any time (always allowed, flag-independent):
+#   .venv/bin/python -m app.cli aggregate-market-ticks --hours 24
+
+[Unit]
+Description=Run Probability Arena tick aggregation hourly (storage plumbing)
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=1h
+RandomizedDelaySec=120
+Persistent=false
+Unit=probability-arena-tick-aggregation.service
+
+[Install]
+WantedBy=timers.target

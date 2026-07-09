@@ -467,6 +467,32 @@ Operational rules:
 * Manual only — no timer is installed for aggregation. If regular runs are
   wanted later, that is a separate deploy decision.
 
+### OPS-013 hardening + gated timer
+
+```bash
+.venv/bin/python -m app.cli aggregate-market-ticks --hours 24                      # per-hour commits (default)
+.venv/bin/python -m app.cli aggregate-market-ticks --hours 24 --subwindow-hours 2  # coarser commit unit
+.venv/bin/python -m app.cli aggregate-market-ticks --scheduled --hours 12          # timer path: NO-OPS unless ENABLE_TICK_AGGREGATION_TIMER=true
+.venv/bin/python -m app.cli tick-aggregation-report                                # coverage + READINESS gates
+```
+
+* **Per-sub-window commits**: the SQLite write lock is held for seconds per
+  window (the OPS-012 full-window pass held one ~49s commit and produced the
+  MarketOps #1215 transient). Per-window rows/buckets/commit_ms/retries are
+  printed; a failed commit is retried bounded times as an apply+commit unit,
+  then recorded LOUDLY (audit row + nonzero exit) — reruns repair it.
+* **Timer rollout (two-step, like meme-news; do NOT enable unless asked):**
+  1. `cp infra/systemd/user/probability-arena-tick-aggregation.{service,timer} ~/.config/systemd/user/ && systemctl --user daemon-reload && systemctl --user enable --now probability-arena-tick-aggregation.timer`
+     — safe dark: the service runs `--scheduled` which no-ops while
+     `ENABLE_TICK_AGGREGATION_TIMER=false`.
+  2. Set `ENABLE_TICK_AGGREGATION_TIMER=true` in `.env` to go live (hourly,
+     `--hours 12` overlap so cycles self-heal).
+* **Raw-retention reduction stays staged**: check
+  `tick-aggregation-report` — all readiness gates (coverage_72h ≥ 0.98,
+  ≥ 5 clean scheduled cycles, no recent run errors, raw feed fresh) must pass
+  before proposing the 3d → 24-48h change as its own explicitly-accepted
+  milestone. `tick_aggregation_runs` (migration 0024) is the evidence trail.
+
 ## DB backup (OPS-007)
 
 Consistent snapshots via the sqlite3 online backup API (safe while all
