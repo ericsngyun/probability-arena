@@ -1306,3 +1306,31 @@ Deployed **`8514159` → `2cd7c63`** by `git pull --ff-only`; **migration `0022`
 **Safety:** tokenize-stripped code scan + AST identifier audit on `tick_aggregation.py` / `db_growth.py` / `retention.py` → **NONE** across the expanded vocabulary (wallet/private_key/keypair/swap/jupiter/signing/send_transaction/order-placement/dollar-EV/paper-trading/sizing/trade-recommendation/buy/sell/bet/arbitrage/arb/opportunity; `OpportunitySignal` is the pre-existing OPS-002 model name). Buckets are telemetry summaries with no side/size/EV/action/order/wallet column; host scanner `safety_ok=True`.
 
 **Recommendation: KEEP OPS-012. Do NOT reduce raw retention yet.** Coverage is healthy on today's window, but the staged reduction (3d → 24-48h) is an **OPS-013 decision** to be taken only after aggregation has been run regularly and coverage stays healthy on the host — aggregation is manual-only today (no timer), so either schedule manual passes with slate deploys or make OPS-013 the milestone that adds the (explicitly accepted) timer + per-sub-window commits + the retention change. **Rollback (if ever):** `git reset --hard 8514159` + `alembic downgrade 0022` (drops only the isolated bucket table).
+
+## OPS-013 — per-sub-window aggregation deployed; timer installed DARK (2026-07-09, ~01:25 UTC)
+
+Deployed **`dd931e2` → `dd9e439`** by `git pull --ff-only`; **migration `0023` → `0024`** (`tick_aggregation_runs` audit spine). Operational storage/durability only: raw ticks untouched, **`TICK_RETENTION_DAYS=3` unchanged** (verified in `.env`), no lane logic changed. The aggregation timer was installed **DARK** per the controlled-deployment instruction — **`ENABLE_TICK_AGGREGATION_TIMER` is NOT set (false)** and every scheduled fire no-ops until explicitly approved.
+
+| item | value |
+|---|---|
+| pushed / deployed commit | **`dd9e439`** (origin/main + EVO-X2) |
+| DB backup (pre-migration) | `data/backups/backup-20260709T012029Z.db.gz` (203.16 MiB) — verified OK (40 tables, integrity ok) |
+| alembic revision | **0023 → 0024** (via `run-baseline --dry-run`, pipeline #49 `status=dry_run`) |
+| scheduled guard | `aggregate-market-ticks --scheduled --hours 1` with flag unset → **"scheduled tick-aggregation cycle skipped"**, no run row, nothing written ✅ |
+
+**The headline number — lock hold collapsed ~17×:** the manual 24h pass (`--subwindow-hours 1`) ran as **24 separate sub-window commits with `max_commit_ms=2841`** (idempotent rerun: **335ms**), versus the OPS-012 single ~49,000ms full-window commit that caused the MarketOps #1215 collision. **MarketOps cycle #1220 ran concurrently with the real pass and completed `ok`** — along with #1216–#1219 — i.e. **no SQLite lock regression under live concurrent writes**.
+
+**Aggregation sequence:** dry-run → would-write 43,414 buckets across 24 sub-windows, wrote nothing (`max_commit_ms=0`), row-cap truncation honestly reported at the hour boundary. Real pass (audit **run #1**): rows_read=202,950, buckets 43,414 (300 inserted / 43,114 updated), 23.5s total, **0 retries, 0 failed windows, 0 oversized windows**. Idempotent rerun (audit **run #2**): **inserted=0, updated=43,414** — exact. `tick_aggregation_runs` holds both rows (`ok`, `failed_windows=null`, `oversized_windows=null`).
+
+**Raw invariance & retention:** raw count only *increased* across every step (622,200 → 622,350 → 622,500 — live watcher writes; aggregation deleted nothing). `prune-retention --dry-run`: `market_price_ticks` window still 3d (11,550 eligible — normal), `market_price_tick_buckets` 0 eligible (90d), `tick_aggregation_runs` 0 eligible (30d).
+
+**Readiness (honest, as designed):** `tick-aggregation-report` shows the new READINESS section → **`not_ready`**, reasons `coverage_72h=0.6849 < 0.98` (the 72h view reaches Jul-6 hours that predate aggregation) and `clean_scheduled_cycles=0 < 5` (timer dark). 48h coverage 0.9796/healthy; `raw_feed_fresh=True`; recent runs error-free. **Raw-retention reduction stays a future OPS-014**, gated on clean scheduled evidence.
+
+**Dark timer install (step 13, manual validation clean):** units copied to `~/.config/systemd/user/`, `daemon-reload`, timer **enabled** — next fire 02:26 UTC, hourly. **Proof of dark no-op from the journal:** a manual service start logged `ENABLE_TICK_AGGREGATION_TIMER=false; scheduled tick-aggregation cycle skipped` and the unit finished cleanly. Each hourly fire will no-op identically until the flag is explicitly flipped.
+
+**Health & safety:** MarketOps #1216–#1220 all `ok`; frontier readiness **unchanged** (`ready_for_cycle_scoped_edge_automation`), **`safety_ok=True`**; DB 2,728.14 MiB (above warn 1,536, below crit 3,072 — unchanged by this deploy; buckets 90,424 rows). Tokenize + AST audits on the OPS-013 modules: **NONE** across the expanded vocabulary (wallet/keys/swap/jupiter/signing/send_transaction/orders/dollar-EV/paper-trading/sizing/trade-recommendation/buy/sell/bet/arbitrage/arb/opportunity).
+
+**Recommendation: KEEP OPS-013 — manual validation fully clean.**
+- **Timer enablement remains a separate explicit step:** flip `ENABLE_TICK_AGGREGATION_TIMER=true` in `.env` only on explicit approval; the installed timer then goes live on its next hourly fire (`--hours 12` overlap, self-healing).
+- **Raw-retention reduction remains future OPS-014**, proposable only after the readiness report shows `ready_to_stage` (≥5 clean scheduled cycles + coverage_72h ≥ 0.98 + no errors + fresh raw feed).
+- **Rollback (if ever):** `systemctl --user disable --now probability-arena-tick-aggregation.timer`, `git reset --hard dd931e2`, `alembic downgrade 0023` (drops only the isolated audit table).
