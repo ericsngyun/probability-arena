@@ -1638,6 +1638,72 @@ async def edge_followthrough_diagnostic_report(hours: int = 24, top: int = 5, se
             session.close()
 
 
+async def edge_filter_shadow_report(hours: int = 24, top: int = 5, session=None) -> int:
+    """EDGE-FILTER-001 read-only SHADOW filter analysis: what would the
+    watchlist's follow-through have looked like under candidate adverse-
+    selection filters (gap-vs-move, sharp pre-move, market type, series)?
+    Re-slices existing rows only — changes no live gate/forecast/promotion/
+    automation; not PnL, not EV, never advice. Returns population size."""
+    from app.services.edge_filter_shadow import EdgeFilterShadowReportService
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        r = EdgeFilterShadowReportService().build(session, hours=hours, top=top)
+        print(f"edge shadow-filter report (window {r['window_hours']}h) — analysis only, never advice")
+        print(r["note"])
+        print(f"\npopulation={r['population']} watchlist rows  worst_series={r['worst_series']}")
+        print("\npolicies (survival | 60m toward/closure | label):")
+        for p in r["policies"]:
+            ft60 = p["follow_through"].get("60m", {})
+            print(
+                f"  {p['name']:<44} kept={p['included']:<4} ({(p['survival_ratio'] or 0):>5.0%})  "
+                f"60m toward={ft60.get('moved_toward_rate')} closure={ft60.get('mean_gap_closure_pct')}  "
+                f"-> {p['label']}"
+            )
+        print("\nper-policy detail:")
+        for p in r["policies"]:
+            print(f"  == {p['name']} ({p['label']}) ==")
+            print(f"     {p['label_reason']}")
+            print(
+                f"     included={p['included']} excluded={p['excluded']} final_n={p['final_n']}  "
+                f"paths: away={p['continued_away_rate']} toward={p['reverted_toward_rate']} flat={p['flat_rate']}"
+            )
+            print(f"     market_type={p['market_type_mix']}  gap_sign={p['gap_sign_mix']}")
+            print(f"     signal_type={p['signal_type_mix']}")
+            print(f"     series={p['series_mix']}  max_ticker_share={p['max_ticker_share']} max_game_share={p['max_game_share']}")
+            print(
+                f"     follow: " + "  ".join(
+                    f"{h}[n={v['samples']} toward={v['moved_toward_rate']} closure={v['mean_gap_closure_pct']}]"
+                    for h, v in p["follow_through"].items()
+                )
+            )
+            print(
+                f"     drift60m: spread={p['spread_change_60m_mean']} liquidity={p['liquidity_change_60m_mean']}"
+            )
+            if p["examples_removed"]:
+                print("     removed (worst first): " + "; ".join(
+                    f"{e['ticker'][:24]} rel={e['relation']} c60={e['closure_60m']}"
+                    for e in p["examples_removed"][:3]
+                ))
+            if p["examples_retained"]:
+                print("     retained (best first): " + "; ".join(
+                    f"{e['ticker'][:24]} rel={e['relation']} c60={e['closure_60m']}"
+                    for e in p["examples_retained"][:3]
+                ))
+        print("\ninterpretation (measurement only — never advice):")
+        for k, v in r["interpretation"].items():
+            print(f"  {k}: {v}")
+        return r["population"]
+    finally:
+        if owns_session:
+            session.close()
+
+
 async def edge_cohort_report(hours: int = 24, session=None) -> int:
     """Print the edge-precheck cohort analysis (analysis only — no EV, no
     trades, no positions; cohort labels authorize nothing). Returns 0."""
@@ -3600,6 +3666,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ft_diag_parser.add_argument("--hours", type=int, default=24)
     ft_diag_parser.add_argument("--top", type=int, default=5, help="failure examples per section")
+    ef_shadow_parser = subparsers.add_parser(
+        "edge-filter-shadow-report",
+        help="EDGE-FILTER-001: shadow adverse-selection filters over existing watchlist rows (read-only; changes nothing; never advice)",
+    )
+    ef_shadow_parser.add_argument("--hours", type=int, default=24)
+    ef_shadow_parser.add_argument("--top", type=int, default=5, help="examples per policy")
     meme_scan_parser = subparsers.add_parser(
         "meme-scan-once",
         help="One read-only meme/news attention scan (MEME-NEWS-001; never advice)",
@@ -3938,6 +4010,9 @@ def main(argv: list[str] | None = None) -> int:
         return asyncio.run(edge_policy_report(hours=args.hours))
     if args.command == "edge-followthrough-diagnostic-report":
         n = asyncio.run(edge_followthrough_diagnostic_report(hours=args.hours, top=args.top))
+        return 0 if n >= 0 else 1
+    if args.command == "edge-filter-shadow-report":
+        n = asyncio.run(edge_filter_shadow_report(hours=args.hours, top=args.top))
         return 0 if n >= 0 else 1
     if args.command == "meme-scan-once":
         scored = asyncio.run(meme_scan_once(limit=args.limit))
