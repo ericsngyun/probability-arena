@@ -1403,3 +1403,23 @@ Deployed **`e81e398` → `fb84852`** by `git pull --ff-only`. **No migration** (
 **Health (unchanged):** MarketOps #1281 `ok`; frontier `ready_for_cycle_scoped_edge_automation`, **`safety_ok=True`**; tick aggregation 6 clean scheduled cycles, coverage_72h 0.7671 (OPS-014 still on its ~22:00 UTC track); DB 2,728.14 MiB flat (the shadow report persists nothing). Safety audits (tokenize-stripped + AST, expanded vocabulary incl. buy/sell/bet/arbitrage/arb/opportunity) **NONE** on this exact tree pre-commit; grep hits are boundary disclaimers only.
 
 **Recommendation: KEEP — manual/report-only. Continue accumulating; no live gate change.** The first positive-closure cohorts in the project's history now exist in shadow, but every one is below the 0.55 rate bar or under-sampled: the follows-move+totals cohort needs roughly 2× its current sample before `promising_shadow` can even apply, and a live-gate discussion would be its own explicitly-accepted milestone after that. Re-run `edge-filter-shadow-report --hours 48` after the next few MLB slates and during the World Cup semifinal windows. **Rollback (if ever):** `git reset --hard e81e398` — analysis-only, nothing to unwind.
+
+## FORECAST-ANCHOR-001 — anchoring diagnostic deployed (2026-07-09, ~16:40 UTC)
+
+Deployed **`7ff96c0` → `5edd80d`** by `git pull --ff-only`. **No migration** (`0024 (head)`, 24 files). Read-only analysis: no flag/timer/endpoint/persistence; forecasts, edge-precheck gates, promotion, MarketOps, and EDGE-AUTO unchanged. New capability: `forecast-anchor-diagnostic-report --hours N --top N` — did the forecast move when the market moved, measured per row from recorded prior forecasts and ticks.
+
+| item | value |
+|---|---|
+| pushed / deployed commit | **`5edd80d`** (origin/main + EVO-X2) |
+| migration | **none** |
+| 48h live (n=255, 118 classifiable) | median **adjustment_ratio 0.483** (forecast moves ~half as much as the market; market moved more in 83% of rows); **anchored_static share only 5.9%**, partial 40.7%; ~50% of rows have NO prior forecast |
+| moved_with_market cohort | **still fails: toward 0.19 / closure −0.25** (vs partial 0.13/−0.69, anchored 0.29/−1.00) — keeping up does not rescue follow-through |
+| spreads vs totals anchoring | near-identical anchored+partial shares (**0.419 vs 0.410**); totals grade `no_anchor_issue_detected` (toward 0.378), spreads `timing_adverse_selection` (0.196) — **totals are less adverse, not less anchored** |
+| overall verdict (48h) | **`timing_adverse_selection`** — selection/timing dominates; anchoring contributes but is secondary |
+| 24h refinement (n=114) | overall `market_type_specific`: **winner markets grade `anchoring_confirmed`** (anchored+partial 0.667, ratio 0.416) while totals/spreads grade timing — the one market type where anchoring IS the mechanism |
+
+**Interpretation (printed by the report, from data):** the negative follow-through is a **trigger timing/selection issue, not primarily forecaster anchoring** — `next_step_evidence: trigger_redesign_candidate_or_more_data … keep collecting shadow data before any change`. This matches the external second opinion's caution and redirects the going-in hypothesis. Companion post-pull runs reconcile: 48h follow-through diagnostic reproduces (`adverse_selection_candidate`, toward 0.2756, opposes 0.755) and the shadow filters HOLD on the rolled-forward window (`gap_follows_move_and_tight_spread` 0.404/+0.245, `require_gap_follows_move_exclude_spreads` 0.459/+0.255 — both still `promising_shadow`).
+
+**Health (unchanged):** MarketOps #1374 `ok`; frontier `ready_for_cycle_scoped_edge_automation`, **`safety_ok=True`**; tick aggregation **15 clean scheduled cycles**, coverage_72h **0.8904** and climbing (OPS-014 re-check ~22:00 UTC on track); DB 2,728.14 MiB flat (nothing persisted). Safety audits (tokenize + AST, expanded vocabulary incl. buy/sell/bet/arbitrage/arb/opportunity) **NONE** on this exact tree pre-commit.
+
+**Recommendation: KEEP — manual/report-only. MVP-005B remains blocked.** The next alpha-facing milestone should be **trigger-timing shadow analysis** (e.g. simulating delayed/settlement-gated measurement or a follows-move condition at trigger time, over persisted rows) — **not a live gate change**, and not forecaster redesign except possibly for winner markets where anchoring is confirmed (also shadow-first). **Rollback (if ever):** `git reset --hard 7ff96c0` — analysis-only, nothing to unwind.
