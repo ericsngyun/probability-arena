@@ -29,7 +29,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import func, null, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
@@ -224,8 +224,10 @@ class TickAggregationService:
                 run.buckets_written = stats.buckets_written
                 run.buckets_inserted = stats.buckets_inserted
                 run.buckets_updated = stats.buckets_updated
-                run.failed_windows = stats.failed_windows or None
-                run.oversized_windows = stats.oversized_windows or None
+                # null() (SQL NULL), not None: assigning None to a JSON column
+                # stores JSON 'null', which defeats SQL IS NULL predicates.
+                run.failed_windows = stats.failed_windows or null()
+                run.oversized_windows = stats.oversized_windows or null()
                 run.truncated = stats.truncated
 
             ok, _ = self._commit_unit(session, finalize_run)
@@ -571,13 +573,16 @@ class TickAggregationReportService:
         r.runs_with_errors_recent = sum(
             1 for x in runs if x.status != "ok" or x.failed_windows
         )
-        r.clean_scheduled_cycles = session.execute(
-            select(func.count()).select_from(TickAggregationRun).where(
+        # Count in Python, not with an IS NULL predicate: rows written before
+        # the null() fix hold JSON 'null' (not SQL NULL) in failed_windows, and
+        # both must count as clean. Reads map either form to falsy None/[].
+        scheduled_ok = session.execute(
+            select(TickAggregationRun.failed_windows).where(
                 TickAggregationRun.scheduled.is_(True),
                 TickAggregationRun.status == "ok",
-                TickAggregationRun.failed_windows.is_(None),
             )
-        ).scalar() or 0
+        ).all()
+        r.clean_scheduled_cycles = sum(1 for (fw,) in scheduled_ok if not fw)
         if r.raw_newest is not None:
             age_min = (_now() - r.raw_newest).total_seconds() / 60
             r.raw_feed_fresh = age_min <= READINESS_RAW_FRESH_MINUTES

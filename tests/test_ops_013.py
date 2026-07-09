@@ -317,6 +317,37 @@ def clean_scheduled_run(session, *, hours_ago=1):
 
 
 class TestReadinessReport:
+    def test_service_written_scheduled_run_counts_as_clean_cycle(self, session):
+        """Regression (found live on EVO-X2): assigning None to a JSON column
+        stores JSON 'null', not SQL NULL, so an IS NULL predicate never matched
+        service-written rows and clean_scheduled_cycles stayed 0 forever. A run
+        written by the SERVICE ITSELF (not seeded) must count."""
+        seed_hours(session, 1)
+        svc().aggregate(session, hours=1, scheduled=True)
+
+        r = report(session)
+        assert r.clean_scheduled_cycles == 1
+
+    def test_legacy_json_null_rows_also_count_as_clean(self, session):
+        """Rows written before the null() fix hold the JSON-null form; the
+        counter must accept both."""
+        session.add(TickAggregationRun(
+            status="ok", scheduled=True, started_at=NOW, created_at=NOW,
+            failed_windows=None,  # ORM assign-None => JSON 'null' (legacy form)
+        ))
+        session.commit()
+        r = report(session)
+        assert r.clean_scheduled_cycles == 1
+
+    def test_scheduled_run_with_failed_windows_not_counted_clean(self, session):
+        session.add(TickAggregationRun(
+            status="ok", scheduled=True, started_at=NOW, created_at=NOW,
+            failed_windows=["2026-07-09T00:00:00+00:00"],
+        ))
+        session.commit()
+        r = report(session)
+        assert r.clean_scheduled_cycles == 0
+
     def test_not_ready_with_no_runs(self, session):
         seed_hours(session, 2)
         r = report(session)
