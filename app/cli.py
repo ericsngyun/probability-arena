@@ -1707,6 +1707,80 @@ async def trigger_timing_shadow_report(hours: int = 24, top: int = 5, session=No
             session.close()
 
 
+async def edge_selection_validation_report(
+    hours: int = 24,
+    since: str | None = None,
+    until: str | None = None,
+    session=None,
+) -> int:
+    """EDGE-SELECTION-001 pre-registered validation report: evaluates ONLY the
+    frozen policy registry (docs/EDGE_SELECTION_PREREG_2026_07_09.md) against
+    fixed success/failure gates on an explicitly labelled discovery/validation
+    window. Changes no gate/forecast/promotion/flag/automation; not PnL, not
+    EV, never advice; validated_shadow authorizes nothing. Returns population."""
+    from datetime import datetime, timezone
+
+    from app.services.edge_selection import EdgeSelectionValidationReportService
+
+    def _parse(ts: str | None):
+        if ts is None:
+            return None
+        parsed = datetime.fromisoformat(ts)
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        r = EdgeSelectionValidationReportService().build(
+            session, hours=hours, since=_parse(since), until=_parse(until)
+        )
+        print("edge-selection validation report — pre-registered protocol, never advice")
+        print(r["note"])
+        w = r["window"]
+        print(
+            f"\nprereg: {r['prereg_doc']} (locked {r['prereg_locked_at']})"
+            f"\nwindow: {w['start']} .. {w['end']}  type={w['type'].upper()}"
+            f"  rows pre-lock={w['rows_pre_lock']} post-lock={w['rows_post_lock']}"
+        )
+        if w["type"] != "validation":
+            print(
+                "  NOTE: only a VALIDATION window (entirely after the lock) can "
+                "validate a candidate — this window cannot."
+            )
+        print(f"population={r['population']} watchlist rows")
+        print("\npre-registered policies (final_n | 60m toward/closure | max ticker/game share | status):")
+        for p in r["policies"]:
+            ft60 = p["follow_through"].get("60m", {})
+            print(
+                f"  {p['name']:<44} [{p['role']:<16}] n={p['final_n']:<4} "
+                f"toward={ft60.get('moved_toward_rate')} closure={ft60.get('mean_gap_closure_pct')}  "
+                f"conc={p['max_ticker_share']}/{p['max_game_share']}  -> {p['status']}"
+            )
+        print("\nper-policy gates:")
+        for p in r["policies"]:
+            print(f"  == {p['name']} ({p['role']}; alias {p['prereg_alias']}) ==")
+            print(f"     status: {p['status']} — {p['status_reason']}")
+            gates = "  ".join(f"{k}={'PASS' if v else 'fail'}" for k, v in p["gates"].items())
+            print(f"     gates: {gates}")
+            if p["failure_reasons"]:
+                print(f"     failure gates tripped: {p['failure_reasons']}")
+            print(f"     market_type_mix: {p['market_type_mix']}")
+        print(
+            f"\nnegative control consistent: {r['negative_control_consistent']}"
+            f"\nvalidated_shadow policies this window: {r['validated_shadow_policies'] or 'none'}"
+        )
+        print(f"\noverfitting risk: {r['overfitting_note']}")
+        print(f"\n{r['mvp_005b_note']}")
+        return r["population"]
+    finally:
+        if owns_session:
+            session.close()
+
+
 async def forecast_anchor_diagnostic_report(hours: int = 24, top: int = 5, session=None) -> int:
     """FORECAST-ANCHOR-001 read-only diagnostic: when the market moved between
     the PRIOR forecast and this measurement, did the forecast move too? Per-row
@@ -3819,6 +3893,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     tt_parser.add_argument("--hours", type=int, default=24)
     tt_parser.add_argument("--top", type=int, default=5, help="examples per section")
+    es_parser = subparsers.add_parser(
+        "edge-selection-validation-report",
+        help="EDGE-SELECTION-001: pre-registered policy validation vs fixed gates on labelled discovery/validation windows (read-only; never advice)",
+    )
+    es_parser.add_argument("--hours", type=int, default=24)
+    es_parser.add_argument(
+        "--since", type=str, default=None,
+        help="ISO window start (UTC assumed if naive); overrides --hours",
+    )
+    es_parser.add_argument(
+        "--until", type=str, default=None, help="ISO window end (default: now)"
+    )
     meme_scan_parser = subparsers.add_parser(
         "meme-scan-once",
         help="One read-only meme/news attention scan (MEME-NEWS-001; never advice)",
@@ -4166,6 +4252,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if n >= 0 else 1
     if args.command == "trigger-timing-shadow-report":
         n = asyncio.run(trigger_timing_shadow_report(hours=args.hours, top=args.top))
+        return 0 if n >= 0 else 1
+    if args.command == "edge-selection-validation-report":
+        n = asyncio.run(
+            edge_selection_validation_report(
+                hours=args.hours, since=args.since, until=args.until
+            )
+        )
         return 0 if n >= 0 else 1
     if args.command == "meme-scan-once":
         scored = asyncio.run(meme_scan_once(limit=args.limit))
