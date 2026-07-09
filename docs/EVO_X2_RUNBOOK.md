@@ -435,6 +435,38 @@ hour advisories tripped on normal live-slate volume). Defaults:
 next run; restart the watcher only if a watcher-affecting flag changed). This
 is ops/observability only — no forecasting, edge, or trading behavior changes.
 
+## Tick aggregation (OPS-012 — manual, NO timer)
+
+`market_price_ticks` dominates the SQLite file (~62%: raw rows carry
+`raw_payload` JSON at ~2.8 KB/row). OPS-012 rolls raw ticks into fixed-interval
+`market_price_tick_buckets` (OHLC midpoint, open/close bid/ask, spread/liquidity
+ranges, tick counts — migration `0023`) so history survives at a fraction of the
+storage. **Buckets are telemetry summaries, never trading signals.**
+
+```bash
+.venv/bin/python -m app.cli aggregate-market-ticks --hours 24 --dry-run   # preview; writes nothing
+.venv/bin/python -m app.cli aggregate-market-ticks --hours 24             # idempotent upsert (rerun-safe)
+.venv/bin/python -m app.cli tick-aggregation-report                       # coverage + staged recommendation
+.venv/bin/python -m app.cli db-growth-report                              # now shows buckets + steady-state projection
+```
+
+Operational rules:
+
+* **Aggregation never deletes raw ticks.** Only `prune-retention` prunes, on its
+  own windows; **raw tick retention (`TICK_RETENTION_DAYS`) is UNCHANGED by
+  OPS-012.** The tick-aggregation-report STAGES (never enacts) the future option
+  of reducing raw retention toward 24-48h once coverage is proven healthy —
+  enacting that is a separate, explicitly-accepted milestone.
+* Buckets age out on their own `TICK_BUCKET_RETENTION_DAYS=90` window (via the
+  existing retention timer's prune).
+* Bounded: `TICK_AGGREGATION_MAX_ROWS=200000` raw rows per pass; a cap stop
+  lands on an hour boundary and is printed (rerun to continue — never silent).
+* Expected scale (validated on a 24h copy of real host ticks): ~203k raw →
+  ~43.5k five-minute buckets in ~35s; hour coverage 100%; rerun updates in
+  place with identical values.
+* Manual only — no timer is installed for aggregation. If regular runs are
+  wanted later, that is a separate deploy decision.
+
 ## DB backup (OPS-007)
 
 Consistent snapshots via the sqlite3 online backup API (safe while all

@@ -27,6 +27,7 @@ from app.models import (
     CryptoWatcherRun,
     EdgePrecheckSnapshot,
     MarketPriceTick,
+    MarketPriceTickBucket,
     MemeAttentionSnapshot,
     MemeCatalystEvent,
 )
@@ -85,6 +86,13 @@ class GrowthReport:
     backups: tuple[int, float] | None
     retention: RetentionConfig
     thresholds: dict = field(default_factory=dict)
+    # OPS-012 additions: which tickers dominate, what steady-state looks like
+    # under the CURRENT retention window, aggregation state, and threshold status.
+    tick_top_tickers: list = field(default_factory=list)  # [(ticker, rows), ...]
+    tick_projected_steady_state_mib: float | None = None  # est_daily * retention_days
+    tick_bucket_total: int = 0                             # aggregated buckets (OPS-012)
+    above_warning: bool | None = None
+    above_critical: bool | None = None
 
     @property
     def largest_tables(self) -> list[TableStat]:
@@ -187,9 +195,34 @@ def build_growth_report(session: Session, settings: Settings | None = None) -> G
         per_row_mib = tick_mib / tick_total
         tick_est_daily_mib = round(per_row_mib * tick_last_hour * 24, 2)
 
+    # OPS-012: heaviest tickers, steady-state projection, threshold status
+    retention_cfg = RetentionConfig.from_settings(settings)
+    tick_top_tickers = [
+        (ticker, cnt)
+        for ticker, cnt in session.execute(
+            select(MarketPriceTick.market_ticker, func.count())
+            .group_by(MarketPriceTick.market_ticker)
+            .order_by(func.count().desc())
+            .limit(10)
+        ).all()
+    ]
+    tick_projected_steady_state_mib = (
+        round(tick_est_daily_mib * retention_cfg.tick_days, 2)
+        if tick_est_daily_mib is not None
+        else None
+    )
+    tick_bucket_total = _count(session, MarketPriceTickBucket)
+    size_mib = _sqlite_file_mib(settings)
+    above_warning = (
+        size_mib > settings.db_growth_warning_mb if size_mib is not None else None
+    )
+    above_critical = (
+        size_mib > settings.db_growth_critical_mb if size_mib is not None else None
+    )
+
     return GrowthReport(
         database_url=make_url(settings.database_url).render_as_string(hide_password=True),
-        size_mib=_sqlite_file_mib(settings),
+        size_mib=size_mib,
         tables=tables,
         tick_total=tick_total,
         tick_by_age=tick_by_age,
@@ -198,6 +231,11 @@ def build_growth_report(session: Session, settings: Settings | None = None) -> G
         tick_newest=newest,
         tick_last_hour=tick_last_hour,
         tick_est_daily_mib=tick_est_daily_mib,
+        tick_top_tickers=tick_top_tickers,
+        tick_projected_steady_state_mib=tick_projected_steady_state_mib,
+        tick_bucket_total=tick_bucket_total,
+        above_warning=above_warning,
+        above_critical=above_critical,
         edge_total=_count(session, EdgePrecheckSnapshot),
         edge_last_hour=_count_since(
             session, EdgePrecheckSnapshot, EdgePrecheckSnapshot.created_at, hour_ago

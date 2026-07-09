@@ -896,6 +896,19 @@ async def db_growth_report(top: int = 12, session=None) -> int:
         print(f"  last hour: {r.tick_last_hour} ticks"
               + (f"  (~{r.tick_est_daily_mib} MiB/day est)"
                  if r.tick_est_daily_mib is not None else ""))
+        if r.tick_top_tickers:
+            print("  heaviest tickers: " + ", ".join(
+                f"{t[:26]}={n}" for t, n in r.tick_top_tickers[:5]))
+        if r.tick_projected_steady_state_mib is not None:
+            print(f"  projected steady-state under current retention: "
+                  f"~{r.tick_projected_steady_state_mib} MiB "
+                  f"({r.tick_est_daily_mib} MiB/day x {r.retention.tick_days}d window)")
+        print(f"  aggregated buckets (OPS-012): {r.tick_bucket_total} rows "
+              f"(telemetry summaries — never trading signals)")
+        if r.above_critical:
+            print("  !! DB size ABOVE CRITICAL threshold")
+        elif r.above_warning:
+            print("  ! DB size above warning threshold (below critical)")
 
         print(f"\nedge_precheck_snapshots: {r.edge_total} total"
               f"  (+{r.edge_last_hour}/h, +{r.edge_last_24h}/24h)")
@@ -907,7 +920,8 @@ async def db_growth_report(top: int = 12, session=None) -> int:
 
         rc = r.retention
         print("\nretention windows: "
-              f"ticks={rc.tick_days}d, crypto={rc.crypto_days}d, meme={rc.meme_days}d, "
+              f"ticks={rc.tick_days}d, tick_buckets={rc.tick_bucket_days}d, "
+              f"crypto={rc.crypto_days}d, meme={rc.meme_days}d, "
               f"watcher_runs={rc.watcher_run_days}d, pipeline_runs={rc.pipeline_run_days}d, "
               f"signals={'keep forever' if rc.signal_days == 0 else str(rc.signal_days) + 'd'}, "
               "edge_precheck_snapshots=keep forever")
@@ -920,6 +934,94 @@ async def db_growth_report(top: int = 12, session=None) -> int:
               f"signal_flood warn={th['signal_flood_warning_per_hour']}/h "
               f"crit={th['signal_flood_critical_per_hour']}/h")
         return total_rows
+    finally:
+        if owns_session:
+            session.close()
+
+
+async def aggregate_market_ticks(
+    hours: int = 24,
+    bucket_seconds: int | None = None,
+    dry_run: bool = False,
+    max_rows: int | None = None,
+    session=None,
+) -> int:
+    """One bounded OPS-012 tick-aggregation pass: rolls raw market_price_ticks
+    into fixed-interval OHLC/spread/liquidity buckets (idempotent upsert).
+    NEVER deletes or modifies raw ticks. --dry-run computes and reports without
+    writing. Storage/telemetry plumbing only — buckets are summaries, never
+    trading signals; no EV/trade/sizing/orders/wallets/signing/execution.
+    Returns buckets written (or would-write in dry-run), -1 on error."""
+    from app.services.tick_aggregation import TickAggregationService
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        stats = TickAggregationService().aggregate(
+            session, hours=hours, bucket_seconds=bucket_seconds,
+            dry_run=dry_run, max_rows=max_rows,
+        )
+        print(
+            f"tick aggregation{' (DRY RUN — nothing written)' if stats.dry_run else ''}: "
+            f"window={stats.window_start:%Y-%m-%dT%H:%M}Z..{stats.window_end:%Y-%m-%dT%H:%M}Z "
+            f"bucket={stats.bucket_seconds}s"
+        )
+        print(
+            f"  rows_read={stats.rows_read} skipped_unusable={stats.rows_skipped_unusable} "
+            f"buckets_written={stats.buckets_written} "
+            f"(inserted={stats.buckets_inserted} updated={stats.buckets_updated}) "
+            f"duration_ms={stats.duration_ms}"
+        )
+        if stats.truncated:
+            print(
+                f"  TRUNCATED at the row cap — aggregation complete only up to "
+                f"{stats.covered_until}; rerun to continue (never silent)."
+            )
+        print("  raw ticks unchanged — aggregation never deletes them (not advice; telemetry only)")
+        return stats.buckets_written
+    finally:
+        if owns_session:
+            session.close()
+
+
+async def tick_aggregation_report(session=None) -> int:
+    """OPS-012 read-only aggregation coverage report: bucket totals/ranges,
+    per-domain and per-interval counts, compression ratio, hour-level coverage
+    of the recent raw window, retention windows, and the STAGED (not enacted)
+    raw-retention recommendation. Changes nothing. Returns bucket count."""
+    from app.services.tick_aggregation import TickAggregationReportService
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        r = TickAggregationReportService().build(session)
+        print("tick aggregation report — read-only storage telemetry, not advice")
+        print(r.note)
+        print(
+            f"buckets={r.bucket_total} (oldest={r.bucket_oldest} newest={r.bucket_newest})  "
+            f"raw_ticks={r.raw_total}"
+        )
+        print(f"buckets by domain:   {r.buckets_by_domain}")
+        print(f"buckets by interval: {r.buckets_by_seconds}")
+        if r.compression_ratio is not None:
+            print(f"compression: ~{r.compression_ratio} raw ticks per bucket row")
+        print(
+            f"coverage (last 48h, hour granularity): "
+            f"{r.covered_hours_last_48h}/{r.raw_hours_last_48h} raw-tick hours have buckets"
+            + (f" (rate={r.coverage_rate_last_48h})" if r.coverage_rate_last_48h is not None else "")
+            + f"  healthy={r.coverage_healthy}"
+        )
+        print(f"retention: {r.retention}")
+        print(f"staged recommendation (NOT enacted): {r.staged_recommendation}")
+        return r.bucket_total
     finally:
         if owns_session:
             session.close()
@@ -3233,6 +3335,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="OPS-011: DB size/growth, tick age+domain buckets, retention windows, alert thresholds",
     )
     growth_parser.add_argument("--top", type=int, default=12, help="largest N tables to list")
+    agg_parser = subparsers.add_parser(
+        "aggregate-market-ticks",
+        help="OPS-012: roll raw ticks into fixed OHLC buckets (idempotent; never deletes raw ticks; not advice)",
+    )
+    agg_parser.add_argument("--hours", type=int, default=24)
+    agg_parser.add_argument(
+        "--bucket-seconds", type=int, default=None,
+        help="bucket interval (default from settings, 300s; must divide 3600)",
+    )
+    agg_parser.add_argument("--dry-run", action="store_true", help="compute + report, write nothing")
+    agg_parser.add_argument("--max-rows", type=int, default=None, help="raw-row cap for this pass")
+    subparsers.add_parser(
+        "tick-aggregation-report",
+        help="OPS-012: aggregation coverage + staged (not enacted) retention recommendation",
+    )
     recent_parser = subparsers.add_parser("signals-recent", help="List recent signals")
     recent_parser.add_argument("--limit", type=int, default=20)
     recent_parser.add_argument("--status", type=str, default=None)
@@ -3576,6 +3693,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "db-growth-report":
         total = asyncio.run(db_growth_report(top=args.top))
         return 0 if total >= 0 else 1
+    if args.command == "aggregate-market-ticks":
+        n = asyncio.run(aggregate_market_ticks(
+            hours=args.hours, bucket_seconds=args.bucket_seconds,
+            dry_run=args.dry_run, max_rows=args.max_rows,
+        ))
+        return 0 if n >= 0 else 1
+    if args.command == "tick-aggregation-report":
+        n = asyncio.run(tick_aggregation_report())
+        return 0 if n >= 0 else 1
     if args.command == "signals-recent":
         count = asyncio.run(signals_recent(limit=args.limit, signal_status=args.status))
         return 0 if count >= 0 else 1

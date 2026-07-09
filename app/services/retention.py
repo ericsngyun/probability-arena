@@ -41,6 +41,7 @@ from app.models import (
     CryptoPriceTick,
     CryptoWatcherRun,
     MarketPriceTick,
+    MarketPriceTickBucket,
     MemeAttentionSnapshot,
     MemeCatalystEvent,
     MemeScoutRun,
@@ -96,6 +97,7 @@ class RetentionConfig:
     crypto_days: int = 7  # crypto_price_ticks + crypto_watcher_runs
     meme_days: int = 14  # MEME-NEWS-002: meme_scout_runs + attention + catalysts
     polymarket_days: int = 14  # POLY-001: polymarket_scout_runs + markets + orderbook snaps
+    tick_bucket_days: int = 90  # OPS-012: aggregated tick buckets (raw tick_days UNCHANGED)
     batch_size: int = 5000
 
     @classmethod
@@ -109,6 +111,7 @@ class RetentionConfig:
             "crypto_days": s.crypto_retention_days,
             "meme_days": s.meme_news_retention_days,
             "polymarket_days": s.polymarket_retention_days,
+            "tick_bucket_days": s.tick_bucket_retention_days,
             "batch_size": s.retention_batch_size,
         }
         values.update({key: value for key, value in overrides.items() if value is not None})
@@ -169,6 +172,14 @@ class RetentionService:
                 MarketPriceTick,
                 MarketPriceTick.created_at < _cutoff(cfg.tick_days),
                 cfg.tick_days,
+                timestamps=True,
+            ),
+            # OPS-012 aggregated buckets: their own (much longer) window; the raw
+            # tick window above is UNCHANGED by OPS-012.
+            project(
+                MarketPriceTickBucket,
+                MarketPriceTickBucket.created_at < _cutoff(cfg.tick_bucket_days),
+                cfg.tick_bucket_days,
                 timestamps=True,
             ),
             project(
@@ -276,6 +287,13 @@ class RetentionService:
 
         counts["market_price_ticks"] = self._delete_batched(
             session, MarketPriceTick, MarketPriceTick.created_at < _cutoff(cfg.tick_days), dry_run
+        )
+        # OPS-012: aggregated buckets age out on their own much-longer window.
+        counts["market_price_tick_buckets"] = self._delete_batched(
+            session,
+            MarketPriceTickBucket,
+            MarketPriceTickBucket.created_at < _cutoff(cfg.tick_bucket_days),
+            dry_run,
         )
         counts["watcher_runs"] = self._delete_batched(
             session, WatcherRun, WatcherRun.created_at < _cutoff(cfg.watcher_run_days), dry_run

@@ -37,6 +37,7 @@ def test_schema_creates_all_tables(session):
         "pipeline_runs",
         "pipeline_stage_runs",
         "market_price_ticks",
+        "market_price_tick_buckets",  # OPS-012 aggregated telemetry summaries
         "opportunity_signals",
         "watcher_runs",
         # Crypto Arena (CRYPTO-001) — read-only surveillance lane

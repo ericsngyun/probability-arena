@@ -324,6 +324,23 @@ change only WHICH persisted rows are considered — the matcher, labels, gates, 
 midpoint/side alignment are unchanged. No timer, migration, endpoint, or external
 call; no EV/arbitrage/opportunity/sizing/orders/wallets/keys/signing/swaps/execution.
 
+## Tick aggregation (OPS-012 — storage plumbing; no EV/trade/orders/wallets)
+
+**No feature flag.** Aggregation is manual-only (`aggregate-market-ticks`); no timer is
+installed and nothing schedules it. Tuning:
+
+| Setting | Default | Effect |
+|---|---|---|
+| `TICK_AGGREGATION_BUCKET_SECONDS` | 300 | bucket interval (must divide 3600) |
+| `TICK_AGGREGATION_MAX_ROWS` | 200000 | raw rows read per pass (truncation reported, never silent) |
+| `TICK_BUCKET_RETENTION_DAYS` | 90 | aggregated buckets' own retention window |
+
+**Raw tick retention (`TICK_RETENTION_DAYS`) is UNCHANGED by OPS-012.** The
+`tick-aggregation-report` stages — but never enacts — the future option of reducing raw
+retention toward 24-48h once bucket coverage is proven healthy. Aggregation never deletes
+raw ticks; buckets are telemetry summaries, never trading signals; no
+EV/recommendations/sizing/orders/wallets/keys/signing/swaps/execution.
+
 ## Retention windows
 
 `TICK_RETENTION_DAYS=7`, `WATCHER_RUN_RETENTION_DAYS=30`,

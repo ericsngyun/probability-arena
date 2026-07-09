@@ -9,6 +9,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -312,6 +313,54 @@ class MarketPriceTick(Base):
 
     __table_args__ = (
         Index("ix_market_price_ticks_ticker_observed", "market_ticker", "observed_at"),
+    )
+
+
+class MarketPriceTickBucket(Base):
+    """OPS-012: one fixed-interval AGGREGATE of raw market_price_ticks for a
+    ticker — OHLC midpoint, open/close bid/ask, spread and liquidity ranges, and
+    the tick count. A storage/telemetry SUMMARY so raw ticks need not be kept
+    forever: it carries no side, size, EV, dollar, action, recommendation,
+    order, wallet, or execution field and is never a trading signal. Raw ticks
+    are unchanged; aggregation never deletes them (only the retention service,
+    explicitly invoked, prunes raw ticks per its own unchanged window)."""
+
+    __tablename__ = "market_price_tick_buckets"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    market_ticker: Mapped[str] = mapped_column(String(64), index=True)
+    domain: Mapped[str | None] = mapped_column(String(32), index=True)
+    bucket_start: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    bucket_seconds: Mapped[int] = mapped_column(Integer, default=300)
+    # midpoint OHLC (dollars 0..1, like the raw tick); None when no tick in the
+    # bucket carried a midpoint — never fabricated
+    open_mid: Mapped[float | None] = mapped_column(Float)
+    high_mid: Mapped[float | None] = mapped_column(Float)
+    low_mid: Mapped[float | None] = mapped_column(Float)
+    close_mid: Mapped[float | None] = mapped_column(Float)
+    # first/last observed quotes (integer cents, like the raw tick)
+    open_bid: Mapped[int | None] = mapped_column(Integer)
+    close_bid: Mapped[int | None] = mapped_column(Integer)
+    open_ask: Mapped[int | None] = mapped_column(Integer)
+    close_ask: Mapped[int | None] = mapped_column(Integer)
+    # spread/liquidity ranges over the bucket
+    spread_min: Mapped[int | None] = mapped_column(Integer)
+    spread_max: Mapped[int | None] = mapped_column(Integer)
+    spread_avg: Mapped[float | None] = mapped_column(Float)
+    liquidity_min: Mapped[int | None] = mapped_column(Integer)
+    liquidity_max: Mapped[int | None] = mapped_column(Integer)
+    liquidity_avg: Mapped[float | None] = mapped_column(Float)
+    tick_count: Mapped[int] = mapped_column(Integer, default=0)
+    first_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "market_ticker", "bucket_start", "bucket_seconds",
+            name="uq_tick_bucket_ticker_start_seconds",
+        ),
+        Index("ix_tick_bucket_start", "bucket_start"),
     )
 
 

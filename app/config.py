@@ -114,6 +114,15 @@ class Settings(BaseSettings):
     signal_retention_days: int = 0  # 0 = keep signals indefinitely
     retention_batch_size: int = 5000
 
+    # OPS-012: tick aggregation (storage/durability plumbing only — aggregated
+    # buckets are telemetry summaries, never trading signals; no EV/trade/
+    # sizing/order/wallet/execution semantics). Raw tick retention is UNCHANGED
+    # in OPS-012; a future OPS milestone may reduce it only after the
+    # tick-aggregation-report proves coverage is healthy.
+    tick_aggregation_bucket_seconds: int = 300   # 5-minute buckets (must divide 3600)
+    tick_aggregation_max_rows: int = 200_000     # bounded raw rows read per invocation
+    tick_bucket_retention_days: int = 90         # aggregated buckets kept much longer than raw
+
     # OPS-011 alert calibration — advisory operational alerts only; NOT trading
     # logic. Static thresholds raised after SCANNER-002 grew the watcher/tick
     # universe (512 MiB / 150 signals-per-hour were chronically tripped by
