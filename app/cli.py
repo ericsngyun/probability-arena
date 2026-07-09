@@ -1837,6 +1837,97 @@ async def edge_cost_shadow_report(hours: int = 24, top: int = 5, session=None) -
             session.close()
 
 
+async def live_market_state_report(
+    domain: str = "sports_tennis", top: int = 10, hours: int = 6, session=None
+) -> int:
+    """LIVE-MARKET-001 read-only live-state observation: freshness, quote
+    quality, latency, and volatility DIAGNOSTICS for currently-ticking markets
+    in a domain, plus the tennis match-winner state scaffold (persisted
+    research packets only — provider gaps reported honestly, never
+    fabricated). Changes no gate/forecast/promotion/flag/automation; not EV,
+    not trading, never advice. Returns live-candidate count."""
+    from app.services.live_market_state import LiveMarketStateReportService
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        r = LiveMarketStateReportService().build(
+            session, domain=domain, top=top, hours=hours
+        )
+        print("live market state report — observation only, never advice")
+        print(r["note"])
+        print(
+            f"\ndomain={r['domain']}  window={r['window_hours']}h  "
+            f"generated_at={r['generated_at']}"
+            f"\nlive_candidates={r['live_candidates']}  "
+            f"state_backed={r['state_backed_count']}  "
+            f"template_only={r['template_only_count']}"
+        )
+        print(f"quote_quality_mix={r['quote_quality_mix']}")
+        print(f"status_mix={r['status_mix']}")
+        print(f"mean_market_freshness_s={r['mean_market_freshness_s']}")
+        for gap in r["provider_gaps"]:
+            print(f"  ! {gap}")
+        for w in r["warnings"]:
+            print(f"  ! {w}")
+        if r["volatile_examples"]:
+            print("\nvolatile markets (diagnostic labels, not signals):")
+            for v in r["volatile_examples"]:
+                print(
+                    f"  {v['ticker'][:36]:<36} move_5m={v['move_5m']} "
+                    f"move_10m={v['move_10m']}  ({v['reason']})"
+                )
+        print("\nobservations:")
+        for o in r["observations"]:
+            print(
+                f"  == {o.market_ticker} [{o.market_type}] "
+                f"status={o.market_status} =="
+            )
+            print(
+                f"     mid={o.market_mid} bid={o.bid} ask={o.ask} "
+                f"spread={o.spread} liq={o.liquidity}  "
+                f"quote_quality={o.quote_quality}"
+            )
+            print(
+                f"     freshness: market={o.market_freshness_s}s "
+                f"score={o.score_freshness_s}s "
+                f"score_to_market_lag={o.score_to_market_lag_s}s "
+                f"moved_since_score={o.market_moved_since_last_score}"
+            )
+            print(
+                f"     volatility: {o.volatility_label} ({o.volatility_reason}) "
+                f"moves={o.moves} spread_d10m={o.spread_delta_10m} "
+                f"instability={o.quote_instability_10m}"
+            )
+            print(
+                f"     state_quality={o.state_quality}  "
+                f"status={o.live_observation_status}"
+            )
+            if o.tennis:
+                t = o.tennis
+                print(
+                    f"     tennis[{t['source']}]: {t['player_a']} vs {t['player_b']} "
+                    f"sets={t['set_score']} games={t['game_score']} "
+                    f"server={t['server']} match_status={t['match_status']}"
+                )
+                print(f"       missing_info={t['missing_info']}")
+                print(f"       provenance={t['provenance']}")
+            for w in o.warnings:
+                print(f"     ! {w}")
+        print(
+            "\ndisclaimer: observation and diagnostics only — not EV, not a "
+            "trade recommendation, no trading capability of any kind."
+        )
+        return r["live_candidates"]
+    finally:
+        if owns_session:
+            session.close()
+
+
 async def forecast_anchor_diagnostic_report(hours: int = 24, top: int = 5, session=None) -> int:
     """FORECAST-ANCHOR-001 read-only diagnostic: when the market moved between
     the PRIOR forecast and this measurement, did the forecast move too? Per-row
@@ -3967,6 +4058,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ec_parser.add_argument("--hours", type=int, default=24)
     ec_parser.add_argument("--top", type=int, default=5, help="series cohorts shown")
+    lms_parser = subparsers.add_parser(
+        "live-market-state-report",
+        help="LIVE-MARKET-001: live-state observation — freshness/quote/latency/volatility diagnostics + tennis scaffold (read-only; never advice)",
+    )
+    lms_parser.add_argument("--domain", type=str, default="sports_tennis")
+    lms_parser.add_argument("--top", type=int, default=10)
+    lms_parser.add_argument("--hours", type=int, default=6, help="tick recency window for live candidacy")
     meme_scan_parser = subparsers.add_parser(
         "meme-scan-once",
         help="One read-only meme/news attention scan (MEME-NEWS-001; never advice)",
@@ -4324,6 +4422,11 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if n >= 0 else 1
     if args.command == "edge-cost-shadow-report":
         n = asyncio.run(edge_cost_shadow_report(hours=args.hours, top=args.top))
+        return 0 if n >= 0 else 1
+    if args.command == "live-market-state-report":
+        n = asyncio.run(
+            live_market_state_report(domain=args.domain, top=args.top, hours=args.hours)
+        )
         return 0 if n >= 0 else 1
     if args.command == "meme-scan-once":
         scored = asyncio.run(meme_scan_once(limit=args.limit))

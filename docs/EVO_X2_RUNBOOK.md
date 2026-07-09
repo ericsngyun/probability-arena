@@ -206,7 +206,9 @@ The runner (`~/edge-observation/run_report.sh`) and its logs live **outside**
 the git tree, so the repo stays clean. It only runs the read-only report
 suite (edge-policy/edge-cohort/edge-followthrough-diagnostic/edge-filter-shadow/forecast-anchor-diagnostic/trigger-timing-shadow/edge-selection-validation/edge-cost-shadow/frontier-eval/champion-challenger/db-growth/
 prune-retention --dry-run); it changes no flag, gate, threshold, or live
-service. Note: a cloud/routine scheduler cannot reach this private Tailscale
+service. `live-market-state-report` (LIVE-MARKET-001) is deliberately NOT on
+the daily timer — it is a manual on-demand observation report whose value is
+real-time freshness/volatility during live slates, not daily snapshots. Note: a cloud/routine scheduler cannot reach this private Tailscale
 host — this on-host timer is the reliable mechanism.
 
 ```bash
