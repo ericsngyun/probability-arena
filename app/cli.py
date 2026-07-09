@@ -1638,6 +1638,75 @@ async def edge_followthrough_diagnostic_report(hours: int = 24, top: int = 5, se
             session.close()
 
 
+async def trigger_timing_shadow_report(hours: int = 24, top: int = 5, session=None) -> int:
+    """TRIGGER-TIMING-001 read-only SHADOW simulation: if edge-precheck had
+    measured LATER (fixed cooldowns or settle-conditions), what would the gap
+    and its follow-through have looked like? Replays persisted ticks with the
+    recorded forecast held fixed. Changes no trigger/gate/forecast/promotion/
+    automation; not PnL, not EV, never advice. Returns population size."""
+    from app.services.trigger_timing import TriggerTimingShadowReportService
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        r = TriggerTimingShadowReportService().build(session, hours=hours, top=top)
+        print(f"trigger-timing shadow report (window {r['window_hours']}h) — analysis only, never advice")
+        print(r["note"])
+        print(f"\npopulation={r['population']} watchlist rows")
+        print("\ntiming policies (measurable | opposes-share | 60m toward/closure | label):")
+        for p in r["policies"]:
+            ft60 = p["follow_through"].get("60m", {})
+            print(
+                f"  {p['name']:<32} n={p['rows_measurable']:<4} ({(p['survival_ratio'] or 0):>4.0%})  "
+                f"opposes={p['gap_opposes_move_share']}  "
+                f"60m toward={ft60.get('moved_toward_rate')} closure={ft60.get('mean_gap_closure_pct')}  "
+                f"-> {p['label']}"
+            )
+        print("\nper-policy detail:")
+        for p in r["policies"]:
+            print(f"  == {p['name']} ({p['label']}) ==")
+            print(f"     {p['label_reason']}")
+            print(
+                f"     measurable={p['rows_measurable']} final_n={p['final_n']} "
+                f"lost={p['rows_lost']} median_delay_s={p['median_delay_s']}"
+            )
+            print(
+                f"     sharp_pre_move={p['sharp_pre_move_share']} "
+                f"market_type={p['market_type_mix']} gap_sign={p['gap_sign_mix']}"
+            )
+            print(
+                "     follow: " + "  ".join(
+                    f"{h}[n={v['samples']} toward={v['moved_toward_rate']} closure={v['mean_gap_closure_pct']}]"
+                    for h, v in p["follow_through"].items()
+                )
+            )
+            print(
+                f"     paths: away={p['continued_away_rate']} toward={p['reverted_toward_rate']} "
+                f"flat={p['flat_rate']}  drift60m: spread={p['spread_change_60m_mean']} "
+                f"liq={p['liquidity_change_60m_mean']}"
+            )
+        ex = r["examples"]
+        if ex["improved_by_delay_10m"]:
+            print("\n  improved most by a 10m delay (closure delta vs immediate):")
+            for e in ex["improved_by_delay_10m"][:3]:
+                print(f"    {e['ticker'][:28]:<28} {e['baseline_closure_60m']} -> {e['delayed_closure_60m']} (delta {e['delta']})")
+        if ex["worsened_by_delay_10m"]:
+            print("  worsened most by a 10m delay:")
+            for e in ex["worsened_by_delay_10m"][:3]:
+                print(f"    {e['ticker'][:28]:<28} {e['baseline_closure_60m']} -> {e['delayed_closure_60m']} (delta {e['delta']})")
+        print("\ncomparison (measurement only — never advice):")
+        for k, v in r["comparison"].items():
+            print(f"  {k}: {v}")
+        return r["population"]
+    finally:
+        if owns_session:
+            session.close()
+
+
 async def forecast_anchor_diagnostic_report(hours: int = 24, top: int = 5, session=None) -> int:
     """FORECAST-ANCHOR-001 read-only diagnostic: when the market moved between
     the PRIOR forecast and this measurement, did the forecast move too? Per-row
@@ -3744,6 +3813,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     fa_parser.add_argument("--hours", type=int, default=24)
     fa_parser.add_argument("--top", type=int, default=5, help="examples per section")
+    tt_parser = subparsers.add_parser(
+        "trigger-timing-shadow-report",
+        help="TRIGGER-TIMING-001: shadow simulation of delayed/settle-gated measurement over persisted ticks (read-only; never advice)",
+    )
+    tt_parser.add_argument("--hours", type=int, default=24)
+    tt_parser.add_argument("--top", type=int, default=5, help="examples per section")
     meme_scan_parser = subparsers.add_parser(
         "meme-scan-once",
         help="One read-only meme/news attention scan (MEME-NEWS-001; never advice)",
@@ -4088,6 +4163,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if n >= 0 else 1
     if args.command == "forecast-anchor-diagnostic-report":
         n = asyncio.run(forecast_anchor_diagnostic_report(hours=args.hours, top=args.top))
+        return 0 if n >= 0 else 1
+    if args.command == "trigger-timing-shadow-report":
+        n = asyncio.run(trigger_timing_shadow_report(hours=args.hours, top=args.top))
         return 0 if n >= 0 else 1
     if args.command == "meme-scan-once":
         scored = asyncio.run(meme_scan_once(limit=args.limit))
