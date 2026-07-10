@@ -67,6 +67,11 @@ def test_schema_creates_all_tables(session):
         "polymarket_markets",
         "polymarket_orderbook_snapshots",
         "polymarket_domain_inventory_snapshots",
+        # TENNIS-TAPE-001 — read-only synchronized tennis tape (measurement only)
+        "tennis_tape_runs",
+        "tennis_tape_score_snapshots",
+        "tennis_tape_market_snapshots",
+        "tennis_tape_links",
         # POLY-002 — read-only Kalshi<->Polymarket cross-venue observation
         "cross_venue_observation_runs",
         "cross_venue_market_candidates",

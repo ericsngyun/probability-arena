@@ -2075,6 +2075,99 @@ async def tennis_watch_report(hours: int = 24, session=None) -> int:
             session.close()
 
 
+async def tennis_tape_capture_once(
+    limit: int | None = None, hours: int = 24, dry_run: bool = False, session=None,
+) -> int:
+    """TENNIS-TAPE-001 manual bounded tape capture: one score pass (hard call
+    cap) + one market quote pass + linking, persisting ONLY tape rows (dry-run
+    persists nothing). Measurement infrastructure — not a model, not EV, never
+    advice. Returns links created (0 for dry-run/skip)."""
+    from app.services.tennis_tape import TennisTapeRecorder
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        r = await TennisTapeRecorder().capture_once(
+            session, limit=limit, hours=hours, dry_run=dry_run
+        )
+        print("tennis tape capture — measurement only, never advice")
+        print(f"status={r['status']}")
+        if r.get("note"):
+            print(r["note"])
+        print(
+            f"candidates={r['candidates']}  score_calls={r['score_calls']}  "
+            f"market_fetches={r['market_fetches']}  "
+            f"quotes_returned={r.get('quotes_returned')}  "
+            f"two_sided={r.get('two_sided_quotes')}"
+        )
+        print(f"links={r['links']}")
+        print(
+            f"persisted: score_snapshots={r['score_snapshots']} "
+            f"market_snapshots={r['market_snapshots']}"
+            + (f"  tape_run_id={r['tape_run_id']}" if r.get("tape_run_id") else "")
+        )
+        return sum(r["links"].values()) if r["links"] else 0
+    finally:
+        if owns_session:
+            session.close()
+
+
+async def tennis_tape_report(hours: int = 24, top: int = 5, session=None) -> int:
+    """TENNIS-TAPE-001 tape report: runs, snapshot volumes, link quality,
+    freshness, score-to-market deltas, examples. DB-only; read-only; never
+    advice. Returns tape run count."""
+    from app.services.tennis_tape import build_tape_report
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        r = build_tape_report(session, hours=hours, top=top)
+        print("tennis tape report — measurement only, never advice")
+        print(r["note"])
+        print(
+            f"\nwindow={r['window_hours']}h  generated_at={r['generated_at']}"
+            f"\ntape_runs={r['tape_runs']}  score_snapshots={r['score_snapshots']}  "
+            f"market_snapshots={r['market_snapshots']}  links={r['links_total']}"
+        )
+        print(
+            f"link_label_mix={r['link_label_mix']}  "
+            f"source_backed_rate={r['source_backed_rate']}"
+        )
+        print(
+            f"quote_coverage={r['quote_coverage']}  "
+            f"in_play_score_snapshots={r['in_play_score_snapshots']}"
+        )
+        print(
+            f"freshness: score={r['score_freshness_s']}s "
+            f"market={r['market_freshness_s']}s  "
+            f"mean_score_to_market_delta_s={r['mean_score_to_market_delta_s']}"
+        )
+        for gap in r["provider_gaps"]:
+            print(f"  ! {gap}")
+        if r["linked_examples"]:
+            print("linked examples:")
+            for e in r["linked_examples"]:
+                print(f"  {e['ticker'][:44]:<44} event={e['event_id']} delta_s={e['delta_s']}")
+        if r["unresolved_examples"]:
+            print("unresolved/no-match examples:")
+            for e in r["unresolved_examples"]:
+                print(f"  {e['ticker'][:44]:<44} [{e['label']}] {e['basis']}")
+        print(f"db_impact_rows={r['db_impact_rows']}")
+        print(f"\ndisclaimer: {r['disclaimer']}")
+        return r["tape_runs"]
+    finally:
+        if owns_session:
+            session.close()
+
+
 async def forecast_anchor_diagnostic_report(hours: int = 24, top: int = 5, session=None) -> int:
     """FORECAST-ANCHOR-001 read-only diagnostic: when the market moved between
     the PRIOR forecast and this measurement, did the forecast move too? Per-row
@@ -4231,6 +4324,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="TENNIS-WATCHER-001: tennis tick-coverage report (DB-only, read-only; never advice)",
     )
     twr_parser.add_argument("--hours", type=int, default=24)
+    ttc_parser = subparsers.add_parser(
+        "tennis-tape-capture-once",
+        help="TENNIS-TAPE-001: one bounded synchronized score+market tape capture (read-only measurement; never advice)",
+    )
+    ttc_parser.add_argument("--limit", type=int, default=None)
+    ttc_parser.add_argument("--hours", type=int, default=24, help="recency window for live tennis candidates")
+    ttc_parser.add_argument("--dry-run", action="store_true", help="compute and report; persist nothing")
+    ttr_parser = subparsers.add_parser(
+        "tennis-tape-report",
+        help="TENNIS-TAPE-001: tape runs/links/freshness report (DB-only; never advice)",
+    )
+    ttr_parser.add_argument("--hours", type=int, default=24)
+    ttr_parser.add_argument("--top", type=int, default=5)
     meme_scan_parser = subparsers.add_parser(
         "meme-scan-once",
         help="One read-only meme/news attention scan (MEME-NEWS-001; never advice)",
@@ -4607,6 +4713,16 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if n >= 0 else 1
     if args.command == "tennis-watch-report":
         n = asyncio.run(tennis_watch_report(hours=args.hours))
+        return 0 if n >= 0 else 1
+    if args.command == "tennis-tape-capture-once":
+        n = asyncio.run(
+            tennis_tape_capture_once(
+                limit=args.limit, hours=args.hours, dry_run=args.dry_run
+            )
+        )
+        return 0 if n >= 0 else 1
+    if args.command == "tennis-tape-report":
+        n = asyncio.run(tennis_tape_report(hours=args.hours, top=args.top))
         return 0 if n >= 0 else 1
     if args.command == "meme-scan-once":
         scored = asyncio.run(meme_scan_once(limit=args.limit))

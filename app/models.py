@@ -1144,3 +1144,102 @@ class CrossVenueMarketCandidate(Base):
     __table_args__ = (
         Index("ix_cross_venue_run_label", "run_id", "match_label"),
     )
+
+
+class TennisTapeRun(Base):
+    """TENNIS-TAPE-001: one manual bounded tape capture pass. Counters and
+    provenance only — measurement infrastructure, never a trading surface."""
+
+    __tablename__ = "tennis_tape_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    status: Mapped[str] = mapped_column(String(32), default="running")
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+    provider_source: Mapped[str | None] = mapped_column(String(64))
+    score_calls_made: Mapped[int] = mapped_column(Integer, default=0)
+    market_fetches_made: Mapped[int] = mapped_column(Integer, default=0)
+    candidates_considered: Mapped[int] = mapped_column(Integer, default=0)
+    score_snapshots: Mapped[int] = mapped_column(Integer, default=0)
+    market_snapshots: Mapped[int] = mapped_column(Integer, default=0)
+    links_created: Mapped[int] = mapped_column(Integer, default=0)
+    source_backed_links: Mapped[int] = mapped_column(Integer, default=0)
+    error_type: Mapped[str | None] = mapped_column(String(128))
+    error_message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class TennisTapeScoreSnapshot(Base):
+    """One provider score/state observation on a tape. Score facts only."""
+
+    __tablename__ = "tennis_tape_score_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tape_run_id: Mapped[int] = mapped_column(ForeignKey("tennis_tape_runs.id"), index=True)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    provider_source: Mapped[str] = mapped_column(String(64))
+    provider_event_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    event_date: Mapped[str | None] = mapped_column(String(10))
+    event_type: Mapped[str | None] = mapped_column(String(64))
+    tournament_name: Mapped[str | None] = mapped_column(String(128))
+    player_a: Mapped[str | None] = mapped_column(String(128))
+    player_b: Mapped[str | None] = mapped_column(String(128))
+    match_status: Mapped[str | None] = mapped_column(String(64))
+    match_state: Mapped[str | None] = mapped_column(String(16))
+    final_result: Mapped[str | None] = mapped_column(String(32))
+    game_result: Mapped[str | None] = mapped_column(String(32))
+    serving: Mapped[str | None] = mapped_column(String(16))
+    set_scores: Mapped[list | None] = mapped_column(RawJSON)
+    missing_info: Mapped[list | None] = mapped_column(RawJSON)
+    raw_payload: Mapped[dict | None] = mapped_column(RawJSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class TennisTapeMarketSnapshot(Base):
+    """One Kalshi tennis market quote observation on a tape. Quotes only."""
+
+    __tablename__ = "tennis_tape_market_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tape_run_id: Mapped[int] = mapped_column(ForeignKey("tennis_tape_runs.id"), index=True)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    market_ticker: Mapped[str] = mapped_column(String(64), index=True)
+    market_title: Mapped[str | None] = mapped_column(Text)
+    market_status: Mapped[str | None] = mapped_column(String(32))
+    yes_bid: Mapped[int | None] = mapped_column(Integer)
+    yes_ask: Mapped[int | None] = mapped_column(Integer)
+    midpoint: Mapped[float | None] = mapped_column(Float)
+    spread: Mapped[int | None] = mapped_column(Integer)
+    liquidity_proxy: Mapped[int | None] = mapped_column(Integer)
+    volume_24h: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class TennisTapeLink(Base):
+    """One market↔score alignment on a tape, with an honest confidence label
+    (source_backed_link / fuzzy_candidate / unresolved / provider_no_match /
+    incompatible_market_type). Alignment metadata only."""
+
+    __tablename__ = "tennis_tape_links"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tape_run_id: Mapped[int] = mapped_column(ForeignKey("tennis_tape_runs.id"), index=True)
+    score_snapshot_id: Mapped[int | None] = mapped_column(
+        ForeignKey("tennis_tape_score_snapshots.id")
+    )
+    market_snapshot_id: Mapped[int | None] = mapped_column(
+        ForeignKey("tennis_tape_market_snapshots.id")
+    )
+    market_ticker: Mapped[str] = mapped_column(String(64), index=True)
+    provider_event_id: Mapped[str | None] = mapped_column(String(64))
+    link_label: Mapped[str] = mapped_column(String(32), index=True)
+    link_basis: Mapped[str | None] = mapped_column(String(128))
+    player_a_code: Mapped[str | None] = mapped_column(String(8))
+    player_b_code: Mapped[str | None] = mapped_column(String(8))
+    event_date: Mapped[str | None] = mapped_column(String(10))
+    score_observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    market_observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    score_to_market_delta_s: Mapped[float | None] = mapped_column(Float)
+    missing_info: Mapped[list | None] = mapped_column(RawJSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

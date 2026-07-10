@@ -207,9 +207,12 @@ the git tree, so the repo stays clean. It only runs the read-only report
 suite (edge-policy/edge-cohort/edge-followthrough-diagnostic/edge-filter-shadow/forecast-anchor-diagnostic/trigger-timing-shadow/edge-selection-validation/edge-cost-shadow/frontier-eval/champion-challenger/db-growth/
 prune-retention --dry-run); it changes no flag, gate, threshold, or live
 service. `live-market-state-report` (LIVE-MARKET-001),
-`tennis-live-source-report` (TENNIS-LIVE-SOURCE-001), and the
+`tennis-live-source-report` (TENNIS-LIVE-SOURCE-001), the
 TENNIS-WATCHER-001 pair (`tennis-watch-scan-once [--dry-run]`,
-`tennis-watch-report`) are deliberately NOT on the daily timer — they are
+`tennis-watch-report`), and the TENNIS-TAPE-001 pair
+(`tennis-tape-capture-once [--dry-run]`, `tennis-tape-report` — bounded
+manual captures; needs TENNIS_RESEARCH_PROVIDER=api_tennis inline + the
+host-only key, else it skips honestly) are deliberately NOT on the daily timer — they are
 manual on-demand observation tools whose value is real-time
 freshness/coverage during live slates, not daily snapshots (the tennis source
 report only fetches when a provider is explicitly configured, and the tennis
