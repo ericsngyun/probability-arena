@@ -1664,3 +1664,19 @@ Deployed **`4a6f275` → `5175946`** by `git pull --ff-only`. **No migration** (
 **Health:** MarketOps #1677 `ok`; frontier `safety_ok=True`, p90 50.3s < 60s; DB 2,750.43 MiB flat. **Notable: tick aggregation now at `ready_to_stage` with coverage_72h = 1.0 and 45 clean scheduled cycles** — the OPS-014 gate is at perfect coverage (decision still pending Eric, nothing enacted). **Safety audit** (expanded vocabulary incl. markov, 79 files): only the two long-standing Kalshi RSA references.
 
 **Recommendation: KEEP — manual/report-only. Run the bounded Goalserve probe ONLY after Eric adds `GOALSERVE_TENNIS_API_KEY`** (30-day trial signup; same hidden-input .env pattern), then one explicitly-approved probe during a live ITF/Challenger window decides the score-side provider question (pass → TENNIS-TAPE-GOALSERVE-001/TENNIS-MICROSTRUCTURE-001; fail → market-only tapes or Sportradar path). **Rollback:** `git reset --hard 4a6f275` — validation plumbing only.
+
+## TENNIS-CANDIDATE-ORDER-001 — informative-books-first capture ordering deployed (2026-07-10, ~23:10 UTC)
+
+Deployed **`b932c06` → `7270ca8`** by `git pull --ff-only`. **No migration** (`0025 (head)`), no flags, no timers, no provider-key changes; MarketOps/EDGE-AUTO/forecasts/gates unchanged. Change is confined to tennis capture/report candidate ORDERING: new `rank_tennis_candidates` (match-winner → actively-ticking ≤30m → two-sided → 24h volume desc → recent 60m mid movement desc → recently source-backed → stable ticker sort), consumed by `tennis-watch-scan-once`, `tennis-tape-capture-once`, and the watch report's uncovered examples, with per-candidate reason labels surfaced as `top_ordering`.
+
+| item | value |
+|---|---|
+| pushed / deployed commit | **`7270ca8`** (origin/main + EVO-X2) |
+| migration / flags / timers | **none / none / none** |
+| tests at commit | 1477 passed / 2 skipped; safety audit clean |
+
+**Pre/post behavior:** previously bounded slots filled alphabetically (measured failure: tape session 1's 40 slots all went to pre-match Challenger books while MATOCH/IMANAK traded seven figures). Post-deploy validation (23:08 UTC, quiet no-play hour): scan and tape dry-runs both print `top_ordering` with reason labels; with no fresh tennis ticks in the 60m window, `source_backed` is the firing criterion and the ordered top-20 tape slice links **20/20 `source_backed_link`** (the alphabetical slice previously mixed in no-match/doubles rows); at live hours the active/volume/move criteria dominate (test-proven: the hot book wins the only slot at `--limit 1`). **Dry-runs persisted nothing** (tape runs unchanged at 30; zero tennis ticks written). Goalserve probe re-verified inert (`no_key`, 0 calls).
+
+**Health (unchanged):** MarketOps #1680 `ok`; frontier `safety_ok=True`, p90 50.9s < 60s; DB 2,750.43 MiB flat; tick aggregation `ready_to_stage` (coverage_72h 0.9863, 45 clean cycles — OPS-014 pending Eric). **Safety audit** (expanded vocabulary incl. markov, 79 files): only the two long-standing Kalshi RSA references.
+
+**Recommendation: KEEP — manual/report-only. The next gating action remains the Goalserve trial key + one bounded, explicitly-approved probe during a live ITF/Challenger window.** With this ordering in place, future capture sessions automatically target the books that matter. **Rollback:** `git reset --hard b932c06` — ordering-only change.
