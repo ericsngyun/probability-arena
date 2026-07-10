@@ -94,6 +94,11 @@ class Settings(BaseSettings):
     # Read-only research only: no EV, trade, sizing, order, wallet, or execution.
     enable_tennis_external_research: bool = False
     tennis_research_provider: str = "template"
+    # TENNIS-PROVIDER-001: API key for the api_tennis provider scaffold.
+    # Default empty = the fetcher makes NO request and reports provider_gap
+    # honestly. Set only on the host .env, never committed; report
+    # presence/absence only, never the value.
+    tennis_provider_api_key: str = ""
     tennis_research_timeout_seconds: float = 15.0
     tennis_research_max_sources: int = 8
     tennis_research_collector_version: str = "v1"

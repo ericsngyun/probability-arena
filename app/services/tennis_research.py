@@ -167,6 +167,15 @@ def get_tennis_fetcher(settings: Settings | None = None) -> TennisDataFetcher | 
     provider = settings.tennis_research_provider.strip().lower()
     if provider == "espn":
         return EspnTennisApiFetcher(timeout=settings.tennis_research_timeout_seconds)
+    if provider == "api_tennis":
+        # TENNIS-PROVIDER-001 scaffold: without TENNIS_PROVIDER_API_KEY the
+        # fetcher makes no request and callers report provider_gap honestly
+        from app.services.tennis_providers import ApiTennisFetcher
+
+        return ApiTennisFetcher(
+            api_key=settings.tennis_provider_api_key,
+            timeout=settings.tennis_research_timeout_seconds,
+        )
     if provider != "template":
         logger.warning("Unknown TENNIS_RESEARCH_PROVIDER %r; using template fallback", provider)
     return None
