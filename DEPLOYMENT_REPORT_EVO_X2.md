@@ -1582,3 +1582,22 @@ Deployed **`7b4ec8a` → `999892f`** by `git pull --ff-only`. **No migration** (
 **Health (unchanged):** MarketOps #1484 `ok`; frontier `safety_ok=True`, p90 54.3s < 60s; tick aggregation `ready_to_stage` (coverage_72h 0.9863, 26 clean cycles — OPS-014 decision still pending Eric); DB 2,750.43 MiB (below critical). **Safety audit** (host tokenize scan, expanded vocabulary, 76 files): no hits in any TENNIS-PROVIDER-001 or analysis surface; only the two long-standing `kalshi_private_key_path` RSA request-signing references (read-only Kalshi API auth, pre-existing, documented).
 
 **Recommendation: KEEP — scaffold inert until explicitly activated.** **TENNIS-TAPE-001 remains parked** until the bounded API-Tennis validation passes: Eric obtains a 14-day trial key (host `.env` only, never committed), then an explicitly-approved run of `tennis-live-source-report` with `TENNIS_RESEARCH_PROVIDER=api_tennis` inline (≤10 REST calls, no persistence) measures real Challenger/ITF coverage against the decision gates (≥50% source_backed useful; <25% after one tuning pass → Goalserve). **Rollback (if ever):** `git reset --hard 7b4ec8a` — additive research/plumbing, nothing to unwind.
+
+## TENNIS-PROVIDER-001 validation — API-Tennis PASSED; tuned scaffold deployed (2026-07-10, ~04:05 UTC)
+
+Deployed **`bf2da7f` → `977753f`** by `git pull --ff-only`. **No migration** (`0024 (head)`), no timer, no autonomous fetch loop; MarketOps/EDGE-AUTO/forecasts/gates unchanged. This deploy carries the **validated API-Tennis tuning** (fetch_scoreboard adapts unfiltered — player codes disambiguate) and the research doc's §7b validation results.
+
+| item | value |
+|---|---|
+| pushed / deployed commit | **`977753f`** (origin/main + EVO-X2) |
+| bounded validation verdict | **API-Tennis PASSED** — targeted live-candidate run: **130/176 = 73.9% source_backed** (Challenger 32/36 = 89%, WTA-Challenger 12/14, ITF-W 46/60, ITF-M 40/66); untuned first pass 47.7%; one allowed tuning pass (tour-filter fix) |
+| call budget | **5 of ≤10** for the validation; post-deploy verification used the report's own hard cap (**exactly 6 scoreboard fetches**) |
+| tier check | trial plan includes **all 27 tournament types** incl. Challenger M/W + ITF M/W — no tier lockout |
+| secret exposure | **none** — key stored in host `.env` only (backed up pre-change), reported present/absent only; 0 occurrences in report output; repo grep for key fragment: clean |
+| tests at commit | 1398 passed / 2 skipped |
+
+**Post-deploy verification (04:03 UTC):** `TENNIS_RESEARCH_PROVIDER=api_tennis tennis-live-source-report --top 50 --hours 24` ran end-to-end through the deployed scaffold: `provider=api-tennis.com`, **source_backed=276** match-winner markets matched (incl. real `Finished`/`Retired` statuses — richer state than ESPN ever returned), `provider_no_match=284`, `provider_gap=744`, `scoreboards_fetched=6` (cap held). Note: the full report's overall 21.1% rate is the known **cap-ordering artifact** (its 6 fetch slots go to the oldest (tour,date) pairs — Jul-3 era — leaving current dates as provider_gap); the **authoritative live-candidate coverage number remains 73.9%** from the targeted validation. Remaining matching limitation: ~26% of live candidates miss on player-name→code edge cases (multi-word/hyphenated last names, diacritics) — tuning headroom, not a blocker; a live-first fetch ordering for capped runs is a known small follow-up.
+
+**Health (unchanged):** MarketOps #1489 `ok`; frontier `safety_ok=True`, p90 54.2s < 60s; tick aggregation `ready_to_stage` (coverage_72h 0.9863, 27 clean cycles — OPS-014 still pending Eric); DB 2,750.43 MiB. **Safety audit** (host tokenize scan, expanded vocabulary, 76 files): only the two long-standing `kalshi_private_key_path` Kalshi RSA references.
+
+**Recommendation & status: TENNIS-TAPE-001 is now DESIGNABLE — both halves exist** (market ticks via TENNIS-WATCHER-001, validated live; score source via API-Tennis, validated at 73.9% live-candidate coverage). It remains **parked pending explicit acceptance** of a tape design milestone. Practical notes: trial key expires ~2026-07-24; Starter ($40/mo) suffices on request volume (one livescore call covers all live matches; 8k req/day fits 10–15s polling). Known follow-ups for the tape design: name-code tuning (+headroom above 73.9%), live-first fetch ordering for capped report runs. **Rollback (if ever):** `git reset --hard bf2da7f` — research/plumbing only.
