@@ -1648,3 +1648,19 @@ Deployed **`08d6cb7` → `5af9694`** by `git pull --ff-only`. **No migration** (
 **Health (unchanged):** MarketOps #1507 `ok`; frontier `safety_ok=True`, p90 53.8s; tick aggregation `ready_to_stage` (coverage_72h 0.9863, 28 clean cycles — OPS-014 pending Eric); DB 2,750.43 MiB flat. **Safety audit** (expanded vocabulary incl. markov, 78 files): only the two long-standing Kalshi RSA references.
 
 **Recommendation: KEEP — manual/report-only. Next step: ONE bounded live-window WebSocket probe** (explicitly approved, ≤300s, during active ITF/Challenger play with moving Kalshi books). Pass → wire live feed into a future tape milestone; fail → execute the pre-registered Goalserve fallback plan (research doc §7c). **Rollback:** `git reset --hard 08d6cb7` — validation plumbing only.
+
+## TENNIS-GOALSERVE-001 — Goalserve fallback validation deployed (2026-07-10, ~22:50 UTC)
+
+Deployed **`4a6f275` → `5175946`** by `git pull --ff-only`. **No migration** (`0025 (head)`), **no key present** (verified: `GOALSERVE_TENNIS_API_KEY` absent from `.env`), no timer, no reconnect loop; MarketOps/EDGE-AUTO/forecasts/gates unchanged. New capability: `tennis-goalserve-probe --probes N --interval-sec N --top N` — bounded Goalserve live-state validation (hard caps ≤8 probes/≤10 calls) under the exact conditions that failed API-Tennis (same candidates, same tape linker), with **path-embedded-key hygiene**: request URLs never logged/echoed, masked display URL only, failures by exception type. New config `GOALSERVE_TENNIS_API_KEY` (default empty = no request).
+
+| item | value |
+|---|---|
+| pushed / deployed commit | **`5175946`** (origin/main + EVO-X2) |
+| migration / key / timer / reconnects | **none / absent / none / none** |
+| tests at commit | 1467 passed / 2 skipped; safety + secret audits clean |
+
+**No-key validation (22:49 UTC):** verdict **`no_key`**, `calls_made=0` (honest skip — nothing fetched), masked display URL rendered, nothing persisted (tape runs unchanged at 30), API-Tennis baseline printed for future comparison. Exactly as designed.
+
+**Health:** MarketOps #1677 `ok`; frontier `safety_ok=True`, p90 50.3s < 60s; DB 2,750.43 MiB flat. **Notable: tick aggregation now at `ready_to_stage` with coverage_72h = 1.0 and 45 clean scheduled cycles** — the OPS-014 gate is at perfect coverage (decision still pending Eric, nothing enacted). **Safety audit** (expanded vocabulary incl. markov, 79 files): only the two long-standing Kalshi RSA references.
+
+**Recommendation: KEEP — manual/report-only. Run the bounded Goalserve probe ONLY after Eric adds `GOALSERVE_TENNIS_API_KEY`** (30-day trial signup; same hidden-input .env pattern), then one explicitly-approved probe during a live ITF/Challenger window decides the score-side provider question (pass → TENNIS-TAPE-GOALSERVE-001/TENNIS-MICROSTRUCTURE-001; fail → market-only tapes or Sportradar path). **Rollback:** `git reset --hard 4a6f275` — validation plumbing only.
