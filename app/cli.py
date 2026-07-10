@@ -2225,6 +2225,71 @@ async def tennis_api_livefeed_probe(
             session.close()
 
 
+async def tennis_goalserve_probe(
+    probes: int = 2, interval_sec: int = 20, top: int = 10, session=None,
+) -> int:
+    """TENNIS-GOALSERVE-001 bounded Goalserve live-state validation under the
+    exact conditions that failed API-Tennis: same candidates, same linker,
+    hard call cap, nothing persisted, key never in any printed URL. Not a
+    model, not EV, never advice. Returns matched candidate count."""
+    from app.services.tennis_goalserve import GoalserveValidationService
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        r = await GoalserveValidationService().validate(
+            session, probes=probes, interval_sec=interval_sec, top=top
+        )
+        print("goalserve live-state validation — provider validation only, never advice")
+        print(r["note"])
+        print(
+            f"\nprovider={r['provider_tested']}  url={r['display_url']}"
+            f"\ngenerated_at={r['generated_at']}  live_candidates={r['live_candidates']}"
+        )
+        print(
+            f"probes={r['probes_planned']}  calls_made={r['calls_made']}  "
+            f"fetch_errors={r['fetch_errors'] or 'none'}"
+        )
+        print(
+            f"live_rows_per_probe={r['live_rows_per_probe']}  "
+            f"in_play_per_probe={r['in_play_rows_per_probe']}"
+        )
+        print(
+            f"state_changes={r['state_changes']}  "
+            f"live_state_fields={r['live_state_fields']}"
+        )
+        print(f"matched_candidates={r['matched_candidates']}")
+        if r["matched_examples"]:
+            print("matched ITF/Challenger candidates:")
+            for e in r["matched_examples"]:
+                print(
+                    f"  {e['ticker'][:44]:<44} status={e['status']} "
+                    f"in_play={e['in_play']} sets={e['sets']}"
+                )
+        if r["miss_examples"]:
+            print("provider misses:")
+            for e in r["miss_examples"][:5]:
+                print(f"  {e['ticker'][:44]:<44} [{e['label']}]")
+        if r["state_change_examples"]:
+            print("state-change examples:")
+            for e in r["state_change_examples"]:
+                print(
+                    f"  {e['players'][:40]:<40} status={e['status']} "
+                    f"sets={e['sets']} points={e['point_score']}"
+                )
+        print(f"api_tennis_baseline: {r['api_tennis_baseline']}")
+        print(f"\nVERDICT: {r['verdict']}")
+        print(f"recommendation: {r['recommendation']}")
+        return r["matched_candidates"]
+    finally:
+        if owns_session:
+            session.close()
+
+
 async def forecast_anchor_diagnostic_report(hours: int = 24, top: int = 5, session=None) -> int:
     """FORECAST-ANCHOR-001 read-only diagnostic: when the market moved between
     the PRIOR forecast and this measurement, did the forecast move too? Per-row
@@ -4400,6 +4465,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     tlf_parser.add_argument("--duration-sec", type=int, default=60)
     tlf_parser.add_argument("--top", type=int, default=10)
+    tgs_parser = subparsers.add_parser(
+        "tennis-goalserve-probe",
+        help="TENNIS-GOALSERVE-001: bounded Goalserve live-state validation vs Kalshi candidates (read-only; never advice)",
+    )
+    tgs_parser.add_argument("--probes", type=int, default=2)
+    tgs_parser.add_argument("--interval-sec", type=int, default=20)
+    tgs_parser.add_argument("--top", type=int, default=10)
     meme_scan_parser = subparsers.add_parser(
         "meme-scan-once",
         help="One read-only meme/news attention scan (MEME-NEWS-001; never advice)",
@@ -4790,6 +4862,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "tennis-api-livefeed-probe":
         n = asyncio.run(
             tennis_api_livefeed_probe(duration_sec=args.duration_sec, top=args.top)
+        )
+        return 0 if n >= 0 else 1
+    if args.command == "tennis-goalserve-probe":
+        n = asyncio.run(
+            tennis_goalserve_probe(
+                probes=args.probes, interval_sec=args.interval_sec, top=args.top
+            )
         )
         return 0 if n >= 0 else 1
     if args.command == "meme-scan-once":

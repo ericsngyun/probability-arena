@@ -99,6 +99,11 @@ class Settings(BaseSettings):
     # honestly. Set only on the host .env, never committed; report
     # presence/absence only, never the value.
     tennis_provider_api_key: str = ""
+    # TENNIS-GOALSERVE-001: Goalserve fallback live-state validation key.
+    # Goalserve embeds the key in the URL PATH, so URLs are never logged or
+    # echoed (a masked display URL exists for reports). Default empty = no
+    # request. Host .env only; never committed; presence/absence only.
+    goalserve_tennis_api_key: str = ""
     tennis_research_timeout_seconds: float = 15.0
     tennis_research_max_sources: int = 8
     tennis_research_collector_version: str = "v1"

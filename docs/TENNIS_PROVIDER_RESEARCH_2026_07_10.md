@@ -160,6 +160,23 @@ with the host-only key, persists nothing, REST comparison included).
   the remaining options are Sportradar (ATP/WTA/Challenger only) or
   market-only tapes.
 
+## 7d. API-Tennis FINAL live-state verdict + Goalserve validation built (2026-07-10)
+
+- **WS probe (decisive, 05:57 UTC)**: 180s during a confirmed in-play window
+  (156 live candidates; 24 Kalshi books moved in the bracketing ~4 min;
+  MATOCH at match-point). WebSocket connected cleanly, **0 frames**. REST
+  livescore 0 rows in the same window; fixtures still mapped 120 candidates.
+  **Verdict: `api_tennis_ws_fail_goalserve_next` — API-Tennis is
+  catalog/mapping-only for our purposes. Final.**
+- **TENNIS-GOALSERVE-001 built** per the §7c fallback plan:
+  `tennis-goalserve-probe` (≤8 probes/≤10 calls, path-embedded key never in
+  URLs, same linker, same live conditions, verdicts pass/partial/fail).
+  Awaiting Eric's Goalserve 30-day-trial signup + explicit probe approval
+  during a live ITF/Challenger window.
+- Decision framing for ~Jul 24 (API-Tennis trial end): pay $40/mo for
+  mapping-only, or — if Goalserve passes — evaluate whether Goalserve
+  ($150/mo) covers both mapping and live state alone.
+
 ## 8. Can the recommended provider support TENNIS-TAPE-001?
 
 Likely yes, pending validation: API-Tennis exposes fixtures + livescore with

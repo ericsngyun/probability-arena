@@ -200,6 +200,12 @@ first). Ticks land in `market_price_ticks` with the existing raw-tick
 retention window — no new table, no new retention knob. Observation only: no
 signal detection, no forecasts, no trading semantics of any kind.
 
+### TENNIS-GOALSERVE-001 — fallback live-state validation key
+
+| Setting | Default | Effect |
+|---|---|---|
+| `GOALSERVE_TENNIS_API_KEY` | "" (empty) | Empty = the Goalserve probe makes **no request**. Set only on the host `.env` (never committed). Because Goalserve embeds the key in the URL path, request URLs are never logged/echoed; reports show a masked display URL only |
+
 ### MEME-NEWS-002 — scheduled discovery lane
 
 | Flag | Default | Effect |
