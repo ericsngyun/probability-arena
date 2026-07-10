@@ -1632,3 +1632,19 @@ Deployed **`0abc8c3` → `7ca733a`** by `git pull --ff-only`. No migration (stay
 **Validation capture (tape_run_id=3, `--limit 160`):** source_backed **120/160 (75%**, up from 114), and **all four MATOCH/IMANAK market rows now link `source_backed` via "both player codes + adjacent date (2026-07-10)"** — the regression fixed live. Honest residual: `get_livescore` returned **0 rows** at capture time while Kalshi books traded — either between-play timing or an ITF livescore coverage/latency limitation on the provider side; the overlay path is test-proven and will populate whenever the provider flags live events. This is precisely what repeated captures (and TENNIS-MICROSTRUCTURE-001) should quantify: **provider livescore latency vs Kalshi book activity is now itself a measurable question on the tape.**
 
 **Health:** MarketOps `ok`, frontier `safety_ok=True`, DB unchanged. **Rollback:** `git reset --hard 0abc8c3`.
+
+## TENNIS-LIVE-FEED-002 — WebSocket live-feed probe deployed (2026-07-10, ~05:55 UTC)
+
+Deployed **`08d6cb7` → `5af9694`** by `git pull --ff-only`. **No migration** (`0025 (head)`), no timer, no reconnect loop, no autonomous fetches; MarketOps/EDGE-AUTO/forecasts/gates unchanged. New capability: `tennis-api-livefeed-probe --duration-sec N --top N` — one bounded WebSocket connection to the documented `wss://wss.api-tennis.com/live` (hard duration cap **300s**), frame normalization, per-match state-change detection, correlation to Kalshi candidates via the existing tape linker, bounded REST comparison, honest verdict ladder. **Key protections**: connects only when the host-only key is present; key never printed and never in display URLs; connection errors reported by exception TYPE only (the connect URI embeds the key and can therefore never leak) — test-enforced with a literal key probe.
+
+| item | value |
+|---|---|
+| pushed / deployed commit | **`5af9694`** (origin/main + EVO-X2) |
+| migration / timer / reconnects | **none / none / none** |
+| tests at commit | 1446 passed / 2 skipped; safety audit clean (incl. markov) |
+
+**Sanity probe (10s, 05:54 UTC):** WebSocket **connected cleanly** (no connection error — endpoint + key auth work), 0 frames received in the 10s window, key fully redacted, verdict machinery rendered honestly (`api_tennis_ws_fail_goalserve_next` on the fail-shaped output). **A 10-second window is NOT decisive** — the two earlier live ITF matches had likely concluded by probe time (live-market tennis candidates trailed off), and WS feeds may emit only on score events. The decisive test remains a **120–300s probe during a confirmed live ITF/Challenger window with Kalshi books actively moving** — requires explicit approval.
+
+**Health (unchanged):** MarketOps #1507 `ok`; frontier `safety_ok=True`, p90 53.8s; tick aggregation `ready_to_stage` (coverage_72h 0.9863, 28 clean cycles — OPS-014 pending Eric); DB 2,750.43 MiB flat. **Safety audit** (expanded vocabulary incl. markov, 78 files): only the two long-standing Kalshi RSA references.
+
+**Recommendation: KEEP — manual/report-only. Next step: ONE bounded live-window WebSocket probe** (explicitly approved, ≤300s, during active ITF/Challenger play with moving Kalshi books). Pass → wire live feed into a future tape milestone; fail → execute the pre-registered Goalserve fallback plan (research doc §7c). **Rollback:** `git reset --hard 08d6cb7` — validation plumbing only.
