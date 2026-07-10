@@ -134,6 +134,120 @@ def discover_tennis_universe(
     return TennisUniverse(active=active, covered_tickers=covered)
 
 
+@dataclass
+class RankedCandidate:
+    """One capture candidate with the ordering reasons that ranked it.
+    Selection for MEASUREMENT capture only — never a value/trade judgment."""
+
+    market: Market
+    reasons: list = field(default_factory=list)
+
+    @property
+    def ticker(self) -> str:
+        return self.market.ticker
+
+
+# ordering-reason labels (TENNIS-CANDIDATE-ORDER-001)
+REASON_ACTIVE = "active_book"
+REASON_TWO_SIDED = "two_sided"
+REASON_HIGH_VOLUME = "high_volume"
+REASON_RECENT_MOVE = "recent_move"
+REASON_SOURCE_BACKED = "source_backed"
+REASON_FALLBACK = "fallback_sort"
+
+ACTIVE_TICK_WINDOW_MIN = 30     # a tick this fresh = actively watched book
+MOVE_WINDOW_MIN = 60            # movement measured over the trailing hour
+HIGH_VOLUME_FLOOR = 10_000      # 24h volume above this earns high_volume
+RECENT_MOVE_FLOOR = 0.005       # >=0.5 prob-points of mid movement
+
+
+def rank_tennis_candidates(
+    session: Session, markets: list[Market],
+) -> list[RankedCandidate]:
+    """Deterministic capture ordering: match-winner first, then actively
+    ticking books, two-sided quotes, higher 24h volume, bigger recent mid
+    movement, recently source-backed tickers, then stable ticker sort.
+    Bounded scans spend their slots on the most informative books first
+    (measured: alphabetical ordering wasted session slots on pre-match books
+    while MATOCH/IMANAK traded seven figures). Read-only; never advice."""
+    now = _now()
+    tickers = [m.ticker for m in markets]
+    latest: dict[str, MarketPriceTick] = {}
+    moves: dict[str, float] = {}
+    if tickers:
+        rows = session.execute(
+            select(MarketPriceTick)
+            .where(
+                MarketPriceTick.market_ticker.in_(tickers),
+                MarketPriceTick.observed_at >= now - timedelta(minutes=MOVE_WINDOW_MIN),
+            )
+            .order_by(MarketPriceTick.observed_at.asc(), MarketPriceTick.id.asc())
+        ).scalars().all()
+        firsts: dict[str, float] = {}
+        for t in rows:
+            latest[t.market_ticker] = t
+            if t.midpoint is not None:
+                firsts.setdefault(t.market_ticker, t.midpoint)
+        for ticker, tick in latest.items():
+            if tick.midpoint is not None and ticker in firsts:
+                moves[ticker] = abs(tick.midpoint - firsts[ticker])
+    source_backed: set = set()
+    try:
+        from app.models import TennisTapeLink
+
+        source_backed = {
+            t for (t,) in session.execute(
+                select(TennisTapeLink.market_ticker)
+                .where(
+                    TennisTapeLink.link_label == "source_backed_link",
+                    TennisTapeLink.created_at >= now - timedelta(hours=24),
+                )
+                .distinct()
+            ).all()
+        }
+    except Exception:                      # table absent pre-migration: fine
+        source_backed = set()
+
+    type_rank = {"match_winner": 0, "set_winner": 1, "prop": 2, "unknown": 3}
+    ranked: list[tuple[tuple, RankedCandidate]] = []
+    for m in markets:
+        tick = latest.get(m.ticker)
+        active = tick is not None and _aware(tick.observed_at) >= (
+            now - timedelta(minutes=ACTIVE_TICK_WINDOW_MIN)
+        )
+        two_sided = bool(
+            tick is not None and tick.yes_bid is not None and tick.yes_ask is not None
+        )
+        volume = (tick.volume_24h or 0) if tick is not None else 0
+        move = moves.get(m.ticker, 0.0)
+        is_source_backed = m.ticker in source_backed
+        reasons = []
+        if active:
+            reasons.append(REASON_ACTIVE)
+        if two_sided:
+            reasons.append(REASON_TWO_SIDED)
+        if volume >= HIGH_VOLUME_FLOOR:
+            reasons.append(REASON_HIGH_VOLUME)
+        if move >= RECENT_MOVE_FLOOR:
+            reasons.append(REASON_RECENT_MOVE)
+        if is_source_backed:
+            reasons.append(REASON_SOURCE_BACKED)
+        if not reasons:
+            reasons.append(REASON_FALLBACK)
+        key = (
+            type_rank.get(classify_tennis_market(m.ticker), 3),
+            0 if active else 1,
+            0 if two_sided else 1,
+            -volume,
+            -move,
+            0 if is_source_backed else 1,
+            m.ticker,
+        )
+        ranked.append((key, RankedCandidate(market=m, reasons=reasons)))
+    ranked.sort(key=lambda pair: pair[0])
+    return [candidate for _, candidate in ranked]
+
+
 class TennisTickWatcher:
     """Manual, bounded, read-only tennis tick capture. Persists ONLY
     market_price_ticks rows (never signals, never watcher_runs)."""
@@ -146,16 +260,11 @@ class TennisTickWatcher:
         self.settings = settings or get_settings()
         self.adapter = adapter or KalshiRestAdapter()
 
-    def _targets(self, session: Session, limit: int, hours: int) -> list[str]:
-        """Bounded target list: active tennis markets, match-winner first
-        (the tape-relevant type), then set/prop, deterministic order."""
+    def _targets(self, session: Session, limit: int, hours: int) -> list[RankedCandidate]:
+        """Bounded target list, ordered by rank_tennis_candidates so capture
+        slots go to the most informative books first (measurement only)."""
         universe = discover_tennis_universe(session, hours=hours)
-        rank = {"match_winner": 0, "set_winner": 1, "prop": 2, "unknown": 3}
-        ordered = sorted(
-            universe.active,
-            key=lambda m: (rank.get(classify_tennis_market(m.ticker), 3), m.ticker),
-        )
-        return [m.ticker for m in ordered[: max(limit, 0)]]
+        return rank_tennis_candidates(session, universe.active)[: max(limit, 0)]
 
     async def scan_once(
         self,
@@ -179,7 +288,8 @@ class TennisTickWatcher:
                 "targets": 0, "fetched": 0, "ticks_recorded": 0,
             }
         limit = limit if limit is not None else self.settings.tennis_tick_watch_limit
-        targets = self._targets(session, limit, hours)
+        ranked = self._targets(session, limit, hours)
+        targets = [c.ticker for c in ranked]
         if not targets:
             return {
                 "status": SCAN_NO_TARGETS,
@@ -216,6 +326,9 @@ class TennisTickWatcher:
             "two_sided_quotes": two_sided,
             "ticks_recorded": recorded,
             "series_mix": self._mix(targets),
+            "top_ordering": [
+                {"ticker": c.ticker, "reasons": c.reasons} for c in ranked[:5]
+            ],
             "observed_at": observed_at.isoformat(),
         }
 
@@ -298,7 +411,9 @@ def build_tennis_watch_report(session: Session, hours: int = 24) -> dict:
         "series_mix_active": series_mix(active),
         "series_mix_covered": series_mix(covered),
         "market_type_mix": type_mix(active),
-        "uncovered_examples": [m.ticker for m in universe.uncovered[:10]],
+        "uncovered_examples": [
+            c.ticker for c in rank_tennis_candidates(session, universe.uncovered)[:10]
+        ],
         "provider_state_relationship": (
             "score-side coverage remains provider_gap (TENNIS-LIVE-SOURCE-001: "
             "ESPN source_backed=0 on current Challenger-tier candidates) — tick "

@@ -2027,6 +2027,8 @@ async def tennis_watch_scan_once(
         )
         if r.get("series_mix"):
             print(f"series_mix={r['series_mix']}")
+        for entry in r.get("top_ordering") or []:
+            print(f"  rank: {entry['ticker'][:44]:<44} {entry['reasons']}")
         return r["ticks_recorded"]
     finally:
         if owns_session:
@@ -2105,6 +2107,8 @@ async def tennis_tape_capture_once(
             f"two_sided={r.get('two_sided_quotes')}"
         )
         print(f"links={r['links']}")
+        for entry in r.get("top_ordering") or []:
+            print(f"  rank: {entry['ticker'][:44]:<44} {entry['reasons']}")
         print(
             f"persisted: score_snapshots={r['score_snapshots']} "
             f"market_snapshots={r['market_snapshots']}"

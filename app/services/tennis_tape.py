@@ -41,7 +41,7 @@ from app.models import (
 from app.services.edge_followthrough import _aware, _mean, _rate
 from app.services.tennis_live_source import classify_tennis_market
 from app.services.tennis_research import get_tennis_fetcher, parse_tennis_ticker
-from app.services.tennis_watcher import discover_tennis_universe
+from app.services.tennis_watcher import discover_tennis_universe, rank_tennis_candidates
 
 logger = logging.getLogger(__name__)
 
@@ -233,11 +233,10 @@ class TennisTapeRecorder:
             }
         limit = min(limit if limit is not None else 50, MAX_MARKET_TICKERS)
         universe = discover_tennis_universe(session, hours=hours)
-        rank = {"match_winner": 0, "set_winner": 1, "prop": 2, "unknown": 3}
-        candidates = sorted(
-            universe.active,
-            key=lambda m: (rank.get(classify_tennis_market(m.ticker), 3), m.ticker),
-        )[: max(limit, 0)]
+        # TENNIS-CANDIDATE-ORDER-001: bounded slots go to the most informative
+        # books first (active/two-sided/high-volume/moving), not the alphabet
+        ranked = rank_tennis_candidates(session, universe.active)[: max(limit, 0)]
+        candidates = [c.market for c in ranked]
         if not candidates:
             return {
                 "status": STATUS_NO_TARGETS,
@@ -321,6 +320,9 @@ class TennisTapeRecorder:
                 if q.yes_bid is not None and q.yes_ask is not None
             ),
             "links": dict(sorted(label_mix.items(), key=lambda kv: -kv[1])),
+            "top_ordering": [
+                {"ticker": c.ticker, "reasons": c.reasons} for c in ranked[:5]
+            ],
             "score_snapshots": 0,
             "market_snapshots": 0,
         }
