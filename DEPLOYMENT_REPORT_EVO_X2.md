@@ -1601,3 +1601,24 @@ Deployed **`bf2da7f` → `977753f`** by `git pull --ff-only`. **No migration** (
 **Health (unchanged):** MarketOps #1489 `ok`; frontier `safety_ok=True`, p90 54.2s < 60s; tick aggregation `ready_to_stage` (coverage_72h 0.9863, 27 clean cycles — OPS-014 still pending Eric); DB 2,750.43 MiB. **Safety audit** (host tokenize scan, expanded vocabulary, 76 files): only the two long-standing `kalshi_private_key_path` Kalshi RSA references.
 
 **Recommendation & status: TENNIS-TAPE-001 is now DESIGNABLE — both halves exist** (market ticks via TENNIS-WATCHER-001, validated live; score source via API-Tennis, validated at 73.9% live-candidate coverage). It remains **parked pending explicit acceptance** of a tape design milestone. Practical notes: trial key expires ~2026-07-24; Starter ($40/mo) suffices on request volume (one livescore call covers all live matches; 8k req/day fits 10–15s polling). Known follow-ups for the tape design: name-code tuning (+headroom above 73.9%), live-first fetch ordering for capped report runs. **Rollback (if ever):** `git reset --hard bf2da7f` — research/plumbing only.
+
+## TENNIS-TAPE-001 — synchronized tennis tape deployed (2026-07-10, ~04:30 UTC)
+
+Deployed **`1088427` → `ca4f7f0`** by `git pull --ff-only` with **backup-first migration**. `backup-db` → `data/backups/backup-20260710T042831Z.db.gz` (220.02 MiB), `verify-db-backup` → **OK (41 tables, integrity ok)**. **Migration 0025 applied** via `run-baseline --dry-run` (0024 → 0025); all four tape tables verified present (`tennis_tape_runs` / `tennis_tape_score_snapshots` / `tennis_tape_market_snapshots` / `tennis_tape_links`). No timer, no scheduled path, no new flags enabled; MarketOps/EDGE-AUTO/forecasts/gates/promotion unchanged.
+
+| item | value |
+|---|---|
+| pushed / deployed commit | **`ca4f7f0`** (origin/main + EVO-X2) |
+| migration | **0025 applied** (backup verified first) |
+| tests at commit | 1422 passed / 2 skipped; safety audit clean (incl. `markov` forbidden in Phase 0) |
+| caps | 4 provider calls/run (deduped by date); ≤200 tickers/quote pass |
+
+**Dry-run validation (04:29 UTC):**
+- Plain run (provider=template): **`skipped_provider_gap`** — nothing fetched, nothing persisted, exactly as designed.
+- Inline `TENNIS_RESEARCH_PROVIDER=api_tennis` dry-run (`--limit 20`): **16/20 `source_backed_link` (80%)**, 2 `fuzzy_candidate`, 2 `provider_no_match`; **2 score calls** (cap held), 1 chunked market fetch, **10/20 two-sided quotes** (live in-play window at capture time). Key never echoed.
+- **Persistence check: all four tape tables at 0 rows; zero tennis market_price_ticks written; no signals; no watcher rows** — dry-run persists nothing, proven live.
+- `tennis-tape-report`: renders honestly empty (no tape runs yet).
+
+**Health (unchanged):** MarketOps #1493 `ok`; frontier `safety_ok=True`, p90 53.9s < 60s; tick aggregation `ready_to_stage` (coverage_72h 0.9863, 27 clean cycles — OPS-014 still pending Eric); DB 2,750.43 MiB (backup added 220 MiB under `data/backups/`, rotating per backup retention). **Safety audit** (host tokenize scan, expanded vocabulary now incl. `markov`, 77 files): only the two long-standing `kalshi_private_key_path` Kalshi RSA references.
+
+**Recommendation: KEEP — dark/manual.** The **first real (non-dry-run) capture requires explicit approval and should run during a live Challenger/ITF in-play window** (the 04:29 dry-run showed 10/20 two-sided books — in-play windows exist right now); meaningful lag measurement comes from REPEATED captures across a window, each explicitly run. **After real tape data accumulates, the next milestone should be TENNIS-MICROSTRUCTURE-001** (read-only analysis over tapes: score-to-market lag distributions, quote-response profiles — still no models/EV/trading). **Rollback:** `git reset --hard 1088427` + `alembic downgrade 0024` (tape tables are additive and empty; the pre-migration backup exists regardless).
