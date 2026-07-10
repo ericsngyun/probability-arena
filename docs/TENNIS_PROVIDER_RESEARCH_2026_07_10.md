@@ -132,6 +132,34 @@ providers' own until validated.
   designable** (still parked until a tape design milestone is explicitly
   accepted). Goalserve fallback not needed.
 
+## 7c. LIVE-STATE FINDINGS + WebSocket test + Goalserve fallback plan (2026-07-10)
+
+Two bounded tape sessions (25 capture runs, 04:54–05:35 UTC) split the
+verdict: **REST mapping validated** (75–85% source_backed, stable) but **REST
+live state FAILED at ITF tier** — `get_livescore` returned 0 rows in 25
+probes and fixture state stayed frozen at "sets 0-0" while the linked Kalshi
+books moved 24 probability points in-play. TENNIS-LIVE-FEED-002 therefore
+tests the provider's remaining live surface: the documented WebSocket
+(`wss://wss.api-tennis.com/live?APIkey=...`, fixture-shaped events; their own
+docs example is ITF Men Singles) via the bounded
+`tennis-api-livefeed-probe --duration-sec N` (hard cap 300s, connect only
+with the host-only key, persists nothing, REST comparison included).
+
+**Goalserve fallback validation plan (only if the WS probe fails):**
+- Signup: Goalserve 30-day free trial (Eric's action); key host-`.env` only
+  (`GOALSERVE_KEY` or equivalent), never committed, presence/absence
+  reporting.
+- Bounded test: ≤10 REST calls against the tennis livescore feed
+  (`.../tennis_scores/live` JSON) during the SAME kind of live ITF/Challenger
+  window; same output fields (event id, players, status, set/game/point
+  state); map to Kalshi candidates through the same linker; no persistence
+  unless explicitly accepted.
+- Falsifiable claim to test: "point-by-point every 5s for all
+  ATP/WTA/Challenger/ITF" — pass = live state changes observed for markets
+  whose Kalshi books are moving; fail = frozen state again, at which point
+  the remaining options are Sportradar (ATP/WTA/Challenger only) or
+  market-only tapes.
+
 ## 8. Can the recommended provider support TENNIS-TAPE-001?
 
 Likely yes, pending validation: API-Tennis exposes fixtures + livescore with

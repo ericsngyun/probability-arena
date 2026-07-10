@@ -2168,6 +2168,63 @@ async def tennis_tape_report(hours: int = 24, top: int = 5, session=None) -> int
             session.close()
 
 
+async def tennis_api_livefeed_probe(
+    duration_sec: int = 60, top: int = 10, session=None,
+) -> int:
+    """TENNIS-LIVE-FEED-002 bounded WebSocket live-feed validation: does the
+    provider emit usable live ITF/Challenger state? Connects only with the
+    host-only key (never printed), fixed duration, persists nothing, REST
+    comparison included. Not a model, not EV, never advice. Returns matched
+    candidate count (>=0)."""
+    from app.services.tennis_livefeed import TennisLiveFeedProbe
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        r = await TennisLiveFeedProbe().probe(
+            session, duration_sec=duration_sec, top=top
+        )
+        print("tennis live-feed probe — provider validation only, never advice")
+        print(r["note"])
+        print(
+            f"\nprovider={r['provider_tested']}  url={r['ws_display_url']}  "
+            f"duration={r['duration_sec']}s  generated_at={r['generated_at']}"
+        )
+        print(
+            f"live_candidates={r['live_candidates']}  ws_frames={r['ws_frames']}  "
+            f"ws_events={r['ws_events']}  unparseable={r['ws_unparseable_frames']}  "
+            f"distinct_matches={r['distinct_matches']}"
+        )
+        print(
+            f"state_changes={r['state_changes']}  "
+            f"matched_candidates={r['matched_candidates']}"
+        )
+        if r["connection_error"]:
+            print(f"  ! connection_error={r['connection_error']}")
+        if r["matched_examples"]:
+            print("matched candidates:")
+            for e in r["matched_examples"]:
+                print(f"  {e['ticker'][:44]:<44} status={e['status']}")
+        if r["state_change_examples"]:
+            print("state-change examples:")
+            for e in r["state_change_examples"]:
+                print(
+                    f"  {e['players'][:44]:<44} versions={e['versions']} "
+                    f"{e['first_status']} -> {e['last_status']} [{e['type']}]"
+                )
+        print(f"rest_comparison={r['rest_comparison']}")
+        print(f"\nVERDICT: {r['verdict']}")
+        print(f"recommendation: {r['recommendation']}")
+        return r["matched_candidates"]
+    finally:
+        if owns_session:
+            session.close()
+
+
 async def forecast_anchor_diagnostic_report(hours: int = 24, top: int = 5, session=None) -> int:
     """FORECAST-ANCHOR-001 read-only diagnostic: when the market moved between
     the PRIOR forecast and this measurement, did the forecast move too? Per-row
@@ -4337,6 +4394,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ttr_parser.add_argument("--hours", type=int, default=24)
     ttr_parser.add_argument("--top", type=int, default=5)
+    tlf_parser = subparsers.add_parser(
+        "tennis-api-livefeed-probe",
+        help="TENNIS-LIVE-FEED-002: bounded WebSocket live-feed validation vs Kalshi candidates (read-only; never advice)",
+    )
+    tlf_parser.add_argument("--duration-sec", type=int, default=60)
+    tlf_parser.add_argument("--top", type=int, default=10)
     meme_scan_parser = subparsers.add_parser(
         "meme-scan-once",
         help="One read-only meme/news attention scan (MEME-NEWS-001; never advice)",
@@ -4723,6 +4786,11 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if n >= 0 else 1
     if args.command == "tennis-tape-report":
         n = asyncio.run(tennis_tape_report(hours=args.hours, top=args.top))
+        return 0 if n >= 0 else 1
+    if args.command == "tennis-api-livefeed-probe":
+        n = asyncio.run(
+            tennis_api_livefeed_probe(duration_sec=args.duration_sec, top=args.top)
+        )
         return 0 if n >= 0 else 1
     if args.command == "meme-scan-once":
         scored = asyncio.run(meme_scan_once(limit=args.limit))

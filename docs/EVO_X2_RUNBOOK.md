@@ -212,7 +212,9 @@ TENNIS-WATCHER-001 pair (`tennis-watch-scan-once [--dry-run]`,
 `tennis-watch-report`), and the TENNIS-TAPE-001 pair
 (`tennis-tape-capture-once [--dry-run]`, `tennis-tape-report` — bounded
 manual captures; needs TENNIS_RESEARCH_PROVIDER=api_tennis inline + the
-host-only key, else it skips honestly) are deliberately NOT on the daily timer — they are
+host-only key, else it skips honestly), and `tennis-api-livefeed-probe`
+(TENNIS-LIVE-FEED-002 — one bounded WebSocket validation, ≤300s, key
+host-only, persists nothing) are deliberately NOT on the daily timer — they are
 manual on-demand observation tools whose value is real-time
 freshness/coverage during live slates, not daily snapshots (the tennis source
 report only fetches when a provider is explicitly configured, and the tennis
