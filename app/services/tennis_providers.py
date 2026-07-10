@@ -153,7 +153,13 @@ class ApiTennisFetcher:
         payload = await self._get({
             "method": "get_fixtures", "date_start": date, "date_stop": date,
         })
-        return adapt_fixtures_to_scoreboard(payload, tour)
+        # Validated tuning (2026-07-10 bounded run): the ticker parser maps
+        # KXITF* to tour "atp", so tour-filtering excluded every ITF-women
+        # candidate (47.7% match rate). With the filter neutral, player-code
+        # matching disambiguates on its own: 73.9% source_backed across
+        # Challenger/ITF. Adapt unfiltered; `tour` remains part of the
+        # protocol signature for other providers.
+        return adapt_fixtures_to_scoreboard(payload, "all")
 
     async def fetch_match_details(self, tour: str, event_id: str) -> dict | None:
         payload = await self._get({"method": "get_fixtures", "match_key": event_id})

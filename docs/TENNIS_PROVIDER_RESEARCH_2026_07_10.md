@@ -114,6 +114,24 @@ providers' own until validated.
    trading surface of any kind. TENNIS-TAPE-001 remains parked until a
    provider passes AND a tape design milestone is explicitly accepted.
 
+## 7b. VALIDATION RESULTS (2026-07-10, bounded run — 5 of ≤10 calls, no persistence)
+
+- **Tier check (`get_events`, 1 call): PASSED** — the 14-day trial plan
+  includes all 27 tournament types, explicitly **Challenger Men/Women
+  Singles+Doubles and ITF Men/Women Singles+Doubles**. No tier lockout.
+- **Coverage (`get_fixtures`, 2 dates × 2 passes): PASSED the ≥50% gate.**
+  435 + 251 fixtures returned for the two live dates. First (untuned) pass:
+  84/176 = 47.7% — depressed by the ESPN-era `KXITF*→atp` tour mapping
+  excluding ITF-women fixtures. Allowed tuning pass (tour filter neutral,
+  player codes disambiguate): **130/176 = 73.9% source_backed** —
+  KXATPCHALLENGERMATCH 32/36, KXWTACHALLENGERMATCH 12/14, KXITFWMATCH 46/60,
+  KXITFMATCH 40/66. The tuning is codified in `ApiTennisFetcher.fetch_scoreboard`.
+- Remaining ~26% unmatched: last-name-code edge cases (multi-word/hyphenated
+  names, diacritics) — further headroom, not a blocker.
+- **VERDICT: API-Tennis is USEFUL per §7 gates. TENNIS-TAPE-001 becomes
+  designable** (still parked until a tape design milestone is explicitly
+  accepted). Goalserve fallback not needed.
+
 ## 8. Can the recommended provider support TENNIS-TAPE-001?
 
 Likely yes, pending validation: API-Tennis exposes fixtures + livescore with

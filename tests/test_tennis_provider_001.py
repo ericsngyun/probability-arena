@@ -103,6 +103,25 @@ class TestAdaptation:
         assert _find_event(board, ctx) is None   # documented v1 limitation
 
 
+class TestValidatedTuning:
+    def test_fetch_scoreboard_adapts_unfiltered(self, monkeypatch):
+        """Validated 2026-07-10: tour filtering excluded ITF-women candidates
+        (KXITF*→atp mapping); the fetcher now adapts unfiltered and player
+        codes disambiguate (47.7% -> 73.9% measured)."""
+        fetcher = ApiTennisFetcher(api_key="k")
+
+        async def fake_get(params):
+            return {"result": [
+                fixture(event_type="Itf Men Singles"),
+                fixture(first="Ana Perez", second="Mia Lopez",
+                        event_type="Itf Women Singles"),
+            ]}
+
+        monkeypatch.setattr(fetcher, "_get", fake_get)
+        board = asyncio.run(fetcher.fetch_scoreboard("atp", "2026-07-10"))
+        assert len(board["events"]) == 2   # women's fixture NOT excluded
+
+
 class TestNoKeyNoRequest:
     def test_fetch_without_key_returns_none_without_network(self):
         fetcher = ApiTennisFetcher(api_key="")
