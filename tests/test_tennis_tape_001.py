@@ -66,12 +66,17 @@ class FakeScoreFetcher:
     source_name = "fake-provider.test"
     has_key = True
 
-    def __init__(self, fixtures_by_date=None, fail_dates=()):
+    def __init__(self, fixtures_by_date=None, fail_dates=(), livescore=None):
         self.fixtures_by_date = fixtures_by_date or {}
         self.fail_dates = set(fail_dates)
+        self.livescore = livescore or []
         self.calls = []
+        self.livescore_calls = 0
 
     async def _get(self, params):
+        if params.get("method") == "get_livescore":
+            self.livescore_calls += 1
+            return {"result": self.livescore}
         date = params.get("date_start")
         self.calls.append(date)
         if date in self.fail_dates:
@@ -200,6 +205,34 @@ class TestLinking:
         out = link_candidate("KXATPSETWIN-26JUL10CASAMB-1", {DATE: [fixture()]})
         assert out.label == LINK_INCOMPATIBLE
 
+    def test_adjacent_date_link_matoch_regression(self):
+        # measured live 2026-07-10: Kalshi KXITFMATCH-26JUL09MATOCH traded
+        # actively while the provider listed Matsuda vs Ochi under 2026-07-10
+        out = link_candidate(
+            "KXITFMATCH-26JUL09MATOCH-MAT",
+            {"2026-07-09": [fixture("Ana Diaz", "Mia Solis")],
+             "2026-07-10": [fixture("K. Matsuda", "M. Ochi", key=222)]},
+        )
+        assert out.label == LINK_SOURCE_BACKED
+        assert "adjacent date (2026-07-10)" in out.basis
+        assert out.fixture["event_key"] == 222
+
+    def test_exact_date_wins_over_adjacent(self):
+        out = link_candidate(
+            TICKER,
+            {DATE: [fixture(key=1)], "2026-07-11": [fixture(key=2)]},
+        )
+        assert out.fixture["event_key"] == 1
+        assert out.basis == "both player codes + date"
+
+    def test_no_cross_date_fuzzy(self):
+        # a one-sided match on an ADJACENT date must not produce fuzzy
+        out = link_candidate(
+            TICKER,
+            {DATE: [], "2026-07-11": [fixture(second="Someone Else")]},
+        )
+        assert out.label == LINK_NO_MATCH
+
 
 # --- capture -------------------------------------------------------------------------
 
@@ -272,14 +305,15 @@ class TestCapture:
         assert all(v == 0 for v in counts(session).values())
 
     def test_score_call_hard_cap(self, session):
-        for day in range(10, 10 + tt.MAX_SCORE_CALLS + 2):
+        for day in range(10, 10 + tt.MAX_SCORE_CALLS + 4):
             seed_market(session, ticker=f"KXATPCHALLENGERMATCH-26JUL{day}CASAMB-CAS",
                         title=f"d{day}")
         fetcher = FakeScoreFetcher()
         r = capture(session, recorder(fetcher), dry_run=True)
-        assert len(fetcher.calls) == tt.MAX_SCORE_CALLS
-        assert r["score_calls"] == tt.MAX_SCORE_CALLS
-        # candidates beyond the cap remain honestly unresolved
+        assert len(fetcher.calls) == tt.MAX_SCORE_CALLS      # fixture calls capped
+        assert fetcher.livescore_calls == 1                  # exactly one overlay
+        assert r["score_calls"] == tt.MAX_SCORE_CALLS + tt.LIVESCORE_CALLS
+        # candidates beyond the cap (and its +/-1-day reach) stay unresolved
         assert r["links"].get(LINK_UNRESOLVED, 0) >= 2
 
     def test_failed_score_fetch_leaves_unresolved(self, session):
@@ -292,6 +326,36 @@ class TestCapture:
     def test_no_targets(self, session):
         r = capture(session, recorder())
         assert r["status"] == "no_targets"
+
+    def test_livescore_overlay_replaces_stale_fixture_state(self, session):
+        # fixtures endpoint lags in-play state (measured live); the livescore
+        # row for the same event_key must win
+        seed_market(session)
+        stale = fixture(status="", key=111)
+        stale["event_live"] = "0"
+        live = fixture(status="Set 2", key=111)
+        live["event_live"] = "1"
+        live["event_date"] = DATE
+        r = capture(session, recorder(FakeScoreFetcher(
+            {DATE: [stale]}, livescore=[live],
+        )))
+        assert r["links"] == {LINK_SOURCE_BACKED: 1}
+        state = session.execute(text(
+            "select match_state, match_status from tennis_tape_score_snapshots"
+        )).one()
+        assert tuple(state) == ("in", "Set 2")
+
+    def test_livescore_only_event_links_via_own_date_bucket(self, session):
+        # a live match whose date bucket was never fetched still links,
+        # because the livescore row creates its own bucket
+        seed_market(session, ticker="KXITFMATCH-26JUL09MATOCH-MAT",
+                    title="Matsuda vs Ochi winner?")
+        live = fixture("K. Matsuda", "M. Ochi", key=333, status="Set 1")
+        live["event_date"] = "2026-07-10"
+        r = capture(session, recorder(FakeScoreFetcher(
+            {"2026-07-09": []}, livescore=[live],
+        )))
+        assert r["links"] == {LINK_SOURCE_BACKED: 1}
 
 
 # --- report --------------------------------------------------------------------------

@@ -56,6 +56,7 @@ TAPE_NOTE = (
 
 # hard caps per capture run
 MAX_SCORE_CALLS = 4            # provider fixture calls (deduped by date)
+LIVESCORE_CALLS = 1            # plus exactly one get_livescore call per run
 MAX_MARKET_TICKERS = 200       # tickers per market quote pass
 
 LINK_SOURCE_BACKED = "source_backed_link"
@@ -107,10 +108,27 @@ class LinkOutcome:
     missing_info: list = field(default_factory=list)
 
 
+def _adjacent_dates(date_str: str) -> list[str]:
+    """[date, date+1, date-1] — Kalshi ticker dates and provider event dates
+    can disagree by one day across timezones (measured live: KXITFMATCH
+    26JUL09 tickers vs provider fixtures dated 2026-07-10)."""
+    try:
+        base = datetime.strptime(date_str, "%Y-%m-%d")
+    except (ValueError, TypeError):
+        return [date_str]
+    return [
+        date_str,
+        (base + timedelta(days=1)).strftime("%Y-%m-%d"),
+        (base - timedelta(days=1)).strftime("%Y-%m-%d"),
+    ]
+
+
 def link_candidate(ticker: str, fixtures_by_date: dict) -> LinkOutcome:
     """Pure linking: one Kalshi market ticker against the run's raw fixtures.
-    Exact = both player codes + date; fuzzy = exactly one plausible
-    single-code match on the date. Never guesses beyond that."""
+    Exact = both player codes on the ticker date, then on adjacent (+/-1 day)
+    dates — timezone rollover is real and measured. Fuzzy = exactly one
+    plausible single-code match on the exact date only. Never guesses
+    beyond that."""
     if classify_tennis_market(ticker) != "match_winner":
         return LinkOutcome(ticker, LINK_INCOMPATIBLE,
                            basis="non-match-winner market")
@@ -122,10 +140,10 @@ def link_candidate(ticker: str, fixtures_by_date: dict) -> LinkOutcome:
         ticker, LINK_UNRESOLVED, event_date=ctx.date,
         player_a_code=ctx.player_a, player_b_code=ctx.player_b,
     )
-    fixtures = fixtures_by_date.get(ctx.date)
-    if fixtures is None:
+    search_dates = [d for d in _adjacent_dates(ctx.date) if d in fixtures_by_date]
+    if not search_dates:
         out.label = LINK_UNRESOLVED
-        out.basis = "date not fetched this run (score call cap)"
+        out.basis = "date (and adjacent days) not fetched this run (score call cap)"
         out.missing_info.append("provider fixtures for event date")
         return out
     if not ctx.player_a or not ctx.player_b:
@@ -133,26 +151,33 @@ def link_candidate(ticker: str, fixtures_by_date: dict) -> LinkOutcome:
         out.missing_info.append("player codes")
         return out
     want = {ctx.player_a, ctx.player_b}
-    exact, partial = [], []
-    for f in fixtures:
+    for search_date in search_dates:            # exact date first, then +/-1
+        exact = []
+        for f in fixtures_by_date.get(search_date) or []:
+            a, b = _fixture_codes(f)
+            if a and b and {a, b} == want:
+                exact.append(f)
+        if len(exact) == 1:
+            out.label = LINK_SOURCE_BACKED
+            out.basis = (
+                "both player codes + date" if search_date == ctx.date
+                else f"both player codes + adjacent date ({search_date})"
+            )
+            out.fixture = exact[0]
+            return out
+        if len(exact) > 1:
+            out.label = LINK_FUZZY
+            out.basis = f"{len(exact)} fixtures share both codes — ambiguous"
+            out.fixture = exact[0]
+            out.missing_info.append("unambiguous player-code match")
+            return out
+    partial = []
+    for f in fixtures_by_date.get(ctx.date) or []:   # fuzzy: exact date only
         a, b = _fixture_codes(f)
         if not a or not b:
             continue
-        if {a, b} == want:
-            exact.append(f)
-        elif a in want or b in want:
+        if a in want or b in want:
             partial.append(f)
-    if len(exact) == 1:
-        out.label = LINK_SOURCE_BACKED
-        out.basis = "both player codes + date"
-        out.fixture = exact[0]
-        return out
-    if len(exact) > 1:
-        out.label = LINK_FUZZY
-        out.basis = f"{len(exact)} fixtures share both codes — ambiguous"
-        out.fixture = exact[0]
-        out.missing_info.append("unambiguous player-code match")
-        return out
     if len(partial) == 1:
         out.label = LINK_FUZZY
         out.basis = "single one-sided player-code match"
@@ -160,7 +185,7 @@ def link_candidate(ticker: str, fixtures_by_date: dict) -> LinkOutcome:
         out.missing_info.append("second player code match")
         return out
     out.label = LINK_NO_MATCH
-    out.basis = "no fixture shares the ticker's player codes on the date"
+    out.basis = "no fixture shares the ticker's player codes on or adjacent to the date"
     out.missing_info.append("provider event for this match")
     return out
 
@@ -237,6 +262,31 @@ class TennisTapeRecorder:
             fixtures_by_date[d] = (payload or {}).get("result") if payload else None
             if fixtures_by_date[d] is None:
                 logger.warning("tape: score fetch failed for %s", d)
+        # one livescore overlay call: get_fixtures lags in-play state
+        # (measured live: actively-traded matches showed live=0/status="" on
+        # fixtures while get_livescore is the provider's now-playing view).
+        # Live rows REPLACE same-event fixtures and are added to their own
+        # event_date bucket so adjacent-date linking sees them too.
+        live_payload = await fetcher._get({"method": "get_livescore"})
+        score_calls += LIVESCORE_CALLS
+        live_rows = (live_payload or {}).get("result") or []
+        for row in live_rows:
+            if not isinstance(row, dict):
+                continue
+            row_date = row.get("event_date")
+            key = row.get("event_key")
+            if not row_date:
+                continue
+            bucket = fixtures_by_date.get(row_date)
+            if bucket is None:
+                fixtures_by_date[row_date] = [row]
+                continue
+            for i, f in enumerate(bucket):
+                if isinstance(f, dict) and f.get("event_key") == key:
+                    bucket[i] = row
+                    break
+            else:
+                bucket.append(row)
 
         # --- market pass: one chunked quote fetch over candidate tickers -----
         tickers = [m.ticker for m in candidates]
