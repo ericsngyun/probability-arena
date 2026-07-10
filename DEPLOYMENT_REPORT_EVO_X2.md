@@ -1544,3 +1544,23 @@ Deployed **`17b10c4` → `751c5c6`** by `git pull --ff-only`. **No migration** (
 **Health (unchanged):** MarketOps #1454 `ok` / #1455 running normally; frontier `safety_ok=True`, p90 54.8s < 60s; tick aggregation **`ready_to_stage`** (coverage_72h 0.9863, 23 clean cycles — OPS-014 proposal pending Eric's decision, nothing enacted); DB 2,750.43 MiB (intraday tick accumulation before the 00:08 prune — normal, below critical). **Safety audit** (host tokenize scan, expanded vocabulary, 74 files): no hits in any TENNIS-LIVE-SOURCE-001 or analysis surface; only the two long-standing `kalshi_private_key_path` RSA request-signing references (read-only Kalshi API auth, pre-existing, documented).
 
 **Recommendation: KEEP — manual/report-only. Providers remain OFF.** The next tennis step should be **bounded provider coverage validation** — an explicitly-approved, read-only `TENNIS_RESEARCH_PROVIDER=espn` run during a live tennis window to turn structural validation into a real coverage measurement (expected: `provider_no_match` on Challenger; possibly real matches on ATP/WTA main tour) — **before any TENNIS-TAPE-001 discussion**. No trading capability is implied by any outcome. **Rollback (if ever):** `git reset --hard 17b10c4` — analysis-only, nothing to unwind.
+
+## TENNIS-WATCHER-001 — tennis tick coverage tool deployed (2026-07-10, ~01:40 UTC)
+
+Deployed **`5362849` → `f42f523`** by `git pull --ff-only`. **No migration** (`0024 (head)`), **no flag enabled** (`ENABLE_TENNIS_TICK_WATCHER` not in `.env`, default false), **no timer installed** (verified: no tennis unit in `systemctl --user list-timers`); MarketOps, EDGE-AUTO, forecasts, gates, promotion, and signal detection untouched. New capability: `tennis-watch-scan-once --limit N [--dry-run] [--scheduled]` (bounded read-only quote pass over active tennis markets into plain `market_price_ticks` — same table/shape/retention as the realtime watcher; no signals, no watcher_runs) + `tennis-watch-report --hours N` (DB-only coverage).
+
+| item | value |
+|---|---|
+| pushed / deployed commit | **`f42f523`** (origin/main + EVO-X2) |
+| migration / flags / timers | **none / none enabled / none installed** |
+| tests at commit | 1381 passed / 2 skipped; tokenize+AST audit clean |
+
+**Validation sequence (01:38 UTC):**
+- **Coverage report (pre):** active tennis markets **240**, match-winner **176**, tick_covered **0**, coverage_rate **0.0** — the measured market-side gap, now visible as a first-class report.
+- **Dry-run scan (`--limit 20 --dry-run`):** 20/20 Challenger tickers fetched (read-only GET), **ticks_recorded=0**; `two_sided_quotes=0` (no-play hour — books one-sided, honestly reported).
+- **Coverage report (post dry-run):** still 0/240 — **dry-run persisted nothing**, verified.
+- **Scheduled guard (`--limit 5 --scheduled`):** `skipped_flag_disabled` — no fetch, no rows, exactly as designed.
+
+**Health (unchanged):** MarketOps #1464 `ok`; frontier `safety_ok=True`, p90 53.8s < 60s; tick aggregation `ready_to_stage` (coverage_72h 0.9863, 24 clean cycles — OPS-014 decision still pending Eric, nothing enacted); DB 2,750.43 MiB (normal intraday, below critical). **Safety audit** (host tokenize scan, expanded vocabulary, 75 files): no hits in any TENNIS-WATCHER-001 or analysis surface; only the two long-standing `kalshi_private_key_path` RSA request-signing references (read-only Kalshi API auth, pre-existing, documented).
+
+**Recommendation: KEEP — manual/report-only.** Non-dry-run scans remain available for explicitly-chosen live Challenger windows (books were one-sided at deploy time; meaningful capture requires in-play hours). **TENNIS-TAPE-001 remains parked** — market-side ticks are now capturable on demand, but the score side is still blocked on provider coverage. **The next tennis milestone should be TENNIS-PROVIDER-001**: research/select a live-score source with Challenger/ITF draw coverage (ESPN measured definitively insufficient: source_backed 0/176), read-only validation first, behind the existing provider plumbing. **Rollback (if ever):** `git reset --hard 5362849` — additive tooling, nothing to unwind.
