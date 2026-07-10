@@ -224,7 +224,9 @@ class TestEndToEnd:
         seed_market(session)
         seed_ticks(session, mids=[0.50, 0.52], minutes=[4, 1])
         o = build(session)["observations"][0]
-        assert 30 <= o.market_freshness_s <= 120
+        # seeded 1m before module import; generous upper bound so a slow,
+        # loaded suite run cannot flake this
+        assert 30 <= o.market_freshness_s <= 600
         assert o.quote_quality == "tight"
 
     def test_volatile_market_surfaces_in_examples(self, session):

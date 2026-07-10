@@ -1928,6 +1928,72 @@ async def live_market_state_report(
             session.close()
 
 
+async def tennis_live_source_report(top: int = 10, hours: int = 24, session=None) -> int:
+    """TENNIS-LIVE-SOURCE-001 read-only provider/source validation: can
+    persisted tennis markets be mapped to source-backed live match state?
+    Uses the existing TENNIS-001 provider scaffold only — with the default
+    template provider nothing is fetched (honest provider_gap). Coverage
+    measurement only; changes no gate/forecast/promotion/flag/automation;
+    not EV, never advice. Returns total tennis market count."""
+    from app.services.tennis_live_source import TennisLiveSourceReportService
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        r = await TennisLiveSourceReportService().build(session, top=top, hours=hours)
+        print("tennis live-source validation report — coverage measurement only, never advice")
+        print(r["note"])
+        print(
+            f"\nprovider={r['provider']}  window={r['window_hours']}h  "
+            f"generated_at={r['generated_at']}"
+        )
+        print(
+            f"total_tennis_markets={r['total_tennis_markets']}  "
+            f"live_candidates={r['live_candidates']}  "
+            f"match_winner_candidates={r['match_winner_candidates']}"
+        )
+        print(f"classification_mix={r['classification_mix']}")
+        print(f"mapping_status_mix={r['mapping_status_mix']}")
+        print(
+            f"provider_match_rate={r['provider_match_rate']}  "
+            f"source_backed={r['source_backed_count']}  "
+            f"missing_player_mapping={r['missing_player_mapping_count']}  "
+            f"unparseable_tickers={r['unparseable_ticker_count']}  "
+            f"scoreboards_fetched={r['scoreboards_fetched']}"
+        )
+        for w in r["warnings"]:
+            print(f"  ! {w}")
+        print("\nexamples:")
+        for c in r["examples"]:
+            print(
+                f"  == {c.market_ticker} [{c.market_classification}] "
+                f"live={c.is_live_candidate} =="
+            )
+            print(
+                f"     players={c.player_a}/{c.player_b} tour={c.tour} "
+                f"date={c.event_date}  -> {c.mapping_status}"
+            )
+            print(
+                f"     event_status={c.event_status} fetched_at={c.fetched_at} "
+                f"quote_age_s={c.market_quote_age_s} "
+                f"score_to_market_lag_s={c.score_to_market_lag_s}"
+            )
+            for note in c.notes:
+                print(f"     . {note}")
+        print(
+            "\ndisclaimer: source-coverage validation only — no probability "
+            "updates, not EV, not a recommendation, no trading capability."
+        )
+        return r["total_tennis_markets"]
+    finally:
+        if owns_session:
+            session.close()
+
+
 async def forecast_anchor_diagnostic_report(hours: int = 24, top: int = 5, session=None) -> int:
     """FORECAST-ANCHOR-001 read-only diagnostic: when the market moved between
     the PRIOR forecast and this measurement, did the forecast move too? Per-row
@@ -4065,6 +4131,12 @@ def build_parser() -> argparse.ArgumentParser:
     lms_parser.add_argument("--domain", type=str, default="sports_tennis")
     lms_parser.add_argument("--top", type=int, default=10)
     lms_parser.add_argument("--hours", type=int, default=6, help="tick recency window for live candidacy")
+    tls_parser = subparsers.add_parser(
+        "tennis-live-source-report",
+        help="TENNIS-LIVE-SOURCE-001: can persisted tennis markets map to source-backed live state? provider coverage validation (read-only; never advice)",
+    )
+    tls_parser.add_argument("--top", type=int, default=10)
+    tls_parser.add_argument("--hours", type=int, default=24, help="recency window for live candidacy")
     meme_scan_parser = subparsers.add_parser(
         "meme-scan-once",
         help="One read-only meme/news attention scan (MEME-NEWS-001; never advice)",
@@ -4427,6 +4499,9 @@ def main(argv: list[str] | None = None) -> int:
         n = asyncio.run(
             live_market_state_report(domain=args.domain, top=args.top, hours=args.hours)
         )
+        return 0 if n >= 0 else 1
+    if args.command == "tennis-live-source-report":
+        n = asyncio.run(tennis_live_source_report(top=args.top, hours=args.hours))
         return 0 if n >= 0 else 1
     if args.command == "meme-scan-once":
         scored = asyncio.run(meme_scan_once(limit=args.limit))
