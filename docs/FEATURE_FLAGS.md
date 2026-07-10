@@ -189,6 +189,17 @@ and `CRYPTO_CHAIN=solana`. `attention_score` is an interest/velocity signal for
 human review — never a buy/trade/EV/alpha score. No new authenticated sources
 are added; rss/x/discord/telegram catalyst sources remain unconfigured placeholders.
 
+### TENNIS-WATCHER-001 — tennis tick capture (market observation only)
+
+| Flag | Default | Effect |
+|---|---|---|
+| `ENABLE_TENNIS_TICK_WATCHER` | false | Gates the **scheduled** path only (`tennis-watch-scan-once --scheduled` no-ops while false; no timer artifact is installed by the milestone). Manual bounded `tennis-watch-scan-once` runs and `tennis-watch-report` are always allowed |
+
+Tuning: `TENNIS_TICK_WATCH_LIMIT=200` (bounded targets per pass, match-winner
+first). Ticks land in `market_price_ticks` with the existing raw-tick
+retention window — no new table, no new retention knob. Observation only: no
+signal detection, no forecasts, no trading semantics of any kind.
+
 ### MEME-NEWS-002 — scheduled discovery lane
 
 | Flag | Default | Effect |

@@ -1994,6 +1994,87 @@ async def tennis_live_source_report(top: int = 10, hours: int = 24, session=None
             session.close()
 
 
+async def tennis_watch_scan_once(
+    limit: int | None = None, hours: int = 24, dry_run: bool = False,
+    scheduled: bool = False, session=None,
+) -> int:
+    """TENNIS-WATCHER-001 manual read-only tennis tick capture: one bounded
+    quote pass over active tennis markets into market_price_ticks (same table
+    and retention as the realtime watcher; no signals, no watcher_runs). Dry
+    run persists nothing; the scheduled path no-ops unless
+    ENABLE_TENNIS_TICK_WATCHER=true. Market observation only — not EV, never
+    advice. Returns ticks recorded (0 for dry-run/skip)."""
+    from app.services.tennis_watcher import TennisTickWatcher
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        r = await TennisTickWatcher().scan_once(
+            session, limit=limit, hours=hours, dry_run=dry_run, scheduled=scheduled
+        )
+        print("tennis tick scan — market observation only, never advice")
+        print(f"status={r['status']}")
+        if r.get("note"):
+            print(r["note"])
+        print(
+            f"targets={r['targets']}  fetched={r['fetched']}  "
+            f"two_sided_quotes={r.get('two_sided_quotes')}  "
+            f"ticks_recorded={r['ticks_recorded']}"
+        )
+        if r.get("series_mix"):
+            print(f"series_mix={r['series_mix']}")
+        return r["ticks_recorded"]
+    finally:
+        if owns_session:
+            session.close()
+
+
+async def tennis_watch_report(hours: int = 24, session=None) -> int:
+    """TENNIS-WATCHER-001 read-only tennis tick-coverage report: active
+    tennis markets vs tick-covered, freshness, quote completeness, series and
+    market-type mixes. DB-only; no external call; changes nothing. Returns
+    active tennis market count."""
+    from app.services.tennis_watcher import build_tennis_watch_report
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        r = build_tennis_watch_report(session, hours=hours)
+        print("tennis watch coverage report — market observation only, never advice")
+        print(r["note"])
+        print(
+            f"\nwindow={r['window_hours']}h  generated_at={r['generated_at']}  "
+            f"ENABLE_TENNIS_TICK_WATCHER={r['flag_enable_tennis_tick_watcher']}"
+        )
+        print(
+            f"active_tennis_markets={r['active_tennis_markets']}  "
+            f"match_winner={r['match_winner_markets']}  "
+            f"tick_covered={r['tick_covered']}  uncovered={r['uncovered']}  "
+            f"coverage_rate={r['coverage_rate']}"
+        )
+        print(f"latest_tick_age_s={r['latest_tick_age_s']}")
+        print(f"quote_stats={r['quote_stats']}")
+        print(f"series_mix_active={r['series_mix_active']}")
+        print(f"series_mix_covered={r['series_mix_covered']}")
+        print(f"market_type_mix={r['market_type_mix']}")
+        if r["uncovered_examples"]:
+            print(f"uncovered_examples={r['uncovered_examples']}")
+        print(f"\nprovider/state relationship: {r['provider_state_relationship']}")
+        print(f"\ndisclaimer: {r['disclaimer']}")
+        return r["active_tennis_markets"]
+    finally:
+        if owns_session:
+            session.close()
+
+
 async def forecast_anchor_diagnostic_report(hours: int = 24, top: int = 5, session=None) -> int:
     """FORECAST-ANCHOR-001 read-only diagnostic: when the market moved between
     the PRIOR forecast and this measurement, did the forecast move too? Per-row
@@ -4137,6 +4218,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     tls_parser.add_argument("--top", type=int, default=10)
     tls_parser.add_argument("--hours", type=int, default=24, help="recency window for live candidacy")
+    tws_parser = subparsers.add_parser(
+        "tennis-watch-scan-once",
+        help="TENNIS-WATCHER-001: one bounded read-only tennis tick capture pass (market observation only; never advice)",
+    )
+    tws_parser.add_argument("--limit", type=int, default=None)
+    tws_parser.add_argument("--hours", type=int, default=24, help="recency window for active tennis markets")
+    tws_parser.add_argument("--dry-run", action="store_true", help="report only; persist nothing")
+    tws_parser.add_argument("--scheduled", action="store_true", help="scheduled entry point (no-ops unless ENABLE_TENNIS_TICK_WATCHER=true)")
+    twr_parser = subparsers.add_parser(
+        "tennis-watch-report",
+        help="TENNIS-WATCHER-001: tennis tick-coverage report (DB-only, read-only; never advice)",
+    )
+    twr_parser.add_argument("--hours", type=int, default=24)
     meme_scan_parser = subparsers.add_parser(
         "meme-scan-once",
         help="One read-only meme/news attention scan (MEME-NEWS-001; never advice)",
@@ -4502,6 +4596,17 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if n >= 0 else 1
     if args.command == "tennis-live-source-report":
         n = asyncio.run(tennis_live_source_report(top=args.top, hours=args.hours))
+        return 0 if n >= 0 else 1
+    if args.command == "tennis-watch-scan-once":
+        n = asyncio.run(
+            tennis_watch_scan_once(
+                limit=args.limit, hours=args.hours,
+                dry_run=args.dry_run, scheduled=args.scheduled,
+            )
+        )
+        return 0 if n >= 0 else 1
+    if args.command == "tennis-watch-report":
+        n = asyncio.run(tennis_watch_report(hours=args.hours))
         return 0 if n >= 0 else 1
     if args.command == "meme-scan-once":
         scored = asyncio.run(meme_scan_once(limit=args.limit))

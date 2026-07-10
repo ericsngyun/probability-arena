@@ -123,6 +123,14 @@ class Settings(BaseSettings):
     tick_aggregation_max_rows: int = 200_000     # bounded raw rows read per invocation
     tick_bucket_retention_days: int = 90         # aggregated buckets kept much longer than raw
 
+    # TENNIS-WATCHER-001: read-only tennis market tick capture (market
+    # observation only — no forecasting, no signals, no trading semantics).
+    # The flag gates ONLY a future scheduled path (manual runs always
+    # allowed); default OFF. Ticks reuse market_price_ticks and its existing
+    # raw retention window.
+    enable_tennis_tick_watcher: bool = False
+    tennis_tick_watch_limit: int = 200
+
     # COST-MODEL-001: friction assumption for the read-only cost-adjusted
     # SHADOW report (edge-cost-shadow-report) ONLY. Conservative Kalshi
     # taker-fee model: the published fee is ceil(0.07 * C * P * (1-P)) per

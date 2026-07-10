@@ -206,12 +206,15 @@ The runner (`~/edge-observation/run_report.sh`) and its logs live **outside**
 the git tree, so the repo stays clean. It only runs the read-only report
 suite (edge-policy/edge-cohort/edge-followthrough-diagnostic/edge-filter-shadow/forecast-anchor-diagnostic/trigger-timing-shadow/edge-selection-validation/edge-cost-shadow/frontier-eval/champion-challenger/db-growth/
 prune-retention --dry-run); it changes no flag, gate, threshold, or live
-service. `live-market-state-report` (LIVE-MARKET-001) and
-`tennis-live-source-report` (TENNIS-LIVE-SOURCE-001) are deliberately NOT on
-the daily timer — they are manual on-demand observation/validation reports
-whose value is real-time freshness/coverage during live slates, not daily
-snapshots (and the tennis report only fetches when a provider is explicitly
-configured; the default template provider makes no external call). Note: a cloud/routine scheduler cannot reach this private Tailscale
+service. `live-market-state-report` (LIVE-MARKET-001),
+`tennis-live-source-report` (TENNIS-LIVE-SOURCE-001), and the
+TENNIS-WATCHER-001 pair (`tennis-watch-scan-once [--dry-run]`,
+`tennis-watch-report`) are deliberately NOT on the daily timer — they are
+manual on-demand observation tools whose value is real-time
+freshness/coverage during live slates, not daily snapshots (the tennis source
+report only fetches when a provider is explicitly configured, and the tennis
+tick scan's scheduled path no-ops unless ENABLE_TENNIS_TICK_WATCHER=true;
+manual bounded runs are always allowed). Note: a cloud/routine scheduler cannot reach this private Tailscale
 host — this on-host timer is the reliable mechanism.
 
 ```bash
