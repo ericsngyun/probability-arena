@@ -1680,3 +1680,26 @@ Deployed **`b932c06` → `7270ca8`** by `git pull --ff-only`. **No migration** (
 **Health (unchanged):** MarketOps #1680 `ok`; frontier `safety_ok=True`, p90 50.9s < 60s; DB 2,750.43 MiB flat; tick aggregation `ready_to_stage` (coverage_72h 0.9863, 45 clean cycles — OPS-014 pending Eric). **Safety audit** (expanded vocabulary incl. markov, 79 files): only the two long-standing Kalshi RSA references.
 
 **Recommendation: KEEP — manual/report-only. The next gating action remains the Goalserve trial key + one bounded, explicitly-approved probe during a live ITF/Challenger window.** With this ordering in place, future capture sessions automatically target the books that matter. **Rollback:** `git reset --hard b932c06` — ordering-only change.
+
+## OPS-014 — staged raw tick retention reduction 3d → 2d EXECUTED (2026-07-11, ~21:29 UTC)
+
+**Storage hygiene only** — explicitly approved after the gate held `ready_to_stage` for >45 clean cycles (67 at execution; coverage_72h reached 1.0 on 2026-07-10). Additional context at approval: the EDGE-SELECTION candidates failed out-of-sample and were retired (EDGE-RETIRE-001), removing the main analytical dependence on a 3-day raw-tick lookback.
+
+**Sequence (backup-first, per runbook):**
+1. `backup-db` → `backup-20260711T212716Z.db.gz` (265.70 MiB); `verify-db-backup` → **OK (45 tables, integrity ok)** — this snapshot permanently archives the full 3d tick history.
+2. `.env` backed up → `.env.20260711T212811Z.pre-ops014`.
+3. **Single change: `TICK_RETENTION_DAYS=3` → `2`** — diff against the backup confirms nothing else changed.
+4. Dry-run before (3d): 180,600 eligible of 770,461. Dry-run after (2d): **380,850 eligible**. Manual `prune-retention` executed: **380,850 market_price_ticks deleted in 8.95s** (bounded batches; MarketOps ran normally throughout — #1905 `ok` mid-window).
+
+| verification | result |
+|---|---|
+| raw ticks | 770,461 → **389,761 rows**; table 2,091.94 → **985.59 MiB** (~1.1 GiB freed for reuse) |
+| tick window | oldest now 2026-07-09 21:29 (clean 2d); steady-state eligible ≈ 150 |
+| buckets (90d) | **intact**: 210,595 rows / 47.21 MiB, oldest 2026-07-06 — aggregate history preserved across the reduction |
+| DB file | 2,750.43 MiB unchanged (SQLite free-page reuse; **no VACUUM**, per plan — file growth now has ~1.1 GiB internal headroom) |
+| aggregation | 48h coverage 0.98 healthy; note: the READINESS metric now reads `not_ready` (coverage_72h 0.9796) because it computes over the narrower raw window + the transient current hour — expected artifact, the gate's purpose (staging THIS change) is fulfilled |
+| MarketOps / frontier | #1905 `ok`; `safety_ok=True`, p90 < 60s |
+
+**Rollback plan:** restore `TICK_RETENTION_DAYS=3` from `.env.20260711T212811Z.pre-ops014` (stops further narrowing); pruned raw ticks are recoverable only from `backup-20260711T212716Z.db.gz`. Buckets carry the 90d aggregate history regardless. Any further reduction (toward 24–48h) is a NEW explicitly-accepted milestone.
+
+No other flags changed; no timers; no forecast/MarketOps/EDGE-AUTO/MEME/Polymarket/tennis behavior touched.
