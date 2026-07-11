@@ -216,8 +216,10 @@ host-only key, else it skips honestly), and `tennis-api-livefeed-probe`
 (TENNIS-LIVE-FEED-002 — one bounded WebSocket validation, ≤300s, key
 host-only, persists nothing), and `tennis-goalserve-probe`
 (TENNIS-GOALSERVE-001 — bounded Goalserve fallback validation, ≤10 calls,
-GOALSERVE_TENNIS_API_KEY host-only, persists nothing) are deliberately NOT
-on the daily timer — they are
+GOALSERVE_TENNIS_API_KEY host-only, persists nothing), and
+`tennis-tape-capture-session` (TENNIS-CAPTURE-SESSION-001 — repeated bounded
+captures in ONE invocation, max 60 min, aborts on errors; the preferred way
+to run live-window tape sessions) are deliberately NOT on the daily timer — they are
 manual on-demand observation tools whose value is real-time
 freshness/coverage during live slates, not daily snapshots (the tennis source
 report only fetches when a provider is explicitly configured, and the tennis

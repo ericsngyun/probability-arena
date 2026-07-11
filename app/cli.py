@@ -2120,6 +2120,60 @@ async def tennis_tape_capture_once(
             session.close()
 
 
+async def tennis_tape_capture_session(
+    duration_min: int = 15, interval_sec: int = 90, limit: int | None = None,
+    dry_run: bool = False, session=None,
+) -> int:
+    """TENNIS-CAPTURE-SESSION-001 bounded manual capture session: a fixed,
+    capped number of capture_once passes in ONE invocation, then exit — not a
+    timer, not a daemon. Aborts on abnormal capture status or detectable
+    MarketOps error. Measurement only; never advice. Returns captures run."""
+    from app.services.tennis_tape import run_capture_session
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        r = await run_capture_session(
+            session, duration_min=duration_min, interval_sec=interval_sec,
+            limit=limit, dry_run=dry_run,
+        )
+        print("tennis tape capture session — measurement only, never advice")
+        print(
+            f"status={r['status']}"
+            + (f"  ABORT: {r['abort_reason']}" if r["abort_reason"] else "")
+        )
+        print(
+            f"duration_min={r['duration_min']}  interval_sec={r['interval_sec']}  "
+            f"captures={r['captures_run']}/{r['captures_planned']}  "
+            f"provider_calls={r['provider_calls']}"
+        )
+        print(f"capture_statuses={r['capture_statuses']}")
+        s = r["session_summary"]
+        if s.get("available"):
+            print(
+                f"session: runs={s['runs']}  score_snapshots={s['score_snapshots']}  "
+                f"market_snapshots={s['market_snapshots']}  links={s['links']}"
+            )
+            print(f"quote_coverage={s['quote_coverage']}  db_impact_rows={s['db_impact_rows']}")
+            if s["top_movers"]:
+                print("top moving markets (abs mid range across session):")
+                for m in s["top_movers"]:
+                    print(
+                        f"  {m['ticker'][:44]:<44} {m['first_mid']} -> {m['last_mid']} "
+                        f"(range {m['abs_range']})"
+                    )
+        else:
+            print(f"session summary: {s['reason']}")
+        return r["captures_run"]
+    finally:
+        if owns_session:
+            session.close()
+
+
 async def tennis_tape_report(hours: int = 24, top: int = 5, session=None) -> int:
     """TENNIS-TAPE-001 tape report: runs, snapshot volumes, link quality,
     freshness, score-to-market deltas, examples. DB-only; read-only; never
@@ -4515,6 +4569,14 @@ def build_parser() -> argparse.ArgumentParser:
     ttc_parser.add_argument("--limit", type=int, default=None)
     ttc_parser.add_argument("--hours", type=int, default=24, help="recency window for live tennis candidates")
     ttc_parser.add_argument("--dry-run", action="store_true", help="compute and report; persist nothing")
+    tts_parser = subparsers.add_parser(
+        "tennis-tape-capture-session",
+        help="TENNIS-CAPTURE-SESSION-001: bounded repeated tape captures in one invocation (max 60 min; read-only measurement; never advice)",
+    )
+    tts_parser.add_argument("--duration-min", type=int, default=15)
+    tts_parser.add_argument("--interval-sec", type=int, default=90)
+    tts_parser.add_argument("--limit", type=int, default=None)
+    tts_parser.add_argument("--dry-run", action="store_true")
     ttr_parser = subparsers.add_parser(
         "tennis-tape-report",
         help="TENNIS-TAPE-001: tape runs/links/freshness report (DB-only; never advice)",
@@ -4918,6 +4980,14 @@ def main(argv: list[str] | None = None) -> int:
         n = asyncio.run(
             tennis_tape_capture_once(
                 limit=args.limit, hours=args.hours, dry_run=args.dry_run
+            )
+        )
+        return 0 if n >= 0 else 1
+    if args.command == "tennis-tape-capture-session":
+        n = asyncio.run(
+            tennis_tape_capture_session(
+                duration_min=args.duration_min, interval_sec=args.interval_sec,
+                limit=args.limit, dry_run=args.dry_run,
             )
         )
         return 0 if n >= 0 else 1

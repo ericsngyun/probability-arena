@@ -23,6 +23,7 @@ sizing, orders, wallets, signing, swaps, execution, or autonomy — and no
 forecast/gate/promotion/MarketOps/EDGE-AUTO behavior change.
 """
 
+import asyncio
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -436,6 +437,143 @@ class TennisTapeRecorder:
         summary["market_snapshots"] = len(market_rows)
         summary["tape_run_id"] = run.id
         return summary
+
+
+# --- TENNIS-CAPTURE-SESSION-001: bounded manual session runner ---------------------
+# A convenience wrapper over capture_once for live windows. NOT a timer, NOT a
+# daemon: it runs a fixed, capped number of captures within one invocation and
+# then exits. Aborts on abnormal capture status or detectable MarketOps error.
+
+SESSION_MAX_DURATION_MIN = 60
+SESSION_INTERVAL_MIN_S = 30
+SESSION_INTERVAL_MAX_S = 300
+SESSION_MAX_CAPTURES = 60
+
+SESSION_OK = "ok"
+SESSION_DRY_RUN = "dry_run"
+SESSION_ABORTED = "aborted"
+
+
+def _marketops_degraded(session: Session) -> bool:
+    """Cheap detectable health check: latest MarketOps run errored."""
+    try:
+        from app.models import MarketOpsRun
+
+        latest = session.execute(
+            select(MarketOpsRun).order_by(MarketOpsRun.id.desc()).limit(1)
+        ).scalars().first()
+        return bool(latest is not None and latest.status == "error")
+    except Exception:
+        return False
+
+
+def summarize_session(session: Session, run_ids: list[int], top: int = 5) -> dict:
+    """Aggregate movement/link stats over the session's persisted tape runs.
+    Read-only; empty for dry-run sessions (nothing persisted)."""
+    if not run_ids:
+        return {"available": False, "reason": "no persisted runs (dry-run session)"}
+    links = session.execute(
+        select(TennisTapeLink.link_label, TennisTapeLink.id)
+        .where(TennisTapeLink.tape_run_id.in_(run_ids))
+    ).all()
+    label_mix: dict[str, int] = {}
+    for label, _ in links:
+        label_mix[label] = label_mix.get(label, 0) + 1
+    snaps = session.execute(
+        select(TennisTapeMarketSnapshot)
+        .where(TennisTapeMarketSnapshot.tape_run_id.in_(run_ids))
+        .order_by(TennisTapeMarketSnapshot.tape_run_id.asc())
+    ).scalars().all()
+    mids: dict[str, list] = {}
+    two_sided = 0
+    for s in snaps:
+        if s.yes_bid is not None and s.yes_ask is not None:
+            two_sided += 1
+        if s.midpoint is not None:
+            mids.setdefault(s.market_ticker, []).append(s.midpoint)
+    movers = sorted(
+        (
+            {"ticker": t, "first_mid": series[0], "last_mid": series[-1],
+             "abs_range": round(max(series) - min(series), 4)}
+            for t, series in mids.items() if len(series) >= 2
+        ),
+        key=lambda m: -m["abs_range"],
+    )
+    scores = session.execute(
+        select(TennisTapeScoreSnapshot.id)
+        .where(TennisTapeScoreSnapshot.tape_run_id.in_(run_ids))
+    ).all()
+    return {
+        "available": True,
+        "runs": len(run_ids),
+        "score_snapshots": len(scores),
+        "market_snapshots": len(snaps),
+        "links": dict(sorted(label_mix.items(), key=lambda kv: -kv[1])),
+        "quote_coverage": (
+            round(two_sided / len(snaps), 4) if snaps else None
+        ),
+        "top_movers": movers[:top],
+        "db_impact_rows": len(run_ids) + len(scores) + len(snaps) + len(links),
+    }
+
+
+async def run_capture_session(
+    session: Session,
+    recorder: "TennisTapeRecorder | None" = None,
+    duration_min: int = 15,
+    interval_sec: int = 90,
+    limit: int | None = None,
+    dry_run: bool = False,
+    top: int = 5,
+) -> dict:
+    """Bounded manual capture session: a fixed number of capture_once passes
+    with a sleep between, then exit. Hard caps on duration/interval/captures;
+    aborts on abnormal capture status or a detectable MarketOps error.
+    Measurement only — never advice."""
+    duration_min = max(1, min(duration_min, SESSION_MAX_DURATION_MIN))
+    interval_sec = max(SESSION_INTERVAL_MIN_S, min(interval_sec, SESSION_INTERVAL_MAX_S))
+    captures_planned = min(
+        max(1, (duration_min * 60) // interval_sec), SESSION_MAX_CAPTURES
+    )
+    recorder = recorder or TennisTapeRecorder()
+    started = _now()
+    captures: list[dict] = []
+    run_ids: list[int] = []
+    provider_calls = 0
+    abort_reason = None
+    for i in range(captures_planned):
+        result = await recorder.capture_once(
+            session, limit=limit, dry_run=dry_run
+        )
+        captures.append(result)
+        provider_calls += result.get("score_calls", 0)
+        if result.get("tape_run_id"):
+            run_ids.append(result["tape_run_id"])
+        if result["status"] not in (STATUS_OK, STATUS_DRY_RUN):
+            abort_reason = f"capture {i + 1} status={result['status']}"
+            break
+        if _marketops_degraded(session):
+            abort_reason = "latest MarketOps run errored"
+            break
+        if i < captures_planned - 1:
+            await asyncio.sleep(interval_sec)
+    status = SESSION_ABORTED if abort_reason else (
+        SESSION_DRY_RUN if dry_run else SESSION_OK
+    )
+    return {
+        "note": TAPE_NOTE,
+        "status": status,
+        "abort_reason": abort_reason,
+        "started_at": started.isoformat(),
+        "duration_min": duration_min,
+        "interval_sec": interval_sec,
+        "captures_planned": captures_planned,
+        "captures_run": len(captures),
+        "provider_calls": provider_calls,
+        "capture_statuses": [c["status"] for c in captures],
+        "session_summary": summarize_session(session, run_ids, top=top),
+        "tape_run_ids": run_ids,
+    }
 
 
 def build_tape_report(session: Session, hours: int = 24, top: int = 5) -> dict:
