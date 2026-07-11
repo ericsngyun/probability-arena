@@ -1703,3 +1703,23 @@ Deployed **`b932c06` → `7270ca8`** by `git pull --ff-only`. **No migration** (
 **Rollback plan:** restore `TICK_RETENTION_DAYS=3` from `.env.20260711T212811Z.pre-ops014` (stops further narrowing); pruned raw ticks are recoverable only from `backup-20260711T212716Z.db.gz`. Buckets carry the 90d aggregate history regardless. Any further reduction (toward 24–48h) is a NEW explicitly-accepted milestone.
 
 No other flags changed; no timers; no forecast/MarketOps/EDGE-AUTO/MEME/Polymarket/tennis behavior touched.
+
+## TENNIS-CAPTURE-SESSION-001 — bounded session helper deployed (2026-07-11, ~21:55 UTC)
+
+Deployed **`3bf417b` → `0e475ee`** by `git pull --ff-only` (the pull also carried the docs-only **FRONTIER-REVIEW-CONTEXT-002** packet, `4962ce2` — flagged intentionally this time). **No migration** (`0025 (head)`), no timer, no daemon, no flags, no provider-key changes; MarketOps/EDGE-AUTO/forecasts/gates unchanged. New capability: `tennis-tape-capture-session --duration-min N --interval-sec N --limit N [--dry-run]` — repeated `capture_once` passes in ONE invocation, then exit. Hard caps: duration ≤60 min, interval clamped 30–300s, ≤60 captures/session, provider-call caps inherited. Aborts immediately on abnormal capture status or a detectable MarketOps error.
+
+| item | value |
+|---|---|
+| pushed / deployed commit | **`0e475ee`** (origin/main + EVO-X2; incl. docs-only `4962ce2`) |
+| migration / timer / daemon / flags | **none / none / none / none** |
+| tests at commit | 1497 passed / 2 skipped; vocab/safety audit clean |
+
+**Validation (21:54 UTC):**
+- Plain dry-run session (no provider): **`status=aborted` after capture 1 with honest reason `skipped_provider_gap`** — the abort-on-error path proven live; 0 provider calls.
+- Inline `api_tennis` dry-run session (1 min / 30s / limit 10): **2/2 clean captures**, 4 bounded provider calls, per-capture statuses rendered, session summary honestly unavailable for dry-run.
+- **Persistence proof: tape runs unchanged at 30** — dry-run sessions persist nothing.
+- Goalserve probe re-verified inert in preflight (`no_key`, 0 calls).
+
+**Health (unchanged):** MarketOps #1909 `ok`; frontier `safety_ok=True`; DB 2,750.43 MiB flat (post-OPS-014 steady state); aggregation coverage healthy. **Safety audit** (expanded vocabulary incl. markov, 79 files): only the two long-standing Kalshi RSA references.
+
+**Recommendation: KEEP — manual/report-only.** Use for **explicitly-approved live-window tennis market-only sessions** while the Goalserve key is pending (each session = one approved invocation, e.g. `--duration-min 30 --interval-sec 60 --limit 60`, with the ordering fix choosing the books and top-movers printed in the session summary). Real (non-dry-run) sessions still require explicit approval per run. **Rollback:** `git reset --hard 3bf417b` — additive helper only.
