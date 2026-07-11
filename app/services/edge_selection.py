@@ -102,6 +102,37 @@ VALIDATED_PREFERRED_N = 150     # preferred final_n
 VALIDATED_TOWARD_60 = 0.55      # 60m moved-toward rate
 FAIL_TOWARD_FLOOR = 0.50        # failure gate: toward below this on a future window
 
+# EDGE-RETIRE-001: all six candidates RETIRED on out-of-sample evidence
+# (docs/EDGE_SELECTION_RETIREMENT_2026_07_10.md). Retired policies remain in
+# the frozen registry for registry/observation purposes but are ineligible
+# for any live gate/paper/MVP discussion; resurrection requires a NEW prereg
+# document with a NEW lock.
+RETIREMENT_DOC = "docs/EDGE_SELECTION_RETIREMENT_2026_07_10.md"
+RETIRED_AT = "2026-07-11T07:15:00+00:00"
+RETIRED_CANDIDATES: dict[str, dict] = {
+    "require_gap_follows_move_totals_only": {
+        "discovery": "0.539/+0.42", "validation": "0.286/-1.22"},
+    "require_gap_follows_move_exclude_spreads": {
+        "discovery": "0.459/+0.26", "validation": "0.261/-1.52"},
+    "gap_follows_move_and_high_liquidity": {
+        "discovery": "0.483/+0.35", "validation": "0.220/-1.74"},
+    "gap_follows_move_and_tight_spread": {
+        "discovery": "0.404/+0.24", "validation": "0.232/-1.38"},
+    "total_only": {
+        "discovery": "0.380/-0.11", "validation": "0.349/-0.06"},
+    "exclude_spread_markets": {
+        "discovery": "0.335/-0.22", "validation": "0.337/-0.25"},
+}
+RETIREMENT_CONCLUSION = (
+    "the 18-policy search OVERFIT: all six pre-registered candidates failed "
+    "their first substantial out-of-sample window (some inverted to far worse "
+    "than baseline) while the negative control outperformed them, and the "
+    "cost-adjusted view had independently killed every cohort. No retired "
+    "policy is eligible for any live gate, paper-trading discussion, or "
+    "MVP-005B step; a successor hypothesis requires a NEW prereg + NEW lock "
+    "and should be mechanism-first, with cost-adjusted gates from day one."
+)
+
 WINDOW_DISCOVERY = "discovery"
 WINDOW_VALIDATION = "validation"
 WINDOW_MIXED = "mixed"
@@ -261,6 +292,12 @@ class EdgeSelectionValidationReportService:
             summary["role"] = role
             summary["prereg_alias"] = alias
             summary.update(evaluate_gates(summary, window_type, role))
+            if name in RETIRED_CANDIDATES:
+                summary["retired"] = True
+                summary["status_reason"] += (
+                    " [RETIRED per EDGE-RETIRE-001 — registry observation "
+                    "only; ineligible for live gate/paper/MVP]"
+                )
             # trim keys this protocol report does not need
             summary.pop("signal_type_mix", None)
             summary.pop("gap_sign_mix", None)

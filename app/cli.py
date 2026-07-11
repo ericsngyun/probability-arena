@@ -2294,6 +2294,60 @@ async def tennis_goalserve_probe(
             session.close()
 
 
+async def edge_selection_retirement_report(session=None) -> int:
+    """EDGE-RETIRE-001 experiment-registry report: the frozen retirement
+    record (discovery vs out-of-sample vs cost) plus the CURRENT post-lock
+    behavior of the retired policies (observation only). Changes nothing;
+    never advice. Returns retired-candidate count."""
+    from app.services.edge_selection import (
+        PREREG_LOCKED_AT,
+        RETIRED_AT,
+        RETIRED_CANDIDATES,
+        RETIREMENT_CONCLUSION,
+        RETIREMENT_DOC,
+        EdgeSelectionValidationReportService,
+    )
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        print("edge-selection retirement report — experiment registry only, never advice")
+        print(f"retirement record: {RETIREMENT_DOC} (retired_at={RETIRED_AT})")
+        print(f"prereg lock: {PREREG_LOCKED_AT.isoformat()}")
+        print("\nretired candidates (frozen record — discovery vs out-of-sample, 60m toward/closure):")
+        for name, rec in RETIRED_CANDIDATES.items():
+            print(f"  {name:<44} discovery={rec['discovery']:<12} validation={rec['validation']}")
+        print(f"\nconclusion: {RETIREMENT_CONCLUSION}")
+        print("\ncurrent post-lock behavior (live re-measurement — registry observation only):")
+        r = EdgeSelectionValidationReportService().build(
+            session, since=PREREG_LOCKED_AT
+        )
+        print(f"  window: {r['window']['start']} .. {r['window']['end']}  type={r['window']['type']}")
+        print(f"  population={r['population']}")
+        for p in r["policies"]:
+            ft60 = p["follow_through"].get("60m", {})
+            retired = " [RETIRED]" if p.get("retired") else ""
+            print(
+                f"  {p['name']:<44} n={p['final_n']:<4} "
+                f"toward={ft60.get('moved_toward_rate')} "
+                f"closure={ft60.get('mean_gap_closure_pct')} -> {p['status']}{retired}"
+            )
+        print(f"\n{r['mvp_005b_note']}")
+        print(
+            "resurrection rule: a retired policy is ineligible for live "
+            "gate/paper/MVP regardless of future windows; a NEW prereg + NEW "
+            "lock is required for any successor hypothesis."
+        )
+        return len(RETIRED_CANDIDATES)
+    finally:
+        if owns_session:
+            session.close()
+
+
 async def forecast_anchor_diagnostic_report(hours: int = 24, top: int = 5, session=None) -> int:
     """FORECAST-ANCHOR-001 read-only diagnostic: when the market moved between
     the PRIOR forecast and this measurement, did the forecast move too? Per-row
@@ -4418,6 +4472,10 @@ def build_parser() -> argparse.ArgumentParser:
     es_parser.add_argument(
         "--until", type=str, default=None, help="ISO window end (default: now)"
     )
+    subparsers.add_parser(
+        "edge-selection-retirement-report",
+        help="EDGE-RETIRE-001: frozen retirement record + current post-lock behavior of retired policies (registry only; never advice)",
+    )
     ec_parser = subparsers.add_parser(
         "edge-cost-shadow-report",
         help="COST-MODEL-001: cost-adjusted follow-through — spread/fee/executable-touch friction over existing rows (read-only; never advice)",
@@ -4830,6 +4888,9 @@ def main(argv: list[str] | None = None) -> int:
                 hours=args.hours, since=args.since, until=args.until
             )
         )
+        return 0 if n >= 0 else 1
+    if args.command == "edge-selection-retirement-report":
+        n = asyncio.run(edge_selection_retirement_report())
         return 0 if n >= 0 else 1
     if args.command == "edge-cost-shadow-report":
         n = asyncio.run(edge_cost_shadow_report(hours=args.hours, top=args.top))
