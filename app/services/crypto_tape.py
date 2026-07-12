@@ -880,3 +880,193 @@ def build_tape_report(session: Session, hours: int = 24, top: int = 5) -> dict:
             "no sizing, no orders, no wallets, no execution"
         ),
     }
+
+
+# --- CRYPTO-TAPE-CADENCE-001: bounded manual tape session ----------------------
+# A convenience wrapper over run_once so repeated passes can MATURE the
+# 15m/1h/6h/24h survival horizons (CRYPTO-RETROSPECT-001 found provider_gap
+# dominating precisely because horizons lacked observations). NOT a timer,
+# NOT a daemon, NOT autonomous: one invocation runs a fixed, hard-capped
+# number of derived (zero-external-call) passes with a sleep between, then
+# exits. Aborts on abnormal capture status or a detectable MarketOps error.
+# Dry-run persists nothing: it prints the planned schedule and runs exactly
+# ONE dry probe pass — it never sleeps and never loops.
+
+SESSION_MAX_DURATION_HOURS = 36
+SESSION_INTERVAL_MIN_MINUTES = 15
+SESSION_INTERVAL_MAX_MINUTES = 120
+SESSION_MAX_CAPTURES = 144  # 36h at the 15-minute floor
+
+SESSION_OK = "ok"
+SESSION_DRY_RUN = "dry_run"
+SESSION_ABORTED = "aborted"
+
+SESSION_NOTE = (
+    "Bounded manual tape session: repeated derived lifecycle passes so the "
+    "15m/1h/6h/24h survival horizons can mature. Zero external calls, zero "
+    "provider-budget impact (each pass reads persisted rows only). Not a "
+    "timer, not a daemon, never autonomous; measurement only, never advice."
+)
+
+
+def _marketops_degraded(session: Session) -> bool:
+    """Cheap detectable health check: latest MarketOps run errored. Mirrors
+    the tennis session helper; kept local so the crypto lane imports no
+    tennis/adapter modules."""
+    try:
+        from app.models import MarketOpsRun
+
+        latest = session.execute(
+            select(MarketOpsRun).order_by(MarketOpsRun.id.desc()).limit(1)
+        ).scalars().first()
+        return bool(latest is not None and latest.status == "error")
+    except Exception:  # pragma: no cover - defensive
+        return False
+
+
+def summarize_tape_session(session: Session, run_ids: list[int]) -> dict:
+    """Post-session maturity view over the runs this session persisted.
+    Read-only; empty for dry-run sessions (nothing persisted)."""
+    if not run_ids:
+        return {"available": False, "reason": "no persisted runs (dry-run session)"}
+    runs = list(session.execute(
+        select(CryptoTokenLifecycleRun).where(
+            CryptoTokenLifecycleRun.id.in_(run_ids)
+        )
+    ).scalars().all())
+    outcomes = list(session.execute(
+        select(CryptoTokenSurvivalOutcome).where(
+            CryptoTokenSurvivalOutcome.last_run_id.in_(run_ids)
+        )
+    ).scalars().all())
+    totals = {
+        "birth_events": sum(r.birth_events_created for r in runs),
+        "snapshots": sum(r.snapshots_created for r in runs),
+        "actor_observations": sum(r.actor_observations_created for r in runs),
+        "outcomes_updated": sum(r.outcomes_updated for r in runs),
+    }
+    horizon_maturity = {}
+    for label, _ in HORIZONS:
+        key = f"survived_{label}"
+        known = sum(1 for o in outcomes if getattr(o, key) is not None)
+        horizon_maturity[key] = {"known": known, "unknown": len(outcomes) - known}
+    return {
+        "available": True,
+        "runs": len(runs),
+        "totals": totals,
+        "outcomes_tracked": len(outcomes),
+        "outcomes_final": sum(1 for o in outcomes if o.final),
+        "horizon_maturity": horizon_maturity,
+        "provider_gap_true": sum(1 for o in outcomes if o.provider_gap is True),
+        "db_impact_rows": len(runs) + totals["birth_events"] + totals["snapshots"]
+        + totals["actor_observations"] + totals["outcomes_updated"],
+    }
+
+
+async def run_tape_session(
+    session: Session,
+    recorder: CryptoLifecycleTapeRecorder | None = None,
+    duration_hours: int = 6,
+    interval_min: int = 30,
+    limit: int | None = None,
+    hours: int | None = None,
+    dry_run: bool = False,
+    sleeper=None,
+) -> dict:
+    """Bounded manual tape session: a fixed, hard-capped number of derived
+    run_once passes with a sleep between, then exit. Aborts on abnormal pass
+    status or a detectable MarketOps error. Measurement only — never advice."""
+    import asyncio
+
+    sleeper = sleeper or asyncio.sleep
+    duration_hours = max(1, min(duration_hours, SESSION_MAX_DURATION_HOURS))
+    interval_min = max(
+        SESSION_INTERVAL_MIN_MINUTES, min(interval_min, SESSION_INTERVAL_MAX_MINUTES)
+    )
+    captures_planned = min(
+        max(1, (duration_hours * 60) // interval_min), SESSION_MAX_CAPTURES
+    )
+    recorder = recorder or CryptoLifecycleTapeRecorder()
+    started = _now()
+    planned_schedule_min = [i * interval_min for i in range(captures_planned)]
+
+    if dry_run:
+        # one dry probe proves the pass works; nothing persisted, no sleeping
+        probe = recorder.run_once(session, limit=limit, hours=hours, dry_run=True)
+        return {
+            "note": SESSION_NOTE,
+            "status": SESSION_DRY_RUN,
+            "abort_reason": None,
+            "started_at": started.isoformat(),
+            "duration_hours": duration_hours,
+            "interval_min": interval_min,
+            "captures_planned": captures_planned,
+            "captures_run": 1,
+            "capture_statuses": [probe["status"]],
+            "planned_schedule_min": planned_schedule_min,
+            "probe": {
+                "tokens_considered": probe["tokens_considered"],
+                "external_calls": probe["external_calls"],
+                "survival_label_mix": probe["survival_label_mix"],
+            },
+            "provider_gap_trend": None,
+            "session_summary": {"available": False,
+                                "reason": "no persisted runs (dry-run session)"},
+            "tape_run_ids": [],
+        }
+
+    captures: list[dict] = []
+    run_ids: list[int] = []
+    abort_reason = None
+    for i in range(captures_planned):
+        try:
+            result = recorder.run_once(session, limit=limit, hours=hours)
+        except Exception as exc:  # run_once records + re-raises; session aborts
+            abort_reason = f"capture {i + 1} raised {type(exc).__name__}"
+            break
+        captures.append(result)
+        if result.get("tape_run_id"):
+            run_ids.append(result["tape_run_id"])
+        if result["status"] != STATUS_OK:
+            abort_reason = f"capture {i + 1} status={result['status']}"
+            break
+        if _marketops_degraded(session):
+            abort_reason = "latest MarketOps run errored"
+            break
+        if i < captures_planned - 1:
+            await sleeper(interval_min * 60)
+
+    def gap_share(capture: dict) -> float | None:
+        tokens = capture.get("tokens_considered") or 0
+        if not tokens:
+            return None
+        return round(capture["survival_label_mix"].get("provider_gap", 0) / tokens, 4)
+
+    trend = None
+    if len(captures) >= 2:
+        first, last = gap_share(captures[0]), gap_share(captures[-1])
+        if first is not None and last is not None:
+            trend = {
+                "first_capture_gap_share": first,
+                "last_capture_gap_share": last,
+                "direction": (
+                    "improving" if last < first
+                    else ("worsening" if last > first else "flat")
+                ),
+            }
+
+    return {
+        "note": SESSION_NOTE,
+        "status": SESSION_ABORTED if abort_reason else SESSION_OK,
+        "abort_reason": abort_reason,
+        "started_at": started.isoformat(),
+        "duration_hours": duration_hours,
+        "interval_min": interval_min,
+        "captures_planned": captures_planned,
+        "captures_run": len(captures),
+        "capture_statuses": [c["status"] for c in captures],
+        "planned_schedule_min": planned_schedule_min,
+        "provider_gap_trend": trend,
+        "session_summary": summarize_tape_session(session, run_ids),
+        "tape_run_ids": run_ids,
+    }

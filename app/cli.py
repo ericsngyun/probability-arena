@@ -1413,6 +1413,80 @@ async def crypto_tape_run_once(
             session.close()
 
 
+async def crypto_tape_session(
+    duration_hours: int = 6, interval_min: int = 30, limit: int | None = None,
+    dry_run: bool = False, session=None,
+) -> int:
+    """CRYPTO-TAPE-CADENCE-001 bounded manual tape session: a fixed, hard-capped
+    number of derived run_once passes in ONE invocation, then exit — not a
+    timer, not a daemon, never autonomous. Zero external calls. Aborts on
+    abnormal pass status or detectable MarketOps error. Measurement only;
+    never advice. Returns captures run."""
+    from app.services.crypto_tape import run_tape_session
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        r = await run_tape_session(
+            session, duration_hours=duration_hours, interval_min=interval_min,
+            limit=limit, dry_run=dry_run,
+        )
+        print("crypto tape session — measurement only, never advice")
+        print(r["note"])
+        print(
+            f"status={r['status']}"
+            + (f"  ABORT: {r['abort_reason']}" if r["abort_reason"] else "")
+        )
+        print(
+            f"duration_hours={r['duration_hours']}  interval_min={r['interval_min']}  "
+            f"captures={r['captures_run']}/{r['captures_planned']}"
+        )
+        schedule = r["planned_schedule_min"]
+        preview = ", ".join(f"+{m}m" for m in schedule[:8])
+        print(
+            f"planned schedule: {preview}"
+            + (f" … (+{len(schedule) - 8} more)" if len(schedule) > 8 else "")
+        )
+        print(f"capture_statuses={r['capture_statuses']}")
+        if r.get("probe"):
+            p = r["probe"]
+            print(
+                f"dry probe: tokens_considered={p['tokens_considered']}  "
+                f"external_calls={p['external_calls']}  "
+                f"labels={p['survival_label_mix']}"
+            )
+        if r["provider_gap_trend"]:
+            t = r["provider_gap_trend"]
+            print(
+                f"provider_gap share: first={t['first_capture_gap_share']} "
+                f"last={t['last_capture_gap_share']} ({t['direction']})"
+            )
+        s = r["session_summary"]
+        if s.get("available"):
+            print(
+                f"session: runs={s['runs']}  totals={s['totals']}  "
+                f"outcomes_tracked={s['outcomes_tracked']} "
+                f"(final={s['outcomes_final']})"
+            )
+            print("horizon maturity (known/unknown):")
+            for label, mix in s["horizon_maturity"].items():
+                print(f"  {label:<14} {mix['known']}/{mix['unknown']}")
+            print(
+                f"provider_gap_true={s['provider_gap_true']}  "
+                f"db_impact_rows={s['db_impact_rows']}"
+            )
+        else:
+            print(f"session summary: {s['reason']}")
+        return r["captures_run"]
+    finally:
+        if owns_session:
+            session.close()
+
+
 async def crypto_tape_report(hours: int = 24, top: int = 5, session=None) -> int:
     """CRYPTO-TAPE-001 tape report: volumes, provider coverage, survival label
     distribution, risk distribution, actor-pattern examples, missing data.
@@ -4638,6 +4712,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     tape_report_parser.add_argument("--hours", type=int, default=24)
     tape_report_parser.add_argument("--top", type=int, default=5)
+    tape_session_parser = subparsers.add_parser(
+        "crypto-tape-session",
+        help="Bounded manual tape session to mature survival horizons "
+             "(CRYPTO-TAPE-CADENCE-001; not a timer, zero external calls)",
+    )
+    tape_session_parser.add_argument("--duration-hours", type=int, default=6)
+    tape_session_parser.add_argument("--interval-min", type=int, default=30)
+    tape_session_parser.add_argument("--limit", type=int, default=None)
+    tape_session_parser.add_argument(
+        "--dry-run", action="store_true",
+        help="print the planned schedule + one dry probe; persist nothing",
+    )
     retro_parser = subparsers.add_parser(
         "crypto-retrospect-report",
         help="Retrospective feature/outcome separation analysis "
@@ -5102,6 +5188,14 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if n >= 0 else 1
     if args.command == "crypto-tape-report":
         n = asyncio.run(crypto_tape_report(hours=args.hours, top=args.top))
+        return 0 if n >= 0 else 1
+    if args.command == "crypto-tape-session":
+        n = asyncio.run(
+            crypto_tape_session(
+                duration_hours=args.duration_hours, interval_min=args.interval_min,
+                limit=args.limit, dry_run=args.dry_run,
+            )
+        )
         return 0 if n >= 0 else 1
     if args.command == "crypto-retrospect-report":
         n = asyncio.run(crypto_retrospect_report(hours=args.hours, top=args.top))

@@ -285,6 +285,12 @@ wallet/swap/signing/execution/sizing/paper trading.
 .venv/bin/python -m app.cli crypto-tape-run-once --limit 25 --hours 48 --dry-run  # compute + report, persists NOTHING
 .venv/bin/python -m app.cli crypto-tape-run-once --limit 25 --hours 48            # persists ONLY lifecycle tape rows
 .venv/bin/python -m app.cli crypto-tape-report --hours 24 --top 5                 # coverage, survival labels, actor patterns
+.venv/bin/python -m app.cli crypto-tape-session --duration-hours 6 --interval-min 30 --limit 25 [--dry-run]
+   # CRYPTO-TAPE-CADENCE-001: bounded repeated passes to mature horizons — one
+   # invocation, hard caps (<=36h, 15-120min, <=144 captures), aborts on
+   # abnormal status/MarketOps error; NOT a timer; dry-run persists nothing.
+   # Real sessions require explicit approval per invocation (long-lived
+   # foreground process on a shared host — run inside tmux/screen).
 ```
 
 One DERIVED assembly pass consolidating already-persisted rows (crypto

@@ -395,7 +395,10 @@ It makes **zero external calls and has zero provider-budget impact**; fields no 
 python -m app.cli crypto-tape-run-once --limit 25 --hours 48 --dry-run  # compute + report, persist nothing
 python -m app.cli crypto-tape-run-once --limit 25 --hours 48            # persist ONLY lifecycle tape rows
 python -m app.cli crypto-tape-report --hours 24 --top 5                 # coverage, survival labels, actor patterns
+python -m app.cli crypto-tape-session --duration-hours 6 --interval-min 30 --limit 25 [--dry-run]  # bounded repeated passes (CRYPTO-TAPE-CADENCE-001)
 ```
+
+**Session helper (CRYPTO-TAPE-CADENCE-001):** `crypto-tape-session` runs a fixed, hard-capped number of `run_once` passes in ONE invocation with a sleep between, then exits — not a timer, not a daemon, never autonomous. It exists because survival horizons only mature when the tape observes tokens repeatedly (CRYPTO-RETROSPECT-001 found provider gaps dominating for exactly this reason). Hard caps: duration ≤36h, interval clamped 15–120 min, ≤144 captures/session; aborts on abnormal pass status or a detectable MarketOps error. Each pass is the same derived, zero-external-call assembly. `--dry-run` prints the planned schedule and runs exactly one dry probe — nothing persisted, no sleeping. The session summary reports captures, rows written, horizon maturity (known/unknown per horizon), and the provider-gap share trend across captures.
 
 No new flag, no timer, no scheduled path (a later milestone would gate that); MarketOps is unchanged. A survival label is measured token behavior — no EV, no recommendation, no sizing, no paper trading, no orders, no wallets/keys/swaps/signing/execution.
 
