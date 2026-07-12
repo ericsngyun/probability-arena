@@ -399,6 +399,18 @@ python -m app.cli crypto-tape-report --hours 24 --top 5                 # covera
 
 No new flag, no timer, no scheduled path (a later milestone would gate that); MarketOps is unchanged. A survival label is measured token behavior — no EV, no recommendation, no sizing, no paper trading, no orders, no wallets/keys/swaps/signing/execution.
 
+## Crypto retrospective analysis (CRYPTO-RETROSPECT-001)
+
+**Which persisted features actually separate the lifecycle outcomes?** A compute-on-demand measurement layer (like MEME-SHADOW: no table, no migration, nothing persisted, zero external calls, zero provider-budget impact) that joins observable features to the CRYPTO-TAPE-001 survival outcomes over the recent token universe. Persisted tape birth events are preferred as anchors; other tokens get an on-the-fly derivation from the same already-persisted rows (never written back).
+
+```bash
+python -m app.cli crypto-retrospect-report --hours 48 --top 5
+```
+
+Feature dimensions: top10/sniper/insider/bundler/creator concentration buckets (thresholds anchored to the risk engine's), risk level/score, per-risk-reason cohorts, liquidity depth, volume-to-liquidity shape, boost/attention, social metadata presence, launch venue (launchpad vs AMM), graduation, provider coverage, and per-missing-info cohorts. Outcomes: `survived_15m/1h/6h/24h`, `liquidity_removed`, `dead_volume`, `severe_risk`, `graduated_or_migrated`, `provider_gap` — immature/unmeasurable outcomes stay unknown and never enter a rate.
+
+Interpretation is deliberately conservative: cohorts under 12 samples are `too_thin`; a dimension whose primary outcome is mostly unmeasurable is `provider_gap_dominates`; otherwise the best-vs-worst measured-cohort rate delta yields `no_separation` (<0.10), `weak_separator` (≥0.10), or `strong_risk_separator`/`strong_survival_separator` (≥0.25). A separation label is evidence about feature/label quality for review triage and future milestone design — never advice, never EV, never a trade direction.
+
 ## MarketOps Autopilot (OPS-006)
 
 **Read-only coordination, not new capability.** One autopilot cycle sequences the existing services: inspect fresh signals → auto-promote top-N → process promoted (fresh enrichment/assessment/research/forecast via whatever the env flags select) → crypto scan → outcome sync → forecast scoring → champion/challenger snapshot → local DB alerts → one `marketops_runs` audit row. Every stage is individually guarded — a failing stage records its error in the run summary plus a `provider_error` alert and the cycle continues (`MARKETOPS_FAIL_FAST=false`). The autopilot can promote, process, research, forecast, score, and report; it **cannot trade, paper trade, calculate EV, size positions, place orders, or move money** — those capabilities do not exist anywhere in this codebase.

@@ -299,6 +299,21 @@ never PnL/EV/recommendation/sizing/order. **Deployed dark 2026-07-12
 (`b4362c8`, migration 0026, tape_run_id=1 validated live — see
 DEPLOYMENT_REPORT_EVO_X2.md); manual/report-only, no timer.**
 
+### CRYPTO-RETROSPECT-001 retrospective analysis (read-only, on-demand, NO timer)
+
+```bash
+.venv/bin/python -m app.cli crypto-retrospect-report --hours 48 --top 5   # which features separate tape outcomes? (measurement)
+```
+
+Joins persisted features (concentration/risk/liquidity/volume/boost/attention/
+social/venue/coverage/missing-info buckets) to the CRYPTO-TAPE-001 survival
+outcomes over the recent token universe, with conservative labels (`too_thin`
+/ `provider_gap_dominates` / `no_separation` / `weak_separator` /
+`strong_risk_separator` / `strong_survival_separator`). **No table/migration,
+persists nothing, no external call, no SolanaTracker budget impact, no
+timer.** A separation label is feature-quality evidence, never advice. Deploy
+is code-only, dark-by-default; **do not deploy unless explicitly asked.**
+
 ### MEME-SHADOW-001 label follow-through (read-only, on-demand, NO timer)
 
 ```bash

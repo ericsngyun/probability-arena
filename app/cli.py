@@ -1474,6 +1474,82 @@ async def crypto_tape_report(hours: int = 24, top: int = 5, session=None) -> int
             session.close()
 
 
+async def crypto_retrospect_report(hours: int = 48, top: int = 5, session=None) -> int:
+    """CRYPTO-RETROSPECT-001 retrospective feature/outcome analysis: which
+    persisted features separate the lifecycle-tape survival outcomes?
+    Compute-on-demand; persists nothing; no external call; never advice.
+    Returns tokens analyzed."""
+    from app.services.crypto_retrospect import build_retrospect_report
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        r = build_retrospect_report(session, hours=hours, top=top)
+        print("crypto retrospective report — measurement only, never advice")
+        print(r["note"])
+        print(
+            f"\nwindow={r['window_hours']}h  generated_at={r['generated_at']}"
+            f"\ntokens_analyzed={r['tokens_analyzed']} "
+            f"(tape_backed={r['tape_backed_tokens']}, "
+            f"derived_only={r['derived_only_tokens']}"
+            + (f", TRUNCATED at {r['universe_cap']}" if r["universe_truncated"] else "")
+            + ")"
+        )
+        print("outcome totals (true/false/unknown; unknown = immature or gap):")
+        for outcome, mix in r["outcome_totals"].items():
+            print(f"  {outcome:<22} {mix['true']}/{mix['false']}/{mix['unknown']}")
+        if r["best_separators"]:
+            print("best separators (max measured-cohort rate delta):")
+            for s in r["best_separators"]:
+                print(
+                    f"  {s['dimension']:<24} {s['label']:<26} "
+                    f"delta={s['max_delta']} on {s['driving_outcome']}"
+                )
+        if r["worst_separators"]:
+            print("worst separators:")
+            for s in r["worst_separators"]:
+                print(
+                    f"  {s['dimension']:<24} {s['label']:<26} "
+                    f"delta={s['max_delta']} on {s['driving_outcome']}"
+                )
+        if r["unreadable_dimensions"]:
+            print("unreadable dimensions (honest gaps):")
+            for d in r["unreadable_dimensions"]:
+                print(f"  {d['dimension']:<24} {d['label']:<26} {d['basis']}")
+        print("\nper-dimension cohorts (n, survival_1h / liq_removed / dead_vol / severe / gap rates):")
+        for dim in r["dimensions"]:
+            interp = dim["interpretation"]
+            print(f"  == {dim['dimension']} [{interp['label']}] {interp.get('basis', '')}")
+            for c in dim["cohorts"][: max(top, 4)]:
+                o = c["outcomes"]
+
+                def fmt(name):
+                    rate = o[name]["rate"]
+                    return "n/a" if rate is None else f"{rate}"
+
+                print(
+                    f"     {c['cohort']:<20} n={c['n']:<4} [{c['label']}] "
+                    f"surv1h={fmt('survived_1h')} liq_rm={fmt('liquidity_removed')} "
+                    f"dead={fmt('dead_volume')} severe={fmt('severe_risk')} "
+                    f"gap={fmt('provider_gap')}"
+                )
+                if c["label"] == "measured" and c["examples"]:
+                    ex = c["examples"][0]
+                    print(
+                        f"       e.g. {ex['symbol'] or '?'} {ex['token']} "
+                        f"{ex['outcomes'] or '(no true labels yet)'}"
+                    )
+        print(f"\ndisclaimer: {r['disclaimer']}")
+        return r["tokens_analyzed"]
+    finally:
+        if owns_session:
+            session.close()
+
+
 async def edge_precheck(
     limit: int = 50,
     force_readonly: bool = False,
@@ -4562,6 +4638,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     tape_report_parser.add_argument("--hours", type=int, default=24)
     tape_report_parser.add_argument("--top", type=int, default=5)
+    retro_parser = subparsers.add_parser(
+        "crypto-retrospect-report",
+        help="Retrospective feature/outcome separation analysis "
+             "(CRYPTO-RETROSPECT-001; compute-on-demand, never advice)",
+    )
+    retro_parser.add_argument("--hours", type=int, default=48)
+    retro_parser.add_argument("--top", type=int, default=5)
     mrc_parser = subparsers.add_parser(
         "meme-risk-coverage-report",
         help="Holder-risk coverage for the meme-news lane (read-only)",
@@ -5019,6 +5102,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if n >= 0 else 1
     if args.command == "crypto-tape-report":
         n = asyncio.run(crypto_tape_report(hours=args.hours, top=args.top))
+        return 0 if n >= 0 else 1
+    if args.command == "crypto-retrospect-report":
+        n = asyncio.run(crypto_retrospect_report(hours=args.hours, top=args.top))
         return 0 if n >= 0 else 1
     if args.command == "meme-risk-coverage-report":
         n = asyncio.run(meme_risk_coverage_report(hours=args.hours))

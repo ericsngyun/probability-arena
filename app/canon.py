@@ -30,6 +30,8 @@ ALLOWED_CAPABILITIES = (
     "crypto risk engine (heuristic + provider risk scoring; avoid/flag verdicts only)",
     "crypto lifecycle tape (read-only replayable token lifecycle recording + "
     "survival labels, derived from already-persisted rows)",
+    "crypto retrospective analysis (compute-on-demand feature/outcome "
+    "separation measurement; conservative labels, never advice)",
     "marketops autopilot (read-only coordination: promote/process/scan/score/report/alert)",
     "edge precheck (probability-gap measurement only; no EV, no advice, no actions)",
     "frontier evaluation (full-desk measurement quality + conservative readiness labels)",
