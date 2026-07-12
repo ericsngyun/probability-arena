@@ -1360,6 +1360,120 @@ async def crypto_report(session=None) -> int:
             session.close()
 
 
+async def crypto_tape_run_once(
+    limit: int | None = None, hours: int | None = None,
+    dry_run: bool = False, session=None,
+) -> int:
+    """CRYPTO-TAPE-001 lifecycle tape assembly: consolidate already-persisted
+    surveillance rows into birth events, lifecycle snapshots, actor
+    observations, and survival outcomes. Zero external calls; dry-run persists
+    nothing. Research infrastructure only — never advice. Returns tokens
+    considered."""
+    from app.services.crypto_tape import CryptoLifecycleTapeRecorder
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        r = CryptoLifecycleTapeRecorder().run_once(
+            session, limit=limit, hours=hours, dry_run=dry_run
+        )
+        print("crypto lifecycle tape — research infrastructure only, never advice")
+        print(f"status={r['status']}  external_calls={r['external_calls']}")
+        print(
+            f"window={r['window_hours']}h  tokens_considered={r['tokens_considered']}  "
+            f"birth_events={r['birth_events_created']}  "
+            f"snapshots={r['snapshots_created']}  "
+            f"actor_observations={r['actor_observations_created']}  "
+            f"outcomes={r['outcomes_updated']}"
+        )
+        print(
+            "provider coverage: "
+            + ", ".join(f"{k}={v}" for k, v in sorted(r["provider_coverage"].items()))
+        )
+        if r["survival_label_mix"]:
+            print(
+                "survival labels (true counts): "
+                + ", ".join(f"{k}={v}" for k, v in r["survival_label_mix"].items())
+            )
+        for e in r["examples"]:
+            print(
+                f"  {e['symbol'] or '?':<10} {e['token']:<16} "
+                f"launch={e['launch_source']} risk={e['risk_level']} "
+                f"top10={e['top10_holder_pct']} labels={e['labels']}"
+            )
+        if r.get("tape_run_id"):
+            print(f"tape_run_id={r['tape_run_id']}")
+        return r["tokens_considered"]
+    finally:
+        if owns_session:
+            session.close()
+
+
+async def crypto_tape_report(hours: int = 24, top: int = 5, session=None) -> int:
+    """CRYPTO-TAPE-001 tape report: volumes, provider coverage, survival label
+    distribution, risk distribution, actor-pattern examples, missing data.
+    DB-only; read-only; never advice. Returns tape run count."""
+    from app.services.crypto_tape import build_tape_report
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        r = build_tape_report(session, hours=hours, top=top)
+        print("crypto lifecycle tape report — research infrastructure only, never advice")
+        print(r["note"])
+        print(
+            f"\nwindow={r['window_hours']}h  generated_at={r['generated_at']}"
+            f"\ntape_runs={r['tape_runs']}  tokens_observed={r['tokens_observed']}  "
+            f"birth_events={r['birth_events_in_window']}  "
+            f"snapshots={r['snapshots_recorded']}  "
+            f"actor_observations={r['actor_observations_recorded']}"
+        )
+        print(
+            f"outcomes: computed={r['outcomes_computed']}  final={r['outcomes_final']}"
+        )
+        if r["provider_coverage_mix"]:
+            print(
+                "provider coverage: "
+                + ", ".join(f"{k}={v}" for k, v in r["provider_coverage_mix"].items())
+            )
+        if r["risk_level_mix"]:
+            print(
+                "risk levels: "
+                + ", ".join(f"{k}={v}" for k, v in r["risk_level_mix"].items())
+            )
+        print("survival labels (true/false/unknown):")
+        for label, mix in r["survival_labels"].items():
+            print(f"  {label:<22} {mix['true']}/{mix['false']}/{mix['unknown']}")
+        if r["actor_pattern_examples"]:
+            print("actor-pattern examples (most concentrated):")
+            for e in r["actor_pattern_examples"]:
+                print(
+                    f"  {e['token']:<16} top10={e['top10_holder_pct']} "
+                    f"sniper={e['sniper_pct']} insider={e['insider_pct']} "
+                    f"bundler={e['bundler_pct']} "
+                    f"creator_known={e['creator_address_known']}"
+                )
+        if r["missing_data_mix"]:
+            print(
+                "missing data: "
+                + ", ".join(f"{k}={v}" for k, v in r["missing_data_mix"].items())
+            )
+        print(f"db_impact_rows={r['db_impact_rows']}")
+        print(f"\ndisclaimer: {r['disclaimer']}")
+        return r["tape_runs"]
+    finally:
+        if owns_session:
+            session.close()
+
+
 async def edge_precheck(
     limit: int = 50,
     force_readonly: bool = False,
@@ -4431,6 +4545,23 @@ def build_parser() -> argparse.ArgumentParser:
         "crypto-provider-budget-report",
         help="SolanaTracker request accounting + budget status (read-only cost/usage)",
     )
+    tape_run_parser = subparsers.add_parser(
+        "crypto-tape-run-once",
+        help="One derived lifecycle-tape assembly pass (CRYPTO-TAPE-001; "
+             "no external calls, never advice)",
+    )
+    tape_run_parser.add_argument("--limit", type=int, default=None)
+    tape_run_parser.add_argument("--hours", type=int, default=None)
+    tape_run_parser.add_argument(
+        "--dry-run", action="store_true", help="compute and report; persist nothing"
+    )
+    tape_report_parser = subparsers.add_parser(
+        "crypto-tape-report",
+        help="Lifecycle tape report: coverage, survival labels, actor patterns "
+             "(read-only)",
+    )
+    tape_report_parser.add_argument("--hours", type=int, default=24)
+    tape_report_parser.add_argument("--top", type=int, default=5)
     mrc_parser = subparsers.add_parser(
         "meme-risk-coverage-report",
         help="Holder-risk coverage for the meme-news lane (read-only)",
@@ -4879,6 +5010,16 @@ def main(argv: list[str] | None = None) -> int:
         return asyncio.run(crypto_provider_health_report())
     if args.command == "crypto-provider-budget-report":
         return asyncio.run(crypto_provider_budget_report())
+    if args.command == "crypto-tape-run-once":
+        n = asyncio.run(
+            crypto_tape_run_once(
+                limit=args.limit, hours=args.hours, dry_run=args.dry_run
+            )
+        )
+        return 0 if n >= 0 else 1
+    if args.command == "crypto-tape-report":
+        n = asyncio.run(crypto_tape_report(hours=args.hours, top=args.top))
+        return 0 if n >= 0 else 1
     if args.command == "meme-risk-coverage-report":
         n = asyncio.run(meme_risk_coverage_report(hours=args.hours))
         return 0 if n >= 0 else 1

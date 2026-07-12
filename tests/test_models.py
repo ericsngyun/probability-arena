@@ -75,6 +75,12 @@ def test_schema_creates_all_tables(session):
         # POLY-002 — read-only Kalshi<->Polymarket cross-venue observation
         "cross_venue_observation_runs",
         "cross_venue_market_candidates",
+        # CRYPTO-TAPE-001 — read-only memecoin lifecycle tape (research only)
+        "crypto_token_lifecycle_runs",
+        "crypto_token_birth_events",
+        "crypto_token_lifecycle_snapshots",
+        "crypto_token_actor_observations",
+        "crypto_token_survival_outcomes",
     }
 
 

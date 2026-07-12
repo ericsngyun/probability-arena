@@ -383,6 +383,22 @@ python -m app.cli crypto-provider-budget-report   # plan/limit, requests today/h
 
 Operational targets: ≤150k/month, ≤5k/day, ≤200/hour, ≤20–30 lookups per 10-minute window. The guardrail can only **skip** optional SolanaTracker lookups — when a scan hits `SOLANA_TRACKER_PER_RUN_LOOKUP_LIMIT` (25) or the day reaches `SOLANA_TRACKER_STOP_DAILY_REQUESTS` (6000), further SolanaTracker calls are skipped and those tokens fall back to **GoPlus + heuristics** (a fully supported mode). It never adds calls, never changes **GoPlus/Birdeye** behavior, and defaults sit far above current usage so nothing is skipped under normal load — the STOP is a cost circuit breaker. Skips are logged and the report shows the WARN/STOP state, so the budget is never silently exceeded. No EV, paper trading, recommendations, sizing, orders, wallets/keys, signing, swaps, or execution.
 
+## Crypto lifecycle tape (CRYPTO-TAPE-001)
+
+**Read-only replayable token lifecycle recording — research infrastructure, never advice.** The tape moves the crypto lane from point-in-time scoring to lifecycle intelligence: token birth, early holder/actor structure, risk-provider enrichment, liquidity path, social metadata, and deterministic survival outcomes over 15m/1h/6h/24h horizons.
+
+The tape is **derived**: one assembly pass consolidates rows the existing lanes already persist (`crypto_tokens`/`crypto_pairs`/`crypto_price_ticks`/discovery events/risk assessments + meme attention snapshots/catalyst events) into five tape tables — `crypto_token_lifecycle_runs` (audit spine), `crypto_token_birth_events` (one per token: first evidence, launch source, first pair/dex, mint/freeze authority, metadata/social links, initial market state, bonding-curve state, raw provenance), `crypto_token_lifecycle_snapshots` (consolidated market + holder-concentration + risk + social/catalyst + quote-quality state per run, with per-source provenance ids), `crypto_token_actor_observations` (creator address/holding if a provider exposed one, sniper/insider/bundler counts, holder distribution; **public-chain addresses only**, with honest placeholders for first buyers and cohort/cluster refs), and `crypto_token_survival_outcomes` (per birth event, recomputed each run until the 24h window closes: `survived_15m/1h/6h/24h`, `liquidity_removed`, `dead_volume`, `severe_risk`, `graduated_or_migrated`, `provider_gap` — NULL means "not yet measurable or source gap", never a guess).
+
+It makes **zero external calls and has zero provider-budget impact**; fields no source ever provided stay NULL and are named in `missing_info`. Tape tables are not retention-pruned (they are the durable research record; only the raw ticks they were derived from are).
+
+```bash
+python -m app.cli crypto-tape-run-once --limit 25 --hours 48 --dry-run  # compute + report, persist nothing
+python -m app.cli crypto-tape-run-once --limit 25 --hours 48            # persist ONLY lifecycle tape rows
+python -m app.cli crypto-tape-report --hours 24 --top 5                 # coverage, survival labels, actor patterns
+```
+
+No new flag, no timer, no scheduled path (a later milestone would gate that); MarketOps is unchanged. A survival label is measured token behavior — no EV, no recommendation, no sizing, no paper trading, no orders, no wallets/keys/swaps/signing/execution.
+
 ## MarketOps Autopilot (OPS-006)
 
 **Read-only coordination, not new capability.** One autopilot cycle sequences the existing services: inspect fresh signals → auto-promote top-N → process promoted (fresh enrichment/assessment/research/forecast via whatever the env flags select) → crypto scan → outcome sync → forecast scoring → champion/challenger snapshot → local DB alerts → one `marketops_runs` audit row. Every stage is individually guarded — a failing stage records its error in the run summary plus a `provider_error` alert and the cycle continues (`MARKETOPS_FAIL_FAST=false`). The autopilot can promote, process, research, forecast, score, and report; it **cannot trade, paper trade, calculate EV, size positions, place orders, or move money** — those capabilities do not exist anywhere in this codebase.

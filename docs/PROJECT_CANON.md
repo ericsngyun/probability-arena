@@ -66,6 +66,7 @@ Parallel to that: watcher (60s ticks + signals; universe = top-scored candidates
 | market_price_tick_buckets | OPS-012 aggregated tick summaries (OHLC/spread/liquidity per fixed interval) — storage telemetry, never a trading signal |
 | tick_aggregation_runs | OPS-013 aggregation audit spine (per-pass counters, failed/oversized windows) — readiness evidence, never a trading surface |
 | crypto_tokens, crypto_pairs, crypto_token_discovery_events, crypto_token_risk_assessments, crypto_price_ticks, crypto_opportunity_signals, crypto_watcher_runs | Crypto Arena read-only surveillance (CRYPTO-001) |
+| crypto_token_lifecycle_runs, crypto_token_birth_events, crypto_token_lifecycle_snapshots, crypto_token_actor_observations, crypto_token_survival_outcomes | Crypto lifecycle tape (CRYPTO-TAPE-001; derived from persisted rows, zero external calls; survival labels are measured behavior, never advice) |
 | polymarket_markets, polymarket_orderbook_snapshots, polymarket_scout_runs, polymarket_domain_inventory_snapshots | Polymarket read-only market-data observer (POLY-001, second venue) |
 | cross_venue_observation_runs, cross_venue_market_candidates | Kalshi<->Polymarket read-only cross-venue observation (POLY-002; measurement, never EV/arbitrage) |
 | marketops_runs, marketops_alerts | MarketOps Autopilot coordination audit + local alerts (OPS-006) |

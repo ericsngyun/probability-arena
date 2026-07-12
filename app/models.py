@@ -1243,3 +1243,211 @@ class TennisTapeLink(Base):
     score_to_market_delta_s: Mapped[float | None] = mapped_column(Float)
     missing_info: Mapped[list | None] = mapped_column(RawJSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+# --- CRYPTO-TAPE-001: read-only Solana memecoin lifecycle tape ---------------
+# Replayable token lifecycle recording DERIVED from rows the existing lanes
+# already persist (crypto ticks/pairs/discovery events/risk assessments +
+# meme attention/catalysts). Research infrastructure only: observation and
+# survival-label columns exist; no EV, side, size, recommendation, order,
+# key, swap, signing, or execution column exists by construction.
+
+
+class CryptoTokenLifecycleRun(Base):
+    """One lifecycle-tape assembly pass (audit spine). Dry-run persists
+    nothing, including this row."""
+
+    __tablename__ = "crypto_token_lifecycle_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    status: Mapped[str] = mapped_column(String(16), default="running")  # running|ok|error
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+    window_hours: Mapped[int | None] = mapped_column(Integer)
+    tokens_considered: Mapped[int] = mapped_column(Integer, default=0)
+    birth_events_created: Mapped[int] = mapped_column(Integer, default=0)
+    snapshots_created: Mapped[int] = mapped_column(Integer, default=0)
+    actor_observations_created: Mapped[int] = mapped_column(Integer, default=0)
+    outcomes_updated: Mapped[int] = mapped_column(Integer, default=0)
+    provider_coverage: Mapped[dict | None] = mapped_column(RawJSON)
+    config: Mapped[dict | None] = mapped_column(RawJSON)
+    error_type: Mapped[str | None] = mapped_column(String(128))
+    error_message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class CryptoTokenBirthEvent(Base):
+    """First-evidence record for one token: how and when it surfaced, its
+    launch/authority/social context, and raw-payload provenance. One row per
+    (chain, token); fields the sources never provided stay NULL and are named
+    in missing_info — nothing is fabricated."""
+
+    __tablename__ = "crypto_token_birth_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("crypto_token_lifecycle_runs.id"), index=True
+    )
+    chain: Mapped[str] = mapped_column(String(32), index=True)
+    token_address: Mapped[str] = mapped_column(String(128), index=True)
+    symbol: Mapped[str | None] = mapped_column(String(64))
+    name: Mapped[str | None] = mapped_column(String(256))
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    first_evidence_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), index=True
+    )
+    launch_source: Mapped[str | None] = mapped_column(String(64))  # e.g. dexscreener:profile
+    first_pair_address: Mapped[str | None] = mapped_column(String(128))
+    first_dex_id: Mapped[str | None] = mapped_column(String(64))
+    pair_created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    creator_address: Mapped[str | None] = mapped_column(String(128))  # public-chain address only
+    mint_authority_enabled: Mapped[bool | None] = mapped_column()
+    freeze_authority_enabled: Mapped[bool | None] = mapped_column()
+    metadata_links: Mapped[dict | None] = mapped_column(RawJSON)  # description/urls/socials
+    initial_price_usd: Mapped[float | None] = mapped_column(Float)
+    initial_liquidity_usd: Mapped[float | None] = mapped_column(Float)
+    initial_volume_24h_usd: Mapped[float | None] = mapped_column(Float)
+    initial_market_cap: Mapped[float | None] = mapped_column(Float)
+    initial_fdv: Mapped[float | None] = mapped_column(Float)
+    bonding_curve_state: Mapped[str | None] = mapped_column(String(32))
+    provenance: Mapped[dict | None] = mapped_column(RawJSON)  # source row ids per field
+    missing_info: Mapped[list | None] = mapped_column(RawJSON)
+    raw_payload: Mapped[dict | None] = mapped_column(RawJSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (
+        Index("ix_crypto_birth_chain_token", "chain", "token_address", unique=True),
+    )
+
+
+class CryptoTokenLifecycleSnapshot(Base):
+    """One consolidated lifecycle observation per token per tape run: market
+    state + holder structure + risk labels + social/catalyst context + source
+    coverage, all read from already-persisted rows."""
+
+    __tablename__ = "crypto_token_lifecycle_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("crypto_token_lifecycle_runs.id"), index=True
+    )
+    birth_event_id: Mapped[int | None] = mapped_column(
+        ForeignKey("crypto_token_birth_events.id"), index=True
+    )
+    chain: Mapped[str] = mapped_column(String(32), index=True)
+    token_address: Mapped[str] = mapped_column(String(128), index=True)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    token_age_seconds: Mapped[int | None] = mapped_column(Integer)
+    # market state (from the best pair's latest persisted tick)
+    price_usd: Mapped[float | None] = mapped_column(Float)
+    liquidity_usd: Mapped[float | None] = mapped_column(Float)
+    volume_5m_usd: Mapped[float | None] = mapped_column(Float)
+    volume_1h_usd: Mapped[float | None] = mapped_column(Float)
+    volume_24h_usd: Mapped[float | None] = mapped_column(Float)
+    market_cap: Mapped[float | None] = mapped_column(Float)
+    fdv: Mapped[float | None] = mapped_column(Float)
+    # holder / concentration structure (from persisted risk assessments)
+    holder_count: Mapped[int | None] = mapped_column(Integer)
+    top10_holder_pct: Mapped[float | None] = mapped_column(Float)
+    sniper_pct: Mapped[float | None] = mapped_column(Float)
+    insider_pct: Mapped[float | None] = mapped_column(Float)
+    bundler_pct: Mapped[float | None] = mapped_column(Float)
+    creator_pct: Mapped[float | None] = mapped_column(Float)
+    # risk labels (avoid/flag verdicts for review — never trade directions)
+    risk_score: Mapped[float | None] = mapped_column(Float)
+    risk_level: Mapped[str | None] = mapped_column(String(16))
+    risk_reasons: Mapped[list | None] = mapped_column(RawJSON)
+    # social / boost / catalyst context
+    boost_amount: Mapped[float | None] = mapped_column(Float)
+    attention_score: Mapped[float | None] = mapped_column(Float)
+    has_social: Mapped[bool | None] = mapped_column()
+    social_links_count: Mapped[int | None] = mapped_column(Integer)
+    catalyst_count_24h: Mapped[int | None] = mapped_column(Integer)
+    # quote / liquidity quality
+    pair_count: Mapped[int | None] = mapped_column(Integer)
+    best_pair_address: Mapped[str | None] = mapped_column(String(128))
+    best_dex_id: Mapped[str | None] = mapped_column(String(64))
+    volume_to_liquidity_24h: Mapped[float | None] = mapped_column(Float)
+    single_venue: Mapped[bool | None] = mapped_column()
+    # honesty about the derived sources
+    source_tick_id: Mapped[int | None] = mapped_column(ForeignKey("crypto_price_ticks.id"))
+    source_risk_assessment_id: Mapped[int | None] = mapped_column(
+        ForeignKey("crypto_token_risk_assessments.id")
+    )
+    source_attention_snapshot_id: Mapped[int | None] = mapped_column(
+        ForeignKey("meme_attention_snapshots.id")
+    )
+    source_tick_age_seconds: Mapped[int | None] = mapped_column(Integer)
+    provider_coverage: Mapped[list | None] = mapped_column(RawJSON)
+    missing_info: Mapped[list | None] = mapped_column(RawJSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (
+        Index("ix_crypto_lifecycle_snap_token_observed", "token_address", "observed_at"),
+    )
+
+
+class CryptoTokenActorObservation(Base):
+    """Actor-structure observation for one token per tape run: creator /
+    early-buyer / concentration-cohort structure as far as public-chain
+    addresses already persisted by providers reveal it. Public addresses
+    only; no deanonymization, no key material, ever."""
+
+    __tablename__ = "crypto_token_actor_observations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("crypto_token_lifecycle_runs.id"), index=True
+    )
+    birth_event_id: Mapped[int | None] = mapped_column(
+        ForeignKey("crypto_token_birth_events.id"), index=True
+    )
+    chain: Mapped[str] = mapped_column(String(32), index=True)
+    token_address: Mapped[str] = mapped_column(String(128), index=True)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    creator_address: Mapped[str | None] = mapped_column(String(128))
+    creator_holding_pct: Mapped[float | None] = mapped_column(Float)
+    first_buyer_addresses: Mapped[list | None] = mapped_column(RawJSON)  # rarely available
+    sniper_address_count: Mapped[int | None] = mapped_column(Integer)
+    insider_address_count: Mapped[int | None] = mapped_column(Integer)
+    bundler_address_count: Mapped[int | None] = mapped_column(Integer)
+    # placeholders for later cross-token cohort analysis (no behavior today)
+    repeated_cohort_ref: Mapped[str | None] = mapped_column(String(64))
+    known_creator_cluster_ref: Mapped[str | None] = mapped_column(String(64))
+    holder_distribution: Mapped[dict | None] = mapped_column(RawJSON)
+    observation_sources: Mapped[list | None] = mapped_column(RawJSON)
+    missing_info: Mapped[list | None] = mapped_column(RawJSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class CryptoTokenSurvivalOutcome(Base):
+    """Deterministic survival labels for one birth event, recomputed per tape
+    run until final. Labels are measured token behavior (liquidity/volume/risk
+    trajectory) — never PnL, EV, a return, or a recommendation. NULL means
+    'not yet measurable or source gap', never a guess."""
+
+    __tablename__ = "crypto_token_survival_outcomes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    birth_event_id: Mapped[int] = mapped_column(
+        ForeignKey("crypto_token_birth_events.id"), index=True, unique=True
+    )
+    chain: Mapped[str] = mapped_column(String(32), index=True)
+    token_address: Mapped[str] = mapped_column(String(128), index=True)
+    survived_15m: Mapped[bool | None] = mapped_column()
+    survived_1h: Mapped[bool | None] = mapped_column()
+    survived_6h: Mapped[bool | None] = mapped_column()
+    survived_24h: Mapped[bool | None] = mapped_column()
+    liquidity_removed: Mapped[bool | None] = mapped_column()
+    dead_volume: Mapped[bool | None] = mapped_column()
+    severe_risk: Mapped[bool | None] = mapped_column()
+    graduated_or_migrated: Mapped[bool | None] = mapped_column()
+    provider_gap: Mapped[bool | None] = mapped_column()
+    final: Mapped[bool] = mapped_column(default=False, index=True)
+    details: Mapped[dict | None] = mapped_column(RawJSON)  # per-horizon evidence
+    last_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("crypto_token_lifecycle_runs.id")
+    )
+    computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

@@ -28,6 +28,8 @@ ALLOWED_CAPABILITIES = (
     "retention pruning of our own operational tables",
     "crypto scouting (read-only Solana token/pair surveillance + risk telemetry)",
     "crypto risk engine (heuristic + provider risk scoring; avoid/flag verdicts only)",
+    "crypto lifecycle tape (read-only replayable token lifecycle recording + "
+    "survival labels, derived from already-persisted rows)",
     "marketops autopilot (read-only coordination: promote/process/scan/score/report/alert)",
     "edge precheck (probability-gap measurement only; no EV, no advice, no actions)",
     "frontier evaluation (full-desk measurement quality + conservative readiness labels)",

@@ -279,6 +279,25 @@ domain-scout inventory kept. `db-growth-report` now reports the meme row counts.
 `attention_score`/alerts are informational only — no EV/recommendation/order/
 wallet/swap/signing/execution/sizing/paper trading.
 
+### CRYPTO-TAPE-001 crypto lifecycle tape (read-only, on-demand, NO timer)
+
+```bash
+.venv/bin/python -m app.cli crypto-tape-run-once --limit 25 --hours 48 --dry-run  # compute + report, persists NOTHING
+.venv/bin/python -m app.cli crypto-tape-run-once --limit 25 --hours 48            # persists ONLY lifecycle tape rows
+.venv/bin/python -m app.cli crypto-tape-report --hours 24 --top 5                 # coverage, survival labels, actor patterns
+```
+
+One DERIVED assembly pass consolidating already-persisted rows (crypto
+tokens/pairs/ticks/discovery events/risk assessments + meme attention/
+catalysts) into lifecycle tape tables (migration 0026: runs / birth events /
+snapshots / actor observations / survival outcomes — NOT retention-pruned).
+**Zero external calls, zero SolanaTracker budget impact, no flag, no timer,
+no scheduled path; MarketOps unchanged.** Rollout sequence when asked: deploy
+dark → migrate → `--dry-run` (verify persists nothing) → one real bounded run
+→ inspect `crypto-tape-report`. A survival label is measured token behavior,
+never PnL/EV/recommendation/sizing/order. **Not deployed yet; do not deploy
+unless explicitly asked.**
+
 ### MEME-SHADOW-001 label follow-through (read-only, on-demand, NO timer)
 
 ```bash
