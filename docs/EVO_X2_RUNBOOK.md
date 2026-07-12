@@ -311,8 +311,10 @@ outcomes over the recent token universe, with conservative labels (`too_thin`
 / `provider_gap_dominates` / `no_separation` / `weak_separator` /
 `strong_risk_separator` / `strong_survival_separator`). **No table/migration,
 persists nothing, no external call, no SolanaTracker budget impact, no
-timer.** A separation label is feature-quality evidence, never advice. Deploy
-is code-only, dark-by-default; **do not deploy unless explicitly asked.**
+timer.** A separation label is feature-quality evidence, never advice.
+**Deployed dark 2026-07-12 (`18a6a93`, no migration; 24h/72h reports
+validated live — no-persistence and zero-ST-movement proven; see
+DEPLOYMENT_REPORT_EVO_X2.md); manual/report-only.**
 
 ### MEME-SHADOW-001 label follow-through (read-only, on-demand, NO timer)
 

@@ -1749,3 +1749,27 @@ Deployed **`cdbb1c9` → `b4362c8`** by `git pull --ff-only`. **Migration 0026 a
 **Safety:** canonical grep over the new files — 3 hits, all boundary-statement docstrings. Expanded identifier-level tokenize audit (strings/comments excluded; wallet, private_key, keypair, swap, jupiter, send/sign_transaction, order placement, EV, paper trading, sizing, recommend, buy, sell, bet, arbitrage, arb, opportunity, pnl, profit): **one hit — `first_buyer_addresses`**, the spec-required early-buyer OBSERVATION placeholder column (public-chain addresses only; currently always NULL with `missing_info` naming the gap; no action semantics). No other hits.
 
 **Recommendation: KEEP — manual/report-only.** No timer, no flag; each tape run is one manual invocation. The 24h survival horizons need repeated manual runs (or a later, separately-gated scheduled milestone) to mature — outcomes upsert until each token's 36h window closes. **Next crypto milestone should be actor/cohort intelligence (cross-token creator/cohort clustering over the placeholder refs) or survival-label validation (does the tape's provider_gap/coverage split predict outcomes?) — not trading.** **Rollback:** `alembic downgrade 0025` (empty additive tables) + `git reset --hard cdbb1c9`.
+
+## CRYPTO-RETROSPECT-001 — retrospective analysis dark-deployed (2026-07-12, ~01:30 UTC)
+
+Deployed **`4aa6cec` → `18a6a93`** by `git pull --ff-only`. **No migration** (revision stayed `0026`), no table, no flag, no timer, no provider change, no MarketOps/EDGE-AUTO change. New capability: `crypto-retrospect-report --hours N --top N` — compute-on-demand feature/outcome separation measurement over the lifecycle tape, composing the CRYPTO-TAPE-001 pure builders (persisted birth events preferred as anchors; non-taped tokens derived on the fly, never written back).
+
+| item | value |
+|---|---|
+| pushed / deployed commit | **`18a6a93`** (origin/main + EVO-X2) |
+| migration / persistence / flags / timers / providers | **none / none / unchanged / none / unchanged** |
+| tests at commit | 1556 passed / 2 skipped; safety grep + AST audit clean |
+
+**No-persistence proof (counts immediately before → after the 24h report, and again after the 72h report):** lifecycle_runs 1→1→1, birth_events 50→50→50, snapshots 50→50→50, actor_observations 50→50→50, survival_outcomes 50→50→50, `crypto_opportunity_signals` **16025→16025→16025**, `marketops_runs` 1945→1945, `crypto_token_risk_assessments` 58795→58795, `crypto_price_ticks` 138660→138660 — the reports wrote nothing anywhere.
+
+**SolanaTracker budget: literally unchanged** — `today=225 / month=15,833` identical before and after both retrospect runs (no background scan even fired in the window; the tape/retrospect layer made zero requests). Run-rate 108,450/mo vs 200,000; KEEP.
+
+**24h report (`--hours 24 --top 30`):** 211 tokens analyzed (50 tape_backed + 161 derived_only). Outcome measurability is still tape-limited: survived_1h known for 82/211; provider_gap true for 199/211. **The conservative ladder behaved exactly as designed on immature data:** 13 dimensions `provider_gap_dominates` (each printing "collect more tape before reading this"), 5 `too_thin` (sniper/insider/creator concentration — SolanaTracker pcts mostly sub-threshold so all tokens land in one cohort; provider_coverage; missing_info). **One dimension crossed the bar: `risk_reason` = `strong_survival_separator` (delta 0.5819 on survived_1h)** — treat as a *hint only*: at 72h the same dimension honestly demotes to gap-dominated, so no separator claim stands yet.
+
+**72h report (`--hours 72 --top 30`):** 400 tokens with the **TRUNCATED-at-400 marker rendered** (cap working). survived_1h known for 144/400; provider_gap 388/400; **every dimension** now `provider_gap_dominates` or `too_thin` — the layer correctly refuses to read separators from thin, gap-dominated data instead of manufacturing findings. Early *unread* cohort spreads exist (e.g. top10 `flagged` surv1h 0.9481 vs `low` 0.2222 in-window) but are explicitly not claimed while gap-dominated.
+
+**Health (unchanged):** MarketOps #1945 `ok`; meme-mas 264 tokens; DB 2,750.43 MiB flat; frontier eval **`safety_ok=True` (81 files scanned, now including crypto_retrospect.py)**.
+
+**Safety:** canonical + expanded grep on the deployed module — 3 hits, all boundary-statement docstrings/notes. Expanded identifier-level tokenize audit (strings/comments excluded; wallet, private_key, keypair, swap, jupiter, send/sign_transaction, order placement, EV, paper trading, sizing, recommend, buy, sell, bet, arbitrage, arb, opportunity, pnl, profit): **CLEAN — zero hits.**
+
+**Recommendation: KEEP — manual/report-only.** The retrospect layer is working exactly as intended: it currently reports that the evidence base is too thin/gap-dominated to name separators, and says so loudly. **Next crypto milestone should improve tape cadence/horizon coverage (more frequent bounded `crypto-tape-run-once` passes so 1h/6h/24h horizons actually mature and provider_gap stops dominating) BEFORE any actor/cohort intelligence claims are built on top.** Rollback: `git reset --hard 4aa6cec` — additive compute-only module.
