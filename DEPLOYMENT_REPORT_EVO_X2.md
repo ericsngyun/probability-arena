@@ -1723,3 +1723,29 @@ Deployed **`3bf417b` → `0e475ee`** by `git pull --ff-only` (the pull also carr
 **Health (unchanged):** MarketOps #1909 `ok`; frontier `safety_ok=True`; DB 2,750.43 MiB flat (post-OPS-014 steady state); aggregation coverage healthy. **Safety audit** (expanded vocabulary incl. markov, 79 files): only the two long-standing Kalshi RSA references.
 
 **Recommendation: KEEP — manual/report-only.** Use for **explicitly-approved live-window tennis market-only sessions** while the Goalserve key is pending (each session = one approved invocation, e.g. `--duration-min 30 --interval-sec 60 --limit 60`, with the ordering fix choosing the books and top-movers printed in the session summary). Real (non-dry-run) sessions still require explicit approval per run. **Rollback:** `git reset --hard 3bf417b` — additive helper only.
+
+## CRYPTO-TAPE-001 — crypto lifecycle tape dark-deployed (2026-07-12, ~00:52 UTC)
+
+Deployed **`cdbb1c9` → `b4362c8`** by `git pull --ff-only`. **Migration 0026 applied** (`0025 → 0026 (head)`): five lifecycle tape tables (`crypto_token_lifecycle_runs` / `crypto_token_birth_events` / `crypto_token_lifecycle_snapshots` / `crypto_token_actor_observations` / `crypto_token_survival_outcomes`), all excluded from retention pruning. **No timer, no daemon, no flag changes, no new provider, no MarketOps/EDGE-AUTO change.** The tape is DERIVED from already-persisted rows — the pass itself makes zero external calls and has zero SolanaTracker budget impact.
+
+| item | value |
+|---|---|
+| pushed / deployed commit | **`b4362c8`** (origin/main + EVO-X2) |
+| backup | `data/backups/backup-20260712T004950Z.db.gz` (186.21 MiB) — **verified: ok (45 tables, integrity ok)** |
+| migration | **0026 applied** via `run-baseline --dry-run`; all five tape tables present, empty |
+| timer / daemon / flags / providers | **none / none / unchanged / unchanged** |
+| tests at commit | 1531 passed / 2 skipped; safety grep + AST audit clean |
+
+**Dry-run (00:51 UTC, `--limit 50 --hours 24`):** `status=dry_run  external_calls=0`; 50 tokens considered, 50 birth events / snapshots / actor observations / outcomes COMPUTED; **persistence proof: all five tape tables 0 rows before AND after** — dry-run persists nothing, including the run row.
+
+**Real run (00:51 UTC, `--limit 50 --hours 24`):** `status=ok  external_calls=0`, `tape_run_id=1`. **Tape-rows-only proof (counts immediately before → after):** lifecycle_runs 0→1, birth_events 0→50, snapshots 0→50, actor_observations 0→50, survival_outcomes 0→50, while `crypto_opportunity_signals` **15992→15992**, `marketops_runs` **1939→1939**, `crypto_price_ticks` **138299→138299**, `crypto_token_risk_assessments` **58655→58655**, `crypto_watcher_runs` **1702→1702** — no signal, no trading/execution row, no scan row, nothing but tape rows.
+
+**Report (`crypto-tape-report --hours 24 --top 30`):** 50 tokens observed; provider coverage attention=50, price_tick=50, risk:goplus=50, risk:risk-engine=50, risk:solana-tracker=34; risk levels low=39 / medium=11. Survival labels render honestly with NULL for immature/gap cases (true/false/unknown): survived_15m 15/0/35, survived_1h 9/5/36, survived_6h 1/0/49, survived_24h 0/0/50 (window too young — correct), liquidity_removed 11/4/35, dead_volume 0/0/50, severe_risk 6/44/0, graduated_or_migrated 12/30/8, **provider_gap 42/8/0** (mostly no-tick-at-horizon on newly seen tokens — stated, never guessed); missing_data mix rendered (`bundler_pct=1`). First real actor patterns already visible: top10 concentration up to **85.03%**, a bundler cohort at **33.3%**, and a launchpad-born token that graduated to an AMM and then had liquidity pulled.
+
+**SolanaTracker budget:** today 120 → 135 across the deploy window — the +15 is the background MarketOps crypto scan (#1939 at 00:50, 24 tokens), **not the tape** (risk-assessment row count identical immediately before/after the tape run proves zero tape lookups). Run-rate 108,450/mo vs 200,000 limit; recommendation KEEP; WARN/STOP not triggered.
+
+**Health (unchanged):** MarketOps #1939 `ok` (52 signals seen, 5 promoted/processed); meme-mas 273 tokens assessed, provider coverage 267/273; DB 2,750.43 MiB flat; frontier eval **`safety_ok=True` (80 files scanned, now including crypto_tape.py)**.
+
+**Safety:** canonical grep over the new files — 3 hits, all boundary-statement docstrings. Expanded identifier-level tokenize audit (strings/comments excluded; wallet, private_key, keypair, swap, jupiter, send/sign_transaction, order placement, EV, paper trading, sizing, recommend, buy, sell, bet, arbitrage, arb, opportunity, pnl, profit): **one hit — `first_buyer_addresses`**, the spec-required early-buyer OBSERVATION placeholder column (public-chain addresses only; currently always NULL with `missing_info` naming the gap; no action semantics). No other hits.
+
+**Recommendation: KEEP — manual/report-only.** No timer, no flag; each tape run is one manual invocation. The 24h survival horizons need repeated manual runs (or a later, separately-gated scheduled milestone) to mature — outcomes upsert until each token's 36h window closes. **Next crypto milestone should be actor/cohort intelligence (cross-token creator/cohort clustering over the placeholder refs) or survival-label validation (does the tape's provider_gap/coverage split predict outcomes?) — not trading.** **Rollback:** `alembic downgrade 0025` (empty additive tables) + `git reset --hard cdbb1c9`.

@@ -295,8 +295,9 @@ snapshots / actor observations / survival outcomes — NOT retention-pruned).
 no scheduled path; MarketOps unchanged.** Rollout sequence when asked: deploy
 dark → migrate → `--dry-run` (verify persists nothing) → one real bounded run
 → inspect `crypto-tape-report`. A survival label is measured token behavior,
-never PnL/EV/recommendation/sizing/order. **Not deployed yet; do not deploy
-unless explicitly asked.**
+never PnL/EV/recommendation/sizing/order. **Deployed dark 2026-07-12
+(`b4362c8`, migration 0026, tape_run_id=1 validated live — see
+DEPLOYMENT_REPORT_EVO_X2.md); manual/report-only, no timer.**
 
 ### MEME-SHADOW-001 label follow-through (read-only, on-demand, NO timer)
 
