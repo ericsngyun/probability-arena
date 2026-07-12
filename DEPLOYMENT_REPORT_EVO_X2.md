@@ -1773,3 +1773,27 @@ Deployed **`4aa6cec` → `18a6a93`** by `git pull --ff-only`. **No migration** (
 **Safety:** canonical + expanded grep on the deployed module — 3 hits, all boundary-statement docstrings/notes. Expanded identifier-level tokenize audit (strings/comments excluded; wallet, private_key, keypair, swap, jupiter, send/sign_transaction, order placement, EV, paper trading, sizing, recommend, buy, sell, bet, arbitrage, arb, opportunity, pnl, profit): **CLEAN — zero hits.**
 
 **Recommendation: KEEP — manual/report-only.** The retrospect layer is working exactly as intended: it currently reports that the evidence base is too thin/gap-dominated to name separators, and says so loudly. **Next crypto milestone should improve tape cadence/horizon coverage (more frequent bounded `crypto-tape-run-once` passes so 1h/6h/24h horizons actually mature and provider_gap stops dominating) BEFORE any actor/cohort intelligence claims are built on top.** Rollback: `git reset --hard 4aa6cec` — additive compute-only module.
+
+## CRYPTO-TAPE-CADENCE-001 — bounded tape session helper dark-deployed (2026-07-12, ~01:55 UTC)
+
+Deployed **`c6da59f` → `b5da6d7`** by `git pull --ff-only`. **No migration** (revision stayed `0026`), no timer installed (user timer list unchanged at the pre-existing set), no daemon, no flag change, no provider change, no MarketOps/EDGE-AUTO change. New capability: `crypto-tape-session --duration-hours N --interval-min N --limit N [--dry-run]` — a fixed, hard-capped number of derived zero-external-call tape passes in ONE invocation (duration ≤36h, interval clamped 15–120 min, ≤144 captures), aborting on abnormal pass status, a pass exception, or a detectable MarketOps error. Exists so repeated passes can mature the 15m/1h/6h/24h survival horizons that CRYPTO-RETROSPECT-001 found gap-dominated.
+
+| item | value |
+|---|---|
+| pushed / deployed commit | **`b5da6d7`** (origin/main + EVO-X2) |
+| migration / timer / daemon / flags / providers | **none / none / none / unchanged / unchanged** |
+| tests at commit | 1571 passed / 2 skipped; safety grep + AST audit clean |
+
+**Dry-run session validation (01:53 UTC, `--duration-hours 1 --interval-min 30 --limit 10 --dry-run`):**
+- **Completed in 1.03 s wall-clock** for a nominal 1-hour session — dry-run provably never sleeps.
+- Schedule preview rendered (`+0m, +30m`; captures_planned=2), **exactly one dry probe** ran (`capture_statuses=['dry_run']`, 10 tokens considered, `external_calls=0`, live survival-label mix rendered).
+- **Persistence proof:** all five tape tables AND `crypto_opportunity_signals`/`crypto_token_risk_assessments` byte-identical before → after (lifecycle_runs 1, births 50, snapshots 50, actors 50, outcomes 50, signals 16061, assessments 58892).
+- **SolanaTracker budget literally unchanged:** `today=285 / month=15,893` identical before and after the session window; run-rate 108,450/mo vs 200,000; KEEP.
+
+**Post-validation reports:** `crypto-tape-report` unchanged (1 run / 50 rows each — the dry session added nothing); `crypto-retrospect-report` renders (215 tokens, still honestly gap-dominated pending real sessions).
+
+**Health (unchanged):** MarketOps #1949 `ok`; DB 2,750.43 MiB flat; frontier eval **`safety_ok=True` (81 files)**.
+
+**Safety:** expanded identifier-level tokenize audit on the deployed `crypto_tape.py` (strings/comments excluded; wallet, private_key, keypair, swap, jupiter, send/sign_transaction, order placement, EV, paper trading, sizing, recommend, sell, bet, arbitrage, arb, opportunity, pnl, profit): **CLEAN**. Known accepted from CRYPTO-TAPE-001: `first_buyer_addresses` contains "buy" — the spec-required early-buyer OBSERVATION placeholder (always NULL, public-chain addresses only). Canonical grep hits remain the 3 docstring boundary statements.
+
+**Recommendation: KEEP — manual/report-only.** **The first REAL session requires explicit approval per invocation and should run inside tmux/screen** (long-lived foreground process on a shared host). Suggested first approved session: `crypto-tape-session --duration-hours 6 --interval-min 30 --limit 25` (~12 passes → 15m/1h horizons mature broadly, 6h starts filling), followed the next day by a second session to close 24h windows — then re-read `crypto-retrospect-report` to see dimensions move out of `provider_gap_dominates`. **Rollback:** `git reset --hard c6da59f` — additive helper only.

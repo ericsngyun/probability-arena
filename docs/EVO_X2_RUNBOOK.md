@@ -289,6 +289,8 @@ wallet/swap/signing/execution/sizing/paper trading.
    # CRYPTO-TAPE-CADENCE-001: bounded repeated passes to mature horizons — one
    # invocation, hard caps (<=36h, 15-120min, <=144 captures), aborts on
    # abnormal status/MarketOps error; NOT a timer; dry-run persists nothing.
+   # Deployed dark 2026-07-12 (b5da6d7; dry-run session validated live in
+   # 1.03s — no sleeping, nothing persisted, ST budget unchanged).
    # Real sessions require explicit approval per invocation (long-lived
    # foreground process on a shared host — run inside tmux/screen).
 ```
