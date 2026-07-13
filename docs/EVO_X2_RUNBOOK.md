@@ -349,6 +349,11 @@ re-run the observe pass (it now captures per-candidate diagnostics + better
 selection), then read `crypto-horizon-pair-selection-report` to see if the
 failure was avoidable and `crypto-horizon-outcome-reconciliation-report` to
 prove which observations matured a survival label. No migration in OBS-002.
+**OBS-002 deployed dark 2026-07-13 (`8ffa4fb`, no migration; dry-run persists
+nothing, denominators reconciled, outcome-reconciliation proved 1 unknown→known
+transition (Cyy7Mdet5H9i6Vsv 6h), ST budget unchanged). NO real retry run —
+cohort-1 6h windows have closed; next productive real pass is cohort-1 24h
+(8 due_now) or a fresh cohort, on explicit approval. See DEPLOYMENT_REPORT.**
 
 Fills the UPSTREAM tick-coverage gap CRYPTO-COVERAGE-001 identified: fetches
 market/liquidity state for a FROZEN cohort near each 15m/1h/6h/24h mark and

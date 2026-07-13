@@ -1953,3 +1953,37 @@ Deployed **`27f03a1` → `1d20392`** by `git pull --ff-only`. **Migration 0027 a
 **Safety:** canonical grep — boundary docstrings only. Expanded identifier-level tokenize audit on the deployed module (wallet, private_key, keypair, swap, jupiter, send/sign_transaction, order placement, EV, paper trading, sizing, recommend, buy, sell, bet, arbitrage, arb, opportunity, pnl, profit, plus no-timer/daemon vocab systemd/daemonize): **CLEAN**.
 
 **Recommendation: KEEP — manual/report-only. Validate on cohort size 10 before increasing to 25.** cohort_id=1 has 8 tokens with 6h `due_now` and is a ready, bounded target for a first REAL `crypto-horizon-observe-once --cohort-id 1 --limit 10` pass (≤8 DexScreener calls, zero SolanaTracker) — **only on explicit approval**. Operational note for maturing SHORT horizons going forward: a fresh-token cohort needs a small `--hours` window run right after births appear (i.e., shortly after a discovery/cadence pass), then `observe-once` at ~15m/1h/6h/24h post-birth; on this host, without a recent tape pass the newest births were already 7.4h old, so only 6h/24h are catchable for cohort 1. **Rollback:** `alembic downgrade 0026` (empty additive tables) + `git reset --hard 27f03a1`.
+
+## CRYPTO-HORIZON-OBS-002 — pair selection + outcome proof dark-deployed (2026-07-13, ~22:23 UTC)
+
+Deployed **`d02c9f1` → `8ffa4fb`** by `git pull --ff-only`. **No migration** (revision stayed `0027`; OBS-002 audit reuses the existing `raw_payload` column), no table, no flag, no timer (user timer list unchanged at 6), no new provider, no MarketOps/EDGE-AUTO change. **No real observe/retry provider pass was run** (deferred to explicit approval).
+
+| item | value |
+|---|---|
+| pushed / deployed commit | **`8ffa4fb`** (origin/main + EVO-X2) |
+| migration / table / flag / timer / providers | **none / none / none / none / unchanged** |
+| tests at commit | 1681 passed / 2 skipped; safety grep + AST audit clean |
+
+**Preflight cohort-1 status (unchanged by the deploy):** 10 members, 5 observations (2 `observed`, 3 `no_liquidity_state`); the 2 observed rows are frozen with their original liquidity (35,521.71 / 4,075.40).
+
+**Dry-run persistence proof (`observe-once --cohort-id 1 --limit 10 --dry-run`):** `external_calls=0`; observations 5→5, ticks 139,261→139,261 unchanged. Plan (windows have since aged): 15m/1h all `overdue_unobserved`, 6h `overdue_unobserved`=8 + `already_observed`=2, **24h `due_now`=8** + `not_due`=2.
+
+**Denominator reconciliation (new explicit buckets resolve the OBS-001 confusion):** for 6h — `horizon_due_total`=10, `due_now`=0, `overdue_unobserved`=5, `attempted`=5, `observed`=2, `missed_attempted`=3, `not_due`=0; **completion(of attempts)=0.4**, **coverage(of due)=0.2**, liq_field=1.0. The earlier "observe due_tokens=5 vs report due=10" is now explicit: 5 = attempts (fetched tokens), 10 = horizon_due_total, 2 = observed, 3 = failed-and-retryable, 5 = overdue-never-attempted.
+
+**Pair-selection diagnostics (`--cohort-id 1`):** 3 failed `no_liquidity_state`, but all 3 were observed under OBS-001 and **carry no captured candidate pairs**, so the report honestly reports `avoidable=0`, `projected_completion_improvement=0.0`, and prints "3 failed row(s) have no captured candidates (observed before OBS-002) — re-run observe to diagnose." (A v2 observe pass captures candidates; the 6h windows for these tokens have since closed, so a fresh diagnosis would come from the next cohort or the 24h horizon.)
+
+**Outcome-transition proof (`--cohort-id 1`) — the headline result:** `observed_with_tick=2`, **`transitioned_unknown_to_known=1`** (rate 0.5), computed read-only by recomputing survival WITH vs WITHOUT each observation's exact `tick_id`:
+- `Cyy7Mdet5H9i6Vsv` 6h obs_id=3 tick_id=184697: **before=None → after=True → transitioned=True** — the horizon observation flipped the 6h survival label from unknown to known.
+- `9Gv4i5YikU2rV6L9` 6h obs_id=2 tick_id=184696: before=True → after=True → transitioned=False — already covered by a background tick (honest).
+
+This is the token-level proof the milestone asked for, and it isolates the cohort transition cleanly despite the 98 unrelated new births that made aggregate counts unusable.
+
+**No real observe/retry pass run.** The 3 failed 6h observations are now `overdue_unobserved` (windows closed at ~12h token age), so `observe-once` would not re-fetch them; 24h is `due_now` for 8 tokens and a real pass there is bounded (≤8 DexScreener calls, zero SolanaTracker) — **only on explicit approval**, not run here.
+
+**SolanaTracker budget: unchanged** — `today=3,375 / month=22,598` identical before and after; every OBS-002 command (report, dry-run, pair-selection, reconciliation) made zero external calls. KEEP.
+
+**Health (unchanged):** MarketOps #2396 `ok`; DB 2,750.43 MiB flat; frontier eval **`safety_ok=True` (83 files)**.
+
+**Safety:** canonical grep — boundary docstrings only. Expanded identifier-level tokenize audit on the deployed module (wallet, private_key, keypair, swap, jupiter, send/sign_transaction, order placement, EV, paper trading, sizing, recommend, sell, bet, arbitrage, arb, opportunity, pnl, profit, plus systemd/daemonize): **CLEAN**.
+
+**Recommendation: KEEP — manual/report-only.** OBS-002 is proven: the outcome-reconciliation confirms an observation matures a real survival label (unknown→known). **Retry failed cohort-1 observations only after explicit approval** — and note the 6h windows have closed, so the productive next real pass is either the cohort-1 **24h** horizon (8 due_now, ≤8 calls) or a **fresh cohort of just-born tokens** (created right after a discovery/cadence pass) so 15m/1h/6h are still catchable and OBS-002's candidate diagnostics + quality selection get exercised end-to-end. **Rollback:** `git reset --hard d02c9f1` — additive, no schema change.
