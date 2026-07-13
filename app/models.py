@@ -1451,3 +1451,97 @@ class CryptoTokenSurvivalOutcome(Base):
     )
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+# --- CRYPTO-HORIZON-OBS-001: bounded read-only horizon-observation lane -------
+# CRYPTO-COVERAGE-001 proved the 6h/24h maturation ceiling is UPSTREAM tick
+# coverage (the background scout does not tick aged tokens near their long
+# horizons). This lane fixes a small, STABLE research cohort and — on manual
+# invocation only — fetches market/liquidity state via the existing read-only
+# DexScreener adapter near each 15m/1h/6h/24h mark, persisting ordinary price
+# ticks (so survival horizons can mature) plus an audit observation row.
+# Manual only: no timer, no scheduled path, no autonomy. Observation/market
+# data only — no EV, side, size, order, wallet, key, swap, signing, or
+# execution column exists by construction.
+
+
+class CryptoHorizonCohort(Base):
+    """One fixed research cohort selected from persisted discoveries. Members
+    are frozen at creation; provenance records how it was chosen."""
+
+    __tablename__ = "crypto_horizon_cohorts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    chain: Mapped[str] = mapped_column(String(32), index=True)
+    member_limit: Mapped[int] = mapped_column(Integer)
+    window_hours: Mapped[int] = mapped_column(Integer)
+    note: Mapped[str | None] = mapped_column(Text)
+    provenance: Mapped[dict | None] = mapped_column(RawJSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class CryptoHorizonCohortMember(Base):
+    """One frozen member of a horizon cohort (its birth anchor is fixed)."""
+
+    __tablename__ = "crypto_horizon_cohort_members"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    cohort_id: Mapped[int] = mapped_column(
+        ForeignKey("crypto_horizon_cohorts.id"), index=True
+    )
+    chain: Mapped[str] = mapped_column(String(32), index=True)
+    token_address: Mapped[str] = mapped_column(String(128), index=True)
+    symbol: Mapped[str | None] = mapped_column(String(64))
+    birth_event_id: Mapped[int | None] = mapped_column(
+        ForeignKey("crypto_token_birth_events.id")
+    )
+    birth_observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    first_evidence_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (
+        Index("ix_horizon_member_cohort_token", "cohort_id", "token_address", unique=True),
+    )
+
+
+class CryptoHorizonObservation(Base):
+    """One horizon-observation attempt for a (cohort, token, horizon). Records
+    the captured market/liquidity state (or the honest miss cause), and links
+    to the ordinary crypto_price_tick it persisted. Unique per
+    (cohort, token, horizon) so a horizon is never double-observed. Market
+    observation only — never a trade signal."""
+
+    __tablename__ = "crypto_horizon_observations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    cohort_id: Mapped[int] = mapped_column(
+        ForeignKey("crypto_horizon_cohorts.id"), index=True
+    )
+    member_id: Mapped[int | None] = mapped_column(
+        ForeignKey("crypto_horizon_cohort_members.id"), index=True
+    )
+    chain: Mapped[str] = mapped_column(String(32), index=True)
+    token_address: Mapped[str] = mapped_column(String(128), index=True)
+    horizon: Mapped[str] = mapped_column(String(8), index=True)  # 15m|1h|6h|24h
+    target_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    window_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    window_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(String(24), index=True)  # observed|token_inactive|provider_no_pair|no_liquidity_state|request_failed
+    missing_cause: Mapped[str | None] = mapped_column(String(32))
+    tick_id: Mapped[int | None] = mapped_column(ForeignKey("crypto_price_ticks.id"))
+    price_usd: Mapped[float | None] = mapped_column(Float)
+    liquidity_usd: Mapped[float | None] = mapped_column(Float)
+    volume_24h_usd: Mapped[float | None] = mapped_column(Float)
+    market_cap: Mapped[float | None] = mapped_column(Float)
+    fdv: Mapped[float | None] = mapped_column(Float)
+    pair_address: Mapped[str | None] = mapped_column(String(128))
+    dex_id: Mapped[str | None] = mapped_column(String(64))
+    provider: Mapped[str | None] = mapped_column(String(64))
+    raw_payload: Mapped[dict | None] = mapped_column(RawJSON)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (
+        Index("ix_horizon_obs_cohort_token_horizon", "cohort_id", "token_address",
+              "horizon", unique=True),
+    )

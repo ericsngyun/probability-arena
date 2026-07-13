@@ -81,6 +81,10 @@ def test_schema_creates_all_tables(session):
         "crypto_token_lifecycle_snapshots",
         "crypto_token_actor_observations",
         "crypto_token_survival_outcomes",
+        # CRYPTO-HORIZON-OBS-001 — bounded read-only horizon-observation lane
+        "crypto_horizon_cohorts",
+        "crypto_horizon_cohort_members",
+        "crypto_horizon_observations",
     }
 
 

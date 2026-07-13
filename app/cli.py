@@ -1559,6 +1559,151 @@ async def crypto_tape_report(hours: int = 24, top: int = 5, session=None) -> int
             session.close()
 
 
+async def crypto_horizon_cohort_create(
+    limit: int = 25, hours: int = 48, dry_run: bool = False, session=None,
+) -> int:
+    """CRYPTO-HORIZON-OBS-001: freeze a fixed research cohort of recently-born
+    tokens for horizon observation. Read-only selection from persisted births;
+    dry-run persists nothing; no external call. Returns members selected."""
+    from app.services.crypto_horizon import CryptoHorizonService
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        r = CryptoHorizonService().create_cohort(
+            session, limit=limit, hours=hours, dry_run=dry_run
+        )
+        print("crypto horizon cohort — observation infrastructure, never advice")
+        print(f"status={r['status']}  external_calls={r['external_calls']}")
+        print(
+            f"members_selected={r['members_selected']}  "
+            f"requested_limit={r['requested_limit']}  window_hours={r['window_hours']}"
+            + (f"  cohort_id={r['cohort_id']}" if r.get("cohort_id") else "")
+        )
+        for e in r.get("preview") or []:
+            print(f"  {e['symbol'] or '?':<10} {e['token']:<16} born={e['first_evidence_at']}")
+        return r["members_selected"]
+    finally:
+        if owns_session:
+            session.close()
+
+
+async def crypto_horizon_observe_once(
+    cohort_id: int, limit: int = 25, dry_run: bool = False, session=None,
+) -> int:
+    """CRYPTO-HORIZON-OBS-001: one manual, bounded observation pass over
+    currently-due horizons for a cohort. Dry-run makes ZERO external calls and
+    persists nothing. A real pass fetches via DexScreener (no SolanaTracker),
+    persists ordinary ticks + audit rows, reports provider calls. Manual only —
+    no loop, no timer. Returns observations recorded (0 for dry-run)."""
+    from app.services.crypto_horizon import CryptoHorizonService
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        r = await CryptoHorizonService().observe_once(
+            session, cohort_id=cohort_id, limit=limit, dry_run=dry_run
+        )
+        print("crypto horizon observe — observation only, never advice")
+        print(f"status={r['status']}  external_calls={r.get('external_calls', 0)}")
+        if r["status"] == "no_cohort":
+            print(f"  no members for cohort_id={cohort_id}")
+            return 0
+        print(
+            f"due_tokens={r.get('due_tokens')}  due_observations={r.get('due_observations')}  "
+            f"cap={r.get('cap')}"
+        )
+        if r["status"] == "dry_run":
+            print(f"would_fetch_tokens={r.get('would_fetch_tokens')}  (no calls, nothing persisted)")
+            print(f"plan_status_counts={r.get('plan_status_counts')}")
+            return 0
+        print(
+            f"provider={r.get('provider')}  observations_recorded={r.get('observations_recorded')}  "
+            f"ticks_written={r.get('ticks_written')}"
+        )
+        print(f"outcome_counts={r.get('outcome_counts')}")
+        return r.get("observations_recorded", 0)
+    finally:
+        if owns_session:
+            session.close()
+
+
+async def crypto_horizon_observation_report(
+    cohort_id: int, top: int = 5, shadow: bool = False, session=None,
+) -> int:
+    """CRYPTO-HORIZON-OBS-001 coverage report: completion/liquidity rates by
+    horizon, inactive/no-pair rates, target-distance distribution, success
+    gates (measurement only), examples. With --shadow, print the pre-observation
+    coverage-gain + provider-load estimate instead. Read-only; never advice.
+    Returns cohort size."""
+    from app.services.crypto_horizon import build_observation_report, shadow_estimate
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        if shadow:
+            r = shadow_estimate(session, cohort_id)
+            print("crypto horizon shadow estimate — measurement only, never advice")
+            print(f"cohort_id={r['cohort_id']}  external_calls={r['external_calls']}")
+            print("expected coverage gain by horizon (due_now/total):")
+            for label, g in r["expected_coverage_gain_by_horizon"].items():
+                print(
+                    f"  {label:<4} due_now={g['due_now']}/{g['total']}  "
+                    f"gain={g['expected_coverage_gain']}"
+                )
+            print(f"required calls/day estimate (cohort 25/50/100): {r['required_calls_per_day_estimate']}")
+            print(f"solana_tracker_usage: {r['solana_tracker_usage']}")
+            print(f"provider_budget_supported={r['provider_budget_supported']}")
+            return 0
+        r = build_observation_report(session, cohort_id, top=top)
+        print("crypto horizon observation report — measurement only, never advice")
+        print(r["note"])
+        print(f"\ncohort_id={r['cohort_id']}  cohort_size={r['cohort_size']}  "
+              f"observations_total={r['observations_total']}")
+        print("by horizon (due / observed / missed / completion / liquidity-field):")
+        for label in ("15m", "1h", "6h", "24h"):
+            h = r["by_horizon"][label]
+            print(
+                f"  {label:<4} {h['due']}/{h['observed']}/{h['missed']}  "
+                f"completion={h['completion_rate']}  "
+                f"liq_field={h['liquidity_field_completion_rate']}"
+            )
+        print(
+            f"inactive_token_rate={r['inactive_token_rate']}  "
+            f"provider_no_pair_rate={r['provider_no_pair_rate']}"
+        )
+        if r["early_liquidity_diagnostics"]:
+            print(f"early-liquidity diagnostics (15m/1h): {r['early_liquidity_diagnostics']}")
+        td = r["target_distance_seconds"]
+        print(f"target-distance s: p50={td['p50']} p90={td['p90']} min={td['min']} max={td['max']}")
+        print("success gates (MEASUREMENT only):")
+        for label, g in r["success_gates"].items():
+            print(f"  {label:<14} target={g['target']} actual={g['actual']} pass={g['pass']}")
+        for name, rows in r["examples"].items():
+            if rows:
+                print(f"{name}:")
+                for e in rows:
+                    print(f"  {e}")
+        print(f"provider_usage={r['provider_usage']}  db_impact_rows={r['db_impact_rows']}")
+        print(f"\ndisclaimer: {r['disclaimer']}")
+        return r["cohort_size"]
+    finally:
+        if owns_session:
+            session.close()
+
+
 async def crypto_tape_coverage_report(
     hours: int = 168, top: int = 5, limit: int = 25, session=None
 ) -> int:
@@ -4865,6 +5010,33 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run", action="store_true",
         help="print the planned schedule + one dry probe; persist nothing",
     )
+    hcc_parser = subparsers.add_parser(
+        "crypto-horizon-cohort-create",
+        help="Freeze a fixed research cohort for horizon observation "
+             "(CRYPTO-HORIZON-OBS-001; read-only selection)",
+    )
+    hcc_parser.add_argument("--limit", type=int, default=25)
+    hcc_parser.add_argument("--hours", type=int, default=48)
+    hcc_parser.add_argument("--dry-run", action="store_true",
+                            help="preview selection; persist nothing")
+    hobs_parser = subparsers.add_parser(
+        "crypto-horizon-observe-once",
+        help="One manual bounded observation pass over due horizons "
+             "(CRYPTO-HORIZON-OBS-001; DexScreener only, no timer/loop)",
+    )
+    hobs_parser.add_argument("--cohort-id", type=int, required=True)
+    hobs_parser.add_argument("--limit", type=int, default=25)
+    hobs_parser.add_argument("--dry-run", action="store_true",
+                             help="plan preview; ZERO external calls, nothing persisted")
+    hrep_parser = subparsers.add_parser(
+        "crypto-horizon-observation-report",
+        help="Horizon-observation coverage report + success gates "
+             "(CRYPTO-HORIZON-OBS-001; read-only)",
+    )
+    hrep_parser.add_argument("--cohort-id", type=int, required=True)
+    hrep_parser.add_argument("--top", type=int, default=5)
+    hrep_parser.add_argument("--shadow", action="store_true",
+                             help="pre-observation coverage-gain + provider-load estimate")
     cov_parser = subparsers.add_parser(
         "crypto-tape-coverage-report",
         help="Coverage forensics: why survival horizons stay unmeasurable + "
@@ -5351,6 +5523,27 @@ def main(argv: list[str] | None = None) -> int:
             crypto_tape_session(
                 duration_hours=args.duration_hours, interval_min=args.interval_min,
                 limit=args.limit, dry_run=args.dry_run,
+            )
+        )
+        return 0 if n >= 0 else 1
+    if args.command == "crypto-horizon-cohort-create":
+        n = asyncio.run(
+            crypto_horizon_cohort_create(
+                limit=args.limit, hours=args.hours, dry_run=args.dry_run
+            )
+        )
+        return 0 if n >= 0 else 1
+    if args.command == "crypto-horizon-observe-once":
+        n = asyncio.run(
+            crypto_horizon_observe_once(
+                cohort_id=args.cohort_id, limit=args.limit, dry_run=args.dry_run
+            )
+        )
+        return 0 if n >= 0 else 1
+    if args.command == "crypto-horizon-observation-report":
+        n = asyncio.run(
+            crypto_horizon_observation_report(
+                cohort_id=args.cohort_id, top=args.top, shadow=args.shadow
             )
         )
         return 0 if n >= 0 else 1

@@ -327,6 +327,32 @@ never PnL/EV/recommendation/sizing/order. **Deployed dark 2026-07-12
 (`b4362c8`, migration 0026, tape_run_id=1 validated live — see
 DEPLOYMENT_REPORT_EVO_X2.md); manual/report-only, no timer.**
 
+### CRYPTO-HORIZON-OBS-001 horizon observation (bounded MANUAL, NO timer/loop)
+
+```bash
+.venv/bin/python -m app.cli crypto-horizon-cohort-create --limit 25 --hours 48 --dry-run   # preview a fixed cohort
+.venv/bin/python -m app.cli crypto-horizon-cohort-create --limit 25 --hours 48             # freeze it (returns cohort_id)
+.venv/bin/python -m app.cli crypto-horizon-observation-report --cohort-id N --shadow        # coverage-gain + provider-load estimate FIRST
+.venv/bin/python -m app.cli crypto-horizon-observe-once --cohort-id N --limit 25 --dry-run   # plan preview, ZERO calls, nothing persisted
+.venv/bin/python -m app.cli crypto-horizon-observe-once --cohort-id N --limit 25             # ONE bounded pass (DexScreener; requires approval per run)
+.venv/bin/python -m app.cli crypto-horizon-observation-report --cohort-id N --top 5          # completion/liquidity rates + success gates
+```
+
+Fills the UPSTREAM tick-coverage gap CRYPTO-COVERAGE-001 identified: fetches
+market/liquidity state for a FROZEN cohort near each 15m/1h/6h/24h mark and
+persists ordinary `crypto_price_ticks` (so tape survival horizons mature) plus
+audit rows. **Manual only — no timer, no loop, no scheduled path, no flag.**
+Uses **DexScreener only (free, no key) → ZERO SolanaTracker impact**; each pass
+is bounded (≤100 calls, only `due_now` horizons, one fetch/token, a horizon
+observed once); dry-run makes ZERO calls and persists nothing; misses recorded
+honestly, never fabricated. Real observe passes require explicit approval per
+invocation. To actually mature horizons: create a cohort of freshly-born
+tokens, then run `observe-once` at roughly 15m / 1h / 6h / 24h after birth (a
+few manual passes) so each window gets a tick; check the success gates in the
+report (measurement only). Rollout: deploy dark → migrate → `--dry-run` cohort
++ observe → `--shadow` → one small approved real pass → report. Migration 0027
+(3 additive tables). **Do not deploy unless explicitly asked.**
+
 ### CRYPTO-COVERAGE-001 tape coverage forensics (read-only, on-demand, NO timer)
 
 ```bash

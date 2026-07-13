@@ -437,6 +437,21 @@ It separates the two failure modes that need opposite fixes:
 
 Report sections: a per-horizon **coverage funnel** (born → due → revisited → raw data → within tolerance → measurable → provider_gap, with rates), a **gap-cause histogram**, a **bottleneck verdict** (is 6h/24h limited by upstream coverage or revisit policy?), a **selection analysis** (appearances per token, how often due old cohorts rank below the limit, whether recent-first starves them), a **shadow-only selection comparison** estimating how many currently-maturable 6h/24h outcomes each policy (`current_recent_selection` / `due_horizon_first` / `fixed_cohort_revisit` / `mixed_new_and_due`) would pick up on the next run, and concrete examples per cause. It changes **no stored outcome label and no live recorder selection** — it is pure measurement to inform a future, separately-accepted selection milestone.
 
+## Crypto horizon observation (CRYPTO-HORIZON-OBS-001)
+
+**Fixing the upstream coverage gap CRYPTO-COVERAGE-001 found.** The forensics proved the 6h/24h maturation ceiling is upstream tick coverage — the background scout doesn't tick aged tokens near their long horizons — not tape selection. This is the first crypto lane that *fetches* to fill that gap: a small, **frozen** research cohort gets **manual** market/liquidity observations near each 15m/1h/6h/24h mark via the existing read-only DexScreener adapter, persisting an ordinary `crypto_price_tick` (so the tape's survival horizons actually mature) plus an audit observation row.
+
+**Manual only, by construction: no timer, no scheduled path, no loop, no autonomy, no flag.** It uses DexScreener (free, no key), so it has **zero SolanaTracker budget impact**. Misses are recorded honestly (`token_inactive` / `provider_no_pair` / `no_liquidity_state` / `request_failed`) — never fabricated.
+
+```bash
+python -m app.cli crypto-horizon-cohort-create --limit 25 --hours 48 [--dry-run]   # freeze a fixed cohort (max 100)
+python -m app.cli crypto-horizon-observation-report --cohort-id N --shadow          # pre-observation coverage-gain + provider-load estimate
+python -m app.cli crypto-horizon-observe-once --cohort-id N --limit 25 [--dry-run]   # ONE bounded pass over due horizons
+python -m app.cli crypto-horizon-observation-report --cohort-id N --top 5            # completion/liquidity rates, gates, examples
+```
+
+The **planner** classifies each (token, horizon) as `not_due` / `due_now` / `already_observed` / `overdue_unobserved` / `inactive`; a pass fetches only `due_now` horizons, nearest-target-first, one fetch per token (serving all its due horizons), hard-capped at the limit (≤100 calls). A horizon is observed at most once (unique per cohort+token+horizon). The **report** gives completion rate and liquidity-field completion by horizon, inactive/no-pair rates, target-distance distribution, early-liquidity diagnostics for 15m/1h, and **measurement-only success gates** (15m≥0.80, 1h≥0.80, 6h≥0.70, 24h≥0.60, liquidity-state≥0.80). Observation only — no EV, no recommendation, no sizing, no orders, no wallets/keys/swaps/signing/execution.
+
 ## MarketOps Autopilot (OPS-006)
 
 **Read-only coordination, not new capability.** One autopilot cycle sequences the existing services: inspect fresh signals → auto-promote top-N → process promoted (fresh enrichment/assessment/research/forecast via whatever the env flags select) → crypto scan → outcome sync → forecast scoring → champion/challenger snapshot → local DB alerts → one `marketops_runs` audit row. Every stage is individually guarded — a failing stage records its error in the run summary plus a `provider_error` alert and the cycle continues (`MARKETOPS_FAIL_FAST=false`). The autopilot can promote, process, research, forecast, score, and report; it **cannot trade, paper trade, calculate EV, size positions, place orders, or move money** — those capabilities do not exist anywhere in this codebase.
