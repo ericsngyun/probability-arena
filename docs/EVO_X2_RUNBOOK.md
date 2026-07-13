@@ -345,8 +345,13 @@ whose long horizons are due rank below the per-run limit and starve — read the
 crypto milestone should change selection (its own accepted milestone) or lift
 upstream tick coverage. **No table/migration, persists nothing, no external
 call, no SolanaTracker budget impact, no timer; changes no stored label or live
-selection.** Diagnostic only, never advice. Deploy is code-only, dark-by-default;
-**do not deploy unless explicitly asked.**
+selection.** Diagnostic only, never advice.
+**Deployed dark 2026-07-13 (`452fe79`, no migration; 72h+168h validated live,
+nothing persisted, ST budget unchanged). LIVE VERDICT: 6h/24h bottleneck =
+`upstream_tick_coverage` (0.94 / 0.71), NOT revisit policy — shadow shows
+due-horizon-first matures 0 vs recent-first's 5, so DO NOT change recorder
+selection; the ceiling is upstream scout tick density near long horizons. See
+DEPLOYMENT_REPORT_EVO_X2.md.**
 
 ### CRYPTO-RETROSPECT-001 retrospective analysis (read-only, on-demand, NO timer)
 

@@ -1863,3 +1863,59 @@ Deployed **`b020440` → `2f9aa2c`** by `git pull --ff-only`. **No migration** (
 **Safety:** canonical grep — 3 hits, all boundary docstrings. Expanded identifier-level tokenize audit on the deployed `crypto_tape.py` (strings/comments excluded; wallet, private_key, keypair, swap, jupiter, send/sign_transaction, order placement, EV, paper trading, sizing, recommend, sell, bet, arbitrage, arb, opportunity, pnl, profit, plus no-daemon vocab systemd/while-true/daemonize): **CLEAN**.
 
 **Recommendation: KEEP — manual/report-only.** The session helper is now safe to run under real host write contention. **The second cadence session to close the 24h windows can now be run** (`crypto-tape-session --duration-hours 6 --interval-min 30 --limit 25` in tmux, explicitly approved per invocation): a transient lock will self-recover, and a persistent one aborts cleanly with a MarketOps/tick-aggregation contention hint rather than crashing. After it, re-read `crypto-retrospect-report --hours 72 --cohort tape-backed`. **Rollback:** `git reset --hard b020440` — additive robustness fix, no schema/state change.
+
+## CRYPTO-COVERAGE-001 — tape coverage forensics dark-deployed (2026-07-13, ~16:55 UTC)
+
+Deployed **`830f055` → `452fe79`** by `git pull --ff-only`. **No migration** (revision stayed `0026`), no table, no flag, no timer (user timer list unchanged at 6), no provider change, no MarketOps/EDGE-AUTO change, no recorder-selection change, no survival-label change. New capability: `crypto-tape-coverage-report --hours N --top N --limit N` — compute-on-demand gap decomposition + shadow selection analysis over already-persisted rows.
+
+| item | value |
+|---|---|
+| pushed / deployed commit | **`452fe79`** (origin/main + EVO-X2) |
+| migration / table / flag / timer / providers / selection | **none / none / none / none / unchanged / unchanged** |
+| tests at commit | 1637 passed / 2 skipped; safety grep + AST audit clean |
+
+**No-persistence proof (counts before → after both 72h and 168h reports):** lifecycle_runs 26→26, birth_events 168→168, snapshots 675→675, actor_observations 675→675, survival_outcomes 168→168 — **all five tape tables byte-identical**. Only unrelated background writers moved: crypto_price_ticks +60, risk_assessments +28, marketops_runs +1 (the scout scan + one MarketOps cycle). The report wrote nothing. 72h and 168h windows returned identical results (all 168 births fall within 72h).
+
+**A. Coverage funnel by horizon (of DUE tokens; born=168):**
+| horizon | due | revisited | raw data | in-tolerance | measurable | provider_gap | measurable_rate |
+|---|---|---|---|---|---|---|---|
+| 15m | 168 | 166 | 168 | 167 | 54 | 114 | 0.321 |
+| 1h | 168 | 163 | 168 | 163 | 53 | 115 | 0.316 |
+| 6h | 168 | 72 | 168 | 43 | 9 | 159 | 0.054 |
+| 24h | 122 | 0 | 122 | 3 | 0 | 122 | 0.000 |
+
+The collapse is at **tick-within-tolerance**, not at revisit: raw price data exists for essentially every due token (168/168 at 6h), but only 43/168 (6h) and 3/122 (24h) have a tick that lands inside the horizon window.
+
+**B. Gap causes by horizon:**
+- 15m: `no_pair_or_liquidity_state_near_horizon`=111, `token_not_revisited_after_due`=1, `outside_tolerance_only`=1, `source_rows_exist_but_join_failed`=1
+- 1h: `no_pair_or_liquidity_state_near_horizon`=107, `outside_tolerance_only`=5, `token_not_revisited_after_due`=3
+- 6h: **`outside_tolerance_only`=125**, `no_pair_or_liquidity_state_near_horizon`=24, `token_not_revisited_after_due`=9, `source_rows_exist_but_join_failed`=1
+- 24h: **`outside_tolerance_only`=119**, `horizon_not_due`=46, `token_not_revisited_after_due`=2, `no_pair_or_liquidity_state_near_horizon`=1
+
+Short horizons are blocked by tick **liquidity-state quality** (early ticks with no `liquidity_usd`); long horizons by tick **timing/cadence** (ticks exist but not within ±50% of the 6h/24h mark). Both are upstream-scout properties, not tape selection.
+
+**C. Selection analysis:** token appearances min/mean/max = **1 / 4.02 / 12** (tokens are revisited ~4× on average). Due-token omission by the limit-25: **6h 168/168 (rate 1.0), 24h 122/122 (rate 1.0)** — every due token ranks below the recency cutoff, and `recent_first_starves_old_cohorts=True`. Example due-and-starved ranks run 71 → 353+.
+
+**D. Shadow selection comparison** (est. NEW 6h/24h matures on the next run of 25; **total maturable available = 6h:10, 24h:2**):
+| policy | total | 6h | 24h | interpretation |
+|---|---|---|---|---|
+| current_recent_selection | **5** | 5 | 0 | already captures half the tiny maturable pool; retains full new-discovery capacity |
+| due_horizon_first | **0** | 0 | 0 | picks oldest/most-overdue = inactive tokens with no fresh ticks; WORSE; sacrifices new discovery |
+| fixed_cohort_revisit | **0** | 0 | 0 | same failure mode; also freezes discovery |
+| mixed_new_and_due | 4 | 4 | 0 | between recent and due-first; no gain over recent |
+
+**The decisive finding:** only **10 of 159** 6h gaps and **2 of 122** 24h gaps are revisit-fixable at all (fresh-measurable-but-unstored). Even a perfect revisit policy caps at +10/+2. And **recent-first already outperforms every alternative** (5 vs 0) because maturability tracks *recent scout activity*, not horizon age — the most-overdue tokens are precisely the quiet/inactive ones the scout stopped ticking.
+
+**E. Bottleneck verdict:**
+- **6h → `upstream_tick_coverage`** (upstream share 0.937 vs revisit 0.063)
+- **24h → `upstream_tick_coverage`** (upstream share 0.714 vs revisit 0.012)
+
+**This overturns the going-in hypothesis.** The binding constraint is NOT the recorder's recent-first revisit policy — changing selection would make coverage the same or worse. It is **upstream crypto-price-tick coverage**: the background scout does not tick aged/quiet tokens densely enough near their 6h/24h marks, and early ticks often lack liquidity state.
+
+**SolanaTracker budget: unchanged by the report** — the +15 today/month delta matches one background MarketOps crypto scan; the coverage report made zero external calls. `today=2,550 / month=21,773`, run-rate 108,450/mo, KEEP.
+
+**Health (unchanged):** MarketOps #2341 `ok`; DB 2,750.43 MiB flat; frontier eval **`safety_ok=True` (82 files, now including crypto_coverage.py)**.
+
+**Safety:** canonical grep — 3 hits, all boundary docstrings. Expanded identifier-level tokenize audit on the deployed module (wallet, private_key, keypair, swap, jupiter, send/sign_transaction, order placement, EV, paper trading, sizing, recommend, buy, sell, bet, arbitrage, arb, opportunity, pnl, profit): **CLEAN**.
+
+**Recommendation: KEEP — manual/report-only. DO NOT change the recorder selection.** The evidence is explicit: recent-first is already the best of the modelled policies for maturation, and the 6h/24h ceiling is upstream tick coverage, not revisit selection. A future, separately-accepted milestone should target the UPSTREAM side — denser/longer scout tick coverage for aged tokens, capturing liquidity state on early ticks, and/or a survival-tolerance review (the large `outside_tolerance_only` count suggests the ±50% window is often just missed) — NOT a tape-selection change. **Rollback:** `git reset --hard 830f055` — additive compute-only module.
