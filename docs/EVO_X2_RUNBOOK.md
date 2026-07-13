@@ -351,7 +351,11 @@ tokens, then run `observe-once` at roughly 15m / 1h / 6h / 24h after birth (a
 few manual passes) so each window gets a tick; check the success gates in the
 report (measurement only). Rollout: deploy dark → migrate → `--dry-run` cohort
 + observe → `--shadow` → one small approved real pass → report. Migration 0027
-(3 additive tables). **Do not deploy unless explicitly asked.**
+(3 additive tables). **Deployed dark 2026-07-13 (`1d20392`, migration 0027;
+backup verified; cohort_id=1 created live — 10 members, 8 tokens 6h `due_now`,
+zero external calls, nothing persisted by dry-run/shadow; NO real observe pass
+run yet — awaits approval). See DEPLOYMENT_REPORT_EVO_X2.md. Note: fresh <2h
+cohorts need a discovery/cadence pass first (host's newest birth was 7.4h old).**
 
 ### CRYPTO-COVERAGE-001 tape coverage forensics (read-only, on-demand, NO timer)
 

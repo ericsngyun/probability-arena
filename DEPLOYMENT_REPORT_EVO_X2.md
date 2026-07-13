@@ -1919,3 +1919,37 @@ Short horizons are blocked by tick **liquidity-state quality** (early ticks with
 **Safety:** canonical grep — 3 hits, all boundary docstrings. Expanded identifier-level tokenize audit on the deployed module (wallet, private_key, keypair, swap, jupiter, send/sign_transaction, order placement, EV, paper trading, sizing, recommend, buy, sell, bet, arbitrage, arb, opportunity, pnl, profit): **CLEAN**.
 
 **Recommendation: KEEP — manual/report-only. DO NOT change the recorder selection.** The evidence is explicit: recent-first is already the best of the modelled policies for maturation, and the 6h/24h ceiling is upstream tick coverage, not revisit selection. A future, separately-accepted milestone should target the UPSTREAM side — denser/longer scout tick coverage for aged tokens, capturing liquidity state on early ticks, and/or a survival-tolerance review (the large `outside_tolerance_only` count suggests the ±50% window is often just missed) — NOT a tape-selection change. **Rollback:** `git reset --hard 830f055` — additive compute-only module.
+
+## CRYPTO-HORIZON-OBS-001 — horizon-observation lane dark-deployed (2026-07-13, ~18:22 UTC)
+
+Deployed **`27f03a1` → `1d20392`** by `git pull --ff-only`. **Migration 0027 applied** (`0026 → 0027 (head)`): three additive tables (`crypto_horizon_cohorts` / `crypto_horizon_cohort_members` / `crypto_horizon_observations`). No timer, no daemon, no scheduled path, no flag, no new provider, no MarketOps/EDGE-AUTO change. First crypto lane that *fetches* — but only DexScreener (free, no key), so **zero SolanaTracker use**. **No real observe-once provider pass was run** (deferred to explicit approval).
+
+| item | value |
+|---|---|
+| pushed / deployed commit | **`1d20392`** (origin/main + EVO-X2) |
+| backup | `data/backups/backup-20260713T175455Z.db.gz` (220.14 MiB) — **verified: ok (50 tables, integrity ok)** |
+| migration | **0027 applied**; all three horizon tables present and empty; existing tape tables intact (runs 26 / births 168 / ticks 136,546) |
+| timer / daemon / flags / providers | **none / none / none / unchanged** |
+| tests at commit | 1660 passed / 2 skipped; safety grep + AST audit clean |
+
+**Dry-run cohort planning (`--limit 10 --hours 2`):** `status=dry_run external_calls=0`, **members_selected=0** — a genuine finding, not a bug: the newest tape-recorded birth is 7.4h old, so nothing was born within 2h (no fresh births exist without a recent discovery/cadence pass, which was out of scope here). Zero rows written (`crypto_horizon_cohorts`/`_members` stayed 0).
+
+**Real validation cohort (`--limit 10 --hours 24`, widened so the lane could be validated end-to-end against the available births):**
+- **cohort_id=1**, created_at 2026-07-13 18:22 UTC, **10 members**, `external_calls=0`.
+- Age distribution (by first_evidence): **min 7.8h / median 8.7h / max 9.0h**.
+- **Overdue for 15m at creation: 10/10** (all members are hours old, so their 15m/1h windows have long closed — expected for a non-fresh cohort).
+- **Stable membership proof:** members are frozen (unique per cohort+token); re-query after the observe dry-run returned the identical 10-member set (first = H91bwXft7CfA). Creating another cohort mints a new id; it never mutates cohort 1.
+
+**Shadow planning (`--cohort-id 1 --shadow`, zero calls):** expected coverage gain by horizon (due_now/total) — 15m 0/10, 1h 0/10, **6h 8/10 (gain 0.80)**, 24h 0/10. Required calls/day estimate: cohort 25→100, 50→200, 100→400. **SolanaTracker usage: none (DexScreener only)**; provider budget supported.
+
+**Observe dry-run (`--cohort-id 1 --limit 10 --dry-run`):** `external_calls=0`, **due_tokens=8, due_observations=8, would_fetch_tokens=8** (≤ cap 10). Plan status counts: 15m all `overdue_unobserved` (10), 1h all overdue (10), **6h `due_now`=8 + overdue=2**, 24h all `not_due` (10). **No-persistence proof:** `crypto_horizon_observations` 0→0, `crypto_price_ticks` 136,853→136,853 unchanged, members 10→10.
+
+**Real observation pass: NOT RUN.** The preconditions are met (8 horizons `due_now`, active tokens, 8 calls ≪ cap, MarketOps healthy), but a real provider pass requires explicit per-invocation approval, which was not given for this deployment.
+
+**SolanaTracker budget: unchanged by this lane** — `today` 2,685→2,760 across the deploy window is background-scan drift (`rolling_24h` steady 3,600); the horizon lane made **zero external calls** (cohort-create, shadow, and observe-dry-run are all zero-call paths). KEEP.
+
+**Health (unchanged):** MarketOps #2355 `ok`; DB 2,750.43 MiB flat; frontier eval **`safety_ok=True` (83 files, now including crypto_horizon.py)**.
+
+**Safety:** canonical grep — boundary docstrings only. Expanded identifier-level tokenize audit on the deployed module (wallet, private_key, keypair, swap, jupiter, send/sign_transaction, order placement, EV, paper trading, sizing, recommend, buy, sell, bet, arbitrage, arb, opportunity, pnl, profit, plus no-timer/daemon vocab systemd/daemonize): **CLEAN**.
+
+**Recommendation: KEEP — manual/report-only. Validate on cohort size 10 before increasing to 25.** cohort_id=1 has 8 tokens with 6h `due_now` and is a ready, bounded target for a first REAL `crypto-horizon-observe-once --cohort-id 1 --limit 10` pass (≤8 DexScreener calls, zero SolanaTracker) — **only on explicit approval**. Operational note for maturing SHORT horizons going forward: a fresh-token cohort needs a small `--hours` window run right after births appear (i.e., shortly after a discovery/cadence pass), then `observe-once` at ~15m/1h/6h/24h post-birth; on this host, without a recent tape pass the newest births were already 7.4h old, so only 6h/24h are catchable for cohort 1. **Rollback:** `alembic downgrade 0026` (empty additive tables) + `git reset --hard 27f03a1`.
