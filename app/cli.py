@@ -1580,12 +1580,23 @@ async def crypto_horizon_cohort_create(
         print("crypto horizon cohort — observation infrastructure, never advice")
         print(f"status={r['status']}  external_calls={r['external_calls']}")
         print(
+            f"generated_at={r.get('generated_at')}  now_utc={r.get('now_utc')}"
+        )
+        print(
+            f"window_hours={r['window_hours']}  cutoff_utc={r.get('window_cutoff_utc')}  "
+            f"filter={r.get('filter_timestamp')}"
+        )
+        print(
             f"members_selected={r['members_selected']}  "
-            f"requested_limit={r['requested_limit']}  window_hours={r['window_hours']}"
+            f"requested_limit={r['requested_limit']}  "
+            f"max_age_minutes={r.get('max_age_minutes')}"
             + (f"  cohort_id={r['cohort_id']}" if r.get("cohort_id") else "")
         )
         for e in r.get("preview") or []:
-            print(f"  {e['symbol'] or '?':<10} {e['token']:<16} born={e['first_evidence_at']}")
+            print(
+                f"  {e['symbol'] or '?':<10} {e['token']:<16} "
+                f"born={e['first_evidence_at']}  age_minutes={e['age_minutes']}"
+            )
         return r["members_selected"]
     finally:
         if owns_session:

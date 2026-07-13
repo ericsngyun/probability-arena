@@ -192,6 +192,69 @@ class TestCohort:
         r = service().create_cohort(session, limit=9999, dry_run=True)
         assert r["requested_limit"] == COHORT_MAX
 
+    def test_window_filters_on_first_evidence_not_observed_at(self, session):
+        # regression: a birth tape-RECORDED recently (observed_at) but whose
+        # token was first seen long ago (first_evidence_at) must NOT pass a
+        # short window — the window is a TOKEN-AGE window, not a record-age one.
+        from datetime import timedelta as _td
+
+        from app.models import CryptoTokenBirthEvent
+        old_anchor = NOW - _td(minutes=104)      # first seen ~104 min ago
+        recent_record = NOW - _td(minutes=5)     # tape recorded it 5 min ago
+        session.add(CryptoTokenBirthEvent(
+            chain="solana", token_address="stale" + "A" * 20, symbol="OLD",
+            observed_at=recent_record, first_evidence_at=old_anchor,
+            initial_liquidity_usd=10_000.0, created_at=recent_record,
+        ))
+        session.flush()
+        r = service().create_cohort(session, limit=10, hours=1, dry_run=True)
+        assert r["members_selected"] == 0        # 104-min-old token excluded by --hours 1
+        # and a 2h window DOES include it, with an honest age
+        r2 = service().create_cohort(session, limit=10, hours=2, dry_run=True)
+        assert r2["members_selected"] == 1
+        assert r2["preview"][0]["age_minutes"] == pytest.approx(104, abs=1)
+
+    def test_hours_1_never_returns_token_older_than_60_minutes(self, session):
+        from datetime import timedelta as _td
+
+        from app.models import CryptoTokenBirthEvent
+        # a spread of ages, all tape-recorded 'now' (recent observed_at)
+        for i, mins in enumerate((10, 45, 59, 61, 90, 120)):
+            session.add(CryptoTokenBirthEvent(
+                chain="solana", token_address=f"t{i}" + "A" * 22, symbol="T",
+                observed_at=NOW, first_evidence_at=NOW - _td(minutes=mins),
+                initial_liquidity_usd=10_000.0, created_at=NOW,
+            ))
+        session.flush()
+        r = service().create_cohort(session, limit=100, hours=1, dry_run=True)
+        # inclusive boundary + a few seconds tolerance only
+        assert r["max_age_minutes"] is not None
+        assert r["max_age_minutes"] <= 60 + 0.1
+        assert r["members_selected"] == 3        # 10, 45, 59 min old only
+
+    def test_timezone_naive_first_evidence_handled(self, session):
+        # SQLite may return naive datetimes; the age math must treat them as UTC
+        from datetime import timedelta as _td, timezone as _tz
+
+        from app.models import CryptoTokenBirthEvent
+        naive_anchor = (NOW - _td(minutes=30)).replace(tzinfo=None)
+        session.add(CryptoTokenBirthEvent(
+            chain="solana", token_address="naive" + "A" * 20, symbol="N",
+            observed_at=NOW, first_evidence_at=naive_anchor,
+            initial_liquidity_usd=10_000.0, created_at=NOW,
+        ))
+        session.flush()
+        r = service().create_cohort(session, limit=10, hours=1, dry_run=True)
+        assert r["members_selected"] == 1
+        assert r["preview"][0]["age_minutes"] == pytest.approx(30, abs=1)
+
+    def test_report_prints_generated_at_and_cutoff(self, session):
+        add_birth(session, "a" * 25, born_h=0.2)
+        r = service().create_cohort(session, limit=10, hours=1, dry_run=True)
+        assert "generated_at" in r and "now_utc" in r
+        assert r["filter_timestamp"] == "coalesce(first_evidence_at, observed_at)"
+        assert "window_cutoff_utc" in r
+
 
 # --- observe pass ---------------------------------------------------------------
 

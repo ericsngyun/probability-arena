@@ -388,35 +388,60 @@ class CryptoHorizonService:
     ) -> dict:
         """Freeze a fixed cohort of the most recently born tokens (recent-first,
         so their long horizons are still ahead and catchable). Read-only
-        selection from persisted births; dry-run persists nothing."""
+        selection from persisted births; dry-run persists nothing.
+
+        The `--hours` window is enforced on the token-age ANCHOR
+        (`first_evidence_at`, falling back to `observed_at` when absent) — the
+        SAME timestamp the planner anchors horizons to and the preview displays.
+        Filtering on `observed_at` (tape-record time) was a bug: a single tape
+        run records births for tokens the scout first saw much earlier, so
+        `--hours 1` could return tokens whose true age far exceeded 60 min."""
         limit = max(1, min(limit, COHORT_MAX))
         now = _now()
         cutoff = now - timedelta(hours=hours)
+        # anchor = the token-age timestamp used for horizons + display + filter
+        anchor_col = func.coalesce(
+            CryptoTokenBirthEvent.first_evidence_at,
+            CryptoTokenBirthEvent.observed_at,
+        )
         births = list(session.execute(
             select(CryptoTokenBirthEvent)
             .where(
                 CryptoTokenBirthEvent.chain == self.chain,
-                CryptoTokenBirthEvent.observed_at >= cutoff,
+                anchor_col >= cutoff,
             )
-            .order_by(CryptoTokenBirthEvent.first_evidence_at.desc(),
-                      CryptoTokenBirthEvent.id.desc())
+            .order_by(anchor_col.desc(), CryptoTokenBirthEvent.id.desc())
             .limit(limit)
         ).scalars().all())
+
+        def _anchor(b):
+            return _aware(b.first_evidence_at) or _aware(b.observed_at)
+
+        def _age_min(b):
+            a = _anchor(b)
+            return round((now - a).total_seconds() / 60, 2) if a else None
 
         preview = [
             {"token": b.token_address[:16], "symbol": b.symbol,
              "first_evidence_at": (
-                 _aware(b.first_evidence_at).isoformat() if b.first_evidence_at else None
-             )}
+                 _anchor(b).isoformat() if _anchor(b) else None
+             ),
+             "age_minutes": _age_min(b)}
             for b in births[:10]
         ]
+        ages = [_age_min(b) for b in births if _age_min(b) is not None]
         summary = {
             "status": "dry_run" if dry_run else "ok",
             "note": HORIZON_NOTE,
             "external_calls": 0,
+            "generated_at": now.isoformat(),
+            "now_utc": now.isoformat(),
             "requested_limit": limit,
             "window_hours": hours,
+            "window_cutoff_utc": cutoff.isoformat(),
+            "filter_timestamp": "coalesce(first_evidence_at, observed_at)",
             "members_selected": len(births),
+            "max_age_minutes": max(ages) if ages else None,
             "preview": preview,
         }
         if dry_run or not births:
@@ -429,7 +454,8 @@ class CryptoHorizonService:
             note="recent-first birth cohort for horizon observation",
             provenance={
                 "source": "crypto_token_birth_events",
-                "order": "first_evidence_at desc",
+                "order": "coalesce(first_evidence_at, observed_at) desc",
+                "window_filter": "coalesce(first_evidence_at, observed_at) >= now - window_hours",
                 "window_hours": hours,
                 "selected_at": now.isoformat(),
             },
