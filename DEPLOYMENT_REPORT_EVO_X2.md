@@ -1814,3 +1814,30 @@ First approved real cadence session, launched in `tmux` on `f26f554` (no code ch
 **10. Health:** MarketOps `ok` throughout (latest #2189 `ok`); frontier eval **`safety_ok=True` (81 files)**; no timers, no flags, no providers, no MarketOps/EDGE-AUTO change.
 
 **Recommendation: KEEP — manual/report-only.** The session did exactly its job (15m/1h/6h matured; gap share improved) and the conservative ladder proved its worth by demoting the unconfirmed hint. **Run a SECOND approved session ~a day from now to close the 24h windows**, then re-read `crypto-retrospect-report --hours 72`; only once dimensions leave `provider_gap_dominates` should actor/cohort intelligence or survival validation be designed — never trading.
+
+## CRYPTO-RETROSPECT-002 — tape-backed cohort stratification dark-deployed (2026-07-13, ~02:56 UTC)
+
+Deployed **`239219a` → `c434fd7`** by `git pull --ff-only`. **No migration** (revision stayed `0026`), no table, no flag, no timer (user timer list unchanged), no provider change, no MarketOps/EDGE-AUTO change. Adds `crypto-retrospect-report --cohort {all,tape-backed,derived-only}` plus always-on `data_source_mix` and per-dimension `source_stratification` — pure compute over existing rows.
+
+| item | value |
+|---|---|
+| pushed / deployed commit | **`c434fd7`** (origin/main + EVO-X2) |
+| migration / table / flag / timer / providers | **none / none / none / none / unchanged** |
+| tests at commit | 1596 passed / 2 skipped; safety grep + AST audit clean |
+
+**No-persistence proof:** tape-table counts identical before → after all six cohort reports — lifecycle_runs 13, birth_events 83, snapshots 350, actor_observations 350, survival_outcomes 83.
+
+**All six reports rendered** (24h + 72h × all/tape-backed/derived-only). `data_source_mix` and `source_stratification` present in every one.
+- **data_source_mix 24h:** tape_backed=20, derived_only=172, immature(1h)=130; provider_gap rate by source 0.95 (tape) / 0.9535 (derived) / 0.9531 (all). Horizon maturity by source (tape-backed known/unknown): 15m 13/7, 1h 13/7, 6h 3/17, 24h 1/19.
+- **data_source_mix 72h:** tape_backed=83, derived_only=317 (TRUNCATED at 400), immature(1h)=255; provider_gap rate 0.9759 / 0.9716 / 0.9725. Tape-backed maturity: 15m 32/51, 1h 32/51, 6h 10/73, **24h 2/81** — 24h still barely mature, needs a second cadence session.
+- **source_stratification:** every dimension in every window/lens is `tape_too_thin` (or `too_thin` for concentration dims where providers rarely populate). No dimension produced a readable tape-backed signal yet; **no dilution warnings** fired (there is no tape-backed signal to hide). Tape-backed is either too small to split into two ≥12 cohorts, or (72h) splits but fails the measurability floor → gap-dominated.
+
+**top10_concentration verdict:** `tape_too_thin` at both 24h and 72h. At 24h the all-window and derived-only read `provider_gap_dominates`; at 72h all three sources (all/tape/derived) read `provider_gap_dominates`. **The earlier "unclaimed monotonic spread" (low 0.26 < elevated 0.68 < flagged 0.96) is confirmed NOT trustworthy** — it is gap-dominated in every source, so RETROSPECT-002 correctly refuses to attribute it even to derived-only, let alone matured tape. Exactly the intended behavior: distinguish real matured-tape evidence from noise, and here there is not yet enough of either.
+
+**SolanaTracker budget: unchanged by the reports** — `today=435 / month=19,658` identical before and after; rolling_24h 3,615→3,600 (background variation, a decrease). Retrospect made zero external calls. KEEP.
+
+**Health (unchanged):** MarketOps #2200 `ok`; DB 2,750.43 MiB flat; frontier eval **`safety_ok=True` (81 files)**.
+
+**Safety:** canonical grep — 3 hits, all boundary docstrings. Expanded identifier-level tokenize audit on the deployed module (strings/comments excluded; wallet, private_key, keypair, swap, jupiter, send/sign_transaction, order placement, EV, paper trading, sizing, recommend, buy, sell, bet, arbitrage, arb, opportunity, pnl, profit): **CLEAN**.
+
+**Recommendation: KEEP — manual/report-only.** The stratification is doing its job: it says the tape-backed sample is still too thin per-dimension to read any feature, and the earlier apparent top10 pattern is not real evidence yet. **Run a SECOND crypto tape cadence session to close the 24h windows** (`crypto-tape-session --duration-hours 6 --interval-min 30 --limit 25` in tmux, explicitly approved per invocation), then re-read `crypto-retrospect-report --hours 72 --cohort tape-backed` — that lens is where a matured signal would first become readable. **Rollback:** `git reset --hard 239219a` — additive compute-only.

@@ -326,8 +326,11 @@ mature tape-backed evidence reads apart from fresh derived-only noise — use
 real or just fresh-token dilution. **No table/migration, persists nothing, no
 external call, no SolanaTracker budget impact, no timer.** A separation/source
 label is feature-quality evidence, never advice.
-**RETROSPECT-001 deployed dark 2026-07-12 (`18a6a93`); RETROSPECT-002 is
-code-only, dark-by-default — do not deploy unless explicitly asked.**
+**RETROSPECT-001 deployed dark 2026-07-12 (`18a6a93`); RETROSPECT-002
+deployed dark 2026-07-13 (`c434fd7`, no migration; all six cohort×window
+reports validated live, nothing persisted, ST budget unchanged — every
+dimension still tape_too_thin, needs a second cadence session; see
+DEPLOYMENT_REPORT_EVO_X2.md). Manual/report-only.**
 
 ### MEME-SHADOW-001 label follow-through (read-only, on-demand, NO timer)
 
