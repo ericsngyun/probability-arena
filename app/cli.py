@@ -1672,12 +1672,18 @@ async def crypto_horizon_observation_report(
         print(r["note"])
         print(f"\ncohort_id={r['cohort_id']}  cohort_size={r['cohort_size']}  "
               f"observations_total={r['observations_total']}")
-        print("by horizon (due / observed / missed / completion / liquidity-field):")
+        print("by horizon (explicit denominators):")
         for label in ("15m", "1h", "6h", "24h"):
             h = r["by_horizon"][label]
             print(
-                f"  {label:<4} {h['due']}/{h['observed']}/{h['missed']}  "
-                f"completion={h['completion_rate']}  "
+                f"  {label:<4} due_total={h['horizon_due_total']} due_now={h['due_now']} "
+                f"overdue={h['overdue_unobserved']} attempted={h['attempted']} "
+                f"observed={h['observed']} missed_attempted={h['missed_attempted']} "
+                f"not_due={h['skipped_not_due']}"
+            )
+            print(
+                f"       completion(of attempts)={h['completion_rate_of_attempts']}  "
+                f"coverage(of due)={h['coverage_rate_of_due']}  "
                 f"liq_field={h['liquidity_field_completion_rate']}"
             )
         print(
@@ -1699,6 +1705,87 @@ async def crypto_horizon_observation_report(
         print(f"provider_usage={r['provider_usage']}  db_impact_rows={r['db_impact_rows']}")
         print(f"\ndisclaimer: {r['disclaimer']}")
         return r["cohort_size"]
+    finally:
+        if owns_session:
+            session.close()
+
+
+async def crypto_horizon_pair_selection_report(
+    cohort_id: int, top: int = 5, session=None
+) -> int:
+    """CRYPTO-HORIZON-OBS-002: for each failed (no-liquidity) observation, show
+    the captured candidate pairs, whether another pair had usable liquidity, and
+    which shadow policy would have selected it. Read-only; no external call.
+    Returns failed-observation count."""
+    from app.services.crypto_horizon import build_pair_selection_report
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        r = build_pair_selection_report(session, cohort_id, top=top)
+        print("crypto horizon pair-selection report — diagnostic only, never advice")
+        print(
+            f"cohort_id={r['cohort_id']}  failed_no_liquidity={r['failed_no_liquidity']}  "
+            f"avoidable={r['avoidable_failures']}  "
+            f"projected_completion_improvement={r['projected_completion_improvement']}"
+        )
+        if r["rows_without_captured_candidates"]:
+            print(
+                f"  ! {r['rows_without_captured_candidates']} failed row(s) have no "
+                "captured candidates (observed before OBS-002) — re-run observe to diagnose"
+            )
+        for e in r["examples"]:
+            print(
+                f"  {e['token']:<16} h={e['horizon']} pairs={e['pair_count']} "
+                f"eligible={e['eligible_pair_count']} avoidable={e['no_liquidity_state_avoidable']}"
+            )
+            print(f"     liq_field_states={e['liquidity_field_states']}")
+            print(f"     shadow_selection={e['shadow_policy_selection']}")
+        print(f"\ndisclaimer: {r['disclaimer']}")
+        return r["failed_no_liquidity"]
+    finally:
+        if owns_session:
+            session.close()
+
+
+async def crypto_horizon_outcome_reconciliation_report(
+    cohort_id: int, top: int = 5, session=None
+) -> int:
+    """CRYPTO-HORIZON-OBS-002: cohort-specific proof that a horizon observation
+    flips a lifecycle outcome unknown->known. Recomputes survival WITH vs
+    WITHOUT each observation's exact tick (read-only), isolating its
+    contribution. Nothing persisted. Returns observed-with-tick count."""
+    from app.services.crypto_horizon import build_outcome_reconciliation_report
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        r = build_outcome_reconciliation_report(session, cohort_id, top=top)
+        print("crypto horizon outcome reconciliation — measurement only, never advice")
+        print(r["method"])
+        print(
+            f"cohort_id={r['cohort_id']}  observed_with_tick={r['observed_with_tick']}  "
+            f"transitioned_unknown_to_known={r['transitioned_unknown_to_known']}  "
+            f"transition_rate={r['transition_rate']}"
+        )
+        for e in r["reconciliation"]:
+            print(
+                f"  {e['token']:<16} h={e['horizon']} obs_id={e['observation_id']} "
+                f"tick_id={e['tick_id']} before={e['outcome_before']} "
+                f"after={e['outcome_after']} transitioned={e['transitioned_unknown_to_known']}"
+                + (f" fail={e['failure_cause_if_still_unknown']}"
+                   if e['failure_cause_if_still_unknown'] else "")
+            )
+        print(f"\ndisclaimer: {r['disclaimer']}")
+        return r["observed_with_tick"]
     finally:
         if owns_session:
             session.close()
@@ -5037,6 +5124,20 @@ def build_parser() -> argparse.ArgumentParser:
     hrep_parser.add_argument("--top", type=int, default=5)
     hrep_parser.add_argument("--shadow", action="store_true",
                              help="pre-observation coverage-gain + provider-load estimate")
+    hpsr_parser = subparsers.add_parser(
+        "crypto-horizon-pair-selection-report",
+        help="Diagnose failed (no-liquidity) observations + shadow pair policies "
+             "(CRYPTO-HORIZON-OBS-002; read-only)",
+    )
+    hpsr_parser.add_argument("--cohort-id", type=int, required=True)
+    hpsr_parser.add_argument("--top", type=int, default=5)
+    horr_parser = subparsers.add_parser(
+        "crypto-horizon-outcome-reconciliation-report",
+        help="Prove observation -> outcome unknown->known transition "
+             "(CRYPTO-HORIZON-OBS-002; read-only, nothing persisted)",
+    )
+    horr_parser.add_argument("--cohort-id", type=int, required=True)
+    horr_parser.add_argument("--top", type=int, default=5)
     cov_parser = subparsers.add_parser(
         "crypto-tape-coverage-report",
         help="Coverage forensics: why survival horizons stay unmeasurable + "
@@ -5544,6 +5645,18 @@ def main(argv: list[str] | None = None) -> int:
         n = asyncio.run(
             crypto_horizon_observation_report(
                 cohort_id=args.cohort_id, top=args.top, shadow=args.shadow
+            )
+        )
+        return 0 if n >= 0 else 1
+    if args.command == "crypto-horizon-pair-selection-report":
+        n = asyncio.run(
+            crypto_horizon_pair_selection_report(cohort_id=args.cohort_id, top=args.top)
+        )
+        return 0 if n >= 0 else 1
+    if args.command == "crypto-horizon-outcome-reconciliation-report":
+        n = asyncio.run(
+            crypto_horizon_outcome_reconciliation_report(
+                cohort_id=args.cohort_id, top=args.top
             )
         )
         return 0 if n >= 0 else 1

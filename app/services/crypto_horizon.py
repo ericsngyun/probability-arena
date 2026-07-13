@@ -40,6 +40,7 @@ from app.models import (
     CryptoHorizonCohortMember,
     CryptoHorizonObservation,
     CryptoPriceTick,
+    CryptoToken,
     CryptoTokenBirthEvent,
 )
 from app.services.crypto_tape import HORIZON_TOLERANCE, HORIZONS, _aware, _now
@@ -176,6 +177,190 @@ def due_fetch_order(plan: list[HorizonPlanEntry]) -> list[str]:
         if e.token_address not in order:
             order.append(e.token_address)
     return order
+
+
+# --- CRYPTO-HORIZON-OBS-002: pair diagnostics + deterministic selection ---------
+# The first real cohort-1 pass failed 3/5 6h observations as no_liquidity_state
+# because selection was `max(liquidity_usd or 0)` — which treats None and 0
+# identically and never checks whether ANOTHER returned pair carried usable
+# liquidity. OBS-002 inspects every candidate pair and selects the highest
+# ELIGIBLE-quality pair (valid price + positive liquidity, activity-preferred),
+# preserving an honest no_liquidity_state only when NO candidate has liquidity.
+# This is market-quality selection for observation coverage — NOT a trading
+# score, NOT a recommendation.
+
+# selection policies (shadow-comparable)
+POLICY_FIRST = "first_returned"
+POLICY_MAX_LIQ = "maximum_liquidity_usd"
+POLICY_HIGH_VOL = "highest_recent_volume_with_liquidity"
+POLICY_NEWEST_ACTIVE = "newest_active_pair"
+POLICY_LAUNCHPAD_THEN_AMM = "pump_or_launchpad_preferred_then_amm"
+POLICY_QUALITY = "active_pair_quality_score"
+SELECTION_POLICIES = (
+    POLICY_FIRST, POLICY_MAX_LIQ, POLICY_HIGH_VOL, POLICY_NEWEST_ACTIVE,
+    POLICY_LAUNCHPAD_THEN_AMM, POLICY_QUALITY,
+)
+# the deterministic policy the real observe pass uses
+OBSERVE_POLICY = POLICY_QUALITY
+
+# liquidity field states
+LIQ_ABSENT, LIQ_NULL, LIQ_ZERO, LIQ_MALFORMED, LIQ_PRESENT = (
+    "absent", "null", "zero", "malformed", "present"
+)
+
+
+def _txn_count(raw: dict | None, key: str) -> int:
+    entry = ((raw or {}).get("txns") or {}).get(key) or {}
+    try:
+        return int(entry.get("buys") or 0) + int(entry.get("sells") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def recent_txns(pair) -> int:
+    """Recent (5m + 1h) transaction count from the raw payload (activity)."""
+    raw = getattr(pair, "raw", None) or {}
+    return _txn_count(raw, "m5") + _txn_count(raw, "h1")
+
+
+def recent_volume(pair) -> float:
+    return pair.volume_1h_usd or pair.volume_5m_usd or 0.0
+
+
+def liquidity_field_state(pair) -> str:
+    """Classify the liquidity field: absent / null / zero / malformed / present."""
+    raw = getattr(pair, "raw", None) or {}
+    if "liquidity" not in raw or raw.get("liquidity") is None:
+        # fall back to the parsed value (adapter may have normalized it)
+        if pair.liquidity_usd is None:
+            return LIQ_ABSENT
+        return LIQ_ZERO if pair.liquidity_usd == 0 else LIQ_PRESENT
+    liq = raw.get("liquidity")
+    usd = liq.get("usd") if isinstance(liq, dict) else liq
+    if usd is None:
+        return LIQ_NULL
+    try:
+        value = float(usd)
+    except (TypeError, ValueError):
+        return LIQ_MALFORMED
+    return LIQ_ZERO if value == 0 else LIQ_PRESENT
+
+
+def pair_is_eligible(pair) -> bool:
+    """Usable for a price-tick observation: valid positive price AND positive
+    liquidity. FDV / market cap / volume are NEVER treated as liquidity."""
+    return (
+        pair.price_usd is not None and pair.price_usd > 0
+        and pair.liquidity_usd is not None and pair.liquidity_usd > 0
+    )
+
+
+def active_pair_quality_score(pair, token: str) -> float | None:
+    """Observable market-quality score for an ELIGIBLE pair (None if
+    ineligible). Liquidity is primary; recent activity/volume preferred; an
+    exact base-token match preferred; stale+inactive pairs penalized. This is a
+    coverage-quality score for picking the best OBSERVATION pair — never a
+    trade signal, EV, or recommendation."""
+    if not pair_is_eligible(pair):
+        return None
+    liq = pair.liquidity_usd
+    txns = recent_txns(pair)
+    vol = recent_volume(pair)
+    active = txns > 0 or vol > 0
+    score = min(liq, 1_000_000) / 10_000          # liquidity, up to ~100
+    score += min(txns, 1000) * 0.2                # activity, up to 200
+    score += min(vol, 1_000_000) / 20_000         # recent volume, up to 50
+    if pair.base_token_address == token:
+        score += 25                               # exact base-token match
+    if not active:
+        score -= 50                               # stale/inactive penalty
+    return round(score, 4)
+
+
+def _eligible(pairs, token):
+    return [p for p in pairs if pair_is_eligible(p)]
+
+
+def select_pair(pairs, token, policy=OBSERVE_POLICY):
+    """(selected_pair_or_None, basis). Deterministic; reads only market-quality
+    fields. Returns None when no pair is eligible (honest no_liquidity_state)."""
+    if not pairs:
+        return None, {"policy": policy, "reason": "no_pairs", "candidate_count": 0}
+    elig = _eligible(pairs, token)
+    basis = {
+        "policy": policy, "candidate_count": len(pairs),
+        "eligible_count": len(elig),
+    }
+    chosen = None
+    if policy == POLICY_FIRST:
+        chosen = pairs[0]
+    elif policy == POLICY_MAX_LIQ:
+        chosen = max(elig, key=lambda p: p.liquidity_usd, default=None)
+    elif policy == POLICY_HIGH_VOL:
+        chosen = max(elig, key=recent_volume, default=None)
+    elif policy == POLICY_NEWEST_ACTIVE:
+        active = [p for p in elig if recent_txns(p) > 0 or recent_volume(p) > 0]
+        chosen = max(
+            active,
+            key=lambda p: (_aware(p.pair_created_at) or _aware(_EPOCH)),
+            default=None,
+        )
+    elif policy == POLICY_LAUNCHPAD_THEN_AMM:
+        from app.services.crypto_tape import LAUNCHPAD_DEXES
+        lp = [p for p in elig if (p.dex_id or "").lower() in LAUNCHPAD_DEXES]
+        pool = lp or elig
+        chosen = max(pool, key=lambda p: p.liquidity_usd, default=None)
+    else:  # POLICY_QUALITY
+        scored = [(active_pair_quality_score(p, token), p) for p in pairs]
+        scored = [(s, p) for s, p in scored if s is not None]
+        if scored:
+            best_score, chosen = max(scored, key=lambda sp: sp[0])
+            basis["score"] = best_score
+    if chosen is not None:
+        basis["selected_pair"] = chosen.pair_address
+        basis["selected_liquidity_usd"] = chosen.liquidity_usd
+        basis["reason"] = "highest-quality eligible pair"
+    else:
+        basis["reason"] = (
+            "no eligible pair (no candidate has valid price + positive liquidity)"
+        )
+    return chosen, basis
+
+
+def describe_pair(pair, token: str) -> dict:
+    """Compact per-candidate diagnostic (NOT the full raw payload)."""
+    return {
+        "pair_address": pair.pair_address,
+        "dex_id": pair.dex_id,
+        "pair_created_at": (
+            _aware(pair.pair_created_at).isoformat() if pair.pair_created_at else None
+        ),
+        "recent_txns": recent_txns(pair),
+        "liquidity_usd": pair.liquidity_usd,
+        "liquidity_field_state": liquidity_field_state(pair),
+        "volume_5m_usd": pair.volume_5m_usd,
+        "volume_1h_usd": pair.volume_1h_usd,
+        "volume_24h_usd": pair.volume_24h_usd,
+        "price_usd": pair.price_usd,
+        "fdv": pair.fdv,
+        "market_cap": pair.market_cap,
+        "is_base_token": pair.base_token_address == token,
+        "quote_token_address": pair.quote_token_address,
+        "eligible": pair_is_eligible(pair),
+        "quality_score": active_pair_quality_score(pair, token),
+    }
+
+
+def shadow_pair_selection(pairs, token) -> dict:
+    """Which pair each shadow policy would pick — comparison, no side effects."""
+    out = {}
+    for policy in SELECTION_POLICIES:
+        chosen, _ = select_pair(pairs, token, policy)
+        out[policy] = chosen.pair_address if chosen is not None else None
+    return out
+
+
+_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 
 # --- cohort intake --------------------------------------------------------------
@@ -341,6 +526,7 @@ class CryptoHorizonService:
             summary["plan_status_counts"] = _plan_status_counts(plan)
             return summary
 
+        existing_by_key = {(o.token_address, o.horizon): o for o in observations}
         calls = 0
         outcomes = {OBS_OBSERVED: 0, OBS_NO_LIQUIDITY_STATE: 0,
                     OBS_PROVIDER_NO_PAIR: 0, OBS_TOKEN_INACTIVE: 0,
@@ -358,12 +544,15 @@ class CryptoHorizonService:
                 pairs = []
                 request_failed = True
             calls += 1
-            best = max(
-                (p for p in pairs), key=lambda p: p.liquidity_usd or 0, default=None
-            )
+            # OBS-002: deterministic highest-quality eligible pair (one selection
+            # per token serves all its due horizons)
+            selected, basis = select_pair(pairs, token, policy=OBSERVE_POLICY)
+            candidates = [describe_pair(p, token) for p in pairs]
             for entry in due_by_token.get(token, []):
                 status, cause, tick = self._record_observation(
-                    session, cohort_id, member, entry, best, request_failed, now,
+                    session, cohort_id, member, entry, selected, basis,
+                    candidates, request_failed, now,
+                    existing=existing_by_key.get((token, entry.horizon)),
                 )
                 outcomes[status] = outcomes.get(status, 0) + 1
                 if tick is not None:
@@ -372,16 +561,23 @@ class CryptoHorizonService:
         session.commit()
         summary["external_calls"] = calls
         summary["provider"] = self.adapter.source_name
+        summary["observation_policy"] = OBSERVE_POLICY
         summary["observations_recorded"] = sum(outcomes.values())
         summary["ticks_written"] = ticks_written
         summary["outcome_counts"] = {k: v for k, v in outcomes.items() if v}
         return summary
 
     def _record_observation(
-        self, session, cohort_id, member, entry, best, request_failed, now,
+        self, session, cohort_id, member, entry, selected, basis, candidates,
+        request_failed, now, existing=None,
     ):
-        """Persist one observation row (+ an ordinary price tick when market
-        data exists). Returns (status, missing_cause, tick_or_None)."""
+        """Upsert one observation row (+ an ordinary price tick ONLY when an
+        eligible pair with liquidity was selected — never a null-liquidity
+        tick, never liquidity fabricated from FDV/mcap/volume). A previously
+        FAILED (non-observed) row is retried in place; an OBSERVED row is never
+        overwritten. Returns (status, missing_cause, tick_or_None)."""
+        if existing is not None and existing.status == OBS_OBSERVED:
+            return OBS_OBSERVED, None, None  # frozen; never re-observe
         birth_at = entry.birth_at
         aged = (
             birth_at is not None
@@ -391,15 +587,29 @@ class CryptoHorizonService:
         price = liq = vol = mcap = fdv = pair_addr = dex = None
         if request_failed:
             status, cause = OBS_REQUEST_FAILED, OBS_REQUEST_FAILED
-        elif best is None:
+        elif basis.get("candidate_count", 0) == 0:
             # no pair from the provider — inactive if the token has aged out
             status = OBS_TOKEN_INACTIVE if aged else OBS_PROVIDER_NO_PAIR
             cause = status
+        elif selected is None:
+            # pairs exist but NONE eligible (no valid price + positive liquidity)
+            status, cause = OBS_NO_LIQUIDITY_STATE, OBS_NO_LIQUIDITY_STATE
+            # capture the best-priced candidate's PRICE for the early-liquidity
+            # diagnostic (price observed, liquidity honestly absent) — NO tick,
+            # NO liquidity fabricated from FDV/mcap/volume
+            priced = [c for c in candidates if c.get("price_usd")]
+            if priced:
+                best_c = max(priced, key=lambda c: c["price_usd"])
+                price = best_c.get("price_usd")
+                pair_addr = best_c.get("pair_address")
+                vol = best_c.get("volume_24h_usd")
+                mcap, fdv = best_c.get("market_cap"), best_c.get("fdv")
         else:
-            price, vol = best.price_usd, best.volume_24h_usd
-            mcap, fdv = best.market_cap, best.fdv
-            pair_addr, dex, liq = best.pair_address, best.dex_id, best.liquidity_usd
-            # persist an ordinary tick so the tape's survival horizon can mature
+            price, vol = selected.price_usd, selected.volume_24h_usd
+            mcap, fdv = selected.market_cap, selected.fdv
+            pair_addr, dex, liq = (
+                selected.pair_address, selected.dex_id, selected.liquidity_usd
+            )
             tick = CryptoPriceTick(
                 chain=self.chain, token_address=entry.token_address,
                 pair_address=pair_addr, observed_at=now, price_usd=price,
@@ -410,19 +620,41 @@ class CryptoHorizonService:
             )
             session.add(tick)
             session.flush()
-            status = OBS_OBSERVED if liq is not None else OBS_NO_LIQUIDITY_STATE
-            cause = None if liq is not None else OBS_NO_LIQUIDITY_STATE
-        session.add(CryptoHorizonObservation(
-            cohort_id=cohort_id, member_id=(member.id if member else None),
-            chain=self.chain, token_address=entry.token_address,
-            horizon=entry.horizon, target_at=entry.target_at,
-            window_start=entry.window_start, window_end=entry.window_end,
-            status=status, missing_cause=cause,
-            tick_id=(tick.id if tick is not None else None),
-            price_usd=price, liquidity_usd=liq, volume_24h_usd=vol,
-            market_cap=mcap, fdv=fdv, pair_address=pair_addr, dex_id=dex,
-            provider=self.adapter.source_name, observed_at=now, created_at=now,
-        ))
+            status, cause = OBS_OBSERVED, None
+
+        audit = {
+            "selected_pair_basis": basis,
+            "candidate_count": len(candidates),
+            "candidates": candidates[:12],  # bounded; never the full raw payload
+        }
+        if existing is not None:
+            # retry-in-place: update the failed row
+            existing.status = status
+            existing.missing_cause = cause
+            existing.tick_id = tick.id if tick is not None else None
+            existing.price_usd = price
+            existing.liquidity_usd = liq
+            existing.volume_24h_usd = vol
+            existing.market_cap = mcap
+            existing.fdv = fdv
+            existing.pair_address = pair_addr
+            existing.dex_id = dex
+            existing.provider = self.adapter.source_name
+            existing.raw_payload = audit
+            existing.observed_at = now
+        else:
+            session.add(CryptoHorizonObservation(
+                cohort_id=cohort_id, member_id=(member.id if member else None),
+                chain=self.chain, token_address=entry.token_address,
+                horizon=entry.horizon, target_at=entry.target_at,
+                window_start=entry.window_start, window_end=entry.window_end,
+                status=status, missing_cause=cause,
+                tick_id=(tick.id if tick is not None else None),
+                price_usd=price, liquidity_usd=liq, volume_24h_usd=vol,
+                market_cap=mcap, fdv=fdv, pair_address=pair_addr, dex_id=dex,
+                provider=self.adapter.source_name, raw_payload=audit,
+                observed_at=now, created_at=now,
+            ))
         return status, cause, tick
 
 
@@ -480,29 +712,53 @@ def build_observation_report(session: Session, cohort_id: int, top: int = 5) -> 
     plan = service.build_plan(session, cohort_id)
     obs_by_key = {(o.token_address, o.horizon): o for o in observations}
 
+    # OBS-002 reconciliation: every count is an explicit, disjoint bucket, and
+    # each rate names its denominator (the OBS-001 report conflated overdue and
+    # observed into one "due" denominator).
     by_horizon = {}
     for label, _ in HORIZONS:
         rows = [e for e in plan if e.horizon == label]
-        due = [e for e in rows if e.status in (STATUS_DUE_NOW, STATUS_OVERDUE_UNOBSERVED)
-               or (e.token_address, label) in obs_by_key]
-        observed = [
-            e for e in rows
-            if obs_by_key.get((e.token_address, label)) is not None
-            and obs_by_key[(e.token_address, label)].status == OBS_OBSERVED
-        ]
-        missed = [e for e in rows if e.status == STATUS_OVERDUE_UNOBSERVED
-                  and (e.token_address, label) not in obs_by_key]
-        # liquidity-field completion among successful observations
-        liq_present = sum(
-            1 for e in observed
-            if obs_by_key[(e.token_address, label)].liquidity_usd is not None
+        b = {k: 0 for k in (
+            "observed", "missed_attempted", "due_now", "overdue_unobserved",
+            "skipped_not_due", "inactive",
+        )}
+        liq_present = 0
+        for e in rows:
+            obs = obs_by_key.get((e.token_address, label))
+            if obs is not None and obs.status == OBS_OBSERVED:
+                b["observed"] += 1
+                if obs.liquidity_usd is not None:
+                    liq_present += 1
+            elif obs is not None:
+                b["missed_attempted"] += 1        # attempted, not usable (retryable)
+            elif e.status == STATUS_NOT_DUE:
+                b["skipped_not_due"] += 1
+            elif e.status == STATUS_INACTIVE:
+                b["inactive"] += 1
+            elif e.status == STATUS_DUE_NOW:
+                b["due_now"] += 1
+            elif e.status == STATUS_OVERDUE_UNOBSERVED:
+                b["overdue_unobserved"] += 1
+        attempted = b["observed"] + b["missed_attempted"]
+        horizon_due_total = (
+            attempted + b["due_now"] + b["overdue_unobserved"] + b["inactive"]
         )
         by_horizon[label] = {
-            "due": len(due),
-            "observed": len(observed),
-            "missed": len(missed),
-            "completion_rate": _rate(len(observed), len(due)),
-            "liquidity_field_completion_rate": _rate(liq_present, len(observed)),
+            "horizon_due_total": horizon_due_total,
+            "due_now": b["due_now"],
+            "overdue_unobserved": b["overdue_unobserved"],
+            "attempted": attempted,
+            "observed": b["observed"],
+            "missed_attempted": b["missed_attempted"],
+            "skipped_not_due": b["skipped_not_due"],
+            "skipped_already_observed": b["observed"],  # observed == already-observed on re-plan
+            "inactive": b["inactive"],
+            # explicit-denominator rates
+            "completion_rate_of_attempts": _rate(b["observed"], attempted),
+            "completion_denominator": "attempted",
+            "coverage_rate_of_due": _rate(b["observed"], horizon_due_total),
+            "coverage_denominator": "horizon_due_total",
+            "liquidity_field_completion_rate": _rate(liq_present, b["observed"]),
         }
 
     status_counts: dict[str, int] = {}
@@ -537,12 +793,13 @@ def build_observation_report(session: Session, cohort_id: int, top: int = 5) -> 
         idx = min(len(dists) - 1, int(p * (len(dists) - 1)))
         return round(dists[idx], 1)
 
-    # success gates (measurement only)
+    # success gates (measurement only) — coverage of everything that became due
     gates = {}
     for label in ("15m", "1h", "6h", "24h"):
-        rate = by_horizon[label]["completion_rate"]
+        rate = by_horizon[label]["coverage_rate_of_due"]
         gates[label] = {
             "target": SUCCESS_GATES[label], "actual": rate,
+            "denominator": "horizon_due_total",
             "pass": (rate is not None and rate >= SUCCESS_GATES[label]),
         }
     liq_rates = [
@@ -595,6 +852,185 @@ def build_observation_report(session: Session, cohort_id: int, top: int = 5) -> 
             "bounded horizon-observation coverage — market/liquidity "
             "observations only; misses recorded honestly; success gates are "
             "MEASUREMENT gates, not enforcement; never advice, no EV, no "
+            "recommendation, no sizing, no orders, no wallets, no execution"
+        ),
+    }
+
+
+# --- CRYPTO-HORIZON-OBS-002: pair-selection diagnostic report -------------------
+
+
+def build_pair_selection_report(session: Session, cohort_id: int, top: int = 5) -> dict:
+    """For each FAILED observation (no usable liquidity), read the candidate
+    pairs captured in the observation's audit payload and report whether the
+    failure was AVOIDABLE (another returned pair had usable liquidity) and what
+    each shadow policy would have selected. Read-only; no external call — it
+    reads the candidates a v2 observe pass persisted (re-run observe to capture
+    candidates for pre-OBS-002 rows)."""
+    service = CryptoHorizonService()
+    observations = service._observations(session, cohort_id)
+    failed = [o for o in observations if o.status == OBS_NO_LIQUIDITY_STATE]
+
+    entries = []
+    avoidable = 0
+    for o in failed:
+        audit = o.raw_payload or {}
+        candidates = audit.get("candidates") or []
+        eligible = [c for c in candidates if c.get("eligible")]
+        # shadow: which policies would find an eligible pair from the captured set
+        shadow = {}
+        for policy in SELECTION_POLICIES:
+            if policy == POLICY_FIRST:
+                pick = candidates[0]["pair_address"] if candidates else None
+            elif not eligible:
+                pick = None
+            elif policy == POLICY_MAX_LIQ:
+                pick = max(eligible, key=lambda c: c["liquidity_usd"])["pair_address"]
+            elif policy == POLICY_HIGH_VOL:
+                pick = max(
+                    eligible, key=lambda c: (c.get("volume_1h_usd") or c.get("volume_5m_usd") or 0)
+                )["pair_address"]
+            elif policy == POLICY_QUALITY:
+                pick = max(
+                    eligible, key=lambda c: (c.get("quality_score") or -1e9)
+                )["pair_address"]
+            else:
+                pick = eligible[0]["pair_address"]
+            shadow[policy] = pick
+        was_avoidable = bool(eligible)
+        if was_avoidable:
+            avoidable += 1
+        entries.append({
+            "token": o.token_address[:16],
+            "horizon": o.horizon,
+            "pair_count": len(candidates),
+            "eligible_pair_count": len(eligible),
+            "current_selected_pair": (audit.get("selected_pair_basis") or {}).get("selected_pair"),
+            "another_pair_had_liquidity": was_avoidable,
+            "no_liquidity_state_avoidable": was_avoidable,
+            "shadow_policy_selection": shadow,
+            "liquidity_field_states": [c.get("liquidity_field_state") for c in candidates],
+            "has_captured_candidates": bool(candidates),
+        })
+
+    return {
+        "note": HORIZON_NOTE,
+        "cohort_id": cohort_id,
+        "failed_no_liquidity": len(failed),
+        "avoidable_failures": avoidable,
+        "projected_completion_improvement": _rate(avoidable, len(failed)),
+        "rows_without_captured_candidates": sum(
+            1 for e in entries if not e["has_captured_candidates"]
+        ),
+        "examples": entries[:top],
+        "disclaimer": (
+            "pair-selection diagnostic — market-quality coverage analysis only; "
+            "selection is for OBSERVATION, never a trade signal/EV/recommendation; "
+            "read-only, no external call; no wallets, keys, swaps, signing, "
+            "orders, or execution"
+        ),
+    }
+
+
+# --- CRYPTO-HORIZON-OBS-002: outcome-transition reconciliation ------------------
+
+
+def build_outcome_reconciliation_report(
+    session: Session, cohort_id: int, top: int = 5,
+) -> dict:
+    """Cohort-specific PROOF that a horizon observation flips a lifecycle
+    outcome unknown -> known. For each observed horizon with a persisted tick,
+    recompute survival WITH and WITHOUT that exact tick (read-only): the delta
+    isolates the observation's contribution and sidesteps aggregate counts
+    polluted by unrelated new births. Nothing persisted."""
+    from dataclasses import replace as _replace
+
+    from app.services.crypto_tape import CryptoLifecycleTapeRecorder
+
+    recorder = CryptoLifecycleTapeRecorder()
+    service = CryptoHorizonService()
+    members = service._members(session, cohort_id)
+    observations = service._observations(session, cohort_id)
+    now = _now()
+
+    births = {
+        b.id: b for b in session.execute(
+            select(CryptoTokenBirthEvent).where(
+                CryptoTokenBirthEvent.id.in_(
+                    [m.birth_event_id for m in members if m.birth_event_id]
+                )
+            )
+        ).scalars().all()
+    }
+    tokens = {
+        t.token_address: t for t in session.execute(
+            select(CryptoToken).where(
+                CryptoToken.token_address.in_([m.token_address for m in members])
+            )
+        ).scalars().all()
+    }
+    member_by_token = {m.token_address: m for m in members}
+
+    rows = []
+    transitioned = 0
+    for o in observations:
+        if o.status != OBS_OBSERVED or o.tick_id is None:
+            continue
+        member = member_by_token.get(o.token_address)
+        birth = births.get(member.birth_event_id) if member else None
+        if birth is None:
+            continue
+        # a transient stand-in is fine — _load_sources only reads .token_address
+        token = tokens.get(o.token_address) or CryptoToken(
+            chain=service.chain, token_address=o.token_address
+        )
+        sources = recorder._load_sources(session, token, now)
+        key = f"survived_{o.horizon}"
+        with_tick = recorder.compute_survival(birth, sources, now)["labels"].get(key)
+        without = recorder.compute_survival(
+            birth,
+            _replace(sources, ticks=[t for t in sources.ticks if t.id != o.tick_id]),
+            now,
+        )["labels"].get(key)
+        did = (without is None and with_tick is not None)
+        if did:
+            transitioned += 1
+        failure = None
+        if with_tick is None:
+            # the observation tick did not make it measurable — why?
+            target = _aware(o.target_at)
+            tol_min = _minutes(o.horizon) * OBS_TOLERANCE
+            in_window = (
+                target is not None
+                and abs((_aware(o.observed_at) - target).total_seconds()) <= tol_min * 60
+            )
+            failure = (
+                "tick_outside_horizon_window" if not in_window
+                else "liquidity_or_initial_state_missing"
+            )
+        rows.append({
+            "token": o.token_address[:16], "horizon": o.horizon,
+            "observation_id": o.id, "tick_id": o.tick_id,
+            "outcome_before": without, "outcome_after": with_tick,
+            "transitioned_unknown_to_known": did,
+            "failure_cause_if_still_unknown": failure,
+        })
+
+    return {
+        "note": HORIZON_NOTE,
+        "cohort_id": cohort_id,
+        "observed_with_tick": len(rows),
+        "transitioned_unknown_to_known": transitioned,
+        "transition_rate": _rate(transitioned, len(rows)),
+        "reconciliation": rows[:top] if top else rows,
+        "method": (
+            "read-only: survival recomputed WITH vs WITHOUT the observation's "
+            "exact tick_id, isolating its contribution (no aggregate pollution "
+            "from unrelated new births); nothing persisted"
+        ),
+        "disclaimer": (
+            "outcome-transition reconciliation — measurement of whether an "
+            "observation matures a survival label; never advice, no EV, no "
             "recommendation, no sizing, no orders, no wallets, no execution"
         ),
     }

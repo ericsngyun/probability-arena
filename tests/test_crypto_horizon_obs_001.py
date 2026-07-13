@@ -248,7 +248,12 @@ class TestObserve:
         obs = session.query(CryptoHorizonObservation).filter_by(horizon="24h").one()
         assert obs.status == OBS_NO_LIQUIDITY_STATE
         assert obs.missing_cause == OBS_NO_LIQUIDITY_STATE
-        assert obs.price_usd is not None   # price captured, liquidity honestly absent
+        # OBS-002: no null-liquidity tick is written; price is still captured for
+        # the early-liquidity diagnostic, liquidity honestly absent
+        assert obs.tick_id is None
+        assert session.query(CryptoPriceTick).count() == 0
+        assert obs.price_usd is not None
+        assert obs.liquidity_usd is None
 
     async def test_provider_no_pair_vs_inactive_by_age(self, session):
         # young born 8h: 6h horizon due_now, not aged -> provider_no_pair
@@ -297,7 +302,8 @@ class TestShadowAndReport:
         r = build_observation_report(session, cid)
         assert r["cohort_size"] == 1
         assert r["by_horizon"]["24h"]["observed"] == 1
-        assert r["by_horizon"]["24h"]["completion_rate"] == 1.0
+        assert r["by_horizon"]["24h"]["completion_rate_of_attempts"] == 1.0
+        assert r["by_horizon"]["24h"]["coverage_rate_of_due"] == 1.0
         assert r["success_gates"]["24h"]["pass"] is True
         assert r["provider_usage"]["solana_tracker_calls"] == 0
         assert "never advice" in r["disclaimer"]
@@ -307,8 +313,8 @@ class TestShadowAndReport:
         cid = make_cohort(session, [("a" * 25, 0.05)])
         r = build_observation_report(session, cid)
         assert r["observations_total"] == 0
-        assert r["by_horizon"]["24h"]["completion_rate"] is None
-        assert r["by_horizon"]["24h"]["due"] == 0
+        assert r["by_horizon"]["24h"]["coverage_rate_of_due"] is None
+        assert r["by_horizon"]["24h"]["horizon_due_total"] == 0
 
 
 # --- CLI ------------------------------------------------------------------------

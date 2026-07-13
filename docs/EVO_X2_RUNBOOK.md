@@ -336,7 +336,19 @@ DEPLOYMENT_REPORT_EVO_X2.md); manual/report-only, no timer.**
 .venv/bin/python -m app.cli crypto-horizon-observe-once --cohort-id N --limit 25 --dry-run   # plan preview, ZERO calls, nothing persisted
 .venv/bin/python -m app.cli crypto-horizon-observe-once --cohort-id N --limit 25             # ONE bounded pass (DexScreener; requires approval per run)
 .venv/bin/python -m app.cli crypto-horizon-observation-report --cohort-id N --top 5          # completion/liquidity rates + success gates
+.venv/bin/python -m app.cli crypto-horizon-pair-selection-report --cohort-id N --top 5       # OBS-002: why did observations fail? shadow pair policies
+.venv/bin/python -m app.cli crypto-horizon-outcome-reconciliation-report --cohort-id N       # OBS-002: proof an observation flipped an outcome unknown->known
 ```
+
+**OBS-002 note:** pair selection is now deterministic `active_pair_quality_score`
+(picks the highest-quality *eligible* pair — valid price + positive liquidity —
+over all candidates, never fabricating liquidity from FDV/mcap/volume). Failed
+`no_liquidity_state` observations are **retried in place** on a later
+`observe-once` (observed rows stay frozen), so to fix cohort-1's 3 failures you
+re-run the observe pass (it now captures per-candidate diagnostics + better
+selection), then read `crypto-horizon-pair-selection-report` to see if the
+failure was avoidable and `crypto-horizon-outcome-reconciliation-report` to
+prove which observations matured a survival label. No migration in OBS-002.
 
 Fills the UPSTREAM tick-coverage gap CRYPTO-COVERAGE-001 identified: fetches
 market/liquidity state for a FROZEN cohort near each 15m/1h/6h/24h mark and
