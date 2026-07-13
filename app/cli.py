@@ -1548,11 +1548,14 @@ async def crypto_tape_report(hours: int = 24, top: int = 5, session=None) -> int
             session.close()
 
 
-async def crypto_retrospect_report(hours: int = 48, top: int = 5, session=None) -> int:
-    """CRYPTO-RETROSPECT-001 retrospective feature/outcome analysis: which
-    persisted features separate the lifecycle-tape survival outcomes?
-    Compute-on-demand; persists nothing; no external call; never advice.
-    Returns tokens analyzed."""
+async def crypto_retrospect_report(
+    hours: int = 48, top: int = 5, cohort: str = "all", session=None
+) -> int:
+    """CRYPTO-RETROSPECT-001/002 retrospective feature/outcome analysis: which
+    persisted features separate the lifecycle-tape survival outcomes, and does
+    any apparent signal live in mature tape-backed evidence or fresh
+    derived-only noise? Compute-on-demand; persists nothing; no external call;
+    never advice. Returns tokens analyzed (in the selected cohort)."""
     from app.services.crypto_retrospect import build_retrospect_report
 
     owns_session = session is None
@@ -1562,18 +1565,59 @@ async def crypto_retrospect_report(hours: int = 48, top: int = 5, session=None) 
         run_migrations()
         session = get_sessionmaker()()
     try:
-        r = build_retrospect_report(session, hours=hours, top=top)
+        r = build_retrospect_report(session, hours=hours, top=top, cohort=cohort)
         print("crypto retrospective report — measurement only, never advice")
         print(r["note"])
         print(
-            f"\nwindow={r['window_hours']}h  generated_at={r['generated_at']}"
-            f"\ntokens_analyzed={r['tokens_analyzed']} "
+            f"\nwindow={r['window_hours']}h  cohort={r['cohort']}  "
+            f"generated_at={r['generated_at']}"
+            f"\ntokens_analyzed={r['tokens_analyzed']} (selected cohort)  "
+            f"window_tokens={r['window_tokens']} "
             f"(tape_backed={r['tape_backed_tokens']}, "
             f"derived_only={r['derived_only_tokens']}"
             + (f", TRUNCATED at {r['universe_cap']}" if r["universe_truncated"] else "")
             + ")"
         )
-        print("outcome totals (true/false/unknown; unknown = immature or gap):")
+        # CRYPTO-RETROSPECT-002: data source mix + maturity by source
+        m = r["data_source_mix"]
+        print(
+            f"\ndata source mix: tape_backed={m['tape_backed']} "
+            f"derived_only={m['derived_only']} immature(1h)={m['immature']}"
+        )
+        g = m["provider_gap_rate_by_source"]
+        print(
+            f"provider_gap rate by source: tape_backed={g['tape_backed']} "
+            f"derived_only={g['derived_only']} all={g['all']}"
+        )
+        print("horizon maturity (known/unknown) by source:")
+        for src in ("tape_backed", "derived_only", "all"):
+            cov = m["horizon_coverage_by_source"][src]
+            cells = "  ".join(
+                f"{h.replace('survived_', '')}={cov[h]['known']}/{cov[h]['unknown']}"
+                for h in ("survived_15m", "survived_1h", "survived_6h", "survived_24h")
+            )
+            print(f"  {src:<13} {cells}")
+        # source stratification: where does any signal live?
+        print("\nsource stratification (all | tape-backed | derived-only):")
+        for s in r["source_stratification"]:
+            def fmt(b):
+                d = b["max_delta"]
+                return f"{b['label']}" + (f"(Δ{d} on {b['driving_outcome']})" if d is not None else "")
+
+            flag = "  ⚠ DILUTED" if s["diluted"] else ""
+            print(
+                f"  {s['dimension']:<22} [{s['source_label']}]{flag}\n"
+                f"     all={fmt(s['all'])}  tape={fmt(s['tape_backed'])}  "
+                f"derived={fmt(s['derived_only'])}"
+            )
+            if s["warning"]:
+                print(f"     ! {s['warning']}")
+        if r["diluted_dimensions"]:
+            print(
+                f"\n{len(r['diluted_dimensions'])} dimension(s) show a tape-backed "
+                "signal HIDDEN in the all-window view — trust the tape-backed column."
+            )
+        print("\noutcome totals (true/false/unknown; unknown = immature or gap):")
         for outcome, mix in r["outcome_totals"].items():
             print(f"  {outcome:<22} {mix['true']}/{mix['false']}/{mix['unknown']}")
         if r["best_separators"]:
@@ -4731,6 +4775,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     retro_parser.add_argument("--hours", type=int, default=48)
     retro_parser.add_argument("--top", type=int, default=5)
+    retro_parser.add_argument(
+        "--cohort", choices=["all", "tape-backed", "derived-only"], default="all",
+        help="re-lens the headline to a token source (default all); the source "
+             "stratification section is always shown",
+    )
     mrc_parser = subparsers.add_parser(
         "meme-risk-coverage-report",
         help="Holder-risk coverage for the meme-news lane (read-only)",
@@ -5198,7 +5247,9 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0 if n >= 0 else 1
     if args.command == "crypto-retrospect-report":
-        n = asyncio.run(crypto_retrospect_report(hours=args.hours, top=args.top))
+        n = asyncio.run(
+            crypto_retrospect_report(hours=args.hours, top=args.top, cohort=args.cohort)
+        )
         return 0 if n >= 0 else 1
     if args.command == "meme-risk-coverage-report":
         n = asyncio.run(meme_risk_coverage_report(hours=args.hours))

@@ -414,6 +414,14 @@ Feature dimensions: top10/sniper/insider/bundler/creator concentration buckets (
 
 Interpretation is deliberately conservative: cohorts under 12 samples are `too_thin`; a dimension whose primary outcome is mostly unmeasurable is `provider_gap_dominates`; otherwise the best-vs-worst measured-cohort rate delta yields `no_separation` (<0.10), `weak_separator` (≥0.10), or `strong_risk_separator`/`strong_survival_separator` (≥0.25). A separation label is evidence about feature/label quality for review triage and future milestone design — never advice, never EV, never a trade direction.
 
+**Tape-backed cohort stratification (CRYPTO-RETROSPECT-002):** fresh derived-only tokens (just discovered, horizons still immature) dilute the window and can manufacture apparent patterns, so the report separates mature **tape-backed** evidence (a persisted birth event with repeated re-observations) from **derived-only** noise.
+
+```bash
+python -m app.cli crypto-retrospect-report --hours 72 --cohort tape-backed   # or all (default) / derived-only
+```
+
+`--cohort` re-lenses the headline. Two sections are **always** shown over the full window: a `data_source_mix` (tape-backed / derived-only / immature counts, horizon maturity known/unknown per source, and provider-gap rate per source), and a per-dimension `source_stratification` that computes the interpretation three ways (all vs tape-backed vs derived-only), flags **dilution** when the all-window view hides a tape-backed signal, and assigns a source label: `tape_too_thin`, `tape_readable`, `all_window_diluted`, `derived_only_dominates`, `consistent_across_sources`, or `tape_only_hint`. This is what tells you whether an apparent pattern (like the current top10-concentration spread) actually lives in matured tape or is just fresh-token noise.
+
 ## MarketOps Autopilot (OPS-006)
 
 **Read-only coordination, not new capability.** One autopilot cycle sequences the existing services: inspect fresh signals → auto-promote top-N → process promoted (fresh enrichment/assessment/research/forecast via whatever the env flags select) → crypto scan → outcome sync → forecast scoring → champion/challenger snapshot → local DB alerts → one `marketops_runs` audit row. Every stage is individually guarded — a failing stage records its error in the run summary plus a `provider_error` alert and the cycle continues (`MARKETOPS_FAIL_FAST=false`). The autopilot can promote, process, research, forecast, score, and report; it **cannot trade, paper trade, calculate EV, size positions, place orders, or move money** — those capabilities do not exist anywhere in this codebase.

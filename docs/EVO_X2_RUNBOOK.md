@@ -311,18 +311,23 @@ DEPLOYMENT_REPORT_EVO_X2.md); manual/report-only, no timer.**
 
 ```bash
 .venv/bin/python -m app.cli crypto-retrospect-report --hours 48 --top 5   # which features separate tape outcomes? (measurement)
+.venv/bin/python -m app.cli crypto-retrospect-report --hours 72 --cohort tape-backed   # RETROSPECT-002: mature-tape lens only
 ```
 
 Joins persisted features (concentration/risk/liquidity/volume/boost/attention/
 social/venue/coverage/missing-info buckets) to the CRYPTO-TAPE-001 survival
 outcomes over the recent token universe, with conservative labels (`too_thin`
 / `provider_gap_dominates` / `no_separation` / `weak_separator` /
-`strong_risk_separator` / `strong_survival_separator`). **No table/migration,
-persists nothing, no external call, no SolanaTracker budget impact, no
-timer.** A separation label is feature-quality evidence, never advice.
-**Deployed dark 2026-07-12 (`18a6a93`, no migration; 24h/72h reports
-validated live — no-persistence and zero-ST-movement proven; see
-DEPLOYMENT_REPORT_EVO_X2.md); manual/report-only.**
+`strong_risk_separator` / `strong_survival_separator`). **RETROSPECT-002** adds
+`--cohort {all,tape-backed,derived-only}` plus always-on `data_source_mix` and
+per-dimension `source_stratification` (source labels + a dilution warning) so
+mature tape-backed evidence reads apart from fresh derived-only noise — use
+`--cohort tape-backed` after each cadence session to see whether a pattern is
+real or just fresh-token dilution. **No table/migration, persists nothing, no
+external call, no SolanaTracker budget impact, no timer.** A separation/source
+label is feature-quality evidence, never advice.
+**RETROSPECT-001 deployed dark 2026-07-12 (`18a6a93`); RETROSPECT-002 is
+code-only, dark-by-default — do not deploy unless explicitly asked.**
 
 ### MEME-SHADOW-001 label follow-through (read-only, on-demand, NO timer)
 

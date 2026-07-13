@@ -1,4 +1,4 @@
-"""CRYPTO-RETROSPECT-001 — read-only retrospective feature/outcome analysis.
+"""CRYPTO-RETROSPECT-001/002 — read-only retrospective feature/outcome analysis.
 
 Answers ONE evidence-building question: which observable memecoin features
 (holder concentration, risk labels/reasons, liquidity depth, volume shape,
@@ -15,6 +15,15 @@ tokens get an on-the-fly (never persisted) derivation from the same
 already-persisted rows. Cohorts below the sample floor are labeled
 `too_thin`; immature or unmeasurable outcomes stay unknown and are excluded
 from rates — nothing is guessed.
+
+CRYPTO-RETROSPECT-002 adds TAPE-BACKED COHORT STRATIFICATION: because fresh
+derived-only tokens (just discovered, horizons immature) dilute the window and
+can manufacture apparent patterns, the report now separates mature tape-backed
+evidence (a persisted birth event with repeated re-observations) from
+derived-only noise. `--cohort {all,tape-backed,derived-only}` re-lenses the
+headline; a `data_source_mix` section and a per-dimension `source_stratification`
+(all vs tape-backed vs derived-only, with a dilution warning + a source label)
+tell you WHERE any apparent signal actually lives.
 
 Hard boundary (AGENTS.md, docs/SAFETY_BOUNDARIES.md): MEASUREMENT only. A
 separation label is a statement about label/feature quality — never PnL, EV,
@@ -72,6 +81,25 @@ LABEL_NO_SEPARATION = "no_separation"
 LABEL_WEAK = "weak_separator"
 LABEL_STRONG_RISK = "strong_risk_separator"
 LABEL_STRONG_SURVIVAL = "strong_survival_separator"
+
+# labels that mean a dimension produced an actual separator signal
+SIGNAL_LABELS = frozenset({LABEL_WEAK, LABEL_STRONG_RISK, LABEL_STRONG_SURVIVAL})
+
+# CRYPTO-RETROSPECT-002: per-dimension source-comparison labels (tape-backed
+# vs derived-only). These describe WHERE any apparent signal lives, never a
+# trade direction.
+SOURCE_TAPE_TOO_THIN = "tape_too_thin"            # tape-backed sample can't be read
+SOURCE_TAPE_READABLE = "tape_readable"            # tape readable, no strong signal
+SOURCE_ALL_DILUTED = "all_window_diluted"         # derived rows wash out / distort
+SOURCE_DERIVED_DOMINATES = "derived_only_dominates"  # signal comes from fresh tokens
+SOURCE_CONSISTENT = "consistent_across_sources"   # tape + derived agree
+SOURCE_TAPE_ONLY_HINT = "tape_only_hint"          # signal only in tape; can't cross-check
+
+# valid --cohort selections
+COHORT_ALL = "all"
+COHORT_TAPE_BACKED = "tape-backed"
+COHORT_DERIVED_ONLY = "derived-only"
+COHORT_CHOICES = (COHORT_ALL, COHORT_TAPE_BACKED, COHORT_DERIVED_ONLY)
 
 # concentration thresholds anchored to the risk engine's defaults
 _ENGINE_DEFAULTS = RiskEngineConfig()
@@ -396,10 +424,156 @@ DIMENSIONS = (
 )
 
 
-def build_retrospect_report(session: Session, hours: int = 48, top: int = 5) -> dict:
-    """The full retrospective report. Read-only; derived on demand."""
+# --- CRYPTO-RETROSPECT-002: tape-backed cohort stratification -------------------
+
+
+def _filter_by_cohort(rows: list[FeatureOutcomeRow], cohort: str) -> list[FeatureOutcomeRow]:
+    if cohort == COHORT_TAPE_BACKED:
+        return [r for r in rows if r.tape_backed]
+    if cohort == COHORT_DERIVED_ONLY:
+        return [r for r in rows if not r.tape_backed]
+    return rows
+
+
+def _has_signal(interp: dict) -> bool:
+    return interp.get("label") in SIGNAL_LABELS
+
+
+def _is_readable(interp: dict) -> bool:
+    """Got past too_thin AND the provider-gap floor (produced a rate delta)."""
+    return "max_delta" in interp
+
+
+def _dimension_interpretation(
+    rows: list[FeatureOutcomeRow], dimension: str, top: int
+) -> dict:
+    cohorts = [
+        cohort_stats(name, group, top=top)
+        for name, group in sorted(_group_by(rows, dimension).items())
+    ]
+    return interpret_dimension(cohorts)
+
+
+def _brief(interp: dict) -> dict:
+    return {
+        "label": interp["label"],
+        "max_delta": interp.get("max_delta"),
+        "driving_outcome": interp.get("driving_outcome"),
+    }
+
+
+def source_label(
+    interp_all: dict, interp_tape: dict, interp_derived: dict,
+    n_tape: int, n_derived: int,
+) -> str:
+    """Where does any apparent signal live? Conservative precedence."""
+    tape_readable = _is_readable(interp_tape)
+    if not tape_readable:
+        # can't read the tape-backed sample at all
+        if _is_readable(interp_all) and n_derived > n_tape:
+            return SOURCE_DERIVED_DOMINATES  # all-window reads only via derived rows
+        return SOURCE_TAPE_TOO_THIN
+    # tape-backed is readable
+    if _has_signal(interp_tape):
+        if _has_signal(interp_derived):
+            return (
+                SOURCE_CONSISTENT
+                if interp_tape.get("driving_outcome") == interp_derived.get("driving_outcome")
+                else SOURCE_ALL_DILUTED  # both signal but disagree — combined unreliable
+            )
+        if _is_readable(interp_derived):
+            return SOURCE_ALL_DILUTED     # derived measured-but-flat washes the signal out
+        return SOURCE_TAPE_ONLY_HINT      # derived thin/gap: cannot cross-check
+    # tape readable but no tape signal
+    if _has_signal(interp_derived):
+        return SOURCE_DERIVED_DOMINATES
+    return SOURCE_TAPE_READABLE
+
+
+def build_source_stratification(
+    all_rows: list[FeatureOutcomeRow], top: int
+) -> list[dict]:
+    """Per-dimension all/tape-backed/derived-only interpretation + a source
+    label + a dilution warning when the all-window view masks a tape signal."""
+    tape = [r for r in all_rows if r.tape_backed]
+    derived = [r for r in all_rows if not r.tape_backed]
+    out: list[dict] = []
+    for dimension in DIMENSIONS:
+        interp_all = _dimension_interpretation(all_rows, dimension, top)
+        interp_tape = _dimension_interpretation(tape, dimension, top)
+        interp_derived = _dimension_interpretation(derived, dimension, top)
+        label = source_label(interp_all, interp_tape, interp_derived, len(tape), len(derived))
+        diluted = _has_signal(interp_tape) and not _has_signal(interp_all)
+        warning = None
+        if diluted:
+            warning = (
+                f"all-window hides a tape-backed {interp_tape['label']} on "
+                f"{interp_tape.get('driving_outcome')} — read the tape-backed column, "
+                "not the all-window one"
+            )
+        out.append({
+            "dimension": dimension,
+            "source_label": label,
+            "diluted": diluted,
+            "warning": warning,
+            "all": _brief(interp_all),
+            "tape_backed": _brief(interp_tape),
+            "derived_only": _brief(interp_derived),
+        })
+    return out
+
+
+def _horizon_coverage(rows: list[FeatureOutcomeRow]) -> dict:
+    coverage = {}
+    for horizon in SURVIVAL_OUTCOMES:
+        known = sum(1 for r in rows if r.outcomes.get(horizon) is not None)
+        coverage[horizon] = {"known": known, "unknown": len(rows) - known}
+    return coverage
+
+
+def _provider_gap_rate(rows: list[FeatureOutcomeRow]) -> float | None:
+    values = [r.outcomes.get("provider_gap") for r in rows]
+    measured = [v for v in values if v is not None]
+    if not measured:
+        return None
+    return round(sum(1 for v in measured if v is True) / len(measured), 4)
+
+
+def build_data_source_mix(all_rows: list[FeatureOutcomeRow]) -> dict:
+    tape = [r for r in all_rows if r.tape_backed]
+    derived = [r for r in all_rows if not r.tape_backed]
+    return {
+        "tape_backed": len(tape),
+        "derived_only": len(derived),
+        # immature = primary yardstick (survived_1h) not yet measurable
+        "immature": sum(1 for r in all_rows if r.outcomes.get("survived_1h") is None),
+        "horizon_coverage_by_source": {
+            "tape_backed": _horizon_coverage(tape),
+            "derived_only": _horizon_coverage(derived),
+            "all": _horizon_coverage(all_rows),
+        },
+        "provider_gap_rate_by_source": {
+            "tape_backed": _provider_gap_rate(tape),
+            "derived_only": _provider_gap_rate(derived),
+            "all": _provider_gap_rate(all_rows),
+        },
+    }
+
+
+def build_retrospect_report(
+    session: Session, hours: int = 48, top: int = 5, cohort: str = COHORT_ALL,
+) -> dict:
+    """The full retrospective report. Read-only; derived on demand.
+
+    `cohort` re-lenses the HEADLINE (outcome_totals, dimensions, separators)
+    to all / tape-backed / derived-only rows. `data_source_mix` and
+    `source_stratification` are ALWAYS computed over the full window so the
+    tape-vs-derived comparison never disappears."""
+    if cohort not in COHORT_CHOICES:
+        raise ValueError(f"cohort must be one of {COHORT_CHOICES}, got {cohort!r}")
     service = CryptoRetrospectService()
-    rows, truncated = service.rows(session, hours=hours)
+    all_rows, truncated = service.rows(session, hours=hours)
+    rows = _filter_by_cohort(all_rows, cohort)
     now = _now()
 
     outcome_totals = {}
@@ -467,20 +641,31 @@ def build_retrospect_report(session: Session, hours: int = 48, top: int = 5) -> 
         if d["interpretation"]["label"] in (LABEL_TOO_THIN, LABEL_GAP_DOMINATED)
     ]
 
+    # CRYPTO-RETROSPECT-002: source stratification is ALWAYS over the full
+    # window (independent of the --cohort headline lens).
+    data_source_mix = build_data_source_mix(all_rows)
+    source_stratification = build_source_stratification(all_rows, top)
+    diluted_dimensions = [s for s in source_stratification if s["diluted"]]
+
     return {
         "note": RETROSPECT_NOTE,
         "window_hours": hours,
         "generated_at": now.isoformat(),
-        "tokens_analyzed": len(rows),
-        "tape_backed_tokens": sum(1 for r in rows if r.tape_backed),
-        "derived_only_tokens": sum(1 for r in rows if not r.tape_backed),
+        "cohort": cohort,
+        "tokens_analyzed": len(rows),           # reflects the --cohort lens
+        "window_tokens": len(all_rows),         # full window (all sources)
+        "tape_backed_tokens": sum(1 for r in all_rows if r.tape_backed),
+        "derived_only_tokens": sum(1 for r in all_rows if not r.tape_backed),
         "universe_truncated": truncated,
         "universe_cap": MAX_TOKENS,
+        "data_source_mix": data_source_mix,
         "outcome_totals": outcome_totals,
         "dimensions": dimensions,
         "best_separators": best,
         "worst_separators": worst,
         "unreadable_dimensions": unreadable,
+        "source_stratification": source_stratification,
+        "diluted_dimensions": diluted_dimensions,
         "thresholds": {
             "min_cohort_samples": MIN_COHORT_SAMPLES,
             "min_measurable": MIN_MEASURABLE,
