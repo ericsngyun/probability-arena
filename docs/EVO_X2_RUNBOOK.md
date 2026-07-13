@@ -327,6 +327,27 @@ never PnL/EV/recommendation/sizing/order. **Deployed dark 2026-07-12
 (`b4362c8`, migration 0026, tape_run_id=1 validated live — see
 DEPLOYMENT_REPORT_EVO_X2.md); manual/report-only, no timer.**
 
+### CRYPTO-COVERAGE-001 tape coverage forensics (read-only, on-demand, NO timer)
+
+```bash
+.venv/bin/python -m app.cli crypto-tape-coverage-report --hours 168 --top 5 --limit 25
+   # why do survival horizons stay unmeasurable? decompose gaps + shadow selection
+```
+
+Decomposes every unmeasurable 15m/1h/6h/24h survival horizon into an explicit
+cause and reports a coverage funnel, an upstream-tick-coverage-vs-revisit-policy
+bottleneck verdict, a selection/starvation analysis, and a SHADOW-ONLY selection
+comparison (recent / due-first / fixed-cohort / mixed). **The load-bearing
+finding it exists to surface:** survival matures only from background-scout
+`crypto_price_ticks`, and the recorder selects recent-first, so old cohorts
+whose long horizons are due rank below the per-run limit and starve — read the
+`bottleneck_verdict` and `shadow_selection` sections to decide whether the next
+crypto milestone should change selection (its own accepted milestone) or lift
+upstream tick coverage. **No table/migration, persists nothing, no external
+call, no SolanaTracker budget impact, no timer; changes no stored label or live
+selection.** Diagnostic only, never advice. Deploy is code-only, dark-by-default;
+**do not deploy unless explicitly asked.**
+
 ### CRYPTO-RETROSPECT-001 retrospective analysis (read-only, on-demand, NO timer)
 
 ```bash

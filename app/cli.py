@@ -1559,6 +1559,92 @@ async def crypto_tape_report(hours: int = 24, top: int = 5, session=None) -> int
             session.close()
 
 
+async def crypto_tape_coverage_report(
+    hours: int = 168, top: int = 5, limit: int = 25, session=None
+) -> int:
+    """CRYPTO-COVERAGE-001 tape-coverage forensics: decompose every unmeasurable
+    survival horizon into an explicit cause and estimate (shadow-only) whether
+    selection/revisit policy can mature 6h/24h outcomes. Compute-on-demand;
+    persists nothing; no external call; changes no stored label or live
+    selection; never advice. Returns tokens analyzed."""
+    from app.services.crypto_coverage import build_coverage_report
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        r = build_coverage_report(session, hours=hours, top=top, limit=limit)
+        print("crypto tape coverage forensics — diagnostic only, never advice")
+        print(r["note"])
+        print(
+            f"\nwindow={r['window_hours']}h  generated_at={r['generated_at']}"
+            f"\ntokens_analyzed={r['tokens_analyzed']}  "
+            f"selection_limit={r['selection_limit']}"
+        )
+        print("\ncoverage funnel (of tokens whose horizon is DUE):")
+        for label in ("15m", "1h", "6h", "24h"):
+            f = r["coverage_funnel"][label]
+            print(
+                f"  {label:<4} born={f['tokens_born']} due={f['horizon_due']} "
+                f"revisited={f['revisited_after_due']} data={f['raw_market_data_available']} "
+                f"in_tol={f['tick_within_tolerance']} measurable={f['outcome_measurable']} "
+                f"gap={f['provider_gap']}  "
+                f"(measurable_rate={f['rates_vs_due']['outcome_measurable']})"
+            )
+        print("\ngap causes by horizon:")
+        for label in ("15m", "1h", "6h", "24h"):
+            hist = r["gap_causes"].get(label) or {}
+            if hist:
+                print(
+                    f"  {label:<4} "
+                    + ", ".join(f"{c}={n}" for c, n in sorted(hist.items(), key=lambda kv: -kv[1]))
+                )
+        print("\nbottleneck verdict (6h/24h):")
+        for label, v in r["bottleneck_verdict"].items():
+            print(
+                f"  {label:<4} bottleneck={v['bottleneck']}  "
+                f"upstream_coverage={v['upstream_coverage_share']}  "
+                f"revisit_policy={v['revisit_policy_share']}"
+            )
+        s = r["selection_analysis"]
+        print(
+            f"\nselection: appearances min/mean/max="
+            f"{s['appearances_min']}/{s['appearances_mean']}/{s['appearances_max']}  "
+            f"recent_first_starves_old_cohorts={s['recent_first_starves_old_cohorts']}"
+        )
+        print(
+            f"  due tokens omitted from limit={s['due_tokens_omitted_from_limit']}  "
+            f"omission_rate={s['due_token_omission_rate']}"
+        )
+        sh = r["shadow_selection"]
+        print(
+            f"\nshadow selection (est. NEW 6h/24h matures on next run of {sh['limit']}; "
+            f"total available={sh['total_maturable_available']}):"
+        )
+        for policy, g in sh["policies"].items():
+            print(
+                f"  {policy:<24} total={g['expected_new_matures_total']}  "
+                f"by_horizon={g['expected_new_matures_by_horizon']}"
+            )
+        for name, rows in r["examples"].items():
+            if rows:
+                print(f"\n{name}:")
+                for e in rows:
+                    print(
+                        f"  {e['symbol'] or '?':<10} {e['token']:<16} "
+                        f"h={e['horizon']} cause={e['cause']} rank={e['rank']} "
+                        f"appearances={e['appearances']}"
+                    )
+        print(f"\ndisclaimer: {r['disclaimer']}")
+        return r["tokens_analyzed"]
+    finally:
+        if owns_session:
+            session.close()
+
+
 async def crypto_retrospect_report(
     hours: int = 48, top: int = 5, cohort: str = "all", session=None
 ) -> int:
@@ -4779,6 +4865,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run", action="store_true",
         help="print the planned schedule + one dry probe; persist nothing",
     )
+    cov_parser = subparsers.add_parser(
+        "crypto-tape-coverage-report",
+        help="Coverage forensics: why survival horizons stay unmeasurable + "
+             "shadow selection analysis (CRYPTO-COVERAGE-001; diagnostic only)",
+    )
+    cov_parser.add_argument("--hours", type=int, default=168)
+    cov_parser.add_argument("--top", type=int, default=5)
+    cov_parser.add_argument(
+        "--limit", type=int, default=25,
+        help="the recorder's per-run token cap to model in the shadow analysis",
+    )
     retro_parser = subparsers.add_parser(
         "crypto-retrospect-report",
         help="Retrospective feature/outcome separation analysis "
@@ -5255,6 +5352,11 @@ def main(argv: list[str] | None = None) -> int:
                 duration_hours=args.duration_hours, interval_min=args.interval_min,
                 limit=args.limit, dry_run=args.dry_run,
             )
+        )
+        return 0 if n >= 0 else 1
+    if args.command == "crypto-tape-coverage-report":
+        n = asyncio.run(
+            crypto_tape_coverage_report(hours=args.hours, top=args.top, limit=args.limit)
         )
         return 0 if n >= 0 else 1
     if args.command == "crypto-retrospect-report":

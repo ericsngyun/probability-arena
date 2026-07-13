@@ -32,6 +32,8 @@ ALLOWED_CAPABILITIES = (
     "survival labels, derived from already-persisted rows)",
     "crypto retrospective analysis (compute-on-demand feature/outcome "
     "separation measurement; conservative labels, never advice)",
+    "crypto tape coverage forensics (compute-on-demand gap-cause decomposition "
+    "+ shadow selection analysis; changes no stored label or live selection)",
     "marketops autopilot (read-only coordination: promote/process/scan/score/report/alert)",
     "edge precheck (probability-gap measurement only; no EV, no advice, no actions)",
     "frontier evaluation (full-desk measurement quality + conservative readiness labels)",

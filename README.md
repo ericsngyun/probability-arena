@@ -422,6 +422,21 @@ python -m app.cli crypto-retrospect-report --hours 72 --cohort tape-backed   # o
 
 `--cohort` re-lenses the headline. Two sections are **always** shown over the full window: a `data_source_mix` (tape-backed / derived-only / immature counts, horizon maturity known/unknown per source, and provider-gap rate per source), and a per-dimension `source_stratification` that computes the interpretation three ways (all vs tape-backed vs derived-only), flags **dilution** when the all-window view hides a tape-backed signal, and assigns a source label: `tape_too_thin`, `tape_readable`, `all_window_diluted`, `derived_only_dominates`, `consistent_across_sources`, or `tape_only_hint`. This is what tells you whether an apparent pattern (like the current top10-concentration spread) actually lives in matured tape or is just fresh-token noise.
 
+## Crypto tape coverage forensics (CRYPTO-COVERAGE-001)
+
+**Why do survival horizons stay unmeasurable even after repeated cadence sessions?** A compute-on-demand diagnostic (no table, no migration, nothing persisted, zero external calls) that decomposes every unknown survival outcome into an explicit, actionable cause and asks whether the recorder's token-selection and revisit policy can ever mature 6h/24h outcomes efficiently.
+
+```bash
+python -m app.cli crypto-tape-coverage-report --hours 168 --top 5 --limit 25
+```
+
+It separates the two failure modes that need opposite fixes:
+
+- **Upstream tick coverage** — a survival horizon only matures from `crypto_price_ticks`, which the *background crypto scout* collects, not the tape. If the scout stopped ticking a token near its 6h/24h mark, the horizon is unmeasurable no matter how many tape sessions run (`token_inactive_or_disappeared`, `no_price_tick_near_horizon`, `no_pair_or_liquidity_state_near_horizon`, `outside_tolerance_only`).
+- **Revisit / selection** — the recorder picks tokens recent-first, so an *old* token whose 6h/24h is due ranks below the per-run limit and is never recomputed even when the ticks it needs already exist (`token_not_revisited_after_due`); a genuine recompute bug is `source_rows_exist_but_join_failed`.
+
+Report sections: a per-horizon **coverage funnel** (born → due → revisited → raw data → within tolerance → measurable → provider_gap, with rates), a **gap-cause histogram**, a **bottleneck verdict** (is 6h/24h limited by upstream coverage or revisit policy?), a **selection analysis** (appearances per token, how often due old cohorts rank below the limit, whether recent-first starves them), a **shadow-only selection comparison** estimating how many currently-maturable 6h/24h outcomes each policy (`current_recent_selection` / `due_horizon_first` / `fixed_cohort_revisit` / `mixed_new_and_due`) would pick up on the next run, and concrete examples per cause. It changes **no stored outcome label and no live recorder selection** — it is pure measurement to inform a future, separately-accepted selection milestone.
+
 ## MarketOps Autopilot (OPS-006)
 
 **Read-only coordination, not new capability.** One autopilot cycle sequences the existing services: inspect fresh signals → auto-promote top-N → process promoted (fresh enrichment/assessment/research/forecast via whatever the env flags select) → crypto scan → outcome sync → forecast scoring → champion/challenger snapshot → local DB alerts → one `marketops_runs` audit row. Every stage is individually guarded — a failing stage records its error in the run summary plus a `provider_error` alert and the cycle continues (`MARKETOPS_FAIL_FAST=false`). The autopilot can promote, process, research, forecast, score, and report; it **cannot trade, paper trade, calculate EV, size positions, place orders, or move money** — those capabilities do not exist anywhere in this codebase.
