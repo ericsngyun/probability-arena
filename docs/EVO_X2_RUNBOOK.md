@@ -294,7 +294,9 @@ wallet/swap/signing/execution/sizing/paper trading.
    # CRYPTO-TAPE-CADENCE-002: lock-safe — a capture that hits "database is
    # locked" is rolled back and retried (<=3 attempts, ~3s apart); a
    # persistent lock aborts CLEANLY (aborted=True abort_reason=database_locked
-   # failed_capture_index=N rows_written_before_abort=N), no crash.
+   # failed_capture_index=N rows_written_before_abort=N), no crash. Deployed
+   # dark 2026-07-13 (2f9aa2c, no migration; 15 lock-safe tests pass ON HOST,
+   # dry-run persists nothing, ST budget unchanged).
    # Real sessions require explicit approval per invocation (long-lived
    # foreground process on a shared host — run inside tmux/screen).
 ```

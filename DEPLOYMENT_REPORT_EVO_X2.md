@@ -1841,3 +1841,25 @@ Deployed **`239219a` → `c434fd7`** by `git pull --ff-only`. **No migration** (
 **Safety:** canonical grep — 3 hits, all boundary docstrings. Expanded identifier-level tokenize audit on the deployed module (strings/comments excluded; wallet, private_key, keypair, swap, jupiter, send/sign_transaction, order placement, EV, paper trading, sizing, recommend, buy, sell, bet, arbitrage, arb, opportunity, pnl, profit): **CLEAN**.
 
 **Recommendation: KEEP — manual/report-only.** The stratification is doing its job: it says the tape-backed sample is still too thin per-dimension to read any feature, and the earlier apparent top10 pattern is not real evidence yet. **Run a SECOND crypto tape cadence session to close the 24h windows** (`crypto-tape-session --duration-hours 6 --interval-min 30 --limit 25` in tmux, explicitly approved per invocation), then re-read `crypto-retrospect-report --hours 72 --cohort tape-backed` — that lens is where a matured signal would first become readable. **Rollback:** `git reset --hard 239219a` — additive compute-only.
+
+## CRYPTO-TAPE-CADENCE-002 — lock-safe session fix dark-deployed (2026-07-13, ~05:00 UTC)
+
+Deployed **`b020440` → `2f9aa2c`** by `git pull --ff-only`. **No migration** (revision stayed `0026`), no table, no flag, no timer (user timer list unchanged at 6), no provider change, no MarketOps/EDGE-AUTO change. Robustness fix: `crypto-tape-session` is now lock-safe — a capture that hits `database is locked` is rolled back and retried (≤3 attempts, ~3s apart); a persistent lock aborts cleanly (`aborted=True`, `abort_reason=database_locked`, `failed_capture_index`, `rows_written_before_abort`) instead of crashing with `PendingRollbackError`.
+
+| item | value |
+|---|---|
+| pushed / deployed commit | **`2f9aa2c`** (origin/main + EVO-X2) |
+| migration / table / flag / timer / providers | **none / none / none / none / unchanged** |
+| tests at commit | 1611 passed / 2 skipped; safety grep + AST audit clean |
+
+**No-persistence proof (dry-run session, counts before → after):** lifecycle_runs 14→14, birth_events 108→108, snapshots 375→375, actor_observations 375→375, survival_outcomes 108→108. Dry-run rendered the schedule (`+0m, +30m`), one dry probe (`external_calls=0`), persisted nothing.
+
+**Lock-safe path proven live:** the full CRYPTO-TAPE-CADENCE-002 test suite was run ON THE HOST — **15 passed** — exercising, in the deployed environment: locked-error detection, rollback-on-failure, bounded retry recovery, clean abort after exhausted retries (summary renders, no PendingRollbackError), non-lock no-retry, abort-after-success row accounting, run_once not masking the original error, and the defensive summary on a poisoned session.
+
+**SolanaTracker budget: literally unchanged** — `today=750 / month=19,973 / rolling_24h=3,615` identical before and after; the fix touches no external call. KEEP.
+
+**Health (unchanged):** MarketOps #2221 `ok`; DB 2,750.43 MiB flat; frontier eval **`safety_ok=True` (81 files)**.
+
+**Safety:** canonical grep — 3 hits, all boundary docstrings. Expanded identifier-level tokenize audit on the deployed `crypto_tape.py` (strings/comments excluded; wallet, private_key, keypair, swap, jupiter, send/sign_transaction, order placement, EV, paper trading, sizing, recommend, sell, bet, arbitrage, arb, opportunity, pnl, profit, plus no-daemon vocab systemd/while-true/daemonize): **CLEAN**.
+
+**Recommendation: KEEP — manual/report-only.** The session helper is now safe to run under real host write contention. **The second cadence session to close the 24h windows can now be run** (`crypto-tape-session --duration-hours 6 --interval-min 30 --limit 25` in tmux, explicitly approved per invocation): a transient lock will self-recover, and a persistent one aborts cleanly with a MarketOps/tick-aggregation contention hint rather than crashing. After it, re-read `crypto-retrospect-report --hours 72 --cohort tape-backed`. **Rollback:** `git reset --hard b020440` — additive robustness fix, no schema/state change.
