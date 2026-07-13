@@ -1441,6 +1441,17 @@ async def crypto_tape_session(
             f"status={r['status']}"
             + (f"  ABORT: {r['abort_reason']}" if r["abort_reason"] else "")
         )
+        if r.get("aborted"):
+            print(
+                f"aborted=True  abort_reason={r['abort_reason']}  "
+                f"failed_capture_index={r.get('failed_capture_index')}  "
+                f"rows_written_before_abort={r.get('rows_written_before_abort', 0)}"
+            )
+            if r["abort_reason"] == "database_locked":
+                print(
+                    "  ! database was locked past the retry budget — check MarketOps / "
+                    "tick-aggregation write contention, then rerun (run in tmux)"
+                )
         print(
             f"duration_hours={r['duration_hours']}  interval_min={r['interval_min']}  "
             f"captures={r['captures_run']}/{r['captures_planned']}"

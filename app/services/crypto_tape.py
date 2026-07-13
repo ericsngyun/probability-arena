@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from app.config import Settings, get_settings
@@ -767,14 +768,25 @@ class CryptoLifecycleTapeRecorder:
                 raise
             session.rollback()
             logger.exception("crypto lifecycle tape pass failed")
-            run.status = "error"
-            run.error_type = type(exc).__name__
-            run.error_message = str(exc)[:2000]
-            run.finished_at = _now()
-            run.duration_ms = max(
-                0, int((run.finished_at - started).total_seconds() * 1000)
-            )
-            session.commit()
+            # Best-effort error-row record. Under DB-lock contention the
+            # error-recording commit can ITSELF fail; that must never mask the
+            # original exception or leave the session in a pending-rollback
+            # state (the CRYPTO-TAPE-CADENCE-002 crash). After the rollback the
+            # run row is detached, so re-add before committing; swallow a
+            # second failure and always re-raise the ORIGINAL error so the
+            # caller can classify it (e.g. as database_locked).
+            try:
+                run.status = "error"
+                run.error_type = type(exc).__name__
+                run.error_message = str(exc)[:2000]
+                run.finished_at = _now()
+                run.duration_ms = max(
+                    0, int((run.finished_at - started).total_seconds() * 1000)
+                )
+                session.add(run)
+                session.commit()
+            except Exception:
+                session.rollback()
             raise
 
 
@@ -901,12 +913,36 @@ SESSION_OK = "ok"
 SESSION_DRY_RUN = "dry_run"
 SESSION_ABORTED = "aborted"
 
+# CRYPTO-TAPE-CADENCE-002: SQLite write-lock resilience. On a shared host the
+# baseline/watcher/MarketOps writers can hold the write lock past the DB busy
+# timeout, so a capture's run-row INSERT raises "database is locked". A bounded
+# app-level retry (mirrors the OPS-013 tick-aggregation idiom) recovers from
+# transient contention; a persistent lock aborts loudly and CLEANLY (session
+# rolled back first) so the summary path never hits PendingRollbackError.
+DB_LOCKED_MAX_ATTEMPTS = 3       # total tries per capture (1 + 2 retries)
+DB_LOCKED_RETRY_SECONDS = 3.0    # short wait between attempts
+ABORT_DB_LOCKED = "database_locked"
+
 SESSION_NOTE = (
     "Bounded manual tape session: repeated derived lifecycle passes so the "
     "15m/1h/6h/24h survival horizons can mature. Zero external calls, zero "
     "provider-budget impact (each pass reads persisted rows only). Not a "
     "timer, not a daemon, never autonomous; measurement only, never advice."
 )
+
+
+def _is_db_locked(exc: BaseException | None) -> bool:
+    """True when `exc` is (or wraps) a SQLite 'database is locked' error.
+    Handles both SQLAlchemy OperationalError (via .orig) and raw
+    sqlite3.OperationalError."""
+    if exc is None:
+        return False
+    parts = [str(exc)]
+    orig = getattr(exc, "orig", None)
+    if orig is not None:
+        parts.append(str(orig))
+    text = " ".join(parts).lower()
+    return "database is locked" in text or "database table is locked" in text
 
 
 def _marketops_degraded(session: Session) -> bool:
@@ -926,19 +962,35 @@ def _marketops_degraded(session: Session) -> bool:
 
 def summarize_tape_session(session: Session, run_ids: list[int]) -> dict:
     """Post-session maturity view over the runs this session persisted.
-    Read-only; empty for dry-run sessions (nothing persisted)."""
+    Read-only; empty when no run committed (dry-run or abort before the first
+    commit). Defensive: if the session is in a bad state after an abort, it
+    rolls back and returns gracefully — it NEVER raises (the CADENCE-002
+    PendingRollbackError-from-summary crash)."""
     if not run_ids:
-        return {"available": False, "reason": "no persisted runs (dry-run session)"}
-    runs = list(session.execute(
-        select(CryptoTokenLifecycleRun).where(
-            CryptoTokenLifecycleRun.id.in_(run_ids)
-        )
-    ).scalars().all())
-    outcomes = list(session.execute(
-        select(CryptoTokenSurvivalOutcome).where(
-            CryptoTokenSurvivalOutcome.last_run_id.in_(run_ids)
-        )
-    ).scalars().all())
+        return {
+            "available": False,
+            "reason": "no runs committed (dry-run, or aborted before first capture)",
+        }
+    try:
+        runs = list(session.execute(
+            select(CryptoTokenLifecycleRun).where(
+                CryptoTokenLifecycleRun.id.in_(run_ids)
+            )
+        ).scalars().all())
+        outcomes = list(session.execute(
+            select(CryptoTokenSurvivalOutcome).where(
+                CryptoTokenSurvivalOutcome.last_run_id.in_(run_ids)
+            )
+        ).scalars().all())
+    except Exception:  # a poisoned session must not crash the summary
+        try:
+            session.rollback()
+        except Exception:
+            pass
+        return {
+            "available": False,
+            "reason": "summary unavailable (session error after abort; rolled back)",
+        }
     totals = {
         "birth_events": sum(r.birth_events_created for r in runs),
         "snapshots": sum(r.snapshots_created for r in runs),
@@ -972,10 +1024,15 @@ async def run_tape_session(
     hours: int | None = None,
     dry_run: bool = False,
     sleeper=None,
+    max_lock_attempts: int = DB_LOCKED_MAX_ATTEMPTS,
+    lock_retry_seconds: float = DB_LOCKED_RETRY_SECONDS,
 ) -> dict:
     """Bounded manual tape session: a fixed, hard-capped number of derived
     run_once passes with a sleep between, then exit. Aborts on abnormal pass
-    status or a detectable MarketOps error. Measurement only — never advice."""
+    status or a detectable MarketOps error. Lock-safe: a capture that hits a
+    locked DB is rolled back and retried up to `max_lock_attempts`; a
+    persistent lock aborts cleanly (reason=database_locked) with the session
+    already rolled back. Measurement only — never advice."""
     import asyncio
 
     sleeper = sleeper or asyncio.sleep
@@ -996,7 +1053,9 @@ async def run_tape_session(
         return {
             "note": SESSION_NOTE,
             "status": SESSION_DRY_RUN,
+            "aborted": False,
             "abort_reason": None,
+            "failed_capture_index": None,
             "started_at": started.isoformat(),
             "duration_hours": duration_hours,
             "interval_min": interval_min,
@@ -1004,6 +1063,7 @@ async def run_tape_session(
             "captures_run": 1,
             "capture_statuses": [probe["status"]],
             "planned_schedule_min": planned_schedule_min,
+            "rows_written_before_abort": 0,
             "probe": {
                 "tokens_considered": probe["tokens_considered"],
                 "external_calls": probe["external_calls"],
@@ -1018,19 +1078,50 @@ async def run_tape_session(
     captures: list[dict] = []
     run_ids: list[int] = []
     abort_reason = None
+    failed_capture_index: int | None = None
     for i in range(captures_planned):
-        try:
-            result = recorder.run_once(session, limit=limit, hours=hours)
-        except Exception as exc:  # run_once records + re-raises; session aborts
-            abort_reason = f"capture {i + 1} raised {type(exc).__name__}"
+        # --- one capture with bounded, lock-safe retry -------------------------
+        result = None
+        last_exc: BaseException | None = None
+        for attempt in range(1, max_lock_attempts + 1):
+            try:
+                result = recorder.run_once(session, limit=limit, hours=hours)
+                break
+            except Exception as exc:
+                last_exc = exc
+                # ANY failed flush/commit poisons the transaction — always
+                # rollback so the session stays usable (and the summary path
+                # never hits PendingRollbackError).
+                try:
+                    session.rollback()
+                except Exception:  # pragma: no cover - defensive
+                    pass
+                if _is_db_locked(exc) and attempt < max_lock_attempts:
+                    logger.warning(
+                        "crypto tape session: capture %d hit a locked database — "
+                        "retry %d/%d in %.1fs",
+                        i + 1, attempt, max_lock_attempts - 1, lock_retry_seconds,
+                    )
+                    await sleeper(lock_retry_seconds)
+                    continue
+                break  # non-locked error, or lock retries exhausted
+        if result is None:
+            failed_capture_index = i
+            abort_reason = (
+                ABORT_DB_LOCKED if _is_db_locked(last_exc)
+                else f"capture {i + 1} raised {type(last_exc).__name__}"
+            )
             break
+
         captures.append(result)
         if result.get("tape_run_id"):
             run_ids.append(result["tape_run_id"])
         if result["status"] != STATUS_OK:
+            failed_capture_index = i
             abort_reason = f"capture {i + 1} status={result['status']}"
             break
         if _marketops_degraded(session):
+            failed_capture_index = i
             abort_reason = "latest MarketOps run errored"
             break
         if i < captures_planned - 1:
@@ -1055,10 +1146,23 @@ async def run_tape_session(
                 ),
             }
 
+    # rows written before an abort, computed from the successful captures
+    # (independent of the DB summary, so it survives a poisoned session)
+    rows_written_before_abort = sum(
+        1  # the run row itself
+        + c.get("birth_events_created", 0)
+        + c.get("snapshots_created", 0)
+        + c.get("actor_observations_created", 0)
+        + c.get("outcomes_updated", 0)
+        for c in captures
+    )
+
     return {
         "note": SESSION_NOTE,
         "status": SESSION_ABORTED if abort_reason else SESSION_OK,
+        "aborted": bool(abort_reason),
         "abort_reason": abort_reason,
+        "failed_capture_index": failed_capture_index,
         "started_at": started.isoformat(),
         "duration_hours": duration_hours,
         "interval_min": interval_min,
@@ -1067,6 +1171,7 @@ async def run_tape_session(
         "capture_statuses": [c["status"] for c in captures],
         "planned_schedule_min": planned_schedule_min,
         "provider_gap_trend": trend,
+        "rows_written_before_abort": rows_written_before_abort,
         "session_summary": summarize_tape_session(session, run_ids),
         "tape_run_ids": run_ids,
     }

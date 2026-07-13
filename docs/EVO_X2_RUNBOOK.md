@@ -291,9 +291,27 @@ wallet/swap/signing/execution/sizing/paper trading.
    # abnormal status/MarketOps error; NOT a timer; dry-run persists nothing.
    # Deployed dark 2026-07-12 (b5da6d7; dry-run session validated live in
    # 1.03s — no sleeping, nothing persisted, ST budget unchanged).
+   # CRYPTO-TAPE-CADENCE-002: lock-safe — a capture that hits "database is
+   # locked" is rolled back and retried (<=3 attempts, ~3s apart); a
+   # persistent lock aborts CLEANLY (aborted=True abort_reason=database_locked
+   # failed_capture_index=N rows_written_before_abort=N), no crash.
    # Real sessions require explicit approval per invocation (long-lived
    # foreground process on a shared host — run inside tmux/screen).
 ```
+
+**Lock contention guidance (CRYPTO-TAPE-CADENCE-002).** The host's
+baseline/watcher/MarketOps writers share the SQLite write lock, so a capture's
+run-row INSERT can occasionally hit `database is locked` past the DB busy
+timeout. The session now retries that capture (bounded) and, if the lock
+persists, aborts loudly and cleanly instead of crashing with
+`PendingRollbackError`. When a session reports `abort_reason=database_locked`:
+(1) **always run sessions inside tmux/screen** so an abort never orphans the
+shell; (2) check for a heavy concurrent writer — `marketops-report` (a stuck/
+long cycle) and `tick-aggregation-report` (a big aggregation window holding the
+lock, see OPS-013); (3) **only rerun after those settle** — the tape is
+idempotent, so a rerun simply resumes maturing horizons; no data is lost or
+double-written on an abort (the aborted capture wrote nothing;
+`rows_written_before_abort` counts only the captures that fully committed).
 
 One DERIVED assembly pass consolidating already-persisted rows (crypto
 tokens/pairs/ticks/discovery events/risk assessments + meme attention/
