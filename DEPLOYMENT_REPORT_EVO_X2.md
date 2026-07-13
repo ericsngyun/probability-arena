@@ -1987,3 +1987,32 @@ This is the token-level proof the milestone asked for, and it isolates the cohor
 **Safety:** canonical grep — boundary docstrings only. Expanded identifier-level tokenize audit on the deployed module (wallet, private_key, keypair, swap, jupiter, send/sign_transaction, order placement, EV, paper trading, sizing, recommend, sell, bet, arbitrage, arb, opportunity, pnl, profit, plus systemd/daemonize): **CLEAN**.
 
 **Recommendation: KEEP — manual/report-only.** OBS-002 is proven: the outcome-reconciliation confirms an observation matures a real survival label (unknown→known). **Retry failed cohort-1 observations only after explicit approval** — and note the 6h windows have closed, so the productive next real pass is either the cohort-1 **24h** horizon (8 due_now, ≤8 calls) or a **fresh cohort of just-born tokens** (created right after a discovery/cadence pass) so 15m/1h/6h are still catchable and OBS-002's candidate diagnostics + quality selection get exercised end-to-end. **Rollback:** `git reset --hard d02c9f1` — additive, no schema change.
+
+## CRYPTO-HORIZON cohort-window fix dark-deployed (2026-07-13, ~23:37 UTC)
+
+Deployed **`2357761` → `89d253f`** by `git pull --ff-only`. **No migration** (revision stayed `0027`), no table, no flag, no timer, no provider change, no MarketOps/EDGE-AUTO change. Correctness fix only: `crypto-horizon-cohort-create --hours N` now filters and orders on `coalesce(first_evidence_at, observed_at)` (the token-age anchor the planner uses and the preview shows) instead of `observed_at` (tape-record time). **No cohort created.**
+
+| item | value |
+|---|---|
+| pushed / deployed commit | **`89d253f`** (origin/main + EVO-X2) |
+| migration / table / flag / timer / providers | **none / none / none / none / unchanged** |
+| tests at commit | 1685 passed / 2 skipped; safety grep + AST audit clean |
+
+**Confirmed root cause:** the `--hours` cutoff was applied to `observed_at` (when CRYPTO-TAPE *recorded* the birth row), while the preview displayed and horizon planning anchored on `first_evidence_at` (the token's true discovery anchor). A single tape run records births for tokens the scout first saw much earlier, so old tokens appeared "recently recorded" and eligible for a fresh cohort.
+
+**Old incorrect host result (preflight, old code ~23:35 UTC):** `--hours 1` returned 10 members with born timestamps 22:16–22:22 (~73–79 min old) — all older than the 60-minute window; all shared one tape-record time.
+
+**Post-deploy validation (dry-run, `89d253f`, ~23:37 UTC):**
+- `--hours 1` → **members_selected=0, max_age_minutes=None** (nothing genuinely born in the last hour). `--hours 1` returns no token older than 60 min. ✓
+- `--hours 2` → 9 members, **max_age_minutes=116.7** (< 120). ✓
+- `--hours 6` → 10 members (limit-capped), **max_age_minutes=128.7** (< 360). ✓
+- Every output shows `generated_at` / `now_utc` / `window_cutoff_utc` / `filter_timestamp=coalesce(first_evidence_at, observed_at)` and per-token `age_minutes`; `external_calls=0` throughout.
+- **No persistence:** `crypto_horizon_cohorts` 1→1, `crypto_horizon_cohort_members` 10→10 (cohort-1 untouched; no new cohort).
+
+**SolanaTracker budget: unchanged by the fix** — all dry-runs zero-call (today=3,555/month=22,778 reflects background scan only).
+
+**Health (unchanged):** MarketOps #2408 `ok`; DB 2,750.43 MiB flat; frontier eval **`safety_ok=True` (83 files)**.
+
+**Safety:** expanded identifier-level tokenize audit on the deployed module (wallet, private_key, swap, jupiter, signing, order placement, EV, sizing, recommend, sell, bet, arbitrage, arb, opportunity, pnl, profit, systemd/daemonize): **CLEAN**.
+
+**Recommendation: KEEP.** The window is now a genuine token-age window. Use `--hours 1` or `--hours 2` only after genuinely new `first_evidence_at` rows appear (i.e., shortly after fresh tokens are discovered/tape-birthed) — right now `--hours 1` correctly returns 0 because nothing was born in the last hour. A fresh cohort whose 15m/1h/6h horizons are still catchable requires creating it soon after fresh births land. **Rollback:** `git reset --hard 2357761` — additive correctness fix, no schema change.
