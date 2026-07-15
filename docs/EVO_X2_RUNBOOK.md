@@ -334,13 +334,18 @@ never PnL/EV/recommendation/sizing/order. **Deployed dark 2026-07-12
 (`b4362c8`, migration 0026, tape_run_id=1 validated live — see
 DEPLOYMENT_REPORT_EVO_X2.md); manual/report-only, no timer.**
 
-### CRYPTO-HORIZON-OBS-001 horizon observation (bounded MANUAL, NO timer/loop)
+### Crypto horizon observation + bounded one-shot orchestration
 
 ```bash
 .venv/bin/python -m app.cli crypto-horizon-cohort-create --limit 25 --hours 48 --dry-run   # preview a fixed cohort
 .venv/bin/python -m app.cli crypto-horizon-cohort-create --limit 25 --hours 48             # freeze it (returns cohort_id)
 .venv/bin/python -m app.cli crypto-horizon-schedule-report --cohort-id N                    # exact UTC/PT windows; no calls/writes
 .venv/bin/python -m app.cli crypto-horizon-reminder-plan --cohort-id N                      # static plan only; installs nothing
+.venv/bin/python -m app.cli crypto-horizon-arm-cohort --cohort-id N --dry-run               # exact one-shot preview; installs/writes/calls nothing
+.venv/bin/python -m app.cli crypto-horizon-arm-cohort --cohort-id N --confirm               # explicit install; existing fixed cohort only
+.venv/bin/python -m app.cli crypto-horizon-orchestrator-report --cohort-id N                # pending/completed/failed/missed + logs/health/counts
+.venv/bin/python -m app.cli crypto-horizon-disarm-cohort --cohort-id N                       # exact isolated cleanup preview
+.venv/bin/python -m app.cli crypto-horizon-disarm-cohort --cohort-id N --confirm             # remove only that cohort's units
 .venv/bin/python -m app.cli crypto-horizon-observation-report --cohort-id N --shadow        # coverage-gain + provider-load estimate FIRST
 .venv/bin/python -m app.cli crypto-horizon-observe-once --cohort-id N --limit 25 --dry-run   # plan preview, ZERO calls, nothing persisted
 .venv/bin/python -m app.cli crypto-horizon-observe-once --cohort-id N --limit 25             # ONE bounded pass (DexScreener; requires approval per run)
@@ -349,13 +354,43 @@ DEPLOYMENT_REPORT_EVO_X2.md); manual/report-only, no timer.**
 .venv/bin/python -m app.cli crypto-horizon-outcome-reconciliation-report --cohort-id N       # OBS-002: proof an observation flipped an outcome unknown->known
 ```
 
-Manual workflow: schedule report → reminder plan → operator checks the suggested
-`observe-once --dry-run` → operator explicitly invokes the real `observe-once`
-command → observation/pair-selection/outcome-reconciliation reports. The
-scheduling commands do not need a migration or flag and must never be placed in
-systemd, cron, MarketOps, or another automatic runner. They make zero provider
-calls and persist nothing; a printed real command is for explicit human
-invocation, never an executed action.
+Manual workflow remains available: schedule report → reminder plan → operator
+checks `observe-once --dry-run` → explicit bounded `observe-once` → reports.
+The schedule/reminder commands remain report-only and must not themselves be
+placed in systemd, cron, MarketOps, or another runner.
+
+**CRYPTO-HORIZON-ORCHESTRATOR-001 workflow:** deploy code dark, choose an
+already-created cohort, and review `arm-cohort --dry-run`. It must print every
+deduplicated action in UTC/PT, exact fixed-path command, cohort-size limit, and
+expected job count while creating no directory/unit/state and making no provider
+call. Only a separately approved `--confirm` may write units. Unit names are
+`probability-arena-horizon-cN-jM.{service,timer}` under
+`~/.config/systemd/user/`; operational manifests, statuses, logs, and the four
+post-pass reports live under `~/crypto-horizon-observation/cohort-N/`.
+
+Generated timers contain one exact `OnCalendar`, `Persistent=true`,
+`AccuracySec=1us`, and no recurrence. Services use the fixed project directory
+and `.venv/bin/python` directly with validated integer cohort/job IDs; no token
+name, provider key, or arbitrary shell string enters a unit. Every wakeup first
+rechecks the existing planner. `due_now` may make one cohort-size-bounded
+DexScreener pass; already-observed, early, inconsistent, or overdue windows make
+no call, and overdue windows are never forced/backfilled. A reboot can wake a
+persisted timer, but the same planner check still governs it. MarketOps must have
+a recent successful completed run; otherwise the job skips and creates a local
+warning alert. Database locking gets one retry only; provider failure is recorded
+without a retry loop. Each terminal worker exits and removes its own unit pair.
+
+Before any approved arming, verify isolation:
+
+```bash
+systemctl --user list-timers --all --no-pager
+.venv/bin/python -m app.cli crypto-horizon-orchestrator-report --cohort-id N
+```
+
+Never hand-edit generated units, use sudo, modify `.env`, create a cohort as part
+of arming, or substitute a recurring timer. Rollback is the cohort-specific
+`disarm-cohort` preview followed by explicit `--confirm`; then verify unrelated
+Probability Arena timers are unchanged. No migration or feature flag is needed.
 
 **OBS-002 note:** pair selection is now deterministic `active_pair_quality_score`
 (picks the highest-quality *eligible* pair — valid price + positive liquidity —
@@ -375,14 +410,15 @@ cohort-1 6h windows have closed; next productive real pass is cohort-1 24h
 Fills the UPSTREAM tick-coverage gap CRYPTO-COVERAGE-001 identified: fetches
 market/liquidity state for a FROZEN cohort near each 15m/1h/6h/24h mark and
 persists ordinary `crypto_price_ticks` (so tape survival horizons mature) plus
-audit rows. **Manual only — no timer, no loop, no scheduled path, no flag.**
+audit rows. **Manual or explicitly armed one-shot only — no repeating timer,
+daemon, loop, automatic cohort creation, or flag.**
 Uses **DexScreener only (free, no key) → ZERO SolanaTracker impact**; each pass
 is bounded (≤100 calls, only `due_now` horizons, one fetch/token, a horizon
 observed once); dry-run makes ZERO calls and persists nothing; misses recorded
-honestly, never fabricated. Real observe passes require explicit approval per
-invocation. To actually mature horizons: create a cohort of freshly-born
-tokens, then run `observe-once` at roughly 15m / 1h / 6h / 24h after birth (a
-few manual passes) so each window gets a tick; check the success gates in the
+honestly, never fabricated. Real manual passes or cohort arming require explicit
+approval. To actually mature horizons: create a cohort of freshly-born tokens,
+then manually observe or explicitly arm its planner-derived windows so each
+window gets a tick; check the success gates in the
 report (measurement only). Rollout: deploy dark → migrate → `--dry-run` cohort
 + observe → `--shadow` → one small approved real pass → report. Migration 0027
 (3 additive tables). **Deployed dark 2026-07-13 (`1d20392`, migration 0027;

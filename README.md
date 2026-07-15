@@ -439,14 +439,18 @@ Report sections: a per-horizon **coverage funnel** (born → due → revisited �
 
 ## Crypto horizon observation (CRYPTO-HORIZON-OBS-001)
 
-**Fixing the upstream coverage gap CRYPTO-COVERAGE-001 found.** The forensics proved the 6h/24h maturation ceiling is upstream tick coverage — the background scout doesn't tick aged tokens near their long horizons — not tape selection. This is the first crypto lane that *fetches* to fill that gap: a small, **frozen** research cohort gets **manual** market/liquidity observations near each 15m/1h/6h/24h mark via the existing read-only DexScreener adapter, persisting an ordinary `crypto_price_tick` (so the tape's survival horizons actually mature) plus an audit observation row.
+**Fixing the upstream coverage gap CRYPTO-COVERAGE-001 found.** The forensics proved the 6h/24h maturation ceiling is upstream tick coverage — the background scout doesn't tick aged tokens near their long horizons — not tape selection. This is the first crypto lane that *fetches* to fill that gap: a small, **frozen** research cohort gets bounded market/liquidity observations near each 15m/1h/6h/24h mark via the existing read-only DexScreener adapter, persisting an ordinary `crypto_price_tick` (so the tape's survival horizons actually mature) plus an audit observation row.
 
-**Manual only, by construction: no timer, no scheduled path, no loop, no autonomy, no flag.** It uses DexScreener (free, no key), so it has **zero SolanaTracker budget impact**. Misses are recorded honestly (`token_inactive` / `provider_no_pair` / `no_liquidity_state` / `request_failed`) — never fabricated.
+Manual invocation remains available. **CRYPTO-HORIZON-ORCHESTRATOR-001** adds an explicit-confirmation path that installs only planner-derived, persistent **one-shot** `systemd --user` jobs for an already-created cohort. Every worker rechecks `due_now`, skips missed/already-observed windows, exits after one attempt, and removes its own units. There is no repeating timer, daemon, loop, automatic cohort creation, flag, or SolanaTracker use.
 
 ```bash
 python -m app.cli crypto-horizon-cohort-create --limit 25 --hours 48 [--dry-run]   # freeze a fixed cohort (max 100)
 python -m app.cli crypto-horizon-schedule-report --cohort-id N [--top N]             # exact UTC/PT windows + next manual action
 python -m app.cli crypto-horizon-reminder-plan --cohort-id N                         # static deduplicated reminders; installs nothing
+python -m app.cli crypto-horizon-arm-cohort --cohort-id N --dry-run                  # exact one-shot preview; installs/writes/calls nothing
+python -m app.cli crypto-horizon-arm-cohort --cohort-id N --confirm                  # explicit EVO-X2 arming for an existing cohort
+python -m app.cli crypto-horizon-orchestrator-report --cohort-id N                   # jobs/status/exits/logs/health/observation counts
+python -m app.cli crypto-horizon-disarm-cohort --cohort-id N [--confirm]             # isolated preview/removal of that cohort's units
 python -m app.cli crypto-horizon-observation-report --cohort-id N --shadow          # pre-observation coverage-gain + provider-load estimate
 python -m app.cli crypto-horizon-observe-once --cohort-id N --limit 25 [--dry-run]   # ONE bounded pass over due horizons
 python -m app.cli crypto-horizon-observation-report --cohort-id N --top 5            # completion/liquidity rates, gates, examples
@@ -460,6 +464,16 @@ boundaries, renders UTC plus DST-safe `America/Los_Angeles` timestamps, and
 deduplicates overlapping windows that can truly share one bounded pass. It is
 compute-on-demand only: no reminder persistence, provider call, timer, cron,
 daemon, flag, MarketOps hook, or automatic observation invocation exists.
+
+**One-shot orchestration workflow (CRYPTO-HORIZON-ORCHESTRATOR-001):** review
+`arm-cohort --dry-run`, then explicitly arm with `--confirm` on EVO-X2. Generated
+units use fixed project/Python paths, the cohort's fixed size as the call limit,
+`OnCalendar` once with `Persistent=true`, and no shell interpolation. A reboot
+can trigger the pending timer, but the worker calls the existing planner first
+and never backfills a closed window. One database-lock retry is allowed;
+provider failure, planner disagreement, or unhealthy MarketOps ends the attempt
+and records status. Successful passes save the four horizon reports under
+`~/crypto-horizon-observation/cohort-N/`. No schema migration or feature flag.
 
 The **planner** classifies each (token, horizon) as `not_due` / `due_now` / `already_observed` / `overdue_unobserved` / `inactive`; a pass fetches only `due_now` horizons, nearest-target-first, one fetch per token (serving all its due horizons), hard-capped at the limit (≤100 calls). An *observed* horizon is frozen; a *failed* horizon (no usable liquidity) is retried in place on a later pass — never duplicated. The **report** gives completion rate and liquidity-field completion by horizon, inactive/no-pair rates, target-distance distribution, early-liquidity diagnostics for 15m/1h, and **measurement-only success gates** (15m≥0.80, 1h≥0.80, 6h≥0.70, 24h≥0.60, liquidity-state≥0.80). Observation only — no EV, no recommendation, no sizing, no orders, no wallets/keys/swaps/signing/execution.
 

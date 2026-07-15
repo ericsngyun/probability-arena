@@ -1794,6 +1794,168 @@ async def crypto_horizon_reminder_plan(cohort_id: int, session=None) -> dict:
             session.close()
 
 
+async def crypto_horizon_arm_cohort(
+    cohort_id: int,
+    dry_run: bool = False,
+    confirm: bool = False,
+    session=None,
+    orchestrator=None,
+) -> dict:
+    """Plan or explicitly install bounded user-systemd one-shot observations."""
+    from app.services.crypto_horizon_orchestrator import CryptoHorizonOrchestrator
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        orchestrator = orchestrator or CryptoHorizonOrchestrator()
+        result = orchestrator.arm(
+            session, cohort_id, dry_run=dry_run, confirm=confirm
+        )
+        print("crypto horizon cohort arming — bounded one-shot observation jobs")
+        print(
+            f"status={result['status']} cohort={result['cohort_id']} "
+            f"size={result['cohort_size']} expected_jobs={result['expected_jobs']} "
+            f"external_calls={result['external_calls']} "
+            f"persisted={str(result['persisted']).lower()} "
+            f"installed={str(result['installed']).lower()}"
+        )
+        for warning in result["warnings"]:
+            print(f"WARNING: {warning}")
+        for job in result["jobs"]:
+            print(f"\njob {job['job_id']}  unit={job['unit_base']}")
+            print(
+                f"  execute: UTC={job['execute_at_utc']}  "
+                f"America/Los_Angeles={job['execute_at_los_angeles']}"
+            )
+            print(
+                f"  affected_tokens={job['affected_tokens']} "
+                f"affected_observations={job['affected_observations']} "
+                f"cohort_limit={job['limit']}"
+            )
+            print(f"  command: {job['command']}")
+            print(f"  log: {job['log_path']}")
+        if result["status"] == "confirmation_required":
+            print("No units installed. Re-run with --confirm after reviewing every job.")
+        elif result["status"] == "no_future_windows":
+            print("Cohort rejected: no future unobserved windows remain.")
+        print(f"\ndisclaimer: {result['disclaimer']}")
+        return result
+    finally:
+        if owns_session:
+            session.close()
+
+
+async def crypto_horizon_run_job(
+    cohort_id: int, job_id: int, session=None, orchestrator=None,
+) -> int:
+    """Internal one-attempt worker invoked only by generated one-shot units."""
+    from app.services.crypto_horizon_orchestrator import CryptoHorizonOrchestrator
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        orchestrator = orchestrator or CryptoHorizonOrchestrator()
+        result = await orchestrator.run_job(session, cohort_id, job_id)
+        print("crypto horizon one-shot job — observation only")
+        print(
+            f"cohort={cohort_id} job={job_id} status={result['status']} "
+            f"reason={result['reason']} exit_code={result['last_exit_code']}"
+        )
+        if result.get("observation_summary"):
+            summary = result["observation_summary"]
+            print(
+                f"external_calls={summary.get('external_calls', 0)} "
+                f"observations_recorded={summary.get('observations_recorded', 0)} "
+                f"ticks_written={summary.get('ticks_written', 0)}"
+            )
+        for path in result.get("report_paths", []):
+            print(f"report: {path}")
+        return result["last_exit_code"]
+    finally:
+        if owns_session:
+            session.close()
+
+
+async def crypto_horizon_orchestrator_report(
+    cohort_id: int, session=None, orchestrator=None,
+) -> dict:
+    """Read-only status view over planned jobs, unit files, and observations."""
+    from app.services.crypto_horizon_orchestrator import CryptoHorizonOrchestrator
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        orchestrator = orchestrator or CryptoHorizonOrchestrator()
+        result = orchestrator.report(session, cohort_id)
+        print("crypto horizon orchestrator report — host-native one-shot jobs")
+        print(
+            f"status={result['status']} cohort={cohort_id} "
+            f"planned_jobs={result['planned_jobs']} installed_jobs={result['installed_jobs']}"
+        )
+        print(f"job_status={result['status_counts']}")
+        print(f"next_execution_time={result['next_execution_time']}")
+        print(f"observation_counts_by_horizon={result['observation_counts_by_horizon']}")
+        print(f"last_exit_code={result['last_exit_code']}")
+        print(
+            f"any_timer_installed={str(result['any_timer_installed']).lower()} "
+            "timer_remains_installed_after_completion="
+            f"{str(result['timer_remains_installed_after_completion']).lower()}"
+        )
+        health = result["marketops_health"]
+        print(
+            f"MarketOps health: healthy={str(health['healthy']).lower()} "
+            f"reason={health['reason']} run_id={health.get('run_id')}"
+        )
+        for job in result["jobs"]:
+            print(
+                f"  job={job['job_id']} status={job['status']} "
+                f"execute_at={job['execute_at_utc']} exit={job['last_exit_code']} "
+                f"timer_installed={str(job['timer_installed']).lower()} "
+                f"log={job['log_path']}"
+            )
+        print(f"\ndisclaimer: {result['disclaimer']}")
+        return result
+    finally:
+        if owns_session:
+            session.close()
+
+
+async def crypto_horizon_disarm_cohort(
+    cohort_id: int, confirm: bool = False, orchestrator=None,
+) -> dict:
+    """Preview or remove only the validated one-shot units for one cohort."""
+    from app.services.crypto_horizon_orchestrator import CryptoHorizonOrchestrator
+
+    orchestrator = orchestrator or CryptoHorizonOrchestrator()
+    result = orchestrator.disarm(cohort_id, confirm=confirm)
+    print("crypto horizon cohort disarm — isolated one-shot cleanup")
+    print(f"status={result['status']} cohort={cohort_id}")
+    print("units selected:")
+    for unit in result["units"]:
+        print(f"  {unit}")
+    if not result["units"]:
+        print("  none")
+    if result["removed"]:
+        print("removed:")
+        for unit in result["removed"]:
+            print(f"  {unit}")
+    elif result["status"] == "confirmation_required":
+        print("Nothing removed. Re-run with --confirm after reviewing the units.")
+    return result
+
+
 async def crypto_horizon_observation_report(
     cohort_id: int, top: int = 5, shadow: bool = False, session=None,
 ) -> int:
@@ -5291,6 +5453,39 @@ def build_parser() -> argparse.ArgumentParser:
         help="Static deduplicated reminder plan; installs and invokes nothing",
     )
     hrem_parser.add_argument("--cohort-id", type=int, required=True)
+    harm_parser = subparsers.add_parser(
+        "crypto-horizon-arm-cohort",
+        help="Plan or explicitly install bounded one-shot user-systemd jobs",
+    )
+    harm_parser.add_argument("--cohort-id", type=int, required=True)
+    harm_parser.add_argument(
+        "--dry-run", action="store_true",
+        help="print exact jobs; zero calls, persistence, or installation",
+    )
+    harm_parser.add_argument(
+        "--confirm", action="store_true",
+        help="explicitly install the reviewed one-shot jobs on EVO-X2",
+    )
+    hrun_parser = subparsers.add_parser(
+        "crypto-horizon-run-job",
+        help="Internal one-attempt worker for an installed horizon job",
+    )
+    hrun_parser.add_argument("--cohort-id", type=int, required=True)
+    hrun_parser.add_argument("--job-id", type=int, required=True)
+    horch_parser = subparsers.add_parser(
+        "crypto-horizon-orchestrator-report",
+        help="Report planned/installed/completed one-shot horizon jobs",
+    )
+    horch_parser.add_argument("--cohort-id", type=int, required=True)
+    hdisarm_parser = subparsers.add_parser(
+        "crypto-horizon-disarm-cohort",
+        help="Preview or remove only one cohort's horizon one-shot units",
+    )
+    hdisarm_parser.add_argument("--cohort-id", type=int, required=True)
+    hdisarm_parser.add_argument(
+        "--confirm", action="store_true",
+        help="explicitly remove the listed cohort-specific units",
+    )
     hrep_parser = subparsers.add_parser(
         "crypto-horizon-observation-report",
         help="Horizon-observation coverage report + success gates "
@@ -5825,6 +6020,31 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "crypto-horizon-reminder-plan":
         asyncio.run(crypto_horizon_reminder_plan(cohort_id=args.cohort_id))
         return 0
+    if args.command == "crypto-horizon-arm-cohort":
+        result = asyncio.run(
+            crypto_horizon_arm_cohort(
+                cohort_id=args.cohort_id,
+                dry_run=args.dry_run,
+                confirm=args.confirm,
+            )
+        )
+        return 0 if result["status"] in {"ok", "armed"} else 1
+    if args.command == "crypto-horizon-run-job":
+        return asyncio.run(
+            crypto_horizon_run_job(
+                cohort_id=args.cohort_id, job_id=args.job_id
+            )
+        )
+    if args.command == "crypto-horizon-orchestrator-report":
+        asyncio.run(crypto_horizon_orchestrator_report(cohort_id=args.cohort_id))
+        return 0
+    if args.command == "crypto-horizon-disarm-cohort":
+        result = asyncio.run(
+            crypto_horizon_disarm_cohort(
+                cohort_id=args.cohort_id, confirm=args.confirm
+            )
+        )
+        return 0 if result["status"] in {"disarmed", "already_disarmed"} else 1
     if args.command == "crypto-horizon-observation-report":
         n = asyncio.run(
             crypto_horizon_observation_report(

@@ -1456,12 +1456,13 @@ class CryptoTokenSurvivalOutcome(Base):
 # --- CRYPTO-HORIZON-OBS-001: bounded read-only horizon-observation lane -------
 # CRYPTO-COVERAGE-001 proved the 6h/24h maturation ceiling is UPSTREAM tick
 # coverage (the background scout does not tick aged tokens near their long
-# horizons). This lane fixes a small, STABLE research cohort and — on manual
-# invocation only — fetches market/liquidity state via the existing read-only
+# horizons). This lane fixes a small, STABLE research cohort and — on one
+# bounded manual or explicitly armed one-shot invocation — fetches
+# market/liquidity state via the existing read-only
 # DexScreener adapter near each 15m/1h/6h/24h mark, persisting ordinary price
 # ticks (so survival horizons can mature) plus an audit observation row.
-# Manual only: no timer, no scheduled path, no autonomy. Observation/market
-# data only — no EV, side, size, order, wallet, key, swap, signing, or
+# No repeating timer, daemon, loop, or automatic cohort creation. Observation/
+# market data only — no EV, side, size, order, wallet, key, swap, signing, or
 # execution column exists by construction.
 
 

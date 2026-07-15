@@ -34,10 +34,12 @@ ALLOWED_CAPABILITIES = (
     "separation measurement; conservative labels, never advice)",
     "crypto tape coverage forensics (compute-on-demand gap-cause decomposition "
     "+ shadow selection analysis; changes no stored label or live selection)",
-    "crypto horizon observation (bounded MANUAL cohort market/liquidity "
-    "observations near lifecycle horizons via DexScreener; no timer/loop/autonomy)",
+    "crypto horizon observation (bounded frozen-cohort market/liquidity "
+    "observations near lifecycle horizons via DexScreener)",
     "crypto horizon scheduling (compute-on-demand manual timing/reminder reports; "
     "no provider calls, persistence, timers, or automatic observation)",
+    "crypto horizon one-shot orchestration (explicitly armed user-systemd jobs "
+    "for existing fixed cohorts; planner-gated, bounded, no recurring timer/daemon)",
     "marketops autopilot (read-only coordination: promote/process/scan/score/report/alert)",
     "edge precheck (probability-gap measurement only; no EV, no advice, no actions)",
     "frontier evaluation (full-desk measurement quality + conservative readiness labels)",

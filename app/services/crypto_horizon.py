@@ -4,14 +4,16 @@ CRYPTO-COVERAGE-001 conclusively found the 6h/24h survival-maturation ceiling
 is UPSTREAM tick coverage, not tape-recorder selection: the background scout
 does not tick aged/quiet tokens near their long horizons (dominant cause
 `outside_tolerance_only`), and early ticks often lack liquidity state. This
-lane fixes that at the source for a SMALL, STABLE research cohort: on manual
-invocation only, it fetches market/liquidity state via the existing read-only
+lane fixes that at the source for a SMALL, STABLE research cohort: on one
+bounded invocation, it fetches market/liquidity state via the existing read-only
 DexScreener adapter near each 15m/1h/6h/24h mark and persists an ordinary
 crypto_price_tick (so the tape's survival horizons can actually mature) plus
 an audit observation row.
 
-Manual-only by construction: there is NO timer, NO scheduled path, NO loop,
-NO autonomy, and NO flag enabling it. Cohort membership is frozen at creation.
+Manual invocation remains available. CRYPTO-HORIZON-ORCHESTRATOR-001 may invoke
+the same bounded pass from explicitly armed user-level one-shot timers only;
+there is NO repeating timer, loop, daemon, automatic cohort creation, or flag.
+Cohort membership is frozen at creation.
 A horizon is observed at most once (unique per cohort+token+horizon). Misses
 are recorded honestly (token_inactive / provider_no_pair / no_liquidity_state
 / request_failed) — never fabricated.
@@ -49,9 +51,10 @@ logger = logging.getLogger(__name__)
 
 HORIZON_NOTE = (
     "Bounded read-only horizon-observation lane: a fixed research cohort gets "
-    "manual market/liquidity observations near the 15m/1h/6h/24h marks (via the "
+    "bounded market/liquidity observations near the 15m/1h/6h/24h marks (via the "
     "existing DexScreener adapter) so tape survival horizons can mature. "
-    "Manual only — no timer, no loop, no autonomy; zero SolanaTracker impact; "
+    "Manual or explicitly armed one-shot only — no repeating timer, loop, daemon, "
+    "or cohort admission automation; zero SolanaTracker impact; "
     "misses recorded honestly, never fabricated. Observation only — never EV, a "
     "side, a size, an order, or a recommendation. No wallets, keys, swaps, "
     "signing, or execution."

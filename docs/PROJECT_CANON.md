@@ -1,6 +1,6 @@
 # PROJECT_CANON — Probability Arena system reference
 
-Last updated: FRONTIER-RECOMMENDATION-001. Update alongside `app/canon.py` when capabilities change.
+Last updated: CRYPTO-HORIZON-ORCHESTRATOR-001. Update alongside `app/canon.py` when capabilities change.
 
 ## System overview
 
@@ -41,7 +41,10 @@ Services (app/services/)  — scanner, eligibility, enrichment, resolution, rese
                             per-sub-window commits + gated timer, OPS-013),
                             crypto_horizon_schedule (CRYPTO-HORIZON-SCHEDULE-001:
                             compute-on-demand manual timing/reminder reports over
-                            the existing horizon planner; no calls or persistence)
+                            the existing horizon planner; no calls or persistence),
+                            crypto_horizon_orchestrator (explicitly confirmed,
+                            planner-gated one-shot user timers for fixed cohorts;
+                            no recurring timer/daemon/admission automation)
 Adapters (app/adapters/) — kalshi.py (list/detail/event/series/by-tickers/by-series GETs,
                             legacy + dollars/fp payload shapes, outcome parsing, bounded
                             429 retries), dexscreener.py (crypto, read-only), polymarket.py
@@ -72,7 +75,7 @@ Parallel to that: watcher (60s ticks + signals; universe = top-scored candidates
 | tick_aggregation_runs | OPS-013 aggregation audit spine (per-pass counters, failed/oversized windows) — readiness evidence, never a trading surface |
 | crypto_tokens, crypto_pairs, crypto_token_discovery_events, crypto_token_risk_assessments, crypto_price_ticks, crypto_opportunity_signals, crypto_watcher_runs | Crypto Arena read-only surveillance (CRYPTO-001) |
 | crypto_token_lifecycle_runs, crypto_token_birth_events, crypto_token_lifecycle_snapshots, crypto_token_actor_observations, crypto_token_survival_outcomes | Crypto lifecycle tape (CRYPTO-TAPE-001; derived from persisted rows, zero external calls; survival labels are measured behavior, never advice) |
-| crypto_horizon_cohorts, crypto_horizon_cohort_members, crypto_horizon_observations | Crypto horizon-observation lane (CRYPTO-HORIZON-OBS-001/002; bounded MANUAL market/liquidity observation of a frozen cohort near lifecycle horizons via DexScreener — deterministic active-pair-quality selection, retry-failed-in-place, per-candidate audit in raw_payload; no timer/loop/autonomy, zero SolanaTracker impact; misses recorded honestly, never a trade signal) |
+| crypto_horizon_cohorts, crypto_horizon_cohort_members, crypto_horizon_observations | Crypto horizon-observation lane (CRYPTO-HORIZON-OBS-001/002 + ORCHESTRATOR-001; bounded manual or explicitly armed one-shot market/liquidity observation of a frozen cohort near lifecycle horizons via DexScreener — deterministic active-pair-quality selection, retry-failed-in-place, planner recheck, no recurring timer/daemon/admission automation, zero SolanaTracker impact; misses recorded honestly, never a trade signal). Orchestrator manifests/status/logs are host files, not DB tables. |
 | polymarket_markets, polymarket_orderbook_snapshots, polymarket_scout_runs, polymarket_domain_inventory_snapshots | Polymarket read-only market-data observer (POLY-001, second venue) |
 | cross_venue_observation_runs, cross_venue_market_candidates | Kalshi<->Polymarket read-only cross-venue observation (POLY-002; measurement, never EV/arbitrage) |
 | marketops_runs, marketops_alerts | MarketOps Autopilot coordination audit + local alerts (OPS-006) |
@@ -93,7 +96,8 @@ See `docs/FEATURE_FLAGS.md`. All model/external flags default **false**; deploye
 ## Latest accepted milestones
 
 MVP-001…005A.1, OPS-001…007, OPS-009, SOCCER-001…002, CRYPTO-001…002,
-CRYPTO-HORIZON-OBS-001/002, CRYPTO-HORIZON-SCHEDULE-001, EVAL-001, and
+CRYPTO-HORIZON-OBS-001/002, CRYPTO-HORIZON-SCHEDULE-001,
+CRYPTO-HORIZON-ORCHESTRATOR-001, EVAL-001, and
 FRONTIER-RECOMMENDATION-001, SCANNER-002/OPS-010 — full list with commits in
 `docs/ROADMAP.md`.
 

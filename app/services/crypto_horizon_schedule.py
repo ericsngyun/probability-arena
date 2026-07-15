@@ -1,6 +1,6 @@
 """CRYPTO-HORIZON-SCHEDULE-001 manual scheduling reports.
 
-This module is compute-on-demand operational support for the existing manual
+This module is compute-on-demand operational support for the existing bounded
 crypto horizon-observation lane. It reuses that lane's pure planner as the
 single source of target/window truth, reads persisted cohort state, and emits
 static report data. It never creates reminders, invokes observations, calls a
