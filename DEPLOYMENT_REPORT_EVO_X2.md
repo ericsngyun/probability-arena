@@ -2178,3 +2178,16 @@ Full command path: `/home/miko_node_001/projects/probability-arena/.venv/bin/pyt
 The orchestration plan itself passed every safety, timing, systemd, and purity check. Confirmed arming is **not** recommended now for two reasons: (1) a provider-boundary breach occurred during preparation (contained, documented) and must be reviewed and explicitly accepted by a human before any further operational step; (2) SBULL's **15m window closes 22:47:34 UTC** and will have expired by human-review time, so the full 15m→24h validation the canary was designed for is degraded — the 1h/6h/24h horizons remain cleanly future and armable if the human accepts the (degraded) scope and the incident. Even were it ready, **arming is not performed** — it is gated on explicit human approval.
 
 **The fresh cohort was created manually and its orchestration plan was validated in dry-run mode. No cohort was armed, no timer or service was installed, and confirmed arming remains blocked pending explicit human approval.**
+
+### Human disposition (2026-07-15)
+
+Recorded decision closing this canary:
+
+1. The 2026-07-15 SolanaTracker incident is **accepted** as a contained, documented operational boundary breach (`docs/INCIDENT_CRYPTO_DISCOVERY_PROVIDER_2026_07_15.md`).
+2. **Cohort 4 must remain permanently unarmed** — `crypto-horizon-arm-cohort --cohort-id 4 --confirm` will not be run.
+3. **No missed cohort-4 horizon may be backfilled** — no `observe-once`, no late/manual observation against cohort 4.
+4. Cohort 4 is retained **only as evidence** of successful dry-run planning and purity validation (it stays in the DB, unarmed, with zero observations).
+5. The next authorized milestone is **`CRYPTO-DISCOVERY-PROVIDER-GATE-001`** (fail-closed provider gating for discovery).
+6. **Hard gate:** no new discovery scan and no new fresh cohort may be created until `CRYPTO-DISCOVERY-PROVIDER-GATE-001` is implemented, reviewed, deployed dark, and explicitly approved.
+
+No code, flag, `.env`, unit, timer, or cohort state changed as a result of this disposition; it is a governance record only.
