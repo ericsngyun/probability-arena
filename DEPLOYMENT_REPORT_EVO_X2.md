@@ -2036,3 +2036,49 @@ Deployed **`2357761` → `89d253f`** by `git pull --ff-only`. **No migration** (
 - Frontier safety_ok=True across 84 files
 - Timer list unchanged
 - Recommendation: KEEP; continue accumulating measurements
+
+## CRYPTO-HORIZON-ORCHESTRATOR-001 — bounded one-shot scheduler dark-deployed (2026-07-15, ~22:00 UTC)
+
+Independent adversarial review of `c41b5fc` (the 28-failure-mode audit in the milestone prompt), then dark deployment by `git pull --ff-only`. **No migration** (revision stayed `0027`), no table, no flag, no `.env` change, no new provider, no MarketOps/EDGE-AUTO change, **zero SolanaTracker use**. **No cohort was created or armed, no timer or service was installed, and no provider call occurred.**
+
+| item | value |
+|---|---|
+| implementation commit | **`c41b5fc`** (`CRYPTO-HORIZON-ORCHESTRATOR-001: add bounded one-shot scheduler`) |
+| review-fix commit | **none** — review found no material P0/P1/P2 findings; `c41b5fc` retained unchanged |
+| pushed / deployed commit | **`c41b5fc`** (Mac HEAD = origin/main = EVO-X2 HEAD) |
+| EVO-X2 previous commit | `a26f778` |
+| migration / table / flag / timer / providers | **none / none / none / none / unchanged** |
+| tests at commit (Mac) | **1726 passed / 2 skipped**; focused orchestrator 21 passed; full horizon suite 91 passed |
+| AST safety audit | **85 files scanned, 0 violations**; canonical grep — boundary docstrings only |
+
+### Verdict: PASS (no fixes)
+
+The bounded one-shot scheduler was reviewed against all 28 audited failure modes. All are guarded and tested; no material finding required a code change, so no review-fix commit was manufactured (per the milestone's own instruction). Highlights of the review:
+
+- **`--dry-run` is pure** — `build_arm_plan` performs no filesystem/systemd/DB/provider side effect; the unit test asserts the observation root is never created and `runner.commands == []`. Confirmed live on EVO-X2: dry-run against real cohorts 1 and 3 wrote nothing (`persisted=false installed=false external_calls=0`) and the user-unit inventory hash was byte-identical before/after.
+- **Planning never calls a provider** — `test_no_provider_call_during_planning` monkeypatches the adapter to raise; the plan still computes. Observation is the only provider path and lives solely in `run_job`.
+- **Timers are non-recurring one-shots** — absolute `OnCalendar=<UTC>`, `Type=oneshot`, no `OnUnitActiveSec`/`OnBootSec`/`Restart`. `Persistent=true` was examined specifically for reboot-backfill risk (audit #4/#11/#12): the worker re-runs the planner immediately before any provider access, so an overdue/closed window returns `missed` with **zero** provider calls (`test_overdue_window_is_missed_without_provider_call`). Backfill therefore cannot cause an out-of-window observation; it can only rescue a still-open window.
+- **Planner rechecked immediately before provider access** — `run_job` re-plans and `observe_once` re-plans; not-yet-due, overdue, missed, and already-observed windows all short-circuit before any fetch (dedicated tests for each).
+- **MarketOps gate** before observe; **exactly one** bounded DB-lock retry (`DB_LOCK_MAX_ATTEMPTS=2`, retry only when `_is_db_locked`); integer-only unit names/paths/args (injection test parametrized with `"1;touch /tmp/injected"`); disarm regex is `fullmatch`-scoped to a single cohort and leaves unrelated units intact; status file survives cleanup failure; observation-success + report-failure is classified `failed` (never a false success); timestamps are UTC-anchored (DST-immune), LA shown for humans only.
+
+### EVO-X2 dark validation (read-only / non-installing only)
+
+- **Alembic** `python -m alembic current` → **`0027 (head)`** — no migration needed.
+- **systemd 255** accepts the generated calendar spec: `systemd-analyze calendar "2026-07-16 05:42:00.000000 UTC"` → `Next elapse: Thu 2026-07-16 05:42:00 UTC` (`7h left`). Microsecond + `UTC` suffix normalize correctly.
+- **Generated UTC + America/Los_Angeles representations** verified read-only for cohort 3 (computed against an earlier `now`, no install/provider): e.g. job 1 `UTC=2026-07-15T05:55:04.314833+00:00` / `LA=2026-07-14T22:55:04.314833-07:00` (correct July PDT −07:00), rendering `OnCalendar=2026-07-15 05:55:04.314833 UTC`, `AccuracySec=1us`, `Persistent=true`.
+- **No-future-window cohorts rejected safely** — dry-run of cohorts 1 and 3 both returned `status=no_future_windows expected_jobs=0 external_calls=0 installed=false` (their horizons have long closed).
+- **Arm CLI requires `--dry-run` or `--confirm`** — `--help` shows both; without either, the code returns `confirmation_required` and installs nothing.
+- **No orchestrator user units before or after** validation; `~/.config/systemd/user/` inventory hash **`7cc27b4150...` identical before/after**; existing 6 Probability-Arena timers (marketops / tick-aggregation / meme-news / baseline / retention / edge-observation) unchanged.
+- **No observation state dir** created (`~/crypto-horizon-observation/` absent).
+- **MarketOps healthy after validation** — run `#2874` `ok`, age 264.7s (< 30-min threshold).
+- **EVO-X2 repository tracked-clean** at `c41b5fc`. (One pre-existing untracked junk file named `ystemctl --user list-timers --all --no-pager` from a prior fat-fingered command was left untouched, per instructions.)
+
+### Confirmation of prohibitions
+
+No cohort created · no cohort armed · no `--confirm` passed · no timer installed · no service installed · no provider call · no SolanaTracker use · no MarketOps change · no `.env` change · no flag change · no recurring timer / daemon / extra retry · no EV/recommendation/sizing/wallet/swap/signing/order/capital capability introduced.
+
+**Operational conclusion:**
+
+CRYPTO-HORIZON-ORCHESTRATOR-001 is deployed dark on EVO-X2. No cohort was created or armed, no timer or service was installed, and no provider call occurred.
+
+**Next operational step:** manual creation of a fresh cohort (with genuinely future horizons), followed by review of `crypto-horizon-arm-cohort --cohort-id N --dry-run`. Confirmed arming (`--confirm`) remains blocked pending explicit human approval. **Rollback:** `git reset --hard a26f778` — additive, no schema change.
