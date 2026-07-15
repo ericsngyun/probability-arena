@@ -1,6 +1,6 @@
 # PROJECT_CANON — Probability Arena system reference
 
-Last updated: OPS-005 (post MVP-004F). Update alongside `app/canon.py` when milestones land.
+Last updated: CRYPTO-HORIZON-SCHEDULE-001. Update alongside `app/canon.py` when milestones land.
 
 ## System overview
 
@@ -36,7 +36,10 @@ Services (app/services/)  — scanner, eligibility, enrichment, resolution, rese
                             db_growth (OPS-011: read-only storage/retention observability),
                             tick_aggregation (OPS-012/013: raw ticks -> OHLC bucket
                             summaries — storage plumbing, never trading signals;
-                            per-sub-window commits + gated timer, OPS-013)
+                            per-sub-window commits + gated timer, OPS-013),
+                            crypto_horizon_schedule (CRYPTO-HORIZON-SCHEDULE-001:
+                            compute-on-demand manual timing/reminder reports over
+                            the existing horizon planner; no calls or persistence)
 Adapters (app/adapters/) — kalshi.py (list/detail/event/series/by-tickers/by-series GETs,
                             legacy + dollars/fp payload shapes, outcome parsing, bounded
                             429 retries), dexscreener.py (crypto, read-only), polymarket.py
@@ -87,7 +90,9 @@ See `docs/FEATURE_FLAGS.md`. All model/external flags default **false**; deploye
 
 ## Latest accepted milestones
 
-MVP-001…005A.1, OPS-001…007, OPS-009, SOCCER-001…002, CRYPTO-001…002, EVAL-001, and SCANNER-002/OPS-010 — full list with commits in `docs/ROADMAP.md`. Tests at SCANNER-002: 647 passing, 2 gated live tests skipped by default.
+MVP-001…005A.1, OPS-001…007, OPS-009, SOCCER-001…002, CRYPTO-001…002,
+CRYPTO-HORIZON-OBS-001/002, CRYPTO-HORIZON-SCHEDULE-001, EVAL-001, and
+SCANNER-002/OPS-010 — full list with commits in `docs/ROADMAP.md`.
 
 ## Current known limitations
 

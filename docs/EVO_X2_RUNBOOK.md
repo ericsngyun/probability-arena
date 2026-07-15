@@ -332,6 +332,8 @@ DEPLOYMENT_REPORT_EVO_X2.md); manual/report-only, no timer.**
 ```bash
 .venv/bin/python -m app.cli crypto-horizon-cohort-create --limit 25 --hours 48 --dry-run   # preview a fixed cohort
 .venv/bin/python -m app.cli crypto-horizon-cohort-create --limit 25 --hours 48             # freeze it (returns cohort_id)
+.venv/bin/python -m app.cli crypto-horizon-schedule-report --cohort-id N                    # exact UTC/PT windows; no calls/writes
+.venv/bin/python -m app.cli crypto-horizon-reminder-plan --cohort-id N                      # static plan only; installs nothing
 .venv/bin/python -m app.cli crypto-horizon-observation-report --cohort-id N --shadow        # coverage-gain + provider-load estimate FIRST
 .venv/bin/python -m app.cli crypto-horizon-observe-once --cohort-id N --limit 25 --dry-run   # plan preview, ZERO calls, nothing persisted
 .venv/bin/python -m app.cli crypto-horizon-observe-once --cohort-id N --limit 25             # ONE bounded pass (DexScreener; requires approval per run)
@@ -339,6 +341,14 @@ DEPLOYMENT_REPORT_EVO_X2.md); manual/report-only, no timer.**
 .venv/bin/python -m app.cli crypto-horizon-pair-selection-report --cohort-id N --top 5       # OBS-002: why did observations fail? shadow pair policies
 .venv/bin/python -m app.cli crypto-horizon-outcome-reconciliation-report --cohort-id N       # OBS-002: proof an observation flipped an outcome unknown->known
 ```
+
+Manual workflow: schedule report → reminder plan → operator checks the suggested
+`observe-once --dry-run` → operator explicitly invokes the real `observe-once`
+command → observation/pair-selection/outcome-reconciliation reports. The
+scheduling commands do not need a migration or flag and must never be placed in
+systemd, cron, MarketOps, or another automatic runner. They make zero provider
+calls and persist nothing; a printed real command is for explicit human
+invocation, never an executed action.
 
 **OBS-002 note:** pair selection is now deterministic `active_pair_quality_score`
 (picks the highest-quality *eligible* pair — valid price + positive liquidity —

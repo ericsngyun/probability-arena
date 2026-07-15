@@ -1647,6 +1647,153 @@ async def crypto_horizon_observe_once(
             session.close()
 
 
+async def crypto_horizon_schedule_report(
+    cohort_id: int, top: int | None = None, session=None,
+) -> dict:
+    """Print the static manual observation schedule. No calls or writes."""
+    from app.services.crypto_horizon_schedule import (
+        build_schedule_report,
+        format_los_angeles,
+        format_utc,
+    )
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        r = build_schedule_report(session, cohort_id)
+        print("crypto horizon schedule — static manual timing, no automatic observation")
+        print(
+            f"cohort={r['cohort_id']} size={r['cohort_size']} "
+            f"external_calls={r['external_calls']} persisted={str(r['persisted']).lower()}"
+        )
+        if r["status"] == "no_cohort":
+            print("cohort not found")
+            return r
+
+        def stamp(label, value):
+            print(
+                f"  {label}: UTC={format_utc(value) or 'none'}  "
+                f"America/Los_Angeles={format_los_angeles(value) or 'none'}"
+            )
+
+        print("cohort summary:")
+        stamp("current time", r["now"])
+        stamp("next window opening", r["next_window_opening"])
+        stamp("next target time", r["next_target_time"])
+        stamp("next window closing", r["next_window_closing"])
+        openings = r["opening_within_minutes"]
+        print(
+            f"  already_observed={r['already_observed']} currently_due={r['currently_due']} "
+            f"overdue={r['overdue']}"
+        )
+        print(
+            "  opening_within: "
+            f"10m={openings[10]} 30m={openings[30]} 60m={openings[60]}"
+        )
+        print(f"  recommended manual dry-run: {r['recommended_dry_run_command']}")
+        for warning in r["warnings"]:
+            print(f"WARNING: {warning}")
+
+        rows = r["entries"]
+        if top is not None:
+            member_ids = []
+            for row in rows:
+                if row["member_id"] not in member_ids:
+                    member_ids.append(row["member_id"])
+            shown = set(member_ids[:max(0, top)])
+            rows = [row for row in rows if row["member_id"] in shown]
+            print(f"detail: showing {len(shown)} of {r['cohort_size']} cohort members")
+        else:
+            print("detail: all cohort members and horizons")
+
+        for row in rows:
+            token = row["symbol"] or "unknown"
+            print(f"\n{token}  {row['token_address']}  horizon={row['horizon']}")
+            stamp("birth anchor", row["birth_at"])
+            stamp("exact target", row["target_at"])
+            stamp("window start", row["window_start"])
+            stamp("window end", row["window_end"])
+            stamp("current time", row["now"])
+            stamp("next manual action", row["recommended_next_manual_action_at"])
+            print(
+                f"  status={row['status']} planner_status={row['planner_status']} "
+                f"observe_eligible_now={str(row['observe_eligible_now']).lower()}"
+            )
+            print(
+                "  minutes until: "
+                f"opens={row['minutes_until_window_opens']} "
+                f"target={row['minutes_until_target']} "
+                f"closes={row['minutes_until_window_closes']}"
+            )
+            print(
+                "  shared bounded pass: "
+                f"{str(row['can_share_bounded_pass']).lower()} "
+                f"(tokens={row['shared_pass_tokens']} "
+                f"observations={row['shared_pass_observations']})"
+            )
+        return r
+    finally:
+        if owns_session:
+            session.close()
+
+
+async def crypto_horizon_reminder_plan(cohort_id: int, session=None) -> dict:
+    """Print a static reminder plan. Nothing is installed or invoked."""
+    from app.services.crypto_horizon_schedule import (
+        build_reminder_plan,
+        format_los_angeles,
+        format_utc,
+    )
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        r = build_reminder_plan(session, cohort_id)
+        print("crypto horizon reminder plan — static only, not installed")
+        print(
+            f"cohort={r['cohort_id']} size={r['cohort_size']} "
+            f"reminders={len(r['reminders'])} installed={str(r['installed']).lower()} "
+            f"external_calls={r['external_calls']} persisted={str(r['persisted']).lower()}"
+        )
+        if r["status"] == "no_cohort":
+            print("cohort not found")
+            return r
+        for warning in r["warnings"]:
+            print(f"WARNING: {warning}")
+        for reminder in r["reminders"]:
+            print(f"\nreminder {reminder['id']}:")
+            print(
+                f"  suggested reminder: UTC={format_utc(reminder['suggested_reminder_at'])}  "
+                "America/Los_Angeles="
+                f"{format_los_angeles(reminder['suggested_reminder_at'])}"
+            )
+            print(
+                f"  shared action time: UTC={format_utc(reminder['suggested_action_at'])}  "
+                "America/Los_Angeles="
+                f"{format_los_angeles(reminder['suggested_action_at'])}"
+            )
+            affected = ", ".join(
+                f"{item['symbol'] or item['token_address'][:12]}:{item['horizon']}"
+                for item in reminder["affected"]
+            )
+            print(f"  affected tokens/horizons: {affected}")
+            print(f"  suggested dry-run command: {reminder['suggested_dry_run_command']}")
+            print("  REAL COMMAND — REQUIRES EXPLICIT HUMAN INVOCATION:")
+            print(f"    {reminder['suggested_real_command']}")
+        return r
+    finally:
+        if owns_session:
+            session.close()
+
+
 async def crypto_horizon_observation_report(
     cohort_id: int, top: int = 5, shadow: bool = False, session=None,
 ) -> int:
@@ -5126,6 +5273,21 @@ def build_parser() -> argparse.ArgumentParser:
     hobs_parser.add_argument("--limit", type=int, default=25)
     hobs_parser.add_argument("--dry-run", action="store_true",
                              help="plan preview; ZERO external calls, nothing persisted")
+    hsched_parser = subparsers.add_parser(
+        "crypto-horizon-schedule-report",
+        help="Static manual timing schedule for cohort horizons "
+             "(CRYPTO-HORIZON-SCHEDULE-001; zero calls, no persistence)",
+    )
+    hsched_parser.add_argument("--cohort-id", type=int, required=True)
+    hsched_parser.add_argument(
+        "--top", type=int, default=None,
+        help="limit detailed output to the first N cohort members",
+    )
+    hrem_parser = subparsers.add_parser(
+        "crypto-horizon-reminder-plan",
+        help="Static deduplicated reminder plan; installs and invokes nothing",
+    )
+    hrem_parser.add_argument("--cohort-id", type=int, required=True)
     hrep_parser = subparsers.add_parser(
         "crypto-horizon-observation-report",
         help="Horizon-observation coverage report + success gates "
@@ -5652,6 +5814,14 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
         return 0 if n >= 0 else 1
+    if args.command == "crypto-horizon-schedule-report":
+        asyncio.run(
+            crypto_horizon_schedule_report(cohort_id=args.cohort_id, top=args.top)
+        )
+        return 0
+    if args.command == "crypto-horizon-reminder-plan":
+        asyncio.run(crypto_horizon_reminder_plan(cohort_id=args.cohort_id))
+        return 0
     if args.command == "crypto-horizon-observation-report":
         n = asyncio.run(
             crypto_horizon_observation_report(

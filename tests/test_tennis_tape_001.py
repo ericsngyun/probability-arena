@@ -415,8 +415,10 @@ class TestCLI:
 
         seed_market(session)
         monkeypatch.setattr(
-            tape_mod, "get_tennis_fetcher",
-            lambda settings=None: FakeScoreFetcher({DATE: [fixture()]}),
+            tape_mod, "TennisTapeRecorder",
+            lambda: recorder(
+                FakeScoreFetcher({DATE: [fixture()]}), FakeMarketAdapter()
+            ),
         )
         n = asyncio.run(cli.tennis_tape_capture_once(session=session, dry_run=True))
         out = capsys.readouterr().out

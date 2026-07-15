@@ -4,6 +4,7 @@
 
 | Milestone | Commit | Summary |
 |---|---|---|
+| CRYPTO-HORIZON-SCHEDULE-001 | (this) | Read-only, compute-on-demand scheduling support for frozen crypto horizon cohorts. `crypto-horizon-schedule-report --cohort-id N [--top N]` renders exact 15m/1h/6h/24h planner windows, UTC + DST-safe America/Los_Angeles times, urgency status, signed timing deltas, shared-pass grouping, next actions, cohort warnings/counts, and the exact dry-run command. `crypto-horizon-reminder-plan --cohort-id N` emits static reminders deduplicated only when all windows share a common intersection; real commands are clearly human-invoked. Reuses `plan_observations` as the single timing/eligibility source, including inclusive open/close boundaries. No migration, persistence, provider calls, SolanaTracker impact, timer/cron/daemon, flag, MarketOps/EDGE-AUTO change, or automatic observation invocation. No EV/recommendation/sizing/order/wallet/key/signing/swap/execution/autonomy capability. Manual workflow: schedule → reminders → human dry-run → explicit observe-once → reconciliation reports |
 | MVP-001 | `4fdb0ee` | Read-only Kalshi scanner, ranking, API, Compose, tests |
 | MVP-002 | `4d1f28a` | Alembic, scanner audit fields, CLI, live tests |
 | MVP-003A | `b3ccce2` | Eligibility gate; fixed live payload drift (dollars/fp), MVE filter |

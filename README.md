@@ -445,10 +445,21 @@ Report sections: a per-horizon **coverage funnel** (born → due → revisited �
 
 ```bash
 python -m app.cli crypto-horizon-cohort-create --limit 25 --hours 48 [--dry-run]   # freeze a fixed cohort (max 100)
+python -m app.cli crypto-horizon-schedule-report --cohort-id N [--top N]             # exact UTC/PT windows + next manual action
+python -m app.cli crypto-horizon-reminder-plan --cohort-id N                         # static deduplicated reminders; installs nothing
 python -m app.cli crypto-horizon-observation-report --cohort-id N --shadow          # pre-observation coverage-gain + provider-load estimate
 python -m app.cli crypto-horizon-observe-once --cohort-id N --limit 25 [--dry-run]   # ONE bounded pass over due horizons
 python -m app.cli crypto-horizon-observation-report --cohort-id N --top 5            # completion/liquidity rates, gates, examples
 ```
+
+**Manual scheduling workflow (CRYPTO-HORIZON-SCHEDULE-001):** schedule report
+→ static reminder plan → human checks `observe-once --dry-run` → human explicitly
+runs `observe-once` → observation and outcome-reconciliation reports. The
+schedule reuses the observation planner's exact targets and inclusive window
+boundaries, renders UTC plus DST-safe `America/Los_Angeles` timestamps, and
+deduplicates overlapping windows that can truly share one bounded pass. It is
+compute-on-demand only: no reminder persistence, provider call, timer, cron,
+daemon, flag, MarketOps hook, or automatic observation invocation exists.
 
 The **planner** classifies each (token, horizon) as `not_due` / `due_now` / `already_observed` / `overdue_unobserved` / `inactive`; a pass fetches only `due_now` horizons, nearest-target-first, one fetch per token (serving all its due horizons), hard-capped at the limit (≤100 calls). An *observed* horizon is frozen; a *failed* horizon (no usable liquidity) is retried in place on a later pass — never duplicated. The **report** gives completion rate and liquidity-field completion by horizon, inactive/no-pair rates, target-distance distribution, early-liquidity diagnostics for 15m/1h, and **measurement-only success gates** (15m≥0.80, 1h≥0.80, 6h≥0.70, 24h≥0.60, liquidity-state≥0.80). Observation only — no EV, no recommendation, no sizing, no orders, no wallets/keys/swaps/signing/execution.
 
