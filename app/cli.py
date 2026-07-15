@@ -2351,6 +2351,9 @@ async def frontier_eval_report(
             print(f"  safety_ok: {report.safety_audit['safety_ok']}")
             for violation in report.safety_audit["violations"]:
                 print(f"  VIOLATION: {violation}")
+        section("edge-precheck runtime")
+        for key, value in report.edge_precheck_runtime.items():
+            print(f"  {key}: {value}")
         section("recommended next action")
         print(report.recommended_next_action)
 

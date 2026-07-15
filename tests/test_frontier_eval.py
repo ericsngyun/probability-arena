@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from app import cli
+from app.config import Settings
 from app.db import Base, get_db
 from app.main import app
 from app.models import (
@@ -138,6 +139,17 @@ def seed_marketops_run(session, duration_s=40.0, minutes_ago=30):
     session.add(row)
     session.commit()
     return row
+
+
+def seed_cycle_automation_evidence(session):
+    for duration in (30, 35, 40):
+        seed_marketops_run(session, duration_s=duration)
+    for i in range(MIN_WATCHLIST_SAMPLE):
+        seed_edge(session, ticker=f"KXMLB-{i}", status="watchlist", gap=0.1)
+    seed_edge(
+        session, status="invalid_wide_spread", gap=None,
+        reasons=["invalid_wide_spread"],
+    )
 
 
 def service() -> FrontierEvalService:
@@ -339,15 +351,111 @@ class TestReadinessScorecard:
         assert report.readiness["label"] == READY_OBSERVE
 
     def test_cycle_automation_when_rules_satisfied(self, session):
-        for duration in (30, 35, 40):
-            seed_marketops_run(session, duration_s=duration)
-        for i in range(MIN_WATCHLIST_SAMPLE):
-            seed_edge(session, ticker=f"KXMLB-{i}", status="watchlist", gap=0.1)
-        seed_edge(session, status="invalid_wide_spread", gap=None,
-                  reasons=["invalid_wide_spread"])  # explainable invalid
+        seed_cycle_automation_evidence(session)
         report = self._report(session)
         assert report.readiness["label"] == READY_CYCLE_AUTOMATION
         assert "MARKETOPS_INCLUDE_EDGE_PRECHECK" in report.recommended_next_action
+
+    @pytest.mark.parametrize(
+        ("master", "include", "expected"),
+        (
+            (
+                False, False,
+                "Cycle-scoped edge measurement is operationally ready but disabled. "
+                "Enabling it requires both ENABLE_EDGE_PRECHECK and "
+                "MARKETOPS_INCLUDE_EDGE_PRECHECK.",
+            ),
+            (
+                True, False,
+                "Edge measurement is permitted, but MarketOps inclusion is disabled. "
+                "Evidence supports enabling MARKETOPS_INCLUDE_EDGE_PRECHECK as a "
+                "measurement-only step.",
+            ),
+            (
+                False, True,
+                "MarketOps inclusion is requested, but ENABLE_EDGE_PRECHECK is "
+                "disabled, so the stage skips. Resolve the inconsistent flag state "
+                "before expecting rows.",
+            ),
+            (
+                True, True,
+                "Cycle-scoped edge measurement is already enabled. Continue "
+                "accumulating measurements; no configuration change is needed.",
+            ),
+        ),
+    )
+    def test_cycle_recommendation_reflects_all_flag_combinations(
+        self, session, master, include, expected,
+    ):
+        seed_cycle_automation_evidence(session)
+        settings = Settings(
+            _env_file=None,
+            enable_edge_precheck=master,
+            marketops_include_edge_precheck=include,
+        )
+        report = FrontierEvalService(settings=settings).build(
+            session, include_crypto=False, include_safety=False,
+        )
+        assert report.readiness["label"] == READY_CYCLE_AUTOMATION
+        assert report.edge_precheck_runtime == {
+            "enable_edge_precheck": master,
+            "marketops_include_edge_precheck": include,
+            "effective_marketops_stage_enabled": master and include,
+        }
+        assert report.recommended_next_action == expected
+
+    def test_both_true_does_not_recommend_enabling(self, session):
+        seed_cycle_automation_evidence(session)
+        settings = Settings(
+            _env_file=None,
+            enable_edge_precheck=True,
+            marketops_include_edge_precheck=True,
+        )
+        report = FrontierEvalService(settings=settings).build(
+            session, include_crypto=False, include_safety=False,
+        )
+        assert "supports enabling" not in report.recommended_next_action.lower()
+        assert "already enabled" in report.recommended_next_action.lower()
+
+    def test_settings_unavailable_uses_neutral_fallback(
+        self, session, monkeypatch,
+    ):
+        import app.services.frontier_eval as frontier_module
+
+        seed_cycle_automation_evidence(session)
+
+        def unavailable():
+            raise RuntimeError("settings unavailable")
+
+        monkeypatch.setattr(frontier_module, "get_settings", unavailable)
+        report = FrontierEvalService().build(
+            session, include_crypto=False, include_safety=False,
+        )
+        assert report.readiness["label"] == READY_CYCLE_AUTOMATION
+        assert report.edge_precheck_runtime == {
+            "enable_edge_precheck": None,
+            "marketops_include_edge_precheck": None,
+            "effective_marketops_stage_enabled": None,
+        }
+        assert report.recommended_next_action == (
+            "Evidence supports cycle-scoped edge measurement; verify runtime "
+            "flag state before changing configuration."
+        )
+
+    def test_flag_context_does_not_change_readiness(self, session):
+        seed_cycle_automation_evidence(session)
+        labels = {
+            FrontierEvalService(settings=Settings(
+                _env_file=None,
+                enable_edge_precheck=master,
+                marketops_include_edge_precheck=include,
+            )).build(
+                session, include_crypto=False, include_safety=False,
+            ).readiness["label"]
+            for master in (False, True)
+            for include in (False, True)
+        }
+        assert labels == {READY_CYCLE_AUTOMATION}
 
     def test_manual_when_latency_too_slow(self, session):
         seed_marketops_run(session, duration_s=MARKETOPS_P90_MAX_SECONDS + 30)
@@ -366,6 +474,18 @@ class TestReadinessScorecard:
 
 
 class TestPersistence:
+    def test_runtime_reporting_persists_nothing(self, session):
+        seed_cycle_automation_evidence(session)
+        before = session.execute(select(FrontierEvalRun)).scalars().all()
+        report = FrontierEvalService(settings=Settings(
+            _env_file=None,
+            enable_edge_precheck=True,
+            marketops_include_edge_precheck=True,
+        )).build(session, include_crypto=False, include_safety=False)
+        after = session.execute(select(FrontierEvalRun)).scalars().all()
+        assert report.edge_precheck_runtime["effective_marketops_stage_enabled"] is True
+        assert before == after == []
+
     def test_save_run_persists_summary(self, session):
         seed_edge(session, status="watchlist", gap=0.1)
         svc = service()
@@ -376,6 +496,28 @@ class TestPersistence:
         assert stored.status == "ok"
         assert stored.summary["readiness"]["label"] == report.readiness["label"]
         assert stored.window_end is not None
+
+
+class TestRuntimeIsolation:
+    def test_frontier_build_does_not_invoke_marketops_or_external_calls(
+        self, session, monkeypatch,
+    ):
+        import httpx
+
+        from app.services.marketops import MarketOpsAutopilotService
+
+        def unexpected(*args, **kwargs):
+            raise AssertionError("frontier reporting must not invoke runtime services")
+
+        monkeypatch.setattr(MarketOpsAutopilotService, "run_once", unexpected)
+        monkeypatch.setattr(httpx.Client, "get", unexpected)
+        monkeypatch.setattr(httpx.AsyncClient, "get", unexpected)
+        report = FrontierEvalService(settings=Settings(
+            _env_file=None,
+            enable_edge_precheck=True,
+            marketops_include_edge_precheck=True,
+        )).build(session, include_crypto=False, include_safety=False)
+        assert report.edge_precheck_runtime["effective_marketops_stage_enabled"] is True
 
 
 class TestCliAndApi:
@@ -392,7 +534,7 @@ class TestCliAndApi:
             "forecast quality", "edge-precheck quality",
             "gap follow-through (market movement, not PnL)",
             "microstructure quality", "crypto risk quality", "latency quality",
-            "safety audit", "recommended next action",
+            "safety audit", "edge-precheck runtime", "recommended next action",
         ):
             assert header in output
         assert "evaluation only" in output

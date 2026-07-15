@@ -399,7 +399,12 @@ class TestIntegration:
         now = datetime.now(timezone.utc)
         ticker = WINNER_TICKER
         seed_resolution(session, ticker=ticker)
-        seed_tick(session, ticker=ticker, midpoint=0.50, spread=4, liquidity=2_000)
+        tick = seed_tick(
+            session, ticker=ticker, midpoint=0.50, spread=4, liquidity=2_000
+        )
+        tick.observed_at = now - timedelta(seconds=30)
+        tick.created_at = tick.observed_at
+        session.commit()
         forecast_row = MarketForecastRecord(
             market_ticker=ticker,
             forecaster_name="soccer_evidence",

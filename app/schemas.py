@@ -836,4 +836,5 @@ class FrontierEvalReport(BaseModel):
     crypto_risk_quality: dict | None = None
     latency_quality: dict
     safety_audit: dict | None = None
+    edge_precheck_runtime: dict
     recommended_next_action: str

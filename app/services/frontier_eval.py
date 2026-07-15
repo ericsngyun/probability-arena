@@ -132,7 +132,17 @@ class FrontierEvalService:
     never mutates market state; --save-run persists only its own audit row."""
 
     def __init__(self, settings: Settings | None = None):
-        self.settings = settings or get_settings()
+        if settings is not None:
+            self.settings = settings
+        else:
+            try:
+                self.settings = get_settings()
+            except Exception as exc:  # reporting must degrade without config
+                logger.warning(
+                    "frontier eval runtime settings unavailable: %s",
+                    type(exc).__name__,
+                )
+                self.settings = None
 
     # --- sections -----------------------------------------------------------
 
@@ -707,6 +717,7 @@ class FrontierEvalService:
         latency = self.latency_quality(session, window)
         safety = self.safety_audit() if include_safety else None
         scorecard = self.readiness(edge, follow, forecast, latency, safety)
+        edge_runtime = self.edge_precheck_runtime()
 
         executive = (
             f"{signal['signals_seen']} signals seen / {signal['promoted']} promoted / "
@@ -730,11 +741,28 @@ class FrontierEvalService:
             crypto_risk_quality=crypto,
             latency_quality=latency,
             safety_audit=safety,
-            recommended_next_action=self._recommend(scorecard, edge),
+            edge_precheck_runtime=edge_runtime,
+            recommended_next_action=self._recommend(scorecard, edge, edge_runtime),
         )
 
+    def edge_precheck_runtime(self) -> dict:
+        """Report only the edge flags needed to interpret recommendation text."""
+        if self.settings is None:
+            return {
+                "enable_edge_precheck": None,
+                "marketops_include_edge_precheck": None,
+                "effective_marketops_stage_enabled": None,
+            }
+        master = bool(self.settings.enable_edge_precheck)
+        include = bool(self.settings.marketops_include_edge_precheck)
+        return {
+            "enable_edge_precheck": master,
+            "marketops_include_edge_precheck": include,
+            "effective_marketops_stage_enabled": master and include,
+        }
+
     @staticmethod
-    def _recommend(scorecard: dict, edge: dict) -> str:
+    def _recommend(scorecard: dict, edge: dict, edge_runtime: dict | None = None) -> str:
         label = scorecard["label"]
         if label == READY_NOT:
             return (
@@ -749,9 +777,40 @@ class FrontierEvalService:
         if label == READY_MANUAL:
             return "Address the latency/explainability reasons before considering automation"
         if label == READY_CYCLE_AUTOMATION:
+            if edge_runtime is None or any(
+                edge_runtime.get(key) is None
+                for key in (
+                    "enable_edge_precheck",
+                    "marketops_include_edge_precheck",
+                )
+            ):
+                return (
+                    "Evidence supports cycle-scoped edge measurement; verify runtime "
+                    "flag state before changing configuration."
+                )
+            master = edge_runtime["enable_edge_precheck"]
+            include = edge_runtime["marketops_include_edge_precheck"]
+            if not master and not include:
+                return (
+                    "Cycle-scoped edge measurement is operationally ready but disabled. "
+                    "Enabling it requires both ENABLE_EDGE_PRECHECK and "
+                    "MARKETOPS_INCLUDE_EDGE_PRECHECK."
+                )
+            if master and not include:
+                return (
+                    "Edge measurement is permitted, but MarketOps inclusion is disabled. "
+                    "Evidence supports enabling MARKETOPS_INCLUDE_EDGE_PRECHECK as a "
+                    "measurement-only step."
+                )
+            if not master and include:
+                return (
+                    "MarketOps inclusion is requested, but ENABLE_EDGE_PRECHECK is "
+                    "disabled, so the stage skips. Resolve the inconsistent flag state "
+                    "before expecting rows."
+                )
             return (
-                "Evidence supports enabling MARKETOPS_INCLUDE_EDGE_PRECHECK "
-                "(cycle-scoped, <=5 measurement rows per cycle) as a one-flag step"
+                "Cycle-scoped edge measurement is already enabled. Continue "
+                "accumulating measurements; no configuration change is needed."
             )
         return (
             "Evidence supports drafting the MVP-005B paper-simulator DESIGN "

@@ -187,6 +187,13 @@ be minutes, visible in `marketops-report` ("promotion (OPS-009)" line) and
 --include-safety [--save-run]` — desk-wide quality + readiness over the
 window. Run after live sessions and before considering any flag escalation;
 the scorecard is deliberately conservative (no watchlist rows → not_ready).
+The `edge-precheck runtime` section distinguishes evidence readiness from the
+current double-gated configuration. For
+`ready_for_cycle_scoped_edge_automation`, an already-enabled stage should say
+to continue accumulating measurements, not suggest enabling the flag again.
+If runtime values are unavailable, verify the host `.env`/resolved settings
+before changing configuration. The recommendation is report text only and
+never changes either flag or the evidence-derived readiness label.
 
 ## Edge cohort analysis (EDGE-ANALYSIS-001)
 

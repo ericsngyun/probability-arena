@@ -881,6 +881,15 @@ python -m app.cli frontier-eval-report --hours 24 --domain sports_baseball --inc
 
 `GET /eval/frontier-report` serves the same report. The **readiness scorecard** is deliberately conservative: `not_ready` → `observe_more` → `ready_for_manual_edge_measurement` → `ready_for_cycle_scoped_edge_automation` → `ready_for_paper_design`. No watchlist rows means `not_ready`, full stop. **There is no live- or autonomous-trading label by design, and no readiness label ever authorizes live capital** — the ladder gates further *measurement* milestones only. `--save-run` persists a `frontier_eval_runs` audit row.
 
+**Runtime-aware recommendation (FRONTIER-RECOMMENDATION-001).** Evidence still
+determines the readiness label by itself. The report separately shows only
+`ENABLE_EDGE_PRECHECK`, `MARKETOPS_INCLUDE_EDGE_PRECHECK`, and their effective
+double-gated state, then tailors the recommended-action wording to whether the
+cycle-scoped measurement stage is disabled, partially configured, or already
+enabled. If settings cannot be read, the wording stays neutral and asks the
+operator to verify runtime state. This is reporting correctness only: it changes
+no flag, threshold, row creation, MarketOps stage, service, or timer.
+
 ## Database backups (OPS-007)
 
 ```bash

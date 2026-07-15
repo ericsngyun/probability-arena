@@ -1,6 +1,6 @@
 # PROJECT_CANON — Probability Arena system reference
 
-Last updated: CRYPTO-HORIZON-SCHEDULE-001. Update alongside `app/canon.py` when milestones land.
+Last updated: FRONTIER-RECOMMENDATION-001. Update alongside `app/canon.py` when capabilities change.
 
 ## System overview
 
@@ -32,7 +32,9 @@ Services (app/services/)  — scanner, eligibility, enrichment, resolution, rese
                             measurement, not PnL),
                             marketops (Autopilot: read-only coordination + alerts),
                             edge_precheck (MVP-005A: gap measurement, never advice),
-                            frontier_eval (EVAL-001: desk-wide evaluation + readiness),
+                            frontier_eval (EVAL-001: desk-wide evidence readiness;
+                            FRONTIER-RECOMMENDATION-001 adds runtime-aware wording
+                            without allowing settings to change readiness),
                             db_growth (OPS-011: read-only storage/retention observability),
                             tick_aggregation (OPS-012/013: raw ticks -> OHLC bucket
                             summaries — storage plumbing, never trading signals;
@@ -92,7 +94,8 @@ See `docs/FEATURE_FLAGS.md`. All model/external flags default **false**; deploye
 
 MVP-001…005A.1, OPS-001…007, OPS-009, SOCCER-001…002, CRYPTO-001…002,
 CRYPTO-HORIZON-OBS-001/002, CRYPTO-HORIZON-SCHEDULE-001, EVAL-001, and
-SCANNER-002/OPS-010 — full list with commits in `docs/ROADMAP.md`.
+FRONTIER-RECOMMENDATION-001, SCANNER-002/OPS-010 — full list with commits in
+`docs/ROADMAP.md`.
 
 ## Current known limitations
 

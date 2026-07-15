@@ -37,7 +37,7 @@ def session():
 
 
 def seed_running_run(session, minutes_ago=1.0) -> MarketOpsRun:
-    started = NOW - timedelta(minutes=minutes_ago)
+    started = datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)
     run = MarketOpsRun(status="running", started_at=started, created_at=started)
     session.add(run)
     session.commit()
