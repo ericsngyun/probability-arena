@@ -2016,3 +2016,23 @@ Deployed **`2357761` → `89d253f`** by `git pull --ff-only`. **No migration** (
 **Safety:** expanded identifier-level tokenize audit on the deployed module (wallet, private_key, swap, jupiter, signing, order placement, EV, sizing, recommend, sell, bet, arbitrage, arb, opportunity, pnl, profit, systemd/daemonize): **CLEAN**.
 
 **Recommendation: KEEP.** The window is now a genuine token-age window. Use `--hours 1` or `--hours 2` only after genuinely new `first_evidence_at` rows appear (i.e., shortly after fresh tokens are discovered/tape-birthed) — right now `--hours 1` correctly returns 0 because nothing was born in the last hour. A fresh cohort whose 15m/1h/6h horizons are still catchable requires creating it soon after fresh births land. **Rollback:** `git reset --hard 2357761` — additive correctness fix, no schema change.
+
+## FRONTIER-RECOMMENDATION-001 — dark deployment
+
+- Code commit: 0ae5370
+- Deployment type: reporting-only correctness fix
+- Alembic revision: unchanged at 0027
+- Runtime state:
+  - ENABLE_EDGE_PRECHECK=true
+  - MARKETOPS_INCLUDE_EDGE_PRECHECK=true
+  - effective_marketops_stage_enabled=true
+- Frontier readiness label remained ready_for_cycle_scoped_edge_automation
+- Corrected recommendation:
+  Cycle-scoped edge measurement is already enabled. Continue accumulating measurements; no configuration change is needed.
+- No flags, services, timers, thresholds, MarketOps behavior, or edge-precheck behavior changed
+- No persistence or external calls caused by frontier-eval-report
+- MarketOps healthy
+- DB flat at 2750.43 MiB
+- Frontier safety_ok=True across 84 files
+- Timer list unchanged
+- Recommendation: KEEP; continue accumulating measurements
