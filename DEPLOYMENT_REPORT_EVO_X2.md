@@ -2082,3 +2082,99 @@ No cohort created · no cohort armed · no `--confirm` passed · no timer instal
 CRYPTO-HORIZON-ORCHESTRATOR-001 is deployed dark on EVO-X2. No cohort was created or armed, no timer or service was installed, and no provider call occurred.
 
 **Next operational step:** manual creation of a fresh cohort (with genuinely future horizons), followed by review of `crypto-horizon-arm-cohort --cohort-id N --dry-run`. Confirmed arming (`--confirm`) remains blocked pending explicit human approval. **Rollback:** `git reset --hard a26f778` — additive, no schema change.
+
+## CRYPTO-HORIZON-ORCHESTRATOR-CANARY-001 — first canary cohort planned in dry-run (2026-07-15, ~22:40 UTC)
+
+First controlled canary: one small fresh-token cohort created manually and its full orchestration plan validated in **dry-run only**. **No cohort was armed, no timer or service was installed, and confirmed arming remains blocked pending explicit human approval.** Baseline synchronized commit `2c513e2`; no code change; Alembic unchanged at `0027`.
+
+> **Status:** *Canary completed from already-persisted discovery data after a contained provider-boundary breach; no additional provider calls occurred after detection.* See `docs/INCIDENT_CRYPTO_DISCOVERY_PROVIDER_2026_07_15.md`. This canary is **NOT** described as fully compliant.
+
+### Discovery + provider-call accounting
+
+| item | value |
+|---|---|
+| discovery command | `python -m app.cli crypto-scan-once --limit 40` (scan **#2873**, `tokens=20 pairs=40 ticks=40 signals=7`) |
+| discovery time (UTC) | 2026-07-15 22:18:20 → ~22:18:37 |
+| **SolanaTracker delta (breach)** | **+15** (`hour` 45→60, `today` 3,345→3,360, `month` 29,813→29,828) — root cause: risk-engine path in `crypto_scout.scan_once`; see incident doc |
+| GoPlus | ~1 `token_security` GET per checked token (free, unmetered) |
+| tape assembly | `crypto-tape-run-once` → `external_calls=0`, `tape_run_id=36`, 25 birth events composed (zero-call) |
+| cohort creation | `crypto-horizon-cohort-create --hours 1 --limit 1` → `external_calls=0` (zero-call) |
+| **all commands after detection** | SolanaTracker counter snapshotted before/after each → **before == after (zero self-attributable calls)** |
+
+### Candidate table (fresh births after tape assembly; read-only)
+
+| symbol | id | age (min) | initial liq (USD) | pair | 15m window future? | decision |
+|---|---|---|---|---|---|---|
+| **SBULL** | 428 | 5.9 | **25,085** | pumpswap | **yes (open)** | **INCLUDED** — only fresh token meeting all inclusion criteria |
+| BBTROLLCUP | 427 | 5.9 | **None** | pumpfun | yes | excluded — missing initial liquidity |
+| ARGENTINU | 430 | 17.9 | None | pumpfun | yes | excluded — missing initial liquidity |
+| SOLcat | 429 | 17.9 | None | pumpfun | yes | excluded — missing initial liquidity |
+| CHOCOLATE | — | 23.9 | 20,254 | pumpfun | **no (past)** | excluded — beyond first (15m) target |
+| TCHYON | — | 23.9 | 28,318 | pumpswap | no (past) | excluded — beyond first target |
+| Grokkybara / Dilemma / M11B | — | 23.9–35.9 | 9,131 / 15,367 / 5,737 | — | no | excluded — beyond first target |
+
+**Inclusion rationale (SBULL):** genuinely fresh (5.9 min), complete initial lifecycle anchor (pair `7WL5rmZ4…`, price `6.232e-05`, **liquidity 25,085**, vol24 24,365, mcap 62,329), deterministic pair (pumpswap), all four horizons still future/open at creation, low reconciliation ambiguity.
+**Why single-member:** 2 tokens were preferred, but SBULL was the *only* fresh token satisfying every hard inclusion criterion. Its identical-birth partner **BBTROLLCUP (427)** was excluded for null initial liquidity; every other complete-liquidity token was already beyond its own 15m target. Padding to two would have injected the reconciliation ambiguity Phase 4 forbids. **Deduplication is therefore not exercised by this canary** (single token → one job per horizon); it remains covered by the orchestrator unit test `test_dry_run_exact_timestamps_deduplicates_and_installs_nothing`.
+
+### Cohort
+
+| item | value |
+|---|---|
+| cohort ID | **4** |
+| creation (UTC) | 2026-07-15 22:35:02 |
+| creation (America/Los_Angeles) | 2026-07-15 15:35:02 −07:00 |
+| members | **SBULL** `BwMmKCBDBBLtanE1i8M3D1iy49izy3BBo5iq34vUCrty` (birth_event 428) |
+| first_evidence_at | 2026-07-15 22:25:04.285011 UTC |
+| initial lifecycle state | complete: pair + price + liquidity 25,085 + vol24 + mcap/fdv |
+| observations at creation | **0** (creation performed no observation) |
+| membership check | exactly the approved set; no extra token; no automatic creation |
+
+### Dry-run orchestration plan (`crypto-horizon-arm-cohort --cohort-id 4 --dry-run`)
+
+`status=ok size=1 expected_jobs=4 external_calls=0 persisted=false installed=false`. Each job execute-time independently verified against birth anchor + horizon + 0.5 tolerance.
+
+| Horizon | UTC target | LA target | Job execute (UTC) | Planner state | Unit name | Command | Installed |
+|---|---|---|---|---|---|---|---|
+| 15m | 22:40:04 | 15:40:04 | 22:35:45 (window open) | due_now | `probability-arena-horizon-c4-j1` | `…/.venv/bin/python -m app.cli crypto-horizon-run-job --cohort-id 4 --job-id 1` | **no** |
+| 1h | 23:25:04 | 16:25:04 | 22:55:04 | not_due (opens_soon) | `probability-arena-horizon-c4-j2` | `… --cohort-id 4 --job-id 2` | **no** |
+| 6h | Jul16 04:25:04 | Jul15 21:25:04 | Jul16 01:25:04 | not_due | `probability-arena-horizon-c4-j3` | `… --cohort-id 4 --job-id 3` | **no** |
+| 24h | Jul16 22:25:04 | Jul16 15:25:04 | Jul16 10:25:04 | not_due | `probability-arena-horizon-c4-j4` | `… --cohort-id 4 --job-id 4` | **no** |
+
+Full command path: `/home/miko_node_001/projects/probability-arena/.venv/bin/python`. Log paths: `/home/miko_node_001/crypto-horizon-observation/cohort-4/job-N.log`. No token strings interpolated into any unit name, command, or log path (cohort/job integers only).
+
+### Generated systemd semantics (rendered read-only to a temp dir, never installed)
+
+`systemd-analyze verify` on all 8 rendered units → **exit 0**. Every timer: `Type=oneshot` (service), `AccuracySec=1us`, `RandomizedDelaySec=0`, `Persistent=true`, `Unit=…-cN-jN.service`; **no `OnUnitActiveSec`, `OnBootSec`, `Restart`, or `RemainAfterExit`**. `systemd-analyze calendar` next-elapse: j2 `Wed 22:55:04 UTC`, j3 `Thu 01:25:04 UTC`, j4 `Thu 10:25:04 UTC` (all future); j1 `never` (its due-now 15m instant had already passed by evaluation — expected for an open, closing window). Service uses fixed `.venv/bin/python`, `WorkingDirectory` + `EnvironmentFile` (path reference, no inlined secrets), `NoNewPrivileges=true`, `TimeoutStartSec=10min`. Temp dir removed; **no unit ever entered `~/.config/systemd/user/`.**
+
+### Dry-run purity (before/after comparison)
+
+| check | result |
+|---|---|
+| user-unit inventory hash | `7cc27b41508522a19f7af9571696a3d8` **identical before & after** |
+| horizon service / timer installed | none |
+| timer active/pending | none |
+| SolanaTracker counter across dry-run | before == after (zero) |
+| orchestrator state dir `~/crypto-horizon-observation/` | not created |
+| `orchestrator-report --cohort-id 4` | `status=unarmed`, planned/installed jobs 0, `any_timer_installed=false` (correct unarmed state) |
+| MarketOps health | `healthy=true` (run 2880) |
+| Alembic revision | `0027` (no migration) |
+| `.env` / feature flags | unchanged |
+| existing Probability-Arena timers | unchanged |
+| SolanaTracker use during dry-run | none |
+| automatic cohort creation | none |
+
+### Expected runtime behavior (per already-reviewed `CRYPTO-HORIZON-ORCHESTRATOR-001`)
+
+- **Success:** DexScreener-only observation (zero SolanaTracker), persists tick + audit row, renders the four read-only reports to `cohort-4/job-N-reports/`, self-removes the one-shot unit, exit 0.
+- **Provider failure:** `failed / provider_failure`, exit 1, no retry.
+- **DB lock:** exactly one bounded 3 s retry, then `failed / database_locked` if still locked.
+- **MarketOps degraded:** skip + alert, **no provider call**, `failed / marketops_unhealthy`.
+- **Reboot:** `Persistent=true` may fire late, but the runtime planner recheck refuses any overdue/closed window with **zero** provider calls; only a still-open window is observed.
+- **Overdue / already-observed:** `missed` / `completed(already_observed)` — no provider call.
+- **Disarm (after arming; NOT run):** `crypto-horizon-disarm-cohort --cohort-id 4 --confirm`.
+
+### Verdict: **NOT READY** for confirmed arming
+
+The orchestration plan itself passed every safety, timing, systemd, and purity check. Confirmed arming is **not** recommended now for two reasons: (1) a provider-boundary breach occurred during preparation (contained, documented) and must be reviewed and explicitly accepted by a human before any further operational step; (2) SBULL's **15m window closes 22:47:34 UTC** and will have expired by human-review time, so the full 15m→24h validation the canary was designed for is degraded — the 1h/6h/24h horizons remain cleanly future and armable if the human accepts the (degraded) scope and the incident. Even were it ready, **arming is not performed** — it is gated on explicit human approval.
+
+**The fresh cohort was created manually and its orchestration plan was validated in dry-run mode. No cohort was armed, no timer or service was installed, and confirmed arming remains blocked pending explicit human approval.**
