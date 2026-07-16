@@ -2396,3 +2396,18 @@ Three separate verdict layers:
 **Safety:** no SolanaTracker · no Birdeye · no paid provider · no denied-provider request (all `started=0` in scan #2911) · one discovery scan only · one cohort created · no manual observation trigger · no backfill · no duplicate observation · no recurring timer/daemon · no MarketOps/`.env`/flag change · no trading/capital surface · Alembic `0027` · unrelated units + cohort 5 unchanged.
 
 The full 15m→24h lifecycle is **not** yet complete — the 6h and 24h durable outcomes will be recorded when those host-owned jobs execute (07:38 / 16:38 UTC).
+
+## CRYPTO-HORIZON-COHORT-SELECT-002 — explicit-token cohort selection dark-deployed (2026-07-16, ~06:05 UTC)
+
+Deployed **`be59f4a` → `123d7c3`** by `git pull --ff-only`. Unblocks CANARY-004. **No migration** (Alembic `0027`), no `.env`/flag/MarketOps/trading change. Dark validation zero-call, created nothing.
+
+`crypto-horizon-cohort-create --token <CANONICAL_ID>` (repeatable) freezes EXACTLY the requested already-persisted canonical token ids: exact base58 match only (never symbol/name/partial), input order preserved, duplicates/malformed/unknown/no-local-evidence rejected, **no freshest-first fallback, no substitution**. Atomic — any rejection persists nothing; `--confirm` (not `--dry-run`) persists. Per-token identity + completeness (`--require-complete`) + horizon-feasibility validation; shared-pass suitability (per-horizon window intersection, earliest/latest safe arm, whether 15m windows can enter due_now simultaneously, whether the 45 s activation grace fits the shared interval, `shared_pass_eligible`); optional `--require-shared-horizon-windows` rejects non-overlapping members. Freshest-first + `--require-complete` behavior unchanged without `--token`. Zero external calls; no observation/arming. **33 regression tests** incl. the CANARY-004 case (select intended two, exclude a fresher unrelated token, `shared_pass_eligible=true`). Full suite **1797 passed / 2 skipped**; AST **86 files, 0 violations**.
+
+**EVO-X2 dark validation (zero-call, created nothing):**
+- `--help` shows `--token` / `--confirm` / `--require-shared-horizon-windows`.
+- Two-token dry-run (persisted 22M + BADBULL): `mode=explicit_token`, `external_calls=0`, `persisted=false`; both identities valid; per-horizon windows/states printed; correct `shared_pass_eligible=false` (aged 15m windows disjoint).
+- `--require-complete` dry-run on an aged token → `rejected / horizon_infeasible`, `resulting_members=[]`.
+- `--token 22M` (a symbol) → `rejected / malformed_identifier`, no fallback.
+- **Purity:** SolanaTracker budget unchanged; **cohorts=6 (none created)**; no observation; cohort 6 (j3/j4) + unrelated units (`7cc27b41…` = baseline) untouched; Alembic `0027`.
+
+**CANARY-004 readiness: `SELECTOR READY; NEW GOVERNED DISCOVERY REQUIRED`.** The explicit selector is deployed and validated, but **0** currently-persisted complete tokens are still 15m-feasible (all 87–222 min old; fresh tokens are null-liquidity). Assembling two complete tokens with overlapping 15m windows requires a fresh governed discovery scan — not run without separate explicit approval. **Rollback:** `git reset --hard be59f4a`.
