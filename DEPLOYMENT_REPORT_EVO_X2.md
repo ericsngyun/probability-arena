@@ -2329,3 +2329,47 @@ Requirements, each implemented + tested:
 | no recurring timer/daemon/retry | source audit; Persistent+planner unchanged | `test_no_trading_capability_in_due_now_fix`, `test_reboot_persistence_relies_on_planner_never_backfills` |
 | no provider/MarketOps/cohort/trading change | pure planning + systemd only | `test_no_provider_call_during_arming_and_verification` |
 | dry-run shows adjusted time, installs nothing | `arm(dry_run=True)` | `test_dry_run_shows_adjusted_due_now_time_and_installs_nothing` |
+
+## CRYPTO-HORIZON-COHORT-SELECT-001 — complete-liquidity cohort filter dark-deployed (2026-07-16, ~04:45 UTC)
+
+Deployed **`83fc498` → `8aefb0e`** by `git pull --ff-only`. Enables CANARY-003. **No migration** (Alembic `0027`), no `.env`/flag/MarketOps/trading change. Dark validation zero-call.
+
+CANARY-003 could not select a compliant cohort: `crypto-horizon-cohort-create` is freshest-first by birth anchor with no liquidity filter, and across ~20 min of monitoring the absolute-freshest token was *consistently* a brand-new pumpfun token with **null (frozen) birth-liquidity**, with complete-liquidity tokens always buried behind it — so `--limit` could never isolate a complete cohort, and CANARY-003's hard requirements forbid a null-liquidity member. `--require-complete [--min-liquidity N]` restricts selection to births with a valid pair + positive initial liquidity + initial price **before** the recent-first limit (recorded in summary + cohort provenance); default (flag off) behavior unchanged. Read-only DB selection — no external call, no new provider, no migration, no automation. 6 regression tests; full suite **1764 passed / 2 skipped**; AST **86 files, 0 violations**. EVO-X2 dry-run `--require-complete` returned only complete-liquidity births, `external_calls=0`, ST unchanged. **Rollback:** `git reset --hard 83fc498`.
+
+## CRYPTO-HORIZON-ORCHESTRATOR-CANARY-003 — due-now repair LIVE-PROVEN (2026-07-16)
+
+### Verdict: PASS (primary due-now target)
+
+The DUE-NOW-001 repair is proven live end-to-end: a horizon that was **due_now at arming** received a **grace-adjusted future OnCalendar**, **passed post-install verification**, **triggered exactly once**, **executed inside the valid window**, and **recorded its observation + all four reports** — the exact failure mode CANARY-002 exhibited, now fixed.
+
+**Provider governance.** Preflight (`--allow-provider dexscreener --deny-provider solana-tracker --deny-provider birdeye --deny-provider goplus`): only `dexscreener` will_call, all risk providers DENIED, `external_calls=0`, counters identical. One governed scan **#2911** (UTC 2026-07-16 01:48:54 / PDT 18:48:54): ledger `dexscreener started=31/succeeded=31`; **solana-tracker/birdeye/goplus started=0**; ST budget unchanged (zero denied-provider requests). One scan only.
+
+**Cohort 6** (via `crypto-horizon-cohort-create --hours 1 --limit 1 --require-complete`, `external_calls=0`, ST unchanged): 1 member **22M** `DC4sure5XanGz2Te…pump`, birth 04:38:04.975031, **complete anchor** (pair `6oywUvsS…`, initial liquidity 12,561.49, price 2.891e-05), observations at creation 0. Nominal targets / planner windows (tolerance 0.5):
+
+| Horizon | Nominal target | Window start | Window close |
+|---|---|---|---|
+| 15m | 04:53:04.975 | 04:45:34.975 | 05:00:34.975 |
+| 1h | 05:38:04.975 | 05:08:04.975 | 06:08:04.975 |
+| 6h | 10:38:04.975 | 07:38:04.975 | 13:38:04.975 |
+| 24h | (Jul17) 04:38:04.975 | 16:38:04.975 | (Jul17) 16:38:04.975 |
+
+**Due-now scheduling proof (15m).**
+
+| item | value |
+|---|---|
+| arm time (UTC) | 2026-07-16 04:48:01 |
+| activation grace | 45 s |
+| generated OnCalendar | 2026-07-16 04:48:47.212933 UTC (arm + 45 s) |
+| Δ from arm / vs window | +45.2 s; strictly future; 04:48:47 ∈ [04:45:34, 05:00:34] ✓ |
+| window close | 05:00:34.975 (≈ 12 min after scheduled) |
+| post-install systemd state | `ActiveState=active, SubState=waiting`, `NextElapseUSecRealtime=Thu 2026-07-16 04:48:47 UTC` (populated + future), `LastTriggerUSec` empty — **verification PASSED** (contrast CANARY-002: `elapsed`, empty NextElapse) |
+| actual trigger time | journal `Starting…j1` **04:48:47**, `Started` 04:48:48 — triggered once |
+| service result | `Result=success, ExecMainStatus=0, exit 0`; status `completed / observation_attempt_complete` |
+| observation | 15m 22M **`observed`**, tick_id 225394, liq 8638.96 (`observations_recorded=1, ticks_written=1, external_calls=1`) |
+| reports | 4/4 saved (observation, pair-selection, outcome-reconciliation, schedule) |
+| cleanup | j1 timer+service self-removed |
+| providers | DexScreener-only (1 free call), zero SolanaTracker; ST budget unchanged |
+
+**Isolation.** 4 c6 timers installed once each; unrelated units (excl. c5/c6) hash `7cc27b41…` = baseline; **cohort 5 untouched**; orchestrator `completed:1, missed:0`.
+
+Full lifecycle (1h/6h/24h) — natural execution recorded in the finalization below.
