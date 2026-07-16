@@ -37,15 +37,24 @@ class RecordingRunner:
 
     def __call__(self, argv, **kwargs):
         self.commands.append(argv)
+        # DUE-NOW-001: `systemctl show` on a healthy just-installed timer reports
+        # a future NextElapseUSecRealtime; return one so post-install
+        # verification passes for the normal armed path.
+        if "show" in argv:
+            return SimpleNamespace(
+                returncode=0,
+                stdout="NextElapseUSecRealtime=Sat 2099-01-01 00:00:00 UTC\nLastTriggerUSec=\n",
+                stderr="",
+            )
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
 
 class FailingEnableRunner(RecordingRunner):
     def __call__(self, argv, **kwargs):
-        self.commands.append(argv)
         if argv[2:4] == ["enable", "--now"]:
+            self.commands.append(argv)
             return SimpleNamespace(returncode=1, stdout="", stderr="enable failed")
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
+        return super().__call__(argv, **kwargs)
 
 
 class ScriptedObserver:

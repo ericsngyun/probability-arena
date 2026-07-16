@@ -53,6 +53,12 @@ UNIT_PREFIX = "probability-arena-horizon"
 MARKETOPS_HEALTH_MAX_AGE = timedelta(minutes=30)
 DB_LOCK_MAX_ATTEMPTS = 2
 DB_LOCK_RETRY_SECONDS = 3.0
+# CRYPTO-HORIZON-ORCHESTRATOR-DUE-NOW-001: a due-now (already-open) window must
+# never be armed with an OnCalendar at or before unit-enable time — systemd
+# marks such a one-shot timer `active (elapsed)` and never triggers the service
+# (a silent miss). This internal grace pushes the scheduled time strictly past
+# enable; it is a fixed orchestrator constant, never an environment flag.
+ACTIVATION_GRACE = timedelta(seconds=45)
 
 BOUNDARY_DISCLAIMER = (
     "Host-native one-shot research-data collection only. No recurring timer, "
@@ -290,6 +296,50 @@ class SystemdUserManager:
             removed.extend(self.remove_job(cohort_id, job_id))
         return sorted(removed)
 
+    def timer_state(self, cohort_id: int, job_id: int) -> dict:
+        """Read the installed timer's realtime schedule + last-trigger stamp."""
+        base = unit_base(cohort_id, job_id)
+        result = self._run(
+            [
+                "systemctl", "--user", "show", f"{base}.timer",
+                "-p", "NextElapseUSecRealtime", "-p", "LastTriggerUSec",
+            ],
+            check=False,
+        )
+        state: dict = {}
+        for line in (result.stdout or "").splitlines():
+            if "=" in line:
+                key, value = line.split("=", 1)
+                state[key.strip()] = value.strip()
+        return state
+
+    @staticmethod
+    def _stamp_present(value: str | None) -> bool:
+        # systemd renders an unset USec timestamp as "", "n/a", or "0".
+        return bool(value) and value not in ("n/a", "0")
+
+    def verify_installed(self, jobs: list[dict]) -> list[dict]:
+        """DUE-NOW-001 post-install check. A healthy one-shot timer either has a
+        FUTURE NextElapseUSecRealtime (still scheduled) or a set LastTriggerUSec
+        (already fired). A timer that is merely `active (elapsed)` with an empty
+        LastTriggerUSec never triggered its service — an arming failure. Returns
+        the list of jobs that failed verification (empty when all are healthy)."""
+        failures: list[dict] = []
+        for job in jobs:
+            state = self.timer_state(job["cohort_id"], job["job_id"])
+            next_elapse = state.get("NextElapseUSecRealtime")
+            last_trigger = state.get("LastTriggerUSec")
+            scheduled = self._stamp_present(next_elapse)
+            triggered = self._stamp_present(last_trigger)
+            if not scheduled and not triggered:
+                failures.append({
+                    "job_id": job["job_id"],
+                    "unit_base": job["unit_base"],
+                    "next_elapse": next_elapse or "",
+                    "last_trigger": last_trigger or "",
+                })
+        return failures
+
 
 def build_arm_plan(
     session: Session,
@@ -303,9 +353,26 @@ def build_arm_plan(
     store = store or OrchestratorStore()
     schedule = build_schedule_report(session, cohort_id, now=now)
     jobs = []
+    rejected: dict | None = None
     if schedule["status"] == "ok":
         for job_id, group in enumerate(schedule["pass_groups"], start=1):
-            execute_at = _parse_time(group["suggested_action_at"])
+            # DUE-NOW-001: window open time is max(now, window_start); apply the
+            # activation grace so the OnCalendar is STRICTLY after enable time.
+            # For a genuine future window (window_start >= now + grace) this is a
+            # no-op — future scheduling semantics are unchanged.
+            window_open = _parse_time(group["suggested_action_at"])
+            window_end = _parse_time(group["window_intersection_end"])
+            execute_at = max(window_open, now + ACTIVATION_GRACE)
+            if execute_at > window_end:
+                # Grace would push execution past the window close: reject arming
+                # for the whole cohort BEFORE installing anything.
+                rejected = {
+                    "job_id": job_id,
+                    "horizon_window_end_utc": format_utc(window_end),
+                    "grace_scheduled_utc": execute_at.isoformat(),
+                    "activation_grace_seconds": ACTIVATION_GRACE.total_seconds(),
+                }
+                break
             jobs.append({
                 "job_id": job_id,
                 "cohort_id": cohort_id,
@@ -327,7 +394,10 @@ def build_arm_plan(
                 "log_path": str(store.log_path(cohort_id, job_id)),
             })
     status = schedule["status"]
-    if status == "ok" and not jobs:
+    if rejected is not None:
+        status = "activation_window_too_narrow"
+        jobs = []
+    elif status == "ok" and not jobs:
         status = "no_future_windows"
     return {
         "status": status,
@@ -337,6 +407,8 @@ def build_arm_plan(
         "jobs": jobs,
         "expected_jobs": len(jobs),
         "warnings": schedule.get("warnings", []),
+        "activation_grace_seconds": ACTIVATION_GRACE.total_seconds(),
+        "rejected": rejected,
         "external_calls": 0,
         "persisted": False,
         "installed": False,
@@ -470,6 +542,22 @@ class CryptoHorizonOrchestrator:
             self.systemd.remove_cohort(cohort_id)
             self.store.remove_manifest(cohort_id)
             raise
+        # DUE-NOW-001 post-install verification: every timer must be scheduled
+        # (future NextElapseUSecRealtime) or already-triggered. A timer that
+        # elapsed without triggering is a failed arming — remove ONLY this
+        # cohort's newly-created units and report the failure. No observation is
+        # triggered and no window is backfilled during this recovery.
+        failures = self.systemd.verify_installed(plan["jobs"])
+        if failures:
+            self.systemd.remove_cohort(cohort_id)
+            self.store.remove_manifest(cohort_id)
+            return {
+                **plan,
+                "status": "arming_verification_failed",
+                "verification_failures": failures,
+                "persisted": False,
+                "installed": False,
+            }
         manifest.update({
             "status": "armed",
             "installed": True,
