@@ -116,6 +116,23 @@ false (it only reserves future loop/timer use); a crypto timer would be its own
 deliberate rollout step in a later milestone. Read-only DEX Screener GETs; no
 wallets/swaps/execution exist anywhere.
 
+**Provider gate (CRYPTO-DISCOVERY-PROVIDER-GATE-001).** `crypto-scan-once` and
+`crypto-risk-assess` are now **fail-closed**: a bare command prints a zero-call
+provider plan and does NOT execute. Always preview first with `--provider-plan`
+(zero calls, zero writes). To execute you must pass `--yes` **plus** an explicit
+provider selection; any paid provider (SolanaTracker/Birdeye) additionally
+requires its own `--confirm-paid-provider <name>` — generic `--yes` never
+authorizes a paid provider. Examples:
+```bash
+.venv/bin/python -m app.cli crypto-scan-once --provider-plan                                   # inspect providers; zero calls
+.venv/bin/python -m app.cli crypto-scan-once --allow-provider dexscreener --yes                # DexScreener-only (honest, no paid)
+.venv/bin/python -m app.cli crypto-scan-once --deny-provider solana-tracker --yes              # deny ST (overrides flags/fallback)
+.venv/bin/python -m app.cli crypto-scan-once --confirm-paid-provider solana-tracker --yes      # explicit paid opt-in
+```
+`--deny-provider` overrides feature flags, adapter enablement, and fallbacks. A
+completed run prints a true per-provider request ledger. MarketOps runs under an
+explicit behavior-equivalent policy (unchanged provider set/caps/output).
+
 ## Soccer evidence forecasting (SOCCER-002) rollout
 
 One flag: `ENABLE_SOCCER_EVIDENCE_FORECASTING=true` (soccer research canary

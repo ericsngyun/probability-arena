@@ -28,6 +28,9 @@ ALLOWED_CAPABILITIES = (
     "retention pruning of our own operational tables",
     "crypto scouting (read-only Solana token/pair surveillance + risk telemetry)",
     "crypto risk engine (heuristic + provider risk scoring; avoid/flag verdicts only)",
+    "crypto discovery provider gate (explicit run-scoped provider policy; deny "
+    "overrides flags/fallbacks; paid providers need per-provider confirmation; "
+    "fail-closed before any request; read-only, never a trade action)",
     "crypto lifecycle tape (read-only replayable token lifecycle recording + "
     "survival labels, derived from already-persisted rows)",
     "crypto retrospective analysis (compute-on-demand feature/outcome "
