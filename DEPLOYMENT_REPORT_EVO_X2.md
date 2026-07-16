@@ -2191,3 +2191,41 @@ Recorded decision closing this canary:
 6. **Hard gate:** no new discovery scan and no new fresh cohort may be created until `CRYPTO-DISCOVERY-PROVIDER-GATE-001` is implemented, reviewed, deployed dark, and explicitly approved.
 
 No code, flag, `.env`, unit, timer, or cohort state changed as a result of this disposition; it is a governance record only.
+
+## CRYPTO-DISCOVERY-PROVIDER-GATE-001 — explicit fail-closed provider gate dark-deployed (2026-07-16, ~00:29 UTC)
+
+Deployed **`9ae7f80` → `44b206a`** by `git pull --ff-only`. Makes crypto discovery provider usage explicit, run-scoped, inspectable, and **fail-closed before any external request** — the corrective milestone for the 2026-07-15 SolanaTracker boundary breach. **No migration** (Alembic stayed `0027`), no `.env`/flag change, no MarketOps scheduling/enablement change, no cohort/horizon/timer/trading change. **Dark validation made ZERO live provider calls** (only `--provider-plan`, `--help`, and mocked tests).
+
+| item | value |
+|---|---|
+| implementation commit | **`9012941`** (policy + guards + governed callers + gate tests) |
+| docs commit | **`44b206a`** (canon / capability matrix / safety boundaries / runbook) |
+| deployed commit | **`44b206a`** (Mac = origin = EVO-X2) |
+| EVO-X2 previous commit | `9ae7f80` |
+| migration / flag / `.env` / MarketOps | **none / none / none / unchanged** |
+| Mac tests | **1746 passed / 2 skipped** (incl. 20-test gate suite); AST audit **86 files, 0 violations**; canonical grep boundary docstrings only |
+
+### What deployed
+
+- Closed canonical `Provider` enum; immutable run-scoped `ProviderPolicy` (`deny` overrides flags/adapter-enablement/registry/fallback; paid providers need per-provider confirmation; mandatory-provider denial rejects the mode).
+- Lowest-level `guard_provider_request` authorizes + atomically cap-reserves each request immediately before it, OUTSIDE the adapters' broad handlers (hard `ProviderPolicyError` never swallowed; `gather` re-raises it). Risk adapters (GoPlus/SolanaTracker/Birdeye) guard unconditionally; DexScreener guards when a policy is installed (horizon/meme lanes untouched).
+- `scan_once` requires an explicit policy (missing → `MissingPolicyError` before any request; explicit/ambient `run_id` verified).
+- `crypto-scan-once` / `crypto-risk-assess` governed: `--provider-plan` (zero-call), `--allow-provider`, `--deny-provider`, `--confirm-paid-provider`, `--yes`; bare command prints plan and does not execute; generic `--yes` never authorizes a paid provider; honest DexScreener-only mode.
+- True per-run request ledger (planned/authorized/started/succeeded/failed/blocked_policy/skipped_cap/skipped_budget); existing derived budget report unchanged.
+- **MarketOps runs under a behavior-equivalent explicit policy** (same providers, paid confirmed, same caps, same output) — governed, not exempt.
+
+### EVO-X2 dark validation (zero live calls)
+
+- `crypto-scan-once --provider-plan` (this host's real config: engine on, GoPlus + **SolanaTracker enabled**) → derived plan shows `dexscreener` (free, cap 102) and `goplus` (free) `will_call`, `solana-tracker` (PAID, cap 15) **NEEDS-CONFIRM**, `birdeye` disabled; **verdict BLOCKED — solana-tracker not confirmed**, `external_calls=0`, "no provider was contacted." This is the July 15 breach, now fail-closed on the exact host/config that caused it.
+- `crypto-scan-once --help` shows all governance flags.
+- Gate suite `test_crypto_provider_gate_001.py` on EVO-X2: **20 passed** (mocked, no live calls).
+- **Zero live calls:** SolanaTracker budget `hour=75 today=75 month=30158` **identical before & after**; `CryptoWatcherRun` count **1693 → 1693** (no scan executed).
+- Alembic `0027`; **no migration**. User-unit inventory hash **`7cc27b41…` unchanged**; no horizon units; **cohort 4 still unarmed**; git tracked-clean; MarketOps `healthy=True`.
+
+### Confirmation of prohibitions
+
+No live discovery scan · no provider call (DexScreener/GoPlus/SolanaTracker/Birdeye) · no cohort created/armed · cohort 4 untouched · no timer/service installed · no `.env`/flag change · no MarketOps scheduling/enablement change · no migration (Alembic `0027`) · no trading/EV/sizing/order/wallet/swap/signing/execution surface.
+
+**Operational conclusion:** CRYPTO-DISCOVERY-PROVIDER-GATE-001 is deployed dark on EVO-X2. Crypto discovery is now fail-closed: a bare `crypto-scan-once` prints the provider plan and refuses to execute, and SolanaTracker (and Birdeye) require explicit per-provider confirmation. No live provider call, scan, cohort, or systemd action occurred during deployment.
+
+**Standing gate update:** with GATE-001 implemented, reviewed, and deployed dark, the prior hard gate (no new discovery scan / fresh cohort) can be lifted **only by explicit human approval** — and any future discovery must go through the governed `--provider-plan` → confirm flow. **Rollback:** `git reset --hard 9ae7f80` — additive, no schema change.
