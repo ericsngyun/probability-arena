@@ -2431,3 +2431,24 @@ Deployed **`be59f4a` → `123d7c3`** by `git pull --ff-only`. Unblocks CANARY-00
 - **Purity:** SolanaTracker budget unchanged; **cohorts=6 (none created)**; no observation; cohort 6 (j3/j4) + unrelated units (`7cc27b41…` = baseline) untouched; Alembic `0027`.
 
 **CANARY-004 readiness: `SELECTOR READY; NEW GOVERNED DISCOVERY REQUIRED`.** The explicit selector is deployed and validated, but **0** currently-persisted complete tokens are still 15m-feasible (all 87–222 min old; fresh tokens are null-liquidity). Assembling two complete tokens with overlapping 15m windows requires a fresh governed discovery scan — not run without separate explicit approval. **Rollback:** `git reset --hard be59f4a`.
+
+## CRYPTO-HORIZON-ORCHESTRATOR-CANARY-004 — Gate B preparation attempt (2026-07-16, ~18:11 UTC): NO COMPLIANT TWO-TOKEN PAIR
+
+Gate A (CANARY-003 FULL LIFECYCLE PASS) opened Gate B. Authorized scope executed: one zero-call preflight, one governed DexScreener-only scan, provider-free local candidate analysis, and one explicit two-token dry-run. **Outcome: `NO COMPLIANT TWO-TOKEN PAIR FROM AUTHORIZED SCAN` — nothing created, nothing armed.**
+
+**Zero-call preflight** (`crypto-scan-once --provider-plan --allow-provider dexscreener --deny-provider goplus --deny-provider solana-tracker --deny-provider birdeye`): `external_calls=0`; `dexscreener will_call`; **birdeye/goplus/solana-tracker DENIED**; verdict READY. Counters/rows unchanged.
+
+**One governed scan #3078** (`--limit 40 --allow dexscreener --deny goplus/solana-tracker/birdeye --yes`, UTC 18:11:15): `tokens=17 pairs=40 ticks=40 signals=0`. Ledger — `dexscreener started=19/succeeded=19` (cap 42); **`solana-tracker started=0` (blocked_policy=15)**, **`birdeye started=0`**, **`goplus started=0` (blocked_policy=17)**. No paid provider, no denied-provider request actually issued. One scan only. Global SolanaTracker counter drift over the window (+15) is a concurrent background MarketOps autopilot run (`PER_RUN_LOOKUP_LIMIT=15`), **not** the scan — the scan's own ledger is `started=0`.
+
+**Provider-free candidate analysis** (read-only DB): 30 most-recent complete-anchor births inspected. Freshest complete birth is cohort 6's own 22M (age ~816 min); all discovered profile/boost-feed tokens are 13+ h old with 15m windows long closed. **Zero** pairs have overlapping *still-valid* 15m windows.
+
+**Explicit-selection dry-run** (two freshest complete non-cohort births, `--require-complete --require-shared-horizon-windows --dry-run`):
+
+```
+--token DzxUkQfyer2cziUMyUeN2AJpzUsyJzif7uUv2b7rpump  (BADBULL, birth 04:02:23)
+--token A8GcjepZyqBZuvHoJdJeFrkxABKLeKuqVtE9qJQspump  (GLOBE,   birth 03:51:10)
+```
+
+Result: `status=rejected  mode=explicit_token  external_calls=0  persisted=false`. Both tokens `valid=false reason=horizon_infeasible` (15m/1h/6h `overdue`, only 24h still open) → `no_shared_horizon_windows`, `shared_pass_eligible=false`, `members_selected=0`. The completeness+feasibility gate correctly refuses to build a cohort whose 15m shared-pass window has already closed.
+
+**Isolation/purity:** cohorts still **1–6 (none created)**; cohort 6 (1 member, 4 obs) and cohort 5 (6 obs) untouched; dry-run persisted nothing; no observation; no new/orphaned horizon units (only pre-existing c5-j1); Alembic `0027`; `.env`/flags/MarketOps unchanged; **no GoPlus/SolanaTracker/Birdeye/paid call**. CANARY-004 cohort creation and arming remain **not authorized** pending a later explicit instruction and a fresh scan that yields two 15m-feasible complete tokens.
