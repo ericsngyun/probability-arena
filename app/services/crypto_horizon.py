@@ -29,6 +29,7 @@ orders, execution, or autonomy.
 """
 
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
@@ -109,6 +110,103 @@ INACTIVE_STATUSES = frozenset({OBS_TOKEN_INACTIVE, OBS_PROVIDER_NO_PAIR})
 
 def _minutes(label: str) -> int:
     return dict(HORIZONS)[label]
+
+
+# --- CRYPTO-HORIZON-COHORT-SELECT-002: explicit-token selection helpers -------
+# A canonical Solana token id is a base58 string (no 0/O/I/l), 32-44 chars.
+# Exact-match only — never symbols, display names, or partial addresses.
+_CANONICAL_TOKEN_RE = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$")
+
+
+def _valid_token_id(token: str) -> bool:
+    return bool(isinstance(token, str) and _CANONICAL_TOKEN_RE.match(token))
+
+
+def _completeness_reason(birth, min_liquidity: float) -> str | None:
+    """None when the birth is a COMPLETE lifecycle anchor; else the rejection
+    reason. Mirrors the --require-complete filter, per token."""
+    if not birth.first_pair_address:
+        return "invalid_pair"
+    if birth.initial_price_usd is None:
+        return "missing_initial_price"
+    if birth.initial_liquidity_usd is None:
+        return "liquidity_or_initial_state_missing"
+    if birth.initial_liquidity_usd <= 0:
+        return "null_initial_liquidity"
+    if birth.initial_liquidity_usd <= min_liquidity:
+        return "below_min_liquidity"
+    return None
+
+
+def _horizon_windows(anchor: datetime, now: datetime) -> list[dict]:
+    """Per-horizon nominal target + planner window + state for one birth anchor
+    (window = [target - m*tol, target + m*tol], tol = HORIZON_TOLERANCE). A
+    horizon is feasible while its window has not fully closed (window_end >= now)."""
+    rows = []
+    for label, minutes in HORIZONS:
+        target = anchor + timedelta(minutes=minutes)
+        tol = timedelta(minutes=minutes * HORIZON_TOLERANCE)
+        start, end = target - tol, target + tol
+        if now < start:
+            state = "not_due"
+        elif now <= end:
+            state = "due_now"
+        else:
+            state = "overdue"
+        rows.append({
+            "horizon": label,
+            "nominal_target_utc": target.isoformat(),
+            "window_start_utc": start.isoformat(),
+            "window_close_utc": end.isoformat(),
+            "planner_state": state,
+            "feasible": end >= now,
+            "_start": start, "_end": end,
+        })
+    return rows
+
+
+def _shared_windows(per_token_windows: list[list[dict]], now: datetime) -> dict:
+    """Intersection of each horizon's planner windows across all selected tokens,
+    plus 15m shared-pass arm feasibility (a single grace-adjusted due-now job can
+    cover every member iff their 15m windows share an interval at least the
+    activation grace wide). Zero external calls; pure interval arithmetic."""
+    from app.services.crypto_horizon_orchestrator import ACTIVATION_GRACE
+
+    per_horizon = {}
+    for idx, (label, _m) in enumerate(HORIZONS):
+        starts = [tw[idx]["_start"] for tw in per_token_windows]
+        ends = [tw[idx]["_end"] for tw in per_token_windows]
+        lo, hi = (max(starts), min(ends)) if starts else (None, None)
+        nonempty = bool(starts) and lo <= hi
+        per_horizon[label] = {
+            "intersection_start_utc": lo.isoformat() if lo else None,
+            "intersection_close_utc": hi.isoformat() if hi else None,
+            "nonempty": nonempty,
+            "_lo": lo, "_hi": hi,
+        }
+    fifteen = per_horizon["15m"]
+    grace = ACTIVATION_GRACE
+    # earliest safe arm = when the last member's 15m opens; latest = last moment
+    # the grace-adjusted execution still lands before the first member's 15m close.
+    earliest = fifteen["_lo"]
+    latest = (fifteen["_hi"] - grace) if fifteen["_hi"] else None
+    can_simul = bool(fifteen["nonempty"])
+    grace_fits = bool(fifteen["nonempty"] and earliest + grace <= fifteen["_hi"])
+    arm_now_ok = bool(can_simul and earliest <= now <= latest) if latest else False
+    shared_pass_eligible = bool(grace_fits and all(
+        per_horizon[label]["nonempty"] for label, _m in HORIZONS
+    ))
+    return {
+        "per_horizon": {k: {kk: vv for kk, vv in v.items() if not kk.startswith("_")}
+                        for k, v in per_horizon.items()},
+        "earliest_safe_arm_utc": earliest.isoformat() if earliest else None,
+        "latest_safe_arm_utc": latest.isoformat() if latest else None,
+        "fifteen_min_windows_can_enter_due_now_simultaneously": can_simul,
+        "activation_grace_seconds": grace.total_seconds(),
+        "activation_grace_fits_shared_window": grace_fits,
+        "arm_now_within_shared_window": arm_now_ok,
+        "shared_pass_eligible": shared_pass_eligible,
+    }
 
 
 # --- pure planning --------------------------------------------------------------
@@ -389,6 +487,8 @@ class CryptoHorizonService:
         self, session: Session, limit: int = COHORT_DEFAULT_LIMIT,
         hours: int = 48, dry_run: bool = False,
         require_complete: bool = False, min_liquidity: float = 0.0,
+        tokens: list[str] | None = None, confirm: bool = False,
+        require_shared_horizon_windows: bool = False,
     ) -> dict:
         """Freeze a fixed cohort of the most recently born tokens (recent-first,
         so their long horizons are still ahead and catchable). Read-only
@@ -407,7 +507,18 @@ class CryptoHorizonService:
         BEFORE the recent-first limit — so a canary cohort can deterministically
         exclude null-liquidity fresh tokens that otherwise sort first. Still a
         read-only DB selection: no external call, no new provider, no migration.
+
+        CRYPTO-HORIZON-COHORT-SELECT-002: when `tokens` is provided, switch to
+        EXPLICIT-token mode — freeze exactly those already-persisted canonical
+        token ids (input order), with no freshest-first fallback and no
+        substitution. Still zero external calls.
         """
+        if tokens:
+            return self._create_cohort_explicit(
+                session, tokens, dry_run=dry_run, confirm=confirm,
+                require_complete=require_complete, min_liquidity=min_liquidity,
+                require_shared_horizon_windows=require_shared_horizon_windows,
+            )
         limit = max(1, min(limit, COHORT_MAX))
         min_liquidity = max(0.0, float(min_liquidity))
         now = _now()
@@ -498,6 +609,145 @@ class CryptoHorizonService:
                 first_evidence_at=_aware(b.first_evidence_at), added_at=now,
             ))
         session.commit()
+        summary["cohort_id"] = cohort.id
+        return summary
+
+    def _create_cohort_explicit(
+        self, session: Session, tokens: list[str], *, dry_run: bool, confirm: bool,
+        require_complete: bool, min_liquidity: float,
+        require_shared_horizon_windows: bool,
+    ) -> dict:
+        """CRYPTO-HORIZON-COHORT-SELECT-002: freeze EXACTLY the requested
+        canonical token ids (input order) with per-token identity / completeness
+        / horizon-feasibility validation and shared-pass suitability. Atomic:
+        any rejection persists nothing. No freshest-first fallback, no
+        substitution, zero external calls. `--confirm` (not dry-run) persists."""
+        now = _now()
+        min_liquidity = max(0.0, float(min_liquidity))
+        seen: set = set()
+        ordered: list[str] = []
+        token_reports: list[dict] = []
+        rejections: list[dict] = []
+
+        for raw in tokens:
+            if raw in seen:
+                token_reports.append({"token": raw, "valid": False, "reason": "duplicate"})
+                rejections.append({"token": raw, "reason": "duplicate"})
+                continue
+            seen.add(raw)
+            ordered.append(raw)
+
+        valid_members: list[tuple] = []
+        for token in ordered:
+            rep: dict = {"token": token}
+            if not _valid_token_id(token):
+                rep.update(valid=False, reason="malformed_identifier")
+                token_reports.append(rep)
+                rejections.append({"token": token, "reason": "malformed_identifier"})
+                continue
+            birth = session.execute(
+                select(CryptoTokenBirthEvent)
+                .where(
+                    CryptoTokenBirthEvent.chain == self.chain,
+                    CryptoTokenBirthEvent.token_address == token,  # EXACT, never LIKE
+                )
+                .order_by(CryptoTokenBirthEvent.id.desc())
+            ).scalars().first()
+            if birth is None:
+                rep.update(valid=False, reason="unknown_token_no_local_evidence")
+                token_reports.append(rep)
+                rejections.append({"token": token, "reason": "unknown_token_no_local_evidence"})
+                continue
+            rep["symbol"] = birth.symbol
+            anchor = _aware(birth.first_evidence_at) or _aware(birth.observed_at)
+            rep["first_evidence_at"] = anchor.isoformat() if anchor else None
+            if anchor is None:
+                rep.update(valid=False, reason="missing_first_evidence")
+                token_reports.append(rep)
+                rejections.append({"token": token, "reason": "missing_first_evidence"})
+                continue
+            if require_complete:
+                reason = _completeness_reason(birth, min_liquidity)
+                if reason:
+                    rep.update(valid=False, reason=reason,
+                               initial_liquidity_usd=birth.initial_liquidity_usd)
+                    token_reports.append(rep)
+                    rejections.append({"token": token, "reason": reason})
+                    continue
+            windows = _horizon_windows(anchor, now)
+            rep["horizons"] = [
+                {k: v for k, v in w.items() if not k.startswith("_")} for w in windows
+            ]
+            all_feasible = all(w["feasible"] for w in windows)
+            rep["all_horizons_feasible"] = all_feasible
+            if require_complete and not all_feasible:
+                rep.update(valid=False, reason="horizon_infeasible")
+                token_reports.append(rep)
+                rejections.append({"token": token, "reason": "horizon_infeasible"})
+                continue
+            rep["valid"] = True
+            valid_members.append((token, birth, windows))
+            token_reports.append(rep)
+
+        shared = _shared_windows([w for _t, _b, w in valid_members], now) if valid_members else None
+        if not ordered:
+            rejections.append({"token": None, "reason": "no_tokens_requested"})
+        if require_shared_horizon_windows and (not shared or not shared["shared_pass_eligible"]):
+            rejections.append({"token": None, "reason": "no_shared_horizon_windows"})
+
+        summary = {
+            "status": "dry_run",
+            "note": HORIZON_NOTE,
+            "external_calls": 0,
+            "persisted": False,
+            "generated_at": now.isoformat(),
+            "now_utc": now.isoformat(),
+            "mode": "explicit_token",
+            "requested_tokens": ordered,
+            "require_complete": require_complete,
+            "min_liquidity": min_liquidity if require_complete else None,
+            "require_shared_horizon_windows": require_shared_horizon_windows,
+            "token_reports": token_reports,
+            "shared_pass": shared,
+            "shared_pass_eligible": bool(shared and shared["shared_pass_eligible"]),
+            "rejections": rejections,
+            "resulting_members": [t for t, _b, _w in valid_members],
+            "members_selected": len(valid_members),
+        }
+        if rejections:
+            summary["status"] = "rejected"
+            return summary  # atomic: nothing persisted
+        if dry_run or not confirm:
+            summary["status"] = "dry_run"
+            return summary  # preview only
+
+        cohort = CryptoHorizonCohort(
+            chain=self.chain, member_limit=len(valid_members), window_hours=0,
+            note="explicit-token cohort for horizon observation",
+            provenance={
+                "source": "explicit_token_selection",
+                "tokens": ordered,
+                "order": "requested_input_order",
+                "require_complete": require_complete,
+                "min_liquidity": min_liquidity if require_complete else None,
+                "require_shared_horizon_windows": require_shared_horizon_windows,
+                "shared_pass_eligible": summary["shared_pass_eligible"],
+                "selected_at": now.isoformat(),
+            },
+            created_at=now,
+        )
+        session.add(cohort)
+        session.flush()
+        for token, birth, _w in valid_members:
+            session.add(CryptoHorizonCohortMember(
+                cohort_id=cohort.id, chain=self.chain, token_address=birth.token_address,
+                symbol=birth.symbol, birth_event_id=birth.id,
+                birth_observed_at=_aware(birth.observed_at),
+                first_evidence_at=_aware(birth.first_evidence_at), added_at=now,
+            ))
+        session.commit()
+        summary["status"] = "ok"
+        summary["persisted"] = True
         summary["cohort_id"] = cohort.id
         return summary
 

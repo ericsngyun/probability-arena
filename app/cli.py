@@ -1601,13 +1601,16 @@ async def crypto_tape_report(hours: int = 24, top: int = 5, session=None) -> int
 async def crypto_horizon_cohort_create(
     limit: int = 25, hours: int = 48, dry_run: bool = False, session=None,
     require_complete: bool = False, min_liquidity: float = 0.0,
+    tokens: list | None = None, confirm: bool = False,
+    require_shared_horizon_windows: bool = False,
 ) -> int:
     """CRYPTO-HORIZON-OBS-001: freeze a fixed research cohort of recently-born
     tokens for horizon observation. Read-only selection from persisted births;
     dry-run persists nothing; no external call. `--require-complete`
-    (CRYPTO-HORIZON-COHORT-SELECT-001) restricts to complete-lifecycle-anchor
-    births (pair + positive initial liquidity + price). Returns members
-    selected."""
+    (COHORT-SELECT-001) restricts to complete-lifecycle-anchor births. `--token`
+    (COHORT-SELECT-002) freezes EXACTLY the requested canonical token ids (no
+    freshest-first fallback; `--confirm` persists atomically). Returns members
+    selected (negative on a rejected explicit request)."""
     from app.services.crypto_horizon import CryptoHorizonService
 
     owns_session = session is None
@@ -1620,8 +1623,62 @@ async def crypto_horizon_cohort_create(
         r = CryptoHorizonService().create_cohort(
             session, limit=limit, hours=hours, dry_run=dry_run,
             require_complete=require_complete, min_liquidity=min_liquidity,
+            tokens=list(tokens) if tokens else None, confirm=confirm,
+            require_shared_horizon_windows=require_shared_horizon_windows,
         )
         print("crypto horizon cohort — observation infrastructure, never advice")
+        if r.get("mode") == "explicit_token":
+            print(
+                f"status={r['status']}  mode=explicit_token  external_calls={r['external_calls']}  "
+                f"persisted={str(r['persisted']).lower()}"
+            )
+            print(
+                f"requested_tokens={r['requested_tokens']}  "
+                f"require_complete={str(r['require_complete']).lower()}  "
+                f"require_shared_horizon_windows={str(r['require_shared_horizon_windows']).lower()}"
+            )
+            for rep in r["token_reports"]:
+                line = f"  token={rep['token']}  valid={str(rep.get('valid')).lower()}"
+                if rep.get("reason"):
+                    line += f"  reason={rep['reason']}"
+                if rep.get("symbol"):
+                    line += f"  symbol={rep['symbol']}"
+                if "all_horizons_feasible" in rep:
+                    line += f"  all_horizons_feasible={str(rep['all_horizons_feasible']).lower()}"
+                print(line)
+                for h in rep.get("horizons") or []:
+                    print(
+                        f"      {h['horizon']:<4} target={h['nominal_target_utc']} "
+                        f"window=[{h['window_start_utc']},{h['window_close_utc']}] "
+                        f"state={h['planner_state']} feasible={str(h['feasible']).lower()}"
+                    )
+            sp = r.get("shared_pass")
+            if sp:
+                print(
+                    f"shared_pass_eligible={str(r['shared_pass_eligible']).lower()}  "
+                    f"15m_can_enter_due_now_simultaneously="
+                    f"{str(sp['fifteen_min_windows_can_enter_due_now_simultaneously']).lower()}  "
+                    f"activation_grace_fits={str(sp['activation_grace_fits_shared_window']).lower()}"
+                )
+                print(
+                    f"earliest_safe_arm={sp['earliest_safe_arm_utc']}  "
+                    f"latest_safe_arm={sp['latest_safe_arm_utc']}  "
+                    f"arm_now_ok={str(sp['arm_now_within_shared_window']).lower()}"
+                )
+                for label, iv in sp["per_horizon"].items():
+                    print(
+                        f"    shared {label:<4} intersection="
+                        f"[{iv['intersection_start_utc']},{iv['intersection_close_utc']}] "
+                        f"nonempty={str(iv['nonempty']).lower()}"
+                    )
+            for rej in r.get("rejections") or []:
+                print(f"  REJECT token={rej['token']} reason={rej['reason']}")
+            print(
+                f"resulting_members={r['resulting_members']}  members_selected={r['members_selected']}"
+                + (f"  cohort_id={r['cohort_id']}" if r.get("cohort_id") else "")
+            )
+            return r["members_selected"] if r["status"] in {"ok", "dry_run"} else -1
+        # freshest-first mode (unchanged)
         print(f"status={r['status']}  external_calls={r['external_calls']}")
         print(
             f"generated_at={r.get('generated_at')}  now_utc={r.get('now_utc')}"
@@ -5550,6 +5607,20 @@ def build_parser() -> argparse.ArgumentParser:
         "--min-liquidity", type=float, default=0.0,
         help="minimum initial liquidity (USD) when --require-complete is set",
     )
+    hcc_parser.add_argument(
+        "--token", action="append", metavar="CANONICAL_TOKEN_ID", default=[],
+        help="COHORT-SELECT-002: freeze EXACTLY these canonical token id(s) "
+             "(repeatable; explicit mode — no freshest-first fallback)",
+    )
+    hcc_parser.add_argument(
+        "--confirm", action="store_true",
+        help="explicit mode: atomically persist the exact requested cohort",
+    )
+    hcc_parser.add_argument(
+        "--require-shared-horizon-windows", action="store_true",
+        help="explicit mode: require a nonempty shared valid window per horizon "
+             "(shared-pass canary); reject otherwise",
+    )
     hobs_parser = subparsers.add_parser(
         "crypto-horizon-observe-once",
         help="One manual bounded observation pass over due horizons "
@@ -6139,6 +6210,8 @@ def main(argv: list[str] | None = None) -> int:
                 limit=args.limit, hours=args.hours, dry_run=args.dry_run,
                 require_complete=args.require_complete,
                 min_liquidity=args.min_liquidity,
+                tokens=args.token, confirm=args.confirm,
+                require_shared_horizon_windows=args.require_shared_horizon_windows,
             )
         )
         return 0 if n >= 0 else 1
