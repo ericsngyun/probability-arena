@@ -2229,3 +2229,69 @@ No live discovery scan · no provider call (DexScreener/GoPlus/SolanaTracker/Bir
 **Operational conclusion:** CRYPTO-DISCOVERY-PROVIDER-GATE-001 is deployed dark on EVO-X2. Crypto discovery is now fail-closed: a bare `crypto-scan-once` prints the provider plan and refuses to execute, and SolanaTracker (and Birdeye) require explicit per-provider confirmation. No live provider call, scan, cohort, or systemd action occurred during deployment.
 
 **Standing gate update:** with GATE-001 implemented, reviewed, and deployed dark, the prior hard gate (no new discovery scan / fresh cohort) can be lifted **only by explicit human approval** — and any future discovery must go through the governed `--provider-plan` → confirm flow. **Rollback:** `git reset --hard 9ae7f80` — additive, no schema change.
+
+## CRYPTO-HORIZON-ORCHESTRATOR-CANARY-002 — governed discovery + cohort preparation (2026-07-16, ~00:48–00:56 UTC)
+
+First bounded live-orchestration canary under human authorization. Baseline synchronized at `bf1564f`; Alembic `0027`; cohort 4 unarmed; no horizon units; MarketOps healthy; unit hash `7cc27b41508522a19f7af9571696a3d8`; ST budget `120/120/30203`.
+
+**Provider governance (Phases 2–4).** Intended policy: allow DexScreener only; deny SolanaTracker, Birdeye, and GoPlus. GoPlus denied after inspection proved the horizon cohort's hard lifecycle fields (`first_evidence_at`, initial pair, initial liquidity, price) are all DexScreener-sourced — GoPlus supplies only risk flags/`creator_address`, which are not lifecycle-completeness requirements.
+
+`crypto-scan-once --allow-provider dexscreener --deny-provider solana-tracker --deny-provider birdeye --deny-provider goplus --provider-plan` → `external_calls=0`, verdict READY; `dexscreener` will_call (cap 102 = 2 list calls + up to 100 per-token pairs), `goplus`/`solana-tracker`/`birdeye` **DENIED**. Counters identical before/after (ST `120/120/30203`; watcher_runs `1696`; births `451`).
+
+Executed one governed scan **#2899** (UTC 2026-07-16 00:48:01 / PDT 2026-07-15 17:48:01), `--yes`, DexScreener-only:
+
+| provider | started | succeeded | blocked_policy | skipped_cap |
+|---|---|---|---|---|
+| dexscreener | 32 | 32 | 0 | 0 |
+| **solana-tracker** | **0** | **0** | 15 | 15 |
+| **birdeye** | **0** | **0** | 0 | 0 |
+| **goplus** | **0** | **0** | 30 | 0 |
+
+No denied provider started a request; ST budget unchanged (`135` → `135`, only background drift between commands). One scan only. *Operational finding (benign): the risk engine's per-run ST counter increments even on Layer-A-blocked tokens, so ST accounting splits 15 blocked_policy + 15 skipped_cap; `started=0` and budget unchanged — no request ever issued.*
+
+**Tape + cohort (Phases 5–6).** `crypto-tape-run-once` → `external_calls=0`, `tape_run_id=37`, ST unchanged. Fresh candidates (zero-call preview):
+
+| token | id | age (min) | initial liq | 15m feasible | decision |
+|---|---|---|---|---|---|
+| **MEMESCOPE** | 452 | 0.8 | **3,426.55** | yes | INCLUDED (complete) |
+| **SLOPPER** | 453 | 0.8 | None | yes | INCLUDED via tool ordering (see note) |
+| AICIV / One | 454/455 | 5.8 / 11.8 | None | yes | not selected (null liq) |
+
+**Manual decision:** MEMESCOPE was the only fresh token with complete initial liquidity, but it is **not CLI-isolatable** — SLOPPER shares its exact birth (00:48:02.704733) and sorts first by `id DESC`, so `--limit 1`→SLOPPER, `--limit 2`→{SLOPPER, MEMESCOPE}; only one scan authorized. Selected **`--limit 2`** to capture MEMESCOPE and, via the identical birth, exercise live dedup (all four windows coincide → one shared job per horizon). SLOPPER's *birth-snapshot* liquidity is null (a common fresh-pumpfun gap; it has a valid pair + active volume) — documented measurement caveat, not an orchestration defect; its observations record `no_liquidity_state` honestly.
+
+Cohort **5** created (`crypto-horizon-cohort-create --hours 1 --limit 2`) at UTC 00:54:53 / PDT 17:54:53, `external_calls=0`, ST unchanged; members SLOPPER + MEMESCOPE (birth 00:48:02.704733); observations at creation `0`. Target horizons: 15m 01:03:02.7, 1h 01:48:02.7, 6h 06:48:02.7, 24h 00:48:02.7 (+1d).
+
+**Dry-run + arm (Phases 7–9).** `crypto-horizon-arm-cohort --cohort-id 5 --dry-run` → `size=2 expected_jobs=4 external_calls=0 persisted=false installed=false`; **each of 4 jobs covers both tokens** (dedup); all timestamps independently verified; ST + unit hash unchanged. `systemd-analyze verify` on 8 rendered units → exit 0 (temp dir, no install). Armed with `--confirm` at UTC 00:56:31 → `status=armed`, 4 timers installed once each, ST unchanged, **unrelated PA units hash = baseline** (no unrelated unit touched).
+
+## CRYPTO-HORIZON-ORCHESTRATOR-CANARY-002 — live canary FAILED (2026-07-16)
+
+### Verdict: FAIL
+
+**CRYPTO-HORIZON-ORCHESTRATOR-CANARY-002 failed because the eligible 15m due-now timer was installed with an already-past absolute OnCalendar value and silently elapsed without triggering its service. No manual execution or backfill occurred.**
+
+### Root cause
+
+`build_arm_plan` sets a due-now job's `execute_at = suggested_action_at = max(now, window_start)` = **arm-time now**. `SystemdUserManager.render_timer` emits `OnCalendar=<that timestamp>` with `Persistent=true`. Because the window was already open, that absolute time is in the past the instant `systemctl --user enable --now` runs; the Persistent stamp is written at enable (after that instant), so systemd marks the timer **`active (elapsed)` and never triggers the one-shot service** — a silent, unlogged miss.
+
+### Evidence (persisted systemd / DB / report artifacts — source of truth)
+
+| horizon | scheduled (UTC) | timer `LastTriggerUSec` | timer `NextElapseUSecRealtime` | service | observation | exit | reports | status |
+|---|---|---|---|---|---|---|---|---|
+| **15m (j1)** | 00:56:31.956 (arm-time; past) | **empty (never triggered)** | **empty (never)** | `inactive`, never ran | **none** | — | none | **MISSED (defect)** |
+| **1h (j2)** | 01:18:02.704 (future) | fired (journal: Started 01:18:04) | n/a (timer self-removed) | ran, `exit=0` | **2 in one pass** (MEMESCOPE `observed` tick_id=222743 liq=2974.05; SLOPPER `no_liquidity_state`) | 0 | 4 saved | **completed** |
+| 6h (j3) | 03:48:02.704 (future) | pending | future | — | — | — | — | pending (host-owned) |
+| 24h (j4) | 12:48:02.704 (future) | pending | future | — | — | — | — | pending (host-owned) |
+
+- **Deduplication (future window): confirmed** — the single 1h job observed **both** cohort members in one shared pass (`external_calls=2`, one DexScreener fetch per token, `observations_recorded=2`).
+- **Provider controls: held** — the observe lane is DexScreener-only (2 free calls); zero SolanaTracker/GoPlus/Birdeye; ST budget unchanged by the canary.
+- **Reports: all four saved** after the successful 1h observation (`observation-report.txt`, `pair-selection-report.txt`, `outcome-reconciliation-report.txt`, `schedule-report.txt`).
+- **Status handling: accurate** for the future window (`completed`, exit 0, timer self-removed). For the due-now window it is **misleading**: j1 shows `status=pending` with a stale past `execute_at`, and `orchestrator-report next_execution_time` is stuck at 00:56:31 — a downstream symptom of the never-triggered timer.
+- **Isolation + cleanup:** unrelated Probability-Arena units unchanged (hash `7cc27b41…` = baseline); j2 self-removed on completion; j1's units remain (worker never ran to clean them).
+
+### Canary criteria (Phase 11)
+
+FAIL: the eligible 15m horizon did **not** execute once. Passing signals (future-window execution, dedup, four reports, provider controls, no denied-provider call, no backfill, unrelated units untouched) held for the 1h window and isolate the defect to **due-now** scheduling. No 15m backfill or manual trigger was performed. The already-installed future 6h/24h jobs are left to execute naturally (host-owned).
+
+### Remediation
+
+Tracked as **CRYPTO-HORIZON-ORCHESTRATOR-DUE-NOW-001** (defect plan + fix below): a due-now job must never receive an `OnCalendar` at or before unit-enable time (activation grace), and arming must verify each installed timer has a future `NextElapseUSecRealtime` or evidence it already triggered — a merely `active (elapsed)` timer with empty `LastTriggerUSec` is an arming failure that cleans up only that cohort's units.
