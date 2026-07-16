@@ -150,6 +150,9 @@ class MarketOpsConfig:
     # MVP-005A: edge-precheck stage is DOUBLE-gated (this AND
     # ENABLE_EDGE_PRECHECK); both default false. Measurement only.
     include_edge_precheck: bool = False
+    # CRYPTO-HORIZON-CANDIDATE-READINESS-001: isolated report-only post-crypto hook.
+    # Default off; when off the hook is a complete no-op.
+    include_candidate_readiness: bool = False
     fail_fast: bool = False
 
     @classmethod
@@ -173,6 +176,7 @@ class MarketOpsConfig:
             include_crypto=s.marketops_include_crypto,
             include_probability_markets=s.marketops_include_probability_markets,
             include_edge_precheck=s.marketops_include_edge_precheck,
+            include_candidate_readiness=s.marketops_include_candidate_readiness,
             fail_fast=s.marketops_fail_fast,
         )
 
@@ -711,6 +715,16 @@ class MarketOpsAutopilotService:
             else:
                 summary["stages"]["crypto_scan"] = "skipped"
 
+            # 4b. CRYPTO-HORIZON-CANDIDATE-READINESS-001 — isolated, non-blocking,
+            # report-only measurement AFTER crypto persistence. It reads persisted
+            # local data only (zero provider calls, no second scan), creates no
+            # cohort/observation/unit, and CANNOT fail the cycle: any exception is
+            # caught here (never re-raised, even under fail_fast) and recorded, so
+            # it can never change stage eligibility, provider behavior, the cycle
+            # result, or the exit code. Default-off; a complete no-op when off.
+            if cfg.include_candidate_readiness and cfg.include_crypto:
+                self._evaluate_candidate_readiness(session, run, summary)
+
             # 5. Outcome sync + scoring (safe: read-only GETs + local scoring)
             async def sync():
                 synced = await self.outcome_service.sync_known_markets(
@@ -832,6 +846,34 @@ class MarketOpsAutopilotService:
             run.duration_ms = max(0, int((run.finished_at - started_at).total_seconds() * 1000))
             session.commit()
             return run
+
+    def _evaluate_candidate_readiness(self, session: Session, run, summary: dict) -> None:
+        """Isolated report-only readiness measurement. NEVER raises: any failure is
+        recorded in the summary and swallowed so the MarketOps cycle is unaffected.
+        Appends one append-only audit record per cycle. Zero provider calls; no
+        cohort/observation/unit; cannot change the cycle result."""
+        try:
+            from app.services.crypto_horizon_readiness import (
+                append_readiness_record,
+                evaluate_readiness,
+                readiness_audit_record,
+            )
+
+            readiness = evaluate_readiness(session, marketops_cycle_id=run.id)
+            summary["candidate_readiness"] = {
+                "state": readiness["state"],
+                "overlapping_pairs": readiness["counts"]["overlapping_pairs"],
+                "usable_pairs": readiness["counts"]["usable_pairs"],
+                "complete_candidates": readiness["counts"]["complete_candidates"],
+                "candidate_pair": (
+                    [readiness["top_pair"]["token_a"], readiness["top_pair"]["token_b"]]
+                    if readiness.get("top_pair") else None),
+                "external_calls": 0,
+            }
+            append_readiness_record(readiness_audit_record(readiness, run_id=run.id))
+        except Exception as exc:  # never fail the cycle
+            logger.warning("candidate-readiness hook failed (isolated): %s", exc)
+            summary["candidate_readiness_error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
 
     def _health_alerts(self, session: Session, now: datetime) -> int:
         """Deterministic health checks -> local alerts. Returns alerts created."""

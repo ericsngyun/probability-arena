@@ -2146,6 +2146,136 @@ async def crypto_horizon_shared_candidate_feasibility_report(
     return r
 
 
+async def crypto_horizon_candidate_readiness_report(
+    at: str | None = None, limit: int = 5, fmt: str = "text",
+    require_complete: bool = True, minimum_arm_margin_seconds: float | None = None,
+    session=None,
+) -> dict:
+    """CRYPTO-HORIZON-CANDIDATE-READINESS-001 — is there, right now, an exact
+    two-token shared-pass candidate set in local persisted data? Zero calls, zero
+    writes; manual review required, nothing armed. Historical feasibility is NOT
+    current readiness — this reports the current state only."""
+    import json as _json
+
+    from app.services.crypto_horizon_readiness import (
+        OPERATOR_PREP_MARGIN_SECONDS,
+        evaluate_readiness,
+        proposed_commands,
+    )
+
+    now = None
+    if at is not None:
+        from datetime import datetime as _dt
+
+        now = _dt.fromisoformat(at.replace("Z", "+00:00"))
+    margin = OPERATOR_PREP_MARGIN_SECONDS if minimum_arm_margin_seconds is None \
+        else max(0.0, minimum_arm_margin_seconds)
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        r = evaluate_readiness(
+            session, now=now, min_arm_margin_seconds=margin,
+            require_complete=require_complete, limit=max(1, limit),
+        )
+    finally:
+        if owns_session:
+            session.close()
+
+    if fmt == "json":
+        print(_json.dumps(r, indent=2, default=str))
+        return r
+
+    c = r["counts"]
+    print("crypto horizon candidate readiness — operational canary readiness, manual review required")
+    print(f"status={r['state']}")
+    print(f"external_calls={r['external_calls']} persisted={str(r['persisted']).lower()} "
+          f"writes={r['writes']} manual_action_required={str(r['manual_action_required']).lower()} "
+          f"automatic_cohort_creation={str(r['automatic_cohort_creation']).lower()} "
+          f"automatic_arming={str(r['automatic_arming']).lower()}")
+    print(f"evaluated_at UTC={r['evaluated_at_utc']}  LA={r['evaluated_at_los_angeles']}")
+    print(f"db_coverage UTC={r['database_coverage_utc']} persist_max={r['database_persist_max_utc']} "
+          f"latest_discovery_run_id={r['latest_discovery_run_id']}")
+    print(f"grace={r['activation_grace_seconds']}s min_arm_margin={r['minimum_arm_margin_seconds']}s "
+          f"require_complete={str(r['require_complete']).lower()}")
+    print(f"counts: candidates={c['candidates']} complete={c['complete_candidates']} "
+          f"feasible_15m={c['feasible_15m_candidates']} all_horizons_feasible="
+          f"{c['all_horizons_feasible_candidates']} overlapping_pairs={c['overlapping_pairs']} "
+          f"usable_pairs={c['usable_pairs']} rejected={c['rejected']}")
+    print(f"pair ordering: {r['pair_ordering']}")
+    top = r["top_pair"]
+    if top is None:
+        print("no candidate pair to detail at this evaluation time (historical feasibility != current readiness)")
+    else:
+        print("highest-priority pair:")
+        print(f"  candidate_pair={top['token_a']},{top['token_b']}  "
+              f"symbols={top['symbol_a']},{top['symbol_b']}  state={top['state']}")
+        print(f"  shared_window_open={top['shared_window_open_utc']} "
+              f"close={top['shared_window_close_utc']}")
+        print(f"  grace_adjusted_earliest_exec={top['activation_grace_adjusted_earliest_exec_utc']}")
+        print(f"  earliest_safe_preparation={top['earliest_safe_preparation_utc']} "
+              f"latest_safe_cohort_creation={top['latest_safe_cohort_creation_utc']} "
+              f"latest_safe_arming={top['latest_safe_arming_utc']}")
+        print(f"  remaining_safe_slack_seconds={top['remaining_safe_slack_seconds']} "
+              f"shared_pass_eligible={str(top['shared_pass_eligible']).lower()} "
+              f"not_ready_reason={top['not_ready_reason']}")
+        for side in ("token_a_detail", "token_b_detail"):
+            d = top[side]
+            print(f"  {d['token']} ({d['symbol']}) fe={d['first_evidence_at']} "
+                  f"persisted={d['persisted_at']} src={d['launch_source']} venue={d['pair_venue']} "
+                  f"liq={d['initial_liquidity_usd']} price={d['initial_price_usd']} "
+                  f"completeness={d['completeness']} planner_state={d['planner_state']} "
+                  f"15m_window=[{d['window_15m_start']},{d['window_15m_close']}]")
+    if r["rejected"]:
+        print(f"rejected (fail-closed, sample): {r['rejected']}")
+    cmds = proposed_commands(r)
+    if cmds:
+        print("proposed manual commands (operator review only — NOT executed):")
+        for line in cmds:
+            print(f"  {line}")
+    return r
+
+
+async def crypto_horizon_candidate_readiness_history_report(
+    limit: int = 20, fmt: str = "text",
+) -> dict:
+    """Bounded aggregate over accumulated readiness evaluations (append-only audit).
+    Read-only; zero calls, zero writes. Determines whether the current discovery
+    cadence catches usable moments. No market-performance output."""
+    import json as _json
+
+    from app.services.crypto_horizon_readiness import (
+        build_readiness_history_report,
+        load_readiness_records,
+    )
+
+    records = load_readiness_records()
+    r = build_readiness_history_report(records, limit=max(1, limit))
+    if fmt == "json":
+        print(_json.dumps(r, indent=2, default=str))
+        return r
+    print("crypto horizon candidate readiness history — measurement only, never advice")
+    print(f"external_calls={r['external_calls']} evaluations={r['evaluations']}")
+    print(f"coverage UTC: {r['history_coverage_utc']['first']} .. {r['history_coverage_utc']['last']}")
+    print(f"median_cycle_gap_seconds={r['median_cycle_gap_seconds']}")
+    print(f"count_by_state={r['count_by_state']}")
+    print(f"distinct_ready_moments={r['distinct_ready_moments']} "
+          f"distinct_candidate_pairs={r['distinct_candidate_pairs']}")
+    print(f"ready_moments_by_day={r['ready_moments_by_day']}")
+    print(f"max_arm_slack_seconds={r['max_arm_slack_seconds']} "
+          f"median_arm_slack_seconds={r['median_arm_slack_seconds']}")
+    print(f"estimated_single_cycle_moments={r['estimated_single_cycle_moments']}")
+    print(f"  {r['missed_between_cycle_estimate_note']}")
+    for m in r["moments"]:
+        print(f"  moment pair={m['pair']} [{m['start_utc']}..{m['end_utc']}] "
+              f"duration={m['duration_seconds']}s cycles={m['cycles']} max_slack={m['max_slack_seconds']}s")
+    return r
+
+
 async def crypto_horizon_observation_report(
     cohort_id: int, top: int = 5, shadow: bool = False, session=None,
 ) -> int:
@@ -5780,6 +5910,28 @@ def build_parser() -> argparse.ArgumentParser:
                               help="operator/install/verify margin beyond the 45s activation grace")
     hfeas_parser.add_argument("--format", choices=("text", "json"), default="text",
                               dest="fmt")
+    hready_parser = subparsers.add_parser(
+        "crypto-horizon-candidate-readiness-report",
+        help="Current shared-pass candidate readiness from local data "
+             "(CRYPTO-HORIZON-CANDIDATE-READINESS-001; zero calls, no writes)",
+    )
+    hready_parser.add_argument("--at", type=str, default=None,
+                               help="evaluate at this ISO UTC instant (default: now)")
+    hready_parser.add_argument("--hours", type=int, default=None,
+                               help="reserved; readiness is evaluated at a single instant")
+    hready_parser.add_argument("--limit", type=int, default=5)
+    hready_parser.add_argument("--require-complete", action="store_true", default=True,
+                               help="always applied to the live verdict (cannot be relaxed)")
+    hready_parser.add_argument("--minimum-arm-margin-seconds", type=float, default=None,
+                               help="operator margin beyond the 45s grace (default 180s)")
+    hready_parser.add_argument("--format", choices=("text", "json"), default="text", dest="fmt")
+    hreadyhist_parser = subparsers.add_parser(
+        "crypto-horizon-candidate-readiness-history-report",
+        help="Aggregate accumulated readiness evaluations "
+             "(CRYPTO-HORIZON-CANDIDATE-READINESS-001; read-only)",
+    )
+    hreadyhist_parser.add_argument("--limit", type=int, default=20)
+    hreadyhist_parser.add_argument("--format", choices=("text", "json"), default="text", dest="fmt")
     hrep_parser = subparsers.add_parser(
         "crypto-horizon-observation-report",
         help="Horizon-observation coverage report + success gates "
@@ -6362,6 +6514,22 @@ def main(argv: list[str] | None = None) -> int:
             crypto_horizon_shared_candidate_feasibility_report(
                 hours=args.hours, days=args.days, limit=args.limit,
                 fmt=args.fmt, arm_margin_seconds=args.arm_margin_seconds,
+            )
+        )
+        return 0
+    if args.command == "crypto-horizon-candidate-readiness-report":
+        asyncio.run(
+            crypto_horizon_candidate_readiness_report(
+                at=args.at, limit=args.limit, fmt=args.fmt,
+                require_complete=args.require_complete,
+                minimum_arm_margin_seconds=args.minimum_arm_margin_seconds,
+            )
+        )
+        return 0
+    if args.command == "crypto-horizon-candidate-readiness-history-report":
+        asyncio.run(
+            crypto_horizon_candidate_readiness_history_report(
+                limit=args.limit, fmt=args.fmt,
             )
         )
         return 0

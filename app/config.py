@@ -264,6 +264,13 @@ class Settings(BaseSettings):
     # not-source-backed status records the gap honestly)
     edge_precheck_target_only_source_backed: bool = True
     marketops_include_edge_precheck: bool = False
+    # CRYPTO-HORIZON-CANDIDATE-READINESS-001: default OFF. When true, an isolated,
+    # non-blocking, report-only hook runs AFTER the crypto persistence stage and
+    # appends one shared-pass readiness evaluation per cycle to an append-only
+    # audit. It makes zero provider calls, creates no cohort/observation/unit,
+    # and can never change the MarketOps cycle result or exit code. Off = the hook
+    # is a complete no-op (deploying the code does not activate live persistence).
+    marketops_include_candidate_readiness: bool = False
 
     # Crypto Arena scout (CRYPTO-001) — read-only Solana memecoin
     # surveillance: discovery, price/liquidity ticks, deterministic risk
