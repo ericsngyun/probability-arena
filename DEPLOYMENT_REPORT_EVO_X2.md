@@ -2495,3 +2495,11 @@ Human-authorized activation of the already-dark-deployed, measurement-only readi
 - **MarketOps health:** cycle 3097 status `ok`, exit 0, all stages `ok`; behavior unchanged.
 - **Rollback:** remove/​set `MARKETOPS_INCLUDE_CANDIDATE_READINESS=false` in EVO-X2 `.env` (the hook reverts to a complete no-op next cycle; no code change, no restart). Full code rollback: `git reset --hard 2fd3126`.
 - **Observation window:** hook enabled for **14 days** owned by the existing MarketOps cadence (no new timer). **7-day interim checkpoint: 2026-07-23.** **14-day final checkpoint: 2026-07-30.** No extra scans, no cohort creation/arming, no completeness/anchor change during the window.
+
+## CRYPTO-HORIZON-CANDIDATE-READINESS-001 — 7-day interim checkpoint (recorded 2026-07-16)
+
+Recorded at 2026-07-16T20:02Z — **~6.5 min / 2 cycles after activation**, so the nominal 7-day point (2026-07-23) has not elapsed; this records the checkpoint procedure + hook-reliability verdict against a just-started window, not a 7-day dataset. Full detail: `docs/CRYPTO_HORIZON_READINESS_CHECKPOINT_7D_2026_07.md`.
+
+**Hook reliability: PASS.** 2 records (cycles 3097, 3098), both `expired`, 1 record/cycle, no duplicates, `external_calls=0`, secret-free, schema-valid, append-only. MarketOps: 2/2 cycles ok, 0 failures, 0 evaluator errors, exactly 1 crypto scan/cycle (no second scan), readiness-attributable provider calls/cohorts/observations/units = 0; cohorts 1–6 unchanged; Alembic `0027`; no auxiliary readiness timer/daemon. Catch rate n/a (0 usable moments in the ~6.5-min window — 0 fresh complete-in-window births; consistent with the ~85-min discovery lag, not a hook fault). JSONL ~370 B/record → ~86 KB/day (≈1.17 MB/14 d, ≈2.51 MB/30 d), bounded.
+
+**Interim recommendation: CONTINUE MEASUREMENT TO 14 DAYS** — reliability sound, sample trivially small, no actionable pair. Real 7-day checkpoint 2026-07-23; 14-day 2026-07-30. No cohort/arming occurred.
