@@ -388,6 +388,7 @@ class CryptoHorizonService:
     def create_cohort(
         self, session: Session, limit: int = COHORT_DEFAULT_LIMIT,
         hours: int = 48, dry_run: bool = False,
+        require_complete: bool = False, min_liquidity: float = 0.0,
     ) -> dict:
         """Freeze a fixed cohort of the most recently born tokens (recent-first,
         so their long horizons are still ahead and catchable). Read-only
@@ -398,8 +399,17 @@ class CryptoHorizonService:
         SAME timestamp the planner anchors horizons to and the preview displays.
         Filtering on `observed_at` (tape-record time) was a bug: a single tape
         run records births for tokens the scout first saw much earlier, so
-        `--hours 1` could return tokens whose true age far exceeded 60 min."""
+        `--hours 1` could return tokens whose true age far exceeded 60 min.
+
+        CRYPTO-HORIZON-COHORT-SELECT-001: `require_complete` restricts selection
+        to births with a COMPLETE initial lifecycle anchor (a first pair, a
+        positive initial liquidity above `min_liquidity`, and an initial price)
+        BEFORE the recent-first limit — so a canary cohort can deterministically
+        exclude null-liquidity fresh tokens that otherwise sort first. Still a
+        read-only DB selection: no external call, no new provider, no migration.
+        """
         limit = max(1, min(limit, COHORT_MAX))
+        min_liquidity = max(0.0, float(min_liquidity))
         now = _now()
         cutoff = now - timedelta(hours=hours)
         # anchor = the token-age timestamp used for horizons + display + filter
@@ -407,12 +417,22 @@ class CryptoHorizonService:
             CryptoTokenBirthEvent.first_evidence_at,
             CryptoTokenBirthEvent.observed_at,
         )
+        conditions = [
+            CryptoTokenBirthEvent.chain == self.chain,
+            anchor_col >= cutoff,
+        ]
+        if require_complete:
+            # complete lifecycle anchor: valid pair + positive initial liquidity
+            # + initial price (no liquidity_or_initial_state_missing).
+            conditions += [
+                CryptoTokenBirthEvent.first_pair_address.isnot(None),
+                CryptoTokenBirthEvent.initial_price_usd.isnot(None),
+                CryptoTokenBirthEvent.initial_liquidity_usd.isnot(None),
+                CryptoTokenBirthEvent.initial_liquidity_usd > min_liquidity,
+            ]
         births = list(session.execute(
             select(CryptoTokenBirthEvent)
-            .where(
-                CryptoTokenBirthEvent.chain == self.chain,
-                anchor_col >= cutoff,
-            )
+            .where(*conditions)
             .order_by(anchor_col.desc(), CryptoTokenBirthEvent.id.desc())
             .limit(limit)
         ).scalars().all())
@@ -443,6 +463,8 @@ class CryptoHorizonService:
             "window_hours": hours,
             "window_cutoff_utc": cutoff.isoformat(),
             "filter_timestamp": "coalesce(first_evidence_at, observed_at)",
+            "require_complete": require_complete,
+            "min_liquidity": min_liquidity if require_complete else None,
             "members_selected": len(births),
             "max_age_minutes": max(ages) if ages else None,
             "preview": preview,
@@ -460,6 +482,8 @@ class CryptoHorizonService:
                 "order": "coalesce(first_evidence_at, observed_at) desc",
                 "window_filter": "coalesce(first_evidence_at, observed_at) >= now - window_hours",
                 "window_hours": hours,
+                "require_complete": require_complete,
+                "min_liquidity": min_liquidity if require_complete else None,
                 "selected_at": now.isoformat(),
             },
             created_at=now,

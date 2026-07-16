@@ -1600,10 +1600,14 @@ async def crypto_tape_report(hours: int = 24, top: int = 5, session=None) -> int
 
 async def crypto_horizon_cohort_create(
     limit: int = 25, hours: int = 48, dry_run: bool = False, session=None,
+    require_complete: bool = False, min_liquidity: float = 0.0,
 ) -> int:
     """CRYPTO-HORIZON-OBS-001: freeze a fixed research cohort of recently-born
     tokens for horizon observation. Read-only selection from persisted births;
-    dry-run persists nothing; no external call. Returns members selected."""
+    dry-run persists nothing; no external call. `--require-complete`
+    (CRYPTO-HORIZON-COHORT-SELECT-001) restricts to complete-lifecycle-anchor
+    births (pair + positive initial liquidity + price). Returns members
+    selected."""
     from app.services.crypto_horizon import CryptoHorizonService
 
     owns_session = session is None
@@ -1614,7 +1618,8 @@ async def crypto_horizon_cohort_create(
         session = get_sessionmaker()()
     try:
         r = CryptoHorizonService().create_cohort(
-            session, limit=limit, hours=hours, dry_run=dry_run
+            session, limit=limit, hours=hours, dry_run=dry_run,
+            require_complete=require_complete, min_liquidity=min_liquidity,
         )
         print("crypto horizon cohort — observation infrastructure, never advice")
         print(f"status={r['status']}  external_calls={r['external_calls']}")
@@ -1623,7 +1628,9 @@ async def crypto_horizon_cohort_create(
         )
         print(
             f"window_hours={r['window_hours']}  cutoff_utc={r.get('window_cutoff_utc')}  "
-            f"filter={r.get('filter_timestamp')}"
+            f"filter={r.get('filter_timestamp')}  "
+            f"require_complete={str(r.get('require_complete')).lower()}"
+            + (f"  min_liquidity={r.get('min_liquidity')}" if r.get("require_complete") else "")
         )
         print(
             f"members_selected={r['members_selected']}  "
@@ -5534,6 +5541,15 @@ def build_parser() -> argparse.ArgumentParser:
     hcc_parser.add_argument("--hours", type=int, default=48)
     hcc_parser.add_argument("--dry-run", action="store_true",
                             help="preview selection; persist nothing")
+    hcc_parser.add_argument(
+        "--require-complete", action="store_true",
+        help="select only complete-lifecycle-anchor births (pair + positive "
+             "initial liquidity + price); excludes null-liquidity fresh tokens",
+    )
+    hcc_parser.add_argument(
+        "--min-liquidity", type=float, default=0.0,
+        help="minimum initial liquidity (USD) when --require-complete is set",
+    )
     hobs_parser = subparsers.add_parser(
         "crypto-horizon-observe-once",
         help="One manual bounded observation pass over due horizons "
@@ -6120,7 +6136,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "crypto-horizon-cohort-create":
         n = asyncio.run(
             crypto_horizon_cohort_create(
-                limit=args.limit, hours=args.hours, dry_run=args.dry_run
+                limit=args.limit, hours=args.hours, dry_run=args.dry_run,
+                require_complete=args.require_complete,
+                min_liquidity=args.min_liquidity,
             )
         )
         return 0 if n >= 0 else 1
