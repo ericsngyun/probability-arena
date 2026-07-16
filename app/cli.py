@@ -2059,6 +2059,93 @@ async def crypto_horizon_disarm_cohort(
     return result
 
 
+async def crypto_horizon_shared_candidate_feasibility_report(
+    hours: int | None = None, days: int | None = None, limit: int = 10,
+    fmt: str = "text", arm_margin_seconds: float = 0.0, session=None,
+) -> dict:
+    """CRYPTO-HORIZON-SHARED-CANDIDATE-FEASIBILITY-001 — from persisted local data
+    only, measure whether the pipeline can yield two complete tokens with
+    overlapping 15m windows early enough to arm CANARY-004. Zero calls, zero
+    writes; never advice."""
+    import json as _json
+    from datetime import timedelta
+
+    from app.services.crypto_horizon_feasibility import (
+        DEFAULT_RANGES,
+        build_feasibility_report,
+    )
+
+    ranges = list(DEFAULT_RANGES)
+    if hours is not None:
+        ranges.append((f"{hours}h", timedelta(hours=hours)))
+    if days is not None:
+        ranges.append((f"{days}d", timedelta(days=days)))
+    # de-duplicate by label, preserve order
+    seen, deduped = set(), []
+    for label, delta in ranges:
+        if label not in seen:
+            seen.add(label)
+            deduped.append((label, delta))
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        r = build_feasibility_report(
+            session, ranges=tuple(deduped), limit=max(1, limit),
+            arm_margin_seconds=max(0.0, arm_margin_seconds),
+        )
+    finally:
+        if owns_session:
+            session.close()
+
+    if fmt == "json":
+        print(_json.dumps(r, indent=2, default=str))
+        return r
+
+    cov = r["history_coverage"]
+    print("crypto horizon shared-candidate feasibility — measurement only, never advice")
+    print(f"external_calls={r['external_calls']} writes={r['writes']} "
+          f"persisted={str(r['persisted']).lower()} "
+          f"grace={r['activation_grace_seconds']}s arm_margin={r['operator_arm_margin_seconds']}s")
+    print("history coverage:")
+    print(f"  anchors={cov['total_anchors']} span_days={cov['anchor_span_days']}")
+    print(f"  first_evidence_at: {cov['first_evidence_min']} .. {cov['first_evidence_max']}")
+    print(f"  persisted (created_at): {cov['persist_min']} .. {cov['persist_max']}")
+    for rr in cov["requested_ranges"]:
+        flag = "" if rr["fully_covered_by_history"] else "  [DATA-LIMITED: exceeds history]"
+        print(f"  range {rr['range']}: cutoff={rr['cutoff_utc']}{flag}")
+    print("completeness + arming funnel (denominator = anchors in range):")
+    for label, f in r["funnels"].items():
+        print(f"  [{label}] denom={f['denominator']}")
+        for s in f["steps"]:
+            print(f"    {s['step']:34} {s['count']:5}  {s['pct_of_all']:5.1f}%")
+        print(f"    failure reasons: {f['completeness_failure_reasons']}")
+    sw = r["shared_window"]
+    print(f"shared 15m window feasibility (<= {sw['neighborhood_minutes']}min apart):")
+    print(f"  complete pairs in neighborhood:        {sw['complete_pairs_in_neighborhood']}")
+    print(f"  overlapping 15m windows:               {sw['overlapping_15m_windows']}")
+    print(f"  grace-compatible shared windows:       {sw['grace_compatible_shared_windows']}")
+    print(f"  USABLE (persisted before arm deadline):{sw['usable_pairs_persisted_in_time']}")
+    print(f"  distinct usable moments:               {sw['distinct_usable_moments']}")
+    print(f"  days with >=1 usable pair:             {sw['days_with_usable_pair']}")
+    for ex in sw["examples"]:
+        print(f"    usable: {ex['token_a']}+{ex['token_b']} shared=[{ex['shared_15m_open']},"
+              f"{ex['shared_15m_close']}] slack={ex['arm_slack_seconds']}s")
+    print("by launch_source:")
+    for s in r["by_launch_source"]:
+        print(f"  {str(s['name']):22} n={s['n']} complete={s['complete']} "
+              f"({s['complete_rate']}) null_liq={s['null_liquidity']} "
+              f"median_lag_complete={s['median_lag_seconds_complete']}s armable={s['armable_complete']}")
+    print("by pair_venue (first_dex_id):")
+    for s in r["by_pair_venue"]:
+        print(f"  {str(s['name']):14} n={s['n']} complete={s['complete']} ({s['complete_rate']})")
+    return r
+
+
 async def crypto_horizon_observation_report(
     cohort_id: int, top: int = 5, shadow: bool = False, session=None,
 ) -> int:
@@ -5678,6 +5765,21 @@ def build_parser() -> argparse.ArgumentParser:
         "--confirm", action="store_true",
         help="explicitly remove the listed cohort-specific units",
     )
+    hfeas_parser = subparsers.add_parser(
+        "crypto-horizon-shared-candidate-feasibility-report",
+        help="Local shared-candidate feasibility for CANARY-004 "
+             "(CRYPTO-HORIZON-SHARED-CANDIDATE-FEASIBILITY-001; zero calls, no writes)",
+    )
+    hfeas_parser.add_argument("--hours", type=int, default=None,
+                              help="add an N-hour funnel range")
+    hfeas_parser.add_argument("--days", type=int, default=None,
+                              help="add an N-day funnel range")
+    hfeas_parser.add_argument("--limit", type=int, default=10,
+                              help="cap examples and per-segment rows")
+    hfeas_parser.add_argument("--arm-margin-seconds", type=float, default=0.0,
+                              help="operator/install/verify margin beyond the 45s activation grace")
+    hfeas_parser.add_argument("--format", choices=("text", "json"), default="text",
+                              dest="fmt")
     hrep_parser = subparsers.add_parser(
         "crypto-horizon-observation-report",
         help="Horizon-observation coverage report + success gates "
@@ -6255,6 +6357,14 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
         return 0 if result["status"] in {"disarmed", "already_disarmed"} else 1
+    if args.command == "crypto-horizon-shared-candidate-feasibility-report":
+        asyncio.run(
+            crypto_horizon_shared_candidate_feasibility_report(
+                hours=args.hours, days=args.days, limit=args.limit,
+                fmt=args.fmt, arm_margin_seconds=args.arm_margin_seconds,
+            )
+        )
+        return 0
     if args.command == "crypto-horizon-observation-report":
         n = asyncio.run(
             crypto_horizon_observation_report(
