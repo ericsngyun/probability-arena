@@ -84,7 +84,7 @@ class FakeCryptoService:
         self.explode = explode
         self._next_id = 100
 
-    async def scan_once(self, session, limit=None):
+    async def scan_once(self, session, limit=None, *, policy=None):
         self.calls.append(limit)
         if self.explode:
             raise RuntimeError("crypto provider down")

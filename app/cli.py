@@ -1242,10 +1242,28 @@ async def research_canary_report(session=None) -> int:
             session.close()
 
 
-async def crypto_scan_once(limit: int | None = None, services=None, session=None) -> int:
-    """One read-only crypto discovery pass (Crypto Arena, CRYPTO-001).
-    Manual invocation is always allowed — ENABLE_CRYPTO_SCOUT only gates
-    loop/timer use. Returns 0 on an ok pass, 1 on error."""
+async def crypto_scan_once(
+    limit: int | None = None,
+    services=None,
+    session=None,
+    *,
+    provider_plan: bool = False,
+    allow_provider: list | None = None,
+    deny_provider: list | None = None,
+    confirm_paid_provider: list | None = None,
+    yes: bool = False,
+) -> int:
+    """One read-only crypto discovery pass (Crypto Arena, CRYPTO-001), governed
+    by an explicit provider policy (GATE-001). A bare invocation prints the
+    zero-call provider plan and does NOT execute; execution requires --yes plus
+    per-provider confirmation for any paid provider. Returns 0 on ok, 1 on error
+    or a blocked/aborted plan."""
+    from app.services.crypto_provider_policy import (
+        provider_run,
+        render_ledger,
+        render_provider_plan,
+        resolve_cli_policy,
+    )
     from app.services.crypto_scout import CryptoDiscoveryService
 
     owns_session = session is None
@@ -1256,12 +1274,33 @@ async def crypto_scan_once(limit: int | None = None, services=None, session=None
         session = get_sessionmaker()()
     try:
         service = services or CryptoDiscoveryService()
-        run = await service.scan_once(session, limit=limit)
-        print(
-            f"crypto scan #{run.id}: {run.status} tokens={run.tokens_checked} "
-            f"pairs={run.pairs_checked} ticks={run.ticks_recorded} "
-            f"signals={run.signals_created} in {run.duration_ms}ms"
+        descriptors = service.describe_providers(limit)
+        resolution = resolve_cli_policy(
+            descriptors,
+            allow=allow_provider or [],
+            deny=deny_provider or [],
+            confirm_paid=confirm_paid_provider or [],
         )
+        # Bare invocation or explicit --provider-plan: print plan, zero calls.
+        if provider_plan or not yes:
+            print(render_provider_plan("crypto-scan-once", descriptors, resolution))
+            if not yes:
+                return 0 if resolution.policy is not None else 1
+        if resolution.policy is None:
+            # Fail closed: denied mandatory provider or unconfirmed paid provider.
+            print(render_provider_plan("crypto-scan-once", descriptors, resolution))
+            print("aborted: provider plan is blocked; no provider was contacted.")
+            return 1
+        with provider_run(resolution.policy, planned_max={
+            d.provider: d.max_requests for d in descriptors if d.max_requests is not None
+        }) as ctx:
+            run = await service.scan_once(session, limit=limit, policy=resolution.policy)
+            print(
+                f"crypto scan #{run.id}: {run.status} tokens={run.tokens_checked} "
+                f"pairs={run.pairs_checked} ticks={run.ticks_recorded} "
+                f"signals={run.signals_created} in {run.duration_ms}ms"
+            )
+            print(render_ledger(ctx.ledger.snapshot()))
         return 0 if run.status == "ok" else 1
     finally:
         if owns_session:
@@ -4562,14 +4601,33 @@ async def verify_db_backup(path: str) -> int:
     return 0 if result.ok else 1
 
 
-async def crypto_risk_assess(limit: int = 50, engine=None, session=None) -> int:
+async def crypto_risk_assess(
+    limit: int = 50,
+    engine=None,
+    session=None,
+    *,
+    provider_plan: bool = False,
+    allow_provider: list | None = None,
+    deny_provider: list | None = None,
+    confirm_paid_provider: list | None = None,
+    yes: bool = False,
+) -> int:
     """Assess risk for recently-seen tokens from persisted Crypto Arena data
-    (heuristics always; providers when their flags are on). Read-only risk
-    intelligence — a score is an avoid/flag verdict, never a trade
-    recommendation. Returns the number of tokens assessed."""
+    (heuristics always; providers when their flags are on), governed by an
+    explicit provider policy (GATE-001). A bare invocation prints the zero-call
+    provider plan and does NOT execute; execution requires --yes plus
+    per-provider confirmation for any paid provider. Read-only risk intelligence
+    — a score is an avoid/flag verdict, never a trade recommendation. Returns
+    the number of tokens assessed (0 when only the plan is printed)."""
     from sqlalchemy import select
 
     from app.models import CryptoPair, CryptoPriceTick, CryptoToken
+    from app.services.crypto_provider_policy import (
+        provider_run,
+        render_ledger,
+        render_provider_plan,
+        resolve_cli_policy,
+    )
     from app.services.crypto_risk_engine import RISK_SIGNAL_TYPES, CryptoRiskEngine
     from app.services.crypto_scout import CryptoSignalService
 
@@ -4581,65 +4639,86 @@ async def crypto_risk_assess(limit: int = 50, engine=None, session=None) -> int:
         session = get_sessionmaker()()
     try:
         engine = engine or CryptoRiskEngine()
+        descriptors = engine.registry.describe(limit)
+        resolution = resolve_cli_policy(
+            descriptors,
+            allow=allow_provider or [],
+            deny=deny_provider or [],
+            confirm_paid=confirm_paid_provider or [],
+        )
+        if provider_plan or not yes:
+            print(render_provider_plan("crypto-risk-assess", descriptors, resolution))
+            if not yes:
+                return 0
+        if resolution.policy is None:
+            print(render_provider_plan("crypto-risk-assess", descriptors, resolution))
+            print("aborted: provider plan is blocked; no provider was contacted.")
+            return 0
         signal_service = CryptoSignalService()
-        tokens = session.execute(
-            select(CryptoToken)
-            .order_by(CryptoToken.last_seen_at.desc(), CryptoToken.id.desc())
-            .limit(limit)
-        ).scalars().all()
         assessed = 0
         risk_signals = 0
-        for token in tokens:
-            pairs = session.execute(
-                select(CryptoPair).where(
-                    CryptoPair.base_token_address == token.token_address
-                )
+        with provider_run(resolution.policy) as ctx:
+            tokens = session.execute(
+                select(CryptoToken)
+                .order_by(CryptoToken.last_seen_at.desc(), CryptoToken.id.desc())
+                .limit(limit)
             ).scalars().all()
-            best_pair = None
-            latest = previous = None
-            best_liquidity = -1.0
-            for pair in pairs:
-                ticks = session.execute(
-                    select(CryptoPriceTick)
-                    .where(CryptoPriceTick.pair_address == pair.pair_address)
-                    .order_by(CryptoPriceTick.observed_at.desc(), CryptoPriceTick.id.desc())
-                    .limit(2)
-                ).scalars().all()
-                if ticks and (ticks[0].liquidity_usd or 0) > best_liquidity:
-                    best_liquidity = ticks[0].liquidity_usd or 0
-                    best_pair = pair
-                    latest = ticks[0]
-                    previous = ticks[1] if len(ticks) > 1 else None
-            evaluation = await engine.evaluate(
-                session,
-                token=token,
-                pair=best_pair,
-                tick=latest,
-                previous=previous,
-                pair_count=len(pairs),
-            )
-            assessed += 1
-            # Risk-type signals only (market detectors belong to scans)
-            if best_pair is not None and latest is not None:
-                from datetime import datetime, timezone
-
-                now = datetime.now(timezone.utc)
-                detected = [
-                    signal
-                    for signal in signal_service.detect(
-                        best_pair, previous, latest, evaluation.as_signal_view(), now
+            for token in tokens:
+                pairs = session.execute(
+                    select(CryptoPair).where(
+                        CryptoPair.base_token_address == token.token_address
                     )
-                    if signal.signal_type in RISK_SIGNAL_TYPES
-                ]
-                risk_signals += signal_service.persist_deduped(session, detected, now)
+                ).scalars().all()
+                best_pair = None
+                latest = previous = None
+                best_liquidity = -1.0
+                for pair in pairs:
+                    ticks = session.execute(
+                        select(CryptoPriceTick)
+                        .where(CryptoPriceTick.pair_address == pair.pair_address)
+                        .order_by(
+                            CryptoPriceTick.observed_at.desc(), CryptoPriceTick.id.desc()
+                        )
+                        .limit(2)
+                    ).scalars().all()
+                    if ticks and (ticks[0].liquidity_usd or 0) > best_liquidity:
+                        best_liquidity = ticks[0].liquidity_usd or 0
+                        best_pair = pair
+                        latest = ticks[0]
+                        previous = ticks[1] if len(ticks) > 1 else None
+                evaluation = await engine.evaluate(
+                    session,
+                    token=token,
+                    pair=best_pair,
+                    tick=latest,
+                    previous=previous,
+                    pair_count=len(pairs),
+                )
+                assessed += 1
+                # Risk-type signals only (market detectors belong to scans)
+                if best_pair is not None and latest is not None:
+                    from datetime import datetime, timezone
+
+                    now = datetime.now(timezone.utc)
+                    detected = [
+                        signal
+                        for signal in signal_service.detect(
+                            best_pair, previous, latest, evaluation.as_signal_view(), now
+                        )
+                        if signal.signal_type in RISK_SIGNAL_TYPES
+                    ]
+                    risk_signals += signal_service.persist_deduped(session, detected, now)
+                print(
+                    f"  {token.symbol or '?':<12} {token.token_address[:12]}… "
+                    f"level={evaluation.composite_risk_level:<8} "
+                    f"score={evaluation.composite_risk_score} "
+                    f"reasons={','.join(evaluation.reasons) or 'none'}"
+                )
+            session.commit()
             print(
-                f"  {token.symbol or '?':<12} {token.token_address[:12]}… "
-                f"level={evaluation.composite_risk_level:<8} "
-                f"score={evaluation.composite_risk_score} "
-                f"reasons={','.join(evaluation.reasons) or 'none'}"
+                f"assessed {assessed} token(s), created {risk_signals} risk signal(s)"
             )
-        session.commit()
-        print(f"assessed {assessed} token(s), created {risk_signals} risk signal(s)")
+            print(render_ledger(ctx.ledger.snapshot()))
         return assessed
     finally:
         if owns_session:
@@ -5208,6 +5287,30 @@ async def champion_challenger_report(
             session.close()
 
 
+def _add_provider_gate_args(sub) -> None:
+    """CRYPTO-DISCOVERY-PROVIDER-GATE-001 shared governance flags."""
+    sub.add_argument(
+        "--provider-plan", action="store_true",
+        help="print the zero-call provider plan and exit (no request issued)",
+    )
+    sub.add_argument(
+        "--allow-provider", action="append", metavar="PROVIDER", default=[],
+        help="restrict the run to these providers (repeatable)",
+    )
+    sub.add_argument(
+        "--deny-provider", action="append", metavar="PROVIDER", default=[],
+        help="explicitly deny a provider — overrides flags/allow/fallback (repeatable)",
+    )
+    sub.add_argument(
+        "--confirm-paid-provider", action="append", metavar="PROVIDER", default=[],
+        help="explicitly confirm a specific paid provider (required to call it)",
+    )
+    sub.add_argument(
+        "--yes", action="store_true",
+        help="execute the plan (without this, only the plan is printed)",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m app.cli",
@@ -5370,6 +5473,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="One read-only crypto discovery pass (tokens/pairs/ticks/signals)",
     )
     crypto_scan_parser.add_argument("--limit", type=int, default=None)
+    _add_provider_gate_args(crypto_scan_parser)
     crypto_recent_parser = subparsers.add_parser(
         "crypto-signals-recent", help="List recent crypto signals"
     )
@@ -5382,6 +5486,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Assess risk for recently-seen tokens (read-only risk intelligence)",
     )
     crypto_risk_parser.add_argument("--limit", type=int, default=50)
+    _add_provider_gate_args(crypto_risk_parser)
     subparsers.add_parser("crypto-risk-report", help="Aggregate crypto risk report")
     subparsers.add_parser(
         "crypto-provider-health-report",
@@ -5966,7 +6071,14 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0 if count >= 0 else 1
     if args.command == "crypto-scan-once":
-        return asyncio.run(crypto_scan_once(limit=args.limit))
+        return asyncio.run(crypto_scan_once(
+            limit=args.limit,
+            provider_plan=args.provider_plan,
+            allow_provider=args.allow_provider,
+            deny_provider=args.deny_provider,
+            confirm_paid_provider=args.confirm_paid_provider,
+            yes=args.yes,
+        ))
     if args.command == "crypto-signals-recent":
         count = asyncio.run(crypto_signals_recent(limit=args.limit))
         return 0 if count >= 0 else 1
@@ -5974,7 +6086,14 @@ def main(argv: list[str] | None = None) -> int:
         total = asyncio.run(crypto_report())
         return 0 if total >= 0 else 1
     if args.command == "crypto-risk-assess":
-        count = asyncio.run(crypto_risk_assess(limit=args.limit))
+        count = asyncio.run(crypto_risk_assess(
+            limit=args.limit,
+            provider_plan=args.provider_plan,
+            allow_provider=args.allow_provider,
+            deny_provider=args.deny_provider,
+            confirm_paid_provider=args.confirm_paid_provider,
+            yes=args.yes,
+        ))
         return 0 if count >= 0 else 1
     if args.command == "crypto-provider-health-report":
         return asyncio.run(crypto_provider_health_report())

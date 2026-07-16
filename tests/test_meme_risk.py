@@ -44,6 +44,15 @@ BIRDEYE_PAYLOAD = {
 }
 
 
+@pytest.fixture(autouse=True)
+def _governed_provider_run():
+    # GATE-001: real Birdeye adapter guard fails closed without a policy.
+    from app.services.crypto_provider_policy import ProviderPolicy, provider_run
+
+    with provider_run(ProviderPolicy.allow_all_for_tests()):
+        yield
+
+
 @pytest.fixture
 def session():
     engine = create_engine("sqlite://")

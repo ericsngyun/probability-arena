@@ -196,6 +196,43 @@ class CryptoRiskProviderRegistry:
     def provider_backed(self) -> bool:
         return bool(self.adapters)
 
+    def describe(self, limit: int = 100, settings: Settings | None = None) -> list:
+        """Typed risk-provider descriptors from THIS constructed registry
+        (enabled = adapter actually present). Single source shared by the
+        discovery preflight and crypto-risk-assess (GATE-001)."""
+        from app.services.crypto_provider_policy import Provider, ProviderDescriptor
+
+        settings = settings or get_settings()
+        st_cap = settings.solana_tracker_per_run_lookup_limit
+        enabled: set = set()
+        for adapter in self.adapters:
+            try:
+                enabled.add(Provider(adapter.name))
+            except ValueError:
+                continue
+        specs = [
+            (Provider.GOPLUS, "enable_goplus_risk", False, limit, "heuristics", None),
+            (Provider.SOLANA_TRACKER, "enable_solana_tracker_risk", True,
+             min(limit, st_cap), "GoPlus+heuristics", st_cap),
+            (Provider.BIRDEYE, "enable_birdeye_risk", True, limit, "heuristics", None),
+        ]
+        return [
+            ProviderDescriptor(
+                provider=provider,
+                role="risk enrichment",
+                direct=False,
+                enabled=provider in enabled,
+                paid=paid,
+                mandatory=False,
+                per_token=True,
+                max_requests=max_requests,
+                config_source=flag,
+                fallback=fallback,
+                cap=cap,
+            )
+            for provider, flag, paid, max_requests, fallback, cap in specs
+        ]
+
     async def gather(
         self, token_address: str, skip: set[str] | None = None
     ) -> tuple[list[RiskAssessment], dict]:
@@ -203,18 +240,45 @@ class CryptoRiskProviderRegistry:
         provider never blocks the others or the heuristics. `skip` names
         adapters to bypass this call (PROVIDER-BUDGET-001 budget guardrail);
         a skipped adapter is simply not called — it is never an error."""
-        skip = skip or set()
+        from app.services.crypto_provider_policy import (
+            Authorization,
+            ProviderPolicyError,
+            UnknownProviderError,
+            canonical,
+            current_context,
+            record_not_dispatched,
+        )
+
+        skip = set(skip or set())
+        ctx = current_context()
         results: list[RiskAssessment] = []
         errors: dict = {}
         for adapter in self.adapters:
             if adapter.name in skip:
                 continue
+            # GATE-001 Layer A: in a governed run, an optional risk provider the
+            # policy does not authorize is simply NOT dispatched (graceful
+            # fallback to GoPlus+heuristics). Canonical real providers only;
+            # non-canonical test stubs keep their legacy dispatch. The lowest-
+            # level adapter guard is the fail-closed backstop for real adapters.
+            if ctx is not None:
+                try:
+                    provider = canonical(adapter.name)
+                except UnknownProviderError:
+                    provider = None
+                if provider is not None:
+                    decision = ctx.policy.authorization(provider)
+                    if decision is not Authorization.ALLOWED:
+                        record_not_dispatched(provider, decision)
+                        continue
             try:
                 assessment = await adapter.assess(token_address)
                 if assessment is not None:
                     results.append(assessment)
                 else:
                     errors[adapter.name] = "no usable data (error, rate limit, or drift)"
+            except ProviderPolicyError:
+                raise  # never swallow an authorization failure into an error note
             except Exception as exc:  # defense in depth: adapters shouldn't raise
                 logger.exception("Risk provider %s failed for %s", adapter.name, token_address)
                 errors[adapter.name] = f"{type(exc).__name__}: {str(exc)[:200]}"
@@ -471,6 +535,16 @@ class CryptoRiskEngine:
         skip = None
         if self._has_solana_tracker and self._should_skip_solana_tracker(session):
             skip = {"solana-tracker"}
+            # GATE-001: record the existing budget guardrail's deterministic skip
+            # in the run ledger (per-run cap vs daily-STOP), no request issued.
+            from app.services.crypto_provider_policy import Provider, record_dispatch_skip
+
+            reason = (
+                "skipped_cap"
+                if self._st_lookups_this_run >= self._budget_cfg.per_run_lookup_limit
+                else "skipped_budget"
+            )
+            record_dispatch_skip(Provider.SOLANA_TRACKER, reason)
         provider_results, provider_errors = await self.registry.gather(address, skip=skip)
         if self._has_solana_tracker and skip is None:
             # SolanaTracker was actually attempted for this token this run.

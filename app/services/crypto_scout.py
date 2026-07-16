@@ -371,6 +371,7 @@ class CryptoDiscoveryService:
         # CRYPTO-002: engine takes precedence over the raw provider when on
         self.risk_engine = risk_engine if risk_engine is not None else get_risk_engine()
         self.signal_service = signal_service or CryptoSignalService(self.config)
+        self.last_ledger: dict | None = None  # GATE-001 run-scoped request ledger
 
     def _upsert_token(
         self,
@@ -495,10 +496,92 @@ class CryptoDiscoveryService:
         session.flush()
         return row
 
-    async def scan_once(self, session: Session, limit: int | None = None) -> CryptoWatcherRun:
+    def describe_providers(self, limit: int | None = None) -> list:
+        """Typed provider descriptors derived from THIS constructed graph — the
+        single source the preflight plan and the default run policy both use, so
+        the plan cannot drift from runtime (GATE-001)."""
+        from app.services.crypto_provider_policy import Provider, ProviderDescriptor
+
+        limit = limit or self.config.pair_limit
+        descriptors = [
+            ProviderDescriptor(
+                provider=Provider.DEXSCREENER,
+                role="token discovery",
+                direct=True,
+                enabled=True,
+                paid=False,
+                mandatory=True,
+                per_token=False,
+                max_requests=2 + limit,
+                config_source="mandatory",
+                fallback="none (required)",
+                cap=2 + limit,
+            )
+        ]
+        if self.risk_engine is not None:
+            descriptors.extend(self.risk_engine.registry.describe(limit))
+        else:
+            # engine off: risk providers exist in config but are not dispatched
+            from app.services.crypto_risk_engine import CryptoRiskProviderRegistry
+
+            descriptors.extend(
+                CryptoRiskProviderRegistry(adapters=[]).describe(limit)
+            )
+        return descriptors
+
+    async def scan_once(
+        self, session: Session, limit: int | None = None, *, policy=None
+    ) -> CryptoWatcherRun:
+        """Governed discovery pass (GATE-001). Requires an explicit run-scoped
+        provider policy: either passed as ``policy`` or already installed as the
+        ambient run context. A missing policy fails closed before any provider
+        request; a denied mandatory provider rejects the mode before scanning."""
+        from app.services.crypto_provider_policy import (
+            MandatoryProviderDeniedError,
+            MissingPolicyError,
+            current_context,
+            provider_run,
+        )
+
+        limit = limit or self.config.pair_limit
+        ctx = current_context()
+        if policy is None and ctx is None:
+            raise MissingPolicyError(
+                "crypto discovery requires an explicit provider policy"
+            )
+        if policy is not None and ctx is not None and policy.run_id != ctx.run_id:
+            raise MissingPolicyError(
+                "explicit policy run_id does not match the installed run context"
+            )
+        active = policy if policy is not None else ctx.policy
+        denied = active.mandatory_denied()
+        if denied is not None:
+            raise MandatoryProviderDeniedError(
+                f"mandatory provider {denied.value} is denied; discovery mode rejected"
+            )
+        planned = {
+            d.provider: d.max_requests
+            for d in self.describe_providers(limit)
+            if d.max_requests is not None
+        }
+        if ctx is not None:
+            for provider, value in planned.items():
+                ctx.ledger.planned_max.setdefault(provider, value)
+            run = await self._scan_once_unguarded(session, limit=limit)
+            self.last_ledger = ctx.ledger.snapshot()
+            return run
+        with provider_run(active, planned_max=planned) as run_ctx:
+            run = await self._scan_once_unguarded(session, limit=limit)
+            self.last_ledger = run_ctx.ledger.snapshot()
+            return run
+
+    async def _scan_once_unguarded(
+        self, session: Session, limit: int | None = None
+    ) -> CryptoWatcherRun:
         """One discovery pass: profiles + boosts -> pairs per token -> upserts,
         events, ticks, optional risk, signals. Errors are recorded on the
-        crypto_watcher_runs row and re-raised."""
+        crypto_watcher_runs row and re-raised. Invoked only within a governed
+        provider run context (see scan_once)."""
         limit = limit or self.config.pair_limit
         started_at = _now()
         run = CryptoWatcherRun(status="running", started_at=started_at, created_at=started_at)

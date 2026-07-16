@@ -150,17 +150,42 @@ class DexScreenerAdapter:
         self.timeout = 15.0
 
     async def _get(self, path: str) -> dict | list | None:
+        # CRYPTO-DISCOVERY-PROVIDER-GATE-001: when a run-scoped provider policy
+        # is installed (all governed discovery runs), authorize this request at
+        # the lowest level before opening a client. Ungoverned callers (the
+        # DexScreener-only horizon/meme lanes) install no context and are
+        # unaffected. The guard is OUTSIDE the broad httpx handler below, so a
+        # ProviderPolicyError propagates and is never swallowed into None.
+        from app.services.crypto_provider_policy import (
+            Provider,
+            ProviderSkip,
+            current_context,
+            guard_provider_request,
+            mark_failed,
+            mark_started,
+            mark_succeeded,
+        )
+
+        if current_context() is not None:
+            try:
+                await guard_provider_request(Provider.DEXSCREENER)
+            except ProviderSkip:
+                return None  # deterministic cap/budget skip: no request
         url = f"{DEXSCREENER_API_BASE}{path}"
+        mark_started(Provider.DEXSCREENER)
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.get(url)
                 if response.status_code == 429:
                     logger.warning("DEX Screener rate limit hit for %s", url)
+                    mark_failed(Provider.DEXSCREENER)
                     return None
                 response.raise_for_status()
+                mark_succeeded(Provider.DEXSCREENER)
                 return response.json()
         except (httpx.HTTPError, ValueError) as exc:
             logger.warning("DEX Screener fetch failed for %s: %s", url, exc)
+            mark_failed(Provider.DEXSCREENER)
             return None
 
     async def fetch_latest_token_profiles(self) -> list[TokenProfile]:

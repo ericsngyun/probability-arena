@@ -35,6 +35,7 @@ from app.services.crypto_risk import (
     RiskAssessment,
     get_risk_provider,
 )
+from app.services.crypto_provider_policy import ProviderPolicy
 from app.services.crypto_scout import (
     CryptoDiscoveryService,
     CryptoReportService,
@@ -42,6 +43,7 @@ from app.services.crypto_scout import (
     CryptoSignalService,
 )
 
+_TEST_POLICY = ProviderPolicy.allow_all_for_tests()
 NOW = datetime.now(timezone.utc)
 TOKEN_A = "So1anaTokenAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 TOKEN_B = "So1anaTokenBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
@@ -285,7 +287,7 @@ def discovery(adapter=None, risk_provider=None, cfg=None) -> CryptoDiscoveryServ
 
 class TestDiscovery:
     async def test_scan_once_persists_everything(self, session):
-        run = await discovery().scan_once(session)
+        run = await discovery().scan_once(session, policy=_TEST_POLICY)
 
         assert run.status == "ok"
         assert run.tokens_checked == 2
@@ -319,8 +321,8 @@ class TestDiscovery:
 
     async def test_token_and_pair_upserts_are_idempotent(self, session):
         service = discovery()
-        await service.scan_once(session)
-        await service.scan_once(session)
+        await service.scan_once(session, policy=_TEST_POLICY)
+        await service.scan_once(session, policy=_TEST_POLICY)
 
         tokens = session.execute(select(CryptoToken)).scalars().all()
         pairs = session.execute(select(CryptoPair)).scalars().all()
@@ -337,11 +339,11 @@ class TestDiscovery:
             config=config(),
         )
         service.risk_provider = None  # simulate flag off
-        await service.scan_once(session)
+        await service.scan_once(session, policy=_TEST_POLICY)
         assert session.execute(select(CryptoTokenRiskAssessment)).scalars().all() == []
 
     async def test_pair_limit_bounds_work(self, session):
-        run = await discovery(cfg=config(pair_limit=1)).scan_once(session)
+        run = await discovery(cfg=config(pair_limit=1)).scan_once(session, policy=_TEST_POLICY)
         assert run.pairs_checked == 1
         assert run.ticks_recorded == 1
 
@@ -351,7 +353,7 @@ class TestDiscovery:
                 raise RuntimeError("provider exploded")
 
         with pytest.raises(RuntimeError):
-            await discovery(adapter=ExplodingAdapter()).scan_once(session)
+            await discovery(adapter=ExplodingAdapter()).scan_once(session, policy=_TEST_POLICY)
         run = session.execute(select(CryptoWatcherRun)).scalars().one()
         assert run.status == "error"
         assert run.error_type == "RuntimeError"
@@ -359,7 +361,7 @@ class TestDiscovery:
 
     async def test_empty_provider_responses_yield_clean_run(self, session):
         adapter = FakeDexAdapter(profiles=[], boosts=[], pairs_by_token={})
-        run = await discovery(adapter=adapter).scan_once(session)
+        run = await discovery(adapter=adapter).scan_once(session, policy=_TEST_POLICY)
         assert run.status == "ok"
         assert run.tokens_checked == 0
         assert run.signals_created == 0
@@ -522,7 +524,7 @@ class TestCooldown:
 
 class TestDiscoverySignals:
     async def test_first_scan_emits_new_pair_and_boost(self, session):
-        run = await discovery().scan_once(session)
+        run = await discovery().scan_once(session, policy=_TEST_POLICY)
         types = {
             s.signal_type
             for s in session.execute(select(CryptoOpportunitySignal)).scalars().all()
@@ -544,7 +546,7 @@ class TestDiscoverySignals:
                 )
             }
         )
-        await discovery(risk_provider=risky).scan_once(session)
+        await discovery(risk_provider=risky).scan_once(session, policy=_TEST_POLICY)
         types = {
             s.signal_type
             for s in session.execute(
@@ -561,14 +563,16 @@ class TestDiscoverySignals:
 
 class TestCli:
     async def test_crypto_scan_once_cli(self, session, capsys):
-        exit_code = await cli.crypto_scan_once(services=discovery(), session=session)
+        exit_code = await cli.crypto_scan_once(
+            services=discovery(), session=session, yes=True
+        )
         assert exit_code == 0
         output = capsys.readouterr().out
         assert "crypto scan #1: ok" in output
         assert "tokens=2 pairs=2 ticks=2" in output
 
     async def test_crypto_signals_recent_cli(self, session, capsys):
-        await discovery().scan_once(session)
+        await discovery().scan_once(session, policy=_TEST_POLICY)
         count = await cli.crypto_signals_recent(limit=10, session=session)
         assert count >= 2
         output = capsys.readouterr().out
@@ -576,7 +580,7 @@ class TestCli:
         assert "new_pair" in output
 
     async def test_crypto_report_cli(self, session, capsys):
-        await discovery().scan_once(session)
+        await discovery().scan_once(session, policy=_TEST_POLICY)
         total = await cli.crypto_report(session=session)
         assert total == 2
         output = capsys.readouterr().out
@@ -624,7 +628,7 @@ def client():
 class TestApi:
     async def test_endpoints_serve_scanned_data_without_raw_payloads(self, client):
         test_client, session = client
-        await discovery().scan_once(session)
+        await discovery().scan_once(session, policy=_TEST_POLICY)
 
         tokens = test_client.get("/crypto/tokens").json()
         assert {t["token_address"] for t in tokens} == {TOKEN_A, TOKEN_B}
@@ -666,14 +670,14 @@ class TestApi:
 
 class TestReportService:
     async def test_report_counts_and_errors(self, session):
-        await discovery().scan_once(session)
+        await discovery().scan_once(session, policy=_TEST_POLICY)
 
         class ExplodingAdapter(FakeDexAdapter):
             async def fetch_latest_token_profiles(self):
                 raise RuntimeError("rate limited hard")
 
         with pytest.raises(RuntimeError):
-            await discovery(adapter=ExplodingAdapter()).scan_once(session)
+            await discovery(adapter=ExplodingAdapter()).scan_once(session, policy=_TEST_POLICY)
 
         report = CryptoReportService().build(session)
         assert report.totals["tokens"] == 2

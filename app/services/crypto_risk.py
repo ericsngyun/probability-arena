@@ -127,19 +127,39 @@ class GoPlusSolanaRiskAdapter:
     async def assess(self, token_address: str) -> RiskAssessment | None:
         import httpx
 
+        # GATE-001: authorize before any request. Guard is OUTSIDE the broad
+        # handler so ProviderPolicyError propagates (never swallowed to None).
+        from app.services.crypto_provider_policy import (
+            Provider,
+            ProviderSkip,
+            guard_provider_request,
+            mark_failed,
+            mark_started,
+            mark_succeeded,
+        )
+
+        try:
+            await guard_provider_request(Provider.GOPLUS)
+        except ProviderSkip:
+            return None
+
         headers = {"Authorization": self._api_key} if self._api_key else {}
         url = f"{self.API_BASE}?contract_addresses={token_address}"
+        mark_started(Provider.GOPLUS)
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.get(url, headers=headers)
                 if response.status_code == 429:
                     logger.warning("GoPlus rate limit hit for %s", token_address)
+                    mark_failed(Provider.GOPLUS)
                     return None
                 response.raise_for_status()
                 payload = response.json()
         except (Exception,) as exc:  # httpx errors, JSON errors — never raise
             logger.warning("GoPlus fetch failed for %s: %s", token_address, type(exc).__name__)
+            mark_failed(Provider.GOPLUS)
             return None
+        mark_succeeded(Provider.GOPLUS)
         return self.parse(token_address, payload)
 
     def parse(self, token_address: str, payload) -> RiskAssessment | None:
@@ -201,13 +221,31 @@ class SolanaTrackerRiskAdapter:
     async def assess(self, token_address: str) -> RiskAssessment | None:
         import httpx
 
+        # GATE-001: authorize before any request (paid provider). Guard is
+        # OUTSIDE the broad handler so ProviderPolicyError propagates.
+        from app.services.crypto_provider_policy import (
+            Provider,
+            ProviderSkip,
+            guard_provider_request,
+            mark_failed,
+            mark_started,
+            mark_succeeded,
+        )
+
+        try:
+            await guard_provider_request(Provider.SOLANA_TRACKER)
+        except ProviderSkip:
+            return None
+
         headers = {"x-api-key": self._api_key} if self._api_key else {}
         url = f"{self.API_BASE}/{token_address}"
+        mark_started(Provider.SOLANA_TRACKER)
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.get(url, headers=headers)
                 if response.status_code == 429:
                     logger.warning("SolanaTracker rate limit hit for %s", token_address)
+                    mark_failed(Provider.SOLANA_TRACKER)
                     return None
                 response.raise_for_status()
                 payload = response.json()
@@ -215,7 +253,9 @@ class SolanaTrackerRiskAdapter:
             logger.warning(
                 "SolanaTracker fetch failed for %s: %s", token_address, type(exc).__name__
             )
+            mark_failed(Provider.SOLANA_TRACKER)
             return None
+        mark_succeeded(Provider.SOLANA_TRACKER)
         return self.parse(token_address, payload)
 
     def parse(self, token_address: str, payload) -> RiskAssessment | None:
@@ -303,21 +343,41 @@ class BirdeyeRiskAdapter:
     async def assess(self, token_address: str) -> RiskAssessment | None:
         import httpx
 
+        # GATE-001: authorize before any request (paid provider). Guard is
+        # OUTSIDE the broad handler so ProviderPolicyError propagates.
+        from app.services.crypto_provider_policy import (
+            Provider,
+            ProviderSkip,
+            guard_provider_request,
+            mark_failed,
+            mark_started,
+            mark_succeeded,
+        )
+
+        try:
+            await guard_provider_request(Provider.BIRDEYE)
+        except ProviderSkip:
+            return None
+
         headers = {"x-chain": "solana"}
         if self._api_key:
             headers["X-API-KEY"] = self._api_key
         url = f"{self.API_BASE}?address={token_address}"
+        mark_started(Provider.BIRDEYE)
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.get(url, headers=headers)
                 if response.status_code == 429:
                     logger.warning("Birdeye rate limit hit for %s", token_address)
+                    mark_failed(Provider.BIRDEYE)
                     return None
                 response.raise_for_status()
                 payload = response.json()
         except (Exception,) as exc:  # httpx/JSON errors — never raise
             logger.warning("Birdeye fetch failed for %s: %s", token_address, type(exc).__name__)
+            mark_failed(Provider.BIRDEYE)
             return None
+        mark_succeeded(Provider.BIRDEYE)
         return self.parse(token_address, payload)
 
     def parse(self, token_address: str, payload) -> RiskAssessment | None:

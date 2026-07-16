@@ -671,9 +671,26 @@ class MarketOpsAutopilotService:
             if cfg.include_crypto:
 
                 async def crypto():
-                    return await self.crypto_service.scan_once(
-                        session, limit=cfg.crypto_scan_limit
+                    # GATE-001: MarketOps is not exempt from provider
+                    # authorization. Build an explicit policy that reproduces
+                    # today's effective behavior — same enabled providers, same
+                    # paid providers (confirmed), same caps, same scan output —
+                    # so no operational behavior changes, only that the run is
+                    # now explicitly governed. No scheduling/flag/.env change.
+                    from app.config import get_settings
+                    from app.services.crypto_provider_policy import (
+                        ProviderPolicy,
+                        new_run_id,
+                        provider_run,
                     )
+
+                    policy = ProviderPolicy.compatibility_from_settings(
+                        get_settings(), run_id=new_run_id(), limit=cfg.crypto_scan_limit
+                    )
+                    with provider_run(policy):
+                        return await self.crypto_service.scan_once(
+                            session, limit=cfg.crypto_scan_limit, policy=policy
+                        )
 
                 crypto_run = await stage("crypto_scan", crypto)
                 if crypto_run is not None:

@@ -43,7 +43,10 @@ from app.services.crypto_risk_engine import (
     composite_from,
     level_for,
 )
+from app.services.crypto_provider_policy import ProviderPolicy
 from app.services.crypto_scout import CryptoScoutConfig, CryptoSignalService
+
+_TEST_POLICY = ProviderPolicy.allow_all_for_tests()
 from tests.test_crypto_arena import (
     PAIR_A,
     TOKEN_A,
@@ -53,6 +56,17 @@ from tests.test_crypto_arena import (
 )
 
 NOW = datetime.now(timezone.utc)
+
+
+@pytest.fixture(autouse=True)
+def _governed_provider_run():
+    # GATE-001: these tests exercise real adapters/discovery in isolation; the
+    # unconditional risk-adapter guard fails closed without a policy, so install
+    # an explicit allow-all test context (never a service/adapter default).
+    from app.services.crypto_provider_policy import provider_run
+
+    with provider_run(_TEST_POLICY):
+        yield
 
 
 @pytest.fixture
@@ -433,7 +447,7 @@ class TestDiscoveryIntegration:
         service = discovery(risk_provider=None)
         service.risk_provider = None
         service.risk_engine = engine_with([])
-        run = await service.scan_once(session)
+        run = await service.scan_once(session, policy=_TEST_POLICY)
         assert run.status == "ok"
         rows = session.execute(select(CryptoTokenRiskAssessment)).scalars().all()
         assert {row.token_address for row in rows} == {TOKEN_A, TOKEN_B}
@@ -457,7 +471,7 @@ class TestDiscoveryIntegration:
                 )
             ]
         )
-        await service.scan_once(session)
+        await service.scan_once(session, policy=_TEST_POLICY)
         types = {
             s.signal_type
             for s in session.execute(select(CryptoOpportunitySignal)).scalars().all()
@@ -467,7 +481,7 @@ class TestDiscoveryIntegration:
     async def test_engine_disabled_preserves_crypto001_behavior(self, session):
         service = discovery()  # mock provider, no engine
         assert service.risk_engine is None  # flag off by default
-        await service.scan_once(session)
+        await service.scan_once(session, policy=_TEST_POLICY)
         rows = session.execute(select(CryptoTokenRiskAssessment)).scalars().all()
         assert all(row.provider == "mock" for row in rows)
         assert all(row.composite_risk_score is None for row in rows)
@@ -476,7 +490,7 @@ class TestDiscoveryIntegration:
         service = discovery(risk_provider=None)
         service.risk_provider = None
         service.risk_engine = None
-        await service.scan_once(session)
+        await service.scan_once(session, policy=_TEST_POLICY)
         risk_types = {"rug_risk", "holder_risk", "suspicious_supply_control"}
         signals = session.execute(select(CryptoOpportunitySignal)).scalars().all()
         assert not [s for s in signals if s.signal_type in risk_types]
@@ -487,8 +501,8 @@ class TestCli:
     async def test_crypto_risk_assess_cli(self, session, capsys):
         seeder = discovery()
         seeder.risk_provider = None  # seed tokens/ticks only, no assessments
-        await seeder.scan_once(session)
-        count = await cli.crypto_risk_assess(limit=10, engine=engine_with([]), session=session)
+        await seeder.scan_once(session, policy=_TEST_POLICY)
+        count = await cli.crypto_risk_assess(limit=10, engine=engine_with([]), session=session, yes=True)
         assert count == 2
         output = capsys.readouterr().out
         assert "assessed 2 token(s)" in output
@@ -497,9 +511,9 @@ class TestCli:
         assert len(rows) == 2
 
     async def test_crypto_risk_assess_creates_risk_signals_for_danger(self, session, capsys):
-        await discovery(risk_provider=None).scan_once(session)
+        await discovery(risk_provider=None).scan_once(session, policy=_TEST_POLICY)
         engine = engine_with([StubAdapter(flags={"rug_risk": True})])
-        await cli.crypto_risk_assess(limit=10, engine=engine, session=session)
+        await cli.crypto_risk_assess(limit=10, engine=engine, session=session, yes=True)
         output = capsys.readouterr().out
         assert "risk signal(s)" in output
         types = {
@@ -510,8 +524,8 @@ class TestCli:
 
     async def test_crypto_risk_report_cli(self, session, capsys, monkeypatch):
         monkeypatch.setattr(get_settings(), "enable_crypto_risk_engine", True)
-        await discovery(risk_provider=None).scan_once(session)
-        await cli.crypto_risk_assess(limit=10, engine=engine_with([]), session=session)
+        await discovery(risk_provider=None).scan_once(session, policy=_TEST_POLICY)
+        await cli.crypto_risk_assess(limit=10, engine=engine_with([]), session=session, yes=True)
         capsys.readouterr()
         total = await cli.crypto_risk_report(session=session)
         assert total == 2
@@ -556,13 +570,13 @@ class TestRiskReportService:
         monkeypatch.setattr(get_settings(), "enable_crypto_risk_engine", True)
         monkeypatch.setattr(get_settings(), "enable_goplus_risk", False)
         monkeypatch.setattr(get_settings(), "enable_solana_tracker_risk", False)
-        await discovery(risk_provider=None).scan_once(session)
+        await discovery(risk_provider=None).scan_once(session, policy=_TEST_POLICY)
         # one clean heuristic pass + one dangerous provider-backed pass
-        await cli.crypto_risk_assess(limit=1, engine=engine_with([]), session=session)
+        await cli.crypto_risk_assess(limit=1, engine=engine_with([]), session=session, yes=True)
         dangerous = engine_with(
             [StubAdapter(flags={"rug_risk": True, "top10_holder_pct": 90.0})]
         )
-        await cli.crypto_risk_assess(limit=10, engine=dangerous, session=session)
+        await cli.crypto_risk_assess(limit=10, engine=dangerous, session=session, yes=True)
 
         report = CryptoRiskReportService().build(session)
         assert report.engine_mode == "heuristic-only"  # provider flags off
@@ -606,11 +620,12 @@ class TestApi:
         seeder = discovery()
         seeder.risk_provider = None
         seeder.risk_engine = None  # seed only; flag is monkeypatched on
-        await seeder.scan_once(session)
+        await seeder.scan_once(session, policy=_TEST_POLICY)
         await cli.crypto_risk_assess(
             limit=10,
             engine=engine_with([StubAdapter(flags={"rug_risk": True})]),
             session=session,
+            yes=True,
         )
 
         assessments = test_client.get("/crypto/risk-assessments").json()
