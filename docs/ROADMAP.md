@@ -85,10 +85,12 @@
 
 ## Immediate next steps
 
-1. Roll out SCANNER-002/OPS-010 on EVO-X2 and validate during the next live game-level window (POR–ESP Jul 6 / ARG–EGY Jul 7 / MLB evenings): game-level markets in the scan, watcher ticking them, signals → `soccer_evidence`/`baseball_evidence` forecasts at ≥0.60 confidence → first valid watchlist rows.
-2. Run targeted `edge-precheck --latest-marketops-run` sessions during those windows; on sane watchlist behavior, consider `MARKETOPS_INCLUDE_EDGE_PRECHECK=true`.
-3. Keep accumulating champion/challenger pairs toward `useful_sample` (n≥100) for both `baseball_evidence_v1` and (as data arrives) `soccer_evidence_v1` cohorts.
-4. Consider the remaining CAN–MAR promotion-tuning ideas (harder player-prop deprioritization; KXWCAST/KXWCSOA classification) once game-level supply exists to compare against.
+The crypto-horizon lane (OBS-001/002 → SCHEDULE-001 → ORCHESTRATOR-001/DUE-NOW-001 → COHORT-SELECT-001/002 → CANARY-002/003 → SHARED-CANDIDATE-FEASIBILITY-001 → CANDIDATE-READINESS-001) is logged in detail in `DEPLOYMENT_REPORT_EVO_X2.md`; the portfolio of safe parallel work is in `docs/REPO_PORTFOLIO_2026_07_16.md`.
+
+1. **CRYPTO-HORIZON-CANDIDATE-READINESS-001 measurement is ACTIVE on EVO-X2** (`MARKETOPS_INCLUDE_CANDIDATE_READINESS=true`) — leave it running unchanged through the **2026-07-23 (7-day)** and **2026-07-30 (14-day)** checkpoints; capture readiness state distribution + catch rate at each. Measurement only, no cohort creation/arming.
+2. **CANARY-004** (shared-pass horizon canary) needs a naturally observed compliant complete two-token pair AND a separate explicit human approval — not scheduled. **CRYPTO-DISCOVERY-FRESHNESS-001** stays deferred pending readiness catch-rate evidence (feasibility verdict: the discovery source is the blocker).
+3. Optionally develop the measurement-only forecast reports (scorability audit, reliability decomposition) on a branch — read-only, no forecast/gate/label change; merge to `main` but do not deploy to EVO-X2 before the 2026-07-23 re-sync (they touch the frozen `app/cli.py`).
+4. Keep accumulating champion/challenger pairs toward `useful_sample` (n≥100). Retired EDGE-SELECTION policies remain retired. Goalserve-backed tennis live-state work remains blocked pending the API key.
 
 ## Gated future steps (in order; each requires explicit acceptance)
 

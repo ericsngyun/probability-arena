@@ -7,12 +7,18 @@ Update this file (and docs/PROJECT_CANON.md) when a milestone lands."""
 PROJECT_NAME = "probability-arena"
 
 CURRENT_PHASE = (
-    "Read-only intelligence + calibration accumulation (through EVAL-001). "
-    "No EV, no trading of any kind. Canary flags exist for baseball external "
-    "research, evidence-aware baseball and soccer forecasting, and soccer external research. "
-    "Crypto Arena adds read-only Solana memecoin surveillance plus a risk "
-    "engine (a risk score is an avoid/flag verdict, never a trade "
-    "recommendation); MarketOps Autopilot coordinates it all behind flags."
+    "Read-only market intelligence + calibration/follow-through measurement "
+    "(through EVAL-001). No EV, no trading of any kind. MarketOps Autopilot "
+    "coordinates the read-only loop behind flags. Canary flags exist for "
+    "baseball/soccer/tennis evidence forecasting and baseball/soccer external "
+    "research. Crypto Arena: provider-governed read-only Solana surveillance + "
+    "risk engine (a risk score is an avoid/flag verdict, never a trade "
+    "recommendation), lifecycle tape, bounded frozen-cohort horizon observation "
+    "and explicitly-armed one-shot orchestration, shared-candidate feasibility "
+    "analysis, and an ACTIVE measurement-only candidate-readiness signal "
+    "(through the 2026-07-23 / 2026-07-30 checkpoints). Polymarket observation, "
+    "cross-venue comparability, and tennis market/tape research are read-only "
+    "measurement lanes."
 )
 
 ALLOWED_CAPABILITIES = (
@@ -43,9 +49,23 @@ ALLOWED_CAPABILITIES = (
     "no provider calls, persistence, timers, or automatic observation)",
     "crypto horizon one-shot orchestration (explicitly armed user-systemd jobs "
     "for existing fixed cohorts; planner-gated, bounded, no recurring timer/daemon)",
+    "explicit-token horizon cohort selection (COHORT-SELECT-001/002: "
+    "complete-lifecycle-anchor filter + exact canonical-token-id freeze; "
+    "zero external calls, no substitution, no automatic admission)",
+    "crypto shared-candidate feasibility analysis (compute-on-demand completeness "
+    "funnel + shared 15m-window feasibility over persisted births; zero calls, no writes)",
+    "crypto candidate-readiness measurement (local operational readiness signal for "
+    "the manually-authorized shared-pass canary; isolated default-off MarketOps hook "
+    "+ read-only reports; zero calls, creates no cohort/observation/arming)",
     "marketops autopilot (read-only coordination: promote/process/scan/score/report/alert)",
     "edge precheck (probability-gap measurement only; no EV, no advice, no actions)",
     "frontier evaluation (full-desk measurement quality + conservative readiness labels)",
+    "Polymarket observation (read-only public Gamma catalog + CLOB books; behind flag)",
+    "cross-venue semantic comparability measurement (persisted-row-only "
+    "Kalshi<->Polymarket matcher + observation reports; no external calls; never EV/arbitrage)",
+    "tennis market/tape measurement (read-only tennis market ticks + tape score/market "
+    "snapshots; live-score side pending the Goalserve key)",
+    "meme/news surveillance + MEME-MAS shadow analysis (read-only; behind default-off flags)",
 )
 
 FORBIDDEN_CAPABILITIES = (
@@ -63,18 +83,35 @@ FORBIDDEN_CAPABILITIES = (
 
 EXPECTED_SERVICES_EVO_X2 = (
     "probability-arena-baseline.timer (systemd user, every 4h)",
-    "probability-arena-retention.timer (systemd user, daily)",
+    "probability-arena-marketops.timer (systemd user, every 5min — MarketOps "
+    "Autopilot; runs the default-off candidate-readiness measurement hook when "
+    "MARKETOPS_INCLUDE_CANDIDATE_READINESS is enabled)",
     "probability-arena-watcher.service (systemd user, 60s loop)",
+    "probability-arena-meme-news.timer (systemd user, every 10min)",
+    "probability-arena-tick-aggregation.timer (systemd user, hourly — storage plumbing)",
+    "probability-arena-retention.timer (systemd user, daily)",
+    "probability-arena-backup.timer (systemd user, daily)",
+    "(explicitly-armed crypto-horizon one-shot user timers are transient/per-cohort "
+    "and self-remove — not continuously-expected services)",
 )
 
 NEXT_MILESTONES = (
-    "Accumulate paired outcomes toward useful_sample (n>=100) and edge-precheck "
-    "measurement data (MVP-005A shipped; gate crossed at paired n=36)",
-    "MVP-005B paper simulator (requires MVP-005A acceptance)",
-    "CRYPTO-003 crypto paper simulator (gated like MVP-005B; requires "
-    "CRYPTO-002 risk data maturity)",
-    "WALLET-001 policy-controlled transaction PROPOSAL gateway only "
-    "(no signing/keys; much later, dedicated security review)",
+    "Crypto candidate-readiness measurement ACTIVE on EVO-X2 "
+    "(MARKETOPS_INCLUDE_CANDIDATE_READINESS=true) through the 2026-07-23 (7-day) "
+    "and 2026-07-30 (14-day) checkpoints — measurement only, no cohort creation/arming",
+    "CANARY-004 (shared-pass horizon canary) requires a naturally observed compliant "
+    "complete two-token pair AND separate explicit human approval — not scheduled",
+    "CRYPTO-DISCOVERY-FRESHNESS-001 deferred pending readiness catch-rate evidence "
+    "(SHARED-CANDIDATE-FEASIBILITY-001 verdict: the discovery source is the blocker)",
+    "Measurement-only forecast reports (scorability audit, reliability decomposition) "
+    "may be developed separately — read-only, no forecast/gate/label change",
+    "Goalserve-backed tennis live-state work blocked pending the API key",
+    "Accumulate paired outcomes toward useful_sample (n>=100); retired EDGE-SELECTION "
+    "policies remain retired (EDGE-RETIRE-001; resurrection needs a new prereg+lock)",
+    "EV, paper trading, portfolio sizing, wallet/key handling, transaction "
+    "construction/signing, swaps, and live execution remain UNAUTHORIZED and require "
+    "explicit, separately-accepted milestones before any surface may exist "
+    "(see docs/SAFETY_BOUNDARIES.md) — none are a current next step",
 )
 
 CANON_DOCS = (
@@ -95,6 +132,8 @@ KEY_FEATURE_FLAGS = (
     "enable_crypto_risk_provider",
     "enable_crypto_risk_engine",
     "enable_marketops_autopilot",
+    "marketops_include_candidate_readiness",
+    "marketops_include_edge_precheck",
     "enable_edge_precheck",
     "enable_baseball_external_research",
     "enable_soccer_external_research",
