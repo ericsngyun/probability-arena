@@ -2295,3 +2295,37 @@ FAIL: the eligible 15m horizon did **not** execute once. Passing signals (future
 ### Remediation
 
 Tracked as **CRYPTO-HORIZON-ORCHESTRATOR-DUE-NOW-001** (defect plan + fix below): a due-now job must never receive an `OnCalendar` at or before unit-enable time (activation grace), and arming must verify each installed timer has a future `NextElapseUSecRealtime` or evidence it already triggered — a merely `active (elapsed)` timer with empty `LastTriggerUSec` is an arming failure that cleans up only that cohort's units.
+
+## CRYPTO-HORIZON-ORCHESTRATOR-DUE-NOW-001 — fix deployed dark (2026-07-16, ~01:31 UTC)
+
+Deployed **`bf1564f` → `30cbab0`** by `git pull --ff-only`. Fixes the CANARY-002 defect. **No migration** (Alembic `0027`), no `.env`/flag change, no MarketOps/cohort/trading change, no recurring timer/daemon/retry. Dark validation made **zero live provider calls** and **installed/armed nothing new**.
+
+**Fix (`app/services/crypto_horizon_orchestrator.py`):**
+- `build_arm_plan`: `execute_at = max(window_open, now + ACTIVATION_GRACE)` where `ACTIVATION_GRACE = 45s` is a fixed orchestrator constant (not an env flag). A genuine future window (`window_open ≥ now+grace`) is unchanged. If the grace-adjusted time would fall past the horizon window close, arming is **rejected before install** (`activation_window_too_narrow`).
+- Post-install verification: `SystemdUserManager.verify_installed` reads each timer's `NextElapseUSecRealtime` + `LastTriggerUSec`; a timer that is scheduled (future elapse) or already-triggered passes, but one that is merely `active (elapsed)` with empty `LastTriggerUSec` is an **arming failure** → `arm()` removes **only this cohort's** newly-created units and returns `arming_verification_failed`. No observation is triggered and no window is backfilled during recovery.
+- `Persistent=true` + the runtime planner recheck (reboot safety, no backfill) are unchanged.
+
+**Validation:** 12 regression tests (due-now schedules strictly future; grace stays inside window; insufficient-window rejection before install; elapsed-without-trigger → arming failure with cohort-only cleanup; unrelated units untouched; future 1h/6h/24h timestamps exact/unchanged; dry-run shows adjusted time + installs nothing; no provider call; no trading surface). Full suite **1758 passed / 2 skipped**; AST audit **86 files, 0 violations**.
+
+**EVO-X2 dark validation (zero live calls):** due-now suite 12/12 passed (mocked); read-only `build_arm_plan` for cohort 5 at `now`=birth+8min (15m due-now) → `execute_at = now + 45s` (00:56:47), strictly future — the exact case that previously silently missed. Live dry-run at 01:30:59 → due-now 1h-retry scheduled at `now+45s` (01:31:45) while future 6h/24h remained exact (03:48:02.704 / 12:48:02.704). ST budget unchanged; cohort 5's installed future timers (j3 6h, j4 24h) left to execute naturally; unrelated PA units hash `7cc27b41…` = baseline; git clean.
+
+**Note:** cohort 5 stays FAILED (its pre-fix 15m timer silently missed and its units remain inert); the fix governs future arming. **Rollback:** `git reset --hard bf1564f` — additive, no schema change.
+
+## CRYPTO-HORIZON-ORCHESTRATOR-DUE-NOW-001 — defect plan (as implemented)
+
+Requirements, each implemented + tested:
+
+| requirement | implementation | test |
+|---|---|---|
+| due-now never gets OnCalendar ≤ enable time | `max(window_open, now + ACTIVATION_GRACE)` | `test_due_now_arming_schedules_strictly_in_future` |
+| activation grace = 45s, internal constant (not env flag) | `ACTIVATION_GRACE = timedelta(seconds=45)` | — |
+| reject if adjusted time outside planner window | `activation_window_too_narrow`, before install | `test_insufficient_window_rejects_before_installation` |
+| future-window semantics unchanged | grace is a no-op when `window_open ≥ now+grace` | `test_future_windows_timestamps_unchanged` |
+| post-install verify future NextElapse or triggered | `verify_installed` | `test_verify_installed_passes_when_scheduled_or_triggered` |
+| `active (elapsed)` + empty `LastTriggerUSec` = failure | `verify_installed` returns failure | `test_verify_installed_detects_elapsed_without_trigger` |
+| on failure remove only this cohort's units + failed status | `remove_cohort` + `arming_verification_failed` | `test_elapsed_timer_causes_arming_failure_and_cohort_cleanup` |
+| unrelated units untouched | cohort-scoped cleanup | `test_failed_verification_leaves_unrelated_units_untouched` |
+| no manual trigger / no backfill | verification only removes units | (covered above) |
+| no recurring timer/daemon/retry | source audit; Persistent+planner unchanged | `test_no_trading_capability_in_due_now_fix`, `test_reboot_persistence_relies_on_planner_never_backfills` |
+| no provider/MarketOps/cohort/trading change | pure planning + systemd only | `test_no_provider_call_during_arming_and_verification` |
+| dry-run shows adjusted time, installs nothing | `arm(dry_run=True)` | `test_dry_run_shows_adjusted_due_now_time_and_installs_nothing` |
