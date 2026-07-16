@@ -2378,7 +2378,7 @@ Three separate verdict layers:
 
 - **DUE-NOW-001 LIVE PROOF: PASS** — established from the durable 15m evidence above.
 - **CANARY-003 PRIMARY LIFECYCLE: PASS** — the natural 1h executed correctly (independent durable evidence, not the monitor's claim).
-- **CANARY-003 FULL LIFECYCLE: PENDING 6H/24H** — j3 (6h) and j4 (24h) remain installed and host-owned; to be finalized from durable evidence.
+- **CANARY-003 FULL LIFECYCLE: PASS** — j3 (6h) and j4 (24h) both executed naturally, exactly once, inside their planner windows, host-owned end-to-end (no SSH timing dependency). Finalized from durable evidence below.
 
 **Natural 1h execution (durable evidence).** Journal `Starting…j2` **05:08:04**, `Started` 05:08:08 (triggered once at window-start; 1h was a future window at arm, so the activation grace was correctly a no-op — scheduled = window_start, not `arm+grace`). j2 service `Result=success, ExecMainStatus=0`; timer self-removed (`ActiveState=inactive`). Status JSON `completed / observation_attempt_complete`, exit 0. DB: 1h 22M **`observed`, tick_id 225694**, liq 6181.6, observed_at 05:08:05.47 — distinct from the 15m tick 225394 (no duplicate, no backfill). `external_calls=1` (DexScreener), zero SolanaTracker; ST budget unchanged by the canary. 4 reports saved (observation / pair-selection / outcome-reconciliation / schedule). Orchestrator `completed:2, missed:0`; unrelated units (excl. c5/c6) hash `7cc27b41…` = baseline; **cohort 5 untouched**; j3/j4 preserved unchanged for natural execution.
 
@@ -2388,14 +2388,34 @@ Three separate verdict layers:
 |---|---|---|---|---|---|---|---|---|
 | 15m (due_now) | 04:53:04.975 | 04:45:34.975 | **04:48:47.213 (arm+45 s grace)** | 05:00:34.975 | 04:48:47 | observed, tick 225394 | 4/4 | completed |
 | 1h (future) | 05:38:04.975 | 05:08:04.975 | 05:08:04.975 (window_start; grace no-op) | 06:08:04.975 | 05:08:04 | observed, tick 225694 | 4/4 | completed |
-| 6h (future) | 10:38:04.975 | 07:38:04.975 | 07:38:04.975 | 13:38:04.975 | pending | — | — | host-owned |
-| 24h (future) | (Jul17) 04:38:04.975 | 16:38:04.975 | 16:38:04.975 | (Jul17) 16:38:04.975 | pending | — | — | host-owned |
+| 6h (future) | 10:38:04.975 | 07:38:04.975 | 07:38:04.975 | 13:38:04.975 | 07:38:05 | observed, tick 227859 | 4/4 | completed |
+| 24h (future) | (Jul17) 04:38:04.975 | 16:38:04.975 | 16:38:04.975 | (Jul17) 16:38:04.975 | 16:38:05 | observed, tick 233809 | 4/4 | completed |
 
 **Selector milestone contribution:** The new lifecycle-complete cohort filter deterministically selected cohort 6 without including fresher null-liquidity candidates.
 
 **Safety:** no SolanaTracker · no Birdeye · no paid provider · no denied-provider request (all `started=0` in scan #2911) · one discovery scan only · one cohort created · no manual observation trigger · no backfill · no duplicate observation · no recurring timer/daemon · no MarketOps/`.env`/flag change · no trading/capital surface · Alembic `0027` · unrelated units + cohort 5 unchanged.
 
-The full 15m→24h lifecycle is **not** yet complete — the 6h and 24h durable outcomes will be recorded when those host-owned jobs execute (07:38 / 16:38 UTC).
+The full 15m→24h lifecycle completed naturally; the 6h and 24h durable outcomes are finalized below.
+
+### Full lifecycle finalized — CANARY-003 FULL LIFECYCLE: PASS (2026-07-16, 24h complete)
+
+Both remaining host-owned horizons executed naturally with no human SSH timing dependency:
+
+- **6h (j3), durable evidence.** Journal `Starting…j3` **07:38:04**, `Started` 07:38:05 (triggered once at window-start; 6h was a future window at arm → grace no-op, scheduled = window_start 07:38:04.975). Service `Result=success, ExecMainStatus=0`; timer+service self-removed. Status JSON `completed / observation_attempt_complete`, exit 0. DB: 6h 22M **`observed`, tick_id 227859**, liq 2862.73, price 1.495e-06, observed_at 07:38:05.489 — inside window `[07:38:04.975, 13:38:04.975]`. `external_calls=1` (DexScreener), `solana_tracker_calls=0`. 4/4 reports saved.
+- **24h (j4), durable evidence.** Nominal target Jul17 04:38:04.975; the planner opens the 24h window 12 h before target, so the natural scheduled trigger is **window-start 2026-07-16 16:38:04.975** (`due_now` at window open — matches the prompt's expected planner state). Journal `Starting…j4` **16:38:04**, `Started` 16:38:06 (triggered once). Service `Result=success, ExecMainStatus=0`, `LoadState=not-found` (self-removed); no `c6-j4` unit files remain on disk; status `removed_units` lists both timer+service. Status JSON `completed / observation_attempt_complete`, `finished_at 16:38:05.416`, exit 0, `marketops_health.healthy=true` (run 3063, age 112.7 s). DB: 24h 22M **`observed`, tick_id 233809**, liq 2908.43, price 1.559e-06, observed_at 16:38:05.479, pair `4cKH9gc6…pumpswap` — inside window `[16:38:04.975, Jul17 16:38:04.975]`; distinct tick, no duplicate, no backfill. `external_calls=1` (DexScreener), `solana_tracker_calls=0`. 4/4 reports saved.
+
+**Full 15m→24h lifecycle (nominal target vs planner window vs scheduled vs actual trigger; tolerance 0.5 s):**
+
+| Horizon | Nominal target | Window start | Scheduled | Window close | Actual trigger | Planner state | Observation | Exit | Reports | Status |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 15m | 04:53:04.975 | 04:45:34.975 | 04:48:47.213 (arm+45 s grace) | 05:00:34.975 | 04:48:47 | due_now | observed, tick 225394, liq 8638.96 | 0 | 4/4 | completed |
+| 1h | 05:38:04.975 | 05:08:04.975 | 05:08:04.975 (window_start; grace no-op) | 06:08:04.975 | 05:08:05 | due_now (window-open) | observed, tick 225694, liq 6181.6 | 0 | 4/4 | completed |
+| 6h | 10:38:04.975 | 07:38:04.975 | 07:38:04.975 | 13:38:04.975 | 07:38:05 | due_now (window-open) | observed, tick 227859, liq 2862.73 | 0 | 4/4 | completed |
+| 24h | (Jul17) 04:38:04.975 | 16:38:04.975 | 16:38:04.975 | (Jul17) 16:38:04.975 | 16:38:05 | due_now (window-open) | observed, tick 233809, liq 2908.43 | 0 | 4/4 | completed |
+
+**Acceptance:** 15m/1h/6h/24h each executed exactly once within their valid planner windows · orchestrator `completed:4, missed:0` · no duplicate · no backfill · all 4 jobs self-cleaned (no `c6` timer/service remains) · unrelated unit inventory unchanged · four reports saved after each observation · DexScreener-only (4 free calls total, one per job) · **solana-tracker/birdeye/goplus started=0/succeeded=0**, no paid provider, no denied-provider request · cohort 5 untouched · MarketOps healthy · `.env`/flags unchanged · Alembic `0027`.
+
+**Operational note (non-blocking, not attributable to CANARY-003).** The prior failed **cohort 5** left orphaned user units on the shared host — `probability-arena-horizon-c5-j1.timer` in `active (elapsed)` (a DUE-NOW-001-class silent-miss timer) and `…c5-j1.service` `inactive/dead` (unit files mtime Jul 16 00:56, predating cohort 6's 04:38 birth). Per cohort-5 disposition ("failed evidence; never rearm or backfill") these are **left untouched**; they are unrelated to cohort 6's lifecycle and do not affect shared-pass safety.
 
 ## CRYPTO-HORIZON-COHORT-SELECT-002 — explicit-token cohort selection dark-deployed (2026-07-16, ~06:05 UTC)
 
