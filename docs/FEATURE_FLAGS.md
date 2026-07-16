@@ -59,6 +59,7 @@ it is never an EV/value/trade quantity.
 |---|---|---|
 | `ENABLE_EDGE_PRECHECK` | false | `edge-precheck` CLI (without `--force-readonly`), `POST /edge-precheck/run` (without `force_readonly=true`), and the MarketOps stage |
 | `MARKETOPS_INCLUDE_EDGE_PRECHECK` | false | The MarketOps stage additionally requires `ENABLE_EDGE_PRECHECK=true` (double-gated) |
+| `MARKETOPS_INCLUDE_CANDIDATE_READINESS` | false | Gates the isolated, non-blocking, report-only post-crypto-stage candidate-readiness hook (CRYPTO-HORIZON-CANDIDATE-READINESS-001). Off = complete no-op; on = one append-only readiness evaluation per cycle, zero provider calls, cannot fail the cycle. The `crypto-horizon-candidate-readiness-report`/`-history-report` CLIs are always available read-only regardless of this flag |
 
 Provisional thresholds (design §6): `EDGE_PRECHECK_MIN_ABS_GAP=0.05`,
 `EDGE_PRECHECK_MAX_SPREAD_CENTS=10`, `EDGE_PRECHECK_MIN_LIQUIDITY_CENTS=500`,
