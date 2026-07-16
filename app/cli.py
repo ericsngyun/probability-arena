@@ -525,6 +525,81 @@ async def calibration_report(session=None) -> int:
             session.close()
 
 
+async def forecast_scorability_audit_report(
+    hours: int | None = None, since: str | None = None, until: str | None = None,
+    domain: str | None = None, forecaster: str | None = None, top: int = 10,
+    fmt: str = "text", session=None,
+) -> int:
+    """FORECAST-SCORABILITY-AUDIT-001 — read-only scorability + representativeness
+    diagnostics over persisted forecasts. Zero provider calls, zero DB writes, no
+    outcome sync, no scoring; never advice. Returns 0 ok / 2 on invalid window."""
+    import json as _json
+    from datetime import datetime as _dt, timezone as _tz
+
+    from app.services.forecast_scorability import build_scorability_report
+
+    def _parse(ts):
+        if ts is None:
+            return None
+        d = _dt.fromisoformat(ts.replace("Z", "+00:00"))
+        return d if d.tzinfo else d.replace(tzinfo=_tz.utc)
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        r = build_scorability_report(
+            session, hours=hours, since=_parse(since), until=_parse(until),
+            domain=domain, forecaster=forecaster, top=max(1, top))
+    except ValueError as exc:
+        print(f"error: {exc}")
+        return 2
+    finally:
+        if owns_session:
+            session.close()
+
+    if fmt == "json":
+        print(_json.dumps(r, indent=2, default=str))
+        return 0
+    c = r["counts"]
+    print("forecast scorability audit — measurement/data-quality only, never advice")
+    print(r["disclaimer"])
+    print(f"external_calls={r['external_calls']} persisted={str(r['persisted']).lower()} "
+          f"writes={r['writes']}")
+    w = r["window"]
+    print(f"window: since={w['since_utc']} until={w['until_utc']} hours={w['hours']} "
+          f"domain={w['domain_filter']} forecaster={w['forecaster_filter']}")
+    if w["domain_filtered_out"]:
+        print(f"  (truncated: {w['domain_filtered_out']} forecasts filtered out by --domain)")
+    print(f"counts: forecasts={c['forecasts']} matured_eligible={c['matured_eligible']} "
+          f"scored_current={c['scored_current']} pending={c['legitimately_pending']} "
+          f"unscorable={c['unscorable']} scorable_backlog={c['scorable_backlog']} "
+          f"stale_backlog={c['stale_score_backlog']} inconsistent={c['inconsistent']}")
+    print("scorability funnel:")
+    for s in r["scorability_funnel"]["scorability_steps"]:
+        print(f"  {s['step']:34} {s['count']:5}  {s['pct_of_all']:5.1f}%")
+    print(f"state histogram: {r['state_histogram']}")
+    print("cohorts (domain):")
+    for co in r["cohorts"]["domain"]:
+        print(f"  {co['name']:20} n={co['total']:4} scored={co['scored_current']:4} "
+              f"rate={co['scorability_rate']} conc={co['concentration_share_of_scored']} "
+              f"{co['sample_label']}")
+    print("representation (domain):")
+    for rp in r["representation"]["domain"]:
+        print(f"  {rp['name']:20} all%={rp['share_all_pct']:5} scored%={rp['share_scored_pct']:5} "
+              f"delta_pp={rp['representation_delta_pp']:6} {rp['label']}")
+    print("latency (seconds):")
+    for k, v in r["latency"].items():
+        print(f"  {k:24} n={v['count']:4} median={v['median_s']} p90={v['p90_s']} "
+              f"max={v['max_s']} missing={v['missing']} neg={v['negative_findings']}")
+    print(f"VERDICT: {r['verdict']['primary']}  blockers={r['verdict']['blockers']}")
+    print(f"  rates={r['verdict']['rates']}")
+    return 0
+
+
 async def run_baseline(
     scan_limit: int | None = None,
     candidate_limit: int | None = None,
@@ -5655,6 +5730,20 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         "calibration-report", help="Print aggregate calibration summary by cohort"
     )
+    fsa_parser = subparsers.add_parser(
+        "forecast-scorability-audit-report",
+        help="Read-only forecast scorability + representativeness diagnostics "
+             "(FORECAST-SCORABILITY-AUDIT-001; zero calls, no writes)",
+    )
+    fsa_parser.add_argument("--hours", type=int, default=None,
+                            help="window = now-hours .. now (over forecast created_at)")
+    fsa_parser.add_argument("--since", type=str, default=None,
+                            help="ISO UTC window start (overrides --hours)")
+    fsa_parser.add_argument("--until", type=str, default=None, help="ISO UTC window end (default now)")
+    fsa_parser.add_argument("--domain", type=str, default=None)
+    fsa_parser.add_argument("--forecaster", type=str, default=None)
+    fsa_parser.add_argument("--top", type=int, default=10)
+    fsa_parser.add_argument("--format", choices=("text", "json"), default="text", dest="fmt")
     baseline_parser = subparsers.add_parser(
         "run-baseline", help="Run the full read-only measurement loop as one audited pipeline"
     )
@@ -6334,6 +6423,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "calibration-report":
         total = asyncio.run(calibration_report())
         return 0 if total >= 0 else 1
+    if args.command == "forecast-scorability-audit-report":
+        return asyncio.run(
+            forecast_scorability_audit_report(
+                hours=args.hours, since=args.since, until=args.until,
+                domain=args.domain, forecaster=args.forecaster, top=args.top, fmt=args.fmt,
+            )
+        )
     if args.command == "run-baseline":
         run = asyncio.run(
             run_baseline(
