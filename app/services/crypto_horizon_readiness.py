@@ -93,14 +93,16 @@ def classify_pair(
     ``grace_fits`` is the deployed ``activation_grace_fits_shared_window``."""
     if shared_open is None or shared_close is None:
         return NO_OVERLAPPING_PAIR
+    if now > shared_close:
+        # the shared window has closed — temporal state takes precedence over any
+        # geometric width judgement so a stale pair reads honestly as expired
+        return EXPIRED
     if not grace_fits:
         return INSUFFICIENT_ARM_SLACK
     deadline = safe_arm_deadline(shared_close, margin_seconds)  # close - grace - margin
     if deadline < shared_open:
         # window too narrow for grace + operator margin at any instant
         return INSUFFICIENT_ARM_SLACK
-    if now > shared_close:
-        return EXPIRED
     if now > deadline:
         return INSUFFICIENT_ARM_SLACK
     if now < shared_open - timedelta(seconds=margin_seconds):
