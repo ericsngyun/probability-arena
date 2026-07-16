@@ -357,6 +357,8 @@ DEPLOYMENT_REPORT_EVO_X2.md); manual/report-only, no timer.**
 .venv/bin/python -m app.cli crypto-horizon-cohort-create --limit 25 --hours 48 --dry-run   # preview a fixed cohort
 .venv/bin/python -m app.cli crypto-horizon-cohort-create --limit 25 --hours 48             # freeze it (returns cohort_id)
 .venv/bin/python -m app.cli crypto-horizon-cohort-create --hours 1 --limit 2 --require-complete --dry-run  # COHORT-SELECT-001: only complete-liquidity-anchor births (excludes null-liquidity fresh tokens that sort first); optional --min-liquidity N
+.venv/bin/python -m app.cli crypto-horizon-cohort-create --token <ID> --token <ID> --require-complete --require-shared-horizon-windows --dry-run  # COHORT-SELECT-002: exact explicit membership; preview validation + shared_pass_eligible; zero calls, persists nothing
+.venv/bin/python -m app.cli crypto-horizon-cohort-create --token <ID> --token <ID> --require-complete --require-shared-horizon-windows --confirm   # atomically freeze exactly those tokens (or nothing)
 .venv/bin/python -m app.cli crypto-horizon-schedule-report --cohort-id N                    # exact UTC/PT windows; no calls/writes
 .venv/bin/python -m app.cli crypto-horizon-reminder-plan --cohort-id N                      # static plan only; installs nothing
 .venv/bin/python -m app.cli crypto-horizon-arm-cohort --cohort-id N --dry-run               # exact one-shot preview; installs/writes/calls nothing
