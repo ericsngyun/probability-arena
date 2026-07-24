@@ -1,5 +1,63 @@
 # CRYPTO-HORIZON-ORCHESTRATOR-CANARY-004 — attempt record (2026-07-24)
 
+## Attempt 3 (2026-07-24 06:06–06:47 UTC, bounded window): NO QUALIFYING NATURAL CYCLE WITHIN BOUNDED WINDOW
+
+```text
+VERDICT: NO QUALIFYING NATURAL CYCLE WITHIN BOUNDED WINDOW
+BOUNDS: 8 natural cycles inspected / 41 min elapsed (limits: 8 cycles, 45 min)
+MUTATIONS: NONE (no tape run, no cohort, no arming, no unit, no provider call)
+```
+
+Third live attempt, authorized with a bounded qualification window (max 8
+naturally scheduled cycles, max 45 minutes, stop at first qualifying cycle;
+no manual scan). Gate 1 baseline re-verified at `3111442` (Alembic `0027`,
+flag active, anchors 511, cohorts 1–6, **horizon units 0**, DB
+3,681,239,040 B, 73.85 GB free, 0 lock events, readiness JSONL 1,790 lines;
+telemetry JSONL 14,955 → 29,914 B — the expected 06:00 UTC hourly
+tick-aggregation emission, not a canary effect).
+
+### Bounded qualification window (Gate 2)
+
+Window opened 06:06 UTC. Every cycle completed naturally; none was
+triggered or accelerated; all eight were status `ok` with a healthy crypto
+stage and exactly one scan each; database and filesystem stayed healthy
+throughout; provider counters moved only with the normal governed cadence.
+
+| Cycle | Start → finish (UTC) | New tokens | With complete local state (pair + price + liq>0) |
+|---|---|---|---|
+| 4887 | 06:06:03 → 06:06:46 | 1 | 1 |
+| 4888 | 06:12:03 → 06:12:53 | 1 | 1 |
+| 4889 | 06:17:05 → 06:17:42 | 0 | 0 |
+| 4890 | 06:23:04 → 06:24:02 | 1 | 0 |
+| 4891 | 06:28:07 → 06:28:42 | 2 | 0 (neither had positive local liquidity) |
+| 4892 | 06:34:04 → 06:34:50 | 1 | 0 |
+| 4893 | 06:40:04 → 06:40:39 | 1 | 1 |
+| 4894 | 06:46:04 → 06:46:41 | 1 | 0 |
+
+No cycle reached the qualification bar (≥2 newly persisted tokens with
+complete local initial state). The window closed at the 8-cycle bound with
+41 minutes elapsed; per the authorization, **no tape session ran** and
+nothing downstream (cohort/arming/observation) was attempted.
+
+### Arrival-rate evidence for the July-30 review
+
+Across the 13 cycles directly inspected today (4878–4881, 4885,
+4887–4894): new-token counts 0,0,0,3,0,1,1,0,1,2,1,1,1; only **one** cycle
+(4881) carried ≥2 complete candidates. The per-cycle probability of a
+compliant two-token set in a single ~6-minute discovery slot is roughly
+1/13 (~8%) on today's evidence — an 8-cycle window has perhaps a 45–50%
+chance of qualifying. The mechanism itself remains fully proven
+(ANCHOR-FEED-CANARY-001 converted exactly such a cycle into a live
+readiness pair within 6 minutes); what CANARY-004 now needs is either
+patience across more windows, a wider bounded window in a future
+authorization, or acceptance that the operator arms at an
+ANCHOR-FEED-style live moment when one naturally arises.
+
+State after the attempt: identical to baseline in every canary-relevant
+dimension (anchors 511, tape runs 60, cohorts 1–6, horizon units 0,
+forecast PRs untouched). Epochs unchanged — **no Epoch-3 intervention
+occurred**; passive readiness measurement remains uncontaminated.
+
 ## Attempt 2 (2026-07-24 ~05:50–05:56 UTC): NO COMPLIANT TWO-TOKEN SET IN SELECTED NATURAL CYCLE
 
 ```text
