@@ -24,8 +24,10 @@ Guarantees:
   where no tick carried a midpoint has NULL OHLC — values are never fabricated.
 """
 
+import contextlib
 import logging
 import time
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
@@ -36,8 +38,25 @@ from sqlalchemy.orm import Session
 from app.config import Settings, get_settings
 from app.models import MarketPriceTick, MarketPriceTickBucket, TickAggregationRun
 from app.services.db_growth import domain_for_ticker
+from app.telemetry.sqlite_events import (
+    OpContext,
+    emit_event,
+    sample_gauges,
+    session_op_context,
+)
 
 logger = logging.getLogger(__name__)
+
+# SQLITE-LOCK-TELEMETRY-001A: coarse table families this writer touches —
+# fixed labels only, never a bare table name or row value.
+_TELEMETRY_TABLE_GROUPS = ["market_ticks", "runs_audit"]
+
+
+def _is_locked_error(exc: BaseException) -> bool:
+    """Telemetry-only classification (never a retry decision): does this
+    OperationalError look like SQLite lock contention?"""
+    text = str(getattr(exc, "orig", None) or exc).lower()
+    return "database is locked" in text or "database table is locked" in text
 
 AGGREGATION_NOTE = (
     "Read-only-posture storage plumbing: aggregated tick buckets are telemetry "
@@ -154,7 +173,99 @@ class TickAggregationService:
         """One bounded aggregation pass over raw ticks observed in the last
         `hours`, committed per sub-window. Upserts buckets; NEVER deletes or
         modifies raw ticks. With dry_run=True everything is computed and
-        counted but nothing is written (no commits, no audit row)."""
+        counted but nothing is written (no commits, no audit row, and — by
+        the same token — no telemetry events)."""
+        if dry_run:
+            return self._aggregate_impl(
+                session, hours=hours, bucket_seconds=bucket_seconds,
+                dry_run=True, max_rows=max_rows,
+                subwindow_hours=subwindow_hours, scheduled=scheduled,
+            )
+        # SQLITE-LOCK-TELEMETRY-001A: measurement only. The op-context +
+        # session-scoped listeners observe this writer's own session; they
+        # change no transaction boundary, retry ladder, or result. Telemetry
+        # setup/emit failures are swallowed — the pass runs exactly as before.
+        ctx = None
+        with contextlib.ExitStack() as stack:
+            try:
+                ctx = OpContext(
+                    writer_name="tick_aggregation", writer_class="maintenance",
+                    operation_name="aggregate",
+                )
+                ctx.parent_event_id = str(uuid.uuid4())  # this op's own event id
+                stack.enter_context(session_op_context(session, ctx))
+                self._telemetry_ctx = ctx
+            except Exception:  # pragma: no cover - defensive
+                ctx = None
+                self._telemetry_ctx = None
+            try:
+                stats = self._aggregate_impl(
+                    session, hours=hours, bucket_seconds=bucket_seconds,
+                    dry_run=False, max_rows=max_rows,
+                    subwindow_hours=subwindow_hours, scheduled=scheduled,
+                )
+            except Exception as exc:
+                self._emit_operation_event(ctx, None, exc)
+                raise
+            finally:
+                self._telemetry_ctx = None
+        self._emit_operation_event(ctx, stats, None)
+        return stats
+
+    def _emit_operation_event(
+        self, ctx, stats: "AggregationStats | None", exc: Exception | None
+    ) -> None:
+        """Parent operation event, emitted AFTER the pass finishes (all
+        commits done) or after terminal failure handling. Never raises."""
+        if ctx is None:
+            return
+        try:
+            fields = dict(
+                event_id=ctx.parent_event_id,
+                parent_event_id=None,
+                retry_limit=self.busy_retries,
+                table_groups=list(_TELEMETRY_TABLE_GROUPS),
+                external_calls=0,
+                transaction_hold_quality="unknown",  # checkpoint-committed op
+                **sample_gauges(),
+            )
+            if exc is not None:
+                locked = isinstance(exc, OperationalError) and _is_locked_error(exc)
+                emit_event(
+                    ctx, outcome="failed_lock" if locked else "failed_other",
+                    exception_class=type(exc).__name__,
+                    exception_category=(
+                        "database_locked" if locked
+                        else "operational_error"
+                        if isinstance(exc, OperationalError) else "unknown"
+                    ),
+                    **fields,
+                )
+                return
+            partial = bool(stats.failed_windows)
+            emit_event(
+                ctx,
+                outcome="partial_success" if partial else "success",
+                duration_ms=stats.duration_ms,
+                rows_attempted=stats.rows_read,
+                rows_committed=stats.buckets_written,
+                rows_skipped=stats.rows_skipped_unusable,
+                partial_progress=partial,
+                **fields,
+            )
+        except Exception:  # pragma: no cover - defensive
+            pass
+
+    def _aggregate_impl(
+        self,
+        session: Session,
+        hours: int = 24,
+        bucket_seconds: int | None = None,
+        dry_run: bool = False,
+        max_rows: int | None = None,
+        subwindow_hours: int | None = None,
+        scheduled: bool = False,
+    ) -> AggregationStats:
         started = _now()
         bucket_seconds = int(
             self.default_bucket_seconds if bucket_seconds is None else bucket_seconds
@@ -363,16 +474,42 @@ class TickAggregationService:
         `apply_fn` is re-invoked on every attempt because an OperationalError
         rollback discards pending state — retrying only the commit would commit
         an empty transaction and falsely report success. On final failure the
-        session is rolled back so the pass continues with a clean transaction."""
+        session is rolled back so the pass continues with a clean transaction.
+
+        SQLITE-LOCK-TELEMETRY-001A: one child telemetry event per unit,
+        emitted AFTER the commit succeeds or the ladder is exhausted; the
+        ladder itself (attempts, backoff, error match) is byte-identical to
+        the pre-telemetry behavior and telemetry can never raise into it."""
         retries = 0
+        ctx = getattr(self, "_telemetry_ctx", None)
+        unit_started = _now()
+        failed_attempt_ms = 0
+        last_exc: OperationalError | None = None
         while True:
+            attempt_started = time.monotonic()  # covers an apply_fn failure
             try:
                 apply_fn()
+                # restart the timer AFTER apply_fn: a failed COMMIT attempt's
+                # wall time then covers only the commit phase (where the
+                # busy-timeout wait lives), not the upsert re-execution —
+                # keeping the derived lock-wait figure a floor
+                attempt_started = time.monotonic()
                 session.commit()
+                self._emit_unit_event(
+                    ctx, unit_started, True, retries, failed_attempt_ms, last_exc
+                )
                 return True, retries
-            except OperationalError:
+            except OperationalError as exc:
+                last_exc = exc
+                failed_attempt_ms += int((time.monotonic() - attempt_started) * 1000)
+                if ctx is not None:
+                    with contextlib.suppress(Exception):
+                        ctx.mark_rollback_start()
                 session.rollback()
                 if retries >= self.busy_retries:
+                    self._emit_unit_event(
+                        ctx, unit_started, False, retries, failed_attempt_ms, last_exc
+                    )
                     return False, retries
                 retries += 1
                 logger.warning(
@@ -380,6 +517,65 @@ class TickAggregationService:
                     "in %.1fs", retries, self.busy_retries, self.busy_retry_seconds,
                 )
                 time.sleep(self.busy_retry_seconds)
+
+    def _emit_unit_event(
+        self, ctx, unit_started, ok: bool, retries: int,
+        failed_attempt_ms: int, last_exc: OperationalError | None,
+    ) -> None:
+        """Child event for one (apply + commit) unit. Measurement only —
+        never raises, never alters the unit's result."""
+        if ctx is None:
+            return
+        try:
+            if ok:
+                outcome = "retried_success" if retries else "success"
+            else:
+                outcome = "retried_failed"
+            locked = last_exc is not None and _is_locked_error(last_exc)
+            # derived FLOOR on contention wait: failed attempt wall time plus
+            # the ladder's sleeps; successful delayed acquisitions inside the
+            # busy-timeout are invisible by design (quality tag says so).
+            lock_wait_ms = None
+            if last_exc is not None:
+                lock_wait_ms = failed_attempt_ms + int(
+                    retries * self.busy_retry_seconds * 1000
+                )
+            emit_event(
+                ctx,
+                operation_name="commit_unit",
+                started_at=unit_started,
+                parent_event_id=ctx.parent_event_id,
+                outcome=outcome,
+                retry_count=retries,
+                retry_limit=self.busy_retries,
+                attempt_number=retries + 1,
+                exception_class=type(last_exc).__name__ if last_exc else None,
+                exception_category=(
+                    None if last_exc is None
+                    else "database_locked" if locked else "operational_error"
+                ),
+                lock_wait_ms=lock_wait_ms,
+                lock_wait_quality=(
+                    "derived_estimate" if lock_wait_ms is not None else None
+                ),
+                commit_ms=ctx.last_commit_ms if ok else None,
+                commit_quality="exact" if (ok and ctx.last_commit_ms is not None) else None,
+                transaction_hold_ms=ctx.last_transaction_hold_ms if ok else None,
+                transaction_hold_quality=(
+                    "instrumented_estimate"
+                    if (ok and ctx.last_transaction_hold_ms is not None) else None
+                ),
+                rollback_ms=ctx.last_rollback_ms if last_exc is not None else None,
+                rollback_quality=(
+                    "instrumented_estimate"
+                    if (last_exc is not None and ctx.last_rollback_ms is not None)
+                    else None
+                ),
+                table_groups=list(_TELEMETRY_TABLE_GROUPS),
+                external_calls=0,
+            )
+        except Exception:  # pragma: no cover - defensive
+            pass
 
     @staticmethod
     def _upsert_bucket(
