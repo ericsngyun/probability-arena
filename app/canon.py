@@ -57,6 +57,10 @@ ALLOWED_CAPABILITIES = (
     "crypto candidate-readiness measurement (local operational readiness signal for "
     "the manually-authorized shared-pass canary; isolated default-off MarketOps hook "
     "+ read-only reports; zero calls, creates no cohort/observation/arming)",
+    "crypto anchor-feed measurement (exact-cycle provider-free birth-anchor "
+    "materialization from the same natural discovery cycle via the existing "
+    "lifecycle tape; isolated default-off MarketOps hook; zero provider calls, "
+    "bounded per-cycle cap, creates no cohort/observation/arming)",
     "marketops autopilot (read-only coordination: promote/process/scan/score/report/alert)",
     "edge precheck (probability-gap measurement only; no EV, no advice, no actions)",
     "frontier evaluation (full-desk measurement quality + conservative readiness labels)",
@@ -133,6 +137,7 @@ KEY_FEATURE_FLAGS = (
     "enable_crypto_risk_engine",
     "enable_marketops_autopilot",
     "marketops_include_candidate_readiness",
+    "marketops_include_crypto_tape_anchor_feed",
     "marketops_include_edge_precheck",
     "enable_edge_precheck",
     "enable_baseball_external_research",
