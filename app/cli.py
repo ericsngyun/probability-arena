@@ -1402,12 +1402,16 @@ async def crypto_report(session=None) -> int:
 async def crypto_tape_run_once(
     limit: int | None = None, hours: int | None = None,
     dry_run: bool = False, session=None,
+    source_crypto_run_id: int | None = None, confirm: bool = False,
 ) -> int:
     """CRYPTO-TAPE-001 lifecycle tape assembly: consolidate already-persisted
     surveillance rows into birth events, lifecycle snapshots, actor
     observations, and survival outcomes. Zero external calls; dry-run persists
-    nothing. Research infrastructure only — never advice. Returns tokens
-    considered."""
+    nothing. With --source-crypto-run-id (ANCHOR-FEED-MEASUREMENT-001), the
+    pass consolidates EXACTLY the tokens first persisted by that discovery
+    run — no freshest fallback, no substitution — and persists only under
+    --confirm. Research infrastructure only — never advice. Returns tokens
+    considered (negative on exact-run rejection)."""
     from app.services.crypto_tape import CryptoLifecycleTapeRecorder
 
     owns_session = session is None
@@ -1417,6 +1421,50 @@ async def crypto_tape_run_once(
         run_migrations()
         session = get_sessionmaker()()
     try:
+        if source_crypto_run_id is not None:
+            if limit is not None or hours is not None:
+                print(
+                    "exact-run mode uses exact run membership: "
+                    "--limit/--hours are rejected"
+                )
+                return -1
+            from app.services.crypto_tape import new_token_ids_for_run
+
+            recorder = CryptoLifecycleTapeRecorder()
+            token_ids = new_token_ids_for_run(
+                session, source_crypto_run_id, chain=recorder.config.chain
+            )
+            effective_dry = dry_run or not confirm
+            r = recorder.record_discovery_run(
+                session, source_crypto_run_id, token_ids, dry_run=effective_dry
+            )
+            print(
+                "crypto lifecycle tape — exact-cycle anchor feed "
+                "(research infrastructure only, never advice)"
+            )
+            print(
+                f"status={r['status']}  source_crypto_run_id={r['source_crypto_run_id']}  "
+                f"external_calls={r['external_calls']}"
+            )
+            print(
+                f"tokens_received={r['tokens_received']}  "
+                f"tokens_validated={r['tokens_validated']}  "
+                f"anchors_attempted={r['anchors_attempted']}  "
+                f"anchors_created={r['anchors_created']}  "
+                f"anchors_existing={r['anchors_existing']}  "
+                f"complete={r['complete_anchors']}  "
+                f"incomplete={r['incomplete_anchors']}"
+            )
+            if r["error"]:
+                print(f"rejected: {r['error']}")
+            if r["status"] in ("ok", "dry_run"):
+                if effective_dry and not dry_run:
+                    print(
+                        "not persisted — exact-run mode persists only with "
+                        "--confirm (this was a preview)"
+                    )
+                return r["tokens_validated"]
+            return -1
         r = CryptoLifecycleTapeRecorder().run_once(
             session, limit=limit, hours=hours, dry_run=dry_run
         )
@@ -5787,6 +5835,17 @@ def build_parser() -> argparse.ArgumentParser:
     tape_run_parser.add_argument(
         "--dry-run", action="store_true", help="compute and report; persist nothing"
     )
+    tape_run_parser.add_argument(
+        "--source-crypto-run-id", type=int, default=None,
+        help="ANCHOR-FEED-MEASUREMENT-001 exact-run mode: consolidate EXACTLY "
+             "the tokens first persisted by this crypto discovery run (no "
+             "freshest fallback; rejects --limit/--hours; requires --confirm "
+             "to persist)",
+    )
+    tape_run_parser.add_argument(
+        "--confirm", action="store_true",
+        help="exact-run mode only: actually persist (absent = preview only)",
+    )
     tape_report_parser = subparsers.add_parser(
         "crypto-tape-report",
         help="Lifecycle tape report: coverage, survival labels, actor patterns "
@@ -6443,7 +6502,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "crypto-tape-run-once":
         n = asyncio.run(
             crypto_tape_run_once(
-                limit=args.limit, hours=args.hours, dry_run=args.dry_run
+                limit=args.limit, hours=args.hours, dry_run=args.dry_run,
+                source_crypto_run_id=args.source_crypto_run_id,
+                confirm=args.confirm,
             )
         )
         return 0 if n >= 0 else 1
