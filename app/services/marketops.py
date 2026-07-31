@@ -153,6 +153,10 @@ class MarketOpsConfig:
     # CRYPTO-HORIZON-CANDIDATE-READINESS-001: isolated report-only post-crypto hook.
     # Default off; when off the hook is a complete no-op.
     include_candidate_readiness: bool = False
+    # CRYPTO-HORIZON-ANCHOR-FEED-MEASUREMENT-001: isolated provider-free
+    # exact-cycle anchor materialization after crypto persistence, before the
+    # readiness evaluation. Default off; when off the hook is a complete no-op.
+    include_crypto_tape_anchor_feed: bool = False
     fail_fast: bool = False
 
     @classmethod
@@ -177,6 +181,7 @@ class MarketOpsConfig:
             include_probability_markets=s.marketops_include_probability_markets,
             include_edge_precheck=s.marketops_include_edge_precheck,
             include_candidate_readiness=s.marketops_include_candidate_readiness,
+            include_crypto_tape_anchor_feed=s.marketops_include_crypto_tape_anchor_feed,
             fail_fast=s.marketops_fail_fast,
         )
 
@@ -280,6 +285,7 @@ class MarketOpsAutopilotService:
         champion_challenger_service=None,
         alert_service: MarketOpsAlertService | None = None,
         edge_precheck_service=None,
+        anchor_feed_session_factory=None,
     ):
         self.config = config or MarketOpsConfig.from_settings()
         self.promotion_service = promotion_service or SignalPromotionService()
@@ -290,6 +296,9 @@ class MarketOpsAutopilotService:
         self._cc_service = champion_challenger_service
         self._edge_service = edge_precheck_service
         self.alert_service = alert_service or MarketOpsAlertService()
+        # ANCHOR-FEED-MEASUREMENT-001: injectable for tests; defaults to the
+        # app sessionmaker (an isolated short-lived session per cycle).
+        self._anchor_feed_session_factory = anchor_feed_session_factory
 
     # --- stage helpers -----------------------------------------------------
 
@@ -672,6 +681,7 @@ class MarketOpsAutopilotService:
                 summary["stages"]["probability_markets"] = "skipped"
 
             # 4. Crypto lane
+            crypto_run = None
             if cfg.include_crypto:
 
                 async def crypto():
@@ -714,6 +724,28 @@ class MarketOpsAutopilotService:
                             alerts_created += 1
             else:
                 summary["stages"]["crypto_scan"] = "skipped"
+
+            # 4a. CRYPTO-HORIZON-ANCHOR-FEED-MEASUREMENT-001 — isolated,
+            # provider-free, exact-cycle anchor materialization AFTER the crypto
+            # stage has persisted and committed its discovery results and BEFORE
+            # the readiness evaluation, so readiness can inspect the newly
+            # materialized anchors in the same natural cycle. Uses the existing
+            # lifecycle-tape logic on an isolated short-lived session (never the
+            # shared cycle session), starts no scan, calls no provider, creates
+            # no cohort/observation/unit, runs at most once per cycle, is
+            # idempotent on replay, and CANNOT fail the cycle: any exception is
+            # caught (never re-raised, even under fail_fast) and recorded.
+            # Default-off; a complete no-op when off.
+            if cfg.include_crypto_tape_anchor_feed and cfg.include_crypto:
+                # Checkpoint-commit the shared session FIRST (run counters and
+                # any crypto spike alert may be flushed-but-uncommitted, which
+                # would hold the SQLite write lock this same coroutine's
+                # isolated feed session must acquire — self-contention that can
+                # never resolve). Consistent with the documented
+                # "checkpoint-committed, not atomic" cycle contract; guarded by
+                # the flag so the disabled path is byte-identical to before.
+                session.commit()
+                self._materialize_cycle_anchors(crypto_run, summary)
 
             # 4b. CRYPTO-HORIZON-CANDIDATE-READINESS-001 — isolated, non-blocking,
             # report-only measurement AFTER crypto persistence. It reads persisted
@@ -846,6 +878,94 @@ class MarketOpsAutopilotService:
             run.duration_ms = max(0, int((run.finished_at - started_at).total_seconds() * 1000))
             session.commit()
             return run
+
+    def _materialize_cycle_anchors(self, crypto_run, summary: dict) -> None:
+        """CRYPTO-HORIZON-ANCHOR-FEED-MEASUREMENT-001 — isolated provider-free
+        exact-cycle anchor materialization. NEVER raises: any failure is
+        recorded in the summary and swallowed so the MarketOps cycle is
+        unaffected. Zero provider calls; no second scan; no cohort/observation/
+        unit; bounded token count per cycle; idempotent on replay. Uses its own
+        short-lived session so the shared cycle session's transaction
+        boundaries are untouched. The bounded summary carries counts only —
+        token-level provenance stays in the lifecycle tables."""
+        import time as _time_mod
+
+        started = _now()
+        try:
+            if crypto_run is None:
+                summary["anchor_feed"] = {
+                    "status": "skipped_no_crypto_run",
+                    "source_crypto_run_id": None,
+                    "external_calls": 0,
+                    "duration_ms": 0,
+                    "error": None,
+                }
+                return
+            from app.services.crypto_tape import (
+                DB_LOCKED_MAX_ATTEMPTS,
+                DB_LOCKED_RETRY_SECONDS,
+                CryptoLifecycleTapeRecorder,
+                _is_db_locked,
+                new_token_ids_for_run,
+            )
+
+            recorder = CryptoLifecycleTapeRecorder()
+            if self._anchor_feed_session_factory is not None:
+                feed_session = self._anchor_feed_session_factory()
+            else:
+                from app.db import get_sessionmaker
+
+                feed_session = get_sessionmaker()()
+            try:
+                token_ids = new_token_ids_for_run(
+                    feed_session, crypto_run.id, chain=recorder.config.chain
+                )
+                result = None
+                last_exc: BaseException | None = None
+                # canonical tape lock convention (same matcher/attempts/backoff
+                # as the manual tape session) — never a new divergent ladder
+                for attempt in range(1, DB_LOCKED_MAX_ATTEMPTS + 1):
+                    try:
+                        result = recorder.record_discovery_run(
+                            feed_session, crypto_run.id, token_ids, dry_run=False
+                        )
+                        break
+                    except Exception as exc:
+                        last_exc = exc
+                        feed_session.rollback()
+                        if _is_db_locked(exc) and attempt < DB_LOCKED_MAX_ATTEMPTS:
+                            _time_mod.sleep(DB_LOCKED_RETRY_SECONDS)
+                            continue
+                        raise
+                assert result is not None  # loop either set result or raised
+                summary["anchor_feed"] = {
+                    "status": result["status"],
+                    "source_crypto_run_id": result["source_crypto_run_id"],
+                    "tokens_received": result["tokens_received"],
+                    "tokens_validated": result["tokens_validated"],
+                    "anchors_attempted": result["anchors_attempted"],
+                    "anchors_created": result["anchors_created"],
+                    "anchors_existing": result["anchors_existing"],
+                    "complete_anchors": result["complete_anchors"],
+                    "incomplete_anchors": result["incomplete_anchors"],
+                    "skipped_cap": result["skipped_cap"],
+                    "external_calls": result["external_calls"],
+                    "duration_ms": max(
+                        0, int((_now() - started).total_seconds() * 1000)
+                    ),
+                    "error": result["error"],
+                }
+            finally:
+                feed_session.close()
+        except Exception as exc:  # never fail the cycle
+            logger.warning("anchor-feed hook failed (isolated): %s", exc)
+            summary["anchor_feed"] = {
+                "status": "error",
+                "source_crypto_run_id": getattr(crypto_run, "id", None),
+                "external_calls": 0,
+                "duration_ms": max(0, int((_now() - started).total_seconds() * 1000)),
+                "error": f"{type(exc).__name__}: {str(exc)[:200]}",
+            }
 
     def _evaluate_candidate_readiness(self, session: Session, run, summary: dict) -> None:
         """Isolated report-only readiness measurement. NEVER raises: any failure is

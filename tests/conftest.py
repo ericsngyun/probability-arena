@@ -5,6 +5,21 @@ import pytest
 from app.schemas import MarketData
 
 
+@pytest.fixture(autouse=True)
+def _isolate_sqlite_telemetry(tmp_path, monkeypatch):
+    """SQLITE-LOCK-TELEMETRY-001A: every test writes telemetry (if any) to a
+    per-test temp dir, never to the real ~/probability-arena-telemetry/ —
+    instrumented writers (tick aggregation, backup) are exercised by many
+    pre-existing tests. Also resets the process-wide sink singleton."""
+    import app.telemetry.sink as _telemetry_sink
+
+    monkeypatch.setenv(
+        "SQLITE_TELEMETRY_DIR", str(tmp_path / "telemetry-isolated"))
+    _telemetry_sink._sink = None
+    yield
+    _telemetry_sink._sink = None
+
+
 @pytest.fixture
 def sample_kalshi_market() -> dict:
     """Raw market object shaped like GET /trade-api/v2/markets output."""

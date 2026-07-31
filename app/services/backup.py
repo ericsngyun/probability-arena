@@ -24,8 +24,53 @@ from pathlib import Path
 from sqlalchemy.engine.url import make_url
 
 from app.config import Settings, get_settings
+from app.telemetry.sqlite_events import OpContext, emit_event
 
 logger = logging.getLogger(__name__)
+
+
+def _emit_backup_event(
+    ctx: OpContext | None, *, outcome: str, exc: BaseException | None = None,
+    db_path: Path | None = None, journal_mode: str | None = None,
+    synchronous_mode: str | None = None,
+) -> None:
+    """SQLITE-LOCK-TELEMETRY-001A: one reader op event per real backup, for
+    writer-overlap measurement. Emitted AFTER the backup finishes or after
+    terminal failure handling; never raises, never changes backup behavior."""
+    if ctx is None:
+        return
+    try:
+        gauges: dict = {}
+        try:
+            if db_path is not None and db_path.exists():
+                gauges["database_bytes"] = db_path.stat().st_size
+                vfs = os.statvfs(db_path.parent)
+                gauges["filesystem_free_bytes"] = vfs.f_bavail * vfs.f_frsize
+        except OSError:  # gauge loss must not drop the whole event
+            gauges = {}
+        category = None
+        if exc is not None:
+            if isinstance(exc, FileNotFoundError):
+                category = "filesystem_error"
+            elif isinstance(exc, OSError) and getattr(exc, "errno", None) == 28:
+                category = "disk_full"
+            elif isinstance(exc, OSError):
+                category = "filesystem_error"
+            else:
+                category = "unknown"
+        emit_event(
+            ctx,
+            outcome=outcome,
+            exception_class=type(exc).__name__ if exc is not None else None,
+            exception_category=category,
+            journal_mode=journal_mode,
+            synchronous_mode=synchronous_mode,
+            external_calls=0,
+            filesystem_io_during_transaction=False,  # reader; no write txn
+            **gauges,
+        )
+    except Exception:  # pragma: no cover - defensive
+        pass
 
 BACKUP_PREFIX = "backup-"
 BACKUP_SUFFIX = ".db.gz"
@@ -110,33 +155,65 @@ def backup_database(settings: Settings | None = None) -> BackupResult | str:
     settings = settings or get_settings()
     db_path = _sqlite_path(settings)
     if db_path is None:
-        return UNSUPPORTED_GUIDANCE
-    if not db_path.exists():
-        raise FileNotFoundError(f"SQLite database not found at {db_path}")
+        return UNSUPPORTED_GUIDANCE  # no operation performed — no event
 
-    directory = _backup_dir(settings)
-    directory.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    target = directory / f"{BACKUP_PREFIX}{stamp}{BACKUP_SUFFIX}"
-
-    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
-        tmp_path = Path(tmp.name)
+    # SQLITE-LOCK-TELEMETRY-001A: measurement only; a telemetry failure can
+    # never fail the backup, and backup errors propagate exactly as before.
     try:
-        source = sqlite3.connect(str(db_path))
-        try:
-            snapshot = sqlite3.connect(str(tmp_path))
-            try:
-                source.backup(snapshot)  # online backup API: consistent under writers
-            finally:
-                snapshot.close()
-        finally:
-            source.close()
-        with open(tmp_path, "rb") as raw, gzip.open(target, "wb") as compressed:
-            shutil.copyfileobj(raw, compressed)
-    finally:
-        tmp_path.unlink(missing_ok=True)
+        ctx = OpContext(
+            writer_name="backup", writer_class="maintenance",
+            operation_name="backup_database",
+        )
+    except Exception:  # pragma: no cover - defensive
+        ctx = None
+    journal_mode = synchronous_mode = None
 
-    pruned = prune_old_backups(settings)
+    try:
+        if not db_path.exists():
+            raise FileNotFoundError(f"SQLite database not found at {db_path}")
+
+        directory = _backup_dir(settings)
+        directory.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        target = directory / f"{BACKUP_PREFIX}{stamp}{BACKUP_SUFFIX}"
+
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
+            tmp_path = Path(tmp.name)
+        try:
+            source = sqlite3.connect(str(db_path))
+            try:
+                try:
+                    # query form only — sampling, never an assignment
+                    journal_mode = source.execute(
+                        "PRAGMA journal_mode").fetchone()[0]
+                    synchronous_mode = str(source.execute(
+                        "PRAGMA synchronous").fetchone()[0])
+                except Exception:  # pragma: no cover - sampling is optional
+                    journal_mode = synchronous_mode = None
+                snapshot = sqlite3.connect(str(tmp_path))
+                try:
+                    source.backup(snapshot)  # online backup API: consistent under writers
+                finally:
+                    snapshot.close()
+            finally:
+                source.close()
+            with open(tmp_path, "rb") as raw, gzip.open(target, "wb") as compressed:
+                shutil.copyfileobj(raw, compressed)
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
+        pruned = prune_old_backups(settings)
+    except BaseException as exc:
+        _emit_backup_event(
+            ctx, outcome="failed_other", exc=exc, db_path=db_path,
+            journal_mode=journal_mode, synchronous_mode=synchronous_mode,
+        )
+        raise
+
+    _emit_backup_event(
+        ctx, outcome="success", db_path=db_path,
+        journal_mode=journal_mode, synchronous_mode=synchronous_mode,
+    )
     return BackupResult(
         path=str(target),
         size_bytes=target.stat().st_size,

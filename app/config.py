@@ -271,6 +271,15 @@ class Settings(BaseSettings):
     # and can never change the MarketOps cycle result or exit code. Off = the hook
     # is a complete no-op (deploying the code does not activate live persistence).
     marketops_include_candidate_readiness: bool = False
+    # CRYPTO-HORIZON-ANCHOR-FEED-MEASUREMENT-001: default OFF. When true, an
+    # isolated provider-free hook runs AFTER the crypto persistence stage and
+    # BEFORE the candidate-readiness evaluation, materializing canonical birth
+    # anchors for EXACTLY the raw tokens newly persisted by that same natural
+    # discovery cycle (existing lifecycle-tape logic; no second scan, zero
+    # provider calls, bounded per-cycle token cap, idempotent, isolated
+    # session). It creates no cohort/observation/unit and can never change the
+    # MarketOps cycle result or exit code. Off = a complete no-op.
+    marketops_include_crypto_tape_anchor_feed: bool = False
 
     # Crypto Arena scout (CRYPTO-001) — read-only Solana memecoin
     # surveillance: discovery, price/liquidity ticks, deterministic risk

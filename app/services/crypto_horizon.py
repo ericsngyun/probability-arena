@@ -46,7 +46,13 @@ from app.models import (
     CryptoToken,
     CryptoTokenBirthEvent,
 )
-from app.services.crypto_tape import HORIZON_TOLERANCE, HORIZONS, _aware, _now
+from app.services.crypto_tape import (  # noqa: F401 (_completeness_reason re-exported)
+    HORIZON_TOLERANCE,
+    HORIZONS,
+    _aware,
+    _completeness_reason,
+    _now,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -122,20 +128,11 @@ def _valid_token_id(token: str) -> bool:
     return bool(isinstance(token, str) and _CANONICAL_TOKEN_RE.match(token))
 
 
-def _completeness_reason(birth, min_liquidity: float) -> str | None:
-    """None when the birth is a COMPLETE lifecycle anchor; else the rejection
-    reason. Mirrors the --require-complete filter, per token."""
-    if not birth.first_pair_address:
-        return "invalid_pair"
-    if birth.initial_price_usd is None:
-        return "missing_initial_price"
-    if birth.initial_liquidity_usd is None:
-        return "liquidity_or_initial_state_missing"
-    if birth.initial_liquidity_usd <= 0:
-        return "null_initial_liquidity"
-    if birth.initial_liquidity_usd <= min_liquidity:
-        return "below_min_liquidity"
-    return None
+# ANCHOR-FEED-MEASUREMENT-001: `_completeness_reason`'s canonical home moved to
+# the provider-free tape module (the anchor domain) so the exact-cycle anchor
+# feed can classify births without transitively importing this module's
+# provider adapter. Imported via the top-level crypto_tape import below and
+# re-exported unchanged for every existing caller.
 
 
 def _horizon_windows(anchor: datetime, now: datetime) -> list[dict]:

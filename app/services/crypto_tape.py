@@ -41,9 +41,36 @@ from app.models import (
     CryptoTokenLifecycleSnapshot,
     CryptoTokenRiskAssessment,
     CryptoTokenSurvivalOutcome,
+    CryptoWatcherRun,
     MemeAttentionSnapshot,
     MemeCatalystEvent,
 )
+
+def _completeness_reason(birth, min_liquidity: float) -> str | None:
+    """None when the birth is a COMPLETE lifecycle anchor; else the rejection
+    reason. Mirrors the --require-complete filter, per token. Canonical home
+    (ANCHOR-FEED-MEASUREMENT-001): lives in this provider-free module so the
+    exact-cycle anchor feed can classify births without importing anything
+    network-capable; `crypto_horizon` re-exports it unchanged."""
+    if not birth.first_pair_address:
+        return "invalid_pair"
+    if birth.initial_price_usd is None:
+        return "missing_initial_price"
+    if birth.initial_liquidity_usd is None:
+        return "liquidity_or_initial_state_missing"
+    if birth.initial_liquidity_usd <= 0:
+        return "null_initial_liquidity"
+    if birth.initial_liquidity_usd <= min_liquidity:
+        return "below_min_liquidity"
+    return None
+
+
+# CRYPTO-HORIZON-ANCHOR-FEED-MEASUREMENT-001: hard cap on tokens the
+# exact-cycle anchor feed will process from one natural discovery cycle.
+# Internal safety constant (never an environment knob); comfortably above the
+# marketops crypto scan's own bounded per-cycle output. An over-cap cycle is
+# skipped loudly (`skipped_cap`) — never silently truncated.
+MAX_ANCHOR_FEED_TOKENS_PER_CYCLE = 40
 
 logger = logging.getLogger(__name__)
 
@@ -616,8 +643,143 @@ class CryptoLifecycleTapeRecorder:
         limit = limit if limit is not None else self.config.default_limit
         hours = hours if hours is not None else self.config.default_window_hours
         cutoff = started - timedelta(hours=hours)
-
         tokens = self._universe(session, limit, cutoff)
+        summary = self._assemble_pass(
+            session, tokens, started=started, dry_run=dry_run,
+            window_hours=hours,
+            run_config={"limit": limit, "hours": hours, "chain": self.config.chain},
+        )
+        summary.pop("_births", None)  # internal accounting, not part of the contract
+        return summary
+
+    def record_discovery_run(
+        self,
+        session: Session,
+        crypto_run_id: int,
+        token_ids,
+        *,
+        dry_run: bool = False,
+    ) -> dict:
+        """CRYPTO-HORIZON-ANCHOR-FEED-MEASUREMENT-001 — exact-cycle anchor
+        materialization. Consolidates EXACTLY the given canonical token ids —
+        which must all have been first persisted by crypto discovery run
+        `crypto_run_id` — into lifecycle rows via the same `_assemble_pass`
+        the manual tape uses (no second lifecycle-anchor implementation).
+
+        Guarantees: exact canonical ids only (no symbol/partial/freshest
+        fallback, no substitution); membership validated against the exact
+        originating run BEFORE any write (fail-closed — validation failure
+        persists nothing); input order preserved; existing anchors
+        deduplicated idempotently; one bounded transaction; zero provider
+        access; hard-capped at MAX_ANCHOR_FEED_TOKENS_PER_CYCLE (an over-cap
+        cycle is skipped loudly, never truncated silently). Measurement
+        only — never advice."""
+        started = _now()
+        received = list(token_ids)  # materialize once (generator-safe)
+
+        def _result(status: str, **extra) -> dict:
+            base = {
+                "status": status,
+                "note": TAPE_NOTE,
+                "mode": "exact_cycle",
+                "source_crypto_run_id": crypto_run_id,
+                "external_calls": 0,
+                "tokens_received": len(received),
+                "tokens_validated": 0,
+                "anchors_attempted": 0,
+                "anchors_created": 0,
+                "anchors_existing": 0,
+                "complete_anchors": 0,
+                "incomplete_anchors": 0,
+                "skipped_cap": 0,
+                "error": None,
+                "duration_ms": max(0, int((_now() - started).total_seconds() * 1000)),
+            }
+            base.update(extra)
+            return base
+
+        run = session.get(CryptoWatcherRun, crypto_run_id)
+        if run is None:
+            return _result("unknown_run", error="crypto discovery run not found")
+
+        ordered = list(dict.fromkeys(received))  # dedupe, preserve input order
+        if not ordered:
+            return _result("no_new_tokens")
+        if len(ordered) > MAX_ANCHOR_FEED_TOKENS_PER_CYCLE:
+            return _result(
+                "skipped_cap", skipped_cap=len(ordered),
+                error=(
+                    f"cycle produced {len(ordered)} tokens > cap "
+                    f"{MAX_ANCHOR_FEED_TOKENS_PER_CYCLE}; no anchors created"
+                ),
+            )
+
+        window_start = _aware(run.started_at)
+        window_end = _aware(run.finished_at) or _now()
+        tokens: list[CryptoToken] = []
+        for token_id in ordered:
+            if not isinstance(token_id, str) or not token_id.strip() or len(token_id) > 64:
+                return _result("invalid_token", error="malformed canonical token id")
+            token = session.execute(
+                select(CryptoToken).where(
+                    CryptoToken.chain == self.config.chain,
+                    CryptoToken.token_address == token_id,
+                )
+            ).scalars().first()
+            if token is None:
+                return _result(
+                    "invalid_token",
+                    error="canonical token id not persisted for this chain",
+                )
+            if not (window_start <= _aware(token.first_seen_at) <= window_end):
+                return _result(
+                    "membership_mismatch",
+                    error="token was not first persisted by the given discovery run",
+                )
+            tokens.append(token)
+
+        summary = self._assemble_pass(
+            session, tokens, started=started, dry_run=dry_run,
+            window_hours=None,
+            run_config={
+                "mode": "exact_cycle",
+                "source_crypto_run_id": crypto_run_id,
+                "chain": self.config.chain,
+            },
+        )
+        births = summary.pop("_births", [])
+        complete = incomplete = 0
+        for birth in births:
+            if _completeness_reason(birth, 0.0) is None:
+                complete += 1
+            else:
+                incomplete += 1
+        created = summary["birth_events_created"]
+        return _result(
+            "dry_run" if dry_run else "ok",
+            tokens_validated=len(tokens),
+            anchors_attempted=len(tokens),
+            anchors_created=created,
+            anchors_existing=len(tokens) - created,
+            complete_anchors=complete,
+            incomplete_anchors=incomplete,
+            tape_run_id=summary.get("tape_run_id"),
+            tokens_considered=summary["tokens_considered"],
+            snapshots_created=summary["snapshots_created"],
+            outcomes_updated=summary["outcomes_updated"],
+        )
+
+    def _assemble_pass(
+        self,
+        session: Session,
+        tokens: list,
+        *,
+        started: datetime,
+        dry_run: bool,
+        window_hours: int | None,
+        run_config: dict,
+    ) -> dict:
+        hours = window_hours
         existing_births = {
             b.token_address: b
             for b in session.execute(
@@ -643,12 +805,13 @@ class CryptoLifecycleTapeRecorder:
         }
         survival_mix: dict[str, int] = {}
         examples: list[dict] = []
+        births_seen: list[CryptoTokenBirthEvent] = []
 
         run: CryptoTokenLifecycleRun | None = None
         if not dry_run:
             run = CryptoTokenLifecycleRun(
                 status="running", started_at=started, window_hours=hours,
-                config={"limit": limit, "hours": hours, "chain": self.config.chain},
+                config=run_config,
                 created_at=started,
             )
             session.add(run)
@@ -677,6 +840,7 @@ class CryptoLifecycleTapeRecorder:
                         session.add(birth)
                         session.flush()
                         existing_births[token.token_address] = birth
+                births_seen.append(birth)
 
                 snapshot = self.build_snapshot(
                     sources, birth if birth.id is not None else None, started
@@ -746,6 +910,7 @@ class CryptoLifecycleTapeRecorder:
                 "provider_coverage": coverage_summary,
                 "survival_label_mix": dict(sorted(survival_mix.items())),
                 "examples": examples,
+                "_births": births_seen,
             }
             if dry_run:
                 return summary
@@ -929,6 +1094,26 @@ SESSION_NOTE = (
     "provider-budget impact (each pass reads persisted rows only). Not a "
     "timer, not a daemon, never autonomous; measurement only, never advice."
 )
+
+
+def new_token_ids_for_run(
+    session: Session, crypto_run_id: int, chain: str = "solana"
+) -> list[str]:
+    """Canonical token ids FIRST persisted by exactly the given crypto
+    discovery run (first_seen_at within the run's own start/finish window),
+    in persistence order. Read-only; zero provider access. Returns [] for an
+    unknown run — `record_discovery_run` re-validates and fails closed."""
+    run = session.get(CryptoWatcherRun, crypto_run_id)
+    if run is None:
+        return []
+    window_end = run.finished_at or _now().replace(tzinfo=None)
+    return list(session.execute(
+        select(CryptoToken.token_address).where(
+            CryptoToken.chain == chain,
+            CryptoToken.first_seen_at >= run.started_at,
+            CryptoToken.first_seen_at <= window_end,
+        ).order_by(CryptoToken.first_seen_at, CryptoToken.id)
+    ).scalars().all())
 
 
 def _is_db_locked(exc: BaseException | None) -> bool:
