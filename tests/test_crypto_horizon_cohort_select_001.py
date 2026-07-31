@@ -16,8 +16,6 @@ from app.db import Base
 from app.models import CryptoHorizonCohort, CryptoHorizonCohortMember, CryptoTokenBirthEvent
 from app.services.crypto_horizon import CryptoHorizonService
 
-NOW = datetime(2026, 7, 15, 12, 0, tzinfo=timezone.utc)
-
 
 @pytest.fixture
 def session():
@@ -28,7 +26,7 @@ def session():
 
 
 def add_birth(session, addr, *, mins_ago, symbol, liq, pair="p", price=1e-5):
-    anchor = NOW - timedelta(minutes=mins_ago)
+    anchor = datetime.now(timezone.utc) - timedelta(minutes=mins_ago)
     b = CryptoTokenBirthEvent(
         chain="solana", token_address=addr, symbol=symbol,
         observed_at=anchor, first_evidence_at=anchor,
