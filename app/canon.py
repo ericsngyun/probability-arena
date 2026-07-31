@@ -15,8 +15,10 @@ CURRENT_PHASE = (
     "risk engine (a risk score is an avoid/flag verdict, never a trade "
     "recommendation), lifecycle tape, bounded frozen-cohort horizon observation "
     "and explicitly-armed one-shot orchestration, shared-candidate feasibility "
-    "analysis, and an ACTIVE measurement-only candidate-readiness signal "
-    "(through the 2026-07-23 / 2026-07-30 checkpoints). Polymarket observation, "
+    "analysis, and a measurement-only candidate-readiness signal whose 14-day "
+    "observation window CLOSED 2026-07-31 with a PASS (both checkpoints done; the "
+    "hook remains enabled pending an explicit keep-on/turn-off decision). "
+    "Polymarket observation, "
     "cross-venue comparability, and tennis market/tape research are read-only "
     "measurement lanes."
 )
@@ -100,13 +102,31 @@ EXPECTED_SERVICES_EVO_X2 = (
 )
 
 NEXT_MILESTONES = (
-    "Crypto candidate-readiness measurement ACTIVE on EVO-X2 "
-    "(MARKETOPS_INCLUDE_CANDIDATE_READINESS=true) through the 2026-07-23 (7-day) "
-    "and 2026-07-30 (14-day) checkpoints — measurement only, no cohort creation/arming",
-    "CANARY-004 (shared-pass horizon canary) requires a naturally observed compliant "
-    "complete two-token pair AND separate explicit human approval — not scheduled",
-    "CRYPTO-DISCOVERY-FRESHNESS-001 deferred pending readiness catch-rate evidence "
-    "(SHARED-CANDIDATE-FEASIBILITY-001 verdict: the discovery source is the blocker)",
+    "Crypto candidate-readiness measurement window CLOSED 2026-07-31: both the "
+    "7-day and 14-day checkpoints PASSED (docs/CRYPTO_HORIZON_READINESS_CHECKPOINT_"
+    "14D_2026_07_30.md). Both MARKETOPS_INCLUDE_CANDIDATE_READINESS and "
+    "MARKETOPS_INCLUDE_CRYPTO_TAPE_ANCHOR_FEED are still true on EVO-X2 and still "
+    "measurement-only (no cohort creation/arming) — whether to keep them on now that "
+    "the window has closed is an OPEN human decision, not an assumption",
+    "CANARY-004 (shared-pass horizon canary) is the RECOMMENDED next step per the "
+    "14-day verdict, but arming still requires explicit human approval given AT a "
+    "live readiness moment, never retroactively. Pair scarcity is no longer the "
+    "constraint: Epoch 4 saw 496 distinct live pairs (~66/day) with 62% persisting "
+    "across >=2 consecutive cycles — the binding constraint is now approval timing",
+    "CRYPTO-DISCOVERY-FRESHNESS-001 SUPERSEDED — close or re-scope before building. "
+    "Its premise (SHARED-CANDIDATE-FEASIBILITY-001: 'the discovery source is the "
+    "blocker') was overturned by the 14-day evidence: the real blocker was "
+    "birth-anchor production, now fixed by the exact-cycle anchor feed (lag ~85min "
+    "-> median 17.2s; 100% of anchors persist while 15m-feasible, vs 8.7% before)",
+    "Storage gate wants its own OPS milestone: the DB is at ~132% of the 3072MiB "
+    "app-level gate (295 open critical db_growth_warning alerts), growth dominated "
+    "by market_price_ticks (~2.1GB). Pre-existing since 2026-07-05, NOT attributable "
+    "to the crypto lanes; host itself is fine (62% used). Retention/aggregation "
+    "decision, not a horizon decision",
+    "Freeze-deferred merges are now eligible (the window they waited on has closed): "
+    "SQLITE-LOCK-TELEMETRY-001B, the CLI decomposition, and forecast PRs #1/#2. "
+    "PR#2 is stacked on PR#1's branch — merge PR#1 to main first, then rebase/"
+    "retarget PR#2. None merged yet; order is the operator's call",
     "Measurement-only forecast reports (scorability audit, reliability decomposition) "
     "may be developed separately — read-only, no forecast/gate/label change",
     "Goalserve-backed tennis live-state work blocked pending the API key",
