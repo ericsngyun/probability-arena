@@ -33,7 +33,13 @@ from app.services import forecast_reliability as fr
 
 REPO = Path(__file__).resolve().parents[1]
 MODULE = REPO / "app/services/forecast_reliability.py"
-NOW = datetime(2026, 7, 16, 12, 0, tzinfo=timezone.utc)
+# Anchored to the real clock, never a fixed calendar date: the CLI parity test
+# compares build_reliability_report(now=NOW) against the CLI, which takes no `now`
+# and evaluates its `hours=` lookback against the real clock. A pinned NOW makes the
+# seeded rows age out of that window (they did, on 2026-07-26), failing for calendar
+# reasons alone. Every seed time below is relative to NOW, so their ordering — and
+# every assertion — is unchanged.
+NOW = datetime.now(timezone.utc)
 _n = {"i": 0}
 
 
