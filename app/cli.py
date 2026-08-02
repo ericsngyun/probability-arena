@@ -5057,19 +5057,56 @@ async def cross_venue_candidates(label: str | None = None, session=None) -> int:
             session.close()
 
 
-async def backup_db() -> int:
-    """Create a compressed, timestamped SQLite backup (consistent snapshot
-    via the online backup API) and prune old ones. Returns 0 on success."""
+async def backup_db(dry_run: bool = False) -> int:
+    """Create a verified, compressed, timestamped SQLite backup (consistent
+    snapshot via the online backup API), publish it atomically only after
+    verification, then apply bounded tiered retention. Returns 0 on success;
+    a bounded skip (overlap/capacity) returns 0 without creating anything."""
     from app.services.backup import BackupResult, backup_database
 
-    result = backup_database()
+    result = backup_database(dry_run=dry_run)
     if isinstance(result, str):
         print(result)  # non-SQLite guidance; nothing executed
         return 1
     assert isinstance(result, BackupResult)
+    print("crypto/db backup — read-only snapshot of our own database, never advice")
+    print(f"status={result.status} external_calls=0")
+    if result.detail:
+        print(f"  {result.detail}")
+    if result.status == "dry_run":
+        print("  dry-run: no backup created, nothing deleted")
+        return 0
+    if result.status in ("skipped_overlap", "skipped_capacity"):
+        print("  skipped: not a successful backup; nothing created or deleted")
+        return 0
+    if result.status == "failed_verification":
+        return 1
     print(f"backup written: {result.path} ({result.size_bytes / (1024 * 1024):.2f} MiB)")
+    print(f"  manifest: {result.manifest_path}")
+    print(f"  sha256={result.sha256}")
+    print(f"  backup_ms={result.duration_ms} verification_ms={result.verification_ms}")
     for name in result.pruned:
         print(f"  pruned old backup: {name}")
+    return 0
+
+
+async def prune_db_backups(confirm: bool = False) -> int:
+    """Apply the bounded tiered backup-retention policy. Without --confirm this
+    only reports the plan; the newest backup is never deleted, and only
+    strictly-named files confined to the backup root are ever removed."""
+    from app.services.backup import apply_retention
+
+    plan = apply_retention(dry_run=not confirm)
+    print("db backup retention — bounded tiered policy, newest always retained")
+    print(f"mode={'confirmed' if confirm else 'dry_run'} external_calls=0")
+    print(f"retained={len(plan.retained)} deleted={len(plan.deleted)} "
+          f"skipped={len(plan.skipped)}")
+    for name in plan.retained:
+        print(f"  retain: {name}")
+    for name in plan.deleted:
+        print(f"  {'deleted' if confirm else 'would delete'}: {name}")
+    for name in plan.skipped:
+        print(f"  skip (not a managed backup): {name}")
     return 0
 
 
@@ -6550,14 +6587,32 @@ def build_parser() -> argparse.ArgumentParser:
         "cross-venue-candidates", help="List cross-venue candidates from the latest run (read-only)"
     )
     cv_cand_parser.add_argument("--label", type=str, default=None)
-    subparsers.add_parser(
+    backup_parser = subparsers.add_parser(
         "backup-db", help="Compressed timestamped SQLite backup (+retention pruning)"
+    )
+    backup_parser.add_argument(
+        "--dry-run", action="store_true",
+        help="report capacity and retention plan; create and delete nothing",
+    )
+    backup_parser.add_argument(
+        "--confirm", action="store_true",
+        help="explicit confirmation (default behaviour; kept for symmetry)",
     )
     subparsers.add_parser("list-db-backups", help="List existing DB backups")
     verify_backup_parser = subparsers.add_parser(
         "verify-db-backup", help="Verify a backup is readable and complete"
     )
     verify_backup_parser.add_argument("path", type=str)
+    prune_backups_parser = subparsers.add_parser(
+        "prune-db-backups",
+        help="Apply bounded tiered backup retention (needs --confirm to delete)",
+    )
+    prune_backups_parser.add_argument(
+        "--dry-run", action="store_true", help="list retained/deleted/skipped only"
+    )
+    prune_backups_parser.add_argument(
+        "--confirm", action="store_true", help="actually delete the planned backups"
+    )
     return parser
 
 
@@ -7037,12 +7092,14 @@ def main(argv: list[str] | None = None) -> int:
         n = asyncio.run(cross_venue_candidates(label=args.label))
         return 0 if n >= 0 else 1
     if args.command == "backup-db":
-        return asyncio.run(backup_db())
+        return asyncio.run(backup_db(dry_run=args.dry_run))
     if args.command == "list-db-backups":
         count = asyncio.run(list_db_backups())
         return 0 if count >= 0 else 1
     if args.command == "verify-db-backup":
         return asyncio.run(verify_db_backup(path=args.path))
+    if args.command == "prune-db-backups":
+        return asyncio.run(prune_db_backups(confirm=args.confirm))
     return 2
 
 

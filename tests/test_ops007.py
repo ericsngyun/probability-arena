@@ -154,17 +154,31 @@ class TestBackups:
         assert len(backups) == 2
         assert backups[0].name > backups[1].name
 
-    def test_retention_prunes_old_backups(self, tmp_path):
+    def test_retention_never_deletes_the_only_backup(self, tmp_path):
+        """SQLITE-BACKUP-COORDINATION-001 intentionally changed this behaviour.
+
+        The previous mtime-based policy would delete the sole remaining backup
+        once it aged past BACKUP_RETENTION_DAYS, leaving zero backups — a
+        latent data-loss bug. The bounded tiered policy always retains the
+        newest backup, however old it is.
+        """
         settings = make_settings(tmp_path, retention_days=7)
         backup_database(settings)
-        old = list_backups(settings)[0]
+        only = list_backups(settings)[0]
         ten_days_ago = time.time() - 10 * 86400
-        os.utime(old, (ten_days_ago, ten_days_ago))
+        os.utime(only, (ten_days_ago, ten_days_ago))
         pruned = prune_old_backups(settings)
-        assert pruned == [old]
-        assert list_backups(settings) == []
+        assert pruned == []
+        assert list_backups(settings) == [only]
 
-    def test_backup_run_prunes_inline(self, tmp_path):
+    def test_backup_run_applies_retention_inline(self, tmp_path):
+        """SQLITE-BACKUP-COORDINATION-001 intentionally changed this behaviour.
+
+        Retention is now filename-stamp based and tiered, with a recency floor:
+        the newest RETAIN_DAILY backups are always kept. Two recent backups are
+        therefore both retained (mtime is no longer consulted), and retention
+        still runs inline after a verified publication.
+        """
         settings = make_settings(tmp_path, retention_days=7)
         backup_database(settings)
         old = list_backups(settings)[0]
@@ -172,8 +186,9 @@ class TestBackups:
         os.utime(old, (ten_days_ago, ten_days_ago))
         time.sleep(1.1)
         result = backup_database(settings)
-        assert old.name in result.pruned
-        assert len(list_backups(settings)) == 1
+        assert result.status == "success"
+        assert result.pruned == []  # both are inside the recency floor
+        assert len(list_backups(settings)) == 2
 
     def test_verify_rejects_garbage_and_incomplete(self, tmp_path):
         garbage = tmp_path / "backup-garbage.db.gz"
