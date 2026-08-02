@@ -96,7 +96,8 @@ EXPECTED_SERVICES_EVO_X2 = (
     "probability-arena-meme-news.timer (systemd user, every 10min)",
     "probability-arena-tick-aggregation.timer (systemd user, hourly — storage plumbing)",
     "probability-arena-retention.timer (systemd user, daily)",
-    "probability-arena-backup.timer (systemd user, daily)",
+    "probability-arena-backup.timer (systemd user, daily 01:30 UTC — verified "
+    "SQLite backup to BACKUP_DIR on /mnt/data; SQLITE-BACKUP-COORDINATION-001)",
     "(explicitly-armed crypto-horizon one-shot user timers are transient/per-cohort "
     "and self-remove — not continuously-expected services)",
 )
