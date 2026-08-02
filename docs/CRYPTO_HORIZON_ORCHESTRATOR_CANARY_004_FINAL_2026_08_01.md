@@ -1,5 +1,11 @@
 # CRYPTO-HORIZON-ORCHESTRATOR-CANARY-004 — Lifecycle finalization (2026-08-01), PARTIAL
 
+> **SUPERSEDED by `CRYPTO_HORIZON_ORCHESTRATOR_CANARY_004_FINAL_2026_08_02.md`.**
+> Retained as historical evidence. This report was written while the 6h and 24h horizons
+> were still pending and therefore claims no full-lifecycle verdict. Both subsequently
+> executed naturally and passed; the full lifecycle verdict is **PASS**. Nothing in this
+> document is retracted — it was accurate at its capture instant (2026-08-01T02:08:37Z).
+
 ```text
 LIFECYCLE STATUS: INCOMPLETE — NOT YET FINALIZABLE
 15m: PASS (shared pass proven)
