@@ -5076,9 +5076,15 @@ async def backup_db(dry_run: bool = False) -> int:
     if result.status == "dry_run":
         print("  dry-run: no backup created, nothing deleted")
         return 0
-    if result.status in ("skipped_overlap", "skipped_capacity"):
+    if result.status == "skipped_overlap":
+        # transient and self-healing on the next cycle; not a unit failure
         print("  skipped: not a successful backup; nothing created or deleted")
         return 0
+    if result.status in ("skipped_capacity", "skipped_contention"):
+        # persistent, human-actionable conditions. Exiting 0 here would leave the
+        # timer green while backups silently stop happening, so fail the unit.
+        print("  skipped: not a successful backup; nothing created or deleted")
+        return 75  # EX_TEMPFAIL
     if result.status == "failed_verification":
         return 1
     print(f"backup written: {result.path} ({result.size_bytes / (1024 * 1024):.2f} MiB)")

@@ -29,6 +29,7 @@ import socket
 import sqlite3
 import subprocess
 import tempfile
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -97,9 +98,32 @@ DIR_MODE = 0o700
 FILE_MODE = 0o600
 
 # Capacity: the uncompressed snapshot and its gzip coexist in the backup dir,
-# so require 2x the database plus a bounded margin.
-CAPACITY_MULTIPLIER = 2
+# and verification decompresses a third full copy into TMPDIR (which we pin to
+# the backup filesystem), so require 3x the database plus a bounded margin.
+CAPACITY_MULTIPLIER = 3
 CAPACITY_MARGIN_BYTES = 512 * 1024 * 1024  # 512 MiB
+
+# Writer coordination (SQLITE-BACKUP-COORDINATION-001).
+#
+# The production database runs journal_mode=delete with a 30 s busy timeout. A
+# single-step online backup (sqlite3's default pages=-1) would hold one SHARED
+# read lock for the WHOLE multi-GiB copy; in rollback-journal mode that blocks
+# every writer's COMMIT, and a multi-minute hold exceeds the 30 s busy handler,
+# turning recoverable waits into hard "database is locked" failures.
+#
+# Copying in bounded steps releases and reacquires the read lock between steps,
+# so writers interleave normally. The cost is that a write from another
+# connection restarts the copy; RESTART/DEADLINE guards below keep that bounded
+# instead of spinning forever on a busy database.
+BACKUP_PAGES_PER_STEP = 4096  # ~16 MiB at a 4 KiB page size
+BACKUP_STEP_SLEEP_SECONDS = 0.05
+BACKUP_MAX_RESTARTS = 12
+BACKUP_DEADLINE_SECONDS = 1500  # 25 min hard stop, well inside TimeoutStartSec
+
+# Compression: level 9 measured ~14 MiB/s with no meaningful ratio gain over
+# level 6; level 1 is ~2x faster for ~4% more size. On a multi-GiB database the
+# critical path matters more than the last few percent.
+COMPRESS_LEVEL = 6
 
 # Bounded tiered retention. The newest backup is never deleted.
 RETAIN_DAILY = 7
@@ -144,6 +168,12 @@ class VerifyResult:
     sha256: str = ""
     alembic_revision: str | None = None
     counts: dict = field(default_factory=dict)
+
+
+class BackupContentionError(RuntimeError):
+    """The online copy could not converge against concurrent writers within the
+    bounded restart/deadline budget. Not a corruption signal — the source and
+    every existing backup are untouched."""
 
 
 @dataclass(frozen=True)
@@ -253,6 +283,20 @@ def _backup_lock(directory: Path):
         os.close(fd)
 
 
+def _create_private(path: Path):
+    """Create `path` O_EXCL|O_NOFOLLOW at 0600 and return the fd.
+
+    Writing to a bare path and chmod'ing afterwards leaves two holes: a planted
+    symlink at the (predictable, second-granular) name would be followed and its
+    target truncated, and the file exists 0644 until the chmod lands — which for
+    the raw snapshot means a full plaintext copy of the database is briefly
+    group/world readable. O_EXCL also makes a same-second stamp collision fail
+    loudly instead of silently overwriting an already-published backup.
+    """
+    return os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                   FILE_MODE)
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with open(path, "rb") as handle:
@@ -279,7 +323,8 @@ def list_backups(settings: Settings | None = None) -> list[Path]:
     if not directory.is_dir():
         return []
     return sorted(
-        (p for p in directory.iterdir() if _is_backup_name(p.name)),
+        (p for p in directory.iterdir()
+         if _is_backup_name(p.name) and _confined(p, directory) and p.is_file()),
         key=lambda p: p.name,
         reverse=True,
     )
@@ -357,10 +402,13 @@ def apply_retention(
     always leaves the newest backup in place. A backup's manifest is removed
     with it."""
     settings = settings or get_settings()
-    plan = plan_retention(settings, now=now)
     if dry_run:
-        return plan
+        return plan_retention(settings)
     directory = _backup_dir(settings)
+    if directory.is_symlink():
+        # backup_database refuses a symlinked root; the destructive path must too
+        raise ValueError(f"backup directory must not be a symlink: {directory}")
+    plan = plan_retention(settings)
     for name in plan.deleted:
         target = directory / name
         if not _is_backup_name(name) or not _confined(target, directory):
@@ -388,7 +436,7 @@ def prune_old_backups(settings: Settings | None = None) -> list[Path]:
 def _inspect_sqlite(path: Path) -> tuple[str, set[str], str | None, dict]:
     """(integrity, tables, alembic_revision, counts) from a plain .db file,
     opened read-only. Never migrates."""
-    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    conn = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)
     try:
         integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
         tables = {
@@ -413,7 +461,7 @@ def _inspect_sqlite(path: Path) -> tuple[str, set[str], str | None, dict]:
         conn.close()
 
 
-def verify_backup(path: str) -> VerifyResult:
+def verify_backup(path: str, *, tmp_dir: Path | None = None) -> VerifyResult:
     """Decompress to a temp file, run integrity_check, and confirm the
     expected core tables exist. Also reports sha256, Alembic revision, and
     bounded table counts. Read-only; never migrates the backup."""
@@ -425,7 +473,9 @@ def verify_backup(path: str) -> VerifyResult:
     if source.stat().st_size == 0:
         return VerifyResult(ok=False, detail=f"{path} is empty")
 
-    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
+    with tempfile.NamedTemporaryFile(
+        suffix=".db", delete=False, dir=str(tmp_dir) if tmp_dir else None
+    ) as tmp:
         tmp_path = Path(tmp.name)
     try:
         try:
@@ -461,6 +511,36 @@ def verify_backup(path: str) -> VerifyResult:
         )
     finally:
         tmp_path.unlink(missing_ok=True)
+
+
+def _reap_stale_partials(directory: Path, *, older_than_seconds: int = 6 * 3600) -> list[str]:
+    """Remove leftover working files from a run that was killed before its
+    cleanup could execute (e.g. SIGTERM on a systemd TimeoutStartSec overrun,
+    which does not unwind Python's handlers).
+
+    Only ever called while the exclusive backup flock is held, so nothing can be
+    in flight. Confined to the backup root, matches only our own working-file
+    shapes, and never touches a published artifact or manifest.
+    """
+    reaped: list[str] = []
+    if not directory.is_dir():
+        return reaped
+    cutoff = time.time() - older_than_seconds
+    for entry in directory.iterdir():
+        name = entry.name
+        is_working = name.endswith(PARTIAL_SUFFIX) or (
+            name.startswith(f".{BACKUP_PREFIX}") and name.endswith(f".raw{PARTIAL_SUFFIX}")
+        )
+        if not is_working or not _confined(entry, directory) or not entry.is_file():
+            continue
+        try:
+            if entry.stat().st_mtime < cutoff:
+                entry.unlink()
+                reaped.append(name)
+                logger.warning("Reaped stale backup working file %s", name)
+        except OSError:  # pragma: no cover - defensive
+            continue
+    return reaped
 
 
 def backup_database(
@@ -528,6 +608,8 @@ def backup_database(
                 detail="another backup run holds the backup lock",
             )
 
+        _reap_stale_partials(directory)
+
         started = datetime.now(timezone.utc)
         stamp = started.strftime(STAMP_FORMAT)
         target = directory / f"{BACKUP_PREFIX}{stamp}{BACKUP_SUFFIX}"
@@ -549,18 +631,48 @@ def backup_database(
                         "PRAGMA synchronous").fetchone()[0])
                 except Exception:  # pragma: no cover - sampling is optional
                     journal_mode = synchronous_mode = None
+                os.close(_create_private(raw_path))
                 snapshot = sqlite3.connect(str(raw_path))
                 try:
-                    source.backup(snapshot)  # online backup API: consistent under writers
+                    # Bounded, restart-aware chunked online backup: never holds
+                    # one long read lock against journal_mode=delete writers.
+                    state = {"remaining": None, "restarts": 0}
+                    deadline = time.monotonic() + BACKUP_DEADLINE_SECONDS
+
+                    def _progress(_status, remaining, _total):
+                        previous = state["remaining"]
+                        if previous is not None and remaining > previous:
+                            state["restarts"] += 1
+                            if state["restarts"] > BACKUP_MAX_RESTARTS:
+                                raise BackupContentionError(
+                                    f"online copy restarted "
+                                    f"{state['restarts']} times under concurrent "
+                                    f"writes; giving up without blocking them"
+                                )
+                        state["remaining"] = remaining
+                        if time.monotonic() > deadline:
+                            raise BackupContentionError(
+                                f"online copy exceeded "
+                                f"{BACKUP_DEADLINE_SECONDS}s deadline"
+                            )
+
+                    source.backup(
+                        snapshot,
+                        pages=BACKUP_PAGES_PER_STEP,
+                        sleep=BACKUP_STEP_SLEEP_SECONDS,
+                        progress=_progress,
+                    )
+                    restarts = state["restarts"]
                 finally:
                     snapshot.close()
             finally:
                 source.close()
-            os.chmod(raw_path, FILE_MODE)
-
-            with open(raw_path, "rb") as raw, gzip.open(partial, "wb") as compressed:
+            with open(raw_path, "rb") as raw, os.fdopen(
+                _create_private(partial), "wb"
+            ) as gz_fd, gzip.GzipFile(
+                fileobj=gz_fd, mode="wb", compresslevel=COMPRESS_LEVEL
+            ) as compressed:
                 shutil.copyfileobj(raw, compressed)
-            os.chmod(partial, FILE_MODE)
             raw_path.unlink(missing_ok=True)
 
             backup_ms = int(
@@ -568,7 +680,7 @@ def backup_database(
 
             # Verify the PARTIAL artifact. Nothing is published unless this passes.
             verify_started = datetime.now(timezone.utc)
-            verdict = verify_backup(str(partial))
+            verdict = verify_backup(str(partial), tmp_dir=directory)
             verify_ms = int(
                 (datetime.now(timezone.utc) - verify_started).total_seconds() * 1000)
             if not verdict.ok:
@@ -598,17 +710,32 @@ def backup_database(
                 "required_tables_present": sorted(EXPECTED_TABLES),
                 "selected_table_counts": verdict.counts,
                 "backup_duration_ms": backup_ms,
+                "online_copy_restarts": restarts,
                 "verification_duration_ms": verify_ms,
                 "host": socket.gethostname(),
                 "application_commit": _application_commit(),
                 "status": "verified",
             }
-            manifest_partial.write_text(json.dumps(manifest, indent=2, sort_keys=True))
-            os.chmod(manifest_partial, FILE_MODE)
+            with os.fdopen(_create_private(manifest_partial), "w") as handle:
+                handle.write(json.dumps(manifest, indent=2, sort_keys=True))
 
             # Atomic publication (same directory => same filesystem).
             os.replace(manifest_partial, manifest_target)
             os.replace(partial, target)
+        except BackupContentionError as exc:
+            for leftover in (raw_path, partial, manifest_partial):
+                try:
+                    leftover.unlink(missing_ok=True)
+                except OSError:  # pragma: no cover - defensive
+                    pass
+            _emit_backup_event(
+                ctx, outcome="skipped_contention", exc=exc, db_path=db_path,
+                journal_mode=journal_mode, synchronous_mode=synchronous_mode,
+            )
+            return BackupResult(
+                path="", size_bytes=0, pruned=[], status="skipped_contention",
+                detail=str(exc),
+            )
         except BaseException as exc:
             for leftover in (raw_path, partial, manifest_partial):
                 try:

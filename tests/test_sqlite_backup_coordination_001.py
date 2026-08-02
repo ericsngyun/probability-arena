@@ -138,7 +138,7 @@ class TestBackupContract:
 
     def test_uses_online_backup_api_not_raw_copy(self):
         source = (REPO / "app/services/backup.py").read_text()
-        assert "source.backup(snapshot)" in source
+        assert "source.backup(" in source
         assert "shutil.copy2(" not in source
 
     def test_no_provider_or_network_surface(self):
@@ -153,7 +153,7 @@ class TestPublicationSafety:
         settings = make_settings(tmp_path)
         monkeypatch.setattr(
             bk, "verify_backup",
-            lambda path: bk.VerifyResult(ok=False, detail="forced failure"),
+            lambda path, **_kw: bk.VerifyResult(ok=False, detail="forced failure"),
         )
         result = bk.backup_database(settings)
         assert result.status == "failed_verification"
@@ -190,8 +190,10 @@ class TestPublicationSafety:
         assert len(bk.list_backups(settings)) == 1
         assert bk._sqlite_path(settings).exists()
 
-    def test_capacity_requirement_is_two_x_plus_margin(self):
-        assert bk.capacity_required(1000) == 2000 + bk.CAPACITY_MARGIN_BYTES
+    def test_capacity_requirement_includes_every_concurrent_copy(self):
+        # raw snapshot + gzip + verification temp all coexist on the same volume
+        assert bk.capacity_required(1000) == (
+            bk.CAPACITY_MULTIPLIER * 1000 + bk.CAPACITY_MARGIN_BYTES)
 
 
 class TestConcurrency:
@@ -409,7 +411,7 @@ class TestRetention:
         before = {p.name for p in bk.list_backups(settings)}
         monkeypatch.setattr(
             bk, "verify_backup",
-            lambda path: bk.VerifyResult(ok=False, detail="forced"),
+            lambda path, **_kw: bk.VerifyResult(ok=False, detail="forced"),
         )
         assert bk.backup_database(settings).status == "failed_verification"
         assert {p.name for p in bk.list_backups(settings)} == before
@@ -508,3 +510,145 @@ class TestIsolation:
         finally:
             conn.close()
         assert not any("telemetry" in name.lower() for name in tables)
+
+
+class TestPartialFileHardening:
+    """Security-review required conditions: in-flight working files must be
+    0600 from birth and must never be written through a planted symlink."""
+
+    def test_planted_symlink_at_partial_is_refused(self, tmp_path):
+        settings = make_settings(tmp_path)
+        directory = bk._ensure_backup_dir(bk._backup_dir(settings))
+        victim = tmp_path / "victim.txt"
+        victim.write_text("do not clobber me")
+        # _create_private must refuse any pre-existing path, symlink or not
+        planted = directory / "planted.part"
+        planted.symlink_to(victim)
+        with pytest.raises(OSError):
+            bk._create_private(planted)
+        assert victim.read_text() == "do not clobber me"
+
+    def test_create_private_is_exclusive_and_0600(self, tmp_path):
+        directory = tmp_path / "d"
+        directory.mkdir()
+        target = directory / "artifact.part"
+        fd = bk._create_private(target)
+        os.close(fd)
+        assert os.stat(target).st_mode & 0o777 == bk.FILE_MODE
+        with pytest.raises(FileExistsError):
+            bk._create_private(target)  # O_EXCL: never silently overwrites
+
+    def test_in_flight_raw_snapshot_is_never_group_readable(self, tmp_path):
+        """The raw snapshot holds a full plaintext copy of the database while it
+        is being written; it must be 0600 for that entire window, not only after
+        a trailing chmod."""
+        settings = make_settings(tmp_path)
+        seen = {}
+        real_connect = bk.sqlite3.connect
+
+        def spy(target, *args, **kwargs):
+            path = Path(str(target))
+            if path.name.endswith(f".raw{bk.PARTIAL_SUFFIX}") and path.exists():
+                seen["mode"] = os.stat(path).st_mode & 0o777
+            return real_connect(target, *args, **kwargs)
+
+        with pytest.MonkeyPatch.context() as m:
+            m.setattr(bk.sqlite3, "connect", spy)
+            assert bk.backup_database(settings).status == "success"
+        assert seen.get("mode") == bk.FILE_MODE
+
+    def test_retention_rejects_symlinked_root_on_destructive_path(self, tmp_path):
+        real = tmp_path / "real_backups"
+        real.mkdir()
+        link = tmp_path / "linked_backups"
+        link.symlink_to(real, target_is_directory=True)
+        settings = make_settings(tmp_path, backup_dir=link)
+        with pytest.raises(ValueError):
+            bk.apply_retention(settings, dry_run=False)
+
+    def test_stale_partials_are_reaped_but_published_backups_are_not(self, tmp_path):
+        settings = make_settings(tmp_path)
+        directory = bk._ensure_backup_dir(bk._backup_dir(settings))
+        keeper = touch_backup(directory, "20260601T000000Z")
+        stale_gz = directory / "backup-20260101T000000Z.db.gz.part"
+        stale_raw = directory / ".backup-20260101T000000Z.raw.part"
+        for path in (stale_gz, stale_raw):
+            path.write_bytes(b"leftover")
+            old = time.time() - 12 * 3600
+            os.utime(path, (old, old))
+        fresh = directory / "backup-20260602T000000Z.db.gz.part"
+        fresh.write_bytes(b"in flight")
+        reaped = bk._reap_stale_partials(directory)
+        assert stale_gz.name in reaped and stale_raw.name in reaped
+        assert not stale_gz.exists() and not stale_raw.exists()
+        assert fresh.exists(), "recent working files must be left alone"
+        assert keeper.exists(), "published backups are never reaped"
+
+
+class TestWriterCoordination:
+    def test_online_copy_is_chunked_not_single_step(self):
+        """journal_mode=delete + a 30s busy timeout means a single-step copy of a
+        multi-GiB database would block every writer's COMMIT past the busy
+        handler. The copy must be bounded per step."""
+        source = (REPO / "app/services/backup.py").read_text()
+        assert "pages=BACKUP_PAGES_PER_STEP" in source
+        assert "sleep=BACKUP_STEP_SLEEP_SECONDS" in source
+        assert bk.BACKUP_PAGES_PER_STEP > 0
+
+    def test_contention_is_bounded_and_returns_skip_not_raise(self, tmp_path, monkeypatch):
+        settings = make_settings(tmp_path)
+
+        real_connect = bk.sqlite3.connect
+
+        class _Contended:
+            def __init__(self, conn):
+                self._conn = conn
+
+            def backup(self, *_a, **_kw):
+                raise bk.BackupContentionError("simulated restart storm")
+
+            def __getattr__(self, name):
+                return getattr(self._conn, name)
+
+        def fake_connect(target, *a, **kw):
+            conn = real_connect(target, *a, **kw)
+            path = Path(str(target))
+            return _Contended(conn) if path.name.endswith(".db") else conn
+
+        monkeypatch.setattr(bk.sqlite3, "connect", fake_connect)
+        result = bk.backup_database(settings)
+        assert result.status == "skipped_contention"
+        assert result.path == ""
+        assert bk.list_backups(settings) == []
+        directory = bk._backup_dir(settings)
+        assert not any(p.name.endswith(bk.PARTIAL_SUFFIX)
+                       for p in directory.iterdir())
+
+    def test_capacity_covers_verification_temp_copy(self):
+        """Verification decompresses a third full copy, so the gate is 3x."""
+        assert bk.CAPACITY_MULTIPLIER >= 3
+        assert bk.capacity_required(1000) == 3000 + bk.CAPACITY_MARGIN_BYTES
+
+    def test_verification_temp_is_pinned_to_backup_filesystem(self):
+        source = (REPO / "app/services/backup.py").read_text()
+        assert "verify_backup(str(partial), tmp_dir=directory)" in source
+
+
+class TestUnitHardening:
+    def _text(self):
+        return SERVICE_UNIT.read_text()
+
+    def test_requires_mount_and_pins_tmpdir(self):
+        text = self._text()
+        assert "RequiresMountsFor=/mnt/data" in text
+        assert "Environment=TMPDIR=" in text and "/mnt/data" in text
+
+    def test_timeout_has_headroom_over_internal_deadline(self):
+        text = self._text()
+        assert "TimeoutStartSec=45min" in text
+        # systemd must never be what kills the Python cleanup path
+        assert bk.BACKUP_DEADLINE_SECONDS < 45 * 60
+
+    def test_resource_limits_present(self):
+        text = self._text()
+        assert "Nice=" in text and "CPUWeight=" in text

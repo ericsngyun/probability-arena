@@ -1,19 +1,40 @@
-# Probability Arena — daily SQLite backup (consistent snapshot via the
-# sqlite3 online backup API, gzipped + retention-pruned). Read-only project;
+# Probability Arena — daily SQLite backup (chunked online-backup snapshot,
+# verified before publication, gzipped + tiered retention). Read-only project;
 # this only copies our own database file.
 # NOT auto-installed. See the .timer file for install commands.
+#
+# TimeoutStartSec is deliberately generous: it is headroom so the Python cleanup
+# path is never what gets SIGKILLed, not a licence to run long. The service
+# enforces its own 25-minute internal deadline (BACKUP_DEADLINE_SECONDS) and
+# returns a bounded skipped result well before systemd would intervene.
+#
+# RequiresMountsFor: BACKUP_DIR lives on /mnt/data. If that volume fails to
+# mount, the mountpoint directory still exists on the root volume and backups
+# would silently accumulate on the very filesystem this milestone exists to
+# protect. This turns that into a clean refusal instead.
+#
+# TMPDIR: verification decompresses a full copy of the database. Left at the
+# default it lands in /tmp on the root volume; pinning it keeps every large
+# temporary write on the backup filesystem, which is also what the capacity
+# gate measures.
 
 [Unit]
 Description=Probability Arena database backup (SQLite snapshot + retention)
-After=network-online.target
+RequiresMountsFor=/mnt/data
+After=probability-arena-retention.service probability-arena-baseline.service
 
 [Service]
 Type=oneshot
 WorkingDirectory=%h/projects/probability-arena
 EnvironmentFile=%h/projects/probability-arena/.env
-ExecStart=%h/projects/probability-arena/.venv/bin/python -m app.cli backup-db
+Environment=TMPDIR=/mnt/data/probability-arena-backups/tmp
+ExecStartPre=/bin/mkdir -p /mnt/data/probability-arena-backups/tmp
+ExecStart=%h/projects/probability-arena/.venv/bin/python -m app.cli backup-db --confirm
 NoNewPrivileges=true
-TimeoutStartSec=10min
+TimeoutStartSec=45min
+Nice=10
+CPUWeight=20
+IOWeight=20
 
 [Install]
 WantedBy=default.target
