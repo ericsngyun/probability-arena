@@ -297,6 +297,19 @@ def _create_private(path: Path):
                    FILE_MODE)
 
 
+def _fsync_dir(directory: Path) -> None:
+    """Persist directory entries so a published rename survives power loss.
+    os.replace orders the rename but does not sync the containing directory."""
+    try:
+        fd = os.open(directory, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    except OSError:  # pragma: no cover - best effort on odd filesystems
+        pass
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with open(path, "rb") as handle:
@@ -330,9 +343,7 @@ def list_backups(settings: Settings | None = None) -> list[Path]:
     )
 
 
-def plan_retention(
-    settings: Settings | None = None, *, now: datetime | None = None
-) -> RetentionPlan:
+def plan_retention(settings: Settings | None = None) -> RetentionPlan:
     """Bounded tiered retention: newest RETAIN_DAILY days, RETAIN_WEEKLY ISO
     weeks, RETAIN_MONTHLY months. The newest backup is ALWAYS retained.
     Anything that is not a strictly-named, confined, regular backup file is
@@ -394,8 +405,7 @@ def plan_retention(
 
 
 def apply_retention(
-    settings: Settings | None = None, *, dry_run: bool = True,
-    now: datetime | None = None,
+    settings: Settings | None = None, *, dry_run: bool = True
 ) -> RetentionPlan:
     """Evaluate retention; delete only when dry_run is False. Deletion is
     confined to the backup root, strict-name-matched, symlink-rejecting, and
@@ -528,8 +538,12 @@ def _reap_stale_partials(directory: Path, *, older_than_seconds: int = 6 * 3600)
     cutoff = time.time() - older_than_seconds
     for entry in directory.iterdir():
         name = entry.name
-        is_working = name.endswith(PARTIAL_SUFFIX) or (
-            name.startswith(f".{BACKUP_PREFIX}") and name.endswith(f".raw{PARTIAL_SUFFIX}")
+        is_working = (
+            name.endswith(PARTIAL_SUFFIX)
+            # the destination's own rollback journal during the online copy
+            or name.endswith(f"{PARTIAL_SUFFIX}-journal")
+            # verification's uncompressed copy (tmp_dir is the backup root)
+            or (name.startswith("tmp") and name.endswith(".db"))
         )
         if not is_working or not _confined(entry, directory) or not entry.is_file():
             continue
@@ -597,7 +611,7 @@ def backup_database(
             path="", size_bytes=0, pruned=[], status="skipped_capacity",
             detail=(
                 f"insufficient space at {directory}: {available} B free, "
-                f"requires {required} B (2x{db_bytes} + margin)"
+                f"requires {required} B ({CAPACITY_MULTIPLIER}x{db_bytes} + margin)"
             ),
         )
 
@@ -610,6 +624,7 @@ def backup_database(
 
         _reap_stale_partials(directory)
 
+        source_counts: dict = {}
         started = datetime.now(timezone.utc)
         stamp = started.strftime(STAMP_FORMAT)
         target = directory / f"{BACKUP_PREFIX}{stamp}{BACKUP_SUFFIX}"
@@ -665,6 +680,15 @@ def backup_database(
                     restarts = state["restarts"]
                 finally:
                     snapshot.close()
+                # M5: reconcile against the live source, so a structurally
+                # perfect but semantically empty snapshot cannot pass.
+                for table in MANIFEST_COUNT_TABLES:
+                    try:
+                        source_counts[table] = source.execute(
+                            f"SELECT count(*) FROM {table}"
+                        ).fetchone()[0]
+                    except sqlite3.Error:
+                        pass
             finally:
                 source.close()
             with open(raw_path, "rb") as raw, os.fdopen(
@@ -673,6 +697,8 @@ def backup_database(
                 fileobj=gz_fd, mode="wb", compresslevel=COMPRESS_LEVEL
             ) as compressed:
                 shutil.copyfileobj(raw, compressed)
+                compressed.flush()
+                os.fsync(gz_fd.fileno())  # H2: durability before verification
             raw_path.unlink(missing_ok=True)
 
             backup_ms = int(
@@ -695,8 +721,24 @@ def backup_database(
                     duration_ms=backup_ms, verification_ms=verify_ms,
                 )
 
+            empty = [
+                t for t, n in source_counts.items()
+                if n > 0 and verdict.counts.get(t, 0) <= 0
+            ]
+            if empty:
+                partial.unlink(missing_ok=True)
+                return BackupResult(
+                    path="", size_bytes=0, pruned=[], status="failed_verification",
+                    detail=(
+                        "backup is structurally valid but empty for "
+                        f"{sorted(empty)}; nothing published"
+                    ),
+                    duration_ms=backup_ms, verification_ms=verify_ms,
+                )
+
             manifest = {
                 "manifest_version": MANIFEST_VERSION,
+                "source_table_counts": source_counts,
                 "created_at": started.isoformat(),
                 "source_database_path_redacted": f".../{db_path.name}",
                 "source_database_bytes": db_bytes,
@@ -718,10 +760,16 @@ def backup_database(
             }
             with os.fdopen(_create_private(manifest_partial), "w") as handle:
                 handle.write(json.dumps(manifest, indent=2, sort_keys=True))
+                handle.flush()
+                os.fsync(handle.fileno())  # H2
 
-            # Atomic publication (same directory => same filesystem).
-            os.replace(manifest_partial, manifest_target)
+            # Atomic publication (same directory => same filesystem). The DATA
+            # file lands first and the manifest last, so the manifest is the
+            # commit record: a crash between them can orphan data (which
+            # retention manages) but never a manifest naming a missing file.
             os.replace(partial, target)
+            os.replace(manifest_partial, manifest_target)
+            _fsync_dir(directory)  # H2: persist the directory entries
         except BackupContentionError as exc:
             for leftover in (raw_path, partial, manifest_partial):
                 try:

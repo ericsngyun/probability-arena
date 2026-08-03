@@ -5131,9 +5131,12 @@ async def list_db_backups() -> int:
 async def verify_db_backup(path: str) -> int:
     """Verify a backup is readable, passes integrity_check, and contains the
     expected core tables. Returns 0 when ok."""
-    from app.services.backup import verify_backup
+    from app.config import get_settings
+    from app.services.backup import _backup_dir, verify_backup
 
-    result = verify_backup(path)
+    # decompress beside the backup root, never the default (root-volume) TMPDIR
+    tmp_dir = _backup_dir(get_settings())
+    result = verify_backup(path, tmp_dir=tmp_dir if tmp_dir.is_dir() else None)
     print(f"{'OK' if result.ok else 'FAILED'}: {result.detail}")
     return 0 if result.ok else 1
 

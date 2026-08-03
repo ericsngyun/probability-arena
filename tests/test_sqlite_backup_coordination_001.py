@@ -652,3 +652,87 @@ class TestUnitHardening:
     def test_resource_limits_present(self):
         text = self._text()
         assert "Nice=" in text and "CPUWeight=" in text
+
+
+class TestDurabilityAndReconciliation:
+    """SQLite-correctness review: H2 (durability), M3 (publication order),
+    M4 (reaper coverage), M5 (semantic reconciliation)."""
+
+    def test_artifact_and_directory_are_fsynced(self):
+        source = (REPO / "app/services/backup.py").read_text()
+        # os.replace orders the rename but not the data blocks or the dirent
+        assert "os.fsync(gz_fd.fileno())" in source
+        assert "os.fsync(handle.fileno())" in source
+        assert "_fsync_dir(directory)" in source
+
+    def test_manifest_is_published_last_as_the_commit_record(self):
+        source = (REPO / "app/services/backup.py").read_text()
+        data_idx = source.index("os.replace(partial, target)")
+        manifest_idx = source.index("os.replace(manifest_partial, manifest_target)")
+        assert data_idx < manifest_idx, (
+            "a crash between renames must never leave a manifest naming a "
+            "file that does not exist"
+        )
+
+    def test_manifest_records_source_side_counts(self, tmp_path):
+        settings = make_settings(tmp_path)
+        result = bk.backup_database(settings)
+        data = json.loads(Path(result.manifest_path).read_text())
+        assert "source_table_counts" in data
+        assert "selected_table_counts" in data
+
+    def test_structurally_valid_but_empty_backup_is_rejected(self, tmp_path, monkeypatch):
+        """integrity_check + table existence both pass on a zero-row database;
+        only reconciliation against the live source catches it."""
+        settings = make_settings(tmp_path)
+        real_verify = bk.verify_backup
+
+        def hollow(path, **kw):
+            verdict = real_verify(path, **kw)
+            return bk.VerifyResult(
+                ok=verdict.ok, detail=verdict.detail, tables=verdict.tables,
+                sha256=verdict.sha256, alembic_revision=verdict.alembic_revision,
+                counts={t: 0 for t in bk.MANIFEST_COUNT_TABLES},
+            )
+
+        # give the source a non-zero row so the reconciliation has something
+        # to compare against (ORM path: respects every NOT NULL constraint)
+        from sqlalchemy.orm import Session as _Session
+
+        from app.models import MarketOpsRun
+
+        engine = create_engine(settings.database_url)
+        with _Session(engine) as sess:
+            now = datetime.now(timezone.utc)
+            sess.add(MarketOpsRun(status="ok", started_at=now, created_at=now))
+            sess.commit()
+        engine.dispose()
+
+        monkeypatch.setattr(bk, "verify_backup", hollow)
+        result = bk.backup_database(settings)
+        assert result.status == "failed_verification"
+        assert "empty" in result.detail
+        assert bk.list_backups(settings) == []
+
+    def test_reaper_covers_journal_and_verification_temp(self, tmp_path):
+        settings = make_settings(tmp_path)
+        directory = bk._ensure_backup_dir(bk._backup_dir(settings))
+        keeper = touch_backup(directory, "20260601T000000Z")
+        old = time.time() - 12 * 3600
+        stale = []
+        for name in (".backup-20260101T000000Z.raw.part-journal", "tmpABCDEF.db"):
+            path = directory / name
+            path.write_bytes(b"leftover")
+            os.utime(path, (old, old))
+            stale.append(path)
+        reaped = bk._reap_stale_partials(directory)
+        for path in stale:
+            assert path.name in reaped and not path.exists()
+        assert keeper.exists()
+
+    def test_capacity_message_matches_the_actual_multiplier(self, tmp_path, monkeypatch):
+        settings = make_settings(tmp_path)
+        monkeypatch.setattr(bk, "free_bytes", lambda _d: 1)
+        result = bk.backup_database(settings)
+        assert result.status == "skipped_capacity"
+        assert f"{bk.CAPACITY_MULTIPLIER}x" in result.detail
