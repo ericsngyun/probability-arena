@@ -708,6 +708,9 @@ class MarketOpsReport(BaseModel):
     source_backed_packets: int = 0
     forecasts_by_forecaster: dict[str, int] = {}
     champion_challenger: dict | None = None
+    # SQLITE-BACKUP-FRESHNESS-ALERT-001: bounded local backup-health snapshot
+    # from the latest run summary (None when the hook is disabled).
+    backup_freshness: dict | None = None
     crypto_totals: dict[str, int] = {}
     database_size_mb: float | None = None
     recommended_action: str = ""
