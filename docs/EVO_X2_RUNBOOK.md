@@ -730,24 +730,55 @@ Operational rules:
   before proposing the 3d → 24-48h change as its own explicitly-accepted
   milestone. `tick_aggregation_runs` (migration 0024) is the evidence trail.
 
-## DB backup (OPS-007)
+## DB backup (OPS-007, hardened by SQLITE-BACKUP-COORDINATION-001)
 
 Consistent snapshots via the sqlite3 online backup API (safe while all
-services run), gzipped into `data/backups/` with `BACKUP_RETENTION_DAYS`
-pruning:
+services run), published atomically **only after verification**, with a
+manifest and bounded tiered retention. Full design and the restore runbook:
+`docs/SQLITE_BACKUP_COORDINATION_001.md`.
 
 ```bash
 cd ~/projects/probability-arena
-.venv/bin/python -m app.cli backup-db
+.venv/bin/python -m app.cli backup-db --dry-run   # capacity + retention plan only
+.venv/bin/python -m app.cli backup-db             # verified backup (what the timer runs)
 .venv/bin/python -m app.cli list-db-backups
-.venv/bin/python -m app.cli verify-db-backup data/backups/backup-<stamp>.db.gz
+.venv/bin/python -m app.cli verify-db-backup <BACKUP_DIR>/backup-<stamp>.db.gz
+.venv/bin/python -m app.cli prune-db-backups --dry-run   # --confirm required to delete
 ```
 
-Optional daily timer (NOT auto-installed; install commands in the unit file):
-`infra/systemd/user/probability-arena-backup.{service,timer}`.
+**Destination:** `BACKUP_DIR=/mnt/data/probability-arena-backups` (set in `.env`).
+Deliberately on `/mnt/data` — a separate ext4 volume with ~712 GiB free — rather
+than the root volume that already holds the ~4.2 GiB database at 61% use.
+Directory `0700`, artifacts and manifests `0600`.
 
-Restore drill: `gunzip -k backup-<stamp>.db.gz`, point a scratch
-`DATABASE_URL` at the extracted file, run `db-stats` against it.
+**Scheduled daily** at `01:30 UTC` (18:30 America/Los_Angeles) with up to 10 min
+jitter, via `probability-arena-backup.{service,timer}`. That slot avoids the
+00:00–00:06 retention/baseline cluster and the hourly tick-aggregation slot at
+`:22`. Install / uninstall:
+
+```bash
+cp infra/systemd/user/probability-arena-backup.{service,timer} ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now probability-arena-backup.timer
+systemctl --user list-timers | grep backup
+
+# uninstall
+systemctl --user disable --now probability-arena-backup.timer
+rm ~/.config/systemd/user/probability-arena-backup.{service,timer}
+systemctl --user daemon-reload
+```
+
+Safety properties worth knowing before touching this: the newest backup is
+**never** pruned; retention keeps 7 daily / 4 weekly / 3 monthly plus a floor of
+the newest 7 backups; overlap returns `skipped_overlap` and capacity shortfall
+returns `skipped_capacity`, neither of which counts as a successful backup and
+neither of which deletes anything.
+
+Restore drill (non-destructive): `gunzip -c <backup> > /tmp/scratch.db`, point a
+scratch `DATABASE_URL` at it, run `db-stats`. A real restore is a
+human-authorised destructive procedure — follow the runbook in
+`docs/SQLITE_BACKUP_COORDINATION_001.md`, which preserves the damaged database
+rather than deleting it.
 TODO (later OPS milestone): scheduled off-host copies.
 
 ## MarketOps overlap guard (OPS-007)
