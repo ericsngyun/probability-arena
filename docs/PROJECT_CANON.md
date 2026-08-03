@@ -44,7 +44,12 @@ Services (app/services/)  — scanner, eligibility, enrichment, resolution, rese
                             the existing horizon planner; no calls or persistence),
                             crypto_horizon_orchestrator (explicitly confirmed,
                             planner-gated one-shot user timers for fixed cohorts;
-                            no recurring timer/daemon/admission automation)
+                            no recurring timer/daemon/admission automation),
+                            backup_freshness (SQLITE-BACKUP-FRESHNESS-ALERT-001:
+                            local, measurement-only check that BACKUP_DIR still
+                            holds a recent/committed/manifest-backed backup;
+                            isolated default-off MarketOps hook + always-on
+                            read-only report; zero provider calls)
 Adapters (app/adapters/) — kalshi.py (list/detail/event/series/by-tickers/by-series GETs,
                             legacy + dollars/fp payload shapes, outcome parsing, bounded
                             429 retries), dexscreener.py (crypto, read-only), polymarket.py
@@ -104,7 +109,9 @@ CANARY-002/003), CRYPTO-HORIZON-COHORT-SELECT-001/002,
 CRYPTO-HORIZON-SHARED-CANDIDATE-FEASIBILITY-001,
 CRYPTO-HORIZON-CANDIDATE-READINESS-001 (measurement hook ACTIVE on EVO-X2),
 EDGE-* (measurement/retirement/cost), EVAL-001, FRONTIER-RECOMMENDATION-001,
-MEME-*, SCANNER-002/OPS-010 — full list with commits in `docs/ROADMAP.md`.
+MEME-*, SCANNER-002/OPS-010, SQLITE-BACKUP-COORDINATION-001,
+SQLITE-BACKUP-FRESHNESS-ALERT-001 (measurement hook default-off, not yet
+enabled on EVO-X2) — full list with commits in `docs/ROADMAP.md`.
 
 ## Current known limitations
 

@@ -63,6 +63,11 @@ ALLOWED_CAPABILITIES = (
     "materialization from the same natural discovery cycle via the existing "
     "lifecycle tape; isolated default-off MarketOps hook; zero provider calls, "
     "bounded per-cycle cap, creates no cohort/observation/arming)",
+    "backup freshness measurement (local, measurement-only check that the "
+    "canonical BACKUP_DIR still holds a recent (<=36h), committed, "
+    "structurally valid, manifest-backed backup; isolated default-off "
+    "MarketOps hook + always-available read-only report; zero provider "
+    "calls, never runs/prunes/mutates a backup, cannot fail a MarketOps cycle)",
     "marketops autopilot (read-only coordination: promote/process/scan/score/report/alert)",
     "edge precheck (probability-gap measurement only; no EV, no advice, no actions)",
     "frontier evaluation (full-desk measurement quality + conservative readiness labels)",
@@ -91,7 +96,9 @@ EXPECTED_SERVICES_EVO_X2 = (
     "probability-arena-baseline.timer (systemd user, every 4h)",
     "probability-arena-marketops.timer (systemd user, every 5min — MarketOps "
     "Autopilot; runs the default-off candidate-readiness measurement hook when "
-    "MARKETOPS_INCLUDE_CANDIDATE_READINESS is enabled)",
+    "MARKETOPS_INCLUDE_CANDIDATE_READINESS is enabled; runs the default-off "
+    "backup-freshness measurement hook at step 7b when "
+    "MARKETOPS_INCLUDE_BACKUP_FRESHNESS_ALERT is enabled)",
     "probability-arena-watcher.service (systemd user, 60s loop)",
     "probability-arena-meme-news.timer (systemd user, every 10min)",
     "probability-arena-tick-aggregation.timer (systemd user, hourly — storage plumbing)",
@@ -159,6 +166,7 @@ KEY_FEATURE_FLAGS = (
     "enable_marketops_autopilot",
     "marketops_include_candidate_readiness",
     "marketops_include_crypto_tape_anchor_feed",
+    "marketops_include_backup_freshness_alert",
     "marketops_include_edge_precheck",
     "enable_edge_precheck",
     "enable_baseball_external_research",

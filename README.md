@@ -910,9 +910,10 @@ no flag, threshold, row creation, MarketOps stage, service, or timer.
 python -m app.cli backup-db          # consistent gzipped snapshot (sqlite3 online backup API) + retention pruning
 python -m app.cli list-db-backups
 python -m app.cli verify-db-backup data/backups/backup-<stamp>.db.gz   # integrity_check + expected tables
+python -m app.cli sqlite-backup-freshness-report --format text|json   # SQLITE-BACKUP-FRESHNESS-ALERT-001: is the newest committed backup still <=36h old? (read-only, always available)
 ```
 
-`BACKUP_DIR=data/backups`, `BACKUP_RETENTION_DAYS=30`. Non-SQLite databases get safe `pg_dump` guidance instead (never executed). Optional daily timer artifacts: `infra/systemd/user/probability-arena-backup.{service,timer}` (not auto-installed). `db-stats` reports backup count/size.
+`BACKUP_DIR=data/backups`, `BACKUP_RETENTION_DAYS=30`. Non-SQLite databases get safe `pg_dump` guidance instead (never executed). Optional daily timer artifacts: `infra/systemd/user/probability-arena-backup.{service,timer}` (not auto-installed). `db-stats` reports backup count/size. `sqlite-backup-freshness-report` makes zero provider calls and mutates nothing; an isolated MarketOps hook can also drive a self-resolving `backup_freshness_warning` alert behind `MARKETOPS_INCLUDE_BACKUP_FRESHNESS_ALERT` (default false).
 
 ## Soccer evidence-aware forecaster (SOCCER-002)
 
