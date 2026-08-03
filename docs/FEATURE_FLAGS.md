@@ -78,6 +78,12 @@ attached behavior. Broad `--limit` sweeps are manual diagnostics; targeted
 modes (`--latest-marketops-run` etc.) are what automation uses, and the
 MarketOps stage is strictly cycle-scoped.
 
+## Operational health hooks
+
+| Flag | Default | Gates |
+|---|---|---|
+| `MARKETOPS_INCLUDE_BACKUP_FRESHNESS_ALERT` | false | Gates the isolated, fail-contained backup-health hook (SQLITE-BACKUP-FRESHNESS-ALERT-001), which runs in the operational-health portion of the cycle (step 7b, adjacent to `db_growth_warning`). On = one bounded local evaluation per cycle of whether `BACKUP_DIR` still holds a recent (≤36 h), committed, structurally valid, manifest-backed backup, driving ONE deduplicated `backup_freshness_warning` alert that self-resolves on recovery. Local files only: zero provider calls, never runs a backup, never prunes, never modifies a backup or manifest, no timer/daemon, no migration, cannot fail the cycle even under `MARKETOPS_FAIL_FAST`. The 36-hour threshold is a code constant (`app.services.backup_freshness.BACKUP_FRESHNESS_MAX_AGE_SECONDS`), deliberately **not** a setting. Off = complete no-op. The `sqlite-backup-freshness-report` CLI is always available read-only regardless of this flag |
+
 ## Frontier evaluation (EVAL-001)
 
 No flags — `frontier-eval-report` (CLI) and `GET /eval/frontier-report` are

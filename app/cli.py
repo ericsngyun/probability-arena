@@ -5141,6 +5141,68 @@ async def verify_db_backup(path: str) -> int:
     return 0 if result.ok else 1
 
 
+def sqlite_backup_freshness_report(fmt: str = "text") -> dict:
+    """SQLITE-BACKUP-FRESHNESS-ALERT-001 — is the canonical backup root still
+    holding a recent, committed, structurally valid, manifest-backed backup?
+
+    Read-only in the strongest sense: it makes zero provider calls, opens no
+    database, writes no file, creates no alert, executes no backup and prunes
+    nothing. It inspects local backup files and manifests only, and does not
+    recompute the artifact SHA-256 (that is `verify-db-backup`'s job).
+
+    There is deliberately no `--backup-root` / `--now` flag: the evaluator takes
+    both as injectable arguments for tests, and exposing an arbitrary
+    operator-supplied path on a production CLI is a strictly larger surface than
+    this check needs. Text and JSON report exactly the same fields.
+    """
+    import json as _json
+
+    from app.services.backup_freshness import (
+        BACKUP_FRESHNESS_MAX_AGE_SECONDS,
+        evaluate_backup_freshness,
+    )
+
+    result = evaluate_backup_freshness()
+    data = result.to_dict()
+
+    if fmt == "json":
+        print(_json.dumps(data, indent=2, sort_keys=True))
+        return data
+
+    print("sqlite backup freshness — local manifest-backed backup health "
+          "(read-only; zero calls, no writes)")
+    print(f"status={data['status']} healthy={str(data['healthy']).lower()} "
+          f"reason={data['reason']}")
+    print(f"evaluated_at={data['evaluated_at']}")
+    print(f"threshold_seconds={BACKUP_FRESHNESS_MAX_AGE_SECONDS} "
+          f"({BACKUP_FRESHNESS_MAX_AGE_SECONDS / 3600:.0f}h)")
+    print(f"backup_root={data['backup_root']}")
+    print(f"backup_root: configured={str(data['backup_root_configured']).lower()} "
+          f"exists={str(data['backup_root_exists']).lower()} "
+          f"is_directory={str(data['backup_root_is_directory']).lower()} "
+          f"is_symlink={str(data['backup_root_is_symlink']).lower()}")
+    print(f"manifests: strict={data['strict_manifest_count']} "
+          f"invalid={data['invalid_manifest_count']}")
+    print(f"newest_manifest_filename={data['newest_manifest_filename']}")
+    print(f"newest_backup_filename={data['newest_backup_filename']}")
+    print(f"newest_verified_at={data['newest_verified_at']} "
+          f"age_seconds={data['age_seconds']}")
+    print(f"artifact: exists={str(data['artifact_exists']).lower()} "
+          f"regular_file={str(data['artifact_is_regular_file']).lower()} "
+          f"is_symlink={str(data['artifact_is_symlink']).lower()} "
+          f"bytes={data['artifact_bytes']} "
+          f"manifest_bytes={data['manifest_backup_bytes']} "
+          f"size_matches_manifest={str(data['size_matches_manifest']).lower()}")
+    print(f"manifest: version={data['manifest_version']} "
+          f"status={data['manifest_status']} "
+          f"integrity_check={data['manifest_integrity_check']} "
+          f"alembic_revision={data['manifest_alembic_revision']}")
+    print(f"external_calls={data['external_calls']} "
+          f"duration_ms={data['duration_ms']}")
+    print("full sha256 verification is NOT performed here — use verify-db-backup")
+    return data
+
+
 async def crypto_risk_assess(
     limit: int = 50,
     engine=None,
@@ -5529,6 +5591,16 @@ async def marketops_report(session=None) -> int:
                 print(f"  promoted by domain: {promo['promoted_by_domain']}")
             if promo.get("promoted_by_market_type"):
                 print(f"  promoted by market type: {promo['promoted_by_market_type']}")
+        if report.backup_freshness is not None:
+            bfr = report.backup_freshness
+            print(
+                f"backup protection: {bfr.get('status')} "
+                f"reason={bfr.get('reason')} "
+                f"newest={bfr.get('newest_backup_filename')} "
+                f"age_seconds={bfr.get('age_seconds')}/"
+                f"{bfr.get('threshold_seconds')} "
+                f"alert={bfr.get('alert_action')}"
+            )
         print(f"runs total: {report.runs_total}")
         print(f"source-backed packets: {report.source_backed_packets}")
         if report.forecasts_by_forecaster:
@@ -6622,6 +6694,15 @@ def build_parser() -> argparse.ArgumentParser:
     prune_backups_parser.add_argument(
         "--confirm", action="store_true", help="actually delete the planned backups"
     )
+    freshness_parser = subparsers.add_parser(
+        "sqlite-backup-freshness-report",
+        help="Local manifest-backed backup health "
+             "(SQLITE-BACKUP-FRESHNESS-ALERT-001; zero calls, no writes, "
+             "runs no backup, prunes nothing)",
+    )
+    freshness_parser.add_argument(
+        "--format", choices=("text", "json"), default="text", dest="fmt"
+    )
     return parser
 
 
@@ -7109,6 +7190,10 @@ def main(argv: list[str] | None = None) -> int:
         return asyncio.run(verify_db_backup(path=args.path))
     if args.command == "prune-db-backups":
         return asyncio.run(prune_db_backups(confirm=args.confirm))
+    if args.command == "sqlite-backup-freshness-report":
+        # 0 = healthy, 1 = unhealthy — same convention as verify-db-backup, so a
+        # report that exits 0 always means backup protection is actually there.
+        return 0 if sqlite_backup_freshness_report(fmt=args.fmt)["healthy"] else 1
     return 2
 
 

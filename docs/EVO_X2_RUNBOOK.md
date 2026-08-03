@@ -774,6 +774,30 @@ the newest 7 backups; overlap returns `skipped_overlap` and capacity shortfall
 returns `skipped_capacity`, neither of which counts as a successful backup and
 neither of which deletes anything.
 
+**Freshness check (SQLITE-BACKUP-FRESHNESS-ALERT-001).** A working backup
+pipeline doesn't answer whether it's *still* producing recent backups — this
+adds a local, read-only health check on top of it.
+
+```bash
+.venv/bin/python -m app.cli sqlite-backup-freshness-report --format text
+.venv/bin/python -m app.cli sqlite-backup-freshness-report --format json
+```
+
+Zero provider calls, opens no database, writes/prunes/mutates nothing. Exit
+code `0` = healthy, `1` = unhealthy (the `verify-db-backup` convention). Both
+formats disclose the 36h threshold, the newest committed backup's age, and the
+exact health reason (`healthy`, `backup_stale`, `manifest_invalid`,
+`artifact_missing`, etc. — see `docs/SQLITE_BACKUP_FRESHNESS_ALERT_001.md` §5
+for the full list). Age is read from the manifest's `created_at`, not
+filesystem mtime.
+
+An isolated MarketOps hook runs the same check at step 7b of every cycle
+behind `MARKETOPS_INCLUDE_BACKUP_FRESHNESS_ALERT` (default **false**, not yet
+enabled on EVO-X2). When enabled, an unhealthy result opens/updates one
+deduplicated `backup_freshness_warning` alert in `marketops_alerts`, which
+self-resolves once a fresh verified backup reappears; the hook cannot fail a
+MarketOps cycle, even under `MARKETOPS_FAIL_FAST`. No new timer/daemon/table.
+
 Restore drill (non-destructive): `gunzip -c <backup> > /tmp/scratch.db`, point a
 scratch `DATABASE_URL` at it, run `db-stats`. A real restore is a
 human-authorised destructive procedure — follow the runbook in

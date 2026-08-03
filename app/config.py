@@ -280,6 +280,18 @@ class Settings(BaseSettings):
     # session). It creates no cohort/observation/unit and can never change the
     # MarketOps cycle result or exit code. Off = a complete no-op.
     marketops_include_crypto_tape_anchor_feed: bool = False
+    # SQLITE-BACKUP-FRESHNESS-ALERT-001: default OFF. When true, an isolated,
+    # fail-contained hook runs in the operational-health portion of the cycle
+    # (adjacent to the db_growth_warning path) and evaluates whether the
+    # canonical BACKUP_DIR still holds a recent, committed, structurally valid,
+    # manifest-backed backup. It inspects LOCAL FILES ONLY: zero provider calls,
+    # never executes or prunes a backup, never modifies a backup file or
+    # manifest, adds no timer/daemon, and can never fail the MarketOps cycle or
+    # change its exit code. Its only database write is the existing bounded
+    # MarketOps alert lifecycle. The 36-hour threshold is a code constant
+    # (app.services.backup_freshness.BACKUP_FRESHNESS_MAX_AGE_SECONDS), not a
+    # setting, so it cannot be quietly widened. Off = a complete no-op.
+    marketops_include_backup_freshness_alert: bool = False
 
     # Crypto Arena scout (CRYPTO-001) — read-only Solana memecoin
     # surveillance: discovery, price/liquidity ticks, deterministic risk

@@ -52,6 +52,14 @@ ALERT_SOURCE_BACKED_FORECAST = "source_backed_forecast_created"
 ALERT_CC_SAMPLE_UPDATE = "champion_challenger_sample_update"
 ALERT_PROVIDER_ERROR = "provider_error"
 ALERT_DB_GROWTH = "db_growth_warning"
+# SQLITE-BACKUP-FRESHNESS-ALERT-001. ONE stable title, deliberately carrying no
+# varying data: MarketOpsAlertService dedupes on (alert_type, title), so a title
+# that embeds a changing measurement stacks a new open row every time the
+# measurement moves (db_growth_warning has accumulated hundreds of open rows
+# that way). Reason, age and threshold live in the message/evidence instead, and
+# a reason change UPDATES the single open row.
+ALERT_BACKUP_FRESHNESS = "backup_freshness_warning"
+ALERT_BACKUP_FRESHNESS_TITLE = "Backup protection unhealthy"
 
 ALERT_STATUS_OPEN = "open"
 ALERT_STATUS_RESOLVED = "resolved"
@@ -157,6 +165,10 @@ class MarketOpsConfig:
     # exact-cycle anchor materialization after crypto persistence, before the
     # readiness evaluation. Default off; when off the hook is a complete no-op.
     include_crypto_tape_anchor_feed: bool = False
+    # SQLITE-BACKUP-FRESHNESS-ALERT-001: isolated local backup-health check in
+    # the operational-health portion of the cycle. Default off; when off the
+    # hook is a complete no-op.
+    include_backup_freshness_alert: bool = False
     fail_fast: bool = False
 
     @classmethod
@@ -182,6 +194,7 @@ class MarketOpsConfig:
             include_edge_precheck=s.marketops_include_edge_precheck,
             include_candidate_readiness=s.marketops_include_candidate_readiness,
             include_crypto_tape_anchor_feed=s.marketops_include_crypto_tape_anchor_feed,
+            include_backup_freshness_alert=s.marketops_include_backup_freshness_alert,
             fail_fast=s.marketops_fail_fast,
         )
 
@@ -251,6 +264,86 @@ class MarketOpsAlertService:
         session.flush()
         return alert
 
+    def upsert_open(
+        self,
+        session: Session,
+        alert_type: str,
+        severity: str,
+        title: str,
+        message: str,
+        evidence: dict | None = None,
+    ) -> tuple[MarketOpsAlert, bool]:
+        """Exactly-one-open-alert semantics for a stable (type, title) identity.
+
+        Returns (alert, created). Unlike `create`, which returns None and drops
+        the new information when an open duplicate exists, this refreshes the
+        existing open row in place — so a recurring condition never stacks
+        duplicates and a *changed* condition is still visible on the one row.
+        Flushes rather than commits, so the write joins the caller's cycle
+        transaction (`resolve` keeps its own commit for the interactive CLI).
+        """
+        open_rows = list(session.execute(
+            select(MarketOpsAlert).where(
+                MarketOpsAlert.alert_type == alert_type,
+                MarketOpsAlert.title == title,
+                MarketOpsAlert.status == ALERT_STATUS_OPEN,
+            ).order_by(MarketOpsAlert.id.asc())
+        ).scalars().all())
+        if open_rows:
+            existing, extras = open_rows[0], open_rows[1:]
+            existing.severity = severity
+            existing.message = message
+            existing.evidence = evidence
+            # Converge to the invariant rather than assuming it. Two open rows
+            # are reachable (the cycle overlap guard is a read-then-write check,
+            # not a lock), and refreshing only the oldest would leave the others
+            # open forever with stale evidence.
+            resolved_at = _now()
+            for extra in extras:
+                extra.status = ALERT_STATUS_RESOLVED
+                extra.resolved_at = resolved_at
+            session.flush()
+            return existing, False
+        alert = MarketOpsAlert(
+            alert_type=alert_type,
+            severity=severity,
+            status=ALERT_STATUS_OPEN,
+            title=title,
+            message=message,
+            evidence=evidence,
+            created_at=_now(),
+        )
+        session.add(alert)
+        session.flush()
+        return alert, True
+
+    def has_open(self, session: Session, alert_type: str) -> bool:
+        """Is any alert of this type currently open?"""
+        return session.execute(
+            select(MarketOpsAlert.id).where(
+                MarketOpsAlert.alert_type == alert_type,
+                MarketOpsAlert.status == ALERT_STATUS_OPEN,
+            ).limit(1)
+        ).first() is not None
+
+    def resolve_open_by_type(self, session: Session, alert_type: str) -> int:
+        """Resolve every open alert of `alert_type` through the existing
+        lifecycle (status + resolved_at); returns how many were resolved.
+        Flushes rather than commits, for the same reason as `upsert_open`."""
+        open_alerts = session.execute(
+            select(MarketOpsAlert).where(
+                MarketOpsAlert.alert_type == alert_type,
+                MarketOpsAlert.status == ALERT_STATUS_OPEN,
+            )
+        ).scalars().all()
+        resolved_at = _now()
+        for alert in open_alerts:
+            alert.status = ALERT_STATUS_RESOLVED
+            alert.resolved_at = resolved_at
+        if open_alerts:
+            session.flush()
+        return len(open_alerts)
+
     def resolve(self, session: Session, alert_id: int) -> MarketOpsAlert:
         alert = session.get(MarketOpsAlert, alert_id)
         if alert is None:
@@ -286,6 +379,7 @@ class MarketOpsAutopilotService:
         alert_service: MarketOpsAlertService | None = None,
         edge_precheck_service=None,
         anchor_feed_session_factory=None,
+        backup_freshness_session_factory=None,
     ):
         self.config = config or MarketOpsConfig.from_settings()
         self.promotion_service = promotion_service or SignalPromotionService()
@@ -299,6 +393,10 @@ class MarketOpsAutopilotService:
         # ANCHOR-FEED-MEASUREMENT-001: injectable for tests; defaults to the
         # app sessionmaker (an isolated short-lived session per cycle).
         self._anchor_feed_session_factory = anchor_feed_session_factory
+        # SQLITE-BACKUP-FRESHNESS-ALERT-001: injectable for tests; defaults to
+        # the app sessionmaker (an isolated short-lived session per cycle, so
+        # the shared cycle session is never touched by the alert write).
+        self._backup_freshness_session_factory = backup_freshness_session_factory
 
     # --- stage helpers -----------------------------------------------------
 
@@ -857,6 +955,26 @@ class MarketOpsAutopilotService:
             # 7. Health / hygiene alerts
             alerts_created += self._health_alerts(session, now)
 
+            # 7b. SQLITE-BACKUP-FRESHNESS-ALERT-001 — local, provider-free
+            # backup-protection health, adjacent to the db_growth_warning path
+            # above. Inspects only local backup files/manifests; never executes
+            # a backup, prunes, or modifies a backup artifact. Fail-CONTAINED:
+            # any exception is caught inside the helper and recorded (never
+            # re-raised, even under fail_fast), so it cannot change the cycle
+            # result or exit code. Default-off; a complete no-op when off.
+            #
+            # Checkpoint-commit the shared session FIRST, for exactly the reason
+            # stage 4a does: the hook's ISOLATED alert session must acquire the
+            # SQLite write lock this same coroutine would otherwise still be
+            # holding — self-contention that can never resolve. Consistent with
+            # the documented "checkpoint-committed, not atomic" cycle contract,
+            # and guarded by the flag so the disabled path is byte-identical to
+            # before. Everything above (the run row, the health alerts) is
+            # already final at this point; only summary/status/timings follow.
+            if cfg.include_backup_freshness_alert:
+                session.commit()
+                alerts_created += self._evaluate_backup_freshness(summary)
+
             run.alerts_created = alerts_created
             run.summary = summary
             run.status = (
@@ -994,6 +1112,93 @@ class MarketOpsAutopilotService:
         except Exception as exc:  # never fail the cycle
             logger.warning("candidate-readiness hook failed (isolated): %s", exc)
             summary["candidate_readiness_error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
+
+    def _evaluate_backup_freshness(self, summary: dict) -> int:
+        """SQLITE-BACKUP-FRESHNESS-ALERT-001 — one bounded local backup-health
+        evaluation per cycle, plus the deduplicated alert lifecycle.
+
+        NEVER raises: any failure is recorded in `summary["backup_freshness_error"]`
+        and swallowed, so the MarketOps cycle is unaffected even under fail_fast.
+        Zero provider calls, one non-recursive scan of the canonical backup root,
+        no SHA recomputation, no decompression, no backup execution, no pruning,
+        no backup-file mutation.
+
+        The alert lifecycle runs on its OWN short-lived session, mirroring
+        `_materialize_cycle_anchors`. That is not incidental. Writing it on the
+        shared cycle session — even inside a SAVEPOINT — is unsafe two ways:
+        `begin_nested()` autoflushes the session's pending state BEFORE emitting
+        the savepoint, so a transient "database is locked" on that flush would
+        poison the shared session and fail the cycle's own final commit; and on
+        pysqlite a SAVEPOINT opened when no transaction is in progress COMMITS
+        on RELEASE, making the alert's transaction boundary depend on whether an
+        earlier stage happened to leave DML pending. An isolated session removes
+        both: the shared session is never touched, and the alert's durability is
+        deterministic — it survives a later cycle failure, which is the right
+        semantics for a monitoring signal.
+
+        Returns the number of alerts CREATED (updates and resolutions are
+        lifecycle transitions on the one existing row, not new alerts). The
+        summary is bounded and carries no paths or manifest bodies.
+        """
+        try:
+            from app.services.backup_freshness import (
+                REASON_EVALUATION_ERROR,
+                evaluate_backup_freshness,
+            )
+
+            result = evaluate_backup_freshness()
+            created = 0
+            if self._backup_freshness_session_factory is not None:
+                alert_session = self._backup_freshness_session_factory()
+            else:
+                from app.db import get_sessionmaker
+
+                alert_session = get_sessionmaker()()
+            try:
+                if result.healthy:
+                    # Quiet by design: no new alert, and any active freshness
+                    # alert is resolved through the existing lifecycle.
+                    resolved = self.alert_service.resolve_open_by_type(
+                        alert_session, ALERT_BACKUP_FRESHNESS
+                    )
+                    action = "resolved" if resolved else "none"
+                elif result.reason == REASON_EVALUATION_ERROR and self.alert_service.has_open(
+                    alert_session, ALERT_BACKUP_FRESHNESS
+                ):
+                    # The CHECK broke while an alert is already open. Do not
+                    # overwrite it: downgrading an outstanding critical
+                    # "no committed backup" to a warning "the monitor hiccuped"
+                    # would mask the real outage on the one row carrying it.
+                    action = "preserved"
+                else:
+                    _alert, was_created = self.alert_service.upsert_open(
+                        alert_session,
+                        ALERT_BACKUP_FRESHNESS,
+                        result.severity,
+                        ALERT_BACKUP_FRESHNESS_TITLE,
+                        (
+                            f"No healthy backup: reason={result.reason}; "
+                            f"newest_verified_at={result.newest_verified_at}; "
+                            f"age_seconds={result.age_seconds}; "
+                            f"threshold_seconds={result.threshold_seconds}. "
+                            "Inspect BACKUP_DIR and the backup timer "
+                            "(sqlite-backup-freshness-report)."
+                        ),
+                        evidence=result.summary_dict(),
+                    )
+                    created = 1 if was_created else 0
+                    action = "created" if was_created else "updated"
+                alert_session.commit()
+            finally:
+                alert_session.close()
+            summary["backup_freshness"] = {
+                **result.summary_dict(), "alert_action": action
+            }
+            return created
+        except Exception as exc:  # never fail the cycle
+            logger.warning("backup-freshness hook failed (isolated): %s", exc)
+            summary["backup_freshness_error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
+            return 0
 
     def _health_alerts(self, session: Session, now: datetime) -> int:
         """Deterministic health checks -> local alerts. Returns alerts created."""
@@ -1153,8 +1358,20 @@ class MarketOpsReportService:
         cc_snapshot = (
             (latest_run.summary or {}).get("champion_challenger") if latest_run else None
         )
+        # SQLITE-BACKUP-FRESHNESS-ALERT-001: surfaced from the latest RUN
+        # SUMMARY, not from open_alerts. open_alerts is `ORDER BY id DESC LIMIT
+        # 10`, and db_growth_warning currently mints a new open row roughly
+        # every 13 minutes (its title embeds a changing size, defeating the
+        # (type, title) dedup), so a backup-protection alert would drop off
+        # this report within ~2 hours and never come back. A per-run summary
+        # key cannot be buried by another alert type.
+        backup_freshness = (
+            (latest_run.summary or {}).get("backup_freshness") if latest_run else None
+        )
 
-        recommended = self._recommend(latest_run, open_alerts, cc_snapshot)
+        recommended = self._recommend(
+            latest_run, open_alerts, cc_snapshot, backup_freshness
+        )
 
         return MarketOpsReport(
             runs_total=runs_total,
@@ -1163,6 +1380,7 @@ class MarketOpsReportService:
             source_backed_packets=source_backed_packets,
             forecasts_by_forecaster=canary.forecasts_by_forecaster,
             champion_challenger=cc_snapshot,
+            backup_freshness=backup_freshness,
             crypto_totals=crypto_totals,
             database_size_mb=(
                 round(size, 2) if (size := database_size_mb()) is not None else None
@@ -1171,7 +1389,17 @@ class MarketOpsReportService:
         )
 
     @staticmethod
-    def _recommend(latest_run, open_alerts, cc_snapshot) -> str:
+    def _recommend(latest_run, open_alerts, cc_snapshot, backup_freshness=None) -> str:
+        # Backup protection first, and NAMED — ahead of the generic open-alert
+        # count, which is permanently pinned by the db_growth_warning backlog
+        # and would otherwise render this signal invisible.
+        if backup_freshness is not None and not backup_freshness.get("healthy", True):
+            return (
+                "Backup protection is unhealthy "
+                f"(reason={backup_freshness.get('reason')}, "
+                f"age_seconds={backup_freshness.get('age_seconds')}) — "
+                "run sqlite-backup-freshness-report and check the backup timer"
+            )
         urgent = [a for a in open_alerts if a.severity in ("warning", "critical")]
         if urgent:
             return (

@@ -120,7 +120,15 @@ class TestBackupContract:
         assert before == after
         assert db_path.stat().st_ino != Path(result.path).stat().st_ino
 
-    def test_backup_opens_read_only_and_outside_live_db(self, tmp_path):
+    # Renamed by SQLITE-BACKUP-FRESHNESS-ALERT-001 (Gate 11). The old name
+    # (`test_backup_opens_read_only_and_outside_live_db`) claimed something the
+    # body never asserted and that the implementation does not do: backup_database
+    # opens the SOURCE read-WRITE (sqlite3's online-backup API requires it). What
+    # this actually proves is that the published artifact is a distinct file from
+    # the live database and that a RESTORED copy of it is intact and refuses
+    # writes when opened mode=ro. Product behavior was not changed to fit the old
+    # name.
+    def test_published_artifact_is_separate_and_restores_intact_read_only(self, tmp_path):
         settings = make_settings(tmp_path)
         result = bk.backup_database(settings)
         db_path = bk._sqlite_path(settings)

@@ -132,7 +132,14 @@ RETAIN_MONTHLY = 3
 
 # A verified backup must contain at least these core data tables
 # (alembic_version is reported but not required: create_all-based test DBs
-# legitimately lack it)
+# legitimately lack it).
+#
+# NOTE (SQLITE-BACKUP-FRESHNESS-ALERT-001): the freshness evaluator is
+# deliberately STRICTER than this — it treats a manifest with no
+# alembic_revision as unhealthy (`manifest_revision_invalid`), because for the
+# production database a backup taken from a schema with no alembic_version is
+# itself the anomaly. Changing this comment's policy means changing
+# app/services/backup_freshness.py too; the two must not drift.
 EXPECTED_TABLES = frozenset(
     {"markets", "market_forecasts", "crypto_tokens", "marketops_runs"}
 )
