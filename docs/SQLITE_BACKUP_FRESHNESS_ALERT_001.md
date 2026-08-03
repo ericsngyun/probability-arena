@@ -524,20 +524,109 @@ Renamed to `test_published_artifact_is_separate_and_restores_intact_read_only`.
 
 ## 10. Deployment
 
-*(Filled in from measured evidence at each step — nothing here is written ahead
-of the event.)*
+Measured evidence, recorded after each step.
 
-### Dark deployment
+### Dark deployment — PASS (2026-08-03)
 
-_Pending._
+Merged to `main` (`2b99464`), pushed, EVO-X2 fast-forwarded `bd24303 -> 2b99464`.
+The incoming diff was audited first: **0 files** under `alembic/` or
+`app/models.py`, **0 files** under `infra/` — no migration, no unit-file change.
+Flag left absent (`False`); MarketOps **not** restarted.
 
-### Activation
+Natural cycle **#7437** (`2026-08-03 19:57:03Z`) observed with the flag off:
 
-_Pending._
+```text
+status=ok  stage_errors={}  alerts_created=0
+stages: promote_signals/process_promoted/crypto_scan/sync_outcomes/
+        score_forecasts/edge_precheck/champion_challenger = ok
+backup_freshness present:       False      <- flag off is a COMPLETE no-op
+backup_freshness_error present: False
+anchor_feed: ok (external_calls=0)   candidate_readiness: ... (external_calls=0)
+Alembic: 0027
+```
 
-### First natural active cycle
+The report CLI was then run against the real backup root and returned
+`healthy=true` in **6 ms**, correctly identifying the newest natural backup. It
+changed nothing: the backup-root listing fingerprint (`md5 5d2151ae…`) and the
+database mtime/size (`1785786765 / 4468723712`) were byte-identical before and
+after, in both `text` and `json` modes.
 
-_Pending._
+### Activation — 2026-08-03
+
+Exactly one semantic line added to the EVO-X2 `.env`:
+
+```env
+# SQLITE-BACKUP-FRESHNESS-ALERT-001 — local manifest-backed backup health
+MARKETOPS_INCLUDE_BACKUP_FRESHNESS_ALERT=true
+```
+
+| Proof | Value |
+|---|---|
+| `.env` SHA-256 before | `7c1b3884799f3544459418be4e0b44a92a269efc2b83cffe44657006491314c0` |
+| `.env` SHA-256 after | `16e57439ba5e08a8d86b98a2f8592b5d3d475eac87c2439317b17f13310fc694` |
+| Lines | 159 -> 162 (blank + comment + flag) |
+| Assignments (`^[A-Z_]+=`) | 85 -> 86 |
+| Keys differing | exactly one: `MARKETOPS_INCLUDE_BACKUP_FRESHNESS_ALERT` |
+
+No unrelated `.env` value was read or echoed. `.env` is gitignored
+(`.gitignore:6`) and was not committed. MarketOps was **not** restarted — the
+timer runs `Type=oneshot`, so the next natural cycle picked the flag up itself.
+
+### First natural active cycle — PASS
+
+Cycle **#7438**, `2026-08-03 20:02:31Z`, naturally scheduled (not triggered):
+
+```text
+status=ok   exit 0   stage_errors={}   alerts_created=0
+exactly one crypto_scan; anchor feed once; candidate readiness once;
+backup freshness once — all three local hooks external_calls=0
+backup_freshness_error = None
+
+backup_freshness:
+  status=healthy  healthy=True  reason=healthy
+  newest_manifest_filename = backup-20260803T013426Z.manifest.json
+  newest_backup_filename   = backup-20260803T013426Z.db.gz
+  newest_verified_at       = 2026-08-03T01:34:26.152163+00:00
+  age_seconds              = 66521.657   (18.5 h, threshold 129600)
+  artifact_bytes = manifest_backup_bytes = 454984541
+  size_matches_manifest = True   manifest_status = verified
+  manifest_integrity_check = ok  strict_manifest_count = 2
+  invalid_manifest_count = 0     alert_action = none
+  external_calls = 0             duration_ms = 1
+```
+
+The manifest and artifact are exactly the latest scheduled backup.
+**Evaluator cost: 1 ms inside a 36,145 ms cycle — 0.003%, operationally
+negligible.**
+
+### Isolation after activation
+
+| Check | Result |
+|---|---|
+| `backup_freshness_warning` alerts ever created | **0** (healthy path is silent) |
+| Backup root listing fingerprint | `5d2151ae…` — unchanged |
+| Backup service last run | `2026-08-03 01:35:02Z` — did **not** run |
+| Backup timer next elapse | `2026-08-04 01:35:33Z` — cadence untouched |
+| Retention timer | untouched |
+| Alembic | `0027` |
+| `database_locked` telemetry events | **4** — unchanged |
+| Cohort / observation / arming action | none |
+
+`marketops-report` now carries the line directly, so the signal is visible
+without SSH and cannot be buried by the `db_growth_warning` backlog:
+
+```text
+backup protection: healthy reason=healthy newest=backup-20260803T013426Z.db.gz
+                   age_seconds=66521.657/129600 alert=none
+```
+
+### Alert-path proof
+
+Per Gate 18, **no production backup file was deleted, renamed, modified, aged or
+replaced** to force an alert. Production activation proves the healthy path only.
+The unhealthy and recovery paths are proven by the 118 focused tests over
+disposable backup roots and disposable MarketOps databases, plus the five
+independent reviews.
 
 ---
 
