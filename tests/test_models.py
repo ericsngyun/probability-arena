@@ -159,7 +159,13 @@ def test_persist_scan_defaults_to_api_source(session):
     assert run.source == "api"
 
 
-def test_persist_scan_stores_raw_payload(session):
+def test_persist_scan_stores_raw_payload(session, monkeypatch):
+    # RAW-PAYLOAD-STORAGE-001: asserts the FULL body, so pin the capture mode
+    # rather than inheriting the host's — otherwise this fails on an activated
+    # host and masks a real regression.
+    from app.services import raw_payload_policy as _rp
+
+    monkeypatch.setattr(_rp, "resolve_capture_mode", lambda *a, **k: "full")
     raw = {"ticker": "AAA", "yes_bid": 48, "unmapped_field": "kept for debugging"}
     ranked = rank_markets([make_market(ticker="AAA", raw=raw)])
     persist_scan(session, ranked)

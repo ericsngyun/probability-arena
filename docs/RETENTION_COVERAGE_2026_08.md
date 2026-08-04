@@ -285,7 +285,10 @@ would just re-compact 1.15 GiB of unread JSON.
 
 Bounded pruning may be activated only when **all** hold:
 
-- [ ] The `raw_payload` decision is made (do it, or explicitly decline).
+- [x] The `raw_payload` decision is made — **RAW-PAYLOAD-STORAGE-001**
+      (`docs/RAW_PAYLOAD_STORAGE_001.md`) adds a prospective capture
+      policy over 1,495 MiB of unread provider bodies. Note it does NOT
+      reclaim the existing ones; that is RAW-PAYLOAD-RECLAMATION-001.
 - [ ] Each window in the chosen scenario has a named owner who accepts the
       capability loss for the tables in §5's blocked class.
 - [ ] `retention-coverage-report` is re-run and its eligible counts reviewed

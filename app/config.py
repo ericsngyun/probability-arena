@@ -241,6 +241,23 @@ class Settings(BaseSettings):
     backup_retention_days: int = 30
     backup_dir: str = "data/backups"
 
+    # RAW-PAYLOAD-STORAGE-001: whether the FULL provider response body is
+    # persisted alongside the normalized columns extracted from it. Default
+    # "full" preserves current behaviour exactly, so deploying the code changes
+    # nothing until a host explicitly opts in.
+    #   full - store the complete body (today's behaviour)
+    #   none - never store the body; keep bounded provenance only
+    # (An `errors_only` mode was designed and dropped: an error body is the
+    #  payload class most likely to echo the request URL, and this repo sends a
+    #  provider key in a query string, so no writer could be allowed to keep one
+    #  without a redaction pass — which made the mode behave identically to
+    #  `none` for every column. A value that cannot behave differently from
+    #  another is a misconfiguration trap.)
+    # Columns with a proven production reader are PINNED to full regardless of
+    # this setting (app/services/raw_payload_policy.PINNED_FULL). An
+    # unrecognised value fails CLOSED to "full" — never to "none".
+    raw_payload_capture_mode: str = "full"
+
     # Edge precheck (MVP-005A) — probability-gap MEASUREMENT only. Records
     # forecast_probability - market_midpoint with validity checks. No dollar
     # EV, no trade recommendations, no sizing, no orders, no execution;

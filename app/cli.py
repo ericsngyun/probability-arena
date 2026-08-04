@@ -895,6 +895,213 @@ async def watch_loop(
     return iterations
 
 
+def raw_payload_storage_report(
+    fmt: str = "text", recent: int = 5000, full_scan: bool = False, session=None
+) -> dict:
+    """RAW-PAYLOAD-STORAGE-001 — read-only raw-payload storage measurement.
+
+    Reports the configured capture mode and, per governed column, how many of
+    the NEWEST rows carry a full body versus a suppressed provenance envelope,
+    and the bytes those rows store.
+
+    Writes nothing, calls no provider, and NEVER prints payload contents — only
+    counts, sizes and the column names themselves.
+
+    **The window is the newest N rows by primary key, not a time range.** A time
+    range would be the natural framing, but none of these tables has an index on
+    its timestamp column, so `WHERE created_at >= ...` is a full table scan —
+    against `market_price_ticks` that is ~900 MiB of page reads including
+    `sum(length(raw_payload))`, holding a SHARED lock under
+    `journal_mode=delete` while a 60s watcher and a 5-minute MarketOps are
+    writing. That is exactly the hazard SQLITE-BACKUP-COORDINATION-001 exists to
+    avoid. A descending primary-key scan with a LIMIT is index-ordered and
+    bounded, and it answers the activation question directly: are the NEWEST
+    rows envelopes?
+
+    PINNED columns are listed without being queried — the capture mode can never
+    touch them, so scanning them buys no decision value.
+
+    `--full-scan` adds whole-table aggregates. It reads every page of every
+    payload column; use it against a decompressed backup copy, never the live
+    database.
+
+    It deliberately does NOT call run_migrations(), unlike most commands here: a
+    report that claims "writes nothing" must not apply Alembic migrations to
+    whatever DATABASE_URL points at, and --full-scan explicitly points it at a
+    backup snapshot that must stay untouched evidence.
+    """
+    import json as _json
+    from datetime import datetime, timezone
+
+    from sqlalchemy import String as _String
+    from sqlalchemy import and_
+    from sqlalchemy import func as _f
+    from sqlalchemy import select as _select
+
+    from app.db import Base
+    from app.services.raw_payload_policy import (
+        GOVERNED_COLUMNS,
+        PINNED_FULL,
+        SUPPRESSED_MARKER,
+        resolve_capture_mode,
+    )
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker
+
+        session = get_sessionmaker()()
+    try:
+        mode = resolve_capture_mode()
+        now = datetime.now(timezone.utc)
+        recent = max(1, recent)
+        marker = f'%"{SUPPRESSED_MARKER}"%'
+        rows_out = []
+        for qualified in sorted(set(GOVERNED_COLUMNS) | set(PINNED_FULL)):
+            table_name, column = qualified.split(".", 1)
+            table = Base.metadata.tables.get(table_name)
+            if table is None or column not in table.c:
+                continue
+            pinned = qualified in PINNED_FULL
+            col = table.c[column]
+            total = session.execute(
+                _select(_f.count()).select_from(table)
+            ).scalar() or 0
+
+            recent_rows = recent_full = recent_suppressed = None
+            recent_bytes = None
+            if not pinned:
+                pk = list(table.primary_key.columns)[0]
+                window = (
+                    _select(pk.label("pk"), col.label("payload"))
+                    .order_by(pk.desc()).limit(recent).subquery()
+                )
+                # SQLAlchemy's JSON type stores Python None as the JSON
+                # literal `null`, NOT as SQL NULL, so `IS NOT NULL` alone counts
+                # a genuinely absent payload as present. Both forms must be
+                # excluded or the operator's primary verification signal — "are
+                # new rows envelopes?" — never reaches its floor.
+                has_payload = and_(
+                    window.c.payload.is_not(None),
+                    _f.cast(window.c.payload, _String) != "null",
+                )
+                recent_rows = session.execute(
+                    _select(_f.count()).select_from(window).where(has_payload)
+                ).scalar() or 0
+                recent_suppressed = session.execute(
+                    _select(_f.count()).select_from(window)
+                    .where(window.c.payload.like(marker))
+                ).scalar() or 0
+                recent_bytes = session.execute(
+                    _select(_f.coalesce(_f.sum(_f.length(window.c.payload)), 0))
+                    .select_from(window).where(has_payload)
+                ).scalar() or 0
+                # NULL means the provider gave nothing — it is neither a full
+                # body nor a suppression, and counting it as "full" would mean
+                # the operator's primary verification signal never reaches 0.
+                recent_full = max(recent_rows - recent_suppressed, 0)
+
+            non_null = stored_bytes = suppressed = full_rows = None
+            avg_full = None
+            if full_scan:
+                non_null = session.execute(
+                    _select(_f.count()).select_from(table).where(col.is_not(None))
+                ).scalar() or 0
+                stored_bytes = session.execute(
+                    _select(_f.coalesce(_f.sum(_f.length(col)), 0)).select_from(table)
+                ).scalar() or 0
+                suppressed = session.execute(
+                    _select(_f.count()).select_from(table).where(col.like(marker))
+                ).scalar() or 0
+                full_rows = max(non_null - suppressed, 0)
+                full_bytes = session.execute(
+                    _select(_f.coalesce(_f.sum(_f.length(col)), 0))
+                    .select_from(table)
+                    .where(col.is_not(None), _f.coalesce(col, "").notlike(marker))
+                ).scalar() or 0
+                avg_full = round(full_bytes / full_rows, 1) if full_rows else None
+
+            rows_out.append({
+                "column": qualified,
+                "pinned_full": pinned,
+                "rows_total": total,
+                "recent_window": None if pinned else recent,
+                "recent_rows_with_payload": recent_rows,
+                "recent_rows_full_payload": recent_full,
+                "recent_rows_suppressed": recent_suppressed,
+                "recent_bytes": recent_bytes,
+                "rows_non_null": non_null,
+                "rows_full_payload": full_rows,
+                "rows_suppressed": suppressed,
+                "stored_bytes": stored_bytes,
+                "avg_bytes_per_full_row": avg_full,
+            })
+    finally:
+        if owns_session:
+            session.close()
+
+    data = {
+        "generated_at": now.isoformat(),
+        "capture_mode": mode,
+        "recent_window": recent,
+        "full_scan": full_scan,
+        "columns": rows_out,
+        "governed_columns": sorted(GOVERNED_COLUMNS),
+        "pinned_columns": sorted(PINNED_FULL),
+        "external_calls": 0,
+        "persisted": False,
+        "prints_payload_contents": False,
+    }
+    if fmt == "json":
+        print(_json.dumps(data, indent=2, sort_keys=True, default=str))
+        return data
+
+    mib = lambda b: "-" if b is None else f"{b / 1048576:.2f}"
+    dash = lambda v: "-" if v is None else v
+    print("raw payload storage — READ ONLY (writes nothing, zero provider calls, "
+          "never prints payload contents)")
+    print(f"generated_at={data['generated_at']}  reporting-process "
+          f"capture_mode={mode}  newest={recent} rows/column  "
+          f"external_calls=0  persisted=false")
+    print()
+    header = (f"{'column':<50}{'rows':>10}{'new w/pl':>10}{'new full':>10}"
+              f"{'new supp':>10}{'new MiB':>9}{'all MiB':>9}  pin")
+    print(header)
+    print("-" * len(header))
+    for row in data["columns"]:
+        print(f"{row['column']:<50}{row['rows_total']:>10}"
+              f"{dash(row['recent_rows_with_payload']):>10}"
+              f"{dash(row['recent_rows_full_payload']):>10}"
+              f"{dash(row['recent_rows_suppressed']):>10}"
+              f"{mib(row['recent_bytes']):>9}"
+              f"{mib(row['stored_bytes']):>9}"
+              f"  {'PINNED' if row['pinned_full'] else ''}")
+    print()
+    print("PINNED columns are listed but never queried — the capture mode "
+          "cannot touch them.")
+    if not full_scan:
+        print("Whole-table columns blank by design: --full-scan reads every page "
+              "of every payload")
+        print("column and would hold a read lock that blocks the writer. Use it "
+              "on a backup copy.")
+    print()
+    print("The capture_mode above is THIS process's. A long-lived writer (the "
+          "watcher service) keeps the")
+    print("mode it started with — @lru_cache'd settings — so after changing "
+          ".env it must be restarted")
+    print("before market_price_ticks reflects the new mode. See "
+          "docs/RAW_PAYLOAD_STORAGE_001.md section 11.")
+    print()
+    print("LOGICAL vs PHYSICAL: suppression avoids FUTURE writes. It does not "
+          "delete history and does not")
+    print("shrink the SQLite file — freed space becomes reusable pages only "
+          "after separate reclamation")
+    print("(RAW-PAYLOAD-RECLAMATION-001) and compaction (SQLITE-COMPACT-COPY-001). "
+          "The database-growth")
+    print("alert stays critical until compaction; only that milestone can clear it.")
+    return data
+
+
 def retention_coverage_report(
     fmt: str = "text", top: int = 25, no_dbstat: bool = False, session=None
 ) -> dict:
@@ -6214,6 +6421,26 @@ def build_parser() -> argparse.ArgumentParser:
     prune_parser = subparsers.add_parser(
         "prune-retention", help="Prune operational tables per retention windows"
     )
+    raw_payload_parser = subparsers.add_parser(
+        "raw-payload-storage-report",
+        help="Read-only raw provider-payload storage measurement "
+             "(RAW-PAYLOAD-STORAGE-001): capture mode, rows by capture state, "
+             "bytes stored and avoided. Writes nothing; prints no payload.",
+    )
+    raw_payload_parser.add_argument(
+        "--format", choices=("text", "json"), default="text", dest="fmt"
+    )
+    raw_payload_parser.add_argument(
+        "--recent", type=int, default=5000,
+        help="inspect the newest N rows per governed column "
+             "(primary-key ordered and bounded; the timestamp "
+             "columns are not indexed)",
+    )
+    raw_payload_parser.add_argument(
+        "--full-scan", action="store_true",
+        help="also compute whole-table totals; this reads every page of the "
+             "payload columns and can block the writer — use on a backup copy",
+    )
     coverage_parser = subparsers.add_parser(
         "retention-coverage-report",
         help="Read-only retention coverage analysis (RETENTION-COVERAGE-001): "
@@ -6969,6 +7196,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "watch-loop":
         iterations = asyncio.run(watch_loop(interval=args.interval, limit=args.limit))
         return 0 if iterations >= 0 else 1
+    if args.command == "raw-payload-storage-report":
+        raw_payload_storage_report(
+            fmt=args.fmt, recent=args.recent, full_scan=args.full_scan
+        )
+        return 0
     if args.command == "retention-coverage-report":
         retention_coverage_report(
             fmt=args.fmt, top=args.top, no_dbstat=args.no_dbstat
