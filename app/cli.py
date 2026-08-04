@@ -918,7 +918,16 @@ def raw_payload_reclaim(
         resolve_target,
     )
 
-    resolved = resolve_target(target)
+    try:
+        resolved = resolve_target(target)
+    except LookupError as exc:
+        # A refused target is an operator typo, not a crash. Print the reason
+        # and the valid names rather than a traceback.
+        from app.services.raw_payload_reclamation import RECLAMATION_TARGETS
+
+        print(f"refused: {exc}")
+        print(f"valid targets: {', '.join(sorted(RECLAMATION_TARGETS))}")
+        return {"error": str(exc), "refused": True}
     owns_session = session is None
     if owns_session:
         from app.db import get_sessionmaker
@@ -7389,11 +7398,21 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if iterations >= 0 else 1
     if args.command == "raw-payload-reclaim":
         # --dry-run always wins, so the pair is safe rather than destructive.
-        raw_payload_reclaim(
+        outcome = raw_payload_reclaim(
             target=args.target, confirm=args.confirm and not args.dry_run,
             max_rows=args.max_rows, fmt=args.fmt,
         )
-        return 0
+        # A run that was BLOCKED or failed verification must not look like
+        # success to a wrapper, an && chain or a runbook. This is the one
+        # irreversible command in the repo; silent zero is the wrong default.
+        if outcome.get("mode") == "confirmed":
+            clean = outcome.get("verified", False) and outcome.get(
+                "stop_reason") in ("completed", "max_rows", "max_batches",
+                                   "max_batch_seconds", "max_total_seconds")
+            return 0 if clean else 1
+        if outcome.get("refused"):
+            return 2
+        return 0 if outcome.get("backup_ok", True) else 1
     if args.command == "raw-payload-reclamation-report":
         raw_payload_reclamation_report(fmt=args.fmt)
         return 0

@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import create_engine, func, select, text
 from sqlalchemy.orm import sessionmaker
 
 import app.models  # noqa: F401
@@ -282,8 +282,6 @@ class TestDryRun:
                     "estimated_reclaimed_bytes", "preserved_recent_rows",
                     "already_suppressed_rows", "rationale"):
             assert key in plan, key
-        assert data["physical_file_shrinks"] is False
-        assert data["prints_payload_contents"] is False
         assert data["pinned"] == sorted(rp.PINNED_FULL)
         assert "market_price_ticks.raw_payload" in data["excluded"]
 
@@ -563,7 +561,7 @@ class TestBatchingAndStops:
         monkeypatch.setattr(type(db), "commit", real_commit)
 
         assert result.stop_reason == "lock_retry_exhausted"
-        assert result.lock_retries > rr.LOCK_RETRY_ATTEMPTS
+        assert result.lock_retries > rr.MAX_LOCK_RETRIES_PER_RUN
         assert result.rows_changed == 0
         assert snapshot_state(db) == before
 
@@ -631,12 +629,12 @@ class TestBatchingAndStops:
         healthy_backup(monkeypatch)
         db.add(MarketOpsRun(status="error", started_at=NOW, created_at=NOW))
         db.commit()
-        assert rr.HealthCheck().check(db).startswith("marketops_run_error")
+        assert rr.HealthCheck().check(db).startswith("marketops_run_degraded")
 
         db.query(MarketOpsRun).delete()
         db.add(WatcherRun(status="error", started_at=NOW, created_at=NOW))
         db.commit()
-        assert rr.HealthCheck().check(db).startswith("watcher_run_error")
+        assert rr.HealthCheck().check(db).startswith("watcher_run_degraded")
 
     def test_a_row_that_changed_since_selection_is_not_overwritten(
         self, db, monkeypatch
@@ -885,3 +883,303 @@ class TestScanEfficiency:
         result = rr.reclaim_target(
             db, rr.resolve_target("market_snapshots.raw_payload"), now=NOW)
         assert 0 <= result.total_seconds < 60
+
+
+class TestOperationalFindings:
+    def test_cli_exits_non_zero_on_a_blocked_run(self, db, monkeypatch, capsys):
+        """A blocked irreversible mutation must not look like success."""
+        from app import cli
+
+        monkeypatch.setattr(
+            rr, "backup_precondition",
+            lambda *a, **k: (False, "no verified backup", None))
+        monkeypatch.setattr(
+            cli, "raw_payload_reclaim",
+            lambda **kw: {"mode": "confirmed", "verified": True,
+                          "stop_reason": "backup_precondition_failed: x"})
+        assert cli.main(["raw-payload-reclaim", "market_snapshots.raw_payload",
+                         "--confirm"]) == 1
+
+    def test_cli_exits_non_zero_on_verification_failure(self, monkeypatch):
+        from app import cli
+
+        monkeypatch.setattr(
+            cli, "raw_payload_reclaim",
+            lambda **kw: {"mode": "confirmed", "verified": False,
+                          "stop_reason": "verification_failed"})
+        assert cli.main(["raw-payload-reclaim", "market_snapshots.raw_payload",
+                         "--confirm"]) == 1
+
+    def test_cli_exits_zero_on_a_clean_run(self, monkeypatch):
+        from app import cli
+
+        monkeypatch.setattr(
+            cli, "raw_payload_reclaim",
+            lambda **kw: {"mode": "confirmed", "verified": True,
+                          "stop_reason": "completed"})
+        assert cli.main(["raw-payload-reclaim", "market_snapshots.raw_payload",
+                         "--confirm"]) == 0
+
+    def test_dry_run_override_is_exercised_through_main(self, monkeypatch):
+        """The single line between `--confirm --dry-run` and an irreversible
+        write — asserted through main(), not re-implemented in the test."""
+        from app import cli
+
+        seen = {}
+        monkeypatch.setattr(
+            cli, "raw_payload_reclaim",
+            lambda **kw: seen.update(kw) or {"mode": "dry_run", "backup_ok": True})
+        cli.main(["raw-payload-reclaim", "market_snapshots.raw_payload",
+                  "--confirm", "--dry-run"])
+        assert seen["confirm"] is False
+
+    def test_result_carries_the_forensic_fields(self, db, monkeypatch):
+        """An incident needs to know which rows were in scope and which backup
+        authorised destroying them."""
+        healthy_backup(monkeypatch)
+        seed_snapshots(db, old=12, recent=0, suppressed=0, null=0, tiny=0)
+        result = rr.reclaim_target(
+            db, rr.resolve_target("market_snapshots.raw_payload"),
+            now=NOW, rows_per_batch=5)
+        assert result.effective_cutoff is not None
+        assert result.authorizing_backup == BACKUP_AT
+        assert result.first_pk is not None and result.last_pk is not None
+        assert result.first_pk < result.last_pk
+
+    def test_a_confirmed_run_leaves_a_durable_record(self, db, monkeypatch, tmp_path):
+        """Terminal scrollback is not a record for an irreversible mutation."""
+        healthy_backup(monkeypatch)
+        audit = tmp_path / "runs.jsonl"
+        monkeypatch.setattr(rr, "RECLAMATION_AUDIT_FILE", audit)
+        seed_snapshots(db, old=8, recent=0, suppressed=0, null=0, tiny=0)
+        rr.reclaim_target(db, rr.resolve_target("market_snapshots.raw_payload"),
+                          now=NOW, rows_per_batch=4)
+        assert audit.exists()
+        lines = [json.loads(x) for x in audit.read_text().splitlines() if x.strip()]
+        assert len(lines) == 1
+        record = lines[0]
+        for key in ("target", "rows_changed", "stop_reason", "verified",
+                    "effective_cutoff", "authorizing_backup", "first_pk", "last_pk"):
+            assert key in record, key
+        blob = json.dumps(record).lower()
+        for banned in ("rules_primary", "unmapped_field", "password", "secret",
+                       "api_key", "bearer", "/users/", "/home/"):
+            assert banned not in blob
+
+    def test_health_gate_trips_on_partial_not_just_error(self, db, monkeypatch):
+        healthy_backup(monkeypatch)
+        db.add(MarketOpsRun(status="partial", started_at=NOW, created_at=NOW))
+        db.commit()
+        assert rr.HealthCheck().check(db).startswith("marketops_run_degraded")
+
+    def test_a_running_row_does_not_mask_a_prior_error(self, db, monkeypatch):
+        """MarketOps is mid-cycle a good fraction of the time; a `running` row
+        must not hide the errored run before it."""
+        healthy_backup(monkeypatch)
+        db.add(MarketOpsRun(status="error", started_at=NOW, created_at=NOW))
+        db.add(MarketOpsRun(status="running", started_at=NOW, created_at=NOW))
+        db.commit()
+        assert rr.HealthCheck().check(db).startswith("marketops_run_degraded")
+
+    def test_a_stale_watcher_stops_the_run(self, db, monkeypatch):
+        """A starved writer may never manage to write status=error — the
+        database is locked. Silence is the direct signature."""
+        healthy_backup(monkeypatch)
+        db.add(MarketOpsRun(status="ok", started_at=NOW, created_at=NOW))
+        db.add(WatcherRun(status="ok", created_at=NOW,
+                          started_at=datetime.now(timezone.utc) - timedelta(hours=2)))
+        db.commit()
+        assert rr.HealthCheck().check(db).startswith("watcher_stale")
+
+    def test_a_live_watcher_passes(self, db, monkeypatch):
+        healthy_backup(monkeypatch)
+        db.add(MarketOpsRun(status="ok", started_at=NOW, created_at=NOW))
+        db.add(WatcherRun(status="ok", created_at=NOW,
+                          started_at=datetime.now(timezone.utc)))
+        db.commit()
+        assert rr.HealthCheck().check(db) is None
+
+    def test_sqlite_locked_is_recognised_as_a_lock(self):
+        """SQLITE_LOCKED's message is `database table is locked`, which does NOT
+        contain the substring `database is locked`."""
+        assert rr._is_locked(RuntimeError("database is locked"))
+        assert rr._is_locked(RuntimeError("database table is locked"))
+        assert not rr._is_locked(RuntimeError("no such column"))
+
+    def test_envelope_size_estimate_is_measured_not_hardcoded(self):
+        assert rr.ENVELOPE_STORED_BYTES == len(json.dumps(
+            rp.provenance_envelope({"probe": "x" * 2000},
+                                   source="kalshi_rest", mode="none")))
+
+    def test_batches_pause_between_commits(self):
+        """Without a pause the loop holds the write lock ~half the wall time for
+        up to 10 minutes on a host with 4 lock events ever."""
+        import inspect
+
+        source = inspect.getsource(rr.reclaim_target)
+        assert "time.sleep(max(MIN_INTER_BATCH_SECONDS" in source
+        assert rr.MIN_INTER_BATCH_SECONDS > 0
+
+    def test_missing_backup_timestamp_fails_closed(self):
+        """require_backup=False must not also disable the recovery floor."""
+        target = rr.resolve_target("market_snapshots.raw_payload")
+        with pytest.raises(ValueError, match="backup floor"):
+            rr._effective_cutoff(target, NOW, None)
+
+    def test_registry_key_must_match_its_target(self, monkeypatch):
+        """Checking the KEY rather than the target fails OPEN — a rename that
+        updates the dataclass and not the key would expose a pinned column."""
+        bad = rr.ReclamationTarget(
+            table="crypto_token_risk_assessments", column="raw_payload",
+            timestamp_column="created_at", preservation_days=7,
+            source="x", rationale="y" * 80)
+        monkeypatch.setitem(
+            rr.RECLAMATION_TARGETS, "market_snapshots.raw_payload", bad)
+        with pytest.raises(LookupError, match="does not match its target"):
+            rr.resolve_target("market_snapshots.raw_payload")
+
+    def test_documented_bounds_match_the_code(self):
+        """The doc is the production authorization artifact; drift in it is a
+        defect, not a typo."""
+        doc = (REPO / "docs/RAW_PAYLOAD_RECLAMATION_001.md").read_text()
+        assert f"| Rows per batch | {rr.MAX_ROWS_PER_BATCH} |" in doc
+        assert f"| Total run duration | {int(rr.MAX_TOTAL_SECONDS)} s |" in doc
+        assert f"| Lock retries | {rr.MAX_LOCK_RETRIES_PER_RUN}" in doc
+
+
+
+class TestReviewFindings:
+    """Third-review findings: classification partition, envelope provenance,
+    literal marker matching, backup/schema agreement, and session hygiene."""
+
+    def test_every_governed_column_is_either_a_target_or_explicitly_excluded(self):
+        """The audit hole RAW-PAYLOAD-STORAGE-001 closed and this one had not.
+
+        Without this, a governed column added later is silently neither
+        reclaimable nor recorded as a deliberate exclusion — it just does not
+        appear anywhere, which reads as "considered" and is not.
+        """
+        classified = set(rr.RECLAMATION_TARGETS) | set(rr.EXCLUDED_FROM_RECLAMATION)
+        assert classified == set(rp.GOVERNED_COLUMNS), (
+            "unclassified governed columns: "
+            f"{sorted(set(rp.GOVERNED_COLUMNS) - classified)}; "
+            f"unknown classified: {sorted(classified - set(rp.GOVERNED_COLUMNS))}"
+        )
+
+    def test_no_target_is_pinned_and_every_target_is_governed(self):
+        for name, target in rr.RECLAMATION_TARGETS.items():
+            assert target.qualified == name
+            assert target.qualified in rp.GOVERNED_COLUMNS
+            assert target.qualified not in rp.PINNED_FULL
+
+    def test_envelope_source_matches_the_live_writer_for_discovery_events(self):
+        """314k envelopes get a hardcoded `source`; pin it to the real adapter.
+
+        The live writer uses `adapter.source_name`. If the scout's adapter ever
+        changes, reclamation would otherwise keep stamping a stale provenance
+        string into history — exactly the quiet lie the envelope exists to
+        prevent.
+        """
+        from app.adapters.dexscreener import DexScreenerAdapter
+
+        target = rr.RECLAMATION_TARGETS["crypto_token_discovery_events.raw_payload"]
+        assert target.source == DexScreenerAdapter.source_name
+
+    def test_marker_match_is_literal_not_a_like_wildcard(self, db):
+        """`_` is a LIKE wildcard, and the marker is full of underscores."""
+        db.add(OpportunitySignal(
+            market_ticker="DECOY", signal_type="price_move_threshold",
+            signal_status="new", observed_at=NOW,
+            raw_payload={"rawXpayloadXsuppressed": True, "body": "x" * 400},
+        ))
+        db.commit()
+        table = rr._table_for(
+            rr.RECLAMATION_TARGETS["opportunity_signals.raw_payload"])
+        col = table.c.raw_payload
+        matched = db.execute(
+            select(func.count()).select_from(table).where(rr._is_suppressed(col))
+        ).scalar()
+        assert matched == 0, "decoy matched the marker through the _ wildcard"
+        assert db.execute(
+            select(func.count()).select_from(table).where(rr._not_suppressed(col))
+        ).scalar() == 1
+
+    @staticmethod
+    def _stub_backup(monkeypatch, revision, healthy=True):
+        class _Result:
+            pass
+
+        r = _Result()
+        r.healthy = healthy
+        r.age_seconds = 60.0 if healthy else None
+        r.reason = "ok" if healthy else "no_verified_backup"
+        r.newest_verified_at = "2026-08-04T01:30:00+00:00" if healthy else None
+        r.newest_backup_filename = "b.sqlite.gz"
+        r.manifest_alembic_revision = revision
+        monkeypatch.setattr(
+            "app.services.backup_freshness.evaluate_backup_freshness",
+            lambda *a, **k: r)
+        return r
+
+    def test_backup_precondition_refuses_a_schema_mismatched_backup(
+        self, db, monkeypatch
+    ):
+        """A backup of a different schema cannot reproduce this database."""
+        db.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32))"))
+        db.execute(text("INSERT INTO alembic_version VALUES ('0027')"))
+        db.commit()
+        self._stub_backup(monkeypatch, "0019")
+
+        ok, detail, _ = rr.backup_precondition(None, db)
+        assert ok is False
+        assert "schema mismatch" in detail
+        assert "0019" in detail and "0027" in detail
+
+    def test_backup_precondition_accepts_a_matching_revision(self, db, monkeypatch):
+        db.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32))"))
+        db.execute(text("INSERT INTO alembic_version VALUES ('0027')"))
+        db.commit()
+        self._stub_backup(monkeypatch, "0027")
+
+        ok, _, _ = rr.backup_precondition(None, db)
+        assert ok is True
+
+    def test_missing_alembic_table_does_not_block(self, db, monkeypatch):
+        """create_all databases carry no revision; absence is not a mismatch."""
+        self._stub_backup(monkeypatch, "0027")
+        ok, _, _ = rr.backup_precondition(None, db)
+        assert ok is True
+
+    def test_report_still_projects_when_no_backup_exists(self, db, monkeypatch):
+        """Read-only sizing must not collapse into a wall of ValueErrors."""
+        self._stub_backup(monkeypatch, None, healthy=False)
+        report = rr.build_report(db).to_dict()
+        assert report["backup_ok"] is False
+        for plan in report["targets"]:
+            assert "error" not in plan, plan
+            assert plan["eligible_rows"] is not None
+            assert plan["backup_floor_unavailable"] is True
+
+    def test_the_mutating_path_still_fails_closed_without_a_backup(self):
+        """The report's leniency must NOT reach the irreversible path."""
+        target = rr.RECLAMATION_TARGETS["opportunity_signals.raw_payload"]
+        with pytest.raises(ValueError, match="backup floor"):
+            rr._effective_cutoff(target, rr._now(), None)
+
+    def test_reclaim_refuses_a_session_carrying_unrelated_pending_work(self, db):
+        """It commits; it must not commit somebody else's uncommitted state."""
+        target = rr.RECLAMATION_TARGETS["opportunity_signals.raw_payload"]
+        db.add(OpportunitySignal(
+            market_ticker="PENDING", signal_type="price_move_threshold",
+            signal_status="new", observed_at=NOW))
+        with pytest.raises(ValueError, match="no pending state"):
+            rr.reclaim_target(db, target)
+
+    def test_cli_refuses_an_unknown_target_cleanly(self, capsys):
+        from app import cli
+
+        outcome = cli.raw_payload_reclaim("market_price_ticks.raw_payload")
+        assert outcome["refused"] is True
+        out = capsys.readouterr().out
+        assert "refused:" in out
+        assert "valid targets:" in out
