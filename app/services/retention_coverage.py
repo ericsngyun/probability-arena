@@ -363,7 +363,13 @@ def build_retention_coverage(
             preservation_floor_reason=floor_reason,
         ))
 
-    tables.sort(key=lambda t: -(t.total_bytes or 0))
+    # Biggest first. With --no-dbstat there are no byte counts, so fall back to
+    # row count rather than silently presenting an alphabetical list as if it
+    # were a ranking.
+    if sizes:
+        tables.sort(key=lambda t: -(t.total_bytes or 0))
+    else:
+        tables.sort(key=lambda t: -t.rows)
     size_mb = (db_bytes / (1024 * 1024)) if db_bytes else None
     return RetentionCoverageReport(
         generated_at=now.isoformat(),
