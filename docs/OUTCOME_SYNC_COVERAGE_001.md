@@ -313,6 +313,47 @@ by `MARKETOPS_SCORE_LIMIT` rather than by code; MED-4's chunking is unnecessary
 at 4,903 bindings against a 32,766 limit but is recorded as a future cliff; L1
 (`provider_cap` unreachable because the list is pre-capped) is dead but harmless.
 
+### Second review — resolution correctness, scoring, statistical validity
+
+It confirmed by probe that there is exactly one status interpreter, that no
+outcome is ever inferred from price, and — the thing I most wanted checked —
+that scoring **converges**: six consecutive cycles over adversarial
+probabilities produced 8 rows then `(0 scored, 0 skipped)` forever. The float
+equality in `_score_is_current` is safe (`round(x, 6)` → SQLite REAL is an exact
+double round-trip) and the NaN attack is blocked upstream by `app/schemas.py`.
+
+Then it falsified three claims with executable probes:
+
+| # | Falsified claim | Resolution |
+|---|---|---|
+| H1 | "conflicts are preserved **unscored**" — false. `_score_target` read `winning_side` alone, so a row saying `yes` with `resolved_probability=0.0` **was scored** and given a Brier value, while the coverage report excluded it. The funnel was not monotonic | One shared rule in both classifiers |
+| H2 | "the denominator does not depend on outcome presence" — false when `Market.close_time` is NULL, where maturity fell back to the *outcome's* close time. Biased **optimistically** | Maturity comes from the market only |
+| H3 | "every candidate reached within `ceil(n/limit)` cycles no matter how many fetches fail" — true under total failure, false under partial success | Docstring states what was measured |
+| H4 | `audit_selection` hard-coded `unreachable = 0` when the repair was on, so it could never report the repair **insufficient** | Measures `candidate_pool`, `full_sweep_cycles`, `full_sweep_hours`; can return `SELECTION_SWEEP_PERIOD_TOO_LONG` |
+| M5 | Rotation counter used `COUNT(marketops_runs)`; `retention_coverage` already recommends a 30-day prune on that table, which would silently restore a fixed prefix | `MAX(id)` |
+| M3 | The flag was not exactly dark — the brier check ran regardless, so merging would re-score flipped outcomes | Gated |
+
+H1 is the one worth dwelling on. My first fix over-reached: it also treated a
+*missing* `resolved_probability` as a contradiction, which broke 26 existing
+tests. That was the right signal. `parse_market_outcome` always writes both
+fields together, so an absent probability is an older or synthetic row and
+`winning_side` is still the source-backed field — calling that a conflict would
+have silently unscored a large legitimate population to fix a small corrupt one.
+Only a **present and disagreeing** value is evidence of corruption.
+
+H4 stings, because the module already contains a paragraph indicting exactly
+this pattern — a constant presented as a measurement — and I wrote the defect
+into the function three screens below it.
+
+Also applied: M1 (a tight uplift bound excluding markets merely awaiting
+settlement, reported alongside the loose one, because the loose bound counts a
+market that closed 61 minutes ago as recoverable *uplift*), M2, M6, M7, L5.
+
+Deferred with reasons: M4 — `provider_failures` cannot distinguish 404 from a
+network outage, because `kalshi.py` collapses every error into `None`. The
+probe is still the right instrument but it answers the question only if the
+failures are 404s; splitting the exception is a separate change. M8 is in §12.
+
 **One finding I disagreed with and resolved differently.** The review suggested
 using the "currently reachable" set as evidence that a fetch had been attempted,
 which would have made `provider_market_missing` reachable. That is wrong:
@@ -332,6 +373,13 @@ declares it unmeasurable and names the probe that measures it.
 - `max_attainable_coverage_pct` is an **upper bound** and is labelled as one in
   both output formats. It assumes every recoverable market settles yes/no. Some
   are genuinely still unsettled and some will return canceled or void.
+- **Flipping the flag breaks comparability of the calibration series.**
+  `CalibrationService.summary()` has no window and no cohort filter, so scored
+  forecasts go from ~1,000 (ids 1..1000, the *oldest*) to ~12,500 within ~13
+  cycles, and `mean_brier` will move for a **population** reason. The prior
+  ADR-004 evidence was computed on an id-prefix sample; it is a *different*
+  population, not a smaller one. Capture a `calibration-report` immediately
+  before activation, or the old cohort is only reconstructible by hand.
 - Coverage improving does **not** mean forecasts improved. A larger, less
   selected sample can easily make measured skill look *worse*, and that would be
   a more honest number, not a regression.
