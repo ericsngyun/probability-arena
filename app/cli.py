@@ -895,6 +895,175 @@ async def watch_loop(
     return iterations
 
 
+def raw_payload_reclaim(
+    target: str, confirm: bool = False, max_rows: int | None = None,
+    fmt: str = "text", session=None
+) -> dict:
+    """RAW-PAYLOAD-RECLAMATION-001 — the ONE mutating command.
+
+    Replaces eligible historical raw bodies with the canonical suppressed
+    envelope, in bounded verified batches. `--confirm` is required; without it
+    this is a dry run. `target` must name a reviewed registry entry — there is
+    no arbitrary table/column interface, because a typo on an irreversible
+    operation is not a recoverable mistake.
+
+    Never deletes a row, never touches a normalized column or a timestamp, never
+    runs VACUUM, never changes a pragma, and never shrinks the file.
+    """
+    import json as _json
+
+    from app.services.raw_payload_reclamation import (
+        build_report,
+        reclaim_target,
+        resolve_target,
+    )
+
+    resolved = resolve_target(target)
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker
+
+        session = get_sessionmaker()()
+    try:
+        if not confirm:
+            data = build_report(session, targets=[resolved.qualified]).to_dict()
+            data["mode"] = "dry_run"
+            if fmt == "json":
+                print(_json.dumps(data, indent=2, sort_keys=True, default=str))
+            else:
+                plan = data["targets"][0]
+                print(f"DRY RUN {resolved.qualified}")
+                print(f"  backup: {'OK' if data['backup_ok'] else 'BLOCKED'} — "
+                      f"{data['backup_detail']}")
+                print(f"  eligible_rows={plan.get('eligible_rows')} "
+                      f"eligible_MiB={(plan.get('eligible_bytes') or 0)/1048576:.1f} "
+                      f"net_MiB={(plan.get('estimated_reclaimed_bytes') or 0)/1048576:.1f}")
+                print(f"  effective_cutoff={str(plan.get('effective_cutoff'))[:19]}")
+                print("  nothing written — re-run with --confirm to apply")
+            return data
+        result = reclaim_target(session, resolved, max_rows=max_rows).to_dict()
+    finally:
+        if owns_session:
+            session.close()
+
+    result["mode"] = "confirmed"
+    if fmt == "json":
+        print(_json.dumps(result, indent=2, sort_keys=True, default=str))
+        return result
+    print(f"CONFIRMED reclamation of {result['target']}")
+    print(f"  started={result['started_at']}  finished={result['finished_at']}")
+    print(f"  batches attempted={result['batches_attempted']} "
+          f"committed={result['batches_committed']}")
+    print(f"  rows_changed={result['rows_changed']}  lock_retries={result['lock_retries']}")
+    print(f"  bytes before={result['bytes_before']} after={result['bytes_after']}  "
+          f"logical reclaimed={(result['bytes_before']-result['bytes_after'])/1048576:.1f} MiB")
+    print(f"  total_seconds={result['total_seconds']}  verified={result['verified']}")
+    print(f"  stop_reason={result['stop_reason']}")
+    print()
+    print("  NOTE: reclaimed bytes are now REUSABLE FREELIST PAGES. The SQLite "
+          "file did NOT shrink and")
+    print("  db_growth_warning stays critical. Only SQLITE-COMPACT-COPY-001 "
+          "changes the file size.")
+    return result
+
+
+def raw_payload_reclamation_report(
+    fmt: str = "text", session=None
+) -> dict:
+    """RAW-PAYLOAD-RECLAMATION-001 — read-only dry-run for historical reclamation.
+
+    Reports, per reviewed target: the preservation floor and why, the effective
+    cutoff, exactly how many historical rows are eligible, how many bytes they
+    hold, what the envelope would cost, and what that nets out to. Also reports
+    every row it is NOT touching and why.
+
+    Writes nothing, calls no provider, and never reads a payload's contents —
+    only `length()`. There is no `--confirm` on this command; the mutation lives
+    behind a separate one.
+    """
+    import json as _json
+
+    from app.services.raw_payload_reclamation import build_report
+
+    owns_session = session is None
+    if owns_session:
+        # No run_migrations(): a read-only report must not apply Alembic to
+        # whatever DATABASE_URL points at.
+        from app.db import get_sessionmaker
+
+        session = get_sessionmaker()()
+    try:
+        report = build_report(session)
+    finally:
+        if owns_session:
+            session.close()
+
+    data = report.to_dict()
+    if fmt == "json":
+        print(_json.dumps(data, indent=2, sort_keys=True, default=str))
+        return data
+
+    mib = lambda b: "-" if b is None else f"{b / 1048576:.1f}"
+    print("raw payload historical reclamation — DRY RUN (writes nothing, zero "
+          "provider calls, prints no payload)")
+    print(f"generated_at={data['generated_at']}  external_calls=0  "
+          f"persisted=false  rows_changed=0")
+    print()
+    print(f"backup prerequisite: {'OK' if data['backup_ok'] else 'BLOCKED'} — "
+          f"{data['backup_detail']}")
+    print()
+    header = (f"{'target':<48}{'rows':>9}{'eligible':>9}{'MiB now':>9}"
+              f"{'MiB env':>9}{'MiB net':>9}{'kept':>8}{'suppr':>8}")
+    print(header)
+    print("-" * len(header))
+    total_net = 0
+    for row in data["targets"]:
+        total_net += row["estimated_reclaimed_bytes"]
+        if row.get("error"):
+            print(f"{row['target']:<48}  ERROR: {row['error']}")
+            continue
+        print(f"{row['target']:<48}{row['total_rows']:>9}{row['eligible_rows']:>9}"
+              f"{mib(row['eligible_bytes']):>9}"
+              f"{mib(row['estimated_replacement_bytes']):>9}"
+              f"{mib(row['estimated_reclaimed_bytes']):>9}"
+              f"{row['preserved_recent_rows']:>8}"
+              f"{row['already_suppressed_rows']:>8}")
+    print("-" * len(header))
+    print(f"{'TOTAL logical bytes reclaimable':<48}{'':>9}{'':>9}{'':>9}{'':>9}"
+          f"{mib(total_net):>9}")
+    print()
+    print("preservation floors (the EARLIER of the two cutoffs wins):")
+    for row in data["targets"]:
+        if row.get("error"):
+            continue
+        print(f"  {row['target']}")
+        print(f"      age floor      {row['preservation_days']}d -> {row['cutoff'][:19]}")
+        print(f"      backup floor   latest verified backup -> {row['backup_cutoff'][:19]}")
+        print(f"      EFFECTIVE      {row['effective_cutoff'][:19]}")
+        print(f"      why: {row['rationale']}")
+    print()
+    print("excluded from reclamation (governed, but deliberately not a target):")
+    for column, why in data["excluded"].items():
+        print(f"  {column}\n      {why}")
+    print()
+    print(f"pinned columns (production readers — never reclaimable): "
+          f"{len(data['pinned'])}")
+    for column in data["pinned"]:
+        print(f"  {column}")
+    print()
+    print("BACKUP PREREQUISITE: reclamation is irreversible. A verified backup "
+          "newer than 12h is required,")
+    print("and rows newer than that backup are never eligible — they would have "
+          "no recovery path at all.")
+    print()
+    print("LOGICAL vs PHYSICAL: reclaimed bytes become REUSABLE FREELIST PAGES. "
+          "The SQLite file does NOT")
+    print("shrink, and db_growth_warning stays critical. Only "
+          "SQLITE-COMPACT-COPY-001 changes the file size,")
+    print("and it is not authorized here.")
+    return data
+
+
 def raw_payload_storage_report(
     fmt: str = "text", recent: int = 5000, full_scan: bool = False, session=None
 ) -> dict:
@@ -6421,6 +6590,28 @@ def build_parser() -> argparse.ArgumentParser:
     prune_parser = subparsers.add_parser(
         "prune-retention", help="Prune operational tables per retention windows"
     )
+    do_reclaim_parser = subparsers.add_parser(
+        "raw-payload-reclaim",
+        help="Replace eligible HISTORICAL raw bodies with the canonical "
+             "suppressed envelope (RAW-PAYLOAD-RECLAMATION-001). Dry run "
+             "without --confirm. Target must be a reviewed registry name.",
+    )
+    do_reclaim_parser.add_argument("target", type=str)
+    do_reclaim_parser.add_argument("--confirm", action="store_true")
+    do_reclaim_parser.add_argument("--dry-run", action="store_true")
+    do_reclaim_parser.add_argument("--max-rows", type=int, default=None)
+    do_reclaim_parser.add_argument(
+        "--format", choices=("text", "json"), default="text", dest="fmt"
+    )
+    reclaim_parser = subparsers.add_parser(
+        "raw-payload-reclamation-report",
+        help="Read-only dry run for historical raw-payload reclamation "
+             "(RAW-PAYLOAD-RECLAMATION-001): eligible rows, bytes, preservation "
+             "floors and blockers. Writes nothing; there is no --confirm here.",
+    )
+    reclaim_parser.add_argument(
+        "--format", choices=("text", "json"), default="text", dest="fmt"
+    )
     raw_payload_parser = subparsers.add_parser(
         "raw-payload-storage-report",
         help="Read-only raw provider-payload storage measurement "
@@ -7196,6 +7387,16 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "watch-loop":
         iterations = asyncio.run(watch_loop(interval=args.interval, limit=args.limit))
         return 0 if iterations >= 0 else 1
+    if args.command == "raw-payload-reclaim":
+        # --dry-run always wins, so the pair is safe rather than destructive.
+        raw_payload_reclaim(
+            target=args.target, confirm=args.confirm and not args.dry_run,
+            max_rows=args.max_rows, fmt=args.fmt,
+        )
+        return 0
+    if args.command == "raw-payload-reclamation-report":
+        raw_payload_reclamation_report(fmt=args.fmt)
+        return 0
     if args.command == "raw-payload-storage-report":
         raw_payload_storage_report(
             fmt=args.fmt, recent=args.recent, full_scan=args.full_scan
