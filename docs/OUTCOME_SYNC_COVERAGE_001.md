@@ -2,9 +2,9 @@
 
 **Status:** implemented and reviewed; production decision in §10.
 
-Probability Arena was evaluating forecast quality on 8% of its matured
+Probability Arena was evaluating forecast quality on **9.5%** of its matured
 forecasts and did not know it. This milestone establishes what the real
-denominator is, why the other 92% have no label, and what it costs to fix.
+denominator is, why the other 90.5% have no label, and what it costs to fix.
 
 **The headline finding is that this was never a provider problem.** Two
 independent selection defects meant the pipeline re-did the same work forever
@@ -164,6 +164,23 @@ non-terminal rows, then the rest, then recently-seen non-forecasted markets to
 preserve prior behavior. A **terminal** row — settled with a yes/no side, or
 canceled/void — is never re-fetched, and that freed budget is what pays for the
 markets the prefix could never reach.
+
+**Measured query cost of the new selections, read-only on production:**
+
+| Query | Rows | Time |
+|---|---:|---:|
+| all outcomes | 1,790 | 6.4 ms |
+| distinct forecasted tickers | 4,903 | 1.6 ms |
+| close times, scoped to forecasted | 4,903 | 6.7 ms |
+| *close times, unscoped (rejected)* | *100,215* | *49.7 ms* |
+| all forecasts (scoring selection) | 12,544 | 60.2 ms |
+| all scores (scoring selection) | 1,631 | 2.1 ms |
+
+Outcome selection ≈15 ms, scoring selection ≈62 ms, against a MarketOps cycle
+averaging ~38–44 s. The unscoped variant was measured and removed anyway: it
+loaded every one of 100,215 market rows each cycle to use 5% of them, and the
+fallback that genuinely needs the rest is now bounded by `LIMIT` rather than
+materializing the table and breaking out of the loop.
 
 **Rollback is a clean `git revert`.** No migration, no schema change, no data
 transformation; the fixes change only which rows are *selected*.

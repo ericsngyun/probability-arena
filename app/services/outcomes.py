@@ -68,7 +68,7 @@ class OutcomeService:
 
         1. matured forecasted markets with no outcome row (oldest close first);
         2. forecasted markets whose row is non-terminal (open/closed/unknown),
-           staleset first;
+           stalest first;
         3. remaining forecasted markets with no row;
         4. recently seen non-forecasted markets, to preserve prior behavior.
 
@@ -89,10 +89,21 @@ class OutcomeService:
                 return True
             return status == "canceled" or side == "void"
 
+        forecasted_tickers = {
+            ticker for (ticker,) in session.execute(
+                select(MarketForecastRecord.market_ticker).distinct()
+            ).all()
+        }
+        # Scoped to forecasted tickers on purpose. The unscoped form loaded every
+        # row of `markets` (100k+ on production) on every six-minute cycle to use
+        # ~5% of it. The fallback below is the only path that needs the rest, and
+        # it only runs when the forecasted set cannot fill the budget.
         close_by_ticker = {
             ticker: close
             for ticker, close in session.execute(
-                select(Market.ticker, Market.close_time)
+                select(Market.ticker, Market.close_time).where(
+                    Market.ticker.in_(forecasted_tickers or {""})
+                )
             ).all()
         }
 
@@ -103,12 +114,7 @@ class OutcomeService:
             close = close if close.tzinfo else close.replace(tzinfo=timezone.utc)
             return (now - close).total_seconds()
 
-        forecasted = [
-            ticker
-            for (ticker,) in session.execute(
-                select(MarketForecastRecord.market_ticker).distinct()
-            ).all()
-        ]
+        forecasted = sorted(forecasted_tickers)
 
         missing_matured, missing_open, non_terminal = [], [], []
         for ticker in forecasted:
@@ -127,10 +133,13 @@ class OutcomeService:
 
         ordered = missing_matured + non_terminal + missing_open
         if len(ordered) < limit:
+            # Bounded: `.all()` on an unlimited select materializes every row
+            # before the loop can break. Fetch a few times the shortfall, which
+            # is more than enough to fill it after terminal rows are skipped.
             for (ticker,) in session.execute(
                 select(Market.ticker).order_by(
                     Market.last_seen_at.desc(), Market.id.desc()
-                )
+                ).limit(max(limit * 4, 100))
             ).all():
                 row = outcomes.get(ticker)
                 if row is not None and is_terminal(row):
