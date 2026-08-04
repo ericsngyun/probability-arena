@@ -170,9 +170,93 @@ simply stop being refreshed and a new per-MiB row would be minted again.
 
 ## 8. Deployment
 
-*(Filled in from measured evidence, after the event.)*
+Merged as `3574248`, EVO-X2 fast-forwarded `e82454c -> 3574248`. Incoming diff
+audited first: **0 files** under `alembic/`, `app/models.py` or `infra/`; the
+database was already at head revision `0027`, so the CLI's `run_migrations()` was
+a no-op.
 
-_Pending._
+By deploy time the backlog had grown **933 -> 956** open rows: the freelist had
+been exhausted, the file resumed growing, and each new MiB minted another row —
+the defect reproducing itself in real time.
+
+### First natural cycle under the new code — PASS
+
+Cycle **#7483**, `2026-08-04 00:32Z`, naturally scheduled:
+
+```text
+status=ok  stage_errors={}
+db_growth: {"alert_action":"created","severity":"critical","status":"critical",
+            "size_mb":4339.81,"warning_mb":1536.0,"critical_mb":3072.0,
+            "external_calls":0}
+open db_growth rows: 957  (956 legacy + 1 canonical)
+backup_freshness: healthy / none   anchor_feed: ok   readiness: pair_detected_not_due
+```
+
+### Reconciliation dry run — scope exact
+
+```text
+open db_growth rows: total=957 matched=957 (canonical=1 legacy=956) already_resolved=0
+excluded (unmatched titles, never written): 0 []
+canonical row: id=5447 source=existing_canonical
+condition_first_observed_at=2026-07-05T01:02:39.802161
+would resolve: 956 id_range=[241, 5430]
+remaining open after: 1 (matched=1 unmatched=0)
+persisted=false external_calls=0 hard_deletes=0
+```
+
+**`excluded_unmatched = 0`** — every open row was a strict legacy match; nothing
+unrelated was in scope. Preconditions verified first: backup freshness `healthy`
+(`backup-20260803T013426Z.db.gz`, 23.0 h), MarketOps healthy, `alembic = 0027`,
+and the clock at 00:33 UTC — clear of the 01:25–01:45 backup window.
+
+### Confirmed reconciliation — 2026-08-04T00:33:30Z
+
+Single invocation, **0.64 s wall clock**.
+
+| Check | Before | After |
+|---|---|---|
+| `db_growth_warning` open | 957 | **1** |
+| `db_growth_warning` resolved | 0 | **956** |
+| Total `marketops_alerts` rows | 5447 | **5447** — no hard deletes |
+| `champion_challenger_sample_update` | 32 open | 32 open |
+| `source_backed_forecast_created` | 4393 open | 4393 open |
+| `too_many_signals` | 56 open | 56 open |
+| `crypto_signal_spike` | 6 open / 1 resolved | 6 open / 1 resolved |
+| `no_recent_signals` / `service_health_warning` | 1 / 1 open | 1 / 1 open |
+| Alembic | 0027 | 0027 |
+
+Canonical row `id=5447`, severity `critical`, title `Database growth above
+threshold`, `condition_first_observed_at=2026-07-05T01:02:39.802161` — the true
+first observation, carried across from the oldest legacy row. 956 rows carry
+`resolved_at=2026-08-04T00:33:30.331192+00:00`, so the inverse in §7 is exact.
+
+### Natural-cycle deduplication proof — PASS
+
+Cycle **#7484**, `2026-08-04 00:38Z`:
+
+```text
+status=ok  stage_errors={}
+db_growth alert_action: "updated"          <- refreshed in place, not duplicated
+open db_growth rows: 1   ids: [5447]       <- same row
+evidence.observed_at: 2026-08-04T00:38:46  <- advanced
+evidence.condition_first_observed_at: 2026-07-05T01:02:39.802161   <- SURVIVED
+total alert rows: 5450 (+3 source_backed only — no new db_growth row)
+```
+
+### Discoverability — verified live
+
+```text
+database growth: critical size_mb=4339.81 warning_mb=1536.0 critical_mb=3072.0 alert=updated
+recommended action: Database is 4339.81 MiB, above the critical gate of 3072.0 MiB
+                    — run db-growth-report and review retention coverage
+```
+
+The canonical row happens to still be inside the newest-10 open alerts today
+(it was just created). It will fall out as `source_backed_forecast_created` rows
+accrue — which is precisely why the condition is carried on the run summary
+rather than depending on that view.
+
+---
 
 ## 9. Known remaining problem — this is not the whole swamp
 
