@@ -1,6 +1,6 @@
 # RAW-PAYLOAD-STORAGE-001 — explicit raw-payload capture policy
 
-**Status:** implemented and reviewed; activation decision and deployment in §10–§12.
+**Status:** ACTIVE on EVO-X2 since 2026-08-04T04:13Z (`RAW_PAYLOAD_CAPTURE_MODE=none`). Decision and evidence in §10–§12.
 
 Several tables store the **complete provider response** next to the normalized
 columns that were extracted from it. On the 2026-08-04 backup snapshot that is
@@ -350,15 +350,109 @@ it. An operator who remembers "31% reduction" and nothing else will expect the
 
 ## 10. Activation decision
 
-_Pending dark deployment._
+```text
+ACTIVATE RAW_PAYLOAD_CAPTURE_MODE=none
+```
+
+Justified on the reader audit, **not** on the size gate:
+
+- No production reader requires any governed payload. Audited three times, once
+  adversarially with the explicit goal of falsifying the claim; the one reader it
+  found (§2) is a propagation into a sink nothing reads, and is recorded.
+- Normalized fields plus the bounded envelope are sufficient for incident work:
+  every value any consumer actually uses lives in its own column, and the
+  envelope keeps source, discarded size and a digest.
+- Parity is established, not asserted — the suite is green in **both** modes, a
+  disposable-database comparison shows `full` is byte-identical to no policy,
+  and end-to-end writer runs show identical normalized columns and row counts.
+- Rollback is one `.env` line plus a watcher restart (§14), with no schema, no
+  timer and no historical mutation to undo.
+- `errors_only` was not a candidate: it was dropped as provably dead
+  configuration (§4).
 
 ## 11. Deployment
 
-_Pending._
+Merged as `eb264b1`, EVO-X2 fast-forwarded `03db6a8 -> eb264b1`. Diff audited
+first: **0 files** under `alembic/`, `app/models.py`, `app/db.py` or `infra/`.
+
+### Dark deployment — PASS
+
+Capture mode left at its default (`.env` key absent, effective `full`).
+MarketOps not restarted. Natural cycle **#7520**:
+
+```text
+status=ok  stage_errors={}   exactly one crypto_scan
+anchor_feed ok ext=0 | readiness ext=0 | backup_freshness healthy ext=0
+db_growth critical/updated       Alembic 0027
+market_snapshots suppressed rows: 0     <- full behaviour unchanged
+```
+
+### Activation — 2026-08-04T04:13Z
+
+| Proof | Value |
+|---|---|
+| `.env` SHA-256 before | `16e57439ba5e08a8d86b98a2f8592b5d3d475eac87c2439317b17f13310fc694` |
+| `.env` SHA-256 after | `041394bba799f0de48452fcb66a886a29937b93d3f4eeef5f60f4ed5bfeeb3a4` |
+| Lines | 162 -> 165 (blank + comment + setting) |
+| Assignments | 86 -> 87 |
+| Keys differing | exactly one: `RAW_PAYLOAD_CAPTURE_MODE` |
+
+No unrelated value read or echoed; `.env` is gitignored and not committed.
+MarketOps was **not** restarted.
+
+**The watcher WAS restarted** (`probability-arena-watcher.service`, up since
+2026-07-04, PID 1919798 -> 3426405, first new run #44021 `ok`, 150 markets). That
+is required, not optional — §14 — and `EVO_X2_RUNBOOK.md:66` prescribes exactly
+this for a flag that affects the watcher. Without it the authorized change would
+have been inert for 99% of its target. No MarketOps cycle was forced.
 
 ## 12. First natural active cycle and initial growth comparison
 
-_Pending._
+Cycle **#7521**, `2026-08-04 04:18Z`, naturally scheduled:
+
+```text
+status=ok  stage_errors={}  duration 36,927 ms
+stages: promote/process/crypto_scan/sync/score/edge_precheck/champion = ok
+anchor_feed ok ext=0 | readiness ext=0 | backup_freshness healthy ext=0
+db_growth critical/updated       Alembic 0027
+```
+
+Capture state by writer (bounded metadata only — no payload was printed):
+
+| Column | Rows since activation | Suppressed | Note |
+|---|---:|---:|---|
+| `market_price_ticks.raw_payload` | 750 | **750** | 118 B vs 2,051 B — **94.2%** |
+| `opportunity_signals.raw_payload` | 1 | **1** | |
+| `crypto_token_discovery_events.raw_payload` | 56 | **50** | the 6 kept are `EVENT_PAIR_SEEN`'s ~66 B bodies — the monotone guard working as designed |
+| `market_snapshots.raw_payload` | 0 | 0 | its writer is the **4-hourly baseline timer**, which last ran 10 min *before* activation |
+| `market_detail_enrichments.raw_*` | 0 | 0 | same writer |
+
+### Initial comparison (bounded — 5 min 8 s, not a trend)
+
+| Column | Suppressed | Stored | Would have stored | Avoided |
+|---|---:|---:|---:|---:|
+| `market_price_ticks` | 750 | 88,500 B | 1,538,250 B | 1.38 MiB |
+| `crypto_token_discovery_events` | 50 | 5,851 B | 37,450 B | 0.03 MiB |
+| `opportunity_signals` | 1 | 118 B | 1,985 B | ~0 |
+| **Total** | | | | **1.41 MiB in 5m08s** |
+
+Extrapolating that rate alone gives ~395 MiB/day, close to the ~404 MiB/day
+projection in §7 — but it is five minutes of one writer and is stated as a
+consistency check, **not** a measured daily rate. `market_snapshots` and the
+enrichment columns, which carry the *net growth* reduction, have not yet had a
+writer run.
+
+| Check | Result |
+|---|---|
+| MarketOps duration | 40,577 ms avg (10 cycles before) -> 36,927 ms (after) — no regression |
+| `database_locked` events | **4** — unchanged |
+| Provider calls | unchanged; all local hooks `external_calls=0` |
+| MarketOps runs not ok | 0 |
+| Watcher runs not ok | 0 (6 runs since activation) |
+| Alembic | 0027 |
+| Report cost on live DB | **0.60 s** (`--recent 2000`) |
+
+---
 
 ## 13. Reclamation and compaction boundary
 
