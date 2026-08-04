@@ -719,9 +719,15 @@ class TestScopeAndBoundaries:
 
         from app.db import Base
 
+        # The QUALIFIED form only — `column="table.column"`. Other modules
+        # legitimately use a bare `column=` keyword (the reclamation registry's
+        # dataclass field), and sweeping those in would make this guard fire on
+        # unrelated code instead of on the capture typo it exists to catch.
         found = set()
         for path in (REPO / "app/services").glob("*.py"):
-            found |= set(_re.findall(r'column="([^"]+)"', path.read_text()))
+            found |= set(_re.findall(
+                r'column="([A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*)"',
+                path.read_text()))
         assert found, "expected some capture call sites"
         for column in found:
             assert column in rp.ALL_CLASSIFIED_COLUMNS, f"unclassified: {column}"
