@@ -895,6 +895,94 @@ async def watch_loop(
     return iterations
 
 
+def retention_coverage_report(
+    fmt: str = "text", top: int = 25, no_dbstat: bool = False, session=None
+) -> dict:
+    """RETENTION-COVERAGE-001 — read-only retention coverage analysis.
+
+    Reports, per table: size, growth, current retention window, classification,
+    readers, preservation floor, and how many rows are eligible under the
+    CURRENT policy. It deletes nothing, writes nothing, calls no provider, and
+    has deliberately NO --confirm path: this milestone produces a decision
+    package, it does not enact one.
+
+    `--no-dbstat` skips per-table page attribution. Prefer it on a large
+    production database: the dbstat scan walks every page, and a long read lock
+    under journal_mode=delete can block the concurrent writer's COMMIT. The
+    zero-risk way to get byte attribution is to run this against a decompressed
+    backup snapshot instead.
+    """
+    import json as _json
+
+    from app.services.retention_coverage import build_retention_coverage
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        report = build_retention_coverage(session, include_dbstat=not no_dbstat)
+    finally:
+        if owns_session:
+            session.close()
+
+    data = report.to_dict()
+    if fmt == "json":
+        print(_json.dumps(data, indent=2, sort_keys=True, default=str))
+        return data
+
+    mib = lambda b: ("-" if b is None else f"{b / 1048576:.1f}")
+    print("retention coverage — READ ONLY (deletes nothing, writes nothing, "
+          "zero provider calls)")
+    print(f"generated_at={data['generated_at']}")
+    print(f"database: {mib(data['database_bytes'])} MiB  "
+          f"warning={data['warning_mb']:.0f} MiB  critical={data['critical_mb']:.0f} MiB  "
+          f"over_critical_by={data['over_critical_by_mb']} MiB")
+    print(f"pages: count={data['page_count']} size={data['page_size']} "
+          f"freelist={data['freelist_pages']} "
+          f"({mib(data['freelist_bytes'])} MiB, {data['freelist_percent']}%)")
+    print(f"dbstat_available={str(data['dbstat_available']).lower()}  "
+          f"external_calls={data['external_calls']}  "
+          f"persisted={str(data['persisted']).lower()}  "
+          f"deletes_performed={data['deletes_performed']}")
+    print()
+    header = (f"{'table':<38}{'rows':>10}{'MiB':>9}{'%db':>7}{'B/row':>8}"
+              f"{'window':>8}{'eligible':>10}  classification")
+    print(header)
+    print("-" * len(header))
+    for row in data["tables"][:top]:
+        window = "never" if row["retention_days"] is None else f"{row['retention_days']}d"
+        print(f"{row['table']:<38}{row['rows']:>10}{mib(row['total_bytes']):>9}"
+              f"{('-' if row['percent_of_database'] is None else row['percent_of_database']):>7}"
+              f"{('-' if row['bytes_per_row'] is None else int(row['bytes_per_row'])):>8}"
+              f"{window:>8}"
+              f"{('-' if row['eligible_now'] is None else row['eligible_now']):>10}"
+              f"  {row['classification']}")
+    print()
+    print("preservation floors (evidence-backed minimums, not size-driven):")
+    for row in data["tables"]:
+        if row["preservation_floor_reason"]:
+            floor = ("indefinite" if row["preservation_floor_days"] is None
+                     else f"{row['preservation_floor_days']}d")
+            print(f"  {row['table']:<38} {floor:>10}  {row['preservation_floor_reason']}")
+    print()
+    blocked = [r for r in data["tables"]
+               if r["classification"] == "blocked_pending_dependency_review"]
+    print(f"blocked pending dependency review: {len(blocked)}")
+    for row in blocked[:12]:
+        print(f"  {row['table']:<38} readers={row['readers'] or ['UNTRACED']}")
+    print()
+    print("LOGICAL vs PHYSICAL: every 'eligible' figure above is rows, and the "
+          "bytes they free become REUSABLE FREELIST PAGES.")
+    print("The SQLite file is a high-water-mark ratchet — deleting rows does "
+          "NOT shrink it. Reclaiming file bytes")
+    print("requires a separately-approved compaction (VACUUM / VACUUM INTO). "
+          "This command authorizes neither.")
+    return data
+
+
 async def prune_retention(
     dry_run: bool = False,
     tick_days: int | None = None,
@@ -6126,6 +6214,21 @@ def build_parser() -> argparse.ArgumentParser:
     prune_parser = subparsers.add_parser(
         "prune-retention", help="Prune operational tables per retention windows"
     )
+    coverage_parser = subparsers.add_parser(
+        "retention-coverage-report",
+        help="Read-only retention coverage analysis (RETENTION-COVERAGE-001): "
+             "size, growth, windows, readers, preservation floors and eligible "
+             "rows. Deletes nothing; there is no --confirm.",
+    )
+    coverage_parser.add_argument(
+        "--format", choices=("text", "json"), default="text", dest="fmt"
+    )
+    coverage_parser.add_argument("--top", type=int, default=25)
+    coverage_parser.add_argument(
+        "--no-dbstat", action="store_true",
+        help="skip per-table page attribution (avoids a full-database read "
+             "scan; prefer this on a large production database)",
+    )
     prune_parser.add_argument("--dry-run", action="store_true")
     prune_parser.add_argument("--tick-days", type=int, default=None)
     prune_parser.add_argument("--watcher-run-days", type=int, default=None)
@@ -6866,6 +6969,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "watch-loop":
         iterations = asyncio.run(watch_loop(interval=args.interval, limit=args.limit))
         return 0 if iterations >= 0 else 1
+    if args.command == "retention-coverage-report":
+        retention_coverage_report(
+            fmt=args.fmt, top=args.top, no_dbstat=args.no_dbstat
+        )
+        return 0
     if args.command == "prune-retention":
         deleted = asyncio.run(
             prune_retention(
