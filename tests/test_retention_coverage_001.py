@@ -355,8 +355,11 @@ class TestOrdering:
     ):
         """--no-dbstat has no byte counts; an alphabetical list presented as a
         ranking would mislead the exact decision this report exists to support."""
-        seed_ticks(db, 40)
-        for i in range(5):
+        # Deliberately inverted against alphabetical order: "market_price_ticks"
+        # sorts BEFORE "marketops_runs", so a test where the bigger table is
+        # also alphabetically first would pass without the fix.
+        seed_ticks(db, 3)
+        for _ in range(30):
             db.add(MarketOpsRun(status="ok", created_at=NOW, started_at=NOW))
         db.commit()
         report = rc.build_retention_coverage(
@@ -364,4 +367,6 @@ class TestOrdering:
         )
         rows = [t["rows"] for t in report.tables]
         assert rows == sorted(rows, reverse=True)
-        assert report.tables[0]["table"] == "market_price_ticks"
+        assert report.tables[0]["table"] == "marketops_runs"
+        names = [t["table"] for t in report.tables]
+        assert names != sorted(names), "still alphabetical — not a ranking"
