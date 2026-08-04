@@ -17,6 +17,7 @@ docs/SAFETY_BOUNDARIES.md.
 """
 
 import logging
+import re
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -52,6 +53,21 @@ ALERT_SOURCE_BACKED_FORECAST = "source_backed_forecast_created"
 ALERT_CC_SAMPLE_UPDATE = "champion_challenger_sample_update"
 ALERT_PROVIDER_ERROR = "provider_error"
 ALERT_DB_GROWTH = "db_growth_warning"
+# DB-GROWTH-ALERT-IDENTITY-001. ONE stable title, carrying no measurement.
+# The pre-repair title embedded the rounded size (`Database at 4262 MiB`), and
+# MarketOpsAlertService dedupes on (alert_type, title) — so every 1 MiB of
+# growth minted a NEW open row instead of refreshing one. That produced 933 open
+# rows with 933 distinct titles between 2026-07-05 and 2026-08-03, permanently
+# pinning `marketops-report`'s recommended action and burying every other alert.
+# The size now lives in the message and evidence, which are refreshed in place.
+ALERT_DB_GROWTH_TITLE = "Database growth above threshold"
+# The pre-repair identity, anchored and fullmatch'd — never a loose substring,
+# and always paired with alert_type == ALERT_DB_GROWTH so it cannot reach an
+# unrelated alert. Both the warning and critical spellings are covered.
+# [0-9] rather than \d: \d matches every Unicode decimal digit, so an
+# Arabic-Indic or fullwidth "Database at ٤٢٦٢ MiB" would match a title our code
+# can never have produced. This decides which production rows get mutated.
+LEGACY_DB_GROWTH_TITLE_RE = re.compile(r"Database at [0-9]+ MiB(?: \(critical\))?")
 # SQLITE-BACKUP-FRESHNESS-ALERT-001. ONE stable title, deliberately carrying no
 # varying data: MarketOpsAlertService dedupes on (alert_type, title), so a title
 # that embeds a changing measurement stacks a new open row every time the
@@ -326,6 +342,28 @@ class MarketOpsAlertService:
             ).limit(1)
         ).first() is not None
 
+    def resolve_open_matching(
+        self, session: Session, alert_type: str, title_matches
+    ) -> int:
+        """Resolve open alerts of `alert_type` whose title satisfies
+        `title_matches`. Narrower than resolve_open_by_type: an automated hook
+        should only ever close identities it is responsible for, never a
+        hand-written row that happens to share the type."""
+        open_alerts = session.execute(
+            select(MarketOpsAlert).where(
+                MarketOpsAlert.alert_type == alert_type,
+                MarketOpsAlert.status == ALERT_STATUS_OPEN,
+            )
+        ).scalars().all()
+        targets = [a for a in open_alerts if title_matches(a.title)]
+        resolved_at = _now()
+        for alert in targets:
+            alert.status = ALERT_STATUS_RESOLVED
+            alert.resolved_at = resolved_at
+        if targets:
+            session.flush()
+        return len(targets)
+
     def resolve_open_by_type(self, session: Session, alert_type: str) -> int:
         """Resolve every open alert of `alert_type` through the existing
         lifecycle (status + resolved_at); returns how many were resolved.
@@ -379,7 +417,7 @@ class MarketOpsAutopilotService:
         alert_service: MarketOpsAlertService | None = None,
         edge_precheck_service=None,
         anchor_feed_session_factory=None,
-        backup_freshness_session_factory=None,
+        alert_session_factory=None,
     ):
         self.config = config or MarketOpsConfig.from_settings()
         self.promotion_service = promotion_service or SignalPromotionService()
@@ -393,10 +431,11 @@ class MarketOpsAutopilotService:
         # ANCHOR-FEED-MEASUREMENT-001: injectable for tests; defaults to the
         # app sessionmaker (an isolated short-lived session per cycle).
         self._anchor_feed_session_factory = anchor_feed_session_factory
-        # SQLITE-BACKUP-FRESHNESS-ALERT-001: injectable for tests; defaults to
-        # the app sessionmaker (an isolated short-lived session per cycle, so
-        # the shared cycle session is never touched by the alert write).
-        self._backup_freshness_session_factory = backup_freshness_session_factory
+        # Isolated short-lived session factory for the operational-health alert
+        # writes (steps 7a and 7b). Injectable for tests; defaults to the app
+        # sessionmaker, so the shared cycle session is never touched by an alert
+        # write and cannot be left needing rollback by one.
+        self._alert_session_factory = alert_session_factory
 
     # --- stage helpers -----------------------------------------------------
 
@@ -955,6 +994,24 @@ class MarketOpsAutopilotService:
             # 7. Health / hygiene alerts
             alerts_created += self._health_alerts(session, now)
 
+            # Operational-health checkpoint. Steps 7a/7b each write their alert
+            # on an ISOLATED short-lived session, so the shared session must let
+            # go of the SQLite write lock first — otherwise this same coroutine
+            # self-contends and can never resolve. Consistent with the
+            # documented "checkpoint-committed, not atomic" cycle contract
+            # (stage 4a). Everything above — the run row, the health alerts — is
+            # already final here; only summary/status/timings follow.
+            session.commit()
+
+            # 7a. DB-GROWTH-ALERT-IDENTITY-001 — one stable-identity database
+            # growth alert. Same size calculation, same thresholds, same
+            # severity bands as before; what changed is that the identity no
+            # longer embeds the measurement, so repeated cycles refresh one row
+            # instead of minting a new one per MiB. Fail-CONTAINED: any
+            # exception is caught inside the helper and recorded, never
+            # re-raised, even under fail_fast.
+            alerts_created += self._evaluate_db_growth(summary)
+
             # 7b. SQLITE-BACKUP-FRESHNESS-ALERT-001 — local, provider-free
             # backup-protection health, adjacent to the db_growth_warning path
             # above. Inspects only local backup files/manifests; never executes
@@ -963,16 +1020,9 @@ class MarketOpsAutopilotService:
             # re-raised, even under fail_fast), so it cannot change the cycle
             # result or exit code. Default-off; a complete no-op when off.
             #
-            # Checkpoint-commit the shared session FIRST, for exactly the reason
-            # stage 4a does: the hook's ISOLATED alert session must acquire the
-            # SQLite write lock this same coroutine would otherwise still be
-            # holding — self-contention that can never resolve. Consistent with
-            # the documented "checkpoint-committed, not atomic" cycle contract,
-            # and guarded by the flag so the disabled path is byte-identical to
-            # before. Everything above (the run row, the health alerts) is
-            # already final at this point; only summary/status/timings follow.
+            # The shared session was already checkpoint-committed above, for
+            # the same write-lock reason.
             if cfg.include_backup_freshness_alert:
-                session.commit()
                 alerts_created += self._evaluate_backup_freshness(summary)
 
             run.alerts_created = alerts_created
@@ -1113,6 +1163,126 @@ class MarketOpsAutopilotService:
             logger.warning("candidate-readiness hook failed (isolated): %s", exc)
             summary["candidate_readiness_error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
 
+    def _evaluate_db_growth(self, summary: dict) -> int:
+        """DB-GROWTH-ALERT-IDENTITY-001 — one stable-identity database-growth
+        alert per cycle.
+
+        The size calculation, both thresholds and both severity bands are
+        EXACTLY as before; this milestone changed only the alert's identity and
+        lifecycle. Above critical -> critical, above warning -> warning, below
+        warning -> resolve. Repeated unhealthy cycles refresh the single open
+        row (and converge any same-title duplicates); a healthy cycle resolves
+        every open row of this type, legacy duplicates included.
+
+        NEVER raises: any failure is recorded in summary["db_growth_error"] and
+        swallowed, so the MarketOps cycle is unaffected even under fail_fast.
+        Crucially, a failure must NOT resolve anything — an evaluation that
+        could not measure the database has no business closing a critical alert.
+
+        Like the freshness hook, the alert write runs on its OWN short-lived
+        session: a failed INSERT on the shared cycle session would leave it
+        needing rollback and take the whole cycle's audit row down with it.
+        """
+        try:
+            settings = get_settings()
+            size_mb = database_size_mb(settings)
+            warn_mb = settings.db_growth_warning_mb
+            crit_mb = settings.db_growth_critical_mb
+
+            if size_mb is None:
+                # Unmeasurable (non-SQLite, or the file vanished). Report it and
+                # change nothing — in particular, do not resolve.
+                summary["db_growth"] = {
+                    "status": "unavailable", "size_mb": None,
+                    "warning_mb": warn_mb, "critical_mb": crit_mb,
+                    "alert_action": "none", "external_calls": 0,
+                }
+                return 0
+
+            if size_mb >= crit_mb:
+                severity, threshold_mb, band = "critical", crit_mb, "critical"
+            elif size_mb >= warn_mb:
+                severity, threshold_mb, band = "warning", warn_mb, "warning"
+            else:
+                severity, threshold_mb, band = None, warn_mb, "ok"
+
+            created = 0
+            alert_session = self._new_alert_session()
+            try:
+                if severity is None:
+                    # Title-SCOPED, not type-scoped: an unattended timer must
+                    # not be able to close a hand-written, operator-pinned
+                    # db_growth row it did not create. Only this milestone's own
+                    # identities (canonical + strict legacy) are resolvable here.
+                    resolved = self.alert_service.resolve_open_matching(
+                        alert_session,
+                        ALERT_DB_GROWTH,
+                        lambda title: (
+                            title == ALERT_DB_GROWTH_TITLE
+                            or is_legacy_db_growth_title(title)
+                        ),
+                    )
+                    action = "resolved" if resolved else "none"
+                else:
+                    # upsert_open REPLACES evidence wholesale, so carry the
+                    # first-observation stamp forward or the very next cycle
+                    # would erase what reconciliation preserved.
+                    existing = alert_session.execute(
+                        select(MarketOpsAlert).where(
+                            MarketOpsAlert.alert_type == ALERT_DB_GROWTH,
+                            MarketOpsAlert.title == ALERT_DB_GROWTH_TITLE,
+                            MarketOpsAlert.status == ALERT_STATUS_OPEN,
+                        ).order_by(MarketOpsAlert.id.asc())
+                    ).scalars().first()
+                    first_observed = None
+                    if existing is not None:
+                        first_observed = (existing.evidence or {}).get(
+                            "condition_first_observed_at"
+                        ) or (
+                            existing.created_at.isoformat()
+                            if existing.created_at else None
+                        )
+                    _alert, was_created = self.alert_service.upsert_open(
+                        alert_session,
+                        ALERT_DB_GROWTH,
+                        severity,
+                        ALERT_DB_GROWTH_TITLE,
+                        _db_growth_message(size_mb, band, threshold_mb),
+                        evidence=_db_growth_evidence(
+                            size_mb, warn_mb, crit_mb, severity,
+                            first_observed_at=first_observed,
+                        ),
+                    )
+                    created = 1 if was_created else 0
+                    action = "created" if was_created else "updated"
+                alert_session.commit()
+            finally:
+                alert_session.close()
+
+            summary["db_growth"] = {
+                "status": band,
+                "size_mb": round(size_mb, 2),
+                "warning_mb": warn_mb,
+                "critical_mb": crit_mb,
+                "severity": severity,
+                "alert_action": action,
+                "external_calls": 0,
+            }
+            return created
+        except Exception as exc:  # never fail the cycle, never resolve on failure
+            logger.warning("db-growth hook failed (isolated): %s", exc)
+            summary["db_growth_error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
+            return 0
+
+    def _new_alert_session(self):
+        """Isolated short-lived session for the operational-health alert writes.
+        Injectable for tests; defaults to the app sessionmaker."""
+        if self._alert_session_factory is not None:
+            return self._alert_session_factory()
+        from app.db import get_sessionmaker
+
+        return get_sessionmaker()()
+
     def _evaluate_backup_freshness(self, summary: dict) -> int:
         """SQLITE-BACKUP-FRESHNESS-ALERT-001 — one bounded local backup-health
         evaluation per cycle, plus the deduplicated alert lifecycle.
@@ -1148,12 +1318,7 @@ class MarketOpsAutopilotService:
 
             result = evaluate_backup_freshness()
             created = 0
-            if self._backup_freshness_session_factory is not None:
-                alert_session = self._backup_freshness_session_factory()
-            else:
-                from app.db import get_sessionmaker
-
-                alert_session = get_sessionmaker()()
+            alert_session = self._new_alert_session()
             try:
                 if result.healthy:
                     # Quiet by design: no new alert, and any active freshness
@@ -1278,31 +1443,224 @@ class MarketOpsAutopilotService:
                 ):
                     created += 1
 
-        size_mb = database_size_mb()
-        warn_mb = settings.db_growth_warning_mb
-        crit_mb = settings.db_growth_critical_mb
-        if size_mb is not None and size_mb >= crit_mb:
-            if self.alert_service.create(
-                session,
-                ALERT_DB_GROWTH,
-                "critical",
-                f"Database at {size_mb:.0f} MiB (critical)",
-                f"SQLite file exceeds critical {crit_mb:.0f} MiB — prune/retention or disk pressure risk",
-                evidence={"size_mb": round(size_mb, 2), "threshold_mb": crit_mb},
-            ):
-                created += 1
-        elif size_mb is not None and size_mb >= warn_mb:
-            if self.alert_service.create(
-                session,
-                ALERT_DB_GROWTH,
-                "warning",
-                f"Database at {size_mb:.0f} MiB",
-                f"SQLite file exceeds warning {warn_mb:.0f} MiB — review retention windows (db-growth-report)",
-                evidence={"size_mb": round(size_mb, 2), "threshold_mb": warn_mb},
-            ):
-                created += 1
-
+        # Database growth moved to _evaluate_db_growth (step 7a,
+        # DB-GROWTH-ALERT-IDENTITY-001): it needs a stable identity, a
+        # resolution path and failure isolation, none of which the plain
+        # create()-only pattern above provides. Thresholds and severity
+        # semantics are unchanged.
         return created
+
+
+def _db_growth_evidence(
+    size_mb: float, warn_mb: float, crit_mb: float, severity: str,
+    *, first_observed_at: str | None = None,
+) -> dict:
+    """Bounded, secret-free evidence for the canonical database-growth alert.
+    Everything that CHANGES lives here rather than in the title."""
+    evidence = {
+        "size_mb": round(size_mb, 2),
+        "threshold_mb": crit_mb if severity == "critical" else warn_mb,
+        "warning_mb": warn_mb,
+        "critical_mb": crit_mb,
+        "severity": severity,
+        "above_warning": size_mb >= warn_mb,
+        "above_critical": size_mb >= crit_mb,
+        "observed_at": _now().isoformat(),
+    }
+    if first_observed_at is not None:
+        # Carried forward from the earliest legacy duplicate so reconciliation
+        # does not destroy when the condition actually started.
+        evidence["condition_first_observed_at"] = first_observed_at
+    return evidence
+
+
+def _db_growth_message(size_mb: float, band: str, threshold_mb: float) -> str:
+    """Single source for the alert message, so the cycle and the reconciliation
+    can never drift apart."""
+    return (
+        f"SQLite file is {size_mb:.0f} MiB, above the {band} threshold of "
+        f"{threshold_mb:.0f} MiB — review retention windows (db-growth-report)."
+    )
+
+
+def is_legacy_db_growth_title(title: str) -> bool:
+    """Strict matcher for the pre-repair database-growth alert identity.
+
+    Anchored fullmatch on the exact legacy spelling only. Callers ALWAYS pair
+    this with alert_type == ALERT_DB_GROWTH, so a same-titled alert of another
+    type could not be reached even if one existed. A substring match would be
+    wrong here: this decides which production rows get mutated.
+    """
+    if not isinstance(title, str):
+        # SQLite's dynamic typing makes a non-text title representable. Not ours
+        # -> not matched, rather than raising in the middle of the read phase.
+        return False
+    return bool(LEGACY_DB_GROWTH_TITLE_RE.fullmatch(title))
+
+
+def reconcile_db_growth_alerts(
+    session: Session, *, confirm: bool = False, settings: Settings | None = None
+) -> dict:
+    """DB-GROWTH-ALERT-IDENTITY-001 — converge the legacy database-growth alert
+    backlog onto ONE canonical row.
+
+    Read-only unless `confirm` is set. Never hard-deletes: duplicates are
+    RESOLVED through the existing lifecycle, so the full history stays queryable.
+    Touches only rows whose alert_type is ALERT_DB_GROWTH *and* whose title is
+    either the canonical title or a strict legacy match — every other row, of
+    every other type (backup_freshness_warning included), is reported as
+    excluded and never written.
+
+    Canonical-row policy: prefer an existing open row already carrying the
+    canonical title (lowest id); otherwise promote the OLDEST legacy row, so the
+    alert keeps the created_at at which the condition was first observed. Either
+    way the earliest observation across all matched rows is preserved in
+    evidence as `condition_first_observed_at`.
+
+    Makes NO application-data deletion, no provider call, and no backup,
+    retention, cohort or observation action.
+    """
+    settings = settings or get_settings()
+    size_mb = database_size_mb(settings)
+    warn_mb = settings.db_growth_warning_mb
+    crit_mb = settings.db_growth_critical_mb
+
+    if size_mb is None:
+        severity = None
+        band = "unavailable"
+    elif size_mb >= crit_mb:
+        severity, band = "critical", "critical"
+    elif size_mb >= warn_mb:
+        severity, band = "warning", "warning"
+    else:
+        severity, band = None, "ok"
+
+    # no_autoflush: on a caller-supplied session with pending state, the reads
+    # below would otherwise autoflush that state to disk — a "read-only" dry run
+    # must not write, even indirectly.
+    with session.no_autoflush:
+        open_rows = list(session.execute(
+            select(MarketOpsAlert)
+            .where(
+                MarketOpsAlert.alert_type == ALERT_DB_GROWTH,
+                MarketOpsAlert.status == ALERT_STATUS_OPEN,
+            )
+            .order_by(MarketOpsAlert.id.asc())
+        ).scalars().all())
+        resolved_legacy = session.execute(
+            select(func.count()).select_from(MarketOpsAlert).where(
+                MarketOpsAlert.alert_type == ALERT_DB_GROWTH,
+                MarketOpsAlert.status == ALERT_STATUS_RESOLVED,
+            )
+        ).scalar() or 0
+
+    canonical_rows = [a for a in open_rows if a.title == ALERT_DB_GROWTH_TITLE]
+    legacy_rows = [a for a in open_rows if is_legacy_db_growth_title(a.title)]
+    unmatched_rows = [
+        a for a in open_rows
+        if a.title != ALERT_DB_GROWTH_TITLE and not is_legacy_db_growth_title(a.title)
+    ]
+
+    matched = canonical_rows + legacy_rows
+    first_observed = min((a.created_at for a in matched if a.created_at), default=None)
+    canonical = canonical_rows[0] if canonical_rows else (
+        min(legacy_rows, key=lambda a: (a.created_at or _now(), a.id))
+        if legacy_rows else None
+    )
+    # An UNMEASURABLE database is not a healthy one. If the size could not be
+    # read we still converge duplicates, but we keep the canonical row open and
+    # leave its severity/evidence untouched — closing a critical alert on the
+    # strength of a failed measurement is exactly the wrong direction.
+    measurable = size_mb is not None
+    keep_canonical = canonical is not None and (severity is not None or not measurable)
+    refresh_canonical = keep_canonical and severity is not None
+    to_resolve = [a for a in matched if not (keep_canonical and a is canonical)]
+
+    report = {
+        "confirmed": bool(confirm),
+        "persisted": False,
+        "external_calls": 0,
+        "size_mb": round(size_mb, 2) if size_mb is not None else None,
+        "warning_mb": warn_mb,
+        "critical_mb": crit_mb,
+        "severity": severity,
+        "status": band,
+        "canonical_title": ALERT_DB_GROWTH_TITLE,
+        "legacy_title_pattern": LEGACY_DB_GROWTH_TITLE_RE.pattern,
+        "open_total": len(open_rows),
+        "matched_total": len(matched),
+        "matched_canonical": len(canonical_rows),
+        "matched_legacy": len(legacy_rows),
+        "already_resolved": resolved_legacy,
+        "excluded_unmatched": len(unmatched_rows),
+        "excluded_unmatched_titles": [
+            str(t)[:200] for t in sorted({a.title for a in unmatched_rows})[:10]
+        ],
+        "canonical_id": canonical.id if canonical else None,
+        "canonical_created_at": (
+            canonical.created_at.isoformat()
+            if canonical is not None and canonical.created_at else None
+        ),
+        "canonical_source": (
+            None if canonical is None
+            else "existing_canonical" if canonical_rows else "promoted_legacy"
+        ),
+        "condition_first_observed_at": (
+            first_observed.isoformat() if first_observed else None
+        ),
+        "would_resolve": len(to_resolve),
+        "would_resolve_ids": [a.id for a in to_resolve][:20],
+        "would_resolve_id_range": (
+            [min(a.id for a in to_resolve), max(a.id for a in to_resolve)]
+            if to_resolve else None
+        ),
+        "measurable": measurable,
+        "canonical_refreshed": refresh_canonical,
+        "hard_deletes": 0,
+        # The ACTUAL post-state, unmatched rows included — this is the number an
+        # operator uses to decide, so it must not under-report.
+        "remaining_open_after": (1 if keep_canonical else 0) + len(unmatched_rows),
+        "remaining_open_matched_after": 1 if keep_canonical else 0,
+        "remaining_open_unmatched_after": len(unmatched_rows),
+        # Full id set + the exact stamp, so the operation has a precise inverse:
+        #   UPDATE marketops_alerts SET status='open', resolved_at=NULL
+        #    WHERE alert_type='db_growth_warning' AND resolved_at='<resolved_at>';
+        "resolve_ids": [a.id for a in to_resolve],
+        "resolved_at": None,
+    }
+
+    if not confirm:
+        # Dry run: guarantee nothing was written, even accidentally.
+        session.rollback()
+        return report
+
+    try:
+        resolved_at = _now()
+        report["resolved_at"] = resolved_at.isoformat()
+        if keep_canonical:
+            # Always adopt the canonical identity, so the next natural cycle
+            # refreshes this row instead of minting another.
+            canonical.title = ALERT_DB_GROWTH_TITLE
+        if refresh_canonical:
+            canonical.severity = severity
+            canonical.message = _db_growth_message(
+                size_mb, band, crit_mb if severity == "critical" else warn_mb
+            )
+            canonical.evidence = _db_growth_evidence(
+                size_mb, warn_mb, crit_mb, severity,
+                first_observed_at=report["condition_first_observed_at"],
+            )
+        for alert in to_resolve:
+            alert.status = ALERT_STATUS_RESOLVED
+            alert.resolved_at = resolved_at
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+
+    report["persisted"] = True
+    report["resolved"] = len(to_resolve)
+    return report
 
 
 def database_size_mb(settings: Settings | None = None) -> float | None:
@@ -1368,9 +1726,19 @@ class MarketOpsReportService:
         backup_freshness = (
             (latest_run.summary or {}).get("backup_freshness") if latest_run else None
         )
+        # DB-GROWTH-ALERT-IDENTITY-001: surfaced from the run summary for the
+        # same reason as backup_freshness. Once the backlog is reconciled to one
+        # canonical row, that row carries one of the LOWEST ids in the table, so
+        # `ORDER BY id DESC LIMIT 10` can never show it again while thousands of
+        # info-level alerts keep accruing higher ids. Without this the repair
+        # would make a 4.4 GB critical condition LESS visible than the bug it
+        # replaced, and recommended_action would read "No action needed".
+        db_growth = (
+            (latest_run.summary or {}).get("db_growth") if latest_run else None
+        )
 
         recommended = self._recommend(
-            latest_run, open_alerts, cc_snapshot, backup_freshness
+            latest_run, open_alerts, cc_snapshot, backup_freshness, db_growth
         )
 
         return MarketOpsReport(
@@ -1381,6 +1749,7 @@ class MarketOpsReportService:
             forecasts_by_forecaster=canary.forecasts_by_forecaster,
             champion_challenger=cc_snapshot,
             backup_freshness=backup_freshness,
+            db_growth=db_growth,
             crypto_totals=crypto_totals,
             database_size_mb=(
                 round(size, 2) if (size := database_size_mb()) is not None else None
@@ -1389,7 +1758,9 @@ class MarketOpsReportService:
         )
 
     @staticmethod
-    def _recommend(latest_run, open_alerts, cc_snapshot, backup_freshness=None) -> str:
+    def _recommend(
+        latest_run, open_alerts, cc_snapshot, backup_freshness=None, db_growth=None
+    ) -> str:
         # Backup protection first, and NAMED — ahead of the generic open-alert
         # count, which is permanently pinned by the db_growth_warning backlog
         # and would otherwise render this signal invisible.
@@ -1399,6 +1770,16 @@ class MarketOpsReportService:
                 f"(reason={backup_freshness.get('reason')}, "
                 f"age_seconds={backup_freshness.get('age_seconds')}) — "
                 "run sqlite-backup-freshness-report and check the backup timer"
+            )
+        # Database growth, NAMED — ahead of the generic open-alert count, which
+        # is capped at the 10 newest open rows and is therefore dominated by
+        # info-level alerts.
+        if db_growth is not None and db_growth.get("status") in ("warning", "critical"):
+            return (
+                f"Database is {db_growth.get('size_mb')} MiB, above the "
+                f"{db_growth.get('status')} gate of "
+                f"{db_growth.get('threshold_mb', db_growth.get('critical_mb'))} MiB "
+                "— run db-growth-report and review retention coverage"
             )
         urgent = [a for a in open_alerts if a.severity in ("warning", "critical")]
         if urgent:
