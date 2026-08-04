@@ -152,9 +152,21 @@ is authorized, and the call budget does not move.
 
 Three, each tied to an observed defect. Nothing speculative; no migration.
 
+**All of it is behind `ENABLE_OUTCOME_SYNC_COVERAGE_REPAIR`, default OFF.** With
+the flag off, both selections keep their deployed behavior byte-for-byte — the
+legacy alphabetical selection is preserved as a named method rather than
+deleted, and a test asserts the OFF path still reproduces the defect exactly.
+This exists because the operations review pointed out something true: without a
+flag, landing the code *is* enabling it, and activation triggers a ~12,500-row
+scoring backfill over ~13 cycles at 1,000 write transactions each, on a shared
+SQLite host running `journal_mode=delete` alongside a live writer — against a
+database with **4 recorded `database_locked` events in its entire history**. A
+change of that size should not take effect as a side effect of a merge, and the
+kill switch should not have to be `git revert`.
+
 | Fix | Defect | File | Provider impact |
 |---|---|---|---|
-| Need-based outcome selection | A | `app/services/outcomes.py` | **neutral** — same cap, terminal outcomes never re-fetched |
+| Need-based outcome selection + rotation | A | `app/services/outcomes.py` | **neutral** — same cap, terminal outcomes never re-fetched |
 | Need-based scoring selection | B | `app/services/calibration.py` | **none** — provider-free |
 | Brier-recomputing currency check | C | `app/services/calibration.py` | **none** — provider-free |
 
@@ -164,6 +176,15 @@ non-terminal rows, then the rest, then recently-seen non-forecasted markets to
 preserve prior behavior. A **terminal** row — settled with a yes/no side, or
 canceled/void — is never re-fetched, and that freed budget is what pays for the
 markets the prefix could never reach.
+
+**The queue rotates, and that is not decoration.** A failed fetch writes no row,
+so under a strict oldest-first order a permanently-unfetchable head — delisted
+markets Kalshi no longer serves — would take the entire budget every cycle and
+never advance. That is the *same defect in a different sort key*, and the
+operations review caught it. Rotating by the persisted MarketOps run count means
+every candidate is reached within `ceil(n / limit)` cycles regardless of how many
+fetches fail. Priority still chooses where a cycle starts; it no longer decides
+whether the rest is ever reached.
 
 **Measured query cost of the new selections, read-only on production:**
 
@@ -255,7 +276,52 @@ _Pending dark deployment and the production report._
 
 ## 11. Review findings
 
-_Pending._
+An independent operations / provider-governance review verified the two claims
+it was explicitly told not to trust, and both held:
+
+- the pre-change selection's reachability was a pure function of alphabetical
+  rank — no cursor, no rotation, no persisted position, so waiting or raising
+  the cap would never have reached rank > N;
+- the recurring stage remains provider-call-neutral: at most `limit` GETs to the
+  same read-only endpoint, no new provider, and `provider_budget.py` is
+  SolanaTracker-scoped and untouched.
+
+It also confirmed by measurement that scoring **converges** — 12,543 rows over
+~13 cycles, then 0 writes at cycle 14, no unbounded growth — and that no restart
+is required, because MarketOps and baseline are `Type=oneshot` timer units and
+the long-running watcher imports none of these paths.
+
+Blocking findings, all applied:
+
+| # | Finding | Resolution |
+|---|---|---|
+| HIGH-1 | New selection had no failure memory; an unfetchable oldest-close head would monopolise the budget forever — the same defect in a new sort key | Queue rotates by the persisted MarketOps run count; every candidate reached within `ceil(n/limit)` cycles |
+| HIGH-2 | `audit_selection` hard-coded the alphabetical prefix while claiming to replay the deployed one, so the tool built to *validate* the repair would have reported the repair absent. Verdict also latched | Replays whichever selection is running and names it; verdict gated on the selection actually being a frozen prefix |
+| HIGH-3 | The dry run exited **1** — the documented, default, safe invocation reported failure | `dry_run` added to the success set |
+| HIGH-4 | No flag, so this was not a dark deploy and had no kill switch but `git revert` | `ENABLE_OUTCOME_SYNC_COVERAGE_REPAIR`, default off, with an OFF-path test |
+| MED-2 | A run where every fetch failed reported `completed` and exited 0 | `all_fetches_failed`, exit 1 — also the primary signal for HIGH-1 |
+| MED-3/6 | Recurring path materialized every forecast's JSON columns and full research packets to read one field (~90–100 MB heap) | `load_only` / two-column selects |
+| MED-5 | Six reasons had no signal, and `provider_market_missing` was **structurally unreachable**, so `requires_new_provider` could only ever be 0 — a constant presented as a measurement | Unmeasurable reasons declared as such; the new-provider question now names the bounded probe that answers it |
+| L2 | Forecasts on markets with no `close_time` were excluded invisibly | Counted in `data_quality` |
+
+Environment checks the review required: EVO-X2 SQLite is **3.45.1** (variable
+limit 32,766, so the `IN`-list cliff is far from current volume) and
+`MARKETOPS_FAIL_FAST` is unset. Both clear.
+
+Deferred with reasons: MED-1 (the write burst) is now controlled by the flag and
+by `MARKETOPS_SCORE_LIMIT` rather than by code; MED-4's chunking is unnecessary
+at 4,903 bindings against a 32,766 limit but is recorded as a future cliff; L1
+(`provider_cap` unreachable because the list is pre-capped) is dead but harmless.
+
+**One finding I disagreed with and resolved differently.** The review suggested
+using the "currently reachable" set as evidence that a fetch had been attempted,
+which would have made `provider_market_missing` reachable. That is wrong:
+*reachable* means "would be selected next cycle", not "was already tried", so a
+freshly forecast market would be labelled a provider gap. I implemented it,
+saw it mislabel exactly that case in a test, and removed it. The honest answer
+is that this repository cannot distinguish never-selected from
+selected-and-failed, because a failed fetch leaves no trace — so the report
+declares it unmeasurable and names the probe that measures it.
 
 ## 12. Limitations
 
