@@ -176,4 +176,9 @@ async def run_backfill(
         result.stop_reason = "completed"
 
     result.persisted = result.outcomes_created + result.outcomes_refreshed > 0
+    if result.provider_calls and result.provider_failures == result.provider_calls:
+        # Every fetch failed. That is the primary signal that the markets we are
+        # trying to recover are no longer served at all, which is a different
+        # problem from "not synced yet" — it must not exit 0 as "completed".
+        result.stop_reason = "all_fetches_failed"
     return result

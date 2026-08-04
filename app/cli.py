@@ -707,7 +707,10 @@ def outcome_sync_backfill(
                   "re-run with --confirm to apply")
         for reason, n in sorted(data["by_reason"].items(), key=lambda kv: -kv[1]):
             print(f"    {reason:34} {n:>6}")
-    if data["stop_reason"] in ("completed", "provider_cap", "max_markets"):
+    # "dry_run" belongs here: the documented, default, SAFE invocation must not
+    # report failure. It previously exited 1, so a runbook under `set -e` would
+    # fail on the safe step and the operator's next move would be --confirm.
+    if data["stop_reason"] in ("dry_run", "completed", "provider_cap", "max_markets"):
         return 0
     return 1
 

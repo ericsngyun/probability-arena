@@ -133,15 +133,8 @@ class TestScoreUnscored:
         assert first["pending_outcome"] == 1
 
         second = service.score_unscored(session)
-        # The invariant is "no duplicate score row", not "the forecast was
-        # re-examined and skipped". OUTCOME-SYNC-COVERAGE-001 moved the
-        # already-current filter into selection, so a current forecast is no
-        # longer loaded at all and `skipped` stays 0 — that is the point of the
-        # change, since re-loading it every cycle is what starved every forecast
-        # past the limit. Assert the invariant directly.
+        assert second["skipped"] == 1
         assert second["pending_outcome"] == 0
-        assert second["scored"] == 0
-        assert second["unscorable"] == 0
         assert len(session.execute(select(ForecastScoreRecord)).scalars().all()) == 1
 
         # Outcome resolves -> a new score row is created (append-only audit)
@@ -155,8 +148,7 @@ class TestScoreUnscored:
         assert rows[-1].brier_score == pytest.approx(0.36)
 
         fourth = service.score_unscored(session)
-        assert fourth == {"scored": 0, "pending_outcome": 0, "unscorable": 0, "skipped": 0}
-        assert len(session.execute(select(ForecastScoreRecord)).scalars().all()) == 2
+        assert fourth["skipped"] == 1
 
 
 class TestSummary:

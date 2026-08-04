@@ -21,6 +21,7 @@ import app.models  # noqa: F401
 from app.db import Base
 from app.models import (
     ForecastScoreRecord,
+    MarketOpsRun,
     Market,
     MarketForecastRecord,
     MarketOutcomeRecord,
@@ -32,6 +33,22 @@ from app.services.calibration import CalibrationService
 from app.services.outcomes import OutcomeService
 
 NOW = datetime(2026, 8, 4, 12, 0, tzinfo=timezone.utc)
+
+
+@pytest.fixture(autouse=True)
+def repair_enabled(monkeypatch):
+    """OUTCOME-SYNC-COVERAGE-001 is default-OFF so it can land dark.
+
+    These tests exercise the repaired behavior, so they turn it on explicitly.
+    `TestFlagGating` below asserts the OFF path separately — that the deployed
+    prefix selections survive byte-for-byte until someone flips the flag.
+    """
+    from app.config import get_settings
+
+    monkeypatch.setenv("ENABLE_OUTCOME_SYNC_COVERAGE_REPAIR", "true")
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
 
 
 @pytest.fixture
@@ -268,14 +285,14 @@ class TestSelectionRepair:
 
     def test_selection_audit_detects_the_frozen_prefix(self, db):
         self._bulk(db, 30)
-        audit = oc.audit_selection(db, limit=10)
+        audit = oc.audit_selection(db, limit=10, repair_enabled=False)
         assert audit.verdict == "SELECTION_IS_A_FROZEN_ALPHABETICAL_PREFIX"
         assert audit.unreachable_tickers == 20
         assert audit.first_unreachable_rank == 10
 
     def test_selection_audit_clean_when_limit_covers_everything(self, db):
         self._bulk(db, 5)
-        audit = oc.audit_selection(db, limit=50)
+        audit = oc.audit_selection(db, limit=50, repair_enabled=False)
         assert audit.verdict == "SELECTION_REACHES_EVERY_FORECASTED_MARKET"
         assert audit.unreachable_tickers == 0
 
@@ -662,3 +679,153 @@ class TestSafetySurface:
         assert '"outcome-sync-coverage-report"' in src
         assert '"outcome-sync-backfill"' in src
         assert "confirm=args.confirm and not args.dry_run" in src
+
+
+class TestFlagGating:
+    """The flag has to be real, not decorative: OFF must reproduce the
+    deployed defect exactly, or "dark deploy" is a story rather than a fact."""
+
+    @pytest.fixture(autouse=True)
+    def repair_disabled(self, monkeypatch):
+        from app.config import get_settings
+
+        monkeypatch.setenv("ENABLE_OUTCOME_SYNC_COVERAGE_REPAIR", "false")
+        get_settings.cache_clear()
+        yield
+        get_settings.cache_clear()
+
+    def test_flag_defaults_off(self, monkeypatch):
+        from app.config import Settings
+
+        monkeypatch.delenv("ENABLE_OUTCOME_SYNC_COVERAGE_REPAIR", raising=False)
+        assert Settings(
+            database_url="sqlite:///x.db"
+        ).enable_outcome_sync_coverage_repair is False
+
+    async def test_off_keeps_the_alphabetical_prefix(self, db):
+        for name in ("Z-1", "A-1", "M-1"):
+            mk_market(db, name); mk_forecast(db, name)
+        calls = []
+
+        class _A:
+            async def get_market_detail(self, ticker):
+                calls.append(ticker)
+                return {"ticker": ticker, "status": "active"}
+
+        await OutcomeService(adapter=_A()).sync_known_markets(db, limit=2)
+        assert calls == ["A-1", "M-1"], "OFF must be the deployed alphabetical order"
+
+    def test_off_keeps_the_id_prefix_for_scoring(self, db):
+        for i in range(6):
+            t = f"P-{i}"
+            mk_market(db, t); mk_forecast(db, t)
+            mk_outcome(db, t, status="settled", side="yes")
+        svc = CalibrationService()
+        svc.score_unscored(db, limit=3)
+        svc.score_unscored(db, limit=3)
+        scored = {r.forecast_id for r in
+                  db.execute(select(ForecastScoreRecord)).scalars().all()}
+        # The deployed defect: the same 3 lowest ids, twice. It must survive
+        # intact while the flag is off.
+        assert scored == {1, 2, 3}
+
+
+class TestStarvationGuard:
+    """A failed fetch writes no row, so strict oldest-first would let a
+    permanently-unfetchable head monopolise the budget forever — the same
+    defect in a different sort key."""
+
+    def test_rotation_reaches_every_candidate_despite_total_failure(self, db):
+        for i in range(12):
+            t = f"R-{i:03d}"
+            mk_market(db, t, close_hours_ago=500 - i); mk_forecast(db, t)
+        svc = OutcomeService(adapter=object())
+        reached = set()
+        for cycle in range(6):
+            db.add(MarketOpsRun(status="ok", started_at=NOW))
+            db.commit()
+            reached |= set(svc.select_sync_candidates(db, limit=3))
+        assert reached == {f"R-{i:03d}" for i in range(12)}, (
+            "every candidate must be reached within ceil(n/limit) cycles even "
+            "though not one fetch ever succeeded")
+
+    def test_rotation_is_deterministic(self, db):
+        for i in range(10):
+            t = f"D-{i}"
+            mk_market(db, t); mk_forecast(db, t)
+        svc = OutcomeService(adapter=object())
+        assert svc.select_sync_candidates(db, limit=3) == \
+            svc.select_sync_candidates(db, limit=3)
+
+    def test_no_rotation_when_everything_fits(self, db):
+        for i in range(3):
+            t = f"F-{i}"
+            mk_market(db, t, close_hours_ago=100 - i); mk_forecast(db, t)
+        svc = OutcomeService(adapter=object())
+        for _ in range(4):
+            db.add(MarketOpsRun(status="ok", started_at=NOW)); db.commit()
+            picked = svc.select_sync_candidates(db, limit=10)
+            assert picked[0] == "F-0", "priority must hold when the budget fits"
+
+
+class TestBackfillExitSemantics:
+    def test_dry_run_exits_zero(self, db, capsys):
+        """The documented, default, SAFE invocation must not report failure —
+        under `set -e` a non-zero dry run pushes the operator toward --confirm."""
+        from app import cli
+
+        mk_market(db, "EX"); mk_forecast(db, "EX")
+        assert cli.outcome_sync_backfill(confirm=False, session=db) == 0
+        assert "nothing written and nothing fetched" in capsys.readouterr().out
+
+    async def test_all_fetches_failing_is_not_completed(self, db):
+        for i in range(3):
+            t = f"AF-{i}"
+            mk_market(db, t); mk_forecast(db, t)
+        result = await ob.run_backfill(
+            db, confirm=True, max_markets=10,
+            service=OutcomeService(adapter=_StubAdapter({})), now=NOW)
+        assert result.provider_calls == 3
+        assert result.provider_failures == 3
+        assert result.stop_reason == "all_fetches_failed"
+        assert result.persisted is False
+
+
+class TestAuditHonesty:
+    """HIGH-2: the tool built to validate the repair must not report that the
+    repair is absent once it ships."""
+
+    def test_audit_reports_the_selection_that_is_actually_running(self, db):
+        for i in range(30):
+            t = f"H-{i:03d}"
+            mk_market(db, t); mk_forecast(db, t)
+        on = oc.audit_selection(db, limit=10, repair_enabled=True)
+        off = oc.audit_selection(db, limit=10, repair_enabled=False)
+        assert on.active_selection == "need_based"
+        assert on.repair_enabled is True
+        assert on.verdict == "SELECTION_IS_NEED_BASED_AND_ROTATES"
+        assert on.unreachable_tickers == 0
+        assert off.active_selection == "legacy_alphabetical_prefix"
+        assert off.verdict == "SELECTION_IS_A_FROZEN_ALPHABETICAL_PREFIX"
+        assert off.unreachable_tickers == 20
+
+    def test_provider_market_missing_is_reachable(self, db):
+        """MED-5: it was structurally dead, so requires_new_provider could only
+        ever be zero — a constant presented as a measurement."""
+        mk_market(db, "SEL"); mk_forecast(db, "SEL")
+        row = [r for r in oc.load_coverage_rows(
+            db, now=NOW, reachable_tickers={"SEL"}) if r.matured][0]
+        assert row.reason == oc.PROVIDER_MARKET_MISSING
+        assert row.recoverability == oc.REQUIRES_NEW_PROVIDER
+
+        other = [r for r in oc.load_coverage_rows(
+            db, now=NOW, reachable_tickers=set()) if r.matured][0]
+        assert other.reason == oc.SYNC_NEVER_ATTEMPTED
+
+    def test_unmeasurable_reasons_are_declared(self, db):
+        mk_market(db, "UM"); mk_forecast(db, "UM")
+        r = oc.build_coverage_report(db, now=NOW, selection_limit=10).to_dict()
+        joined = " ".join(r["data_quality"])
+        assert "NOT MEASURABLE" in joined
+        for reason in oc.UNMEASURABLE_REASONS:
+            assert reason in joined

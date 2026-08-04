@@ -9,7 +9,7 @@ import math
 from datetime import datetime, timezone
 
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only
 
 from app.models import (
     ForecastScoreRecord,
@@ -161,8 +161,23 @@ class CalibrationService:
         The LIMIT now applies to forecasts that actually need work. Bulk-loaded
         (no N+1) and provider-free: this reads persisted state only.
         """
+        # load_only: this runs every cycle over every forecast, and the JSON
+        # columns (raw_response, bull_case, bear_case, skeptic_notes,
+        # key_assumptions) are never read here. Materializing them cost ~90 MB
+        # of process heap for nothing.
         forecasts = list(session.execute(
-            select(MarketForecastRecord).order_by(MarketForecastRecord.id)
+            select(MarketForecastRecord)
+            .options(load_only(
+                MarketForecastRecord.market_ticker,
+                MarketForecastRecord.estimated_probability,
+                MarketForecastRecord.forecaster_name,
+                MarketForecastRecord.forecaster_version,
+                MarketForecastRecord.evidence_depth,
+                MarketForecastRecord.forecast_risk,
+                MarketForecastRecord.research_packet_id,
+                MarketForecastRecord.calibration_tags,
+            ))
+            .order_by(MarketForecastRecord.id)
         ).scalars().all())
         if not forecasts:
             return []
@@ -179,7 +194,14 @@ class CalibrationService:
         # Ascending id -> last write wins == max id, matching latest_score_for.
         latest: dict[int, ForecastScoreRecord] = {}
         for row in session.execute(
-            select(ForecastScoreRecord).order_by(ForecastScoreRecord.id)
+            select(ForecastScoreRecord)
+            .options(load_only(
+                ForecastScoreRecord.forecast_id,
+                ForecastScoreRecord.outcome_id,
+                ForecastScoreRecord.score_status,
+                ForecastScoreRecord.brier_score,
+            ))
+            .order_by(ForecastScoreRecord.id)
         ).scalars():
             latest[row.forecast_id] = row
 
@@ -198,8 +220,17 @@ class CalibrationService:
         """Score forecasts that have no score yet, or whose latest score was
         computed against a different outcome state. Skips forecasts whose
         latest score already matches the current outcome (no duplicates)."""
+        from app.config import get_settings
+
         counts = {STATUS_SCORED: 0, STATUS_PENDING: 0, STATUS_UNSCORABLE: 0, "skipped": 0}
-        for forecast in self.select_scoring_candidates(session, limit):
+        if get_settings().enable_outcome_sync_coverage_repair:
+            candidates = self.select_scoring_candidates(session, limit)
+        else:
+            # Deployed behavior, preserved verbatim while the flag is off.
+            candidates = session.execute(
+                select(MarketForecastRecord).order_by(MarketForecastRecord.id).limit(limit)
+            ).scalars().all()
+        for forecast in candidates:
             outcome = latest_outcome_for(session, forecast.market_ticker)
             existing = latest_score_for(session, forecast.id)
             if _score_is_current(existing, outcome, forecast):

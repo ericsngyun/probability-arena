@@ -7,11 +7,16 @@ endpoints."""
 import logging
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.adapters.kalshi import KalshiRestAdapter, parse_market_outcome
-from app.models import Market, MarketForecastRecord, MarketOutcomeRecord
+from app.models import (
+    Market,
+    MarketForecastRecord,
+    MarketOpsRun,
+    MarketOutcomeRecord,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +57,39 @@ class OutcomeService:
         session.commit()
         return row
 
+    def legacy_alphabetical_candidates(
+        self, session: Session, limit: int
+    ) -> list[str]:
+        """The PRE-OUTCOME-SYNC-COVERAGE-001 selection, preserved verbatim.
+
+        Kept, not deleted, for two reasons: it is what runs while the repair
+        flag is off, so it must stay exactly as deployed; and the coverage
+        report needs to describe the selection that is actually running rather
+        than assume one.
+        """
+        forecasted = [
+            ticker
+            for (ticker,) in session.execute(
+                select(MarketForecastRecord.market_ticker)
+                .distinct()
+                .order_by(MarketForecastRecord.market_ticker)
+            ).all()
+        ]
+        recent = [
+            ticker
+            for (ticker,) in session.execute(
+                select(Market.ticker).order_by(
+                    Market.last_seen_at.desc(), Market.id.desc())
+            ).all()
+        ]
+        tickers: list[str] = []
+        for ticker in forecasted + recent:
+            if ticker not in tickers:
+                tickers.append(ticker)
+            if len(tickers) >= limit:
+                break
+        return tickers
+
     def select_sync_candidates(self, session: Session, limit: int) -> list[str]:
         """Tickers worth spending a provider call on, most urgent first.
 
@@ -75,6 +113,16 @@ class OutcomeService:
         A TERMINAL row — settled with a yes/no side, or canceled/void — is never
         re-fetched. That is the whole freed budget, and it is what pays for the
         markets the prefix could never reach.
+
+        **Starvation guard.** A failed fetch writes no row, so a ticker that
+        cannot be fetched at all stays in the queue at the same position. With a
+        strict oldest-first order, a permanently-unfetchable head — delisted
+        markets Kalshi no longer serves — would monopolise the whole budget
+        every cycle and never advance, which is the SAME defect in a different
+        sort key. So the ordered queue is ROTATED by a cycle counter: every
+        candidate is reached within ceil(n / limit) cycles no matter how many
+        fetches fail. Priority still decides where a cycle starts; it no longer
+        decides whether the rest is ever reached.
         """
         outcomes = {
             row.market_ticker: row
@@ -148,6 +196,22 @@ class OutcomeService:
                 if len(ordered) >= limit * 2:
                     break
 
+        # Rotate. `marketops_runs` is an already-persisted monotonic counter, so
+        # this needs no new state and stays deterministic for tests.
+        deduped: list[str] = []
+        _seen_order: set[str] = set()
+        for ticker in ordered:
+            if ticker not in _seen_order:
+                _seen_order.add(ticker)
+                deduped.append(ticker)
+        if deduped and len(deduped) > limit:
+            cycles = session.execute(
+                select(func.count()).select_from(MarketOpsRun)
+            ).scalar() or 0
+            offset = (cycles * limit) % len(deduped)
+            deduped = deduped[offset:] + deduped[:offset]
+        ordered = deduped
+
         seen: set[str] = set()
         tickers: list[str] = []
         for ticker in ordered:
@@ -167,8 +231,15 @@ class OutcomeService:
         Individual fetch failures are skipped so one bad ticker cannot starve
         the rest of the batch.
         """
+        from app.config import get_settings
+
+        if get_settings().enable_outcome_sync_coverage_repair:
+            candidates = self.select_sync_candidates(session, limit)
+        else:
+            candidates = self.legacy_alphabetical_candidates(session, limit)
+
         synced: list[MarketOutcomeRecord] = []
-        for ticker in self.select_sync_candidates(session, limit):
+        for ticker in candidates:
             try:
                 synced.append(await self.sync_ticker(session, ticker))
             except OutcomeSyncError as exc:

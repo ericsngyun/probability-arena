@@ -105,6 +105,34 @@ _RECOVERABILITY = {
     STATE_INCONSISTENT: NOT_RECOVERABLE,
 }
 
+# Reasons this repository currently has NO SIGNAL for, declared rather than left
+# to look like measured zeros. They stay in the taxonomy because the milestone
+# defines them and a future mapping/provider change would populate them, but the
+# report states plainly that a zero here means "not measurable", not "none".
+UNMEASURABLE_REASONS = (
+    PROVIDER_MARKET_MISSING,          # needs attempt evidence; see below
+    PROVIDER_MARKET_MAPPING_FAILED,   # single provider, the ticker IS the mapping
+    PROVIDER_RESOLUTION_MISSING,      # indistinguishable from closed_unsettled
+    SYNC_ERROR,                       # a failed fetch leaves no persisted trace
+    DOMAIN_NOT_SUPPORTED,             # every forecast domain routes to Kalshi
+    PERMANENTLY_UNSCORABLE,           # subsumed by the specific terminal reasons
+)
+
+# `PROVIDER_MARKET_MISSING` deserves its own note, because it is the reason that
+# answers "is a new provider objectively required?" and it is precisely the one
+# this report CANNOT answer. A successful fetch writes a row; a failed one writes
+# nothing. So "no row" is indistinguishable between never-selected and
+# selected-and-failed, and no persisted state separates them.
+#
+# A proxy was tried — treat "inside the currently reachable selection" as
+# evidence of an attempt — and it is wrong: reachable means "would be selected
+# next cycle", not "was already tried", so a freshly forecast market would be
+# labelled a provider gap. Rather than dress a guess up as a classification,
+# this is declared unmeasurable and the thing that DOES measure it is named.
+PROVIDER_MISSING_PROBE = (
+    "outcome-sync-backfill --confirm --max-markets 20  (reports provider_failures)"
+)
+
 # Reasons whose forecasts would become scorable if the recovery succeeded.
 _SCORING_CANDIDATE = {
     SYNC_NEVER_ATTEMPTED, LOCAL_OUTCOME_STALE, MARKET_CLOSED_UNSETTLED,
@@ -160,8 +188,16 @@ def classify_missing_reason(
 
     if outcome is None:
         # No row at all. Distinguish "we tried and could not" from "we never
-        # looked" — they have completely different fixes, and conflating them
-        # is what makes a coverage gap look like a provider gap.
+        # looked" — completely different fixes, and conflating them is what makes
+        # a coverage gap look like a provider gap.
+        #
+        # A successful fetch always writes a row, so "no row" means either never
+        # selected, or selected and failed. `ever_attempted` is therefore the
+        # ticker's presence in the CURRENTLY REACHABLE selection. An earlier
+        # version tested `ticker in outcomes` inside a branch that only runs when
+        # the ticker is NOT in outcomes, so this could never fire and
+        # `requires_new_provider` was structurally always zero — a number that
+        # could only ever say one thing, presented as though it had been measured.
         if had_sync_error:
             return SYNC_ERROR
         if ever_attempted:
@@ -217,6 +253,8 @@ class SelectionAudit:
     """
     distinct_forecasted_tickers: int
     configured_limit: int
+    repair_enabled: bool
+    active_selection: str
     reachable_tickers: int
     unreachable_tickers: int
     terminal_rows_reselected: int
@@ -225,42 +263,77 @@ class SelectionAudit:
     detail: str
 
 
-def audit_selection(session: Session, *, limit: int) -> SelectionAudit:
-    """Replays the DEPLOYED selection (`OutcomeService.sync_known_markets`)
-    without calling a provider, and reports what it can never reach."""
+def audit_selection(
+    session: Session, *, limit: int, repair_enabled: bool | None = None
+) -> SelectionAudit:
+    """Replays the selection that is ACTUALLY RUNNING, and says which one.
+
+    An earlier version hard-coded the alphabetical prefix and claimed in its
+    docstring to be replaying the deployed selection. That was true only until
+    the repair shipped, at which point the tool built to VALIDATE the repair
+    would have reported that the repair was not there — in a repository whose
+    entire value is honest measurement. So the flag is read, and both the active
+    selection and its name are reported.
+    """
+    if repair_enabled is None:
+        from app.config import get_settings
+
+        repair_enabled = get_settings().enable_outcome_sync_coverage_repair
+
     tickers = [t for (t,) in session.execute(
         select(MarketForecastRecord.market_ticker).distinct()
         .order_by(MarketForecastRecord.market_ticker)
     ).all()]
-    reachable = tickers[:limit]
-    reachable_set = set(reachable)
+
+    from app.services.outcomes import OutcomeService
+
+    service = OutcomeService.__new__(OutcomeService)  # no adapter: nothing is fetched
+    if repair_enabled:
+        reachable = service.select_sync_candidates(session, limit)
+        active = "need_based"
+    else:
+        reachable = service.legacy_alphabetical_candidates(session, limit)
+        active = "legacy_alphabetical_prefix"
 
     terminal = session.execute(
         select(func.count()).select_from(MarketOutcomeRecord).where(
-            MarketOutcomeRecord.market_ticker.in_(reachable_set or {""}),
+            MarketOutcomeRecord.market_ticker.in_(set(reachable) or {""}),
             MarketOutcomeRecord.outcome_status.in_(("settled", "canceled")),
         )
     ).scalar() or 0
 
-    unreachable = max(len(tickers) - len(reachable), 0)
-    first_unreachable = limit if unreachable else None
-
-    if unreachable == 0:
-        verdict = "SELECTION_REACHES_EVERY_FORECASTED_MARKET"
+    if repair_enabled:
+        # Nothing is permanently unreachable: the queue rotates, so every
+        # candidate is reached within ceil(n/limit) cycles.
+        unreachable = 0
+        first_unreachable = None
+        verdict = "SELECTION_IS_NEED_BASED_AND_ROTATES"
         detail = (
-            f"all {len(tickers)} forecasted tickers fall inside the {limit}-ticker "
-            "selection, so coverage gaps are not caused by selection")
+            f"{len(tickers)} distinct forecasted tickers; the {limit}-call budget "
+            "goes to markets whose outcome can still change, oldest close first, "
+            "rotating each cycle so nothing is permanently unreachable. "
+            f"{terminal} terminal rows are excluded rather than re-fetched.")
     else:
-        verdict = "SELECTION_IS_A_FROZEN_ALPHABETICAL_PREFIX"
-        detail = (
-            f"selection sorts {len(tickers)} distinct forecasted tickers "
-            f"alphabetically and keeps the first {limit}; the remaining "
-            f"{unreachable} are unreachable on EVERY cycle, not merely delayed. "
-            f"Of the {len(reachable)} that are reachable, {terminal} already hold a "
-            "TERMINAL outcome (settled/canceled) and are re-fetched anyway, so a "
-            "further share of the budget buys nothing.")
+        unreachable = max(len(tickers) - limit, 0)
+        first_unreachable = limit if unreachable else None
+        if unreachable == 0:
+            verdict = "SELECTION_REACHES_EVERY_FORECASTED_MARKET"
+            detail = (
+                f"all {len(tickers)} forecasted tickers fall inside the "
+                f"{limit}-ticker selection, so coverage gaps are not caused by "
+                "selection")
+        else:
+            verdict = "SELECTION_IS_A_FROZEN_ALPHABETICAL_PREFIX"
+            detail = (
+                f"selection sorts {len(tickers)} distinct forecasted tickers "
+                f"alphabetically and keeps the first {limit}; the remaining "
+                f"{unreachable} are unreachable on EVERY cycle, not merely "
+                f"delayed. Of the {len(reachable)} reachable, {terminal} already "
+                "hold a TERMINAL outcome and are re-fetched anyway. Set "
+                "ENABLE_OUTCOME_SYNC_COVERAGE_REPAIR=true to fix this.")
     return SelectionAudit(
         distinct_forecasted_tickers=len(tickers), configured_limit=limit,
+        repair_enabled=repair_enabled, active_selection=active,
         reachable_tickers=len(reachable), unreachable_tickers=unreachable,
         terminal_rows_reselected=terminal, first_unreachable_rank=first_unreachable,
         verdict=verdict, detail=detail,
@@ -271,6 +344,7 @@ def load_coverage_rows(
     session: Session, *, now: datetime | None = None,
     since: datetime | None = None, until: datetime | None = None,
     domain: str | None = None, grace_seconds: int = MATURITY_GRACE_SECONDS,
+    reachable_tickers: set[str] | None = None,
 ) -> list[CoverageRow]:
     """One row per forecast. Bulk-loaded; no N+1, no provider call, no write."""
     now = now or _now()
@@ -292,10 +366,14 @@ def load_coverage_rows(
     markets = {m.ticker: m for m in session.execute(
         select(Market).where(Market.ticker.in_(tickers or {""}))
     ).scalars()}
-    packets = {p.id: p for p in session.execute(
-        select(MarketResearchPacket).where(
-            MarketResearchPacket.id.in_(packet_ids or {0}))
-    ).scalars()}
+    # Only `domain` is read, and these rows carry large JSON columns
+    # (raw_response, sources, key_facts). Select two columns, not the ORM row.
+    packets = {
+        pid: dom for pid, dom in session.execute(
+            select(MarketResearchPacket.id, MarketResearchPacket.domain)
+            .where(MarketResearchPacket.id.in_(packet_ids or {0}))
+        ).all()
+    }
     latest_score: dict[int, ForecastScoreRecord] = {}
     for s in session.execute(
         select(ForecastScoreRecord)
@@ -308,19 +386,18 @@ def load_coverage_rows(
     # Deliberately conservative: we cannot prove a fetch was attempted and
     # returned nothing, so a ticker with no row is only called
     # `sync_never_attempted` when the selection audit also shows it unreachable.
-    attempted = set(outcomes)
+    attempted = reachable_tickers if reachable_tickers is not None else set()
 
     rows: list[CoverageRow] = []
     for f in forecasts:
         market = markets.get(f.market_ticker)
         outcome = outcomes.get(f.market_ticker)
-        packet = packets.get(f.research_packet_id) if f.research_packet_id else None
         score = latest_score.get(f.id)
         close_time = _aware(
             (outcome.close_time if outcome and outcome.close_time else None)
             or (market.close_time if market else None))
         age = (now - close_time).total_seconds() if close_time else None
-        dom = packet.domain if packet else "missing_packet"
+        dom = packets.get(f.research_packet_id) or "missing_packet"
         if domain is not None and dom != domain:
             continue
 
@@ -387,16 +464,17 @@ def build_coverage_report(
     examples_per_reason: int = 3,
 ) -> CoverageReport:
     now = now or _now()
+    if selection_limit is None:
+        from app.config import get_settings
+
+        selection_limit = get_settings().marketops_sync_outcome_limit
+    audit = audit_selection(session, limit=selection_limit)
+    # Deliberately NOT passing a reachable set: see PROVIDER_MISSING_PROBE.
     rows = load_coverage_rows(
         session, now=now, since=since, until=until, domain=domain)
     matured = [r for r in rows if r.matured]
     usable = [r for r in matured if r.reason is None]
     missing = [r for r in matured if r.reason is not None]
-
-    if selection_limit is None:
-        from app.config import get_settings
-        selection_limit = get_settings().marketops_sync_outcome_limit
-    audit = audit_selection(session, limit=selection_limit)
 
     closed_any = sum(1 for r in rows if r.close_time is not None
                      and r.close_age_seconds is not None and r.close_age_seconds > 0)
@@ -519,6 +597,12 @@ def build_coverage_report(
             data_quality.append(
                 f"every forecast with id <= {hi} has a score row and none above it "
                 "does — the scoring selection is an id-ordered prefix, not a backlog")
+    no_close = sum(1 for r in rows if r.has_market and r.close_time is None)
+    if no_close:
+        data_quality.append(
+            f"{no_close} forecasts sit on markets with no close_time; they are "
+            "excluded from the matured denominator entirely and are the lowest "
+            "sync priority, so they are invisible unless stated here")
     conflicts = sum(1 for r in missing if r.reason == LOCAL_OUTCOME_CONFLICT)
     if conflicts:
         data_quality.append(
@@ -527,16 +611,30 @@ def build_coverage_report(
 
     if not matured:
         verdict = "INSUFFICIENT_DATA"
+    elif not missing:
+        verdict = "COVERAGE_HEALTHY"
     elif audit.unreachable_tickers and recoverable_now >= 0.5 * len(missing):
+        # Gated on the selection ACTUALLY being a frozen prefix. Without that
+        # gate the verdict latches: market_closed_unsettled is classified
+        # recoverable, so `recoverable_now >= half` stays true long after the
+        # selection stopped being the problem, and the tool would keep blaming a
+        # defect it had already helped fix.
         verdict = "OUTCOME_SYNC_SELECTION_IS_THE_BLOCKER"
     elif recoverability.get(REQUIRES_NEW_PROVIDER, 0) >= 0.5 * len(missing):
         verdict = "NEW_PROVIDER_REQUIRED"
     elif recoverability.get(NOT_RECOVERABLE, 0) >= 0.5 * len(missing):
         verdict = "COVERAGE_IS_STRUCTURALLY_UNRECOVERABLE"
-    elif not missing:
-        verdict = "COVERAGE_HEALTHY"
+    elif recoverable_now:
+        verdict = "COVERAGE_RECOVERS_WITH_CURRENT_PROVIDERS"
     else:
         verdict = "MAPPING_OR_INTERPRETATION_WORK_REQUIRED"
+
+    data_quality.append(
+        "reasons with no signal in this repository (a zero means NOT MEASURABLE, "
+        f"not none): {', '.join(UNMEASURABLE_REASONS)}")
+    data_quality.append(
+        "'is a new provider required?' is NOT answerable from persisted state — "
+        "a failed fetch leaves no trace. Measure it with: " + PROVIDER_MISSING_PROBE)
 
     return CoverageReport(
         generated_at=now.isoformat(), funnel=funnel, taxonomy=taxonomy,
@@ -546,6 +644,8 @@ def build_coverage_report(
         selection={
             "distinct_forecasted_tickers": audit.distinct_forecasted_tickers,
             "configured_limit": audit.configured_limit,
+            "repair_enabled": audit.repair_enabled,
+            "active_selection": audit.active_selection,
             "reachable_tickers": audit.reachable_tickers,
             "unreachable_tickers": audit.unreachable_tickers,
             "terminal_rows_reselected": audit.terminal_rows_reselected,
