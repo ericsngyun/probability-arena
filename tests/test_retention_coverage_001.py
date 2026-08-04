@@ -347,3 +347,21 @@ class TestOutput:
         assert defaults.signal_days == 0
         assert defaults.tick_bucket_days == 90
         assert defaults.crypto_days == 7
+
+
+class TestOrdering:
+    def test_ranks_by_rows_when_byte_attribution_is_unavailable(
+        self, db, tmp_path, monkeypatch
+    ):
+        """--no-dbstat has no byte counts; an alphabetical list presented as a
+        ranking would mislead the exact decision this report exists to support."""
+        seed_ticks(db, 40)
+        for i in range(5):
+            db.add(MarketOpsRun(status="ok", created_at=NOW, started_at=NOW))
+        db.commit()
+        report = rc.build_retention_coverage(
+            db, settings_for(tmp_path), now=NOW, include_dbstat=False
+        )
+        rows = [t["rows"] for t in report.tables]
+        assert rows == sorted(rows, reverse=True)
+        assert report.tables[0]["table"] == "market_price_ticks"
