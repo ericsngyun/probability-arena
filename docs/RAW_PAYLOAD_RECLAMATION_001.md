@@ -382,7 +382,32 @@ cost.
 
 **Not performed.** No historical row has been modified. The only production
 access taken under this milestone was read-only: `PRAGMA query_only=ON` samples
-for §9.1, and dry-run reports, which write nothing.
+for §9.1, and the dry run below, which writes nothing.
+
+### Production dry run — 2026-08-04T06:38:06Z, EVO-X2 at `f6184ee`
+
+`external_calls=0  persisted=false  rows_changed=0`
+Backup prerequisite **OK** — `backup-20260804T013626Z.db.gz`, 18,100 s old,
+alembic `0027` matching live.
+
+| Target | Rows | Eligible | MiB now | MiB envelope | **MiB net** |
+|---|---:|---:|---:|---:|---:|
+| `crypto_token_discovery_events.raw_payload` | 315,928 | 156,970 | 118.8 | 17.7 | **101.2** |
+| `market_snapshots.raw_payload` | 154,767 | 119,355 | 251.1 | 13.4 | **237.6** |
+| `opportunity_signals.raw_payload` | 33,665 | 25,324 | 47.7 | 2.8 | **44.9** |
+| `market_detail_enrichments.raw_market_detail` | 12,484 | 9,452 | 18.4 | 1.1 | **17.4** |
+| `market_detail_enrichments.raw_series_detail` | 12,484 | 9,452 | 13.3 | 1.1 | **12.3** |
+| `market_detail_enrichments.raw_event_detail` | 12,484 | 9,452 | 5.0 | 1.1 | **3.9** |
+| **Total logical bytes reclaimable** | | | | | **417.2** |
+
+**These numbers supersede §3.** §3's ≈664.7 MiB was the whole-column inventory
+from `RAW-PAYLOAD-STORAGE-001`; 417.2 MiB is what is actually eligible once the
+preservation floors, the already-suppressed rows and the envelope's own cost are
+applied. The gap is the point: a third of the headline figure was never
+reclaimable.
+
+It is also 417.2 MiB of *logical* space in a 4.4 GiB file that does not shrink
+(§12) — set against the permanently destroyed fields inventoried in §9.2.
 
 ## 11. Verification
 
