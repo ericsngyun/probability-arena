@@ -711,6 +711,10 @@ class MarketOpsReport(BaseModel):
     # SQLITE-BACKUP-FRESHNESS-ALERT-001: bounded local backup-health snapshot
     # from the latest run summary (None when the hook is disabled).
     backup_freshness: dict | None = None
+    # DB-GROWTH-ALERT-IDENTITY-001: bounded database-growth snapshot from the
+    # latest run summary (the canonical alert row sits too low in id order to
+    # survive the open_alerts LIMIT).
+    db_growth: dict | None = None
     crypto_totals: dict[str, int] = {}
     database_size_mb: float | None = None
     recommended_action: str = ""

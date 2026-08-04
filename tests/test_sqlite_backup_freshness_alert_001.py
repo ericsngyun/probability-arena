@@ -140,7 +140,9 @@ class DisposableDb:
     Production gives the hook its own short-lived session per cycle, so tests
     must too — handing it the same session the assertions use would hide the
     `close()` and the independent `commit()` that are the point of the design.
-    `expire_on_commit=False` matches app/db.py.
+    `expire_on_commit=False` matches app/db.py. The engine is disposed on
+    teardown: an undisposed file-backed SQLite engine per test leaks
+    connections and destabilises the rest of the suite.
     """
 
     def __init__(self, tmp_path):
@@ -149,10 +151,12 @@ class DisposableDb:
         self._factory = sessionmaker(bind=self.engine, expire_on_commit=False)
         self.opened = 0
         self.closed = 0
+        self._issued = []
 
     def session(self):
         self.opened += 1
         real = self._factory()
+        self._issued.append(real)
         original_close = real.close
 
         def counting_close():
@@ -164,12 +168,27 @@ class DisposableDb:
 
     def inspect(self):
         """A fresh session for assertions — never the one the hook used."""
-        return self._factory()
+        s = self._factory()
+        self._issued.append(s)
+        return s
+
+    def close(self):
+        for s in self._issued:
+            try:
+                s.close()
+            except Exception:  # pragma: no cover - teardown must not fail a test
+                pass
+        self._issued.clear()
+        self.engine.dispose()
 
 
 @pytest.fixture
 def db(tmp_path):
-    return DisposableDb(tmp_path)
+    disposable = DisposableDb(tmp_path)
+    try:
+        yield disposable
+    finally:
+        disposable.close()
 
 
 def make_session(tmp_path):
@@ -667,7 +686,14 @@ class TestReportCLI:
         text = self._run(monkeypatch, root, "text")
         capsys.readouterr()
         data = self._run(monkeypatch, root, "json")
-        assert text == data
+        # duration_ms is a genuine per-call measurement, so it legitimately
+        # differs between two invocations; every other field must be identical.
+        assert set(text) == set(data)
+        volatile = {"duration_ms"}
+        assert {k: v for k, v in text.items() if k not in volatile} == \
+               {k: v for k, v in data.items() if k not in volatile}
+        assert isinstance(text["duration_ms"], int)
+        assert isinstance(data["duration_ms"], int)
         out = capsys.readouterr().out
         assert json.loads(out) == data
 
@@ -782,7 +808,7 @@ def make_autopilot(root, db=None, **cfg_kwargs):
     )
     return mo.MarketOpsAutopilotService(
         config=cfg,
-        backup_freshness_session_factory=(db.session if db is not None else None),
+        alert_session_factory=(db.session if db is not None else None),
     )
 
 
@@ -1390,7 +1416,7 @@ class TestFullCycle:
             fail_fast=fail_fast,
         )
         calls = pin_evaluator(monkeypatch, root) if root is not None else []
-        service = autopilot(cfg=cfg, backup_freshness_session_factory=db.session)
+        service = autopilot(cfg=cfg, alert_session_factory=db.session)
         return service, calls
 
     def test_flag_off_leaves_no_trace_in_a_real_cycle(self, db, root, monkeypatch):
@@ -1495,7 +1521,7 @@ class TestFullCycle:
                 include_probability_markets=False, include_crypto=False,
                 include_backup_freshness_alert=True, fail_fast=True,
             ),
-            backup_freshness_session_factory=locking_factory,
+            alert_session_factory=locking_factory,
         )
         session = db.inspect()
         try:

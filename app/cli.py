@@ -5591,6 +5591,15 @@ async def marketops_report(session=None) -> int:
                 print(f"  promoted by domain: {promo['promoted_by_domain']}")
             if promo.get("promoted_by_market_type"):
                 print(f"  promoted by market type: {promo['promoted_by_market_type']}")
+        if report.db_growth is not None:
+            dbg = report.db_growth
+            print(
+                f"database growth: {dbg.get('status')} "
+                f"size_mb={dbg.get('size_mb')} "
+                f"warning_mb={dbg.get('warning_mb')} "
+                f"critical_mb={dbg.get('critical_mb')} "
+                f"alert={dbg.get('alert_action')}"
+            )
         if report.backup_freshness is not None:
             bfr = report.backup_freshness
             print(
@@ -5653,6 +5662,77 @@ async def marketops_alerts(limit: int = 20, alert_status: str | None = None, ses
     finally:
         if owns_session:
             session.close()
+
+
+def marketops_reconcile_db_growth_alerts(
+    confirm: bool = False, fmt: str = "text", session=None
+) -> dict:
+    """DB-GROWTH-ALERT-IDENTITY-001 — converge the legacy database-growth alert
+    backlog onto ONE canonical row.
+
+    Dry-run by default and read-only in that mode: it writes nothing, calls no
+    provider, deletes no application data, runs no backup or retention, and
+    touches no cohort or observation. `--confirm` performs exactly one bounded,
+    atomic operational-alert reconciliation — duplicates are RESOLVED through
+    the existing lifecycle, never hard-deleted, so alert history is preserved.
+    """
+    import json as _json
+
+    from app.services.marketops import (
+        ALERT_DB_GROWTH as ALERT_TYPE_DB_GROWTH,
+    )
+    from app.services.marketops import reconcile_db_growth_alerts
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        report = reconcile_db_growth_alerts(session, confirm=confirm)
+    finally:
+        if owns_session:
+            session.close()
+
+    if fmt == "json":
+        print(_json.dumps(report, indent=2, sort_keys=True))
+        return report
+
+    mode = "CONFIRMED" if report["confirmed"] else "DRY RUN"
+    print(f"marketops db-growth alert reconciliation — {mode}")
+    print(f"persisted={str(report['persisted']).lower()} "
+          f"external_calls={report['external_calls']} "
+          f"hard_deletes={report['hard_deletes']}")
+    print(f"database: size_mb={report['size_mb']} "
+          f"warning_mb={report['warning_mb']} critical_mb={report['critical_mb']} "
+          f"status={report['status']} severity={report['severity']}")
+    print(f"canonical_title={report['canonical_title']!r}")
+    print(f"legacy_title_pattern={report['legacy_title_pattern']!r}")
+    print(f"open db_growth rows: total={report['open_total']} "
+          f"matched={report['matched_total']} "
+          f"(canonical={report['matched_canonical']} legacy={report['matched_legacy']}) "
+          f"already_resolved={report['already_resolved']}")
+    print(f"excluded (unmatched titles, never written): "
+          f"{report['excluded_unmatched']} {report['excluded_unmatched_titles']}")
+    print(f"canonical row: id={report['canonical_id']} "
+          f"source={report['canonical_source']} "
+          f"created_at={report['canonical_created_at']}")
+    print(f"condition_first_observed_at={report['condition_first_observed_at']}")
+    verb = "resolved" if report["persisted"] else "would resolve"
+    print(f"{verb}: {report.get('resolved', report['would_resolve'])} "
+          f"id_range={report['would_resolve_id_range']}")
+    print(f"remaining open after: {report['remaining_open_after']} "
+          f"(matched={report['remaining_open_matched_after']} "
+          f"unmatched={report['remaining_open_unmatched_after']})")
+    if report["persisted"]:
+        print(f"resolved_at={report['resolved_at']}  "
+              f"(inverse: UPDATE marketops_alerts SET status='open', "
+              f"resolved_at=NULL WHERE alert_type='{ALERT_TYPE_DB_GROWTH}' "
+              f"AND resolved_at='{report['resolved_at']}')")
+    if not report["confirmed"]:
+        print("nothing was written — re-run with --confirm to apply")
+    return report
 
 
 async def marketops_resolve_alert(alert_id: int, session=None) -> int:
@@ -6368,6 +6448,23 @@ def build_parser() -> argparse.ArgumentParser:
         "marketops-resolve-alert", help="Resolve one MarketOps alert by id"
     )
     mo_resolve_parser.add_argument("alert_id", type=int)
+    mo_reconcile_parser = subparsers.add_parser(
+        "marketops-reconcile-db-growth-alerts",
+        help="Converge the legacy database-growth alert backlog onto one "
+             "canonical row (DB-GROWTH-ALERT-IDENTITY-001; dry-run by default, "
+             "resolves duplicates, never deletes, zero provider calls)",
+    )
+    mo_reconcile_parser.add_argument(
+        "--dry-run", action="store_true",
+        help="report scope only and write nothing (default behaviour)",
+    )
+    mo_reconcile_parser.add_argument(
+        "--confirm", action="store_true",
+        help="apply the reconciliation in one atomic transaction",
+    )
+    mo_reconcile_parser.add_argument(
+        "--format", choices=("text", "json"), default="text", dest="fmt"
+    )
     mo_loop_parser = subparsers.add_parser(
         "marketops-loop",
         help="Autopilot loop (requires ENABLE_MARKETOPS_AUTOPILOT=true)",
@@ -6994,6 +7091,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if count >= 0 else 1
     if args.command == "marketops-resolve-alert":
         return asyncio.run(marketops_resolve_alert(alert_id=args.alert_id))
+    if args.command == "marketops-reconcile-db-growth-alerts":
+        # --confirm is the ONLY mutating path; --dry-run is the default and is
+        # also what you get when neither flag is passed.
+        marketops_reconcile_db_growth_alerts(
+            confirm=args.confirm and not args.dry_run, fmt=args.fmt
+        )
+        return 0
     if args.command == "marketops-loop":
         iterations = asyncio.run(marketops_loop(interval=args.interval))
         return 0 if iterations >= 0 else 1

@@ -141,6 +141,12 @@ class FakeCCService:
 
 
 def autopilot(session=None, cfg=None, **overrides) -> MarketOpsAutopilotService:
+    # Steps 7a/7b write their alerts on an ISOLATED session (as production
+    # does). When a test session is supplied, point that factory at the same
+    # engine so the hooks are exercised for real rather than silently skipped.
+    if session is not None and "alert_session_factory" not in overrides:
+        bind = session.get_bind()
+        overrides["alert_session_factory"] = lambda: Session(bind)
     defaults = dict(
         config=cfg or MarketOpsConfig(),
         promotion_service=SignalPromotionService(),
@@ -367,7 +373,7 @@ class TestAlerts:
         monkeypatch.setattr(get_settings(), "db_growth_warning_mb", 512.0)
         monkeypatch.setattr(get_settings(), "db_growth_critical_mb", 3072.0)
         monkeypatch.setattr(marketops_module, "database_size_mb", lambda *a, **k: 600.0)
-        await autopilot().run_once(session)
+        await autopilot(session).run_once(session)
         alerts = [
             a for a in session.execute(select(MarketOpsAlert)).scalars().all()
             if a.alert_type == "db_growth_warning"
@@ -379,7 +385,7 @@ class TestAlerts:
         monkeypatch.setattr(get_settings(), "db_growth_warning_mb", 512.0)
         monkeypatch.setattr(get_settings(), "db_growth_critical_mb", 3072.0)
         monkeypatch.setattr(marketops_module, "database_size_mb", lambda *a, **k: 4000.0)
-        await autopilot().run_once(session)
+        await autopilot(session).run_once(session)
         alerts = [
             a for a in session.execute(select(MarketOpsAlert)).scalars().all()
             if a.alert_type == "db_growth_warning"
