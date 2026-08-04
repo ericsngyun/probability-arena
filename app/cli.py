@@ -525,6 +525,207 @@ async def calibration_report(session=None) -> int:
             session.close()
 
 
+def outcome_sync_coverage_report(
+    hours: int | None = None, since: str | None = None, until: str | None = None,
+    domain: str | None = None, examples: int = 3, fmt: str = "text", session=None,
+) -> int:
+    """OUTCOME-SYNC-COVERAGE-001 — read-only outcome-coverage diagnostics.
+
+    Zero provider calls, zero DB writes, no outcome sync, no scoring; never
+    advice. Returns 0 ok / 2 on an invalid window.
+    """
+    import json as _json
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+
+    from app.services.outcome_coverage import build_coverage_report
+
+    def _parse(ts):
+        if ts is None:
+            return None
+        d = _dt.fromisoformat(ts.replace("Z", "+00:00"))
+        return d if d.tzinfo else d.replace(tzinfo=_tz.utc)
+
+    now = _dt.now(_tz.utc)
+    start = _parse(since)
+    if start is None and hours is not None:
+        if hours <= 0:
+            print("error: --hours must be positive")
+            return 2
+        start = now - _td(hours=hours)
+    end = _parse(until) or now
+    if start is not None and start > end:
+        print("error: window start is after window end")
+        return 2
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        r = build_coverage_report(
+            session, now=now, since=start, until=end, domain=domain,
+            examples_per_reason=max(1, examples)).to_dict()
+    finally:
+        if owns_session:
+            session.close()
+
+    if fmt == "json":
+        print(_json.dumps(r, indent=2, default=str))
+        return 0
+
+    f = r["funnel"]
+    print("outcome-sync coverage — measurement/data-quality only, never advice")
+    print(r["disclaimer"])
+    print(f"external_calls={r['external_calls']} persisted={str(r['persisted']).lower()} "
+          f"settlement_grace={r['grace_seconds']}s")
+    print()
+    print("denominator funnel (forecast-level, monotonic):")
+    for step in ("all_forecasts", "markets_closed", "matured_eligible",
+                 "outcome_row_present", "settled_yes_no", "scored_current",
+                 "unscorable", "pending_legitimately_unresolved", "missing_outcome"):
+        print(f"  {step:34} {f[step]:>7}")
+    print(f"  {'matured coverage':34} {f['matured_coverage_pct']:>6}%")
+    print(f"  {'scored_current of matured':34} {f['scored_current_pct']:>6}%")
+
+    print()
+    print("missing-outcome taxonomy (mutually exclusive):")
+    print(f"  {'reason':34} {'fcst':>6} {'mkts':>6} {'share':>7}  recoverability")
+    for t in r["taxonomy"]:
+        print(f"  {t['reason']:34} {t['forecasts']:>6} {t['markets']:>6} "
+              f"{t['share_of_matured_pct']:>6}%  {t['recoverability']}"
+              f"{' (provider call)' if t['provider_call_required'] else ''}")
+
+    print()
+    print("recoverability:")
+    for k, v in sorted(r["recoverability"].items(), key=lambda kv: -kv[1]):
+        print(f"  {str(k):36} {v:>7}")
+
+    print()
+    sel = r["selection"]
+    print("outcome-sync selection audit:")
+    print(f"  distinct forecasted tickers  {sel['distinct_forecasted_tickers']:>7}")
+    print(f"  configured limit             {sel['configured_limit']:>7}")
+    print(f"  reachable                    {sel['reachable_tickers']:>7}")
+    print(f"  UNREACHABLE every cycle      {sel['unreachable_tickers']:>7}")
+    print(f"  candidate pool               {sel['candidate_pool']:>7}")
+    if sel.get("full_sweep_cycles") is not None:
+        print(f"  full sweep                   {sel['full_sweep_cycles']:>7} cycles "
+              f"(~{sel['full_sweep_hours']} h)")
+    print(f"  active selection             {sel['active_selection']:>7}"
+          f"  repair_enabled={sel['repair_enabled']}")
+    print(f"  terminal rows re-fetched     {sel['terminal_rows_reselected']:>7}")
+    print(f"  {sel['verdict']}")
+    print(f"  {sel['detail']}")
+
+    print()
+    print("coverage by domain:")
+    for b in r["by_domain"]:
+        print(f"  {b['key']:20} matured={b['matured']:>6} usable={b['usable']:>6} "
+              f"scored={b['scored_current']:>6} coverage={b['coverage_pct']:>6}%")
+    print("coverage by close age:")
+    for b in r["by_close_age"]:
+        print(f"  {b['key']:10} matured={b['matured']:>6} usable={b['usable']:>6} "
+              f"coverage={b['coverage_pct']:>6}%")
+    print("coverage by forecaster (top 8):")
+    for b in r["by_forecaster"][:8]:
+        print(f"  {b['key']:28} matured={b['matured']:>6} coverage={b['coverage_pct']:>6}%")
+
+    u = r["uplift"]
+    print()
+    print("scoring uplift potential:")
+    print(f"  coverage now                       {u['matured_coverage_now_pct']:>7}%")
+    print(f"  recoverable with current providers {u['recoverable_with_current_providers']:>7}")
+    print(f"  requires new mapping               {u['requires_new_mapping']:>7}")
+    print(f"  requires new status interpreter    {u['requires_new_status_interpreter']:>7}")
+    print(f"  requires NEW PROVIDER              {u['requires_new_provider']:>7}")
+    print(f"  permanently unscorable             {u['permanently_unscorable']:>7}")
+    print(f"  max attainable coverage            {u['max_attainable_coverage_pct']:>7}%  "
+          "(LOOSE upper bound: assumes every recoverable market settles yes/no)")
+    print("  max attainable, excluding markets  "
+          f"{u['max_attainable_excluding_awaiting_settlement_pct']:>7}%  "
+          "(TIGHT bound; the truth is between these two)")
+    print("    merely awaiting settlement")
+
+    if r["data_quality"]:
+        print()
+        print("data-quality findings:")
+        for d in r["data_quality"]:
+            print(f"  - {d}")
+    print()
+    print(f"VERDICT: {r['verdict']}")
+    return 0
+
+
+def outcome_sync_backfill(
+    confirm: bool = False, max_markets: int = 250, domain: str | None = None,
+    fmt: str = "text", session=None,
+) -> int:
+    """OUTCOME-SYNC-COVERAGE-001 — bounded historical outcome synchronization.
+
+    Fetches market-resolution status for matured markets that currently have no
+    usable outcome, through the SAME read-only Kalshi detail path MarketOps
+    already uses. Without `--confirm` this is a dry run that calls nothing.
+
+    Never changes a forecast, never infers an outcome from price, never
+    overwrites a conflict, and stops at the cap.
+    """
+    import asyncio as _asyncio
+    import json as _json
+
+    from app.services.outcome_backfill import run_backfill
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        result = _asyncio.run(run_backfill(
+            session, confirm=confirm, max_markets=max_markets, domain=domain))
+    finally:
+        if owns_session:
+            session.close()
+
+    data = result.to_dict()
+    if fmt == "json":
+        print(_json.dumps(data, indent=2, default=str))
+    else:
+        mode = "CONFIRMED RUN" if confirm else "DRY RUN"
+        print(f"outcome-sync backfill — {mode}")
+        print(data["disclaimer"])
+        print(f"  markets_selected     {data['markets_selected']:>7}")
+        print(f"  provider_cap         {data['provider_cap']:>7}")
+        print(f"  provider_calls       {data['provider_calls']:>7}")
+        print(f"  already_current_excluded {data['already_current_excluded']:>3}")
+        print(f"  conflicts_excluded   {data['conflicts_excluded']:>7}")
+        print(f"  scoring_candidates   {data['scoring_candidates']:>7}")
+        print(f"  outcomes_created     {data['outcomes_created']:>7}")
+        print(f"  outcomes_refreshed   {data['outcomes_refreshed']:>7}")
+        print(f"  settled_yes_no       {data['settled_yes_no']:>7}")
+        print(f"  canceled_or_void     {data['canceled_or_void']:>7}")
+        print(f"  still_unsettled      {data['still_unsettled']:>7}")
+        print(f"  unrecognized_status  {data['unrecognized_status']:>7}")
+        print(f"  provider_failures    {data['provider_failures']:>7}")
+        print("  scoring: not performed here — canonical scoring runs as its "
+              "own MarketOps stage")
+        print(f"  persisted={str(data['persisted']).lower()}  "
+              f"stop_reason={data['stop_reason']}")
+        if not confirm:
+            print("  nothing written and nothing fetched — "
+                  "re-run with --confirm to apply")
+        for reason, n in sorted(data["by_reason"].items(), key=lambda kv: -kv[1]):
+            print(f"    {reason:34} {n:>6}")
+    # "dry_run" belongs here: the documented, default, SAFE invocation must not
+    # report failure. It previously exited 1, so a runbook under `set -e` would
+    # fail on the safe step and the operator's next move would be --confirm.
+    if data["stop_reason"] in ("dry_run", "completed", "provider_cap", "max_markets"):
+        return 0
+    return 1
+
+
 async def forecast_scorability_audit_report(
     hours: int | None = None, since: str | None = None, until: str | None = None,
     domain: str | None = None, forecaster: str | None = None, top: int = 10,
@@ -6553,6 +6754,35 @@ def build_parser() -> argparse.ArgumentParser:
     fsa_parser.add_argument("--forecaster", type=str, default=None)
     fsa_parser.add_argument("--top", type=int, default=10)
     fsa_parser.add_argument("--format", choices=("text", "json"), default="text", dest="fmt")
+    osc_parser = subparsers.add_parser(
+        "outcome-sync-coverage-report",
+        help="Read-only outcome-coverage diagnostics and missing-outcome taxonomy "
+             "(OUTCOME-SYNC-COVERAGE-001; zero calls, no writes)",
+    )
+    osc_parser.add_argument("--hours", type=int, default=None,
+                            help="window = now-hours .. now (over forecast created_at)")
+    osc_parser.add_argument("--since", type=str, default=None,
+                            help="ISO UTC window start (overrides --hours)")
+    osc_parser.add_argument("--until", type=str, default=None, help="ISO UTC window end (default now)")
+    osc_parser.add_argument("--domain", type=str, default=None)
+    osc_parser.add_argument("--examples", type=int, default=3,
+                            help="bounded examples per missing reason")
+    osc_parser.add_argument("--format", choices=("text", "json"), default="text", dest="fmt")
+
+    osb_parser = subparsers.add_parser(
+        "outcome-sync-backfill",
+        help="Bounded historical outcome synchronization through the existing "
+             "read-only Kalshi detail path (OUTCOME-SYNC-COVERAGE-001)",
+    )
+    osb_parser.add_argument("--confirm", action="store_true",
+                            help="actually fetch and persist; omit for a dry run")
+    osb_parser.add_argument("--dry-run", action="store_true",
+                            help="force a dry run even with --confirm")
+    osb_parser.add_argument("--max-markets", type=int, default=250,
+                            help="hard provider-call cap for this run")
+    osb_parser.add_argument("--domain", type=str, default=None)
+    osb_parser.add_argument("--format", choices=("text", "json"), default="text", dest="fmt")
+
     frd_parser = subparsers.add_parser(
         "forecast-reliability-decomposition-report",
         help="Read-only calibration/reliability decomposition over scored_current "
@@ -7365,6 +7595,17 @@ def main(argv: list[str] | None = None) -> int:
                 hours=args.hours, since=args.since, until=args.until,
                 domain=args.domain, forecaster=args.forecaster, top=args.top, fmt=args.fmt,
             )
+        )
+    if args.command == "outcome-sync-coverage-report":
+        return outcome_sync_coverage_report(
+            hours=args.hours, since=args.since, until=args.until,
+            domain=args.domain, examples=args.examples, fmt=args.fmt,
+        )
+    if args.command == "outcome-sync-backfill":
+        # --dry-run always wins, so the pair is safe rather than destructive.
+        return outcome_sync_backfill(
+            confirm=args.confirm and not args.dry_run,
+            max_markets=args.max_markets, domain=args.domain, fmt=args.fmt,
         )
     if args.command == "forecast-reliability-decomposition-report":
         return asyncio.run(

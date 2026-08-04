@@ -9,7 +9,7 @@ import math
 from datetime import datetime, timezone
 
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only
 
 from app.models import (
     ForecastScoreRecord,
@@ -61,11 +61,61 @@ def _score_target(
     if outcome.outcome_status in ("canceled", "unknown"):
         return STATUS_UNSCORABLE, None, f"outcome is {outcome.outcome_status}"
     # settled
-    if outcome.winning_side == "yes":
-        return STATUS_SCORED, 1.0, "settled yes"
-    if outcome.winning_side == "no":
-        return STATUS_SCORED, 0.0, "settled no"
+    if outcome.winning_side in ("yes", "no"):
+        y = 1.0 if outcome.winning_side == "yes" else 0.0
+        # A row that disagrees with ITSELF is not evidence. `winning_side` and
+        # `resolved_probability` are written together from one provider payload,
+        # so a mismatch means the row was corrupted or half-written — and scoring
+        # it would mint a Brier value from a label we cannot trust. Deciding on
+        # `winning_side` alone also made the coverage funnel non-monotonic
+        # (scored_current could exceed settled_yes_no) and made this repo's own
+        # claim that conflicts are "preserved unscored" false.
+        # A MISSING probability is not a contradiction — it means "not
+        # recorded". `parse_market_outcome` always writes both together, so an
+        # absent one is an older or synthetic row, and `winning_side` is still
+        # the source-backed field. Only a PRESENT and disagreeing value is
+        # evidence the row is corrupt.
+        if outcome.resolved_probability is not None and outcome.resolved_probability != y:
+            return (STATUS_UNSCORABLE, None,
+                    f"outcome conflicts with itself: winning_side="
+                    f"{outcome.winning_side} but resolved_probability="
+                    f"{outcome.resolved_probability}")
+        return STATUS_SCORED, y, f"settled {outcome.winning_side}"
     return STATUS_UNSCORABLE, None, "settled but winning side is void/unknown"
+
+
+def _score_is_current(
+    score: ForecastScoreRecord | None,
+    outcome: MarketOutcomeRecord | None,
+    forecast: MarketForecastRecord,
+) -> bool:
+    """Is this persisted score still the right answer for the current outcome?
+
+    Identity of the outcome row is NOT enough. `MarketOutcomeRecord` is upserted
+    in place, one row per ticker, so a market that settles yes and is later
+    corrected to no keeps the same `id` AND the same `score_status` ("scored").
+    Comparing only those two would treat the stale yes-score as current forever,
+    and the forecast would be permanently mis-scored against an outcome that no
+    longer exists. Recompute and compare.
+    """
+    if score is None:
+        return False
+    if score.outcome_id != (outcome.id if outcome else None):
+        return False
+    target_status, y, _ = _score_target(outcome)
+    if score.score_status != target_status:
+        return False
+    if target_status != STATUS_SCORED or y is None:
+        return True
+    from app.config import get_settings
+
+    if not get_settings().enable_outcome_sync_coverage_repair:
+        # Gated so OFF really is byte-for-byte. This recompute is strictly more
+        # correct, but it is still a WRITE the flag was supposed to gate: with it
+        # ungated, merging the code would re-score every forecast whose outcome
+        # had flipped in place. "Nearly dark" is not dark.
+        return True
+    return score.brier_score == brier_score(forecast.estimated_probability, y)
 
 
 def _build_score_tags(session: Session, forecast: MarketForecastRecord) -> list[str]:
@@ -119,24 +169,109 @@ class CalibrationService:
         session.commit()
         return row
 
+    def select_scoring_candidates(
+        self, session: Session, limit: int
+    ) -> list[MarketForecastRecord]:
+        """Forecasts whose persisted score does not match their current outcome.
+
+        OUTCOME-SYNC-COVERAGE-001 replaced an id-ordered prefix here. The old
+        selection was `order_by(id).limit(limit)`, which loaded the SAME oldest
+        `limit` forecasts every cycle and skipped almost all of them as already
+        current. Forecasts past the cap were never loaded, so they could never
+        be scored — on production that showed up as exactly 1,000 distinct
+        scored forecasts spanning forecast ids 1..1000, against 12,543
+        forecasts. It was not a backlog draining slowly; it was a prefix.
+
+        The LIMIT now applies to forecasts that actually need work. Bulk-loaded
+        (no N+1) and provider-free: this reads persisted state only.
+        """
+        # load_only: this runs every cycle over every forecast, and the JSON
+        # columns (raw_response, bull_case, bear_case, skeptic_notes,
+        # key_assumptions) are never read here. Materializing them cost ~90 MB
+        # of process heap for nothing.
+        forecasts = list(session.execute(
+            select(MarketForecastRecord)
+            .options(load_only(
+                MarketForecastRecord.market_ticker,
+                MarketForecastRecord.estimated_probability,
+                MarketForecastRecord.forecaster_name,
+                MarketForecastRecord.forecaster_version,
+                MarketForecastRecord.evidence_depth,
+                MarketForecastRecord.forecast_risk,
+                MarketForecastRecord.research_packet_id,
+                MarketForecastRecord.calibration_tags,
+            ))
+            .order_by(MarketForecastRecord.id)
+        ).scalars().all())
+        if not forecasts:
+            return []
+
+        tickers = {f.market_ticker for f in forecasts}
+        outcomes = {
+            o.market_ticker: o
+            for o in session.execute(
+                select(MarketOutcomeRecord).where(
+                    MarketOutcomeRecord.market_ticker.in_(tickers or {""})
+                )
+            ).scalars()
+        }
+        # Ascending id -> last write wins == max id, matching latest_score_for.
+        # Only the LATEST score per forecast matters. `forecast_scores` is
+        # append-only, is about to grow ~12x, and grows again on every outcome
+        # change with no ceiling — streaming all of it every six minutes is a
+        # cost that only ever increases. `summary()` already establishes this
+        # max-id subquery as the house pattern.
+        latest_ids = (
+            select(func.max(ForecastScoreRecord.id))
+            .group_by(ForecastScoreRecord.forecast_id)
+            .scalar_subquery()
+        )
+        latest: dict[int, ForecastScoreRecord] = {}
+        for row in session.execute(
+            select(ForecastScoreRecord)
+            .where(ForecastScoreRecord.id.in_(latest_ids))
+            .options(load_only(
+                ForecastScoreRecord.forecast_id,
+                ForecastScoreRecord.outcome_id,
+                ForecastScoreRecord.score_status,
+                # brier only; log_loss and absolute_error derive from the same
+                # (p, y), so comparing one is comparing all three.
+                ForecastScoreRecord.brier_score,
+            ))
+        ).scalars():
+            latest[row.forecast_id] = row
+
+        candidates: list[MarketForecastRecord] = []
+        for forecast in forecasts:
+            outcome = outcomes.get(forecast.market_ticker)
+            existing = latest.get(forecast.id)
+            if _score_is_current(existing, outcome, forecast):
+                continue  # already current
+            candidates.append(forecast)
+            if len(candidates) >= limit:
+                break
+        return candidates
+
     def score_unscored(self, session: Session, limit: int = 500) -> dict[str, int]:
         """Score forecasts that have no score yet, or whose latest score was
         computed against a different outcome state. Skips forecasts whose
         latest score already matches the current outcome (no duplicates)."""
-        forecasts = session.execute(
-            select(MarketForecastRecord).order_by(MarketForecastRecord.id).limit(limit)
-        ).scalars().all()
+        from app.config import get_settings
 
         counts = {STATUS_SCORED: 0, STATUS_PENDING: 0, STATUS_UNSCORABLE: 0, "skipped": 0}
-        for forecast in forecasts:
+        if get_settings().enable_outcome_sync_coverage_repair:
+            candidates = self.select_scoring_candidates(session, limit)
+        else:
+            # Deployed behavior, preserved verbatim while the flag is off.
+            candidates = session.execute(
+                select(MarketForecastRecord).order_by(MarketForecastRecord.id).limit(limit)
+            ).scalars().all()
+        for forecast in candidates:
             outcome = latest_outcome_for(session, forecast.market_ticker)
-            target_status, _, _ = _score_target(outcome)
             existing = latest_score_for(session, forecast.id)
-            if (
-                existing is not None
-                and existing.outcome_id == (outcome.id if outcome else None)
-                and existing.score_status == target_status
-            ):
+            if _score_is_current(existing, outcome, forecast):
+                # Re-checked against live state, not the bulk snapshot: the
+                # selection is advisory, this is the guarantee against duplicates.
                 counts["skipped"] += 1
                 continue
             row = self.score_forecast(session, forecast, outcome)

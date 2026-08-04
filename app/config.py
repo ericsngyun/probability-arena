@@ -263,6 +263,14 @@ class Settings(BaseSettings):
     # EV, no trade recommendations, no sizing, no orders, no execution;
     # paper_candidate_later is a review label with zero attached behavior.
     # Thresholds are PROVISIONAL (design doc §6) pending precheck data.
+    # OUTCOME-SYNC-COVERAGE-001. Default OFF so the code can land dark: with it
+    # off, outcome-sync and scoring keep their deployed prefix selections
+    # byte-for-byte. Turning it on switches BOTH to need-based selection, which
+    # on first activation scores the entire un-scored backlog. That is a real
+    # write burst, so it gets a flag rather than taking effect the moment the
+    # code lands, and it gives a kill switch that is not `git revert`.
+    enable_outcome_sync_coverage_repair: bool = False
+
     enable_edge_precheck: bool = False
     edge_precheck_min_abs_gap: float = 0.05
     edge_precheck_max_spread_cents: int = 10
