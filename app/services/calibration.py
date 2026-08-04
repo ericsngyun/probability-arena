@@ -61,10 +61,26 @@ def _score_target(
     if outcome.outcome_status in ("canceled", "unknown"):
         return STATUS_UNSCORABLE, None, f"outcome is {outcome.outcome_status}"
     # settled
-    if outcome.winning_side == "yes":
-        return STATUS_SCORED, 1.0, "settled yes"
-    if outcome.winning_side == "no":
-        return STATUS_SCORED, 0.0, "settled no"
+    if outcome.winning_side in ("yes", "no"):
+        y = 1.0 if outcome.winning_side == "yes" else 0.0
+        # A row that disagrees with ITSELF is not evidence. `winning_side` and
+        # `resolved_probability` are written together from one provider payload,
+        # so a mismatch means the row was corrupted or half-written — and scoring
+        # it would mint a Brier value from a label we cannot trust. Deciding on
+        # `winning_side` alone also made the coverage funnel non-monotonic
+        # (scored_current could exceed settled_yes_no) and made this repo's own
+        # claim that conflicts are "preserved unscored" false.
+        # A MISSING probability is not a contradiction — it means "not
+        # recorded". `parse_market_outcome` always writes both together, so an
+        # absent one is an older or synthetic row, and `winning_side` is still
+        # the source-backed field. Only a PRESENT and disagreeing value is
+        # evidence the row is corrupt.
+        if outcome.resolved_probability is not None and outcome.resolved_probability != y:
+            return (STATUS_UNSCORABLE, None,
+                    f"outcome conflicts with itself: winning_side="
+                    f"{outcome.winning_side} but resolved_probability="
+                    f"{outcome.resolved_probability}")
+        return STATUS_SCORED, y, f"settled {outcome.winning_side}"
     return STATUS_UNSCORABLE, None, "settled but winning side is void/unknown"
 
 
@@ -90,6 +106,14 @@ def _score_is_current(
     if score.score_status != target_status:
         return False
     if target_status != STATUS_SCORED or y is None:
+        return True
+    from app.config import get_settings
+
+    if not get_settings().enable_outcome_sync_coverage_repair:
+        # Gated so OFF really is byte-for-byte. This recompute is strictly more
+        # correct, but it is still a WRITE the flag was supposed to gate: with it
+        # ungated, merging the code would re-score every forecast whose outcome
+        # had flipped in place. "Nearly dark" is not dark.
         return True
     return score.brier_score == brier_score(forecast.estimated_probability, y)
 
@@ -192,16 +216,28 @@ class CalibrationService:
             ).scalars()
         }
         # Ascending id -> last write wins == max id, matching latest_score_for.
+        # Only the LATEST score per forecast matters. `forecast_scores` is
+        # append-only, is about to grow ~12x, and grows again on every outcome
+        # change with no ceiling — streaming all of it every six minutes is a
+        # cost that only ever increases. `summary()` already establishes this
+        # max-id subquery as the house pattern.
+        latest_ids = (
+            select(func.max(ForecastScoreRecord.id))
+            .group_by(ForecastScoreRecord.forecast_id)
+            .scalar_subquery()
+        )
         latest: dict[int, ForecastScoreRecord] = {}
         for row in session.execute(
             select(ForecastScoreRecord)
+            .where(ForecastScoreRecord.id.in_(latest_ids))
             .options(load_only(
                 ForecastScoreRecord.forecast_id,
                 ForecastScoreRecord.outcome_id,
                 ForecastScoreRecord.score_status,
+                # brier only; log_loss and absolute_error derive from the same
+                # (p, y), so comparing one is comparing all three.
                 ForecastScoreRecord.brier_score,
             ))
-            .order_by(ForecastScoreRecord.id)
         ).scalars():
             latest[row.forecast_id] = row
 

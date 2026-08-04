@@ -609,6 +609,12 @@ def outcome_sync_coverage_report(
     print(f"  configured limit             {sel['configured_limit']:>7}")
     print(f"  reachable                    {sel['reachable_tickers']:>7}")
     print(f"  UNREACHABLE every cycle      {sel['unreachable_tickers']:>7}")
+    print(f"  candidate pool               {sel['candidate_pool']:>7}")
+    if sel.get("full_sweep_cycles") is not None:
+        print(f"  full sweep                   {sel['full_sweep_cycles']:>7} cycles "
+              f"(~{sel['full_sweep_hours']} h)")
+    print(f"  active selection             {sel['active_selection']:>7}"
+          f"  repair_enabled={sel['repair_enabled']}")
     print(f"  terminal rows re-fetched     {sel['terminal_rows_reselected']:>7}")
     print(f"  {sel['verdict']}")
     print(f"  {sel['detail']}")
@@ -636,7 +642,11 @@ def outcome_sync_coverage_report(
     print(f"  requires NEW PROVIDER              {u['requires_new_provider']:>7}")
     print(f"  permanently unscorable             {u['permanently_unscorable']:>7}")
     print(f"  max attainable coverage            {u['max_attainable_coverage_pct']:>7}%  "
-          "(UPPER BOUND: assumes every recoverable market settles yes/no)")
+          "(LOOSE upper bound: assumes every recoverable market settles yes/no)")
+    print("  max attainable, excluding markets  "
+          f"{u['max_attainable_excluding_awaiting_settlement_pct']:>7}%  "
+          "(TIGHT bound; the truth is between these two)")
+    print("    merely awaiting settlement")
 
     if r["data_quality"]:
         print()
@@ -699,7 +709,8 @@ def outcome_sync_backfill(
         print(f"  still_unsettled      {data['still_unsettled']:>7}")
         print(f"  unrecognized_status  {data['unrecognized_status']:>7}")
         print(f"  provider_failures    {data['provider_failures']:>7}")
-        print(f"  scores_created       {data['scores_created']:>7}")
+        print("  scoring: not performed here — canonical scoring runs as its "
+              "own MarketOps stage")
         print(f"  persisted={str(data['persisted']).lower()}  "
               f"stop_reason={data['stop_reason']}")
         if not confirm:

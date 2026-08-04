@@ -48,6 +48,13 @@ MATURITY_GRACE_SECONDS = 3600
 # it is a row nobody has revisited.
 STALE_OPEN_SECONDS = 6 * 3600
 
+# MarketOps fires every 6 minutes. Used only to turn a sweep length in cycles
+# into hours, which is the unit an operator actually reasons about.
+MARKETOPS_CYCLE_SECONDS = 360
+# Above this, a rotating queue is technically complete but practically stale:
+# a market that settles right after its slot waits most of a day for the next.
+MAX_HEALTHY_SWEEP_HOURS = 12.0
+
 # --- missing-outcome taxonomy (mutually exclusive, deterministic precedence) ---
 SYNC_NEVER_ATTEMPTED = "sync_never_attempted"
 PROVIDER_MARKET_MISSING = "provider_market_missing"
@@ -116,6 +123,7 @@ UNMEASURABLE_REASONS = (
     SYNC_ERROR,                       # a failed fetch leaves no persisted trace
     DOMAIN_NOT_SUPPORTED,             # every forecast domain routes to Kalshi
     PERMANENTLY_UNSCORABLE,           # subsumed by the specific terminal reasons
+    STATE_INCONSISTENT,               # maturity already requires a market row
 )
 
 # `PROVIDER_MARKET_MISSING` deserves its own note, because it is the reason that
@@ -209,12 +217,14 @@ def classify_missing_reason(
 
     if status == "settled":
         if side in ("yes", "no"):
-            if outcome.resolved_probability is None:
-                # Settled with a side but no probability: the row disagrees
-                # with itself. Preserve the conflict; never repair it silently.
-                return LOCAL_OUTCOME_CONFLICT
+            # Same rule as `calibration._score_target`, deliberately: two
+            # different notions of "conflict" between the scorer and the
+            # coverage report is how the funnel stopped being monotonic in the
+            # first place. A MISSING probability means "not recorded"; only a
+            # present, disagreeing one is a contradiction.
             expected = 1.0 if side == "yes" else 0.0
-            if outcome.resolved_probability != expected:
+            if (outcome.resolved_probability is not None
+                    and outcome.resolved_probability != expected):
                 return LOCAL_OUTCOME_CONFLICT
             return None  # usable
         if side == "void":
@@ -259,8 +269,20 @@ class SelectionAudit:
     unreachable_tickers: int
     terminal_rows_reselected: int
     first_unreachable_rank: int | None
+    candidate_pool: int
+    full_sweep_cycles: int | None
+    full_sweep_hours: float | None
     verdict: str
     detail: str
+
+
+def _reachable_for_audit(session: Session, limit: int, repair: bool) -> list[str]:
+    from app.services.outcomes import OutcomeService
+
+    service = OutcomeService.__new__(OutcomeService)  # no adapter: nothing fetched
+    if repair:
+        return service.select_sync_candidates(session, limit)
+    return service.legacy_alphabetical_candidates(session, limit)
 
 
 def audit_selection(
@@ -295,6 +317,10 @@ def audit_selection(
         reachable = service.legacy_alphabetical_candidates(session, limit)
         active = "legacy_alphabetical_prefix"
 
+    # The pool is what the rotation actually has to get through.
+    candidate_pool = len(_reachable_for_audit(session, 10 ** 9, repair_enabled)) \
+        if repair_enabled else len(tickers)
+
     terminal = session.execute(
         select(func.count()).select_from(MarketOutcomeRecord).where(
             MarketOutcomeRecord.market_ticker.in_(set(reachable) or {""}),
@@ -303,17 +329,32 @@ def audit_selection(
     ).scalar() or 0
 
     if repair_enabled:
-        # Nothing is permanently unreachable: the queue rotates, so every
-        # candidate is reached within ceil(n/limit) cycles.
+        # MEASURE the sweep; do not assert it. An earlier version hard-coded
+        # `unreachable = 0` here, which made this tool structurally incapable of
+        # reporting that the repair is INSUFFICIENT — a constant presented as a
+        # measurement, which is the exact defect this module indicts elsewhere.
+        # A rotating queue has no permanently unreachable member, but it very
+        # much has a sweep PERIOD, and that period is the thing that can go bad.
         unreachable = 0
         first_unreachable = None
-        verdict = "SELECTION_IS_NEED_BASED_AND_ROTATES"
+        pool = candidate_pool
+        sweep_cycles = -(-pool // limit) if limit > 0 else None
+        sweep_hours = (
+            round(sweep_cycles * MARKETOPS_CYCLE_SECONDS / 3600.0, 2)
+            if sweep_cycles is not None else None)
+        if sweep_hours is not None and sweep_hours > MAX_HEALTHY_SWEEP_HOURS:
+            verdict = "SELECTION_SWEEP_PERIOD_TOO_LONG"
+        else:
+            verdict = "SELECTION_IS_NEED_BASED_AND_ROTATES"
         detail = (
-            f"{len(tickers)} distinct forecasted tickers; the {limit}-call budget "
-            "goes to markets whose outcome can still change, oldest close first, "
-            "rotating each cycle so nothing is permanently unreachable. "
+            f"{len(tickers)} distinct forecasted tickers, {pool} of them still "
+            f"needing a fetch; the {limit}-call budget goes to markets whose "
+            "outcome can still change, oldest close first, rotating each cycle. "
+            f"A full sweep of the pool takes ~{sweep_cycles} cycles "
+            f"(~{sweep_hours} h at {MARKETOPS_CYCLE_SECONDS}s/cycle). "
             f"{terminal} terminal rows are excluded rather than re-fetched.")
     else:
+        sweep_cycles = sweep_hours = None
         unreachable = max(len(tickers) - limit, 0)
         first_unreachable = limit if unreachable else None
         if unreachable == 0:
@@ -336,6 +377,9 @@ def audit_selection(
         repair_enabled=repair_enabled, active_selection=active,
         reachable_tickers=len(reachable), unreachable_tickers=unreachable,
         terminal_rows_reselected=terminal, first_unreachable_rank=first_unreachable,
+        candidate_pool=candidate_pool,
+        full_sweep_cycles=(sweep_cycles if repair_enabled else None),
+        full_sweep_hours=(sweep_hours if repair_enabled else None),
         verdict=verdict, detail=detail,
     )
 
@@ -393,17 +437,25 @@ def load_coverage_rows(
         market = markets.get(f.market_ticker)
         outcome = outcomes.get(f.market_ticker)
         score = latest_score.get(f.id)
-        close_time = _aware(
-            (outcome.close_time if outcome and outcome.close_time else None)
-            or (market.close_time if market else None))
-        age = (now - close_time).total_seconds() if close_time else None
+        # Maturity is decided by the MARKET's close time only. Falling back to
+        # the outcome row's close time made maturity depend on whether an
+        # outcome happened to exist — the exact bias this denominator is built
+        # to avoid, and biased OPTIMISTICALLY, because the rows admitted that
+        # way are disproportionately the usable ones, lifting numerator and
+        # denominator together. The outcome's close time is still reported, but
+        # it never decides membership.
+        market_close = _aware(market.close_time if market else None)
+        outcome_close = _aware(outcome.close_time if outcome else None)
+        close_time = market_close or outcome_close
+        age = ((now - market_close).total_seconds()
+               if market_close is not None else None)
         dom = packets.get(f.research_packet_id) or "missing_packet"
         if domain is not None and dom != domain:
             continue
 
         matured = (
             market is not None
-            and close_time is not None
+            and market_close is not None
             and age is not None and age >= grace_seconds
             and f.estimated_probability is not None
         )
@@ -564,6 +616,14 @@ def build_coverage_report(
         # and some will come back canceled or void. The floor is today's number.
         "max_attainable_coverage_pct": _pct(
             len(usable) + recoverable_now, len(matured)),
+        # The loose bound counts markets that closed minutes ago and are simply
+        # awaiting settlement as recoverable "uplift", which overstates what
+        # fixing selection buys. The tight bound excludes them. Report both:
+        # the truth is between, and quoting only the loose one would flatter.
+        "max_attainable_excluding_awaiting_settlement_pct": _pct(
+            len(usable) + recoverable_now
+            - sum(1 for r in missing if r.reason == MARKET_CLOSED_UNSETTLED),
+            len(matured)),
         "attainable_is_upper_bound": True,
     }
 
@@ -647,6 +707,9 @@ def build_coverage_report(
             "repair_enabled": audit.repair_enabled,
             "active_selection": audit.active_selection,
             "reachable_tickers": audit.reachable_tickers,
+            "candidate_pool": audit.candidate_pool,
+            "full_sweep_cycles": audit.full_sweep_cycles,
+            "full_sweep_hours": audit.full_sweep_hours,
             "unreachable_tickers": audit.unreachable_tickers,
             "terminal_rows_reselected": audit.terminal_rows_reselected,
             "first_unreachable_rank": audit.first_unreachable_rank,

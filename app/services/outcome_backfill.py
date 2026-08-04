@@ -63,7 +63,6 @@ class BackfillResult:
     still_unsettled: int = 0
     unrecognized_status: int = 0
     provider_failures: int = 0
-    scores_created: int = 0
     stop_reason: str = "completed"
     by_reason: dict = field(default_factory=dict)
     examples: list = field(default_factory=list)

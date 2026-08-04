@@ -119,20 +119,39 @@ class OutcomeService:
         strict oldest-first order, a permanently-unfetchable head — delisted
         markets Kalshi no longer serves — would monopolise the whole budget
         every cycle and never advance, which is the SAME defect in a different
-        sort key. So the ordered queue is ROTATED by a cycle counter: every
-        candidate is reached within ceil(n / limit) cycles no matter how many
-        fetches fail. Priority still decides where a cycle starts; it no longer
-        decides whether the rest is ever reached.
+        sort key. So the ordered queue is ROTATED by a monotonic cycle counter.
+
+        Be exact about what that guarantees, because the first version of this
+        docstring overclaimed and a review disproved it by running it:
+
+        * **Total failure** (no fetch ever succeeds, so the pool is fixed):
+          every candidate is reached within exactly ceil(n / limit) cycles.
+        * **Partial success** (fetches land but leave markets non-terminal —
+          the dominant real case): the offset indexes into a list whose length
+          and membership change as rows appear and tickers move between
+          priority tiers, so a single sweep can miss members. Coverage still
+          completes, empirically within roughly 2-3 sweeps, once the pool
+          composition settles. It is O(n / limit) cycles, not a hard bound.
+
+        What holds in both cases, and is the property that matters: no member
+        is permanently unreachable, and no head can monopolise the budget.
         """
+        # Two columns, not the ORM row: `MarketOutcomeRecord.raw_payload` holds a
+        # full Kalshi market detail, this runs every six minutes, and the repair
+        # takes this table from ~1.8k rows to ~11k+.
         outcomes = {
-            row.market_ticker: row
-            for row in session.execute(select(MarketOutcomeRecord)).scalars()
+            ticker: (status, side)
+            for ticker, status, side in session.execute(
+                select(MarketOutcomeRecord.market_ticker,
+                       MarketOutcomeRecord.outcome_status,
+                       MarketOutcomeRecord.winning_side)
+            ).all()
         }
         now = datetime.now(timezone.utc)
 
-        def is_terminal(row: MarketOutcomeRecord) -> bool:
-            status = (row.outcome_status or "").strip().lower()
-            side = (row.winning_side or "").strip().lower()
+        def is_terminal(row: tuple[str | None, str | None]) -> bool:
+            status = (row[0] or "").strip().lower()
+            side = (row[1] or "").strip().lower()
             if status == "settled" and side in ("yes", "no"):
                 return True
             return status == "canceled" or side == "void"
@@ -205,8 +224,13 @@ class OutcomeService:
                 _seen_order.add(ticker)
                 deduped.append(ticker)
         if deduped and len(deduped) > limit:
+            # MAX(id), not COUNT(*). `retention_coverage` already recommends a
+            # 30-day prune on `marketops_runs`; the day that lands, a count stops
+            # being monotonic, the offset plateaus or walks backwards, and the
+            # selection regresses to a fixed prefix — the very defect this
+            # milestone exists to remove, re-introduced by an unrelated policy.
             cycles = session.execute(
-                select(func.count()).select_from(MarketOpsRun)
+                select(func.max(MarketOpsRun.id))
             ).scalar() or 0
             offset = (cycles * limit) % len(deduped)
             deduped = deduped[offset:] + deduped[:offset]

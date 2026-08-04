@@ -588,10 +588,11 @@ class TestBoundedBackfill:
         mk_market(db, "J-1"); mk_forecast(db, "J-1")
         adapter = _StubAdapter({"J-1": {"ticker": "J-1", "status": "finalized",
                                         "result": "yes"}})
-        result = await ob.run_backfill(
+        await ob.run_backfill(
             db, confirm=True, max_markets=10,
             service=OutcomeService(adapter=adapter), now=NOW)
-        assert result.scores_created == 0
+        assert not hasattr(ob.BackfillResult, "scores_created"), (
+            "a field that is never written is a metric that always reads 0")
         assert db.execute(select(ForecastScoreRecord)).scalars().all() == []
         # canonical scoring picks it up on the next cycle
         CalibrationService().score_unscored(db, limit=10)
@@ -829,3 +830,152 @@ class TestAuditHonesty:
         assert "NOT MEASURABLE" in joined
         for reason in oc.UNMEASURABLE_REASONS:
             assert reason in joined
+
+
+class TestReviewFindingsSecondPass:
+    """Claims the second independent review falsified with executable probes."""
+
+    def test_a_self_contradicting_outcome_is_not_scored(self, db):
+        """H1. `_score_target` decided on winning_side alone, so a row saying
+        'yes' with resolved_probability 0.0 got a Brier value — while the
+        coverage report called the same row a preserved, UNSCORED conflict.
+        One of those two statements had to be false."""
+        mk_market(db, "CFX"); mk_forecast(db, "CFX", probability=0.7)
+        mk_outcome(db, "CFX", status="settled", side="yes", prob=0.0)
+        CalibrationService().score_unscored(db, limit=10)
+        row = db.execute(select(ForecastScoreRecord)).scalars().one()
+        assert row.score_status == "unscorable"
+        assert row.brier_score is None
+        assert row.was_resolved is False
+
+    def test_a_missing_probability_is_not_treated_as_a_conflict(self, db):
+        """The narrow reading matters. `parse_market_outcome` always writes
+        winning_side and resolved_probability together, so an absent
+        probability is an older or synthetic row, not a contradiction —
+        winning_side is still the source-backed field. Calling it a conflict
+        would silently unscore a large, legitimate population."""
+        mk_market(db, "CFY"); mk_forecast(db, "CFY", probability=0.7)
+        row = mk_outcome(db, "CFY", status="settled", side="no")
+        row.resolved_probability = None
+        db.commit()
+        CalibrationService().score_unscored(db, limit=10)
+        scored = db.execute(select(ForecastScoreRecord)).scalars().one()
+        assert scored.score_status == "scored"
+        assert scored.brier_score == pytest.approx(0.49)
+        assert [r for r in oc.load_coverage_rows(db, now=NOW)
+                if r.matured][0].reason is None
+
+    def test_funnel_is_monotonic_on_the_pair_that_broke(self, db):
+        """H1's observable symptom: scored_current exceeded settled_yes_no."""
+        for i in range(6):
+            t = f"MN-{i}"
+            mk_market(db, t); mk_forecast(db, t)
+            mk_outcome(db, t, status="settled", side="yes")
+        mk_market(db, "MN-BAD"); mk_forecast(db, "MN-BAD")
+        mk_outcome(db, "MN-BAD", status="settled", side="yes", prob=0.0)
+        CalibrationService().score_unscored(db, limit=50)
+        f = oc.build_coverage_report(db, now=NOW, selection_limit=50).to_dict()["funnel"]
+        assert f["settled_yes_no"] >= f["scored_current"]
+        assert f["matured_eligible"] >= f["outcome_row_present"]
+
+    def test_maturity_does_not_depend_on_outcome_presence_without_close_time(self, db):
+        """H2. With market.close_time NULL, maturity used to fall back to the
+        OUTCOME's close time — so having an outcome made a forecast matured.
+        The bias was optimistic: it admitted mostly usable rows."""
+        for name in ("NC-A", "NC-B"):
+            m = mk_market(db, name)
+            m.close_time = None
+            mk_forecast(db, name)
+        db.commit()
+        mk_outcome(db, "NC-A", status="settled", side="yes")
+        rows = {r.market_ticker: r for r in oc.load_coverage_rows(db, now=NOW)}
+        assert rows["NC-A"].matured == rows["NC-B"].matured == False, (
+            "maturity flipped purely because an outcome row existed")
+
+    def test_audit_measures_the_sweep_instead_of_asserting_success(self, db):
+        """H4. `unreachable = 0` was hard-coded when the repair was on, so the
+        tool could never report that the repair was INSUFFICIENT."""
+        for i in range(40):
+            t = f"SW-{i:03d}"
+            mk_market(db, t); mk_forecast(db, t)
+        fast = oc.audit_selection(db, limit=40, repair_enabled=True)
+        slow = oc.audit_selection(db, limit=1, repair_enabled=True)
+        assert fast.candidate_pool == slow.candidate_pool == 40
+        assert fast.full_sweep_cycles == 1
+        assert slow.full_sweep_cycles == 40
+        # 40 cycles x 360 s = 4 h — a real number derived from the pool and the
+        # budget, not a constant that can only ever say "fine".
+        assert slow.full_sweep_hours == 4.0
+        assert fast.full_sweep_hours < slow.full_sweep_hours
+        assert slow.verdict == "SELECTION_IS_NEED_BASED_AND_ROTATES"
+
+    def test_audit_can_report_the_repair_is_insufficient(self, db, monkeypatch):
+        for i in range(40):
+            t = f"SL-{i:03d}"
+            mk_market(db, t); mk_forecast(db, t)
+        monkeypatch.setattr(oc, "MAX_HEALTHY_SWEEP_HOURS", 1.0)
+        audit = oc.audit_selection(db, limit=1, repair_enabled=True)
+        assert audit.verdict == "SELECTION_SWEEP_PERIOD_TOO_LONG"
+
+    def test_rotation_survives_a_pruned_run_table(self, db):
+        """M5. COUNT(*) stops being monotonic the day marketops_runs retention
+        lands — already recommended in-repo — and the offset walks backwards."""
+        for i in range(9):
+            t = f"PR-{i}"
+            mk_market(db, t); mk_forecast(db, t)
+        svc = OutcomeService.__new__(OutcomeService)
+        seen = set()
+        for cycle in range(4):
+            run = MarketOpsRun(status="ok", started_at=NOW)
+            db.add(run); db.commit()
+            seen |= set(svc.select_sync_candidates(db, limit=3))
+            # simulate retention pruning everything older than the newest run
+            for old in db.execute(
+                select(MarketOpsRun).order_by(MarketOpsRun.id)
+            ).scalars().all()[:-1]:
+                db.delete(old)
+            db.commit()
+        assert len(seen) > 3, (
+            "with a pruned run table the offset must still advance")
+
+    def test_uplift_reports_both_a_loose_and_a_tight_bound(self, db):
+        """M1. Markets that closed minutes ago and are merely awaiting
+        settlement were counted as recoverable 'uplift'."""
+        mk_market(db, "UB-1"); mk_forecast(db, "UB-1")
+        mk_outcome(db, "UB-1", status="closed", side=None)
+        mk_market(db, "UB-2"); mk_forecast(db, "UB-2")
+        u = oc.build_coverage_report(db, now=NOW, selection_limit=10).to_dict()["uplift"]
+        assert u["max_attainable_excluding_awaiting_settlement_pct"] < \
+            u["max_attainable_coverage_pct"]
+
+    def test_state_inconsistent_is_declared_unmeasurable(self):
+        """M2. Maturity already requires a market row, so it cannot fire."""
+        assert oc.STATE_INCONSISTENT in oc.UNMEASURABLE_REASONS
+
+
+class TestFlagIsExactlyDark:
+    """M3. With the flag OFF the brier-equality check must not fire, or merging
+    the code re-scores flipped outcomes — a write the flag was meant to gate."""
+
+    @pytest.fixture(autouse=True)
+    def repair_disabled(self, monkeypatch):
+        from app.config import get_settings
+
+        monkeypatch.setenv("ENABLE_OUTCOME_SYNC_COVERAGE_REPAIR", "false")
+        get_settings.cache_clear()
+        yield
+        get_settings.cache_clear()
+
+    def test_off_does_not_rescore_an_in_place_flip(self, db):
+        mk_market(db, "DK"); f = mk_forecast(db, "DK", probability=0.7)
+        row = mk_outcome(db, "DK", status="settled", side="yes")
+        svc = CalibrationService()
+        svc.score_unscored(db, limit=10)
+        row.winning_side = "no"
+        row.resolved_probability = 0.0
+        db.commit()
+        svc.score_unscored(db, limit=10)
+        rows = db.execute(
+            select(ForecastScoreRecord)
+            .where(ForecastScoreRecord.forecast_id == f.id)).scalars().all()
+        assert len(rows) == 1, "OFF must write nothing new — that is what dark means"
