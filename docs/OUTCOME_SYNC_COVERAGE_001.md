@@ -270,9 +270,86 @@ provenance + scope/safety; scoring correctness + statistical validity +
 regression risk; provider governance + operations + deployment readiness).
 Findings and dispositions are in §11.
 
-## 10. Production decision (Gate 15)
+## 10. Dark deployment, production run and results (Gates 14–17)
 
-_Pending dark deployment and the production report._
+### Dark deployment
+
+Mac = origin = EVO-X2 = `482dea3`, Alembic `0027`, flag unset (default OFF).
+MarketOps cycles after deployment were byte-identical to before — `ok`,
+`outcomes_synced=100`, `forecasts_scored=0`, `forecast_scores` unchanged at
+1,631 rows / 1,000 distinct forecasts. No restart was required or performed.
+
+### Production coverage report (provider-free, zero writes)
+
+The report's own selection audit, run against production, is the finding:
+
+> Of the 100 reachable, **100 already hold a TERMINAL outcome** and are
+> re-fetched anyway. The remaining 4,854 are unreachable on EVERY cycle.
+
+So **100% of the ~24,000 Kalshi detail GETs per day were being spent on markets
+whose outcome can never change again**, while 4,854 forecasted markets were
+structurally unreachable. The budget was not insufficient; it was entirely
+wasted.
+
+### Gate 15 classification: **READY FOR ONE BOUNDED OUTCOME SYNC**
+
+Backup healthy, MarketOps healthy, dry run exact (250 selected, 0 calls, 0
+writes, exit 0), conflicts excluded (0), no new provider required.
+
+### The one authorized bounded run
+
+`outcome-sync-backfill --confirm --max-markets 250`, 64 seconds:
+
+| | |
+|---|---:|
+| provider calls | 250 |
+| **settled yes/no** | **250** |
+| **provider failures** | **0** |
+| canceled / void | 0 |
+| unrecognized status | 0 |
+| outcomes created / refreshed | 236 / 14 |
+| conflicts excluded | 0 |
+| stop reason | `completed` |
+
+**250 for 250, zero failures.** This settles the operations review's open
+HIGH-1 question — whether Kalshi still serves detail for matured markets that
+have dropped out of the scan universe — with a 100% success rate, and it
+settles the milestone's provider question: **no new provider is required.**
+
+### Coverage uplift
+
+| Metric | Before | After | Δ |
+|---|---:|---:|---:|
+| matured eligible | 11,478 | 11,496 | +18 (new forecasts) |
+| settled yes/no (usable) | 1,128 | **1,634** | **+506** |
+| outcome row present | 1,246 | 1,720 | +474 |
+| **matured coverage** | **9.83%** | **14.21%** | **+4.38 pp** |
+| scored_current | 663 | 840 | +177 |
+| missing outcome | 10,350 | 9,862 | −488 |
+| database bytes | 4,550,623,232 | 4,550,623,232 | 0 |
+
+250 markets recovered **506** scorable forecasts — markets carry multiple
+forecasts, which is why the per-call yield is ~2x. Extrapolating to the 3,746
+markets still missing suggests coverage in the high tens of percent, but that
+is an extrapolation from one favourable sample and is not claimed as a result.
+
+**One measurement artifact, stated because it looked alarming.** `forecast_scores`
+moved 1,631 → 1,808 during the run, which at first reading looked like the
+"dark" deployment changing behavior. It was not: the MarketOps cycle at 23:38:03
+ran **concurrently** with the backfill and its scoring stage picked up outcomes
+the backfill was creating in real time — 145 of the 177 new scores reference an
+outcome row the backfill had just created, seconds earlier. That is the designed
+sequencing (§8) working end to end, and it is also a reminder that a before/after
+capture taken around a live 64-second run is not a clean boundary.
+
+### Scoring is now the binding constraint
+
+`scored_current` is 840 of 11,496 (7.31%) and `distinct scored forecasts` is
+still exactly **1,000, max forecast_id 1,000** — because scoring runs on the
+legacy id prefix while the flag is off. Outcome coverage improved; scorability
+barely moved. **Defect B is now the bottleneck, and only the flag fixes it.**
+
+## 10b. Production decision (Gate 15/18)
 
 ## 11. Review findings
 
