@@ -73,7 +73,11 @@ def session():
 
 
 class TestEnrichTicker:
-    async def test_persists_normalized_fields_and_raw_payloads(self, session):
+    async def test_persists_normalized_fields_and_raw_payloads(
+        self, session, monkeypatch
+    ):
+        from app.services import raw_payload_policy as _rp
+        monkeypatch.setattr(_rp, "resolve_capture_mode", lambda *a, **k: "full")
         service = MarketDetailEnrichmentService(adapter=FakeDetailAdapter())
         row = await service.enrich_ticker(session, "KXMLBHRR-TEST-1", scanner_run_id=None)
 
@@ -91,6 +95,10 @@ class TestEnrichTicker:
             "ESPN (https://www.espn.com); the Governing League (https://www.mlb.com/)"
         )
         assert loaded.category == "Sports"
+        # RAW-PAYLOAD-STORAGE-001: this asserts the FULL body, so it is only
+        # meaningful under the default capture mode. Pinned explicitly so the
+        # suite stays green on a host that has activated suppression, and so a
+        # real activation regression is distinguishable from this expectation.
         assert loaded.raw_market_detail == MARKET_DETAIL
         assert loaded.raw_event_detail == EVENT_DETAIL
         assert loaded.raw_series_detail == SERIES_DETAIL

@@ -40,18 +40,31 @@ logger = logging.getLogger(__name__)
 _WARNED: set = set()
 
 
+_WARN_ONCE_CAP = 64
+
+
 def _warn_once(template: str, *args) -> None:
     key = (template, args)
-    if key in _WARNED:
+    if key in _WARNED or len(_WARNED) >= _WARN_ONCE_CAP:
         return
     _WARNED.add(key)
     logger.warning(template, *args)
 
 CAPTURE_MODE_FULL = "full"
-CAPTURE_MODE_ERRORS_ONLY = "errors_only"
 CAPTURE_MODE_NONE = "none"
 
-VALID_CAPTURE_MODES = (CAPTURE_MODE_FULL, CAPTURE_MODE_ERRORS_ONLY, CAPTURE_MODE_NONE)
+# TWO modes, not three. An `errors_only` mode was implemented first, and review
+# showed it was provably dead configuration: an error body is the payload class
+# most likely to echo the request URL back, and this repo sends a provider key
+# in a query string (tennis_providers.py, params={"APIkey": ...}), so no writer
+# could be allowed to keep one without a redaction pass. With the allowlist
+# necessarily empty, `errors_only` behaved identically to `none` for every
+# column, unconditionally — an env value that cannot behave differently from
+# another is a misconfiguration trap, not a feature. The security reasoning is
+# preserved in MAX_ERROR_PAYLOAD_BYTES' successor note below and in the docs;
+# the mode is not shipped. A future writer with a proven-clean error path can
+# reintroduce it deliberately.
+VALID_CAPTURE_MODES = (CAPTURE_MODE_FULL, CAPTURE_MODE_NONE)
 
 # The default preserves today's behaviour byte-for-byte. Deploying this code
 # changes nothing until a host explicitly opts in.
@@ -62,19 +75,11 @@ DEFAULT_CAPTURE_MODE = CAPTURE_MODE_FULL
 # without spending 64 bytes per row on a hash of data we deliberately discarded.
 DIGEST_HEX_CHARS = 16
 
-# Upper bound on a body kept under `errors_only`. Failure payloads are exactly
-# where an unbounded provider body (an HTML error page, a stack-trace blob) is
-# most likely, so the error path is the one that must be capped.
-MAX_ERROR_PAYLOAD_BYTES = 16 * 1024
-
-# `errors_only` persists a provider ERROR body verbatim, and an error body is
-# the payload class most likely to echo the request URL back — and this repo
-# does send a provider key in a query string (tennis_providers.py: params
-# {"APIkey": ...}). So a writer may only opt into error-body capture after its
-# error path has been shown not to carry request detail. No writer is on this
-# list today, which is why `errors_only` currently behaves exactly like `none`
-# everywhere. Adding one requires a redaction pass or a proven-clean error shape.
-ERROR_BODY_CAPTURE_ALLOWLIST: frozenset = frozenset()
+# NOTE for any future error-capture mode: a provider ERROR body is the payload
+# class most likely to echo the request URL back, and tennis_providers.py sends
+# `params={"APIkey": ...}`. Reintroducing error-body capture therefore requires
+# a redaction pass or a per-writer proven-clean error shape, plus a hard size
+# cap — an HTML error page or a stack-trace blob is unbounded.
 
 # Columns with a PROVEN production reader. These ignore the capture mode. Each
 # entry names the reader so the pin can be re-audited rather than trusted.
@@ -128,8 +133,9 @@ PROPAGATED_COLUMNS = {
 # rather than an accident of where the work stopped.
 UNGOVERNED_BY_DESIGN = {
     "crypto_opportunity_signals.raw_payload":
-        "crypto_scout.py:173 copies the PINNED crypto_price_ticks.raw_payload; "
-        "3.0 MiB total, and governing it would desynchronise a pinned source.",
+        "3.0 MiB total at 44 B/row — the body is already tiny. (It is copied "
+        "from the PINNED crypto_price_ticks.raw_payload at crypto_scout.py:173; "
+        "suppressing the sink could not affect the pinned source either way.)",
     "edge_precheck_snapshots.raw_context":
         "already a bounded 174-byte thresholds dict, not a provider body.",
     "cross_venue_market_candidates.raw_context":
@@ -143,7 +149,25 @@ UNGOVERNED_BY_DESIGN = {
         "fallbacks rather than provider bodies.",
     "market_resolution_assessments.raw_response":
         "5.8 MiB; same reasoning as market_forecasts.raw_response.",
+    "crypto_token_birth_events.raw_payload":
+        "3.4 MiB; the propagated SINK of a governed column (see "
+        "PROPAGATED_COLUMNS) — it receives whatever crypto_tape copies in, so "
+        "governing it separately would double-capture.",
 }
+
+# Every raw-body column found by the Gate 2 inventory must land in exactly one
+# bucket. A column that is inventoried but unclassified is an audit hole, so
+# this union is asserted against the inventory by test.
+ALL_CLASSIFIED_COLUMNS = (
+    frozenset(GOVERNED_COLUMNS)
+    | frozenset(PINNED_FULL)
+    | frozenset(UNGOVERNED_BY_DESIGN)
+    | frozenset({"crypto_token_birth_events.raw_payload"})   # propagated sink
+)
+
+# The envelope serializes to ~110 bytes as stored. A body at or below this is
+# cheaper to keep than to describe.
+MIN_SUPPRESSIBLE_BYTES = 160
 
 SUPPRESSED_MARKER = "raw_payload_suppressed"
 
@@ -167,27 +191,38 @@ def resolve_capture_mode(settings: Settings | None = None) -> str:
     return DEFAULT_CAPTURE_MODE
 
 
+def _canonical(payload) -> str | None:
+    """One canonical serialization, reused for BOTH the byte count and the
+    digest. Sorting keys does not change the length, so a single dumps feeds
+    both and halves the only CPU this module adds on the hot path."""
+    if payload is None:
+        return None
+    try:
+        return json.dumps(payload, separators=(",", ":"), sort_keys=True,
+                          default=str)
+    except Exception:
+        # Deliberately broad. json.dumps raises RecursionError (a RuntimeError)
+        # on deeply nested input, and `default=str` re-raises whatever a hostile
+        # __str__ raises — neither is a TypeError/ValueError. This runs inside a
+        # scan's write transaction, so an escape would abort the whole scan, and
+        # it would do so ONLY under suppression: `full` returns before ever
+        # touching json. An asymmetric abort surface that exists only in the
+        # mode being activated is exactly the wrong risk to carry.
+        return None
+
+
 def payload_bytes(payload) -> int:
     """Serialized size of a payload, or 0 when it is absent/unserializable."""
-    if payload is None:
-        return 0
-    try:
-        return len(json.dumps(payload, separators=(",", ":"), default=str))
-    except (TypeError, ValueError):  # pragma: no cover - defensive
-        return 0
+    blob = _canonical(payload)
+    return len(blob.encode("utf-8")) if blob is not None else 0
 
 
 def payload_digest(payload) -> str | None:
     """Truncated SHA-256 over the canonical serialization, or None."""
-    if payload is None:
+    blob = _canonical(payload)
+    if blob is None:
         return None
-    try:
-        blob = json.dumps(
-            payload, separators=(",", ":"), sort_keys=True, default=str
-        ).encode("utf-8")
-    except (TypeError, ValueError):  # pragma: no cover - defensive
-        return None
-    return hashlib.sha256(blob).hexdigest()[:DIGEST_HEX_CHARS]
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:DIGEST_HEX_CHARS]
 
 
 def provenance_envelope(payload, *, source: str | None, mode: str) -> dict:
@@ -227,10 +262,8 @@ def capture(
 ):
     """Decide what actually gets stored for one raw-payload column.
 
-    `full`        -> the payload, unchanged.
-    `errors_only` -> the payload when `is_error`, capped at
-                     MAX_ERROR_PAYLOAD_BYTES; otherwise the envelope.
-    `none`        -> the envelope.
+    `full` -> the payload, unchanged.
+    `none` -> the bounded provenance envelope.
 
     A `column` listed in PINNED_FULL always returns the payload unchanged,
     whatever the mode says.
@@ -239,12 +272,22 @@ def capture(
     gave nothing, and that is a fact worth keeping distinguishable from
     suppression.
 
-    Writers with no failure concept (a tick row only exists on success) pass
-    `is_error=False` always, so for them `errors_only` behaves exactly like
-    `none`. That is intended and tested, not an oversight.
+    An already-suppressed payload is returned unchanged, so re-capturing is a
+    no-op. RAW-PAYLOAD-RECLAMATION-001 is precisely the caller that would
+    otherwise produce an envelope-of-an-envelope whose bytes/digest describe the
+    envelope and destroy the original provenance.
     """
     if payload is None:
         return None
+    if is_suppressed(payload):
+        # Idempotent: never describe an envelope with another envelope.
+        return payload
+    if payload_bytes(payload) <= MIN_SUPPRESSIBLE_BYTES:
+        # The envelope costs ~110 B. Suppressing a body smaller than that would
+        # make the row BIGGER — e.g. crypto_scout's EVENT_PAIR_SEEN records a
+        # 66-byte {"dex_id":..., "url":...}. Keeping small bodies makes the
+        # policy monotone: it can only ever reduce storage.
+        return payload
     # Fail CLOSED on anything not explicitly governed. Checking only
     # `column in PINNED_FULL` would fail OPEN: a typo in a pin name, a table
     # rename, or a new writer copy-pasting a pin with one wrong character would
@@ -264,17 +307,10 @@ def capture(
     effective = mode if mode in VALID_CAPTURE_MODES else resolve_capture_mode(settings)
     if effective == CAPTURE_MODE_FULL:
         return payload
-    if (
-        effective == CAPTURE_MODE_ERRORS_ONLY
-        and is_error
-        and column in ERROR_BODY_CAPTURE_ALLOWLIST
-    ):
-        if payload_bytes(payload) <= MAX_ERROR_PAYLOAD_BYTES:
-            return payload
-        # Oversized failure body: keep the envelope plus why it was dropped,
-        # rather than persisting an unbounded HTML/stack-trace blob.
-        envelope = provenance_envelope(payload, source=source, mode=effective)
-        envelope["error_payload_dropped"] = "exceeds_max_error_payload_bytes"
-        envelope["max_error_payload_bytes"] = MAX_ERROR_PAYLOAD_BYTES
-        return envelope
-    return provenance_envelope(payload, source=source, mode=effective)
+    try:
+        return provenance_envelope(payload, source=source, mode=effective)
+    except Exception:  # pragma: no cover - defensive
+        # Fail closed: keeping a body costs storage, dropping one that a future
+        # reader needs is unrecoverable, and raising aborts the caller's scan.
+        _warn_once("raw-payload envelope failed for %r — keeping the body", column)
+        return payload

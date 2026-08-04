@@ -35,7 +35,7 @@ Measured against a decompressed copy of `backup-20260804T013626Z.db.gz`
 | `crypto_price_ticks.raw_payload` | 150,719 | 43 | 43 | 45 | 45 | 88 | 6.2 | **PINNED** |
 | `crypto_horizon_observations.raw_payload` | 43 | 1,469 | 1,305 | 2,248 | 2,265 | 2,767 | 0.1 | **PINNED** |
 | `market_forecasts.raw_response` | 12,443 | 1,039 | 367 | 2,197 | 2,201 | 2,807 | 12.3 | ungoverned |
-| `market_research`… `market_resolution_assessments.raw_response` | 12,442 | 486 | 471 | 557 | 557 | 1,285 | 5.8 | ungoverned |
+| `market_resolution_assessments.raw_response` | 12,442 | 486 | 471 | 557 | 557 | 1,285 | 5.8 | ungoverned |
 | `market_outcomes.raw_payload` | 1,788 | 2,347 | 2,404 | 2,632 | 2,795 | 3,855 | 4.0 | ungoverned |
 | `crypto_token_birth_events.raw_payload` | 4,416 | 813 | 788 | 979 | 1,126 | 11,596 | 3.4 | propagated sink |
 | `crypto_opportunity_signals.raw_payload` | 70,654 | 44 | 44 | 45 | 45 | 47 | 3.0 | ungoverned |
@@ -110,7 +110,14 @@ payload unchanged for any column in `PINNED_FULL`, whatever the mode says. The
 audit could still be incomplete; this removes the consequence of that rather
 than relying on the audit being perfect.
 
-**And it fails closed, which it did not at first.** The security review found
+**Precisely: the pin list is inert at runtime, and the fail-closed check is what
+actually protects.** No production call site passes a pinned column — the four
+pinned columns are safe because their writers were never wrapped, and a test
+forbids wrapping them. `PINNED_FULL` is therefore documentation-with-teeth for a
+future writer, not the live guard. The live guard is that `capture()` will only
+suppress a column in `GOVERNED_COLUMNS`.
+
+**And that failed closed only after review.** The security review found
 `capture()` checking only `column in PINNED_FULL`, which fails **open**: a typo
 in a pin name, a table rename, or a new writer copy-pasting a pin with one wrong
 character would silently drop out of the pin list and start suppressing data a
@@ -166,10 +173,21 @@ which is `NOT NULL` — the envelope keeps it valid **without a migration**.
 ## 4. Capture modes
 
 ```env
-RAW_PAYLOAD_CAPTURE_MODE=full          # DEFAULT — today's behaviour, unchanged
-RAW_PAYLOAD_CAPTURE_MODE=errors_only   # full body only on a defined failure, capped 16 KiB
-RAW_PAYLOAD_CAPTURE_MODE=none          # never store the body; envelope only
+RAW_PAYLOAD_CAPTURE_MODE=full   # DEFAULT — today's behaviour, unchanged
+RAW_PAYLOAD_CAPTURE_MODE=none   # never store the body; envelope only
 ```
+
+**Two modes, not three.** An `errors_only` mode was designed, implemented and
+then dropped on review. A provider *error* body is the payload class most likely
+to echo the request URL back, and this repo sends a provider key in a query
+string (`tennis_providers.py`, `params={"APIkey": ...}`) — so no writer could be
+allowed to keep one without a redaction pass. With that allowlist necessarily
+empty, `errors_only` behaved identically to `none` for every column,
+unconditionally. An environment value that provably cannot behave differently
+from another is a misconfiguration trap, not a feature: an operator reading
+`.env.example` would pick it as a safe middle ground and get full suppression.
+The security reasoning is preserved as a note in the module for whoever
+reintroduces error capture deliberately.
 
 An unrecognised value **fails closed to `full`** and logs a warning. It is never
 read as `none`: a typo in a host `.env` must not silently start discarding
@@ -177,15 +195,23 @@ provider bodies.
 
 `payload is None` stays `None` in every mode.
 
-**Honest note on `errors_only`.** It buys nothing over `none` on this
-deployment, for two independent reasons. First, the governed writers have no
-failure concept — a tick or snapshot row only exists on a successful fetch — and
-the columns that *do* carry failure evidence
-(`crypto_token_risk_assessments.provider_errors`, `market_research_packets`
-fallbacks) are all pinned. Second, `ERROR_BODY_CAPTURE_ALLOWLIST` is empty, so
-even a writer that passed `is_error=True` would still get the envelope. It is
-implemented, tested and retained for writers added later that have a
-proven-clean error path; it is not a mode to activate today.
+Three further properties, each of which review found missing at first:
+
+- **`capture()` cannot raise.** `json.dumps` raises `RecursionError` on deeply
+  nested input and `default=str` re-raises whatever a hostile `__str__` raises —
+  neither is a `TypeError`/`ValueError`. This runs inside a scan's write
+  transaction, so an escape would abort the whole scan, and it would do so *only*
+  under suppression, because `full` returns before touching json. An asymmetric
+  abort surface that exists only in the mode being activated is the wrong risk to
+  carry; every failure now falls back to keeping the body.
+- **It is idempotent.** Re-capturing an envelope returns it unchanged.
+  `RAW-PAYLOAD-RECLAMATION-001` is precisely the caller that would otherwise
+  produce an envelope-of-an-envelope whose `bytes`/`digest` describe the
+  envelope and destroy the original provenance.
+- **It is monotone.** A body at or below `MIN_SUPPRESSIBLE_BYTES` (160) is kept,
+  because the envelope costs ~118 B and suppressing a 66-byte body — which
+  `crypto_scout`'s `EVENT_PAIR_SEEN` really does produce — would make the row
+  *bigger*.
 
 ## 5. Writer implementation
 
@@ -204,15 +230,35 @@ change, no new transaction, no retry change, no payload logging, no migration.
 ## 6. Measurement
 
 ```bash
-python -m app.cli raw-payload-storage-report --format text|json [--hours 24]
+python -m app.cli raw-payload-storage-report --format text|json [--recent 5000]
 python -m app.cli raw-payload-storage-report --full-scan   # backup copy only
 ```
 
-Reports capture mode and, per column, rows in a bounded recent window split into
-full-body versus suppressed, plus the bytes that window stored. Writes nothing,
-calls no provider, and **never prints payload contents** — it identifies
+Reports capture mode and, per governed column, how many of the **newest N rows**
+carry a full body versus a suppressed envelope, and the bytes they store. Writes
+nothing, calls no provider, and **never prints payload contents** — it identifies
 suppressed rows by the marker key, never by inspecting payload data. There is no
 `--confirm`.
+
+**The window is the newest N rows by primary key, not a time range.** A time
+range was the first design and review killed it: *none* of these tables has an
+index on its timestamp column, so `WHERE created_at >= ...` is a full table scan.
+Worse, in `market_price_ticks` the `created_at` column sits *after* `raw_payload`
+in row order, so evaluating the predicate forces SQLite to traverse each row's
+overflow chain — the "cheap" default would have read essentially the whole
+834 MiB column while holding a SHARED lock under `journal_mode=delete`. A
+descending primary-key `LIMIT` is index-ordered and bounded, and it answers the
+activation question more directly anyway: *are the newest rows envelopes?*
+
+PINNED columns are listed but **never queried** — the capture mode cannot touch
+them, so scanning 266 MiB of them buys no decision value.
+
+Two smaller corrections review forced: SQLAlchemy's JSON type stores Python
+`None` as the JSON literal `null`, **not** SQL NULL, so an `IS NOT NULL` filter
+alone counted genuinely-absent payloads as present and the operator's primary
+verification signal would never have reached its floor. And the report does not
+call `run_migrations()`, unlike most commands here, so it can be pointed at a
+backup snapshot without mutating the evidence.
 
 **The window is the default on purpose.** Whole-table totals require a full scan
 of a multi-hundred-MiB JSON column, and a long read lock under
@@ -246,12 +292,19 @@ At `none`, per-day writes avoided (governed columns only, from measured rates):
 | `crypto_token_discovery_events.raw_payload` | 11,573 | 749 | **8.3** | **yes** |
 | `opportunity_signals.raw_payload` | 1,531 | 1,985 | **2.9** | **yes** |
 | `market_detail_enrichments.*` (3 cols) | 487 | 4,078 | **1.9** | **yes** |
-| envelope written back | 226,003 | ~95 | −20.5 | |
-| **Net** | | | **≈409 MiB/day less written**, of which **≈23 MiB/day is net growth** | |
+| envelope written back | 226,977 | ~118 | −25.6 | (−2.2 of it on growth tables) |
+| **Net** | | | **≈404 MiB/day less written**, of which **≈21.4 MiB/day is net growth** | |
 
-Against measured net growth of ~70 MiB/day, that is a **~33% reduction in net
-database growth**, plus ~406 MiB/day less write churn (which also shrinks the
+Against measured net growth of ~70 MiB/day, that is a **~31% reduction in net
+database growth**, plus ~400 MiB/day less write churn (which also shrinks the
 nightly backup and its duration).
+
+*(Corrected on review: the envelope is 118 B as SQLAlchemy actually stores it,
+not the 95 B of a compact `json.dumps`; the envelope row count must include the
+three enrichment columns separately; and the earlier draft subtracted envelope
+cost from the churn figure but not from the growth figure. 31% rather than 33% —
+still the largest lever available, but a document whose stated virtue is honesty
+should not have one line net and the next line gross.)*
 
 The ~834 MiB currently held live by `market_price_ticks` would drain out of the
 working set within its 2-day window, becoming reusable free pages.
@@ -260,8 +313,20 @@ working set within its 2-day window, becoming reusable free pages.
 
 ## 8. Compatibility
 
-Default `full` preserves behaviour exactly — the full suite passes unchanged, and
-every existing test that asserts full-payload equality still asserts it. API
+Default `full` preserves behaviour exactly — a disposable-database comparison
+shows it produces a byte-identical file to no policy at all. The suite is green
+in **both** modes (2,370 passed under `full`, 2,370 under `none`), which matters
+more than green-under-default alone: without a green `none` baseline, a real
+activation regression would be indistinguishable from pre-existing noise. Getting
+there required pinning the capture mode in the two product tests that assert
+full-payload equality through a real writer (`test_enrichment.py`,
+`test_models.py`) and decoupling this milestone's own `test_default_is_full` from
+ambient env, which would otherwise fail forever on an activated host.
+
+The suite carries one pre-existing order/load-dependent flake
+(`test_meme_news.py::test_velocity_scoring_from_previous_snapshot`) that also
+fails on unmodified `main` under CPU contention and passes in isolation. It is
+not caused by this change. API
 outputs are unchanged (12 of the 13 governed/ungoverned columns have no field on
 any Out schema at all; the 13th is `exclude=True`). Normalized columns are proven
 identical across all three modes. Backup verification, retention reporting,
@@ -277,6 +342,11 @@ stay exactly where they are.
 
 - Historical reclamation → **RAW-PAYLOAD-RECLAMATION-001** (§13)
 - File compaction → **SQLITE-COMPACT-COPY-001** (§13)
+
+**The `db_growth_warning` alert stays critical after activation.** It measures
+the file, and the file does not shrink. Only `SQLITE-COMPACT-COPY-001` can clear
+it. An operator who remembers "31% reduction" and nothing else will expect the
+4.4 GiB alert to improve; it will not.
 
 ## 10. Activation decision
 
@@ -305,13 +375,37 @@ rather than precede it — compacting first would simply re-compact ~1.5 GiB of
 unread payload. Preferred direction: `VACUUM INTO` a new file on a separate
 volume → verify → maintenance-window swap under explicit approval.
 
-## 14. Rollback
+## 14. Rollback — and the restart it requires
 
 ```env
 RAW_PAYLOAD_CAPTURE_MODE=full
 ```
 
-The next writer call reverts to storing full bodies. Nothing needs undoing:
-rows written while suppressed keep their envelope (they are valid, bounded and
-self-describing), no schema changed, no timer exists, and no historical row was
-modified. Reverting the code has the same effect.
+```bash
+systemctl --user restart probability-arena-watcher.service
+```
+
+**The restart is not optional, and an earlier draft of this section was wrong to
+say otherwise.** `get_settings()` is `@lru_cache`d and nothing calls
+`cache_clear()`, so a long-lived process keeps the mode it started with.
+`probability-arena-watcher.service` runs a continuous loop
+(`EVO_X2_RUNBOOK.md:15`), and it is the sole writer of
+`market_price_ticks.raw_payload` — 405.9 of the 404 MiB/day, i.e. essentially
+all of the benefit. The oneshot MarketOps/scanner/enrichment timers do pick up
+`.env` on their next run, so **without the restart an operator sees a partial
+effect in both directions**: on rollback the report would print
+`capture_mode=full` while the watcher kept suppressing. `EVO_X2_RUNBOOK.md:66`
+already states this rule for flags generally; it applies here.
+
+This is why the report prints the caveat that its `capture_mode` is the
+*reporting process's* mode, not the watcher's.
+
+Beyond that, nothing needs undoing: rows written while suppressed keep their
+envelope (valid, bounded, self-describing, and distinguishable from both a real
+body and a genuine NULL), no schema changed, no timer exists, and no historical
+row was modified. Reverting the code has the same effect as reverting the flag.
+
+**A mixed table is expected and fine.** After activation a governed column holds
+older full bodies and newer envelopes; after rollback, envelopes then bodies
+again. `is_suppressed()` distinguishes them structurally, and the report counts
+each separately.

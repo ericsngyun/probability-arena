@@ -89,6 +89,11 @@ class MarketDetailEnrichmentService:
             await self.adapter.get_series_detail(series_ticker) if series_ticker else None
         )
 
+        # Bound BEFORE the capture calls below: under suppression each
+        # capture serializes a payload, and evaluating them first would
+        # shift this anchor by tens of microseconds. Small, but the
+        # milestone claims no timing anchor changes — so make it true.
+        captured_at = datetime.now(timezone.utc)
         row = MarketDetailEnrichment(
             market_ticker=ticker,
             scanner_run_id=scanner_run_id,
@@ -121,7 +126,7 @@ class MarketDetailEnrichmentService:
                 series_detail, source="kalshi_rest",
                 column="market_detail_enrichments.raw_series_detail",
             ),
-            created_at=datetime.now(timezone.utc),
+            created_at=captured_at,
         )
         session.add(row)
         session.commit()

@@ -64,20 +64,24 @@ def db(tmp_path):
 # --------------------------------------------------------------------------
 
 class TestModeResolution:
-    def test_default_is_full(self):
+    def test_default_is_full(self, monkeypatch):
+        """Decoupled from ambient env on purpose: reading the host's own
+        RAW_PAYLOAD_CAPTURE_MODE would make this fail forever on an activated
+        host, which is exactly where a green baseline matters most."""
+        monkeypatch.delenv("RAW_PAYLOAD_CAPTURE_MODE", raising=False)
         assert rp.DEFAULT_CAPTURE_MODE == rp.CAPTURE_MODE_FULL
         assert Settings(
             database_url="sqlite:///x.db"
         ).raw_payload_capture_mode == "full"
         assert rp.resolve_capture_mode(Settings(database_url="sqlite:///x.db")) == "full"
 
-    @pytest.mark.parametrize("mode", ["full", "errors_only", "none"])
+    @pytest.mark.parametrize("mode", ["full", "none"])
     def test_valid_modes_resolve(self, mode):
         assert rp.resolve_capture_mode(settings_with(mode)) == mode
 
     @pytest.mark.parametrize("mode", [
         "nonsense", "off", "disabled", "0", "true", "", "  ",
-        "non", "None;none", "full;none",
+        "non", "None;none", "full;none", "errors_only",
     ])
     def test_unknown_mode_fails_closed_to_full_never_none(self, mode):
         """A typo in a host .env must never be read as 'discard the bodies'."""
@@ -86,7 +90,7 @@ class TestModeResolution:
         assert resolved != rp.CAPTURE_MODE_NONE
 
     def test_case_and_whitespace_are_normalized(self):
-        for mode in ("NONE", " none ", "None", "Errors_Only"):
+        for mode in ("NONE", " none ", "None", "FULL", " Full "):
             assert rp.resolve_capture_mode(settings_with(mode)) in rp.VALID_CAPTURE_MODES
 
     def test_env_var_name_is_the_documented_one(self, monkeypatch):
@@ -99,6 +103,20 @@ class TestModeResolution:
 # --------------------------------------------------------------------------
 
 class TestCaptureSemantics:
+    def test_errors_only_is_not_a_valid_mode(self):
+        """Designed, then dropped: an error body is the payload class most
+        likely to echo the request URL, and this repo sends a provider key in a
+        query string — so no writer could keep one without redaction, which made
+        the mode behave identically to `none` everywhere. A value that cannot
+        behave differently from another is a misconfiguration trap."""
+        assert rp.VALID_CAPTURE_MODES == ("full", "none")
+        assert not hasattr(rp, "CAPTURE_MODE_ERRORS_ONLY")
+        assert rp.resolve_capture_mode(settings_with("errors_only")) == "full"
+        for path in ("app/config.py", ".env.example"):
+            text = (REPO / path).read_text()
+            assert "errors_only = store" not in text
+            assert "errors_only - store" not in text
+
     def test_full_preserves_the_payload_identically(self):
         out = rp.capture(BODY, source="kalshi_rest", column="market_price_ticks.raw_payload", mode="full")
         assert out is BODY
@@ -112,47 +130,11 @@ class TestCaptureSemantics:
         assert out["bytes"] == rp.payload_bytes(BODY)
         assert out["digest"] == rp.payload_digest(BODY)
 
-    def test_errors_only_does_not_persist_an_unallowlisted_error_body(self):
-        """An error body is the payload class most likely to echo the request
-        URL back, and this repo sends a provider key in a query string. A writer
-        must be explicitly allowlisted before its error bodies are kept."""
-        assert rp.ERROR_BODY_CAPTURE_ALLOWLIST == frozenset()
-        out = rp.capture(
-            BODY, source="kalshi_rest",
-            column="market_price_ticks.raw_payload",
-            mode="errors_only", is_error=True,
-        )
-        assert rp.is_suppressed(out)
 
-    def test_errors_only_keeps_a_failure_body_once_allowlisted(self, monkeypatch):
-        monkeypatch.setattr(
-            rp, "ERROR_BODY_CAPTURE_ALLOWLIST",
-            frozenset({"market_price_ticks.raw_payload"}),
-        )
-        out = rp.capture(
-            BODY, source="kalshi_rest",
-            column="market_price_ticks.raw_payload",
-            mode="errors_only", is_error=True,
-        )
-        assert out is BODY
 
-    def test_errors_only_suppresses_a_successful_body(self):
-        out = rp.capture(BODY, source="kalshi_rest", column="market_price_ticks.raw_payload", mode="errors_only", is_error=False)
-        assert rp.is_suppressed(out)
 
-    def test_errors_only_caps_an_oversized_failure_body(self, monkeypatch):
-        monkeypatch.setattr(
-            rp, "ERROR_BODY_CAPTURE_ALLOWLIST",
-            frozenset({"market_price_ticks.raw_payload"}),
-        )
-        huge = {"html": "x" * (rp.MAX_ERROR_PAYLOAD_BYTES + 5000)}
-        out = rp.capture(huge, source="p", column="market_price_ticks.raw_payload", mode="errors_only", is_error=True)
-        assert rp.is_suppressed(out)
-        assert out["error_payload_dropped"] == "exceeds_max_error_payload_bytes"
-        assert out["max_error_payload_bytes"] == rp.MAX_ERROR_PAYLOAD_BYTES
-        assert "x" * 100 not in json.dumps(out)
 
-    @pytest.mark.parametrize("mode", ["full", "errors_only", "none"])
+    @pytest.mark.parametrize("mode", ["full", "none"])
     def test_none_payload_stays_none_in_every_mode(self, mode):
         """NULL means 'the provider gave us nothing'. Suppression must not
         overload that — the two are genuinely different facts."""
@@ -190,7 +172,7 @@ class TestCaptureSemantics:
 
 class TestPinnedColumnsCannotBeSuppressed:
     @pytest.mark.parametrize("column", sorted(rp.PINNED_FULL))
-    @pytest.mark.parametrize("mode", ["none", "errors_only"])
+    @pytest.mark.parametrize("mode", ["none"])
     def test_pinned_column_ignores_the_mode(self, column, mode):
         out = rp.capture(BODY, source="p", column=column, mode=mode)
         assert out is BODY, f"{column} must never be suppressed"
@@ -204,7 +186,7 @@ class TestPinnedColumnsCannotBeSuppressed:
         "totally_unknown.column",
         "",
     ])
-    @pytest.mark.parametrize("mode", ["none", "errors_only"])
+    @pytest.mark.parametrize("mode", ["none"])
     def test_an_unrecognised_column_fails_CLOSED_not_open(self, typo, mode):
         """The security review found this failing OPEN: checking only
         `column in PINNED_FULL` means a typo'd pin silently drops out of the
@@ -318,7 +300,7 @@ class TestNormalizedParity:
             ),
         )
 
-    @pytest.mark.parametrize("mode", ["full", "errors_only", "none"])
+    @pytest.mark.parametrize("mode", ["full", "none"])
     def test_every_normalized_column_is_identical_across_modes(self, db, mode):
         baseline = self._tick("full")
         candidate = self._tick(mode)
@@ -327,7 +309,7 @@ class TestNormalizedParity:
         for field in NORMALIZED_FIELDS[MarketPriceTick]:
             assert getattr(baseline, field) == getattr(candidate, field), field
 
-    @pytest.mark.parametrize("mode", ["full", "errors_only", "none"])
+    @pytest.mark.parametrize("mode", ["full", "none"])
     def test_row_count_is_identical_across_modes(self, db, mode):
         for _ in range(5):
             db.add(self._tick(mode))
@@ -460,13 +442,53 @@ class TestReport:
                      if c["column"] == "market_price_ticks.raw_payload")
         assert data["full_scan"] is False
         assert ticks["rows_total"] == 4
-        assert ticks["window_rows"] == 4
-        assert ticks["window_rows_full_payload"] == 2
-        assert ticks["window_rows_suppressed"] == 2
+        assert ticks["recent_rows_with_payload"] == 4
+        assert ticks["recent_rows_full_payload"] == 2
+        assert ticks["recent_rows_suppressed"] == 2
         assert ticks["pinned_full"] is False
         # whole-table aggregates are deliberately not computed by default
         assert ticks["rows_full_payload"] is None
         assert ticks["stored_bytes"] is None
+
+    def test_null_payloads_are_not_counted_as_full_bodies(self, db, capsys):
+        """NULL means the provider gave nothing. Counting it as a full body
+        would mean the operator's primary verification signal never reaches 0."""
+        from app import cli
+
+        for i in range(3):
+            db.add(MarketPriceTick(
+                market_ticker=f"N-{i}", observed_at=NOW, created_at=NOW,
+                yes_bid=1, yes_ask=2, raw_payload=None,
+            ))
+        db.add(MarketPriceTick(
+            market_ticker="S-1", observed_at=NOW, created_at=NOW,
+            yes_bid=1, yes_ask=2,
+            raw_payload=rp.capture(BODY, source="k",
+                                   column="market_price_ticks.raw_payload",
+                                   mode="none"),
+        ))
+        db.commit()
+        data = cli.raw_payload_storage_report(fmt="json", session=db)
+        capsys.readouterr()
+        ticks = next(c for c in data["columns"]
+                     if c["column"] == "market_price_ticks.raw_payload")
+        assert ticks["rows_total"] == 4
+        assert ticks["recent_rows_with_payload"] == 1
+        assert ticks["recent_rows_suppressed"] == 1
+        assert ticks["recent_rows_full_payload"] == 0
+
+    def test_pinned_columns_are_listed_but_never_queried(self, db, capsys):
+        """Scanning 266 MiB of columns the mode can never touch buys nothing."""
+        from app import cli
+
+        self._seed(db)
+        data = cli.raw_payload_storage_report(fmt="json", session=db)
+        capsys.readouterr()
+        for row in data["columns"]:
+            if row["pinned_full"]:
+                assert row["recent_rows_with_payload"] is None
+                assert row["recent_bytes"] is None
+                assert row["recent_window"] is None
 
     def test_full_scan_computes_whole_table_totals(self, db, capsys):
         from app import cli
@@ -483,9 +505,39 @@ class TestReport:
         assert ticks["rows_suppressed"] == 2
         assert ticks["stored_bytes"] > 0
 
-    def test_default_avoids_the_whole_table_scan(self, db, capsys, monkeypatch):
-        """A full LIKE/length scan over a multi-hundred-MiB JSON column holds a
-        read lock long enough to block the writer under journal_mode=delete."""
+    def test_default_window_is_bounded_not_a_full_table_read(self, db, capsys):
+        """The timestamp columns are NOT indexed, so a time window would be a
+        full scan of a multi-hundred-MiB JSON column, holding a read lock that
+        blocks the writer under journal_mode=delete. The window is a descending
+        primary-key LIMIT instead — proven here behaviourally: with a small
+        --recent the report must look at only that many rows, however many the
+        table holds."""
+        for i in range(30):
+            db.add(MarketPriceTick(
+                market_ticker=f"B-{i}", observed_at=NOW, created_at=NOW,
+                yes_bid=1, yes_ask=2, raw_payload=dict(BODY, seq=i),
+            ))
+        db.commit()
+
+        from app import cli
+
+        wide = cli.raw_payload_storage_report(fmt="json", recent=30, session=db)
+        capsys.readouterr()
+        narrow = cli.raw_payload_storage_report(fmt="json", recent=5, session=db)
+        capsys.readouterr()
+
+        def ticks(data):
+            return next(c for c in data["columns"]
+                        if c["column"] == "market_price_ticks.raw_payload")
+
+        assert ticks(wide)["recent_rows_with_payload"] == 30
+        assert ticks(narrow)["recent_rows_with_payload"] == 5
+        # and the bytes scale with the window, not the table
+        assert ticks(narrow)["recent_bytes"] < ticks(wide)["recent_bytes"] / 4
+        # the whole-table count is still reported, cheaply
+        assert ticks(narrow)["rows_total"] == 30
+
+    def test_every_payload_query_carries_a_limit(self, db, capsys, monkeypatch):
         from app import cli
 
         self._seed(db)
@@ -493,18 +545,36 @@ class TestReport:
         real_execute = type(db).execute
 
         def spy(self, stmt, *a, **k):
-            seen.append(str(stmt))
+            try:
+                seen.append(str(stmt.compile(
+                    compile_kwargs={"literal_binds": True})))
+            except Exception:
+                seen.append(str(stmt))
             return real_execute(self, stmt, *a, **k)
 
         monkeypatch.setattr(type(db), "execute", spy)
         cli.raw_payload_storage_report(fmt="json", session=db)
         capsys.readouterr()
-        unbounded_like = [
+        payload_queries = [
             q for q in seen
-            if "LIKE" in q.upper() and "created_at" not in q and "observed_at" not in q
-            and "captured_at" not in q
+            if "raw_payload" in q or "raw_market_detail" in q
+            or "raw_event_detail" in q or "raw_series_detail" in q
         ]
-        assert unbounded_like == [], unbounded_like
+        assert payload_queries, "expected payload queries"
+        for query in payload_queries:
+            assert "LIMIT" in query.upper(), query
+
+    def test_report_never_filters_on_an_unindexed_timestamp(self):
+        import inspect
+
+        from app import cli
+
+        source = inspect.getsource(cli.raw_payload_storage_report)
+        # code only — the docstring explains WHY a timestamp window was rejected
+        code = source.split('"""')[-1]
+        for banned in ("created_at >=", "captured_at >=", "timedelta(hours",
+                       "wcol >=", "since"):
+            assert banned not in code, banned
 
     def test_report_writes_nothing(self, db, tmp_path, capsys):
         from app import cli
@@ -569,10 +639,17 @@ class TestReport:
         from app.cli import build_parser
 
         args = build_parser().parse_args(
-            ["raw-payload-storage-report", "--format", "json", "--hours", "6"]
+            ["raw-payload-storage-report", "--format", "json", "--recent", "50"]
         )
         assert args.command == "raw-payload-storage-report"
-        assert args.fmt == "json" and args.hours == 6
+        assert args.fmt == "json" and args.recent == 50
+        scan = build_parser().parse_args(
+            ["raw-payload-storage-report", "--full-scan"]
+        )
+        assert scan.full_scan is True
+        assert build_parser().parse_args(
+            ["raw-payload-storage-report"]
+        ).full_scan is False
         for flag in ("--confirm", "--apply", "--delete", "--purge"):
             with pytest.raises(SystemExit):
                 build_parser().parse_args(["raw-payload-storage-report", flag])
@@ -626,13 +703,49 @@ class TestScopeAndBoundaries:
             assert "raw_payload_policy import capture as _capture_raw" in source
 
     def test_every_governed_column_has_a_live_call_site(self):
-        sources = {
-            path.name: path.read_text()
-            for path in (REPO / "app/services").glob("*.py")
-        }
-        blob = "\n".join(sources.values())
+        blob = "\n".join(
+            path.read_text() for path in (REPO / "app/services").glob("*.py")
+        )
         for column in rp.GOVERNED_COLUMNS:
             assert f'column="{column}"' in blob, column
+
+    def test_every_call_site_names_a_real_classified_column(self):
+        """The inverse guard. Asserting only that each governed column appears
+        SOMEWHERE lets a typo hide behind a sibling call site —
+        market_price_ticks.raw_payload has two writers, so misspelling one still
+        satisfies that check. Extract every literal instead and require each to
+        be classified AND to resolve against the real schema."""
+        import re as _re
+
+        from app.db import Base
+
+        found = set()
+        for path in (REPO / "app/services").glob("*.py"):
+            found |= set(_re.findall(r'column="([^"]+)"', path.read_text()))
+        assert found, "expected some capture call sites"
+        for column in found:
+            assert column in rp.ALL_CLASSIFIED_COLUMNS, f"unclassified: {column}"
+            table_name, _, col = column.partition(".")
+            table = Base.metadata.tables.get(table_name)
+            assert table is not None, f"unknown table: {column}"
+            assert col in table.c, f"unknown column: {column}"
+
+    def test_every_inventoried_column_is_classified_exactly_once(self):
+        """A column that is inventoried but unclassified is an audit hole."""
+        buckets = (
+            set(rp.GOVERNED_COLUMNS), set(rp.PINNED_FULL),
+            set(rp.UNGOVERNED_BY_DESIGN),
+        )
+        for i, a in enumerate(buckets):
+            for b in buckets[i + 1:]:
+                assert not (a & b), a & b
+        assert rp.ALL_CLASSIFIED_COLUMNS == set().union(*buckets)
+        from app.db import Base
+
+        for column in rp.ALL_CLASSIFIED_COLUMNS:
+            table_name, _, col = column.partition(".")
+            table = Base.metadata.tables.get(table_name)
+            assert table is not None and col in table.c, column
 
     def test_no_pinned_column_has_a_capture_call_site(self):
         """A pinned column must not even be routed through the policy."""
@@ -730,17 +843,6 @@ class TestGrowthComparison:
             f"({full_bytes} -> {none_bytes} bytes)"
         )
 
-    def test_errors_only_matches_none_for_a_writer_with_no_error_path(
-        self, tmp_path
-    ):
-        """Documented honestly rather than implied: the governed writers only
-        create a row on success, so errors_only cannot differ from none there."""
-        none_bytes, _, none_norm, _ = self._write_workload(
-            tmp_path, "n.db", "none", rows=200)
-        eo_bytes, _, eo_norm, _ = self._write_workload(
-            tmp_path, "e.db", "errors_only", rows=200)
-        assert none_norm == eo_norm
-        assert abs(none_bytes - eo_bytes) < 8192
 
     def test_full_mode_is_unchanged_from_no_policy_at_all(self, tmp_path):
         """Default `full` must be byte-equivalent to the pre-milestone writer."""
@@ -767,3 +869,95 @@ class TestGrowthComparison:
         policed, _, _, _ = self._write_workload(
             tmp_path, "policed.db", "full", rows=200)
         assert policed == unpoliced
+
+
+# --------------------------------------------------------------------------
+# 9-11: end-to-end writer parity through the REAL watcher path
+# --------------------------------------------------------------------------
+
+class TestWriterProviderParity:
+    """The policy tests above exercise capture() directly. These drive the real
+    RealtimeWatcher so the claims hold where the writer actually runs."""
+
+    def _run(self, tmp_path, mode, monkeypatch):
+        import asyncio
+
+        from app.config import get_settings
+        from app.services.watcher import RealtimeWatcher
+        from tests.test_watcher import CFG, FrameAdapter, market
+
+        monkeypatch.setattr(
+            get_settings(), "raw_payload_capture_mode", mode, raising=False
+        )
+        engine = create_engine(f"sqlite:///{tmp_path / f'{mode}.db'}")
+        Base.metadata.create_all(engine)
+        session = sessionmaker(bind=engine, expire_on_commit=False)()
+        # make_market() carries no raw payload by default (test_watcher.py:86
+        # asserts exactly that), so supply one — otherwise every mode trivially
+        # stores None and the comparison proves nothing.
+        frames = [
+            [market(ticker="W-1", bid=48, ask=52, raw=dict(BODY, frame=1))],
+            [market(ticker="W-1", bid=60, ask=64, raw=dict(BODY, frame=2))],
+        ]
+        adapter = FrameAdapter(frames)
+        watcher = RealtimeWatcher(adapter=adapter, config=CFG)
+        try:
+            for _ in frames:
+                asyncio.run(watcher.watch_once(session, limit=100))
+            ticks = session.execute(
+                select(MarketPriceTick).order_by(MarketPriceTick.id)
+            ).scalars().all()
+            signals = session.execute(
+                select(OpportunitySignal).order_by(OpportunitySignal.id)
+            ).scalars().all()
+            normalized = [
+                (t.market_ticker, t.yes_bid, t.yes_ask, t.midpoint, t.spread,
+                 t.volume_24h, t.liquidity_proxy)
+                for t in ticks
+            ]
+            payloads = [t.raw_payload for t in ticks]
+            signal_payloads = [s.raw_payload for s in signals]
+        finally:
+            session.close()
+            engine.dispose()
+        return {
+            "polls": adapter.polls,
+            "tick_rows": len(ticks),
+            "signal_rows": len(signals),
+            "normalized": normalized,
+            "payloads": payloads,
+            "signal_payloads": signal_payloads,
+        }
+
+    def test_provider_calls_and_rows_are_identical_across_modes(
+        self, tmp_path, monkeypatch
+    ):
+        full = self._run(tmp_path, "full", monkeypatch)
+        none = self._run(tmp_path, "none", monkeypatch)
+
+        assert full["polls"] == none["polls"], "provider call count changed"
+        assert full["tick_rows"] == none["tick_rows"] > 0
+        assert full["signal_rows"] == none["signal_rows"]
+        assert full["normalized"] == none["normalized"]
+
+    def test_full_mode_stores_the_body_and_none_stores_the_envelope(
+        self, tmp_path, monkeypatch
+    ):
+        full = self._run(tmp_path, "full", monkeypatch)
+        none = self._run(tmp_path, "none", monkeypatch)
+
+        assert any(p and not rp.is_suppressed(p) for p in full["payloads"])
+        assert all(p is None or rp.is_suppressed(p) for p in none["payloads"])
+        # the signal writer is governed too
+        if none["signal_payloads"]:
+            assert all(
+                p is None or rp.is_suppressed(p) for p in none["signal_payloads"]
+            )
+
+    def test_suppression_does_not_change_signal_detection(
+        self, tmp_path, monkeypatch
+    ):
+        """Signals are derived from normalized fields, never from the body."""
+        full = self._run(tmp_path, "full", monkeypatch)
+        none = self._run(tmp_path, "none", monkeypatch)
+        assert full["signal_rows"] == none["signal_rows"]
