@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.adapters.kalshi import KalshiRestAdapter
 from app.config import Settings, get_settings
+from app.services.raw_payload_policy import capture as _capture_raw
 from app.models import Market, MarketEligibilityAssessment, MarketSnapshot, ScannerRun
 from app.schemas import MarketData, RankedMarket
 from app.services.eligibility import EligibilityAssessment, EligibilityThresholds, assess_market
@@ -208,7 +209,10 @@ def persist_scan(
                     # Ineligible markets are hard-zeroed, never weighted-scored
                     score=ranked_item.score if ranked_item else 0.0,
                     score_components=ranked_item.components.model_dump() if ranked_item else None,
-                    raw_payload=market_data.raw,
+                    raw_payload=_capture_raw(
+                        market_data.raw, source="kalshi_rest",
+                        column="market_snapshots.raw_payload",
+                    ),
                 )
             )
             if assessment is not None:

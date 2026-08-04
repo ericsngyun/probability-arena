@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from app.adapters.kalshi import KalshiRestAdapter
 from app.models import Market, MarketDetailEnrichment, MarketSnapshot
 from app.schemas import MarketData
+from app.services.raw_payload_policy import capture as _capture_raw
 
 logger = logging.getLogger(__name__)
 
@@ -108,9 +109,18 @@ class MarketDetailEnrichmentService:
                 (event_detail or {}).get("category"),
                 (series_detail or {}).get("category"),
             ),
-            raw_market_detail=market_detail,
-            raw_event_detail=event_detail,
-            raw_series_detail=series_detail,
+            raw_market_detail=_capture_raw(
+                market_detail, source="kalshi_rest",
+                column="market_detail_enrichments.raw_market_detail",
+            ),
+            raw_event_detail=_capture_raw(
+                event_detail, source="kalshi_rest",
+                column="market_detail_enrichments.raw_event_detail",
+            ),
+            raw_series_detail=_capture_raw(
+                series_detail, source="kalshi_rest",
+                column="market_detail_enrichments.raw_series_detail",
+            ),
             created_at=datetime.now(timezone.utc),
         )
         session.add(row)

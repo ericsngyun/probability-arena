@@ -33,6 +33,7 @@ from sqlalchemy.orm import Session
 
 from app.adapters.kalshi import KalshiRestAdapter
 from app.config import Settings, get_settings
+from app.services.raw_payload_policy import capture as _capture_raw
 from app.models import Market, MarketPriceTick
 from app.schemas import MarketData
 from app.services.edge_followthrough import _aware, _mean, _rate
@@ -313,7 +314,10 @@ class TennisTickWatcher:
                     spread=m.spread,
                     volume_24h=m.volume_24h,
                     liquidity_proxy=m.liquidity,
-                    raw_payload=m.raw,
+                    raw_payload=_capture_raw(
+                        m.raw, source="kalshi_rest",
+                        column="market_price_ticks.raw_payload",
+                    ),
                     created_at=observed_at,
                 ))
                 recorded += 1

@@ -37,6 +37,7 @@ from app.models import (
     CryptoWatcherRun,
 )
 from app.services.crypto_risk import CryptoRiskProvider, RiskAssessment, get_risk_provider
+from app.services.raw_payload_policy import capture as _capture_raw
 
 logger = logging.getLogger(__name__)
 
@@ -450,7 +451,10 @@ class CryptoDiscoveryService:
                 source=self.adapter.source_name,
                 event_type=event_type,
                 observed_at=now,
-                raw_payload=raw,
+                raw_payload=_capture_raw(
+                    raw, source=self.adapter.source_name,
+                    column="crypto_token_discovery_events.raw_payload",
+                ),
                 created_at=now,
             )
         )

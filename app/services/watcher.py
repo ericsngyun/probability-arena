@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session
 
 from app.adapters.kalshi import KalshiRestAdapter
 from app.config import Settings, get_settings
+from app.services.raw_payload_policy import capture as _capture_raw
 from app.models import (
     Market,
     MarketPriceTick,
@@ -271,7 +272,10 @@ class RealtimeWatcher:
                     liquidity_proxy=tick.liquidity_proxy,
                     reason=reason,
                     evidence=evidence,
-                    raw_payload=market.raw,
+                    raw_payload=_capture_raw(
+                        market.raw, source="kalshi_rest",
+                        column="opportunity_signals.raw_payload",
+                    ),
                     created_at=observed_at,
                     **fields,
                 )
@@ -390,7 +394,10 @@ class RealtimeWatcher:
                     spread=market.spread,
                     volume_24h=market.volume_24h,
                     liquidity_proxy=market.liquidity,
-                    raw_payload=market.raw,
+                    raw_payload=_capture_raw(
+                        market.raw, source="kalshi_rest",
+                        column="market_price_ticks.raw_payload",
+                    ),
                     created_at=observed_at,
                 )
                 session.add(tick)
