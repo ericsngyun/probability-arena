@@ -895,6 +895,185 @@ async def watch_loop(
     return iterations
 
 
+def raw_payload_storage_report(
+    fmt: str = "text", hours: int = 24, full_scan: bool = False, session=None
+) -> dict:
+    """RAW-PAYLOAD-STORAGE-001 — read-only raw-payload storage measurement.
+
+    Reports the configured capture mode and, per governed column, how many rows
+    carry a full body versus a suppressed provenance envelope, the bytes stored,
+    and the bytes avoided over a bounded window.
+
+    Writes nothing, calls no provider, and NEVER prints payload contents — only
+    counts, sizes and the column names themselves.
+
+    By default it measures only the bounded recent WINDOW, which is what the
+    activation decision actually needs. The whole-table aggregates require a
+    full scan of a multi-hundred-MiB JSON column, and a long read lock under
+    `journal_mode=delete` blocks the concurrent writer's COMMIT — the hazard
+    SQLITE-BACKUP-COORDINATION-001 exists to avoid. Pass `--full-scan` only
+    against a disposable copy or a decompressed backup snapshot.
+    """
+    import json as _json
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import func as _f
+    from sqlalchemy import select as _select
+
+    from app.db import Base
+    from app.services.raw_payload_policy import (
+        GOVERNED_COLUMNS,
+        PINNED_FULL,
+        SUPPRESSED_MARKER,
+        resolve_capture_mode,
+    )
+
+    owns_session = session is None
+    if owns_session:
+        # Deliberately NOT run_migrations(): a report that claims "writes
+        # nothing" must not apply Alembic migrations to whatever DATABASE_URL
+        # points at — and --full-scan explicitly tells the operator to point it
+        # at a decompressed backup snapshot, which must stay untouched evidence.
+        from app.db import get_sessionmaker
+
+        session = get_sessionmaker()()
+    try:
+        mode = resolve_capture_mode()
+        now = datetime.now(timezone.utc)
+        since = now - timedelta(hours=max(1, hours))
+        rows_out = []
+        for qualified in sorted(set(GOVERNED_COLUMNS) | set(PINNED_FULL)):
+            table_name, column = qualified.split(".", 1)
+            table = Base.metadata.tables.get(table_name)
+            if table is None or column not in table.c:
+                continue
+            col = table.c[column]
+            tcol = next(
+                (c for c in ("created_at", "captured_at", "observed_at")
+                 if c in table.c), None
+            )
+            total = session.execute(
+                _select(_f.count()).select_from(table)
+            ).scalar() or 0
+            # A suppressed row is identified by its marker KEY, never by
+            # inspecting payload content.
+            marker = f'%"{SUPPRESSED_MARKER}"%'
+            non_null = stored_bytes = suppressed = None
+            if full_scan:
+                non_null = session.execute(
+                    _select(_f.count()).select_from(table).where(col.is_not(None))
+                ).scalar() or 0
+                stored_bytes = session.execute(
+                    _select(_f.coalesce(_f.sum(_f.length(col)), 0)).select_from(table)
+                ).scalar() or 0
+                suppressed = session.execute(
+                    _select(_f.count()).select_from(table).where(col.like(marker))
+                ).scalar() or 0
+            window_rows = window_bytes = window_suppressed = None
+            if tcol is not None:
+                wcol = table.c[tcol]
+                window_rows = session.execute(
+                    _select(_f.count()).select_from(table).where(wcol >= since)
+                ).scalar() or 0
+                window_bytes = session.execute(
+                    _select(_f.coalesce(_f.sum(_f.length(col)), 0))
+                    .select_from(table).where(wcol >= since)
+                ).scalar() or 0
+                window_suppressed = session.execute(
+                    _select(_f.count()).select_from(table)
+                    .where(wcol >= since, col.like(marker))
+                ).scalar() or 0
+            full_rows = (
+                max(non_null - suppressed, 0) if full_scan else None
+            )
+            avg_full = (
+                round(stored_bytes / full_rows, 1)
+                if (full_scan and full_rows) else None
+            )
+            window_full = (
+                max((window_rows or 0) - (window_suppressed or 0), 0)
+                if window_rows is not None else None
+            )
+            rows_out.append({
+                "column": qualified,
+                "pinned_full": qualified in PINNED_FULL,
+                "rows_total": total,
+                "rows_non_null": non_null,
+                "rows_full_payload": full_rows,
+                "rows_suppressed": suppressed,
+                "window_rows_full_payload": window_full,
+                "stored_bytes": stored_bytes,
+                "avg_bytes_per_full_row": avg_full,
+                "window_hours": hours if tcol else None,
+                "window_rows": window_rows,
+                "window_bytes": window_bytes,
+                "window_rows_suppressed": window_suppressed,
+            })
+    finally:
+        if owns_session:
+            session.close()
+
+    data = {
+        "generated_at": now.isoformat(),
+        "capture_mode": mode,
+        "window_hours": hours,
+        "full_scan": full_scan,
+        "columns": rows_out,
+        "governed_columns": sorted(GOVERNED_COLUMNS),
+        "pinned_columns": sorted(PINNED_FULL),
+        "external_calls": 0,
+        "persisted": False,
+        "prints_payload_contents": False,
+    }
+    if fmt == "json":
+        print(_json.dumps(data, indent=2, sort_keys=True, default=str))
+        return data
+
+    mib = lambda b: "-" if b is None else f"{b / 1048576:.1f}"
+    print("raw payload storage — READ ONLY (writes nothing, zero provider calls, "
+          "never prints payload contents)")
+    print(f"generated_at={data['generated_at']}  capture_mode={mode}  "
+          f"window={hours}h  external_calls=0  persisted=false")
+    print()
+    dash = lambda v: "-" if v is None else v
+    header = (f"{'column':<50}{'rows':>10}{'win rows':>10}{'win full':>10}"
+              f"{'win supp':>10}{'win MiB':>9}{'all MiB':>9}  pin")
+    print(header)
+    print("-" * len(header))
+    for row in data["columns"]:
+        print(f"{row['column']:<50}{row['rows_total']:>10}"
+              f"{dash(row['window_rows']):>10}"
+              f"{dash(row['window_rows_full_payload']):>10}"
+              f"{dash(row['window_rows_suppressed']):>10}"
+              f"{mib(row['window_bytes']):>9}"
+              f"{mib(row['stored_bytes']):>9}"
+              f"  {'PINNED' if row['pinned_full'] else ''}")
+    if not full_scan:
+        print()
+        print("(whole-table columns blank by design: --full-scan reads every page "
+              "of a multi-hundred-MiB")
+        print(" JSON column and would hold a read lock that blocks the writer. "
+              "Use it on a backup copy.)")
+    print()
+    governed = [r for r in data["columns"] if not r["pinned_full"]]
+    win_bytes = sum(r["window_bytes"] or 0 for r in governed)
+    win_rows = sum(r["window_rows"] or 0 for r in governed)
+    print(f"governed columns: {len(governed)}  pinned (production readers): "
+          f"{len(data['columns']) - len(governed)}")
+    print(f"governed rows in the last {hours}h: {win_rows}  "
+          f"storing {mib(win_bytes)} MiB")
+    if mode == "full":
+        print(f"at capture_mode=none this window would have stored roughly the "
+              f"provenance envelope only — see docs/RAW_PAYLOAD_STORAGE_001.md")
+    print()
+    print("LOGICAL vs PHYSICAL: suppression avoids FUTURE writes. It does not "
+          "delete history and does not")
+    print("shrink the SQLite file — freed space becomes reusable pages only "
+          "after separate reclamation")
+    print("(RAW-PAYLOAD-RECLAMATION-001) and compaction (SQLITE-COMPACT-COPY-001).")
+    return data
+
+
 def retention_coverage_report(
     fmt: str = "text", top: int = 25, no_dbstat: bool = False, session=None
 ) -> dict:
@@ -6214,6 +6393,21 @@ def build_parser() -> argparse.ArgumentParser:
     prune_parser = subparsers.add_parser(
         "prune-retention", help="Prune operational tables per retention windows"
     )
+    raw_payload_parser = subparsers.add_parser(
+        "raw-payload-storage-report",
+        help="Read-only raw provider-payload storage measurement "
+             "(RAW-PAYLOAD-STORAGE-001): capture mode, rows by capture state, "
+             "bytes stored and avoided. Writes nothing; prints no payload.",
+    )
+    raw_payload_parser.add_argument(
+        "--format", choices=("text", "json"), default="text", dest="fmt"
+    )
+    raw_payload_parser.add_argument("--hours", type=int, default=24)
+    raw_payload_parser.add_argument(
+        "--full-scan", action="store_true",
+        help="also compute whole-table totals; this reads every page of the "
+             "payload columns and can block the writer — use on a backup copy",
+    )
     coverage_parser = subparsers.add_parser(
         "retention-coverage-report",
         help="Read-only retention coverage analysis (RETENTION-COVERAGE-001): "
@@ -6969,6 +7163,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "watch-loop":
         iterations = asyncio.run(watch_loop(interval=args.interval, limit=args.limit))
         return 0 if iterations >= 0 else 1
+    if args.command == "raw-payload-storage-report":
+        raw_payload_storage_report(
+            fmt=args.fmt, hours=args.hours, full_scan=args.full_scan
+        )
+        return 0
     if args.command == "retention-coverage-report":
         retention_coverage_report(
             fmt=args.fmt, top=args.top, no_dbstat=args.no_dbstat
