@@ -877,9 +877,16 @@ async def forecast_reliability_decomposition_report(
           f"actual={m['actual_brier']} residual={m['discretization_residual']} "
           f"populated_bins={m['populated_bins']}")
     d = r["directional"]
-    print(f"directional: signed_gap={d['signed_calibration_gap']} "
-          f"over_share={d['overprediction_weighted_share']} under_share={d['underprediction_weighted_share']} "
-          f"extreme_miss={d['extreme_confidence_miss_count']} high_correct={d['high_confidence_correct_count']}")
+    print(f"directional (weighted by {d['directional_weight_basis']}, "
+          f"tolerance={d['calibration_tolerance']}):")
+    print(f"  signed_aggregate_gap={d['signed_calibration_gap']}  "
+          f"(mean_p - base_rate; NOT the complement of the shares below)")
+    print(f"  over_share={d['overprediction_weighted_share']} "
+          f"under_share={d['underprediction_weighted_share']} "
+          f"approx_calibrated_share={d['approximately_calibrated_weighted_share']} "
+          f"unclassified={d['unclassified_weighted_share']}")
+    print(f"  extreme_miss={d['extreme_confidence_miss_count']} "
+          f"high_correct={d['high_confidence_correct_count']}")
     print("cohorts (domain):")
     for c in r["cohorts"]["domain"]:
         print(f"  {c['name']:20} n={c['scored_count']:4} prev={c['prevalence']} brier={c['mean_brier']} "
