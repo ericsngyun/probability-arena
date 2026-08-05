@@ -1,0 +1,78 @@
+{
+  "canceled_void_policy": "canceled and void outcomes are excluded and counted separately; they never receive a score",
+  "conflict_policy": "a self-contradicting outcome row is excluded, counted and preserved; it is never repaired to make a member scorable",
+  "data_sources": [
+    "kalshi_rest"
+  ],
+  "declared_baselines": {
+    "base_rate_brier": "Brier of a constant forecast equal to the observed prevalence within this experiment's own matured members"
+  },
+  "domain": "sports_baseball",
+  "domain_sample_floors": {
+    "sports_baseball": 500
+  },
+  "end_condition": "sample floor reached AND minimum_matured_fraction satisfied",
+  "end_time": null,
+  "evaluation_horizons": [
+    "market close time plus a 3600s settlement grace"
+  ],
+  "exclusion_rules": [
+    "market has no close time recorded",
+    "market has not matured by the evaluation horizon",
+    "member is not scored_current at evaluation"
+  ],
+  "experiment_class": "prospective_calibration",
+  "experiment_id": "baseball-prospective-calibration-stability",
+  "experiment_version": 1,
+  "exploratory_or_confirmatory": "confirmatory",
+  "feature_definitions": {
+    "domain": "research packet domain at forecast time",
+    "estimated_probability": "the forecast's own estimated_probability"
+  },
+  "forecast_family": "baseball_evidence",
+  "forecast_version": "v1",
+  "hypothesis": "Brier skill versus the base-rate benchmark remains strictly positive for baseball forecasts created after start_time.",
+  "inclusion_rules": [
+    "forecast created_at >= start_time",
+    "research packet domain == sports_baseball",
+    "forecaster family == baseball_evidence and version == v1"
+  ],
+  "invalidating_conditions": [
+    "forecast_version changes during collection",
+    "ENABLE_OUTCOME_SYNC_COVERAGE_REPAIR is disabled during collection",
+    "evaluation code digests drift without disclosure"
+  ],
+  "known_limitations": [
+    "baseball is 85 percent of the scored population, so this result and the aggregate will move together and are not independent evidence",
+    "prevalence is non-stationary, so the benchmark itself moves"
+  ],
+  "market_population": "Kalshi baseball markets discovered by the standard scan, forecast by the baseball_evidence family at version v1",
+  "minimum_matured_fraction": 0.9,
+  "missing_data_policy": "members whose markets have not matured are counted as pending and excluded from the metric; never imputed",
+  "multiple_testing_policy": "one primary metric; ECE is descriptive only and cannot be promoted",
+  "null_hypothesis": "Brier skill versus the base-rate benchmark is at most zero.",
+  "owner": "eric",
+  "primary_metric": {
+    "definition": "1 - (mean Brier / base-rate-benchmark Brier)",
+    "name": "brier_skill_vs_base_rate",
+    "source": "forecast-reliability-decomposition-report baselines block"
+  },
+  "provider_policy": "no new provider and no paid provider; the existing read-only Kalshi market-detail path only, at the cadence MarketOps already runs",
+  "research_question": "Does the baseball calibration and base-rate skill measured on the post-drain population persist on forecasts created after registration?",
+  "safety_boundary": "measurement only; no expected value, recommendation, sizing, order, wallet or capital behavior is produced or implied, and calibration is not an edge claim",
+  "sample_floor": 500,
+  "secondary_metrics": [
+    {
+      "definition": "expected calibration error",
+      "name": "ece"
+    }
+  ],
+  "signal_definitions": {
+    "none": "no signal gating; every eligible forecast enters"
+  },
+  "stale_score_policy": "only scored_current members enter; stale rows are excluded",
+  "start_condition": "the first forecast whose created_at is at or after start_time; no forecast existing at registration is eligible",
+  "start_time": "2026-08-05T23:00:00+00:00",
+  "stopping_rule": "a single evaluation once the sample floor and matured fraction are both satisfied; no interim looks, and the experiment is not stopped early on a favourable reading",
+  "title": "Baseball prospective calibration stability"
+}

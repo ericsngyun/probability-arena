@@ -36,6 +36,7 @@ read-only scoring against observed outcomes. There are no trading commands.
 
 import argparse
 import asyncio
+from pathlib import Path as _Path
 import logging
 import sys
 
@@ -523,6 +524,167 @@ async def calibration_report(session=None) -> int:
     finally:
         if owns_session:
             session.close()
+
+
+def _registry_print_validation(v, warnings_only=False):
+    if v.errors:
+        print(f"REJECTED ({len(v.errors)} error(s)):")
+        for e in v.errors:
+            print(f"  - {e}")
+    for w in v.warnings:
+        print(f"  flag: {w}")
+
+
+def experiment_registry_validate(manifest: str, fmt: str = "text") -> int:
+    """PROSPECTIVE-EXPERIMENT-REGISTRY-001 — validate a manifest. Pure."""
+    import json as _json
+
+    from app.services.experiment_registry import (
+        ManifestError,
+        load_manifest,
+        validate_manifest,
+    )
+
+    try:
+        data = load_manifest(_Path(manifest))
+    except (ManifestError, OSError) as exc:
+        print(f"error: {exc}")
+        return 2
+    v = validate_manifest(data)
+    if fmt == "json":
+        print(_json.dumps(v.to_dict(), indent=2, sort_keys=True))
+        return 0 if v.ok else 1
+    print(f"manifest: {manifest}")
+    print(f"experiment_id: {v.experiment_id}")
+    if v.ok:
+        print(f"VALID — digest {v.digest}")
+    _registry_print_validation(v)
+    return 0 if v.ok else 1
+
+
+def experiment_registry_register(
+    manifest: str, confirm: bool = False, base: str | None = None,
+    fmt: str = "text",
+) -> int:
+    """Register a manifest. Without --confirm this writes nothing."""
+    import json as _json
+    import subprocess
+
+    from app.services.experiment_registry import (
+        ManifestError,
+        load_manifest,
+        register,
+    )
+
+    try:
+        data = load_manifest(_Path(manifest))
+    except (ManifestError, OSError) as exc:
+        print(f"error: {exc}")
+        return 2
+    commit = None
+    if confirm:
+        try:
+            commit = subprocess.run(
+                ["git", "rev-parse", "HEAD"], capture_output=True, text=True,
+                check=True, timeout=10).stdout.strip()
+        except Exception:
+            commit = None
+    try:
+        out = register(data, base=_Path(base) if base else None,
+                       confirm=confirm, commit=commit)
+    except ManifestError as exc:
+        print(f"REFUSED: {exc}")
+        return 1
+    if fmt == "json":
+        print(_json.dumps(out, indent=2, sort_keys=True, default=str))
+        return 0
+    print(f"experiment {out['experiment_id']} — {out['mode'].upper()}")
+    print(out["disclaimer"])
+    print(f"  manifest_digest   {out['manifest_digest']}")
+    print(f"  state             {out['state']}")
+    print(f"  registered_at     {out['registered_at']}")
+    print(f"  registration_commit {out['registration_commit']}")
+    print(f"  persisted         {str(out['persisted']).lower()}")
+    for w in out.get("warnings", []):
+        print(f"  flag: {w}")
+    if not confirm:
+        print("  nothing written — re-run with --confirm to register")
+        print("  review the digest above; it is what the registration binds")
+    return 0
+
+
+def experiment_registry_status(
+    experiment_id: str, base: str | None = None, fmt: str = "text"
+) -> int:
+    import json as _json
+
+    from app.services.experiment_registry import ManifestError, status
+
+    try:
+        out = status(experiment_id, _Path(base) if base else None)
+    except (ManifestError, OSError) as exc:
+        print(f"error: {exc}")
+        return 2
+    if fmt == "json":
+        print(_json.dumps(out, indent=2, sort_keys=True, default=str))
+        return 0
+    print(f"experiment {out['experiment_id']}")
+    for k in ("state", "kind", "class", "domain", "primary_metric", "sample_floor",
+              "start_time", "registered_at", "registration_commit", "events",
+              "evaluation_permitted"):
+        print(f"  {k:22} {out[k]}")
+    print(f"  allowed_transitions    {out['allowed_transitions']}")
+    print(f"  results                {out['results']}")
+    i = out["integrity"]
+    print(f"  manifest_intact        {i['intact']}  (digest {i['digest_recomputed_now']})")
+    return 0 if i["intact"] else 1
+
+
+def experiment_registry_list(base: str | None = None, fmt: str = "text") -> int:
+    import json as _json
+
+    from app.services.experiment_registry import DISCLAIMER, list_experiments
+
+    rows = list_experiments(_Path(base) if base else None)
+    if fmt == "json":
+        print(_json.dumps({"experiments": rows, "disclaimer": DISCLAIMER},
+                          indent=2, sort_keys=True, default=str))
+        return 0
+    print("prospective experiment registry")
+    print(DISCLAIMER)
+    if not rows:
+        print("  (none registered)")
+        return 0
+    print(f"  {'id':34} {'state':12} {'kind':13} {'domain':16} intact")
+    for r in rows:
+        print(f"  {str(r['experiment_id']):34} {str(r['state']):12} "
+              f"{str(r['kind']):13} {str(r['domain']):16} {r['intact']}")
+    return 0 if all(r["intact"] for r in rows) else 1
+
+
+def experiment_registry_transition(
+    experiment_id: str, to: str, confirm: bool = False, base: str | None = None,
+    note: str | None = None, fmt: str = "text",
+) -> int:
+    import json as _json
+
+    from app.services.experiment_registry import ManifestError, transition
+
+    try:
+        out = transition(experiment_id, to, base=_Path(base) if base else None,
+                         confirm=confirm, note=note)
+    except ManifestError as exc:
+        print(f"REFUSED: {exc}")
+        return 1
+    if fmt == "json":
+        print(_json.dumps(out, indent=2, sort_keys=True, default=str))
+        return 0
+    print(f"experiment {out['experiment_id']} — {out['mode'].upper()}")
+    print(f"  {out['from']} -> {out['to']}")
+    print(f"  persisted {str(out['persisted']).lower()}")
+    if not confirm:
+        print("  nothing written — re-run with --confirm to apply")
+    return 0
 
 
 def outcome_sync_coverage_report(
@@ -6761,6 +6923,44 @@ def build_parser() -> argparse.ArgumentParser:
     fsa_parser.add_argument("--forecaster", type=str, default=None)
     fsa_parser.add_argument("--top", type=int, default=10)
     fsa_parser.add_argument("--format", choices=("text", "json"), default="text", dest="fmt")
+    erv = subparsers.add_parser(
+        "experiment-registry-validate",
+        help="Validate a prospective experiment manifest (PROSPECTIVE-EXPERIMENT-"
+             "REGISTRY-001; pure, no writes, no provider calls)")
+    erv.add_argument("--manifest", type=str, required=True)
+    erv.add_argument("--format", choices=("text", "json"), default="text", dest="fmt")
+
+    err = subparsers.add_parser(
+        "experiment-registry-register",
+        help="Register a manifest immutably (dry run unless --confirm)")
+    err.add_argument("--manifest", type=str, required=True)
+    err.add_argument("--confirm", action="store_true")
+    err.add_argument("--dry-run", action="store_true")
+    err.add_argument("--base", type=str, default=None,
+                     help="registry root (defaults to ./experiments)")
+    err.add_argument("--format", choices=("text", "json"), default="text", dest="fmt")
+
+    ers = subparsers.add_parser("experiment-registry-status",
+                                help="Show one experiment's state and integrity")
+    ers.add_argument("--experiment-id", type=str, required=True)
+    ers.add_argument("--base", type=str, default=None)
+    ers.add_argument("--format", choices=("text", "json"), default="text", dest="fmt")
+
+    erl = subparsers.add_parser("experiment-registry-list",
+                                help="List registered experiments")
+    erl.add_argument("--base", type=str, default=None)
+    erl.add_argument("--format", choices=("text", "json"), default="text", dest="fmt")
+
+    ert = subparsers.add_parser("experiment-registry-transition",
+                                help="Advance experiment state (dry run unless --confirm)")
+    ert.add_argument("--experiment-id", type=str, required=True)
+    ert.add_argument("--to", type=str, required=True)
+    ert.add_argument("--confirm", action="store_true")
+    ert.add_argument("--dry-run", action="store_true")
+    ert.add_argument("--note", type=str, default=None)
+    ert.add_argument("--base", type=str, default=None)
+    ert.add_argument("--format", choices=("text", "json"), default="text", dest="fmt")
+
     osc_parser = subparsers.add_parser(
         "outcome-sync-coverage-report",
         help="Read-only outcome-coverage diagnostics and missing-outcome taxonomy "
@@ -7603,6 +7803,22 @@ def main(argv: list[str] | None = None) -> int:
                 domain=args.domain, forecaster=args.forecaster, top=args.top, fmt=args.fmt,
             )
         )
+    if args.command == "experiment-registry-validate":
+        return experiment_registry_validate(manifest=args.manifest, fmt=args.fmt)
+    if args.command == "experiment-registry-register":
+        return experiment_registry_register(
+            manifest=args.manifest, confirm=args.confirm and not args.dry_run,
+            base=args.base, fmt=args.fmt)
+    if args.command == "experiment-registry-status":
+        return experiment_registry_status(
+            experiment_id=args.experiment_id, base=args.base, fmt=args.fmt)
+    if args.command == "experiment-registry-list":
+        return experiment_registry_list(base=args.base, fmt=args.fmt)
+    if args.command == "experiment-registry-transition":
+        return experiment_registry_transition(
+            experiment_id=args.experiment_id, to=args.to,
+            confirm=args.confirm and not args.dry_run, base=args.base,
+            note=args.note, fmt=args.fmt)
     if args.command == "outcome-sync-coverage-report":
         return outcome_sync_coverage_report(
             hours=args.hours, since=args.since, until=args.until,
