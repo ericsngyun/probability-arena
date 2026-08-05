@@ -18,7 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -317,9 +317,29 @@ def audit_selection(
         reachable = service.legacy_alphabetical_candidates(session, limit)
         active = "legacy_alphabetical_prefix"
 
-    # The pool is what the rotation actually has to get through.
-    candidate_pool = len(_reachable_for_audit(session, 10 ** 9, repair_enabled)) \
-        if repair_enabled else len(tickers)
+    # The pool is what the rotation actually has to get through — count it
+    # directly. Probing `select_sync_candidates` with a huge limit does NOT
+    # measure this: that selector fills any shortfall from recently-seen
+    # NON-forecasted markets, so an enormous limit makes the fallback engulf the
+    # whole `markets` table. On production that reported a pool of 101,166
+    # against 5,019 forecasted tickers and a fictitious 101-hour sweep, while
+    # the real production path (limit=100) never reaches the fallback at all.
+    if repair_enabled:
+        terminal_tickers = {
+            t for (t,) in session.execute(
+                select(MarketOutcomeRecord.market_ticker).where(
+                    or_(
+                        and_(MarketOutcomeRecord.outcome_status == "settled",
+                             MarketOutcomeRecord.winning_side.in_(("yes", "no"))),
+                        MarketOutcomeRecord.outcome_status == "canceled",
+                        MarketOutcomeRecord.winning_side == "void",
+                    )
+                )
+            ).all()
+        }
+        candidate_pool = len(set(tickers) - terminal_tickers)
+    else:
+        candidate_pool = len(tickers)
 
     terminal = session.execute(
         select(func.count()).select_from(MarketOutcomeRecord).where(
@@ -650,13 +670,22 @@ def build_coverage_report(
             f"{audit.terminal_rows_reselected} markets inside the selection already "
             "hold a terminal outcome and are re-fetched every cycle")
     scored_ids = [r.forecast_id for r in rows if r.score is not None]
-    if scored_ids:
+    if scored_ids and not audit.repair_enabled:
+        # Only diagnostic while the repair is OFF. With it ON the selector walks
+        # forecasts in id order taking those that need work, so a contiguous
+        # scored prefix is the EXPECTED shape of a draining queue, not evidence
+        # of a frozen one — and reporting it as a defect would have this tool
+        # blaming a bug it had already helped fix.
         hi = max(scored_ids)
         never = sum(1 for r in rows if r.score is None and r.forecast_id < hi)
         if never == 0 and len(scored_ids) < len(rows):
             data_quality.append(
                 f"every forecast with id <= {hi} has a score row and none above it "
                 "does — the scoring selection is an id-ordered prefix, not a backlog")
+    if audit.repair_enabled and scored_ids:
+        data_quality.append(
+            f"scoring is draining in id order under the repair; highest scored id "
+            f"{max(scored_ids)} of {max((r.forecast_id for r in rows), default=0)}")
     no_close = sum(1 for r in rows if r.has_market and r.close_time is None)
     if no_close:
         data_quality.append(

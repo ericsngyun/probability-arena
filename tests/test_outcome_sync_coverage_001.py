@@ -979,3 +979,40 @@ class TestFlagIsExactlyDark:
             select(ForecastScoreRecord)
             .where(ForecastScoreRecord.forecast_id == f.id)).scalars().all()
         assert len(rows) == 1, "OFF must write nothing new — that is what dark means"
+
+
+class TestActivationInstrumentation:
+    """Defects the ACTIVATION surfaced in the coverage report itself. Neither
+    affected the repair; both made the instrument misreport it."""
+
+    def test_candidate_pool_excludes_non_forecasted_fallback(self, db):
+        """Probing select_sync_candidates with a huge limit engages the
+        non-forecasted fallback, so the 'pool' became the whole markets table:
+        101,166 against 5,019 forecasted tickers on production, and a fictitious
+        101-hour sweep. The production path (limit=100) never reaches it."""
+        for i in range(6):
+            t = f"CP-{i}"
+            mk_market(db, t); mk_forecast(db, t)
+        mk_outcome(db, "CP-0", status="settled", side="yes")   # terminal
+        mk_outcome(db, "CP-1", status="canceled", side="void")  # terminal
+        # markets nobody forecast — must never inflate the pool
+        for i in range(50):
+            mk_market(db, f"NOISE-{i:03d}")
+        audit = oc.audit_selection(db, limit=2, repair_enabled=True)
+        assert audit.distinct_forecasted_tickers == 6
+        assert audit.candidate_pool == 4, (
+            "pool must be non-terminal FORECASTED tickers, not the markets table")
+        assert audit.full_sweep_cycles == 2
+
+    def test_id_prefix_finding_is_suppressed_once_the_repair_is_on(self, db):
+        """With the repair on, a contiguous scored prefix is the expected shape
+        of a queue draining in id order — not a frozen prefix."""
+        for i in range(5):
+            t = f"DQ-{i}"
+            mk_market(db, t); mk_forecast(db, t)
+            mk_outcome(db, t, status="settled", side="yes")
+        CalibrationService().score_unscored(db, limit=3)
+        on = oc.build_coverage_report(db, now=NOW, selection_limit=10).to_dict()
+        joined = " ".join(on["data_quality"])
+        assert "id-ordered prefix, not a backlog" not in joined
+        assert "draining in id order" in joined
