@@ -1,6 +1,6 @@
 # PROSPECTIVE-EXPERIMENT-REGISTRY-001 — research pre-registration
 
-**Status:** implemented and reviewed; registration state in §10.
+**Status:** implemented, reviewed, deployed dark. **Registration deferred — §11.**
 
 The post-drain baseline made prospective research possible for the first time —
 the scored sample is finally the population rather than an id prefix. This
@@ -67,7 +67,7 @@ policy, metrics, floors, and safety. The full list is `REQUIRED_FIELDS` in
 |---|---|
 | hypothesis | `hypothesis`, `null_hypothesis`, `exploratory_or_confirmatory`, `experiment_class` |
 | population | `market_population`, `domain`, `forecast_family`, `forecast_version`, `inclusion_rules`, `exclusion_rules` |
-| timing | `start_condition`, `start_time`, `end_condition`, `evaluation_horizons` |
+| timing | `start_condition`, `end_condition`, `evaluation_horizons` (`start_time` is registry-assigned) |
 | metrics | `primary_metric` (exactly one), `secondary_metrics`, `declared_baselines` |
 | floors | `sample_floor`, `domain_sample_floors`, `minimum_matured_fraction` |
 | data policy | `missing_data_policy`, `canceled_void_policy`, `conflict_policy`, `stale_score_policy` |
@@ -129,7 +129,7 @@ Rejected outright:
 | missing `declared_baselines` | a metric with no baseline cannot support anything |
 | outcome-derived inclusion | `best_performing`, `outcome settled yes`, `score_status` |
 | future-information features | `settlement`, `final_price`, `closing_price` |
-| `start_time` in the past | a prospective experiment cannot admit existing forecasts |
+| author-supplied `start_time` | the registry stamps it at confirmation, so prospectivity holds by construction rather than by promise |
 | duplicate `experiment_id` | identities are never reused |
 | overwriting a registered manifest | refused before any write |
 | confirmatory multi-hypothesis with no multiple-testing policy | undisclosed multiplicity |
@@ -191,28 +191,65 @@ database coupling, no timer, no provider imports.
 
 ## 10. Registered experiments
 
-_See §11 for the registration decision._
+**None. Registration is deferred — see §11.**
 
-Three drafts are authored and validate cleanly:
+Three drafts are authored in `manifests/` and validate cleanly:
 
 | experiment | class | domain | primary metric | floor | digest |
 |---|---|---|---|---|---|
-| `baseball-prospective-calibration-stability` | prospective_calibration | sports_baseball | `brier_skill_vs_base_rate` | 500 | `9872aafd…` |
-| `soccer-prospective-reliability` | domain_reliability | sports_soccer | `brier_skill_vs_base_rate` | 300 | `8435eb5a…` |
-| `tennis-base-rate-falsification` | domain_reliability | sports_tennis | `brier_skill_vs_base_rate` | 200 | `59586978…` |
+| `baseball-prospective-calibration-stability` | prospective_calibration | sports_baseball | `brier_skill_vs_base_rate` | 500 | `af207c21…` |
+| `soccer-prospective-reliability` | domain_reliability | sports_soccer | `brier_skill_vs_base_rate` | 300 | `d706f54e…` |
+| `tennis-base-rate-falsification` | domain_reliability | sports_tennis | `brier_skill_vs_base_rate` | 200 | `ac58890c…` |
 
-All three are **confirmatory**, all draw only on forecasts created at or after
-`start_time`, and all declare the base-rate benchmark computed *within their own
-matured members* rather than inherited from the historical aggregate.
+All three are **confirmatory**, all declare a base-rate benchmark computed
+*within their own matured members* rather than inherited from the historical
+aggregate, and none carries an author-supplied `start_time` — the registry
+stamps it at confirmation, so prospectivity holds by construction.
 
 No experiment was authored for politics (n=30) or any other thin domain. The
 milestone asked for a small portfolio, not a sweep, and manufacturing a
-hypothesis for a domain that cannot reach a floor would be exactly the kind of
+hypothesis for a domain that cannot reach a floor would be exactly the
 box-ticking this registry exists to prevent.
 
-## 11. Registration decision
+## 11. Registration decision — DEFERRED
 
-_Recorded after review and deployment._
+An independent governance review recommended against registering today, and it
+was right. Its blocking findings are fixed; two that determine whether this is a
+control or a ritual are not, and registering real experiments against a registry
+whose evaluation side does not yet enforce anything would manufacture the
+appearance of governance without the substance.
+
+### Fixed
+
+| # | finding | resolution |
+|---|---|---|
+| H1 | All three manifests were **already invalid** — hand-written `start_time` had passed within an hour of authoring, and re-dating would have changed every digest printed in this document | `start_time` is now registry-assigned; the time bomb is structurally impossible and this digest table is generated from source |
+| H2 | `start_time` was **not required**, so omitting it skipped the only prospectivity check entirely | Author-supplied `start_time` is now rejected outright |
+| H3 (partial) | `events.jsonl` was plain lines: truncating one rolled `invalidated` back to `matured` and let the experiment advance again | Events are hash-chained with `prev`/`seq`; `verify_immutability` fails on a broken chain |
+| H4 | Pinning **silently degraded to null** when run from any other directory, after which drift reported a permanent clean bill of health; `commit=None` was accepted | `repo_root` derives from the module, a missing pinned file raises, and `--confirm` without a commit is refused |
+| M2 | The vocabulary blocklist rejected "in order to", "alphabetical", "acknowledged limitation" and "non-profit" — ordinary prose — while accepting "identifies mispricing we can act on" | Word-boundary matching, plus the paraphrases the review demonstrated |
+| M7 | The CLI raised raw tracebacks on a corrupt registry — precisely when a clean diagnostic matters | Both commands return 2 with a readable message |
+| L1 | The "partition" summed to 0.9999 | The largest share absorbs the rounding residual |
+
+### Not fixed — why registration waits
+
+- **M1 — the leakage guard is a prose blocklist and is bypassed by paraphrase.**
+  The review showed "include forecasts in the cohort that beat the benchmark"
+  passing: *exactly* the post-hoc selection this exists to stop. It also found
+  that this milestone's own tennis manifest ships `"member is not scored_current
+  at evaluation"`, which is semantically identical to a phrasing the tests
+  assert is rejected. The right shape is an enumerated predicate vocabulary with
+  free text demoted to a non-operative `rationale`, not a longer blocklist.
+- **M5 — nothing connects the registry to evaluation.** There is no result-write
+  path, so `sample_floor`, `stopping_rule` and `primary_metric` are recorded
+  promises that no code checks. The missing piece is
+  `experiment-registry-record-result`, refusing a result whose metric name is
+  not the declared primary, whose n is below the floor, or whose experiment is
+  not `matured`.
+
+Until M1 and M5 land, the registry is a good filing cabinet with a strong lock
+and no inspector. Filing three real experiments in it now would let us cite
+pre-registration we have not actually enforced.
 
 ## 12. Limitations
 

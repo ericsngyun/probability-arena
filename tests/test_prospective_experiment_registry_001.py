@@ -45,7 +45,6 @@ def base_manifest(**over):
                             "domain == sports_baseball"],
         "exclusion_rules": ["market never closes within the horizon"],
         "start_condition": "first forecast created after registration",
-        "start_time": FUTURE,
         "end_condition": "sample floor reached and all members matured",
         "end_time": None,
         "evaluation_horizons": ["market close + 1h settlement grace"],
@@ -160,10 +159,25 @@ class TestValidation:
             owner="sk-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"))
         assert not v.ok
 
-    def test_past_start_time_rejected(self):
-        v = er.validate_manifest(base_manifest(start_time=PAST))
-        assert not v.ok
-        assert any("in the past" in e for e in v.errors)
+    def test_author_supplied_start_time_rejected(self):
+        """H1/H2: authors used to write a future timestamp, which rotted between
+        authoring and registering — all three of this milestone's manifests went
+        invalid within an hour. The registry stamps it now, so prospectivity is
+        true by construction rather than by promise."""
+        for value in (PAST, FUTURE):
+            v = er.validate_manifest(base_manifest(start_time=value))
+            assert not v.ok
+            assert any("assigned by the registry" in e for e in v.errors)
+        assert "start_time" in er.REGISTRY_ASSIGNED_FIELDS
+
+    def test_registry_stamps_start_time_at_registration(self, tmp_path):
+        before = datetime.now(timezone.utc)
+        er.register(base_manifest(), base=tmp_path, confirm=True, commit="c1")
+        d = er.experiment_dir("baseball-calibration-stability", tmp_path)
+        stored = json.loads((d / er.MANIFEST_FILENAME).read_text())
+        stamped = datetime.fromisoformat(stored["start_time"])
+        assert stamped >= before
+        assert stored["start_time"] == stored["registered_at"]
 
     def test_thin_sample_floor_is_flagged_not_rejected(self):
         v = er.validate_manifest(base_manifest(sample_floor=12,
@@ -215,8 +229,7 @@ class TestRegistration:
         assert not (tmp_path / er.REGISTRY_DIRNAME).exists()
 
     def test_confirmed_registration(self, tmp_path):
-        out = er.register(base_manifest(), base=tmp_path, confirm=True,
-                          commit="abc123")
+        out = er.register(base_manifest(), base=tmp_path, confirm=True, commit="abc123")
         assert out["persisted"] is True
         d = er.experiment_dir("baseball-calibration-stability", tmp_path)
         stored = json.loads((d / er.MANIFEST_FILENAME).read_text())
@@ -227,14 +240,14 @@ class TestRegistration:
             er.REGISTERED
 
     def test_duplicate_experiment_id_rejected(self, tmp_path):
-        er.register(base_manifest(), base=tmp_path, confirm=True)
+        er.register(base_manifest(), base=tmp_path, confirm=True, commit='c1')
         with pytest.raises(er.ManifestError, match="already registered"):
-            er.register(base_manifest(), base=tmp_path, confirm=True)
+            er.register(base_manifest(), base=tmp_path, confirm=True, commit='c1')
 
     def test_invalid_manifest_never_registers(self, tmp_path):
         with pytest.raises(er.ManifestError):
             er.register(base_manifest(primary_metric=None), base=tmp_path,
-                        confirm=True)
+                        confirm=True, commit='c1')
         assert not (tmp_path / er.REGISTRY_DIRNAME).exists()
 
     def test_path_traversal_rejected(self, tmp_path):
@@ -245,7 +258,7 @@ class TestRegistration:
 
 class TestImmutability:
     def test_registered_manifest_edit_is_detected(self, tmp_path):
-        er.register(base_manifest(), base=tmp_path, confirm=True)
+        er.register(base_manifest(), base=tmp_path, confirm=True, commit='c1')
         eid = "baseball-calibration-stability"
         assert er.verify_immutability(eid, tmp_path)["intact"]
         d = er.experiment_dir(eid, tmp_path)
@@ -255,7 +268,7 @@ class TestImmutability:
         assert er.verify_immutability(eid, tmp_path)["intact"] is False
 
     def test_a_tampered_experiment_cannot_advance(self, tmp_path):
-        er.register(base_manifest(), base=tmp_path, confirm=True)
+        er.register(base_manifest(), base=tmp_path, confirm=True, commit='c1')
         eid = "baseball-calibration-stability"
         d = er.experiment_dir(eid, tmp_path)
         m = json.loads((d / er.MANIFEST_FILENAME).read_text())
@@ -281,7 +294,7 @@ class TestImmutability:
 
 class TestStateMachine:
     def _reg(self, tmp_path):
-        er.register(base_manifest(), base=tmp_path, confirm=True)
+        er.register(base_manifest(), base=tmp_path, confirm=True, commit='c1')
         return "baseball-calibration-stability"
 
     def test_append_only_progression(self, tmp_path):
@@ -473,7 +486,7 @@ class TestImmutableReferences:
         registry adding its own bookkeeping afterwards."""
         m = base_manifest()
         before = er.compute_digest(m)
-        er.register(m, base=tmp_path, confirm=True)
+        er.register(m, base=tmp_path, confirm=True, commit='c1')
         d = er.experiment_dir("baseball-calibration-stability", tmp_path)
         stored = json.loads((d / er.MANIFEST_FILENAME).read_text())
         assert stored["manifest_digest"] == before
@@ -481,7 +494,7 @@ class TestImmutableReferences:
                                       tmp_path)["intact"]
 
     def test_evaluation_code_drift_is_detected_and_is_not_an_error(self, tmp_path):
-        er.register(base_manifest(), base=tmp_path, confirm=True)
+        er.register(base_manifest(), base=tmp_path, confirm=True, commit='c1')
         eid = "baseball-calibration-stability"
         assert er.status(eid, tmp_path)["evaluation_code_drift"]["drifted"] is False
         d = er.experiment_dir(eid, tmp_path)
@@ -533,3 +546,136 @@ class TestSecretDetectionPrecision:
         v = er.validate_manifest(base_manifest(auth_token="x"))
         assert not v.ok
         assert any("secret-bearing" in e for e in v.errors)
+
+
+class TestReviewFindings:
+    """Findings from the independent governance review. The registry's three
+    loudest claims — immutability, leakage prevention, reproducible pinning —
+    were docstrings rather than properties of the code."""
+
+    def test_every_shipped_manifest_validates(self):
+        """The single highest-value missing test. All three deliverable
+        manifests were invalid at review time because their hand-written
+        start_time had already passed, and nothing in the suite noticed."""
+        files = sorted(Path("manifests").glob("*.json"))
+        assert files, "no manifests to validate"
+        for f in files:
+            v = er.validate_manifest(json.loads(f.read_text()))
+            assert v.ok, f"{f.name}: {v.errors}"
+
+    def test_coordinated_manifest_and_event_rewrite_is_detected(self, tmp_path):
+        """H3, and be precise about the limit. Recomputing the digest and
+        rewriting BOTH files used to pass unconditionally. The hash chain now
+        catches it as soon as the log has more than one entry, because rewriting
+        the registration event invalidates every `prev` after it.
+
+        It does NOT catch a rewrite of a single-event log — hashing alone cannot,
+        since the forger controls every input. That case is caught only by the
+        git diff, which is the honest statement of what this architecture buys.
+        """
+        er.register(base_manifest(), base=tmp_path, confirm=True, commit="c1")
+        eid = "baseball-calibration-stability"
+        er.transition(eid, er.COLLECTING, base=tmp_path, confirm=True)
+        d = er.experiment_dir(eid, tmp_path)
+        m = json.loads((d / er.MANIFEST_FILENAME).read_text())
+        m["sample_floor"] = 25
+        m["manifest_digest"] = er.compute_digest(m)
+        (d / er.MANIFEST_FILENAME).write_text(json.dumps(m, indent=2, sort_keys=True))
+        events = er.read_events(eid, tmp_path)
+        events[0]["manifest_digest"] = m["manifest_digest"]
+        (d / er.EVENTS_FILENAME).write_text(
+            "\n".join(er.canonical_json(e) for e in events) + "\n")
+        assert er.verify_immutability(eid, tmp_path)["intact"] is False
+
+    def test_event_log_truncation_is_detected(self, tmp_path):
+        """H3. Dropping the last line rolled `invalidated` back to `matured`
+        and let the experiment advance again."""
+        er.register(base_manifest(), base=tmp_path, confirm=True, commit="c1")
+        eid = "baseball-calibration-stability"
+        er.transition(eid, er.COLLECTING, base=tmp_path, confirm=True)
+        er.transition(eid, er.MATURED, base=tmp_path, confirm=True)
+        d = er.experiment_dir(eid, tmp_path)
+        lines = (d / er.EVENTS_FILENAME).read_text().splitlines()
+        (d / er.EVENTS_FILENAME).write_text("\n".join(lines[:-1]) + "\n")
+        # the chain still verifies (a prefix is a valid chain) but re-appending
+        # after truncation breaks it, which is what a forger must do
+        er.append_event(eid, {"event": "transition", "from": er.COLLECTING,
+                              "to": er.MATURED, "at": "x"}, tmp_path)
+        lines2 = (d / er.EVENTS_FILENAME).read_text().splitlines()
+        forged = [json.loads(x) for x in lines2]
+        forged.insert(1, {"event": "transition", "to": er.EVALUATED, "seq": 99,
+                          "prev": None})
+        (d / er.EVENTS_FILENAME).write_text(
+            "\n".join(er.canonical_json(e) for e in forged) + "\n")
+        assert er.verify_event_chain(eid, tmp_path)["intact"] is False
+        assert er.verify_immutability(eid, tmp_path)["intact"] is False
+
+    def test_events_are_hash_chained(self, tmp_path):
+        er.register(base_manifest(), base=tmp_path, confirm=True, commit="c1")
+        eid = "baseball-calibration-stability"
+        er.transition(eid, er.COLLECTING, base=tmp_path, confirm=True)
+        events = er.read_events(eid, tmp_path)
+        assert events[0]["prev"] is None and events[0]["seq"] == 0
+        assert events[1]["seq"] == 1 and events[1]["prev"] is not None
+        assert er.verify_event_chain(eid, tmp_path)["intact"] is True
+
+    def test_registration_without_a_commit_is_refused(self, tmp_path):
+        """H4. `repository_commit: null` used to be a valid registration."""
+        with pytest.raises(er.ManifestError, match="repository commit"):
+            er.register(base_manifest(), base=tmp_path, confirm=True, commit=None)
+
+    def test_pinning_failure_refuses_registration(self, tmp_path):
+        """H4. Missing evaluation code used to record null digests, after which
+        drift detection reported a permanent clean bill of health."""
+        with pytest.raises(er.ManifestError, match="cannot pin evaluation code"):
+            er.capture_immutable_references(base_manifest(), repo_root=tmp_path)
+
+    def test_repo_root_is_derived_from_the_module_not_cwd(self):
+        root = er.repo_root_default()
+        assert (root / "app" / "services" / "experiment_registry.py").exists()
+        for f in er.EVALUATION_CODE_FILES + er.CANON_FILES:
+            assert (root / f).exists(), f
+
+    def test_ordinary_research_prose_is_not_a_trading_claim(self):
+        """M2. Substring matching rejected all of these."""
+        for text in ("we collect 200 members in order to reach the sample floor",
+                     "acknowledged limitation of the design",
+                     "alphabetical listing of domains",
+                     "the recorded ordering of events is preserved",
+                     "a non-profit reference dataset"):
+            v = er.validate_manifest(base_manifest(research_question=text))
+            assert v.ok, f"{text!r}: {v.errors}"
+
+    def test_paraphrased_trading_claims_are_still_caught(self):
+        for text in ("identifies mispricing we can act on",
+                     "quantifies exploitable divergence for capital deployment",
+                     "this is monetisable signal"):
+            v = er.validate_manifest(base_manifest(research_question=text))
+            assert not v.ok, text
+
+    def test_directional_shares_sum_to_exactly_one_after_rounding(self):
+        """L1. Three independent 4dp roundings of 1/3 gave 0.9999."""
+        from app.services.forecast_reliability import compute_bins, directional_summary
+
+        spec = [(0.9, 0.0, 40), (0.55, 1.0, 40), (0.5, 1.0, 20), (0.5, 0.0, 20)]
+        points = []
+        from tests.test_forecast_reliability_directional_fix_001 import pts
+        d = directional_summary(compute_bins(pts(spec), [i / 10 for i in range(11)]),
+                                pts(spec))
+        total = (d["overprediction_weighted_share"]
+                 + d["underprediction_weighted_share"]
+                 + d["approximately_calibrated_weighted_share"]
+                 + d["unclassified_weighted_share"])
+        assert total == 1.0, total
+
+    def test_cli_survives_a_corrupt_registry(self, tmp_path, capsys):
+        """M7. Corrupt files are exactly when a clean diagnostic matters."""
+        from app import cli
+
+        d = er.registry_root(tmp_path) / "broken-experiment"
+        d.mkdir(parents=True)
+        (d / er.MANIFEST_FILENAME).write_text("{not json")
+        assert cli.experiment_registry_list(base=str(tmp_path)) == 2
+        assert "unreadable" in capsys.readouterr().out
+        assert cli.experiment_registry_status("broken-experiment",
+                                              base=str(tmp_path)) == 2

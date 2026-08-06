@@ -94,9 +94,12 @@ VERDICTS = (
 # free-text manifest field, not merely discouraged: the registry is the place a
 # research programme decides what it is allowed to say about itself.
 FORBIDDEN_VOCABULARY = (
-    "profitable", "profit", "tradeable", "tradable", "buy", "sell", "edge",
-    "opportunity", "alpha", "expected value", "ev ", "kelly", "position size",
-    "portfolio", "order", "wallet", "execute", "execution", "pnl", "p&l",
+    "profitable", "tradeable", "tradable", "buy", "sell", "edge",
+    "opportunity", "alpha", "expected value", "kelly", "position size",
+    "portfolio", "wallet", "pnl",
+    # Phrases a blocklist CAN catch that paraphrase-resistant claims use.
+    "mispricing", "exploitable", "monetisable", "monetizable",
+    "act on", "take the other side", "capital deployment",
 )
 
 # Fields whose PURPOSE is to name the forbidden capabilities. A substring scan
@@ -149,9 +152,22 @@ REQUIRED_FIELDS = (
 )
 
 # Set at registration by the registry, never by the author.
+#
+# `start_time` is in this list, and that is the fix for a real time bomb. The
+# first draft had authors write a future timestamp into the manifest. Between
+# authoring and registering, wall clock passes: all three of this milestone's
+# manifests became invalid within an hour of being written, and re-dating them
+# would have changed every digest already recorded in the documentation. Worse,
+# `start_time` was optional, so omitting it skipped the prospectivity check
+# entirely and produced a "prospective" experiment with no time bound at all.
+#
+# Stamping it at confirm time makes prospectivity true BY CONSTRUCTION rather
+# than by an author's promise, and removes the window in which a manifest can
+# rot. The author declares `start_condition` (required prose); the registry
+# supplies the instant.
 REGISTRY_ASSIGNED_FIELDS = (
     "registered_at", "registration_commit", "manifest_digest", "state",
-    "immutable_references",
+    "immutable_references", "start_time",
 )
 
 # Changing any of these after registration changes the hypothesis. Immutable.
@@ -212,9 +228,7 @@ def compute_digest(manifest: dict) -> str:
     showing a digest for confirmation.
     """
     payload = {k: v for k, v in manifest.items()
-               if k not in ("manifest_digest", "registered_at",
-                            "registration_commit", "state",
-                            "immutable_references")}
+               if k not in REGISTRY_ASSIGNED_FIELDS}
     return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
 
 
@@ -231,10 +245,13 @@ def _walk_strings(value, path="") -> list:
     return out
 
 
-def _contains_token(text: str, tokens) -> str | None:
+def _contains_token(text: str, tokens, *, word_boundary: bool = False) -> str | None:
     low = text.lower()
     for t in tokens:
-        if t in low:
+        if word_boundary:
+            if re.search(rf"\b{re.escape(t)}\b", low):
+                return t
+        elif t in low:
             return t
     return None
 
@@ -324,8 +341,12 @@ def validate_manifest(manifest: dict, *, strict: bool = True) -> ValidationResul
     # --- vocabulary and secrets ------------------------------------------------
     for path, text in _walk_strings(manifest):
         root_field = path.split(".")[0].split("[")[0]
+        # Word-boundary matched. Substring matching rejected "in order to",
+        # "acknowledged limitation", "alphabetical" and "non-profit" — ordinary
+        # research prose — which by this module's own stated principle means the
+        # check would have been deleted rather than tightened.
         hit = (None if root_field in VOCABULARY_EXEMPT_FIELDS
-               else _contains_token(text, FORBIDDEN_VOCABULARY))
+               else _contains_token(text, FORBIDDEN_VOCABULARY, word_boundary=True))
         if hit:
             errors.append(
                 f"{path} uses trading vocabulary {hit!r}; this registry governs "
@@ -340,18 +361,10 @@ def validate_manifest(manifest: dict, *, strict: bool = True) -> ValidationResul
     # --- start condition must be future-facing ---------------------------------
     if not manifest.get("start_condition"):
         errors.append("start_condition is required and must be prospective")
-    st = manifest.get("start_time")
-    if st:
-        try:
-            parsed = datetime.fromisoformat(str(st).replace("Z", "+00:00"))
-            if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=timezone.utc)
-            if strict and parsed < datetime.now(timezone.utc):
-                errors.append(
-                    f"start_time {st} is in the past; a prospective experiment "
-                    "cannot admit forecasts that already exist")
-        except ValueError:
-            errors.append(f"start_time {st!r} is not ISO-8601")
+    if manifest.get("start_time") is not None:
+        errors.append(
+            "start_time is assigned by the registry at registration and must not "
+            "appear in an authored manifest; declare start_condition instead")
 
     # --- non-blocking risk flags ----------------------------------------------
     dom = manifest.get("domain")
@@ -387,11 +400,21 @@ CANON_FILES = (
 )
 
 
-def _file_digest(path: Path) -> str | None:
-    try:
-        return hashlib.sha256(path.read_bytes()).hexdigest()
-    except OSError:
-        return None
+def repo_root_default() -> Path:
+    """The repository root, derived from this module's own location.
+
+    NOT `Path.cwd()`. With cwd, registering from any other directory produced
+    `evaluation_code_digests: {all None}` with no error, and
+    `_evaluation_code_drift` then skipped the Nones and reported a permanent
+    clean bill of health backed by no evidence at all.
+    """
+    return Path(__file__).resolve().parents[2]
+
+
+def _file_digest(path: Path) -> str:
+    """Raises rather than returning None. A pin that silently becomes null is
+    worse than no pin, because `status` then reports "no drift" forever."""
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def capture_immutable_references(
@@ -409,7 +432,14 @@ def capture_immutable_references(
     point is to preserve the RULES needed to rebuild membership, not a frozen
     copy of the rows, which would be both enormous and immediately stale.
     """
-    root = repo_root or Path.cwd()
+    root = repo_root or repo_root_default()
+    missing = [f for f in EVALUATION_CODE_FILES + CANON_FILES
+               if not (root / f).exists()]
+    if missing:
+        raise ManifestError(
+            f"cannot pin evaluation code: missing {missing}. Registration is "
+            "refused rather than recording null digests that would make "
+            "drift undetectable.")
 
     def sub(name):
         value = manifest.get(name)
@@ -486,10 +516,38 @@ def current_state(experiment_id: str, base: Path | None = None) -> str | None:
 
 
 def append_event(experiment_id: str, event: dict, base: Path | None = None) -> None:
+    """Append one hash-chained event.
+
+    Each entry carries `prev` — the SHA-256 of the previous entry's canonical
+    form. Without it the log is plain lines in an operator-writable directory:
+    truncating the last line silently rolled state back from `invalidated` to
+    `matured` and allowed the experiment to advance again, and a coordinated
+    rewrite of manifest + events defeated the integrity check entirely. The
+    chain does not make tampering impossible — nothing in a writable tree can —
+    but it makes any edit that is not a full, deliberate re-forge *detectable*.
+    """
     d = experiment_dir(experiment_id, base)
     d.mkdir(parents=True, exist_ok=True)
+    prior = read_events(experiment_id, base)
+    prev = (hashlib.sha256(canonical_json(prior[-1]).encode("utf-8")).hexdigest()
+            if prior else None)
+    entry = dict(event)
+    entry["prev"] = prev
+    entry["seq"] = len(prior)
     with (d / EVENTS_FILENAME).open("a", encoding="utf-8") as fh:
-        fh.write(canonical_json(event) + "\n")
+        fh.write(canonical_json(entry) + "\n")
+
+
+def verify_event_chain(experiment_id: str, base: Path | None = None) -> dict:
+    """Is the event log intact and in order?"""
+    events = read_events(experiment_id, base)
+    prev_hash = None
+    for i, e in enumerate(events):
+        if e.get("seq") != i or e.get("prev") != prev_hash:
+            return {"intact": False, "broken_at": i, "length": len(events)}
+        prev_hash = hashlib.sha256(
+            canonical_json(e).encode("utf-8")).hexdigest()
+    return {"intact": True, "broken_at": None, "length": len(events)}
 
 
 def register(
@@ -505,6 +563,10 @@ def register(
     eid = manifest["experiment_id"]
     d = experiment_dir(eid, base)
     already = (d / MANIFEST_FILENAME).exists()
+    if confirm and not commit:
+        raise ManifestError(
+            "registration requires a repository commit; an unpinned manifest "
+            "cannot be tied to the code that defines its metrics")
     if already and confirm:
         raise ManifestError(
             f"experiment_id {eid!r} is already registered; identities are never "
@@ -530,6 +592,7 @@ def register(
         manifest, commit=commit)
     stored["manifest_digest"] = result.digest
     stored["registered_at"] = now.isoformat()
+    stored["start_time"] = now.isoformat()   # prospective by construction
     stored["registration_commit"] = commit
     stored["state"] = REGISTERED
     d.mkdir(parents=True, exist_ok=True)
@@ -559,13 +622,16 @@ def verify_immutability(experiment_id: str, base: Path | None = None) -> dict:
     events = read_events(experiment_id, base)
     registered = next((e for e in events if e.get("event") == "registered"), None)
     at_registration = registered.get("manifest_digest") if registered else None
+    chain = verify_event_chain(experiment_id, base)
     return {
         "experiment_id": experiment_id,
         "digest_at_registration": at_registration,
         "digest_recorded_in_manifest": recorded,
         "digest_recomputed_now": recomputed,
+        "event_chain": chain,
         "intact": bool(at_registration)
-        and at_registration == recorded == recomputed,
+        and at_registration == recorded == recomputed
+        and chain["intact"],
     }
 
 

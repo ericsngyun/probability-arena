@@ -266,6 +266,20 @@ def murphy_decomposition(points: list[_Point], edges: list[float]) -> dict:
     }
 
 
+_PARTITION_KEYS = ("overprediction_weighted_share", "underprediction_weighted_share",
+                   "approximately_calibrated_weighted_share",
+                   "unclassified_weighted_share")
+
+
+def _rounded_partition(*shares: float) -> dict:
+    rounded = [round(s, 4) for s in shares]
+    total = sum(rounded)
+    if total and abs(total - 1.0) < 1e-3:
+        biggest = max(range(len(rounded)), key=lambda i: rounded[i])
+        rounded[biggest] = round(rounded[biggest] + (1.0 - total), 4)
+    return dict(zip(_PARTITION_KEYS, rounded))
+
+
 def directional_summary(bin_stats: list[dict], points: list[_Point]) -> dict:
     """Directional calibration shares, weighted by FORECAST COUNT.
 
@@ -315,10 +329,12 @@ def directional_summary(bin_stats: list[dict], points: list[_Point]) -> dict:
     return {
         "signed_calibration_gap": round(signed, 4) if signed is not None else None,
         "abs_calibration_gap": round(abs(signed), 4) if signed is not None else None,
-        "overprediction_weighted_share": round(over_share, 4),
-        "underprediction_weighted_share": round(under_share, 4),
-        "approximately_calibrated_weighted_share": round(calibrated_share, 4),
-        "unclassified_weighted_share": round(excluded_share, 4),
+        # Rounded so the four still sum to exactly 1.0: three independent
+        # 4dp roundings of 1/3 give 0.9999, and a partition that does not
+        # partition invites exactly the reconciliation this block warns against.
+        # The largest share absorbs the residual.
+        **_rounded_partition(over_share, under_share, calibrated_share,
+                             excluded_share),
         "directional_weight_basis": "forecast_count",
         "calibration_tolerance": CALIB_TOLERANCE,
         "extreme_confidence_miss_count": extreme_miss,

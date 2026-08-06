@@ -71,7 +71,6 @@
   },
   "stale_score_policy": "only scored_current members enter; stale rows are excluded",
   "start_condition": "the first forecast whose created_at is at or after start_time; no forecast existing at registration is eligible",
-  "start_time": "2026-08-05T23:00:00+00:00",
   "stopping_rule": "a single evaluation once the sample floor and matured fraction are both satisfied; no interim looks, and the experiment is not stopped early on a favourable reading",
   "title": "Tennis base-rate falsification"
 }

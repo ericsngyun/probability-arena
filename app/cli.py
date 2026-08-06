@@ -622,7 +622,7 @@ def experiment_registry_status(
 
     try:
         out = status(experiment_id, _Path(base) if base else None)
-    except (ManifestError, OSError) as exc:
+    except Exception as exc:
         print(f"error: {exc}")
         return 2
     if fmt == "json":
@@ -645,7 +645,13 @@ def experiment_registry_list(base: str | None = None, fmt: str = "text") -> int:
 
     from app.services.experiment_registry import DISCLAIMER, list_experiments
 
-    rows = list_experiments(_Path(base) if base else None)
+    try:
+        rows = list_experiments(_Path(base) if base else None)
+    except Exception as exc:
+        print(f"error: registry is unreadable ({type(exc).__name__}: {exc})")
+        print("this is exactly the state to investigate — see git history for "
+              "experiments/")
+        return 2
     if fmt == "json":
         print(_json.dumps({"experiments": rows, "disclaimer": DISCLAIMER},
                           indent=2, sort_keys=True, default=str))
