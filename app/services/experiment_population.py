@@ -32,6 +32,7 @@ from app.services.experiment_predicates import (
     PREDICATE_SCHEMA_VERSION,
     ForecastFacts,
     canonicalize_population,
+    declared_window_end,
     ensure_registration_floor,
     evaluate,
     field_registry_digest,
@@ -217,12 +218,20 @@ def _load_facts(session: Session) -> list:
 def reconstruct_population(
     session: Session, *, experiment_id: str, population: dict,
     registered_at: datetime, manifest_digest: str | None = None,
-    declared_end: datetime | None = None, examples: int = 5,
+    examples: int = 5,
 ) -> PopulationResult:
-    """Deterministic membership from typed predicates. Writes nothing."""
+    """Deterministic membership from typed predicates. Writes nothing.
+
+    There is deliberately NO `declared_end` argument. It used to be a caller
+    parameter absent from the digest, which meant whoever ran the evaluation
+    chose the cohort's end date — after seeing results — with nothing registered
+    to contradict them. That is optional stopping, and it is the exact mirror of
+    the REGISTRY-001 optional-`start_time` bug. The ceiling now comes from the
+    registered `population.window_end`, which is inside the canonical digest.
+    """
     canon = ensure_registration_floor(canonicalize_population(population))
     registered_at = _aware(registered_at)
-    declared_end = _aware(declared_end)
+    declared_end = declared_window_end(canon)
 
     facts = _load_facts(session)
     members: list[int] = []

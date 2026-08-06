@@ -29,8 +29,9 @@ from app.services import experiment_predicates as pr
 REG = datetime(2026, 8, 6, 12, 0, tzinfo=timezone.utc)
 
 
-def pop(*alls, none=(), version=1):
-    return {"schema_version": version, "all": list(alls), "none": list(none)}
+def pop(*alls, none=(), version=1, window_end="unbounded"):
+    return {"schema_version": version, "all": list(alls), "none": list(none),
+            "window_end": window_end}
 
 
 @pytest.fixture
@@ -73,7 +74,8 @@ class TestSchema:
 
     def test_missing_schema_version_rejected(self):
         with pytest.raises(pr.PredicateError, match="schema_version is required"):
-            pr.canonicalize_population({"all": [], "none": []})
+            pr.canonicalize_population({"all": [], "none": [],
+                                        "window_end": "unbounded"})
 
     def test_unknown_schema_version_rejected(self):
         with pytest.raises(pr.PredicateError, match="not supported"):
@@ -81,7 +83,8 @@ class TestSchema:
 
     def test_unknown_population_keys_rejected(self):
         with pytest.raises(pr.PredicateError, match="unsupported population keys"):
-            pr.canonicalize_population({"schema_version": 1, "all": [], "sql": "x"})
+            pr.canonicalize_population({"schema_version": 1, "all": [],
+                                        "window_end": "unbounded", "sql": "x"})
 
     def test_unknown_predicate_keys_rejected(self):
         with pytest.raises(pr.PredicateError, match="unsupported keys"):
@@ -266,14 +269,31 @@ class TestPopulationReconstruction:
                                       registered_at=REG)
         assert r.eligible_count == 1, "gte means the boundary instant is a member"
 
-    def test_post_end_excluded(self, db):
+    def test_post_end_excluded_using_the_pinned_window(self, db):
+        """The ceiling comes from the REGISTERED document, not a caller.
+
+        It used to be a `declared_end` argument absent from the digest, so
+        whoever ran the evaluation picked the cohort's end date — after seeing
+        results — with nothing registered to contradict them. That is optional
+        stopping, and the exact mirror of the start_time bug at the other end.
+        """
         mk_forecast(db, "IN", created=REG + timedelta(hours=1))
         mk_forecast(db, "LATE", created=REG + timedelta(days=10))
-        r = ep.reconstruct_population(
-            db, experiment_id="e", population=self._canon(), registered_at=REG,
-            declared_end=REG + timedelta(days=5))
+        pinned = pop({"field": "domain", "operator": "eq",
+                      "value": "sports_baseball"},
+                     window_end=(REG + timedelta(days=5)).isoformat())
+        r = ep.reconstruct_population(db, experiment_id="e", population=pinned,
+                                      registered_at=REG)
         assert r.eligible_count == 1
         assert r.post_end_excluded == 1
+        assert r.declared_end is not None
+
+    def test_reconstruction_takes_no_caller_supplied_end(self):
+        import inspect
+
+        params = inspect.signature(ep.reconstruct_population).parameters
+        assert "declared_end" not in params, (
+            "an evaluator must not be able to choose the window's end")
 
     def test_membership_is_deterministic_and_digested(self, db):
         for i in range(4):
@@ -484,3 +504,172 @@ class TestSafetySurface:
             for banned in ("systemd", "crontab", "daemon", "marketops",
                            "MarketOps"):
                 assert banned not in src, f"{rel}: {banned}"
+
+
+class TestReviewFindings002A:
+    """Findings from the independent population-boundary review."""
+
+    def test_window_end_is_required(self):
+        with pytest.raises(pr.PredicateError, match="window_end is required"):
+            pr.canonicalize_population({
+                "schema_version": 1,
+                "all": [{"field": "domain", "operator": "eq", "value": "x"}],
+                "none": []})
+
+    def test_window_end_is_inside_the_digest(self):
+        a = pr.canonicalize_population(pop(
+            {"field": "domain", "operator": "eq", "value": "x"},
+            window_end="unbounded"))
+        b = pr.canonicalize_population(pop(
+            {"field": "domain", "operator": "eq", "value": "x"},
+            window_end="2026-12-01T00:00:00+00:00"))
+        assert pr.population_digest(a) != pr.population_digest(b)
+
+    def test_naive_window_end_rejected(self):
+        with pytest.raises(pr.PredicateError, match="timezone-naive"):
+            pr.canonicalize_population(pop(
+                {"field": "domain", "operator": "eq", "value": "x"},
+                window_end="2026-12-01T00:00:00"))
+
+    def test_before_declared_end_forbidden_in_none(self):
+        """With an unbounded window it returns True for every row, so in `none`
+        it silently excludes the entire cohort."""
+        with pytest.raises(pr.PredicateError, match="may not appear in .none."):
+            pr.canonicalize_population(pop(
+                none=[{"field": "forecast_created_at",
+                       "operator": "before_declared_end"}]))
+
+    def test_contradictory_none_clause_rejected(self):
+        with pytest.raises(pr.PredicateError, match="contradictory .none."):
+            pr.canonicalize_population(pop(
+                none=[{"field": "domain", "operator": "eq", "value": "a"},
+                      {"field": "domain", "operator": "not_eq", "value": "a"}]))
+
+    @pytest.mark.parametrize("bad", [10 ** 400, float("nan"), float("inf"),
+                                     float("-inf"), 1e20])
+    def test_non_finite_and_oversized_numbers_rejected(self, bad):
+        """A huge int raised OverflowError out of a function documented as pure,
+        escaping validate_manifest's handler; NaN/Infinity serialize as invalid
+        JSON, so any non-Python implementation could not recompute the digest."""
+        with pytest.raises(pr.PredicateError):
+            pr.canonicalize_population(pop(
+                {"field": "research_completeness", "operator": "gte",
+                 "value": bad}))
+
+    def test_canonical_json_is_strict_json(self):
+        """The reproducibility property in one assertion: a strict parser must
+        be able to recompute what we digested."""
+        canon = pr.canonicalize_population(pop(
+            {"field": "research_completeness", "operator": "gte", "value": 0.5}))
+        text = pr.canonical_population_json(canon)
+        assert json.loads(text)
+        assert "NaN" not in text and "Infinity" not in text
+
+    def test_oversized_rationale_rejected(self):
+        with pytest.raises(pr.PredicateError, match="rationale exceeds"):
+            pr.canonicalize_population(pop(
+                {"field": "domain", "operator": "eq", "value": "x"})
+                | {"rationale": "x" * 9000})
+
+    def test_validate_manifest_never_raises_a_non_predicate_error(self):
+        from app.services.experiment_registry import validate_manifest
+        from tests.test_prospective_experiment_registry_001 import base_manifest
+
+        for bad in (10 ** 400, float("nan"), {"$ne": 1}, [1, 2]):
+            m = base_manifest()
+            m["population"] = {
+                "schema_version": 1,
+                "all": [{"field": "research_completeness", "operator": "gte",
+                         "value": bad}],
+                "none": [], "window_end": "unbounded"}
+            v = validate_manifest(m)          # must not raise
+            assert not v.ok
+
+
+class TestReportCli:
+    """The command that claims to fail closed had zero tests."""
+
+    def _register(self, tmp_path):
+        from app.services.experiment_registry import register
+        from tests.test_prospective_experiment_registry_001 import base_manifest
+
+        register(base_manifest(), base=tmp_path, confirm=True, commit="c1")
+        return "baseball-calibration-stability"
+
+    def test_clean_report_exits_zero_and_has_no_false_errors(self, tmp_path, capsys):
+        from app import cli
+
+        eid = self._register(tmp_path)
+        assert cli.experiment_registry_report(eid, base=str(tmp_path),
+                                              fmt="json") == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["manifest_intact"] is True
+        assert payload["fail_closed_ok"] is True
+        assert payload["validation_errors"] == [], (
+            "re-validating the stored manifest produced a permanent false error "
+            "on every registered experiment")
+        assert payload["population_predicate_digest_matches"] is True
+
+    def test_report_fails_closed_on_a_tampered_manifest(self, tmp_path, capsys):
+        from app import cli
+        from app.services.experiment_registry import experiment_dir
+
+        eid = self._register(tmp_path)
+        d = experiment_dir(eid, tmp_path)
+        m = json.loads((d / "manifest.json").read_text())
+        m["sample_floor"] = 5
+        (d / "manifest.json").write_text(json.dumps(m, indent=2, sort_keys=True))
+        assert cli.experiment_registry_report(eid, base=str(tmp_path)) == 1
+        assert "FAILED CLOSED" in capsys.readouterr().out
+
+    def test_report_fails_closed_on_material_drift(self, tmp_path, capsys):
+        from app import cli
+        from app.services.experiment_registry import experiment_dir
+
+        eid = self._register(tmp_path)
+        d = experiment_dir(eid, tmp_path)
+        m = json.loads((d / "manifest.json").read_text())
+        m["immutable_references"]["population_references"][
+            "field_registry_digest"] = "0" * 64
+        (d / "manifest.json").write_text(json.dumps(m, indent=2, sort_keys=True))
+        # digest now mismatches too, but the drift itself must also be fatal
+        assert cli.experiment_registry_report(eid, base=str(tmp_path)) == 1
+
+    def test_report_writes_nothing(self, tmp_path):
+        from app import cli
+        from app.services.experiment_registry import experiment_dir
+
+        eid = self._register(tmp_path)
+        d = experiment_dir(eid, tmp_path)
+        before = {p.name: p.read_bytes() for p in d.rglob("*") if p.is_file()}
+        cli.experiment_registry_report(eid, base=str(tmp_path), fmt="json")
+        after = {p.name: p.read_bytes() for p in d.rglob("*") if p.is_file()}
+        assert before == after
+
+    def test_report_text_json_parity(self, tmp_path, capsys):
+        from app import cli
+
+        eid = self._register(tmp_path)
+        cli.experiment_registry_report(eid, base=str(tmp_path), fmt="json")
+        payload = json.loads(capsys.readouterr().out)
+        cli.experiment_registry_report(eid, base=str(tmp_path), fmt="text")
+        text = capsys.readouterr().out
+        assert payload["registry_state"] in text
+        assert payload["population_predicate_digest"] in text
+        assert str(payload["event_count"]) in text
+
+    def test_report_on_a_missing_experiment_exits_two(self, tmp_path, capsys):
+        from app import cli
+
+        assert cli.experiment_registry_report("no-such-experiment",
+                                              base=str(tmp_path)) == 2
+        assert "error:" in capsys.readouterr().out
+
+    def test_report_is_secret_free(self, tmp_path, capsys):
+        from app import cli
+
+        eid = self._register(tmp_path)
+        cli.experiment_registry_report(eid, base=str(tmp_path), fmt="json")
+        out = capsys.readouterr().out.lower()
+        for needle in ("api_key", "secret", "password", "bearer", "token="):
+            assert needle not in out

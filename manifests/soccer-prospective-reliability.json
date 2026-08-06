@@ -72,9 +72,11 @@
     "rationale": [
       "Soccer forecasts produced by soccer_evidence v1 on or after registration.",
       "The earlier soccer figure came from 34 members with 2.9% prevalence; this population is fixed in advance so that cannot recur.",
-      "Scoring state never affects membership."
+      "Scoring state never affects membership.",
+      "window_end is declared 'unbounded' deliberately: the end condition is the sample floor plus matured fraction, not a calendar date. Declaring it explicitly is what stops an evaluator choosing the end after seeing results."
     ],
-    "schema_version": 1
+    "schema_version": 1,
+    "window_end": "unbounded"
   },
   "primary_metric": {
     "definition": "1 - (mean Brier / base-rate-benchmark Brier)",

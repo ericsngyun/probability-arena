@@ -72,9 +72,11 @@
     "none": [],
     "rationale": [
       "Baseball forecasts produced by baseball_evidence v1 on or after registration, with a research packet present.",
-      "Membership is decided ONLY by these typed forecast-time predicates. Pending outcomes remain pending; unscorable rows are reported; sample-floor and matured-fraction rules decide evaluability, never membership."
+      "Membership is decided ONLY by these typed forecast-time predicates. Pending outcomes remain pending; unscorable rows are reported; sample-floor and matured-fraction rules decide evaluability, never membership.",
+      "window_end is declared 'unbounded' deliberately: the end condition is the sample floor plus matured fraction, not a calendar date. Declaring it explicitly is what stops an evaluator choosing the end after seeing results."
     ],
-    "schema_version": 1
+    "schema_version": 1,
+    "window_end": "unbounded"
   },
   "primary_metric": {
     "definition": "1 - (mean Brier / base-rate-benchmark Brier)",

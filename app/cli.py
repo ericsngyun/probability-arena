@@ -654,7 +654,15 @@ def experiment_registry_report(
         print(f"error: {exc}")
         return 2
 
-    v = validate_manifest(manifest)
+    # M5 — re-validate the AUTHORED document. The stored manifest necessarily
+    # contains registry-assigned fields (start_time among them), so validating
+    # it verbatim produced a permanent false error on every registered
+    # experiment, which makes a real error indistinguishable from noise.
+    from app.services.experiment_registry import REGISTRY_ASSIGNED_FIELDS
+
+    authored = {k: val for k, val in manifest.items()
+                if k not in REGISTRY_ASSIGNED_FIELDS}
+    v = validate_manifest(authored)
     refs = manifest.get("immutable_references") or {}
     try:
         canon = ensure_registration_floor(
@@ -666,7 +674,19 @@ def experiment_registry_report(
 
     drift = classify_population_drift(refs.get("population_references"))
     integrity = st["integrity"]
-    ok = bool(integrity["intact"])
+
+    # M6 — compare the live predicate digest against the one pinned at
+    # registration. Cheap defence in depth against a coordinated re-forge.
+    pinned_predicate = refs.get("population_predicate_digest")
+    predicate_matches = (pinned_predicate is None
+                         or pinned_predicate == canon_digest)
+
+    # M3 — fail closed on the cases that actually matter to a future result
+    # layer, not only on a broken digest. A manifest that is digest-intact but
+    # whose population no longer canonicalizes IS the field-registry-drift
+    # scenario, and it previously exited 0.
+    ok = (bool(integrity["intact"]) and canon_err is None
+          and not drift["material"] and predicate_matches)
 
     data = {
         "experiment_id": experiment_id,
@@ -687,6 +707,9 @@ def experiment_registry_report(
         "population_predicate_digest": canon_digest,
         "population_error": canon_err,
         "population_drift": drift,
+        "population_predicate_digest_at_registration": pinned_predicate,
+        "population_predicate_digest_matches": predicate_matches,
+        "fail_closed_ok": ok,
         "evaluation_code_drift": st.get("evaluation_code_drift"),
         "collection_state": (
             "active" if st["state"] == "collecting" else
@@ -724,6 +747,7 @@ def experiment_registry_report(
     print(f"  {'population_digest':28} {data['population_predicate_digest']}")
     print(f"  {'population_drift':28} {drift['classification']} "
           f"(material={drift['material']})")
+    print(f"  {'predicate_digest_matches':28} {predicate_matches}")
     ecd = data["evaluation_code_drift"] or {}
     print(f"  {'evaluation_code_drift':28} {ecd.get('drifted')}")
     print(f"  {'allowed_transitions':28} {data['allowed_transitions']}")
@@ -753,8 +777,9 @@ def experiment_registry_report(
             print(f"    flag: {w}")
     if not ok:
         print()
-        print("  INTEGRITY FAILURE — this experiment's declaration or event log "
-              "no longer matches what was registered")
+        print("  FAILED CLOSED — one of: manifest digest, event chain, "
+              "population canonicalization, pinned predicate digest, or "
+              "material drift. This experiment must not be evaluated.")
     return 0 if ok else 1
 
 

@@ -49,6 +49,7 @@ def base_manifest(**over):
                  "operator": "gte_registration_time"},
             ],
             "none": [],
+            "window_end": "unbounded",
             "rationale": ["prose is rationale only; membership is typed"],
         },
         "start_condition": "first forecast created after registration",
@@ -131,7 +132,7 @@ class TestValidation:
             v = er.validate_manifest(base_manifest(population={
                 "schema_version": 1,
                 "all": [{"field": bad_field, "operator": "eq", "value": "x"}],
-                "none": []}))
+                "none": [], "window_end": "unbounded"}))
             assert not v.ok, bad_field
             assert any("population:" in e for e in v.errors)
 
@@ -144,12 +145,12 @@ class TestValidation:
         v = er.validate_manifest(base_manifest(population={
             "schema_version": 1,
             "all": [{"field": "domain", "operator": "eq", "value": "x"}],
-            "none": []}))
+            "none": [], "window_end": "unbounded"}))
         assert v.ok, v.errors
         canon = ensure_registration_floor(canonicalize_population({
             "schema_version": 1,
             "all": [{"field": "domain", "operator": "eq", "value": "x"}],
-            "none": []}))
+            "none": [], "window_end": "unbounded"}))
         assert has_registration_floor(canon)
 
     def test_future_information_feature_rejected(self):

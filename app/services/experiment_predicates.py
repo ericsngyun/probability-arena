@@ -70,6 +70,11 @@ TYPE_BOOL = "bool"
 MAX_VALUE_CHARS = 128
 MAX_SET_MEMBERS = 64
 MAX_PREDICATES = 32
+MAX_RATIONALE_CHARS = 4000
+# Numeric magnitude bound. Without it `float(10**400)` raises OverflowError out
+# of a function documented as pure, escaping `validate_manifest`'s PredicateError
+# handler and tracebacking the CLI.
+MAX_ABS_NUMBER = 1e15
 
 
 @dataclass(frozen=True)
@@ -271,6 +276,16 @@ def _check_scalar(value: Any, spec: FieldSpec, where: str) -> None:
     if spec.value_type == TYPE_NUMBER:
         if not isinstance(value, (int, float)):
             raise PredicateError(f"{where}: {spec.name} expects a number")
+        # NaN/Infinity survive json.loads, compare False against everything, and
+        # serialize as bare NaN/Infinity — which is not valid JSON. A digest
+        # containing one cannot be recomputed by any non-Python implementation,
+        # silently falsifying the reproducibility property.
+        if isinstance(value, float) and (value != value
+                                         or value in (float("inf"), float("-inf"))):
+            raise PredicateError(f"{where}: {spec.name} must be a finite number")
+        if abs(value) > MAX_ABS_NUMBER:
+            raise PredicateError(
+                f"{where}: {spec.name} magnitude exceeds {MAX_ABS_NUMBER:g}")
         return
     if spec.value_type == TYPE_TIMESTAMP:
         _parse_timestamp(value, where=where)
@@ -378,7 +393,8 @@ def canonicalize_population(document: Any) -> dict:
     """
     if not isinstance(document, dict):
         raise PredicateError("population must be an object")
-    unknown = set(document) - {"schema_version", "all", "none", "rationale"}
+    unknown = set(document) - {"schema_version", "all", "none", "rationale",
+                               "window_end"}
     if unknown:
         raise PredicateError(f"unsupported population keys {sorted(unknown)}")
 
@@ -410,11 +426,30 @@ def canonicalize_population(document: Any) -> dict:
             deduped.append(p)
         out[clause] = sorted(deduped, key=_predicate_sort_key)
 
+    # H1 — the CEILING must be pinned, not supplied by whoever runs the
+    # evaluation. The floor was structural while the window's end was a caller
+    # argument absent from the digest, which left optional stopping fully
+    # available: an evaluator could choose the end date after seeing results and
+    # nothing registered would contradict it. That is the exact mirror of the
+    # REGISTRY-001 optional-`start_time` bug this module fixed at the other end.
+    if "window_end" not in document:
+        raise PredicateError(
+            'population.window_end is required: either an explicit UTC '
+            'timestamp or the literal "unbounded". Leaving the end of the '
+            'collection window undeclared permits optional stopping.')
+    end = document["window_end"]
+    out["window_end"] = ("unbounded" if end == "unbounded"
+                         else _parse_timestamp(
+                             end, where="population.window_end").isoformat())
+
     _reject_contradictions(out)
     if "rationale" in document:
         rationale = document["rationale"]
         if not isinstance(rationale, (str, list)):
             raise PredicateError("population.rationale must be text")
+        if len(json.dumps(rationale, default=str)) > MAX_RATIONALE_CHARS:
+            raise PredicateError(
+                f"population.rationale exceeds {MAX_RATIONALE_CHARS} characters")
         # Carried for humans, excluded from the canonical digest below.
         out["rationale"] = rationale
     return out
@@ -427,6 +462,23 @@ def _reject_contradictions(canon: dict) -> None:
     same field required both to exist and not exist. Anything requiring real
     constraint solving is out of scope and is not claimed.
     """
+    # H2 — `before_declared_end` returns True when no end is pinned: a harmless
+    # no-op inside `all`, and a silent emptying of the cohort inside `none`.
+    for p in canon.get("none", []):
+        if p["operator"] == OP_BEFORE_DECLARED_END:
+            raise PredicateError(
+                "before_declared_end may not appear in `none`: with an "
+                "unbounded window it would exclude every forecast silently")
+    # L3 — this check previously inspected only `all`, so a self-contradicting
+    # `none` clause excluded everything without comment.
+    for p in canon.get("none", []):
+        if any(q["field"] == p["field"] and q.get("value") == p.get("value")
+               and {q["operator"], p["operator"]} == {OP_EQ, OP_NOT_EQ}
+               for q in canon.get("none", [])):
+            raise PredicateError(
+                f"contradictory `none` predicates on {p['field']!r}: eq and "
+                "not_eq of the same value would exclude every forecast")
+
     eqs = {(p["field"], json.dumps(p.get("value"), sort_keys=True, default=str))
            for p in canon["all"] if p["operator"] == OP_EQ}
     for p in canon["all"]:
@@ -456,8 +508,10 @@ def _reject_contradictions(canon: dict) -> None:
 def canonical_population_json(canon: dict) -> str:
     """Digest input. Rationale is prose and must not change the digest."""
     payload = {k: v for k, v in canon.items() if k != "rationale"}
+    # allow_nan=False: a digest a strict JSON parser cannot recompute is not a
+    # reproducibility guarantee.
     return json.dumps(payload, sort_keys=True, separators=(",", ":"),
-                      ensure_ascii=True)
+                      ensure_ascii=True, allow_nan=False)
 
 
 def population_digest(canon: dict) -> str:
@@ -488,6 +542,18 @@ def ensure_registration_floor(canon: dict) -> dict:
                                        "operator": OP_GTE_REGISTRATION_TIME}],
         key=_predicate_sort_key)
     return out
+
+
+def declared_window_end(canon: dict) -> datetime | None:
+    """The pinned ceiling, read from the canonical document — never a caller.
+
+    `None` means the author explicitly declared an unbounded window: a recorded
+    choice rather than an omission.
+    """
+    end = canon.get("window_end")
+    if end in (None, "unbounded"):
+        return None
+    return _parse_timestamp(end, where="population.window_end")
 
 
 def field_registry_snapshot() -> dict:
