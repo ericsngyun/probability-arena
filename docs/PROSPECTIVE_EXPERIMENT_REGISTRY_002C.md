@@ -1,7 +1,7 @@
 # PROSPECTIVE-EXPERIMENT-REGISTRY-002C — governance closure and feasibility
 
-**Status:** five governance findings closed and dark-deployed. **Registration
-blocked by an arrival-rate finding, not by the registry.**
+**Status:** five governance findings closed. **Baseball registered and
+collecting; soccer and tennis explicitly blocked drafts.**
 
 ---
 
@@ -93,14 +93,49 @@ Registering an experiment that cannot reach its floor produces a guaranteed
 ritual with a digest attached, and it would be the first thing in this registry
 that looked like governance without being it.
 
-## 3. Registration disposition
+## 3. Registration disposition — decided
 
-**Baseball is ready.** Soccer must not be registered until its forecaster
-produces again. Tennis needs either a lower floor, a longer window, or an
-explicit acceptance that it will probably expire inconclusive.
+| experiment | state | disposition |
+|---|---|---|
+| `baseball-prospective-calibration-stability` | **registered / collecting** | — |
+| `soccer-prospective-reliability` | draft | `registration_blocked_data_generation_inactive` |
+| `tennis-base-rate-falsification` | draft | `registration_blocked_insufficient_recent_arrival_cadence` |
 
-This is a decision about research strategy, not about the registry, and it
-belongs to Eric.
+### Baseball — registered 2026-08-06T21:31:23.855645Z
+
+| | |
+|---|---|
+| manifest digest | `2632e027a9e4bb8c…` |
+| predicate digest | `d2b42d69f74089ba…` |
+| registration event hash | `3978fc504973d4d3…` |
+| authoritative head | `ac2e7f56c6235b57…`, `event_count = 2` |
+| registration commit | `e11a3a93d6639533…` |
+| window | start = registration instant (registry-assigned), end = `unbounded` |
+| primary / baseline | `mean_brier` / `base_rate_brier` |
+| decision rule | `primary_metric_delta_gt_zero` |
+| CI policy | `cluster_bootstrap_by_market_v1` |
+| floor / maturity | 500 / 0.9 |
+| stopping rule | `fixed_sample_and_end`, not_before 2026-08-06T04:00Z, not_after 2027-02-02T04:00Z |
+
+Fourteen pre-registration checks passed. The manifest carried **no**
+author-supplied registration timestamp — the registry assigned it, which is what
+makes prospectivity structural rather than promised.
+
+### Soccer and tennis
+
+Their blocking status is recorded as **append-only governance events**
+(`experiments/draft-dispositions.jsonl`, hash-chained and head-pinned), not
+written into the manifests. A blocking status is non-authoritative operational
+state; editing a draft to carry it would change its digest and make the eventual
+registration a different document. Soccer's digest is byte-identical to 002B.
+
+Neither floor nor window was changed. Lowering a floor to make an experiment
+feasible is the same act as raising one after seeing results.
+
+Next: `SOCCER-FORECASTER-LIVENESS-001` and `TENNIS-EXPERIMENT-FEASIBILITY-001`,
+the latter requiring a predeclared feasibility threshold (recommended ≥80%
+modeled probability of reaching the floor without changing forecaster or
+protocol).
 
 ## 4. What is deployed
 
