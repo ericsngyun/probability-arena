@@ -76,7 +76,9 @@ def manifest(*, eid="exp-one", floor=3, frac=0.5, primary="mean_brier",
             "confidence_interval_policy": "cluster_bootstrap_by_market_v1",
             "stopping_rule": {"kind": "fixed_sample_and_end",
                               "minimum_sample": floor,
-                              "minimum_matured_fraction": frac},
+                              "minimum_matured_fraction": frac,
+                              "not_before": "2026-08-06T00:00:00+00:00",
+                              "not_after": "2027-08-06T00:00:00+00:00"},
         },
     }
 
@@ -314,14 +316,20 @@ class TestEnforcement:
         assert r["verdict"] == rs.SUPPORTS
         assert r["metric_delta"] > 0
 
-    def test_unsupported_metric_blocks_a_favorable_verdict(self, db, tmp_path):
-        eid = self._prep(db, tmp_path, 6, 6, eid="exp-bad", primary="ece",
-                         floor=3, frac=0.5)
-        out = rs.evaluate_experiment(db, "exp-bad", base=tmp_path,
-                                     now=NOW + timedelta(days=1))
-        assert out["record"]["verdict"] not in rs.TERMINAL_FAVOURABLE
-        assert any("not registry-supported" in d
-                   for d in out["record"]["protocol_deviations"])
+    def test_unsupported_metric_is_rejected_at_REGISTRATION(self, db, tmp_path):
+        """Stricter than the review asked: an unsupported metric can no longer
+        even be registered, so it never reaches evaluation."""
+        with pytest.raises(er.ManifestError, match="not registry-supported"):
+            er.register(manifest(eid="exp-bad", primary="ece"), base=tmp_path,
+                        confirm=True, commit="c1")
+
+    def test_stopping_rule_without_an_end_is_rejected_at_registration(self, tmp_path):
+        """H5 — `fixed_sample_and_end` with no end made the terminal moment
+        'whenever someone chooses to look'."""
+        m = manifest(eid="exp-noend")
+        m["result_protocol"]["stopping_rule"].pop("not_after")
+        with pytest.raises(er.ManifestError, match="requires not_after"):
+            er.register(m, base=tmp_path, confirm=True, commit="c1")
 
     def test_pending_and_unscorable_are_reported_not_dropped(self, db, tmp_path):
         eid = register(tmp_path, manifest(eid="exp-rep", floor=1, frac=0.1))
@@ -341,9 +349,8 @@ class TestEnforcement:
         eid = self._prep(db, tmp_path, 6, 6, floor=3, frac=0.5)
         f = er.experiment_dir(eid, tmp_path) / er.EVENTS_FILENAME
         f.write_text("")
-        with pytest.raises(er.ManifestError, match="integrity is broken"):
-            rs.evaluate_experiment(db, eid, base=tmp_path, confirm=True,
-                                   now=NOW + timedelta(days=1))
+        with pytest.raises(er.ManifestError):
+            rs.evaluate_experiment(db, eid, base=tmp_path, confirm=True)
 
     def test_material_drift_invalidates(self, db, tmp_path):
         eid = self._prep(db, tmp_path, 6, 6, floor=3, frac=0.5)
@@ -391,21 +398,18 @@ class TestAppendOnlyResults:
 
     def test_confirm_appends_and_is_chained(self, db, tmp_path):
         eid = self._terminal(db, tmp_path)
-        out = rs.evaluate_experiment(db, eid, base=tmp_path, confirm=True,
-                                     now=NOW + timedelta(days=1))
+        out = rs.evaluate_experiment(db, eid, base=tmp_path, confirm=True)
         assert out["persisted"] is True
         assert rs.verify_result_chain(eid, tmp_path)["intact"] is True
         assert len(rs.read_result_events(eid, tmp_path)) == 1
 
     def test_reevaluation_requires_a_reason_and_links_the_prior(self, db, tmp_path):
         eid = self._terminal(db, tmp_path)
-        first = rs.evaluate_experiment(db, eid, base=tmp_path, confirm=True,
-                                       now=NOW + timedelta(days=1))
+        first = rs.evaluate_experiment(db, eid, base=tmp_path, confirm=True)
         with pytest.raises(er.ManifestError, match="requires an explicit reason"):
-            rs.evaluate_experiment(db, eid, base=tmp_path, confirm=True,
-                                   now=NOW + timedelta(days=2))
+            rs.evaluate_experiment(db, eid, base=tmp_path, confirm=True)
         second = rs.evaluate_experiment(
-            db, eid, base=tmp_path, confirm=True, now=NOW + timedelta(days=2),
+            db, eid, base=tmp_path, confirm=True,
             reevaluation_reason="outcome corrected upstream")
         assert second["record"]["previous_result_digest"] == \
             first["record"]["result_digest"]
@@ -413,13 +417,11 @@ class TestAppendOnlyResults:
 
     def test_first_terminal_result_is_preserved(self, db, tmp_path):
         eid = self._terminal(db, tmp_path)
-        first = rs.evaluate_experiment(db, eid, base=tmp_path, confirm=True,
-                                       now=NOW + timedelta(days=1))
+        first = rs.evaluate_experiment(db, eid, base=tmp_path, confirm=True)
         for o in db.query(MarketOutcomeRecord).all():
             o.winning_side = "no"; o.resolved_probability = 0.0
         db.commit()
         rs.evaluate_experiment(db, eid, base=tmp_path, confirm=True,
-                               now=NOW + timedelta(days=2),
                                reevaluation_reason="flip")
         files = sorted((er.experiment_dir(eid, tmp_path) /
                         rs.RESULTS_DIRNAME).glob("*.json"))
@@ -431,18 +433,25 @@ class TestAppendOnlyResults:
 
     def test_result_suffix_truncation_detected(self, db, tmp_path):
         eid = self._terminal(db, tmp_path)
-        rs.evaluate_experiment(db, eid, base=tmp_path, confirm=True,
-                               now=NOW + timedelta(days=1))
+        rs.evaluate_experiment(db, eid, base=tmp_path, confirm=True)
         f = er.experiment_dir(eid, tmp_path) / rs.RESULT_EVENTS_FILENAME
         f.write_text("")
         r = rs.verify_result_chain(eid, tmp_path)
         assert r["intact"] is False
 
-    def test_result_digest_is_deterministic(self, db, tmp_path):
+    def test_content_digest_is_deterministic_and_result_digest_is_unique(
+            self, db, tmp_path):
+        """Reproducibility means the FINDING reproduces, not the timestamp.
+
+        Two evaluations of identical data are different records — in an
+        append-only log they must be — so result_digest differs while
+        content_digest does not.
+        """
         eid = self._terminal(db, tmp_path)
-        a = rs.evaluate_experiment(db, eid, base=tmp_path, now=NOW + timedelta(days=1))
-        b = rs.evaluate_experiment(db, eid, base=tmp_path, now=NOW + timedelta(days=1))
-        assert a["record"]["result_digest"] == b["record"]["result_digest"]
+        a = rs.evaluate_experiment(db, eid, base=tmp_path)
+        b = rs.evaluate_experiment(db, eid, base=tmp_path)
+        assert a["record"]["content_digest"] == b["record"]["content_digest"]
+        assert a["record"]["result_digest"] != b["record"]["result_digest"]
 
 
 class TestSafetySurface:
@@ -530,3 +539,111 @@ class TestDraftCompatibility:
             rs.DECISION_DELTA_LT_ZERO
         assert "at or below zero" in m["hypothesis"].lower() \
             or "not" in m["hypothesis"].lower()
+
+
+class TestReviewFindings002B:
+    """The five High findings from the result-enforcement review, each of which
+    was a live route to a favorable verdict."""
+
+    def _terminal(self, db, tmp_path, eid="exp-rv"):
+        register(tmp_path, manifest(eid=eid, floor=3, frac=0.5))
+        m = er.load_manifest(er.experiment_dir(eid, tmp_path) / "manifest.json")
+        reg_at = datetime.fromisoformat(m["registered_at"])
+        seed(db, 6, after=reg_at + timedelta(hours=1), wins=4,
+             discriminating=True)
+        return eid
+
+    def test_first_terminal_verdict_is_locked_in_the_head(self, db, tmp_path):
+        """H1 — the head tracked the NEWEST result, so peeking repeatedly and
+        citing the flattering one was fully available."""
+        eid = self._terminal(db, tmp_path)
+        first = rs.evaluate_experiment(db, eid, base=tmp_path, confirm=True)
+        head = rs.read_result_head(eid, tmp_path)
+        assert head["terminal_result_digest"] == first["record"]["result_digest"]
+        assert head["terminal_verdict"] == first["record"]["verdict"]
+
+        for o in db.query(MarketOutcomeRecord).all():
+            o.winning_side = "no"; o.resolved_probability = 0.0
+        db.commit()
+        second = rs.evaluate_experiment(db, eid, base=tmp_path, confirm=True,
+                                        reevaluation_reason="upstream fix")
+        head2 = rs.read_result_head(eid, tmp_path)
+        # the lock does not move, and the later peek is marked
+        assert head2["terminal_result_digest"] == first["record"]["result_digest"]
+        assert head2["terminal_verdict"] == first["record"]["verdict"]
+        assert second["record"]["superseded_by_protocol"] is True
+
+    def test_deleted_result_file_breaks_the_chain(self, db, tmp_path):
+        """H2 — result files sat outside the integrity check entirely."""
+        eid = self._terminal(db, tmp_path, eid="exp-del")
+        rs.evaluate_experiment(db, "exp-del", base=tmp_path, confirm=True)
+        f = next((er.experiment_dir("exp-del", tmp_path) /
+                  rs.RESULTS_DIRNAME).glob("*.json"))
+        f.unlink()
+        r = rs.verify_result_chain("exp-del", tmp_path)
+        assert r["intact"] is False and "missing" in r["reason"]
+
+    def test_rewritten_result_verdict_breaks_the_chain(self, db, tmp_path):
+        """H2 — a verdict could be rewritten to supports_hypothesis in place."""
+        eid = self._terminal(db, tmp_path, eid="exp-rw")
+        rs.evaluate_experiment(db, "exp-rw", base=tmp_path, confirm=True)
+        f = next((er.experiment_dir("exp-rw", tmp_path) /
+                  rs.RESULTS_DIRNAME).glob("*.json"))
+        rec = json.loads(f.read_text())
+        assert rec["verdict"] != rs.DOES_NOT_SUPPORT
+        rec["verdict"] = rs.DOES_NOT_SUPPORT      # any in-place edit at all
+        rec["primary_metric_value"] = 0.0
+        f.write_text(json.dumps(rec, indent=2, sort_keys=True))
+        r = rs.verify_result_chain("exp-rw", tmp_path)
+        assert r["intact"] is False and "digest" in r["reason"]
+
+    def test_caller_cannot_choose_the_clock_for_a_confirmed_run(self, db, tmp_path):
+        """H3 — passing a future `now` turned still_collecting into
+        supports_hypothesis and persisted it under the spoofed timestamp."""
+        eid = self._terminal(db, tmp_path, eid="exp-clock")
+        with pytest.raises(er.ManifestError, match="caller-chosen clock"):
+            rs.evaluate_experiment(db, "exp-clock", base=tmp_path, confirm=True,
+                                   now=datetime.now(timezone.utc) + timedelta(days=30))
+
+    def test_record_carries_a_non_overridable_recorded_at(self, db, tmp_path):
+        eid = self._terminal(db, tmp_path, eid="exp-rec")
+        out = rs.evaluate_experiment(db, "exp-rec", base=tmp_path,
+                                     now=NOW - timedelta(days=400))
+        assert out["record"]["evaluated_at"] != out["record"]["recorded_at"]
+
+    def test_ci_is_on_the_delta_not_the_raw_metric(self, db, tmp_path):
+        """H4 — `ci_lower_bound_gt_zero` + `mean_brier` was an unconditional
+        SUPPORTS, because a squared error is always > 0. A worthless p=0.5
+        forecaster at 50% prevalence produced delta 0.0 and CI [0.25, 0.25]."""
+        register(tmp_path, manifest(eid="exp-ci", floor=3, frac=0.5,
+                                    rule="ci_lower_bound_gt_zero"))
+        m = er.load_manifest(er.experiment_dir("exp-ci", tmp_path) / "manifest.json")
+        reg_at = datetime.fromisoformat(m["registered_at"])
+        seed(db, 8, after=reg_at + timedelta(hours=1), p=0.5, wins=4)
+        out = rs.evaluate_experiment(db, "exp-ci", base=tmp_path)
+        r = out["record"]
+        assert r["metric_delta"] == 0.0
+        assert r["confidence_interval"]["lower"] <= 0.0, (
+            "the interval must be about the comparison the rule tests")
+        assert r["verdict"] != rs.SUPPORTS
+
+    def test_degenerate_guard_catches_the_soccer_regime(self, db, tmp_path):
+        """M1 — the guard cited soccer's 2.9% prevalence but triggered at 1%."""
+        assert rs.DEGENERATE_PREVALENCE >= 0.029
+
+    def test_membership_digest_is_cross_checked(self, db, tmp_path):
+        """M2 — `_member_ids` re-derives the cohort; agreement is now proven."""
+        eid = self._terminal(db, tmp_path, eid="exp-xchk")
+        out = rs.evaluate_experiment(db, "exp-xchk", base=tmp_path)
+        assert out["record"]["eligible_count"] == \
+            out["record"]["actual_population_count"]
+
+    def test_scanned_count_is_not_called_a_population(self, db, tmp_path):
+        """M3 — `registered_population_count` was every forecast row in the
+        database, printed under a heading about the cohort."""
+        eid = self._terminal(db, tmp_path, eid="exp-cnt")
+        seed(db, 9, after=NOW - timedelta(days=400), ticker_prefix="OTHER")
+        out = rs.evaluate_experiment(db, "exp-cnt", base=tmp_path)
+        r = out["record"]
+        assert "registered_population_count" not in r
+        assert r["scanned_forecast_count"] > r["actual_population_count"]

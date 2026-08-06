@@ -153,7 +153,7 @@ REQUIRED_FIELDS = (
     "hypothesis", "null_hypothesis", "exploratory_or_confirmatory",
     "experiment_class", "owner", "domain", "market_population", "forecast_family",
     "forecast_version", "feature_definitions", "signal_definitions", "data_sources",
-    "provider_policy", "population", "start_condition",
+    "provider_policy", "population", "result_protocol", "start_condition",
     "end_condition", "evaluation_horizons", "primary_metric", "secondary_metrics",
     "declared_baselines", "sample_floor", "domain_sample_floors",
     "minimum_matured_fraction", "missing_data_policy", "canceled_void_policy",
@@ -186,7 +186,7 @@ HYPOTHESIS_FIELDS = (
     "experiment_id", "title", "research_question", "hypothesis", "null_hypothesis",
     "exploratory_or_confirmatory", "experiment_class", "domain", "market_population",
     "forecast_family", "forecast_version", "feature_definitions",
-    "signal_definitions", "population", "start_condition",
+    "signal_definitions", "population", "result_protocol", "start_condition",
     "start_time", "end_condition", "evaluation_horizons", "primary_metric",
     "declared_baselines", "sample_floor", "domain_sample_floors",
     "minimum_matured_fraction", "multiple_testing_policy", "stopping_rule",
@@ -351,6 +351,9 @@ def validate_manifest(manifest: dict, *, strict: bool = True) -> ValidationResul
             canonicalize_population(manifest.get("population")))
         from app.services.experiment_predicates import check_identifier_cohort
 
+        from app.services.experiment_results import validate_result_protocol
+
+        errors.extend(validate_result_protocol(manifest))
         errors.extend(check_identifier_cohort(
             canon, kind=str(manifest.get("exploratory_or_confirmatory")),
             universe=(manifest.get("population") or {}).get("universe")))

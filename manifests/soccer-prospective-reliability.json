@@ -11,7 +11,7 @@
   "domain_sample_floors": {
     "sports_soccer": 300
   },
-  "end_condition": "sample floor reached AND minimum_matured_fraction satisfied",
+  "end_condition": "the declared end 2027-02-02T04:00:00+00:00 OR the sample floor and matured fraction, whichever is later; the end is registered so it cannot be chosen after results are visible",
   "end_time": null,
   "evaluation_horizons": [
     "market close time plus a 3600s settlement grace"
@@ -94,7 +94,9 @@
     "stopping_rule": {
       "kind": "fixed_sample_and_end",
       "minimum_matured_fraction": 0.9,
-      "minimum_sample": 300
+      "minimum_sample": 300,
+      "not_after": "2027-02-02T04:00:00+00:00",
+      "not_before": "2026-08-06T04:00:00+00:00"
     }
   },
   "safety_boundary": "measurement only; no expected value, recommendation, sizing, order, wallet or capital behavior is produced or implied, and calibration is not an edge claim",

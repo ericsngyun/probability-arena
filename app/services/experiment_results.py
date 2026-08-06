@@ -117,6 +117,17 @@ CI_BOOTSTRAP_SAMPLES = 2000
 CI_SEED = 20260806          # fixed: an evaluator must not be able to reroll
 CI_ALPHA = 0.05
 
+# H3 — `now` exists for tests. A confirmed evaluation may not run on a clock the
+# caller chose: with a `not_before` rule, passing a future `now` turned
+# still_collecting into supports_hypothesis and persisted it under the spoofed
+# timestamp. Confirmed runs must be near the real clock, and every record also
+# carries a non-overridable `recorded_at`.
+MAX_CLOCK_SKEW_SECONDS = 300
+
+# Prevalence at or beyond this edge makes the base rate near-unbeatable and the
+# skill metric uninformative. 5% covers the soccer artifact (2.9%).
+DEGENERATE_PREVALENCE = 0.05
+
 # --- drift classes added here ---------------------------------------------------
 DRIFT_METRIC_CODE = "material_metric_code"
 DRIFT_BASELINE = "material_baseline"
@@ -255,6 +266,17 @@ def compute_secondary(scored: list) -> dict:
     }
 
 
+def _delta_for(metrics: dict, primary: str):
+    """Positive always means "better than baseline", for both metrics."""
+    if primary == METRIC_BRIER_SKILL:
+        return metrics.get(METRIC_BRIER_SKILL)
+    mb, bb = metrics.get(METRIC_MEAN_BRIER), metrics.get(BASELINE_BASE_RATE_BRIER)
+    if mb is None or bb is None:
+        return None
+    # Lower Brier is better, so "better than baseline" is baseline - model.
+    return round(bb - mb, 6)
+
+
 def _cluster_bootstrap_ci(scored: list, metric_name: str) -> dict:
     """Deterministic cluster bootstrap, resampling MARKETS not forecasts.
 
@@ -283,9 +305,15 @@ def _cluster_bootstrap_ci(scored: list, metric_name: str) -> dict:
         drawn = []
         for _ in range(len(keys)):
             drawn.extend(clusters[keys[rng.randrange(len(keys))]])
-        vals = compute_metrics(drawn)
-        v = vals.get(metric_name)
-        if v is not None and not math.isnan(v):
+        # H4 — bootstrap the DELTA, not the raw metric. `mean_brier` is a
+        # squared error, so its lower bound exceeds 0 for any non-perfect
+        # forecaster: `ci_lower_bound_gt_zero` paired with `mean_brier` was an
+        # UNCONDITIONAL supports_hypothesis. A deliberately worthless p=0.5
+        # forecaster at 50% prevalence produced delta 0.0 and CI [0.25, 0.25]
+        # and "passed". The interval must be about the comparison the decision
+        # rule tests.
+        v = _delta_for(compute_metrics(drawn), metric_name)
+        if v is not None and math.isfinite(v):
             stats.append(v)
     if not stats:
         return {"policy": CI_CLUSTER_BOOTSTRAP, "version": CI_POLICY_VERSION,
@@ -318,9 +346,11 @@ class ResultRecord:
     baseline_definition_version: int | None = None
     ci_policy: dict = field(default_factory=dict)
     evaluated_at: str = ""
+    recorded_at: str = ""          # real clock; never caller-supplied
     collection_started_at: str | None = None
     collection_ended_at: str | None = None
-    registered_population_count: int = 0
+    scanned_forecast_count: int = 0     # every forecast row scanned, not a cohort
+    eligible_count: int = 0             # what reconstruction found eligible
     actual_population_count: int = 0
     pre_registration_excluded: int = 0
     post_end_excluded: int = 0
@@ -352,15 +382,40 @@ class ResultRecord:
     reevaluation_reason: str | None = None
     verdict: str = STILL_COLLECTING
     previous_result_digest: str | None = None
-    result_digest: str = ""
+    content_digest: str = ""       # the finding, independent of when/who
+    result_digest: str = ""        # this evaluation, timestamps included
     disclaimer: str = DISCLAIMER
 
     def to_dict(self) -> dict:
         return asdict(self)
 
 
+# Timestamps and operator prose identify WHEN and WHO, not WHAT was found.
+_NON_CONTENT_FIELDS = ("result_digest", "content_digest", "evaluated_at",
+                       "recorded_at", "operator_notes", "reevaluation_reason",
+                       "previous_result_digest", "evaluation_commit",
+                       "superseded_by_protocol", "terminal_verdict_of_record")
+
+
 def result_digest(record: dict) -> str:
+    """Identity of THIS evaluation, timestamps included.
+
+    Two evaluations of the same data at different moments are different
+    records, and in an append-only log they must be, or the second could not be
+    appended alongside the first.
+    """
     payload = {k: v for k, v in record.items() if k != "result_digest"}
+    return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
+
+
+def content_digest(record: dict) -> str:
+    """Identity of the FINDING — what reproducibility actually means.
+
+    Excludes when it was computed, by whom, and the append-chain links. Two
+    independent reconstructions of the same experiment over the same data must
+    produce the same content digest even though their result digests differ.
+    """
+    payload = {k: v for k, v in record.items() if k not in _NON_CONTENT_FIELDS}
     return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
 
 
@@ -399,8 +454,34 @@ def verify_result_chain(experiment_id: str, base: Path | None = None) -> dict:
         return {"intact": False, "length": len(events),
                 "reason": "result head does not match the log — truncated or "
                           "appended without updating the head"}
+    if len(events) > MAX_RESULTS:
+        return {"intact": False, "length": len(events),
+                "reason": f"result count exceeds {MAX_RESULTS}"}
+
+    # H2 — the events carry `file` and `result_digest`, and nothing checked
+    # them: a result JSON could be deleted, or its verdict rewritten to
+    # supports_hypothesis, and the chain still verified. The evidence existed
+    # and was simply never used.
+    rdir = experiment_dir(experiment_id, base) / RESULTS_DIRNAME
+    for e in events:
+        f = rdir / str(e.get("file", ""))
+        if not f.exists():
+            return {"intact": False, "length": len(events),
+                    "reason": f"result file {e.get('file')!r} is missing"}
+        try:
+            stored = json.loads(f.read_text())
+        except Exception:
+            return {"intact": False, "length": len(events),
+                    "reason": f"result file {e.get('file')!r} is unreadable"}
+        if result_digest(stored) != e.get("result_digest") or \
+                stored.get("result_digest") != e.get("result_digest"):
+            return {"intact": False, "length": len(events),
+                    "reason": f"result file {e.get('file')!r} does not match "
+                              "its recorded digest"}
     return {"intact": True, "length": len(events), "reason": None,
-            "empty": False}
+            "empty": False,
+            "terminal_result_digest": head.get("terminal_result_digest"),
+            "terminal_verdict": head.get("terminal_verdict")}
 
 
 def _append_result(experiment_id: str, record: dict, base: Path | None = None) -> dict:
@@ -428,9 +509,21 @@ def _append_result(experiment_id: str, record: dict, base: Path | None = None) -
              "previous_result_digest": record.get("previous_result_digest")}
     with (d / RESULT_EVENTS_FILENAME).open("a", encoding="utf-8") as fh:
         fh.write(canonical_json(entry) + "\n")
+    prior_head = read_result_head(experiment_id, base) or {}
+    # H1 — the head used to track the NEWEST result, so peeking repeatedly and
+    # citing the flattering one was fully available. The FIRST terminal verdict
+    # is now pinned and never moves; later records are marked superseded so a
+    # reader cannot mistake one for the binding result.
+    terminal_digest = prior_head.get("terminal_result_digest")
+    terminal_verdict = prior_head.get("terminal_verdict")
+    if terminal_digest is None and record["verdict"] != STILL_COLLECTING:
+        terminal_digest = digest
+        terminal_verdict = record["verdict"]
     head = {"experiment_id": experiment_id, "result_count": len(prior) + 1,
             "terminal_result_hash": hashlib.sha256(
                 canonical_json(entry).encode("utf-8")).hexdigest(),
+            "terminal_result_digest": terminal_digest,
+            "terminal_verdict": terminal_verdict,
             "updated_at": datetime.now(timezone.utc).isoformat()}
     (d / RESULT_HEAD_FILENAME).write_text(
         json.dumps(head, indent=2, sort_keys=True) + "\n")
@@ -497,6 +590,41 @@ def _load_member_state(session: Session, member_ids: list) -> list:
             m.state = "unscorable"
         out.append(m)
     return out
+
+
+def validate_result_protocol(manifest: dict) -> list:
+    """Protocol errors that must block REGISTRATION, not merely evaluation."""
+    errors = []
+    proto = manifest.get("result_protocol") or {}
+    pm = manifest.get("primary_metric")
+    # A list here is already rejected upstream as "multiple primaries"; guard so
+    # this validator reports its own findings instead of raising.
+    primary = pm.get("name") if isinstance(pm, dict) else None
+    rule = proto.get("decision_rule")
+    stopping = proto.get("stopping_rule") or {}
+
+    if primary not in SUPPORTED_PRIMARY_METRICS:
+        errors.append(f"primary metric {primary!r} is not registry-supported")
+    if proto.get("baseline") not in SUPPORTED_BASELINES:
+        errors.append(f"baseline {proto.get('baseline')!r} is not supported")
+    if rule not in SUPPORTED_DECISION_RULES:
+        errors.append(f"decision rule {rule!r} is not supported")
+    if proto.get("confidence_interval_policy") not in SUPPORTED_CI_POLICIES:
+        errors.append("confidence-interval policy is not supported")
+
+    if stopping.get("kind") not in SUPPORTED_STOPPING_RULES:
+        errors.append(f"stopping rule {stopping.get('kind')!r} is not supported")
+    elif stopping.get("kind") == STOP_FIXED_SAMPLE_AND_END:
+        # H5 — the "and_end" half was unenforced, so the terminal moment was
+        # "the first evaluation after the count clears the floor". That is the
+        # optional-stopping surface this milestone exists to remove.
+        if not stopping.get("not_after"):
+            errors.append(
+                "fixed_sample_and_end requires not_after: without a declared "
+                "end the terminal moment is whenever someone chooses to look")
+        if not stopping.get("minimum_sample"):
+            errors.append("fixed_sample_and_end requires minimum_sample")
+    return errors
 
 
 def _check_stopping_rule(rule: dict, *, now: datetime, scored: int,
@@ -575,7 +703,14 @@ def evaluate_experiment(
     — population, metric, baseline, floor, stopping rule, verdict — comes from
     the registered manifest.
     """
-    now = _aware(now) or datetime.now(timezone.utc)
+    real_now = datetime.now(timezone.utc)
+    now = _aware(now) or real_now
+    if confirm and abs((now - real_now).total_seconds()) > MAX_CLOCK_SKEW_SECONDS:
+        raise ManifestError(
+            f"refusing to confirm an evaluation dated {now.isoformat()} when the "
+            f"real clock reads {real_now.isoformat()}: the stopping rule is "
+            "evaluated against this timestamp, so a caller-chosen clock is a "
+            "caller-chosen verdict")
     d = experiment_dir(experiment_id, base)
     if not (d / "manifest.json").exists():
         raise ManifestError(f"{experiment_id!r} is not registered")
@@ -604,8 +739,8 @@ def evaluate_experiment(
     floor = manifest.get("sample_floor")
     min_frac = manifest.get("minimum_matured_fraction")
 
-    deviations = []
-    if primary not in SUPPORTED_PRIMARY_METRICS:
+    deviations = list(validate_result_protocol(manifest))
+    if False and primary not in SUPPORTED_PRIMARY_METRICS:
         deviations.append(f"primary metric {primary!r} is not registry-supported")
     if baseline not in SUPPORTED_BASELINES:
         deviations.append(f"baseline {baseline!r} is not registry-supported")
@@ -633,6 +768,15 @@ def evaluate_experiment(
     # --- 2. freeze, then attach outcome/score state ----------------------------
     frozen_digest = pop.membership_digest
     member_ids = _member_ids(session, pop, canon, registered_at)
+    # M2 — `_member_ids` re-derives the list rather than reusing the frozen
+    # digest's members, so agreement must be proven, not assumed.
+    recomputed = hashlib.sha256(json.dumps(
+        {"experiment_id": experiment_id, "members": member_ids},
+        sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+    if recomputed != pop.membership_digest:
+        raise ManifestError(
+            "membership digest disagrees with the evaluated cohort; refusing to "
+            "evaluate a population that cannot be reproduced")
     members = _load_member_state(session, member_ids)
     scored = [m for m in members if m.state == "scored"]
     pending = [m for m in members if m.state == "pending"]
@@ -674,9 +818,12 @@ def evaluate_experiment(
     # 0.0033 on 34 members at 2.9% prevalence — reported as a domain result when
     # it was a property of the sample. Caught here rather than rediscovered.
     prevalence = metrics.get("prevalence")
+    # Threshold set to the regime the comment cites: soccer was 2.9%. A 1%
+    # bound would not have caught it, which made the guard false assurance.
     degenerate_base_rate = (
         baseline_value is not None and baseline_value < 1e-9) or (
-        prevalence is not None and (prevalence <= 0.01 or prevalence >= 0.99))
+        prevalence is not None and (prevalence <= DEGENERATE_PREVALENCE
+                                    or prevalence >= 1 - DEGENERATE_PREVALENCE))
     # Only at a terminal state. Mid-collection a lopsided prevalence is an
     # ordinary small-sample artifact that the next observations will move; it
     # only becomes a data-quality finding once this is the final sample.
@@ -704,6 +851,9 @@ def evaluate_experiment(
 
     prior_events = read_result_events(experiment_id, base)
     previous_digest = prior_events[-1]["result_digest"] if prior_events else None
+    prior_head = read_result_head(experiment_id, base) or {}
+    locked_verdict = prior_head.get("terminal_verdict")
+    locked_digest = prior_head.get("terminal_result_digest")
     if prior_events and confirm and not reevaluation_reason:
         raise ManifestError(
             "re-evaluation requires an explicit reason; the first terminal "
@@ -725,9 +875,11 @@ def evaluate_experiment(
         ci_policy={"policy": protocol.get("confidence_interval_policy"),
                    "version": CI_POLICY_VERSION},
         evaluated_at=now.isoformat(),
+        recorded_at=real_now.isoformat(),
         collection_started_at=registered_at.isoformat(),
         collection_ended_at=pop.declared_end,
-        registered_population_count=pop.population_count,
+        scanned_forecast_count=pop.population_count,
+        eligible_count=pop.eligible_count,
         actual_population_count=len(members),
         pre_registration_excluded=pop.pre_registration_excluded,
         post_end_excluded=pop.post_end_excluded,
@@ -752,7 +904,15 @@ def evaluate_experiment(
         operator_notes=operator_notes, reevaluation_reason=reevaluation_reason,
         verdict=verdict, previous_result_digest=previous_digest,
     ).to_dict()
+    # H1 — once a terminal verdict is locked, later evaluations are recorded but
+    # explicitly superseded. Peeking is not forbidden (an outcome really can be
+    # corrected upstream); citing a later peek as THE result is.
+    record["superseded_by_protocol"] = bool(
+        locked_digest and record["verdict"] != STILL_COLLECTING)
+    record["terminal_verdict_of_record"] = locked_verdict or (
+        record["verdict"] if record["verdict"] != STILL_COLLECTING else None)
     record["verdict_reasons"] = why
+    record["content_digest"] = content_digest(record)
     record["result_digest"] = result_digest(record)
 
     out = {"mode": "confirmed" if confirm else "dry_run",

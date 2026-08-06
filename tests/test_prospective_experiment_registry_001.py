@@ -73,6 +73,18 @@ def base_manifest(**over):
                                     "coverage repair disabled"],
         "known_limitations": ["baseball dominates the population"],
         "safety_boundary": "measurement only; no execution or capital behavior",
+        # REGISTRY-002B: a registered experiment must declare how its result
+        # will be computed and when collection ends.
+        "result_protocol": {
+            "baseline": "base_rate_brier",
+            "decision_rule": "primary_metric_delta_gt_zero",
+            "confidence_interval_policy": "cluster_bootstrap_by_market_v1",
+            "stopping_rule": {
+                "kind": "fixed_sample_and_end", "minimum_sample": 500,
+                "minimum_matured_fraction": 0.9,
+                "not_before": "2026-08-06T00:00:00+00:00",
+                "not_after": "2027-08-06T00:00:00+00:00"},
+        },
     }
     m.update(over)
     return m
