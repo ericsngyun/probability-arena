@@ -210,6 +210,42 @@ concern, recorded as rationale prose:
 > pending rows remain pending; unscorable rows are reported; sample-floor and
 > matured-fraction rules determine evaluability.
 
+## 11b. Review findings
+
+An independent population-boundary review confirmed the central claim after
+auditing every allowlisted column's writer: all 13 are insert-only, and it could
+not encode "beat the benchmark" through any field, operator or indirect channel.
+It then found the mirror of the bug §6 congratulates itself for fixing.
+
+| # | finding | resolution |
+|---|---|---|
+| **H1** | **The floor was pinned; the ceiling was not.** `declared_end` was a caller argument absent from the digest, so whoever ran the evaluation chose the cohort's end date — after seeing results — with nothing registered to contradict them. Optional stopping, fully available | `population.window_end` is REQUIRED, inside the digest, and `reconstruct_population` no longer accepts a caller-supplied end |
+| **H2** | `before_declared_end` returns True with no end pinned: a no-op in `all`, a silent emptying of the whole cohort in `none` | forbidden in `none` |
+| **H3** | A huge integer raised `OverflowError` out of a function documented as pure, escaping the validator's handler and tracebacking three CLIs | numeric magnitude bounded |
+| **M2** | NaN/Infinity validated and serialized as bare `NaN` — not valid JSON — so the digest could not be recomputed by any non-Python implementation. This silently falsified the reproducibility property | non-finite rejected; `allow_nan=False`; a test round-trips the digest input through a strict parser |
+| **M3/M6** | The report failed closed only on a broken digest. A digest-intact manifest whose population no longer canonicalizes **is** the field-registry-drift case, and it exited 0 | also fails on material drift and on a pinned-vs-live predicate digest mismatch |
+| **M5** | The report re-validated the *stored* manifest, which necessarily contains registry-assigned fields, so every registered experiment carried a permanent false validation error — making a real one indistinguishable from noise | validates the authored document |
+| **L1/L3** | Unbounded rationale; the contradiction check inspected only `all`, so a self-contradicting `none` excluded everything silently | bounded; `none` checked |
+
+The report CLI had **zero tests** despite making the fail-closed claim. It now
+has seven, including tampered-manifest and material-drift exits.
+
+### Carried forward to 002B, disclosed not fixed
+
+- **M1** — in a `none` clause a NULL field does not exclude, so "exclude rows
+  below 0.5 completeness" silently keeps rows where completeness is missing.
+  SQL-consistent, but the asymmetry with `all` deserves an explicit companion
+  requirement.
+- **M4** — event-log *truncation* is still undetected: a prefix of a valid hash
+  chain is a valid hash chain. Inherited from REGISTRY-001. Needs the chain head
+  and length recorded in the manifest at each transition.
+- **L2** — `market_ticker in [...]` is the one remaining hand-picked-cohort
+  channel. The injected registration floor neutralizes it today, because the
+  enumerated markets' forecasts do not exist yet at registration. It becomes
+  real the moment 002B adds an amendment path or a prefix operator.
+- **Reconstruction has no production caller yet** — the floor is currently
+  exercised only by tests. 002B is where it becomes load-bearing.
+
 ## 12. What this milestone does NOT do
 
 No result recording. No metric computation. No sample-floor or maturity
