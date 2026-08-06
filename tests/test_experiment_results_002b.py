@@ -539,8 +539,15 @@ class TestDraftCompatibility:
         # estimate cannot confirm persistent underperformance.
         assert m["result_protocol"]["decision_rule"] == \
             rs.DECISION_CI_UPPER_LT_ZERO
-        assert "at or below zero" in m["hypothesis"].lower() \
-            or "not" in m["hypothesis"].lower()
+        # Structural, not a keyword search: the falsification character lives
+        # in the decision rule above. What the prose must NOT do is turn the
+        # negative finding into something to promote.
+        text = (m["hypothesis"] + " " + m["null_hypothesis"] + " "
+                + m["research_question"]).lower()
+        for promotion in ("improve tennis", "fix tennis", "beat the base rate",
+                          "outperform", "profitable", "edge"):
+            assert promotion not in text, promotion
+        assert "below zero" in m["hypothesis"].lower()
 
 
 class TestReviewFindings002B:
