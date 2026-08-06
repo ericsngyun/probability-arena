@@ -26,20 +26,21 @@
   },
   "forecast_family": "any",
   "forecast_version": "as recorded per member and reported in composition",
-  "hypothesis": "Brier skill versus the base-rate benchmark remains at or below zero for tennis forecasts created after start_time.",
+  "hypothesis": "The 95% cluster-bootstrap confidence interval for tennis Brier skill versus the base rate lies entirely below zero \u2014 that is, tennis persistently fails to beat its own base rate, with the uncertainty accounted for rather than a point estimate asserted.",
   "invalidating_conditions": [
     "any automated change to tennis forecasting during collection, which this milestone does not authorize and would end the experiment",
     "tennis arrival rate cannot reach the floor within 120 days"
   ],
   "known_limitations": [
     "the current tennis observation is n=129 with skill -0.0368 and the worst recorded calibration; a floor of 200 is a modest increase and may still be inconclusive",
-    "this is a falsification attempt, not a repair; no model change is authorized or implied by it"
+    "this is a falsification attempt, not a repair; no model change is authorized or implied by it",
+    "A negative point estimate alone cannot confirm a negative hypothesis: with n=129 the earlier -0.0368 reading is well inside noise. Requiring the whole interval below zero makes an inconclusive result the likely outcome, which is the honest expectation rather than a design flaw."
   ],
   "market_population": "Kalshi tennis markets discovered by the standard scan",
   "minimum_matured_fraction": 0.9,
   "missing_data_policy": "members whose markets have not matured are counted as pending and excluded from the metric; never imputed",
   "multiple_testing_policy": "one primary metric; the directional secondary is descriptive only and cannot be promoted or substituted",
-  "null_hypothesis": "Brier skill versus the base-rate benchmark is strictly positive.",
+  "null_hypothesis": "The interval includes or exceeds zero, so persistent underperformance is not established.",
   "owner": "eric",
   "population": {
     "all": [
@@ -79,7 +80,7 @@
     "baseline": "base_rate_brier",
     "confidence_interval_policy": "cluster_bootstrap_by_market_v1",
     "data_quality_invalidation_policy": "a member whose persisted score disagrees with its current outcome is counted unscorable; if such members exceed half the cohort the evaluation is invalidated rather than reported",
-    "decision_rule": "primary_metric_delta_lt_zero",
+    "decision_rule": "ci_upper_bound_lt_zero",
     "protocol_deviation_policy": "any unsupported metric, baseline, decision rule or CI policy, and any unmet stopping condition, is recorded and blocks a favorable verdict",
     "stopping_rule": {
       "kind": "fixed_sample_and_end",
