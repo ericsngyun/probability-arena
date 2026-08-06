@@ -1,0 +1,2 @@
+{"at":"2026-08-06T21:31:23.855645+00:00","event":"registered","manifest_digest":"2632e027a9e4bb8c94683f7fd7079ed50e5b96ee5c2e8c961d09bfe2f9239482","prev":null,"registration_commit":"e11a3a93d663953366351b7a7d5162be7ab537fe","seq":0,"state":"registered"}
+{"at":"2026-08-06T21:31:40.182937+00:00","event":"transition","from":"registered","note":"natural production owns collection; nothing triggered","prev":"3978fc504973d4d3cd7cfb662d074e2776f3dc729b8d35669badac04794ab4c6","seq":1,"to":"collecting"}

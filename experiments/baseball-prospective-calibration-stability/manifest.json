@@ -1,0 +1,166 @@
+{
+  "canceled_void_policy": "canceled and void outcomes are excluded and counted separately; they never receive a score",
+  "conflict_policy": "a self-contradicting outcome row is excluded, counted and preserved; it is never repaired to make a member scorable",
+  "data_sources": [
+    "kalshi_rest"
+  ],
+  "declared_baselines": {
+    "base_rate_brier": "Brier of a constant forecast equal to the observed prevalence within this experiment's own matured members"
+  },
+  "domain": "sports_baseball",
+  "domain_sample_floors": {
+    "sports_baseball": 500
+  },
+  "end_condition": "the declared end 2027-02-02T04:00:00+00:00 OR the sample floor and matured fraction, whichever is later; the end is registered so it cannot be chosen after results are visible",
+  "end_time": null,
+  "evaluation_horizons": [
+    "market close time plus a 3600s settlement grace"
+  ],
+  "experiment_class": "prospective_calibration",
+  "experiment_id": "baseball-prospective-calibration-stability",
+  "experiment_version": 1,
+  "exploratory_or_confirmatory": "confirmatory",
+  "feature_definitions": {
+    "domain": "research packet domain at forecast time",
+    "estimated_probability": "the forecast's own estimated_probability"
+  },
+  "forecast_family": "baseball_evidence",
+  "forecast_version": "v1",
+  "hypothesis": "Brier skill versus the base-rate benchmark remains strictly positive for baseball forecasts created after start_time.",
+  "immutable_references": {
+    "baseline_definition_digest": "d5ecccabebe402070687d91a4a8be560357de4b2fb1ad5e386164df93bd07d09",
+    "canon_digests": {
+      "docs/PROJECT_CANON.md": "78cbace6e1587524974aebb04c63d83fb3d20f9b7e9c4c39c8d4fb8499427b41",
+      "docs/SAFETY_BOUNDARIES.md": "d6c38783d6a5041fc25378dd06c533574c1811f52ad2904c1db2bffd9cf2121f"
+    },
+    "evaluation_code_digests": {
+      "app/services/calibration.py": "7cfaafffd3b5c03937a751d4d212f158f73db30df31b5c02d0e209ce58f46d53",
+      "app/services/forecast_reliability.py": "aa0f69e03825b85b303baf3d3b1e6f4f06b845e418b0922c9e5436604d46e83d",
+      "app/services/forecast_scorability.py": "08fa86ef338362a543b9dc491b48a221c2646df7610a423221de0216e43db990",
+      "app/services/outcome_coverage.py": "958256dc5d6b6ecdfd61bff74277ec10b8d2ea7953de794e1be46dfe807e1e3a"
+    },
+    "feature_configuration_digest": "558a39e7e0c798a863f8bb246b2a794e8277d656af5c510eaf5ec6cbd8618b50",
+    "forecast_family": "baseball_evidence",
+    "forecast_version": "v1",
+    "metric_references": {
+      "baseline_definition_version": 1,
+      "ci_policy_version": 1,
+      "metric_code_digests": {
+        "app/services/calibration.py": "7cfaafffd3b5c03937a751d4d212f158f73db30df31b5c02d0e209ce58f46d53",
+        "app/services/experiment_results.py": "2942cad53bef3d6c09b899b42c699ae284f2c23c9cb8cf26a90dd06df123c913",
+        "app/services/forecast_reliability.py": "aa0f69e03825b85b303baf3d3b1e6f4f06b845e418b0922c9e5436604d46e83d"
+      }
+    },
+    "population_definition_digest": "0541e04c7290eb49958001250458b12c11538e4fcba716e22c879e6c5efa2898",
+    "population_predicate_digest": "d2b42d69f74089ba6ab14ef0d3784dc6a6f2c62e47af75dfe497d8e8e2bb75b6",
+    "population_references": {
+      "field_registry_digest": "5f90e0bc66708c3b355ce0022ef00056026cdb269f6c8894cc9a1b6cefe7aa47",
+      "field_registry_version": 1,
+      "forecast_model_reference": "MarketForecastRecord@alembic_0027",
+      "population_logic_digests": {
+        "app/services/experiment_population.py": "b85db40d3779bd658cf35bf21ae0162e0883caa2cfacff0e138362f4a56f18d3",
+        "app/services/experiment_predicates.py": "61ac46aac745c599f34407195563373dadd4a30b16b9792aca98c70dad522a18"
+      },
+      "predicate_schema_version": 1
+    },
+    "primary_metric_digest": "38463dd517299ea884262eb657fbdb3105cd00d5ec0845eb5a8be93f81979065",
+    "repository_commit": "e11a3a93d663953366351b7a7d5162be7ab537fe",
+    "signal_configuration_digest": "c7aef6815f098c3009f4e8c5d89ad598e0ac5c444c127780c9ba10b216ea07bb"
+  },
+  "invalidating_conditions": [
+    "forecast_version changes during collection",
+    "ENABLE_OUTCOME_SYNC_COVERAGE_REPAIR is disabled during collection",
+    "evaluation code digests drift without disclosure"
+  ],
+  "known_limitations": [
+    "baseball is 85 percent of the scored population, so this result and the aggregate will move together and are not independent evidence",
+    "prevalence is non-stationary, so the benchmark itself moves"
+  ],
+  "manifest_digest": "2632e027a9e4bb8c94683f7fd7079ed50e5b96ee5c2e8c961d09bfe2f9239482",
+  "market_population": "Kalshi baseball markets discovered by the standard scan, forecast by the baseball_evidence family at version v1",
+  "minimum_matured_fraction": 0.9,
+  "missing_data_policy": "members whose markets have not matured are counted as pending and excluded from the metric; never imputed",
+  "multiple_testing_policy": "one primary metric; ECE is descriptive only and cannot be promoted",
+  "null_hypothesis": "Brier skill versus the base-rate benchmark is at most zero.",
+  "owner": "eric",
+  "population": {
+    "all": [
+      {
+        "field": "domain",
+        "operator": "eq",
+        "value": "sports_baseball"
+      },
+      {
+        "field": "forecast_created_at",
+        "operator": "gte_registration_time"
+      },
+      {
+        "field": "has_research_packet",
+        "operator": "eq",
+        "value": true
+      },
+      {
+        "field": "forecaster",
+        "operator": "eq",
+        "value": "baseball_evidence"
+      },
+      {
+        "field": "forecaster_version",
+        "operator": "eq",
+        "value": "v1"
+      }
+    ],
+    "none": [],
+    "rationale": [
+      "Baseball forecasts produced by baseball_evidence v1 on or after registration, with a research packet present.",
+      "Membership is decided ONLY by these typed forecast-time predicates. Pending outcomes remain pending; unscorable rows are reported; sample-floor and matured-fraction rules decide evaluability, never membership.",
+      "window_end is declared 'unbounded' deliberately: the end condition is the sample floor plus matured fraction, not a calendar date. Declaring it explicitly is what stops an evaluator choosing the end after seeing results."
+    ],
+    "schema_version": 1,
+    "window_end": "unbounded"
+  },
+  "primary_metric": {
+    "definition": "1 - (mean Brier / base-rate-benchmark Brier)",
+    "name": "mean_brier",
+    "source": "registry-owned canonical computation"
+  },
+  "provider_policy": "no new provider and no paid provider; the existing read-only Kalshi market-detail path only, at the cadence MarketOps already runs",
+  "registered_at": "2026-08-06T21:31:23.855645+00:00",
+  "registration_commit": "e11a3a93d663953366351b7a7d5162be7ab537fe",
+  "research_question": "Does the baseball calibration and base-rate skill measured on the post-drain population persist on forecasts created after registration?",
+  "result_protocol": {
+    "baseline": "base_rate_brier",
+    "confidence_interval_policy": "cluster_bootstrap_by_market_v1",
+    "data_quality_invalidation_policy": "a member whose persisted score disagrees with its current outcome is counted unscorable; if such members exceed half the cohort the evaluation is invalidated rather than reported",
+    "decision_rule": "primary_metric_delta_gt_zero",
+    "protocol_deviation_policy": "any unsupported metric, baseline, decision rule or CI policy, and any unmet stopping condition, is recorded and blocks a favorable verdict",
+    "stopping_rule": {
+      "kind": "fixed_sample_and_end",
+      "minimum_matured_fraction": 0.9,
+      "minimum_sample": 500,
+      "not_after": "2027-02-02T04:00:00+00:00",
+      "not_before": "2026-08-06T04:00:00+00:00"
+    }
+  },
+  "safety_boundary": "measurement only; no expected value, recommendation, sizing, order, wallet or capital behavior is produced or implied, and calibration is not an edge claim",
+  "sample_floor": 500,
+  "secondary_metrics": [
+    {
+      "name": "ece",
+      "status": "descriptive_only"
+    },
+    {
+      "name": "murphy_components",
+      "status": "descriptive_only"
+    }
+  ],
+  "signal_definitions": {
+    "none": "no signal gating; every eligible forecast enters"
+  },
+  "stale_score_policy": "only scored_current members enter; stale rows are excluded",
+  "start_condition": "the first forecast whose created_at is at or after start_time; no forecast existing at registration is eligible",
+  "start_time": "2026-08-06T21:31:23.855645+00:00",
+  "state": "registered",
+  "stopping_rule": "a single evaluation once the sample floor and matured fraction are both satisfied; no interim looks, and the experiment is not stopped early on a favourable reading",
+  "title": "Baseball prospective calibration stability"
+}
