@@ -174,6 +174,51 @@ Tennis remains a **falsification**: its decision rule is
 `primary_metric_delta_lt_zero`, so "supports" means skill is *not* positive. The
 negative finding is deliberately not reworded into a promotion objective.
 
+## 13b. Review findings
+
+An independent review found **five live routes to a favorable verdict** in the
+milestone named for closing them. All are fixed.
+
+| # | route | resolution |
+|---|---|---|
+| **H1** | **Peek-until-favorable.** Re-evaluation needed only *some* prose string, and the head tracked the NEWEST result, so an evaluator could evaluate repeatedly and hand the reader the flattering one | the FIRST terminal verdict is pinned in the head and never moves; later records are stamped `superseded_by_protocol` |
+| **H2** | **Result files sat outside the integrity check.** Deleting a result JSON, or rewriting its verdict in place, left the chain verifying clean — the events already carried `file` and `result_digest` and nothing used them | `verify_result_chain` stats each file and recomputes its digest |
+| **H3** | **The caller chose the clock.** With a `not_before` rule, a future `now` turned `still_collecting` into `supports_hypothesis` and persisted it under the spoofed timestamp, which also named the file | confirmed runs must be within 300 s of the real clock; every record carries a non-overridable `recorded_at` |
+| **H4** | **An unconditional pass.** `ci_lower_bound_gt_zero` + `mean_brier` tested the lower bound of a *squared error*, which exceeds zero for any non-perfect forecaster. A worthless p=0.5 forecaster at 50% prevalence produced delta 0.0, CI [0.25, 0.25] and "supports" | the bootstrap resamples the **delta** — the comparison the rule actually tests |
+| **H5** | **`fixed_sample_and_end` did not require an end**, so the terminal moment was "the first evaluation after the count clears the floor" | `not_after` required at registration; all three drafts declare a start and an end |
+| M1 | The degenerate-base-rate guard triggered at 1% while its own comment cited soccer's **2.9%** — false assurance | threshold moved to 5% |
+| M2 | The frozen membership digest was never cross-checked against the evaluated cohort | recomputed and compared; evaluation refuses on disagreement |
+| M3 | `registered_population_count` was every forecast row in the database, printed under a heading about the cohort | renamed `scanned_forecast_count`, with `eligible_count` added |
+| M7 | NaN could reach a digest and produce invalid JSON | `allow_nan=False` |
+
+**Protocol validation moved to REGISTRATION.** An unsupported metric, baseline,
+decision rule, CI policy or endless stopping rule can no longer be *registered* —
+stricter than the review asked, because a contract that only fails at evaluation
+has already wasted the collection window.
+
+**One design split the review's digest test forced.** `result_digest` identifies
+*this evaluation*, timestamps included — in an append-only log two evaluations
+must be distinguishable. `content_digest` identifies *the finding*.
+Reproducibility means the finding reproduces, not the clock.
+
+### Carried to 002C, disclosed not fixed
+
+- **M4** — the identifier universe artifact is presence-checked, not resolved: a
+  fabricated block with `selection_method: "hand picked after looking at
+  results"` passes, because "results" is not in the banned list and the digest
+  is never resolved to a file. No draft uses `market_ticker`, so nothing is
+  registered against it, but it must be closed before one is.
+- **M5** — `operator_notes` and `reevaluation_reason` go verbatim into a
+  committed artifact with no secret scan, vocabulary scan or length cap.
+- **M6** — `experiment_results.py` pins itself as a metric reference, so any
+  edit makes drift material for every registered experiment with no re-pin
+  event. Fail-closed is right; permanently-closed is not.
+- **M8** — tennis confirms a negative hypothesis by point estimate, with no
+  power consideration, and `delta == 0.0` returns `does_not_support`. A CI-based
+  falsification bound would be stronger.
+- **M9** — `none`-clause rows retained through UNKNOWN emit no reason, so they
+  are counted nowhere.
+
 ## 14. What this milestone does NOT do
 
 It does not register anything and records no result. Registration is 002C.
