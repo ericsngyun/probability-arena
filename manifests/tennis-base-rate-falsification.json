@@ -1,0 +1,76 @@
+{
+  "canceled_void_policy": "canceled and void outcomes are excluded and counted separately; they never receive a score",
+  "conflict_policy": "a self-contradicting outcome row is excluded, counted and preserved; it is never repaired to make a member scorable",
+  "data_sources": [
+    "kalshi_rest"
+  ],
+  "declared_baselines": {
+    "base_rate_brier": "Brier of a constant forecast equal to the observed prevalence within this experiment's own matured members"
+  },
+  "domain": "sports_tennis",
+  "domain_sample_floors": {
+    "sports_tennis": 200
+  },
+  "end_condition": "sample floor reached AND minimum_matured_fraction satisfied",
+  "end_time": null,
+  "evaluation_horizons": [
+    "market close time plus a 3600s settlement grace"
+  ],
+  "exclusion_rules": [
+    "market has no close time recorded",
+    "market has not matured by the evaluation horizon",
+    "member is not scored_current at evaluation"
+  ],
+  "experiment_class": "domain_reliability",
+  "experiment_id": "tennis-base-rate-falsification",
+  "experiment_version": 1,
+  "exploratory_or_confirmatory": "confirmatory",
+  "feature_definitions": {
+    "domain": "research packet domain at forecast time",
+    "estimated_probability": "the forecast's own estimated_probability"
+  },
+  "forecast_family": "any",
+  "forecast_version": "as recorded per member and reported in composition",
+  "hypothesis": "Brier skill versus the base-rate benchmark remains at or below zero for tennis forecasts created after start_time.",
+  "inclusion_rules": [
+    "forecast created_at >= start_time",
+    "research packet domain == sports_tennis"
+  ],
+  "invalidating_conditions": [
+    "any automated change to tennis forecasting during collection, which this milestone does not authorize and would end the experiment",
+    "tennis arrival rate cannot reach the floor within 120 days"
+  ],
+  "known_limitations": [
+    "the current tennis observation is n=129 with skill -0.0368 and the worst recorded calibration; a floor of 200 is a modest increase and may still be inconclusive",
+    "this is a falsification attempt, not a repair; no model change is authorized or implied by it"
+  ],
+  "market_population": "Kalshi tennis markets discovered by the standard scan",
+  "minimum_matured_fraction": 0.9,
+  "missing_data_policy": "members whose markets have not matured are counted as pending and excluded from the metric; never imputed",
+  "multiple_testing_policy": "one primary metric; the directional secondary is descriptive only and cannot be promoted or substituted",
+  "null_hypothesis": "Brier skill versus the base-rate benchmark is strictly positive.",
+  "owner": "eric",
+  "primary_metric": {
+    "definition": "1 - (mean Brier / base-rate-benchmark Brier)",
+    "name": "brier_skill_vs_base_rate",
+    "source": "forecast-reliability-decomposition-report baselines block"
+  },
+  "provider_policy": "no new provider and no paid provider; the existing read-only Kalshi market-detail path only, at the cadence MarketOps already runs",
+  "research_question": "Does tennis continue to fail to beat its base-rate benchmark on forecasts created after registration?",
+  "safety_boundary": "measurement only; no expected value, recommendation, sizing, order, wallet or capital behavior is produced or implied, and calibration is not an edge claim",
+  "sample_floor": 200,
+  "secondary_metrics": [
+    {
+      "definition": "directional weighted shares; usable only because FORECAST-RELIABILITY-DIRECTIONAL-FIX-001 made the approximately-calibrated residual explicit",
+      "name": "reliability_bin_direction",
+      "status": "descriptive_only"
+    }
+  ],
+  "signal_definitions": {
+    "none": "no signal gating; every eligible forecast enters"
+  },
+  "stale_score_policy": "only scored_current members enter; stale rows are excluded",
+  "start_condition": "the first forecast whose created_at is at or after start_time; no forecast existing at registration is eligible",
+  "stopping_rule": "a single evaluation once the sample floor and matured fraction are both satisfied; no interim looks, and the experiment is not stopped early on a favourable reading",
+  "title": "Tennis base-rate falsification"
+}

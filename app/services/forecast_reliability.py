@@ -131,8 +131,17 @@ def wilson_interval(k: int, n: int, z: float = 1.96) -> tuple[float | None, floa
 
 
 def direction(mean_p: float, obs_rate: float, tol: float = CALIB_TOLERANCE) -> str:
-    """Precise directional calibration classification."""
-    gap = mean_p - obs_rate
+    """Precise directional calibration classification.
+
+    The gap is rounded to 6dp before comparison, matching the precision at which
+    `compute_bins` stores and the report displays `calibration_gap`. Without it
+    the classification is taken from the raw binary float while the reader sees
+    the rounded one, and they disagree exactly on the boundary: `0.55 - 0.50` is
+    `0.050000000000000044`, so a bin displaying a gap of `0.05` against a
+    tolerance of `0.05` would be classified as overconfident. Rounding first
+    makes the label agree with the number printed next to it.
+    """
+    gap = round(mean_p - obs_rate, 6)
     if abs(gap) <= tol:
         return APPROX_CALIBRATED
     if mean_p >= 0.5:
@@ -257,29 +266,77 @@ def murphy_decomposition(points: list[_Point], edges: list[float]) -> dict:
     }
 
 
+_PARTITION_KEYS = ("overprediction_weighted_share", "underprediction_weighted_share",
+                   "approximately_calibrated_weighted_share",
+                   "unclassified_weighted_share")
+
+
+def _rounded_partition(*shares: float) -> dict:
+    rounded = [round(s, 4) for s in shares]
+    total = sum(rounded)
+    if total and abs(total - 1.0) < 1e-3:
+        biggest = max(range(len(rounded)), key=lambda i: rounded[i])
+        rounded[biggest] = round(rounded[biggest] + (1.0 - total), 4)
+    return dict(zip(_PARTITION_KEYS, rounded))
+
+
 def directional_summary(bin_stats: list[dict], points: list[_Point]) -> dict:
+    """Directional calibration shares, weighted by FORECAST COUNT.
+
+    Weighting basis, stated once and used everywhere: each populated bin
+    contributes `bin.count / total_scored_points`. Not sample share of a
+    filtered subset, not absolute calibration error, not bin count. The three
+    shares therefore partition 1.0 exactly whenever there is data.
+
+    **`over` and `under` being simultaneously 0.0 is a valid state, not a bug.**
+    A bin whose |mean_p − observed| is within `CALIB_TOLERANCE` is classified
+    `approximately_calibrated` and belongs to neither share. When every
+    populated bin is inside tolerance — which is what a well-calibrated model
+    looks like — both shares are 0.0 and the whole mass sits in the
+    approximately-calibrated residual. That residual used to be invisible, so a
+    reader could not tell "excellently calibrated" from "no data". It is now
+    reported explicitly.
+
+    `signed_calibration_gap` is a DIFFERENT quantity: aggregate mean(p) − base
+    rate over all points. It is not the algebraic complement of these shares and
+    must not be reconciled against them. Many small same-signed per-bin gaps,
+    each inside tolerance, sum to a nonzero aggregate — which is exactly the
+    production state that prompted this audit.
+    """
     n = len(points)
     prev = _mean([pt.y for pt in points]) if n else None
     signed = ((_mean([pt.p for pt in points]) - prev) if (n and prev is not None) else None)
     over_w = under_w = 0.0
-    over_share = under_share = 0.0
+    over_share = under_share = calibrated_share = excluded_share = 0.0
     for b in bin_stats:
-        if b["count"] == 0 or b["direction"] is None:
+        if b["count"] == 0:
             continue
         frac = b["count"] / n
-        if b["direction"] in (OVERCONF_POS, OVERCONF_NEG):
+        if b["direction"] is None:
+            # Unreachable while count > 0 (mean_p and observed rate both exist),
+            # but counted rather than silently dropped so the shares always sum.
+            excluded_share += frac
+        elif b["direction"] in (OVERCONF_POS, OVERCONF_NEG):
             over_w += frac
             over_share += frac
         elif b["direction"] in (UNDERCONF_POS, UNDERCONF_NEG):
             under_w += frac
             under_share += frac
+        else:
+            calibrated_share += frac
     extreme_miss = sum(1 for pt in points if (pt.p >= 0.9 and pt.y == 0.0) or (pt.p < 0.1 and pt.y == 1.0))
     high_correct = sum(1 for pt in points if (pt.p >= 0.9 and pt.y == 1.0) or (pt.p < 0.1 and pt.y == 0.0))
     return {
         "signed_calibration_gap": round(signed, 4) if signed is not None else None,
         "abs_calibration_gap": round(abs(signed), 4) if signed is not None else None,
-        "overprediction_weighted_share": round(over_share, 4),
-        "underprediction_weighted_share": round(under_share, 4),
+        # Rounded so the four still sum to exactly 1.0: three independent
+        # 4dp roundings of 1/3 give 0.9999, and a partition that does not
+        # partition invites exactly the reconciliation this block warns against.
+        # The largest share absorbs the residual.
+        **_rounded_partition(over_share, under_share, calibrated_share,
+                             excluded_share),
+        "directional_weight_basis": "forecast_count",
+        "calibration_tolerance": CALIB_TOLERANCE,
         "extreme_confidence_miss_count": extreme_miss,
         "high_confidence_correct_count": high_correct,
         "_over_w": over_w, "_under_w": under_w,
