@@ -148,6 +148,8 @@ class PopulationResult:
     pre_registration_excluded: int = 0
     post_end_excluded: int = 0
     declared_rule_exclusions: dict = field(default_factory=dict)
+    unknown_exclusions: dict = field(default_factory=dict)
+    unknown_retentions: dict = field(default_factory=dict)
     unexpected_missing_fields: dict = field(default_factory=dict)
     invalid_field_values: list = field(default_factory=list)
     membership_digest: str = ""
@@ -237,14 +239,12 @@ def reconstruct_population(
     members: list[int] = []
     pre_reg = post_end = 0
     rule_exclusions: dict[str, int] = {}
+    unknown_exclusions: dict[str, int] = {}
+    unknown_retentions: dict[str, int] = {}
     missing_fields: dict[str, int] = {}
 
     referenced = {p["field"] for p in canon.get("all", []) + canon.get("none", [])}
     for row in facts:
-        for fname in referenced:
-            if fname in FIELD_REGISTRY and row.values.get(fname) is None:
-                missing_fields[fname] = missing_fields.get(fname, 0) + 1
-
         created = row.values.get("forecast_created_at")
         if created is None or created < registered_at:
             pre_reg += 1
@@ -252,14 +252,29 @@ def reconstruct_population(
         if declared_end is not None and created >= declared_end:
             post_end += 1
             continue
+        # Counted only for in-window rows. Tallying before the window filters
+        # made `unexpected_missing_fields` include forecasts that were never
+        # candidates, which reads as a data problem inside the cohort.
+        for fname in referenced:
+            if fname in FIELD_REGISTRY and row.values.get(fname) is None:
+                missing_fields[fname] = missing_fields.get(fname, 0) + 1
 
+        retained: list = []
         ok, reasons = evaluate(canon, row, registered_at=registered_at,
-                               declared_end=declared_end)
+                               declared_end=declared_end,
+                               collect_unknown=retained)
+        for r in retained:
+            unknown_retentions[r] = unknown_retentions.get(r, 0) + 1
         if ok:
             members.append(row.forecast_id)
         else:
             for r in reasons:
-                rule_exclusions[r] = rule_exclusions.get(r, 0) + 1
+                # M9 — separate TRUE exclusions from UNKNOWN ones. "the rule
+                # said no" and "we could not tell" are different findings, and
+                # collapsing them hides a data-quality problem as a filter.
+                target = (unknown_exclusions if r.endswith(":unknown")
+                          else rule_exclusions)
+                target[r] = target.get(r, 0) + 1
 
     members.sort()
     digest = hashlib.sha256(json.dumps(
@@ -275,6 +290,8 @@ def reconstruct_population(
         population_count=len(facts), eligible_count=len(members),
         pre_registration_excluded=pre_reg, post_end_excluded=post_end,
         declared_rule_exclusions=dict(sorted(rule_exclusions.items())),
+        unknown_exclusions=dict(sorted(unknown_exclusions.items())),
+        unknown_retentions=dict(sorted(unknown_retentions.items())),
         unexpected_missing_fields=dict(sorted(missing_fields.items())),
         membership_digest=digest, examples=members[:max(0, examples)],
     )

@@ -106,8 +106,12 @@ SUPPORTED_STOPPING_RULES = (STOP_FIXED_SAMPLE_AND_END,)
 DECISION_DELTA_GT_ZERO = "primary_metric_delta_gt_zero"
 DECISION_DELTA_LT_ZERO = "primary_metric_delta_lt_zero"
 DECISION_CI_LOWER_GT_ZERO = "ci_lower_bound_gt_zero"
+# M8 — a negative POINT estimate cannot confirm persistent underperformance.
+# `ci_upper_bound_lt_zero` is the falsification counterpart of
+# `ci_lower_bound_gt_zero`: the whole interval must sit below zero.
+DECISION_CI_UPPER_LT_ZERO = "ci_upper_bound_lt_zero"
 SUPPORTED_DECISION_RULES = (DECISION_DELTA_GT_ZERO, DECISION_DELTA_LT_ZERO,
-                            DECISION_CI_LOWER_GT_ZERO)
+                            DECISION_CI_LOWER_GT_ZERO, DECISION_CI_UPPER_LT_ZERO)
 
 # --- confidence interval policy (versioned, deterministic) ----------------------
 CI_POLICY_VERSION = 1
@@ -127,6 +131,13 @@ MAX_CLOCK_SKEW_SECONDS = 300
 # Prevalence at or beyond this edge makes the base rate near-unbeatable and the
 # skill metric uninformative. 5% covers the soccer artifact (2.9%).
 DEGENERATE_PREVALENCE = 0.05
+
+# M5 — operator prose is a NON-AUTHORITATIVE annotation. It cannot affect
+# membership, metrics, stopping or the verdict, and nothing here reads it back.
+# It is bounded and secret-scanned because it lands in a committed artifact —
+# but bounding prose is hygiene, not semantic control, and pretending otherwise
+# is how the old vocabulary blocklist earned its reputation.
+MAX_NOTE_CHARS = 2000
 
 # --- drift classes added here ---------------------------------------------------
 DRIFT_METRIC_CODE = "material_metric_code"
@@ -688,6 +699,15 @@ def _derive_verdict(*, integrity_ok: bool, drift_material: bool,
             return INCONCLUSIVE_FLOOR, ["confidence interval unavailable"]
         return (SUPPORTS if lower > 0 else DOES_NOT_SUPPORT), [
             f"ci lower {lower} vs 0 under {decision_rule}"]
+    if decision_rule == DECISION_CI_UPPER_LT_ZERO:
+        upper = ci.get("upper")
+        if upper is None:
+            return INCONCLUSIVE_FLOOR, ["confidence interval unavailable"]
+        # A point estimate below zero is not evidence of persistent
+        # underperformance — the interval has to exclude zero. Otherwise
+        # "continues to fail" is confirmed by noise.
+        return (SUPPORTS if upper < 0 else DOES_NOT_SUPPORT), [
+            f"ci upper {upper} vs 0 under {decision_rule}"]
     return INVALID_PROTOCOL, [f"unsupported decision rule {decision_rule!r}"]
 
 
@@ -704,6 +724,21 @@ def evaluate_experiment(
     the registered manifest.
     """
     real_now = datetime.now(timezone.utc)
+    for label, text in (("operator_notes", operator_notes),
+                        ("reevaluation_reason", reevaluation_reason)):
+        if text is None:
+            continue
+        if not isinstance(text, str) or len(text) > MAX_NOTE_CHARS:
+            raise ManifestError(
+                f"{label} must be text under {MAX_NOTE_CHARS} characters")
+        from app.services.experiment_registry import (
+            SECRET_FIELD_PATTERN,
+            SECRET_VALUE_PATTERN,
+        )
+
+        if SECRET_VALUE_PATTERN.search(text) or SECRET_FIELD_PATTERN.search(text):
+            raise ManifestError(
+                f"{label} looks like it carries a credential; it is committed")
     now = _aware(now) or real_now
     if confirm and abs((now - real_now).total_seconds()) > MAX_CLOCK_SKEW_SECONDS:
         raise ManifestError(
@@ -728,7 +763,52 @@ def evaluate_experiment(
     refs = manifest.get("immutable_references") or {}
     pop_drift = classify_population_drift(refs.get("population_references"))
     metric_drift = classify_metric_drift(refs.get("metric_references"))
-    drift = {"population": pop_drift, "metric": metric_drift}
+
+    # M6 — governed re-pinning. Pinning `experiment_results.py` as its own
+    # reference meant any edit — including fixing anything a review found —
+    # made drift material for every registered experiment, permanently, with no
+    # way back except editing a registered manifest. Fail-closed was right;
+    # permanently closed was not. An append-only amendment can cover a specific
+    # movement, but ONLY a non-semantic one: a change that could move a number
+    # forces a new experiment version instead.
+    from app.services.experiment_amendments import amendment_for
+    from app.services.experiment_population import population_reference_snapshot
+
+    def _covered(kind, drift_result, current_snapshot):
+        if not drift_result["material"]:
+            return drift_result, None
+        try:
+            digest = hashlib.sha256(canonical_json(
+                current_snapshot).encode("utf-8")).hexdigest()
+        except Exception:
+            return drift_result, None
+        am = amendment_for(experiment_id, kind, digest, base)
+        if am and am.get("collection_comparable"):
+            out = dict(drift_result)
+            out["material"] = False
+            out["amended_by"] = am["amendment_id"]
+            out["detail"] = (f"covered by amendment {am['amendment_id']} "
+                             f"({am['reason']}); prior collection declared "
+                             "comparable by review")
+            return out, am
+        return drift_result, am
+
+    try:
+        cur_metric = metric_reference_snapshot()
+    except Exception:
+        cur_metric = {}
+    try:
+        cur_pop = population_reference_snapshot()
+    except Exception:
+        cur_pop = {}
+    metric_drift, metric_amend = _covered(
+        "metric_references", metric_drift, cur_metric)
+    pop_drift, pop_amend = _covered(
+        "population_references", pop_drift, cur_pop)
+
+    drift = {"population": pop_drift, "metric": metric_drift,
+             "amendments": [a["amendment_id"] for a in (metric_amend, pop_amend)
+                            if a]}
     drift_material = bool(pop_drift["material"] or metric_drift["material"])
 
     protocol = manifest.get("result_protocol") or {}

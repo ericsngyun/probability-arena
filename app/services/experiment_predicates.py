@@ -387,7 +387,8 @@ IDENTIFIER_FIELDS = ("market_ticker",)
 
 
 def check_identifier_cohort(canon: dict, *, kind: str,
-                            universe: dict | None = None) -> list:
+                            universe: dict | None = None,
+                            universe_base=None, registered_at=None) -> list:
     """Errors for identifier predicates that could encode a hand-picked cohort.
 
     Confirmatory experiments may not enumerate markets unless the set comes
@@ -409,17 +410,28 @@ def check_identifier_cohort(canon: dict, *, kind: str,
                 "identifier set chosen by hand IS a cohort, and choosing it "
                 "after seeing results is undetectable from the manifest alone")
         else:
-            for required in ("universe_id", "digest", "created_at",
-                             "selection_method", "member_count"):
-                if not universe.get(required):
-                    errors.append(f"population.universe.{required} is required")
-            method = str(universe.get("selection_method", "")).lower()
-            for banned in ("performance", "best", "top", "winning", "beat",
-                           "highest", "lowest", "brier", "score"):
-                if banned in method:
-                    errors.append(
-                        f"universe.selection_method references {banned!r}: the "
-                        "universe must not be result-derived")
+            # M4 — the reference is RESOLVED against the committed artifact, not
+            # presence-checked. The previous version accepted a fabricated block
+            # whose `selection_method` prose merely avoided a substring list,
+            # and never opened the file it named. Presence of a field is not
+            # authority.
+            from app.services.experiment_universe import (
+                UniverseError,
+                check_universe_covers,
+                resolve_universe,
+            )
+
+            try:
+                resolved = resolve_universe(universe, base=universe_base,
+                                            registered_at=registered_at)
+                enumerated: list = []
+                for p in used:
+                    v = p.get("value")
+                    enumerated.extend(v if isinstance(v, list) else [v])
+                errors.extend(check_universe_covers(
+                    [e for e in enumerated if isinstance(e, str)], resolved))
+            except UniverseError as exc:
+                errors.append(f"universe: {exc}")
     for p in used:
         if p["operator"] not in (OP_EQ, OP_IN, OP_NOT_EQ, OP_NOT_IN):
             errors.append(
@@ -711,11 +723,18 @@ def _compare(spec: FieldSpec, op: str, actual: Any, expected: Any,
 
 
 def evaluate(canon: dict, facts: ForecastFacts, *, registered_at: datetime,
-             declared_end: datetime | None = None) -> tuple[bool, list]:
-    """(is_member, reasons_for_exclusion). Pure; reads only `facts`."""
+             declared_end: datetime | None = None,
+             collect_unknown: list | None = None) -> tuple[bool, list]:
+    """(is_member, reasons_for_exclusion). Pure; reads only `facts`.
+
+    `collect_unknown`, when given, receives the `none`-clause vetoes that were
+    NOT applied because the field was unknown — rows kept in the cohort on the
+    strength of a missing value, which reconciliation must be able to show.
+    """
     registered_at = _aware(registered_at)
     declared_end = _aware(declared_end) if declared_end else None
     reasons: list[str] = []
+    retained_unknown: list[str] = []
     for p in canon.get("all", []):
         spec = FIELD_REGISTRY[p["field"]]
         truth = _compare(spec, p["operator"], facts.values.get(p["field"]),
@@ -734,4 +753,12 @@ def evaluate(canon: dict, facts: ForecastFacts, *, registered_at: datetime,
         # (unproven means not vetoed). Both refuse to act on unknowns.
         if truth is TRUE:
             reasons.append(f"none:{p['field']}:{p['operator']}")
+        elif truth is UNKNOWN:
+            # M9 — a row retained through an UNKNOWN veto used to be counted
+            # nowhere: it silently stayed in the cohort on the strength of a
+            # missing value. It is still retained (that is the policy) but the
+            # retention is now visible.
+            retained_unknown.append(f"none:{p['field']}:{p['operator']}:unknown")
+    if collect_unknown is not None:
+        collect_unknown.extend(retained_unknown)
     return (not reasons), reasons

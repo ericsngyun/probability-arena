@@ -535,8 +535,10 @@ class TestDraftCompatibility:
         promotion objective."""
         m = json.loads(
             Path("manifests/tennis-base-rate-falsification.json").read_text())
+        # 002C upgraded this to the uncertainty-aware form: a negative POINT
+        # estimate cannot confirm persistent underperformance.
         assert m["result_protocol"]["decision_rule"] == \
-            rs.DECISION_DELTA_LT_ZERO
+            rs.DECISION_CI_UPPER_LT_ZERO
         assert "at or below zero" in m["hypothesis"].lower() \
             or "not" in m["hypothesis"].lower()
 
