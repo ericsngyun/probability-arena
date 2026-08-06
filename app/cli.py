@@ -613,6 +613,71 @@ def experiment_registry_register(
     return 0
 
 
+def kalshi_realtime_replay(
+    archive: str, environment: str = "demo", fmt: str = "text",
+) -> int:
+    """KALSHI-REALTIME-OBSERVATION-001A — deterministic replay of an archive.
+
+    Pure: no network, no credential, no database, no venue. The same archive
+    must always produce the same per-market checksums — that equality is the
+    acceptance test for the whole data path, not a debugging convenience.
+    """
+    import json as _json
+
+    from app.realtime.archive import (
+        ArchiveError,
+        EventArchive,
+        latency_envelope,
+        replay,
+    )
+
+    try:
+        store = EventArchive(_Path(archive), environment=environment)
+        records = store.read_all()
+    except (ArchiveError, OSError) as exc:
+        print(f"error: {exc}")
+        return 2
+
+    integrity = store.verify()
+    out = replay(records)
+    lat = latency_envelope(records).to_dict()
+    payload = {"archive": str(archive), "environment": environment,
+               "integrity": integrity, "replay": out, "latency": lat,
+               "external_calls": 0, "persisted": False}
+
+    if fmt == "json":
+        print(_json.dumps(payload, indent=2, sort_keys=True, default=str))
+        return 0 if integrity["intact"] and not out["faults"] else 1
+
+    print(f"kalshi realtime replay — {environment}")
+    print("  read-only reconstruction; zero provider calls, zero writes")
+    print(f"  archive              {archive}")
+    print(f"  records              {integrity['records']}")
+    print(f"  digest mismatches    {len(integrity['mismatched'])}")
+    print(f"  truncated records    {integrity['truncated_records']}")
+    print(f"  markets              {out['markets']}")
+    print(f"  events applied       {out['events_applied']}")
+    print(f"  events rejected      {out['events_rejected']}")
+    for ticker, chk in out["checksums"].items():
+        pub = out["publishable"][ticker]
+        st = out["stats"][ticker]
+        print(f"    {ticker:24} publishable={pub} checksum={chk[:16]}…")
+        print(f"      snapshots={st['snapshots']} deltas={st['deltas']} "
+              f"dups={st['duplicates']} gaps={st['gaps']} "
+              f"regressions={st['regressions']}")
+    if out["faults"]:
+        print("  faults (never absorbed silently):")
+        for f in out["faults"][:10]:
+            print(f"    {f['market_ticker']} seq={f['seq']}: {f['error']}")
+    print("  latency envelope (decomposed, never one number):")
+    for hop in ("venue_to_receive_ms", "receive_to_normalize_us",
+                "normalize_to_book_us"):
+        q = lat[hop]
+        print(f"    {hop:26} n={q['n']} p50={q['p50']} p95={q['p95']} "
+              f"p99={q['p99']} max={q['max']}")
+    return 0 if integrity["intact"] and not out["faults"] else 1
+
+
 def experiment_registry_record_result(
     experiment_id: str, confirm: bool = False, base: str | None = None,
     notes: str | None = None, reevaluation_reason: str | None = None,
@@ -7214,6 +7279,16 @@ def build_parser() -> argparse.ArgumentParser:
                      help="registry root (defaults to ./experiments)")
     err.add_argument("--format", choices=("text", "json"), default="text", dest="fmt")
 
+    krr = subparsers.add_parser(
+        "kalshi-realtime-replay",
+        help="Deterministically replay an archived Kalshi event stream "
+             "(KALSHI-REALTIME-OBSERVATION-001A; read-only, zero calls)")
+    krr.add_argument("--archive", type=str, required=True)
+    krr.add_argument("--environment", choices=("demo", "production"),
+                     default="demo")
+    krr.add_argument("--format", choices=("text", "json"), default="text",
+                     dest="fmt")
+
     errr = subparsers.add_parser(
         "experiment-registry-record-result",
         help="Registry-owned evaluation of a registered experiment "
@@ -8105,6 +8180,9 @@ def main(argv: list[str] | None = None) -> int:
         return experiment_registry_register(
             manifest=args.manifest, confirm=args.confirm and not args.dry_run,
             base=args.base, fmt=args.fmt)
+    if args.command == "kalshi-realtime-replay":
+        return kalshi_realtime_replay(
+            archive=args.archive, environment=args.environment, fmt=args.fmt)
     if args.command == "experiment-registry-record-result":
         return experiment_registry_record_result(
             experiment_id=args.experiment_id,
