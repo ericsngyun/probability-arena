@@ -11,7 +11,7 @@
   "domain_sample_floors": {
     "sports_baseball": 500
   },
-  "end_condition": "sample floor reached AND minimum_matured_fraction satisfied",
+  "end_condition": "the declared end 2027-02-02T04:00:00+00:00 OR the sample floor and matured fraction, whichever is later; the end is registered so it cannot be chosen after results are visible",
   "end_time": null,
   "evaluation_horizons": [
     "market close time plus a 3600s settlement grace"
@@ -80,17 +80,35 @@
   },
   "primary_metric": {
     "definition": "1 - (mean Brier / base-rate-benchmark Brier)",
-    "name": "brier_skill_vs_base_rate",
-    "source": "forecast-reliability-decomposition-report baselines block"
+    "name": "mean_brier",
+    "source": "registry-owned canonical computation"
   },
   "provider_policy": "no new provider and no paid provider; the existing read-only Kalshi market-detail path only, at the cadence MarketOps already runs",
   "research_question": "Does the baseball calibration and base-rate skill measured on the post-drain population persist on forecasts created after registration?",
+  "result_protocol": {
+    "baseline": "base_rate_brier",
+    "confidence_interval_policy": "cluster_bootstrap_by_market_v1",
+    "data_quality_invalidation_policy": "a member whose persisted score disagrees with its current outcome is counted unscorable; if such members exceed half the cohort the evaluation is invalidated rather than reported",
+    "decision_rule": "primary_metric_delta_gt_zero",
+    "protocol_deviation_policy": "any unsupported metric, baseline, decision rule or CI policy, and any unmet stopping condition, is recorded and blocks a favorable verdict",
+    "stopping_rule": {
+      "kind": "fixed_sample_and_end",
+      "minimum_matured_fraction": 0.9,
+      "minimum_sample": 500,
+      "not_after": "2027-02-02T04:00:00+00:00",
+      "not_before": "2026-08-06T04:00:00+00:00"
+    }
+  },
   "safety_boundary": "measurement only; no expected value, recommendation, sizing, order, wallet or capital behavior is produced or implied, and calibration is not an edge claim",
   "sample_floor": 500,
   "secondary_metrics": [
     {
-      "definition": "expected calibration error",
-      "name": "ece"
+      "name": "ece",
+      "status": "descriptive_only"
+    },
+    {
+      "name": "murphy_components",
+      "status": "descriptive_only"
     }
   ],
   "signal_definitions": {

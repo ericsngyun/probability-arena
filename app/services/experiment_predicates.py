@@ -380,6 +380,57 @@ def _predicate_sort_key(p: dict) -> tuple:
                                                   default=str))
 
 
+# Gate 4 — fields that name individual markets. A static set is legitimate for a
+# predefined universe and is also the cleanest way to hand-pick a cohort, so it
+# is gated by experiment kind rather than banned outright.
+IDENTIFIER_FIELDS = ("market_ticker",)
+
+
+def check_identifier_cohort(canon: dict, *, kind: str,
+                            universe: dict | None = None) -> list:
+    """Errors for identifier predicates that could encode a hand-picked cohort.
+
+    Confirmatory experiments may not enumerate markets unless the set comes
+    from a separately committed pre-registration universe artifact with its own
+    digest. Exploratory experiments may, because they cannot make a
+    confirmatory claim — but the set is still digested and its concentration
+    must be reported.
+    """
+    errors = []
+    used = [p for p in canon.get("all", []) + canon.get("none", [])
+            if p["field"] in IDENTIFIER_FIELDS]
+    if not used:
+        return errors
+    if kind == CONFIRMATORY_KIND:
+        if not universe:
+            errors.append(
+                "confirmatory experiments may not enumerate market_ticker "
+                "without a committed pre-registration universe artifact: an "
+                "identifier set chosen by hand IS a cohort, and choosing it "
+                "after seeing results is undetectable from the manifest alone")
+        else:
+            for required in ("universe_id", "digest", "created_at",
+                             "selection_method", "member_count"):
+                if not universe.get(required):
+                    errors.append(f"population.universe.{required} is required")
+            method = str(universe.get("selection_method", "")).lower()
+            for banned in ("performance", "best", "top", "winning", "beat",
+                           "highest", "lowest", "brier", "score"):
+                if banned in method:
+                    errors.append(
+                        f"universe.selection_method references {banned!r}: the "
+                        "universe must not be result-derived")
+    for p in used:
+        if p["operator"] not in (OP_EQ, OP_IN, OP_NOT_EQ, OP_NOT_IN):
+            errors.append(
+                f"identifier field {p['field']!r} supports only exact set "
+                "membership; no wildcard, substring, regex or dynamic selection")
+    return errors
+
+
+CONFIRMATORY_KIND = "confirmatory"
+
+
 def canonicalize_population(document: Any) -> dict:
     """Validate and canonicalize a whole population document.
 
@@ -394,7 +445,7 @@ def canonicalize_population(document: Any) -> dict:
     if not isinstance(document, dict):
         raise PredicateError("population must be an object")
     unknown = set(document) - {"schema_version", "all", "none", "rationale",
-                               "window_end"}
+                               "window_end", "universe"}
     if unknown:
         raise PredicateError(f"unsupported population keys {sorted(unknown)}")
 
@@ -443,6 +494,16 @@ def canonicalize_population(document: Any) -> dict:
                              end, where="population.window_end").isoformat())
 
     _reject_contradictions(out)
+    if "universe" in document:
+        u = document["universe"]
+        if not isinstance(u, dict):
+            raise PredicateError("population.universe must be an object")
+        allowed = {"universe_id", "digest", "created_at", "selection_method",
+                   "member_count", "source"}
+        extra = set(u) - allowed
+        if extra:
+            raise PredicateError(f"population.universe extra keys {sorted(extra)}")
+        out["universe"] = {k: u[k] for k in sorted(u)}
     if "rationale" in document:
         rationale = document["rationale"]
         if not isinstance(rationale, (str, list)):
@@ -587,8 +648,27 @@ class ForecastFacts:
     values: dict = field(default_factory=dict)
 
 
+# Three-valued logic. `UNKNOWN` is returned when the source field is NULL and
+# the operator cannot decide, and it is NEVER coerced to True.
+TRUE, FALSE, UNKNOWN = True, False, None
+
+
 def _compare(spec: FieldSpec, op: str, actual: Any, expected: Any,
-             registered_at: datetime, declared_end: datetime | None) -> bool:
+             registered_at: datetime, declared_end: datetime | None):
+    """Returns True / False / UNKNOWN(None).
+
+    **Canonical NULL policy (Gate 3): a predicate matches only when its truth
+    value is explicitly TRUE.** Unknown never satisfies anything, positive or
+    negative. The subtle case is negation: `forecaster_version not_eq "v2"`
+    against a NULL version is UNKNOWN, not True — otherwise every row with a
+    missing field silently joins the cohort through a rule the author wrote to
+    *narrow* it. An author who wants missing values included must say so with
+    an explicit `not_exists`, which is a declaration rather than an accident.
+
+    Consequence, stated because it breaks a reflex: De Morgan does NOT hold
+    across unknowns. `none: [x eq "a"]` is not the same population as
+    `all: [x not_eq "a"]` when x can be NULL.
+    """
     if op == OP_EXISTS:
         return actual is not None
     if op == OP_NOT_EXISTS:
@@ -600,9 +680,9 @@ def _compare(spec: FieldSpec, op: str, actual: Any, expected: Any,
             return True          # no declared end -> unbounded, not excluded
         return actual is not None and _aware(actual) < declared_end
     if actual is None:
-        # SQL-like: a comparison against NULL is not true. Stated explicitly so
-        # a nullable field cannot silently widen a population.
-        return False
+        # Every remaining operator compares a value; with no value the truth is
+        # UNKNOWN, including for the negative forms.
+        return UNKNOWN
     if spec.value_type == TYPE_TIMESTAMP:
         actual_cmp: Any = _aware(actual)
         expected_cmp: Any = (
@@ -638,12 +718,20 @@ def evaluate(canon: dict, facts: ForecastFacts, *, registered_at: datetime,
     reasons: list[str] = []
     for p in canon.get("all", []):
         spec = FIELD_REGISTRY[p["field"]]
-        if not _compare(spec, p["operator"], facts.values.get(p["field"]),
-                        p.get("value"), registered_at, declared_end):
-            reasons.append(f"all:{p['field']}:{p['operator']}")
+        truth = _compare(spec, p["operator"], facts.values.get(p["field"]),
+                         p.get("value"), registered_at, declared_end)
+        # `all` requires explicit TRUE. UNKNOWN excludes.
+        if truth is not TRUE:
+            reasons.append(f"all:{p['field']}:{p['operator']}"
+                           + (":unknown" if truth is UNKNOWN else ""))
     for p in canon.get("none", []):
         spec = FIELD_REGISTRY[p["field"]]
-        if _compare(spec, p["operator"], facts.values.get(p["field"]),
-                    p.get("value"), registered_at, declared_end):
+        truth = _compare(spec, p["operator"], facts.values.get(p["field"]),
+                         p.get("value"), registered_at, declared_end)
+        # `none` excludes on explicit TRUE only. UNKNOWN does NOT exclude —
+        # and that asymmetry with `all` is deliberate and documented: `all` is
+        # a requirement (unproven means not met) while `none` is a veto
+        # (unproven means not vetoed). Both refuse to act on unknowns.
+        if truth is TRUE:
             reasons.append(f"none:{p['field']}:{p['operator']}")
     return (not reasons), reasons
