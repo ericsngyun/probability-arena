@@ -50,6 +50,8 @@ DISCLAIMER = (
 REGISTRY_DIRNAME = "experiments"
 MANIFEST_FILENAME = "manifest.json"
 EVENTS_FILENAME = "events.jsonl"
+HEAD_FILENAME = "head.json"
+MAX_EVENTS = 1000
 RESULTS_DIRNAME = "results"
 
 # --- states ---------------------------------------------------------------------
@@ -347,6 +349,11 @@ def validate_manifest(manifest: dict, *, strict: bool = True) -> ValidationResul
     try:
         canon = ensure_registration_floor(
             canonicalize_population(manifest.get("population")))
+        from app.services.experiment_predicates import check_identifier_cohort
+
+        errors.extend(check_identifier_cohort(
+            canon, kind=str(manifest.get("exploratory_or_confirmatory")),
+            universe=(manifest.get("population") or {}).get("universe")))
         if not has_registration_floor(canon):  # pragma: no cover - defensive
             errors.append("population is missing the registration-time floor")
     except PredicateError as exc:
@@ -467,12 +474,16 @@ def capture_immutable_references(
             canonical_json({name: value}).encode("utf-8")).hexdigest()
 
     from app.services.experiment_population import population_reference_snapshot
+    from app.services.experiment_results import (
+        metric_reference_snapshot as _metric_reference_snapshot,
+    )
 
     canon = ensure_registration_floor(
         canonicalize_population(manifest.get("population")))
     return {
         "population_predicate_digest": population_digest(canon),
         "population_references": population_reference_snapshot(root),
+        "metric_references": _metric_reference_snapshot(root),
         "population_definition_digest": sub("market_population"),
         "feature_configuration_digest": sub("feature_definitions"),
         "signal_configuration_digest": sub("signal_definitions"),
@@ -558,20 +569,87 @@ def append_event(experiment_id: str, event: dict, base: Path | None = None) -> N
     entry = dict(event)
     entry["prev"] = prev
     entry["seq"] = len(prior)
+    if len(prior) >= MAX_EVENTS:
+        raise ManifestError(f"event log exceeds {MAX_EVENTS} entries")
     with (d / EVENTS_FILENAME).open("a", encoding="utf-8") as fh:
         fh.write(canonical_json(entry) + "\n")
+    # Head updated in the SAME operation as the append. A gap here is exactly
+    # the state the head exists to make visible.
+    write_head(experiment_id, count=len(prior) + 1,
+               terminal_hash=_event_hash(entry), base=base)
+
+
+def _event_hash(event: dict) -> str:
+    return hashlib.sha256(canonical_json(event).encode("utf-8")).hexdigest()
+
+
+def read_head(experiment_id: str, base: Path | None = None) -> dict | None:
+    path = experiment_dir(experiment_id, base) / HEAD_FILENAME
+    if not path.exists():
+        return None
+    return json.loads(path.read_text())
+
+
+def write_head(experiment_id: str, *, count: int, terminal_hash: str | None,
+               base: Path | None = None, commit: str | None = None) -> dict:
+    """The authoritative terminal-integrity record (Gate 2, Option A/B).
+
+    A per-line hash chain detects modification and reordering but NOT deletion
+    of a valid suffix: a prefix of a valid chain is itself a valid chain, so
+    truncating the last event silently rolled state backwards and let an
+    experiment advance again. Pinning the expected count AND the terminal hash
+    in a separate committed file closes that, because a truncated log no longer
+    matches the head, and appending without updating the head does not either.
+
+    This is not tamper-PROOF — an attacker with write access can rewrite both
+    files. It is tamper-EVIDENT, and the evidence lands in a git diff.
+    """
+    d = experiment_dir(experiment_id, base)
+    d.mkdir(parents=True, exist_ok=True)
+    head = {
+        "experiment_id": experiment_id,
+        "event_count": count,
+        "terminal_event_hash": terminal_hash,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "registry_commit": commit,
+    }
+    (d / HEAD_FILENAME).write_text(
+        json.dumps(head, indent=2, sort_keys=True) + "\n")
+    return head
 
 
 def verify_event_chain(experiment_id: str, base: Path | None = None) -> dict:
-    """Is the event log intact and in order?"""
+    """Line-chain integrity AND terminal-head agreement."""
     events = read_events(experiment_id, base)
+    if len(events) > MAX_EVENTS:
+        return {"intact": False, "broken_at": MAX_EVENTS, "length": len(events),
+                "reason": f"event count exceeds {MAX_EVENTS}"}
     prev_hash = None
     for i, e in enumerate(events):
         if e.get("seq") != i or e.get("prev") != prev_hash:
-            return {"intact": False, "broken_at": i, "length": len(events)}
-        prev_hash = hashlib.sha256(
-            canonical_json(e).encode("utf-8")).hexdigest()
-    return {"intact": True, "broken_at": None, "length": len(events)}
+            return {"intact": False, "broken_at": i, "length": len(events),
+                    "reason": "line chain broken"}
+        prev_hash = _event_hash(e)
+
+    head = read_head(experiment_id, base)
+    if head is None:
+        # Fail closed. A missing head must never be silently reconstructed from
+        # the log, because reconstruction would bless whatever the log now says.
+        return {"intact": False, "broken_at": None, "length": len(events),
+                "reason": "authoritative head missing", "head": None}
+    if head.get("event_count") != len(events):
+        return {"intact": False, "broken_at": None, "length": len(events),
+                "reason": (f"head expects {head.get('event_count')} events, "
+                           f"log has {len(events)} — truncated or appended "
+                           "without updating the head"),
+                "head": head}
+    expected_terminal = prev_hash if events else None
+    if head.get("terminal_event_hash") != expected_terminal:
+        return {"intact": False, "broken_at": None, "length": len(events),
+                "reason": "terminal event hash does not match the head",
+                "head": head}
+    return {"intact": True, "broken_at": None, "length": len(events),
+            "reason": None, "head": head}
 
 
 def register(

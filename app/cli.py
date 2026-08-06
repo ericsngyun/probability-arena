@@ -613,6 +613,104 @@ def experiment_registry_register(
     return 0
 
 
+def experiment_registry_record_result(
+    experiment_id: str, confirm: bool = False, base: str | None = None,
+    notes: str | None = None, reevaluation_reason: str | None = None,
+    fmt: str = "text",
+) -> int:
+    """PROSPECTIVE-EXPERIMENT-REGISTRY-002B — registry-owned evaluation.
+
+    The caller supplies an id and optional prose. It cannot supply a sample
+    count, a metric value, a population, an end time or a verdict: each of those
+    is a place where a null result becomes a positive one, and accepting them
+    from the person who wants the answer would make this a filing cabinet rather
+    than a control. Everything authoritative comes from the registered manifest.
+
+    Zero provider calls. Reads production data; writes only registry artifacts,
+    and only under --confirm.
+    """
+    import json as _json
+    import subprocess
+
+    from app.services.experiment_registry import ManifestError
+    from app.services.experiment_results import evaluate_experiment
+
+    owns = False
+    session = None
+    try:
+        from app.db import get_sessionmaker
+
+        session = get_sessionmaker()()
+        owns = True
+        commit = None
+        try:
+            commit = subprocess.run(["git", "rev-parse", "HEAD"], check=True,
+                                    capture_output=True, text=True,
+                                    timeout=10).stdout.strip()
+        except Exception:
+            commit = None
+        out = evaluate_experiment(
+            session, experiment_id, base=_Path(base) if base else None,
+            confirm=confirm, operator_notes=notes,
+            reevaluation_reason=reevaluation_reason, commit=commit)
+    except ManifestError as exc:
+        print(f"REFUSED: {exc}")
+        return 1
+    except Exception as exc:
+        print(f"error: {type(exc).__name__}: {exc}")
+        return 2
+    finally:
+        if owns and session is not None:
+            session.close()
+
+    r = out["record"]
+    if fmt == "json":
+        print(_json.dumps(out, indent=2, sort_keys=True, default=str))
+        return 0
+    print(f"experiment {experiment_id} — {out['mode'].upper()}")
+    print(out["disclaimer"])
+    print(f"  external_calls={out['external_calls']} "
+          f"persisted={str(out['persisted']).lower()}")
+    print()
+    print(f"  VERDICT                  {r['verdict']}")
+    for why in r.get("verdict_reasons", []):
+        print(f"    because                {why}")
+    print()
+    print("  population (membership frozen BEFORE outcomes were read):")
+    for k in ("registered_population_count", "actual_population_count",
+              "pre_registration_excluded", "post_end_excluded",
+              "matured_count", "pending_count", "unscorable_count",
+              "matured_fraction"):
+        print(f"    {k:30} {r[k]}")
+    print(f"    membership_digest              {r['membership_digest']}")
+    print()
+    print("  metric:")
+    for k in ("primary_metric_name", "primary_metric_value",
+              "declared_baseline_name", "declared_baseline_value",
+              "metric_delta", "decision_rule", "sample_floor",
+              "sample_floor_met", "stopping_rule_met"):
+        print(f"    {k:30} {r[k]}")
+    ci = r.get("confidence_interval") or {}
+    print(f"    confidence_interval            [{ci.get('lower')}, "
+          f"{ci.get('upper')}] {ci.get('policy')}")
+    print()
+    print(f"  drift: {[(k, v['classification']) for k, v in r['drift_classification'].items()]}")
+    if r["protocol_deviations"]:
+        print("  protocol deviations:")
+        for dv in r["protocol_deviations"]:
+            print(f"    - {dv}")
+    if r["invalidating_events"]:
+        print("  invalidating events:")
+        for iv in r["invalidating_events"]:
+            print(f"    - {iv}")
+    print(f"  result_digest {r['result_digest']}")
+    if not confirm:
+        print("  nothing written — re-run with --confirm to append this result")
+    else:
+        print(f"  appended {out.get('file')}")
+    return 0
+
+
 def experiment_registry_report(
     experiment_id: str, base: str | None = None, fmt: str = "text"
 ) -> int:
@@ -7116,6 +7214,20 @@ def build_parser() -> argparse.ArgumentParser:
                      help="registry root (defaults to ./experiments)")
     err.add_argument("--format", choices=("text", "json"), default="text", dest="fmt")
 
+    errr = subparsers.add_parser(
+        "experiment-registry-record-result",
+        help="Registry-owned evaluation of a registered experiment "
+             "(REGISTRY-002B; dry run unless --confirm)")
+    errr.add_argument("--experiment-id", type=str, required=True)
+    errr.add_argument("--confirm", action="store_true")
+    errr.add_argument("--dry-run", action="store_true")
+    errr.add_argument("--notes", type=str, default=None,
+                      help="non-authoritative operator prose")
+    errr.add_argument("--reevaluation-reason", type=str, default=None)
+    errr.add_argument("--base", type=str, default=None)
+    errr.add_argument("--format", choices=("text", "json"), default="text",
+                      dest="fmt")
+
     erp = subparsers.add_parser(
         "experiment-registry-report",
         help="Full read-only experiment report (identity, predicates, drift, "
@@ -7993,6 +8105,12 @@ def main(argv: list[str] | None = None) -> int:
         return experiment_registry_register(
             manifest=args.manifest, confirm=args.confirm and not args.dry_run,
             base=args.base, fmt=args.fmt)
+    if args.command == "experiment-registry-record-result":
+        return experiment_registry_record_result(
+            experiment_id=args.experiment_id,
+            confirm=args.confirm and not args.dry_run, base=args.base,
+            notes=args.notes, reevaluation_reason=args.reevaluation_reason,
+            fmt=args.fmt)
     if args.command == "experiment-registry-report":
         return experiment_registry_report(
             experiment_id=args.experiment_id, base=args.base, fmt=args.fmt)
