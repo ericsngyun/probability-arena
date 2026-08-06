@@ -613,6 +613,176 @@ def experiment_registry_register(
     return 0
 
 
+def experiment_registry_report(
+    experiment_id: str, base: str | None = None, fmt: str = "text"
+) -> int:
+    """PROSPECTIVE-EXPERIMENT-REGISTRY-002A — full read-only experiment report.
+
+    Specified in the REGISTRY-001 CLI contract and never implemented; that gap
+    was disclosed rather than dropped and is closed here. Zero provider calls,
+    zero writes, no registration, no transition. **Fails closed** (exit 1) when
+    the manifest digest or the event chain is broken, because a report that
+    renders cleanly over a tampered experiment is worse than no report.
+    """
+    import json as _json
+
+    from app.services.experiment_population import classify_population_drift
+    from app.services.experiment_predicates import (
+        PREDICATE_SCHEMA_VERSION,
+        PredicateError,
+        canonicalize_population,
+        ensure_registration_floor,
+        population_digest,
+    )
+    from app.services.experiment_registry import (
+        DISCLAIMER,
+        ManifestError,
+        experiment_dir,
+        load_manifest,
+        read_events,
+        status,
+        validate_manifest,
+    )
+
+    try:
+        root = _Path(base) if base else None
+        st = status(experiment_id, root)
+        manifest = load_manifest(
+            experiment_dir(experiment_id, root) / "manifest.json")
+        events = read_events(experiment_id, root)
+    except Exception as exc:
+        print(f"error: {exc}")
+        return 2
+
+    # M5 — re-validate the AUTHORED document. The stored manifest necessarily
+    # contains registry-assigned fields (start_time among them), so validating
+    # it verbatim produced a permanent false error on every registered
+    # experiment, which makes a real error indistinguishable from noise.
+    from app.services.experiment_registry import REGISTRY_ASSIGNED_FIELDS
+
+    authored = {k: val for k, val in manifest.items()
+                if k not in REGISTRY_ASSIGNED_FIELDS}
+    v = validate_manifest(authored)
+    refs = manifest.get("immutable_references") or {}
+    try:
+        canon = ensure_registration_floor(
+            canonicalize_population(manifest.get("population")))
+        canon_digest = population_digest(canon)
+        canon_err = None
+    except PredicateError as exc:
+        canon, canon_digest, canon_err = None, None, str(exc)
+
+    drift = classify_population_drift(refs.get("population_references"))
+    integrity = st["integrity"]
+
+    # M6 — compare the live predicate digest against the one pinned at
+    # registration. Cheap defence in depth against a coordinated re-forge.
+    pinned_predicate = refs.get("population_predicate_digest")
+    predicate_matches = (pinned_predicate is None
+                         or pinned_predicate == canon_digest)
+
+    # M3 — fail closed on the cases that actually matter to a future result
+    # layer, not only on a broken digest. A manifest that is digest-intact but
+    # whose population no longer canonicalizes IS the field-registry-drift
+    # scenario, and it previously exited 0.
+    ok = (bool(integrity["intact"]) and canon_err is None
+          and not drift["material"] and predicate_matches)
+
+    data = {
+        "experiment_id": experiment_id,
+        "title": manifest.get("title"),
+        "manifest_version": manifest.get("experiment_version"),
+        "manifest_digest": integrity["digest_recomputed_now"],
+        "digest_at_registration": integrity["digest_at_registration"],
+        "manifest_intact": integrity["intact"],
+        "event_chain": integrity.get("event_chain"),
+        "event_count": len(events),
+        "registry_state": st["state"],
+        "allowed_transitions": st["allowed_transitions"],
+        "registered_at": st["registered_at"],
+        "registration_commit": st["registration_commit"],
+        "immutable_references": refs,
+        "predicate_schema_version": PREDICATE_SCHEMA_VERSION,
+        "canonical_population": canon,
+        "population_predicate_digest": canon_digest,
+        "population_error": canon_err,
+        "population_drift": drift,
+        "population_predicate_digest_at_registration": pinned_predicate,
+        "population_predicate_digest_matches": predicate_matches,
+        "fail_closed_ok": ok,
+        "evaluation_code_drift": st.get("evaluation_code_drift"),
+        "collection_state": (
+            "active" if st["state"] == "collecting" else
+            "not_started" if st["state"] in (None, "registered") else st["state"]),
+        "result_state": (
+            "results_not_implemented_until_registry_002b"
+            if not st["results"] else "recorded"),
+        "results": st["results"],
+        "validation_errors": v.errors,
+        "warnings": v.warnings,
+        "external_calls": 0,
+        "persisted": False,
+        "disclaimer": DISCLAIMER,
+    }
+
+    if fmt == "json":
+        print(_json.dumps(data, indent=2, sort_keys=True, default=str))
+        return 0 if ok else 1
+
+    print(f"experiment {experiment_id} — {data['title']}")
+    print(data["disclaimer"])
+    print(f"  external_calls={data['external_calls']} "
+          f"persisted={str(data['persisted']).lower()}")
+    print()
+    for k in ("manifest_version", "registry_state", "registered_at",
+              "registration_commit", "event_count", "collection_state",
+              "result_state"):
+        print(f"  {k:28} {data[k]}")
+    print(f"  {'manifest_digest':28} {data['manifest_digest']}")
+    print(f"  {'manifest_intact':28} {data['manifest_intact']}")
+    ch = data["event_chain"] or {}
+    print(f"  {'event_chain_intact':28} {ch.get('intact')} "
+          f"(len={ch.get('length')}, broken_at={ch.get('broken_at')})")
+    print(f"  {'predicate_schema_version':28} {data['predicate_schema_version']}")
+    print(f"  {'population_digest':28} {data['population_predicate_digest']}")
+    print(f"  {'population_drift':28} {drift['classification']} "
+          f"(material={drift['material']})")
+    print(f"  {'predicate_digest_matches':28} {predicate_matches}")
+    ecd = data["evaluation_code_drift"] or {}
+    print(f"  {'evaluation_code_drift':28} {ecd.get('drifted')}")
+    print(f"  {'allowed_transitions':28} {data['allowed_transitions']}")
+    print()
+    print("  canonical population predicates:")
+    if canon_err:
+        print(f"    ERROR: {canon_err}")
+    else:
+        for clause in ("all", "none"):
+            for pr in canon.get(clause, []):
+                val = f" {pr['value']!r}" if "value" in pr else ""
+                print(f"    {clause:5} {pr['field']} {pr['operator']}{val}")
+    print()
+    print("  immutable references:")
+    for k in sorted(refs):
+        val = refs[k]
+        print(f"    {k:34} {str(val)[:70]}")
+    if v.errors:
+        print()
+        print("  validation errors:")
+        for e in v.errors:
+            print(f"    - {e}")
+    if v.warnings:
+        print()
+        print("  warnings:")
+        for w in v.warnings:
+            print(f"    flag: {w}")
+    if not ok:
+        print()
+        print("  FAILED CLOSED — one of: manifest digest, event chain, "
+              "population canonicalization, pinned predicate digest, or "
+              "material drift. This experiment must not be evaluated.")
+    return 0 if ok else 1
+
+
 def experiment_registry_status(
     experiment_id: str, base: str | None = None, fmt: str = "text"
 ) -> int:
@@ -6946,6 +7116,14 @@ def build_parser() -> argparse.ArgumentParser:
                      help="registry root (defaults to ./experiments)")
     err.add_argument("--format", choices=("text", "json"), default="text", dest="fmt")
 
+    erp = subparsers.add_parser(
+        "experiment-registry-report",
+        help="Full read-only experiment report (identity, predicates, drift, "
+             "integrity); fails closed on tampering")
+    erp.add_argument("--experiment-id", type=str, required=True)
+    erp.add_argument("--base", type=str, default=None)
+    erp.add_argument("--format", choices=("text", "json"), default="text", dest="fmt")
+
     ers = subparsers.add_parser("experiment-registry-status",
                                 help="Show one experiment's state and integrity")
     ers.add_argument("--experiment-id", type=str, required=True)
@@ -7815,6 +7993,9 @@ def main(argv: list[str] | None = None) -> int:
         return experiment_registry_register(
             manifest=args.manifest, confirm=args.confirm and not args.dry_run,
             base=args.base, fmt=args.fmt)
+    if args.command == "experiment-registry-report":
+        return experiment_registry_report(
+            experiment_id=args.experiment_id, base=args.base, fmt=args.fmt)
     if args.command == "experiment-registry-status":
         return experiment_registry_status(
             experiment_id=args.experiment_id, base=args.base, fmt=args.fmt)

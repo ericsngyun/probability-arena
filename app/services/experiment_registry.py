@@ -32,6 +32,15 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
+from app.services.experiment_predicates import (
+    PREDICATE_SCHEMA_VERSION,
+    PredicateError,
+    canonicalize_population,
+    ensure_registration_floor,
+    has_registration_floor,
+    population_digest,
+)
+
 DISCLAIMER = (
     "Research governance only — pre-registration of measurement hypotheses. "
     "Never advice, EV, a side, a size, an order, a recommendation, a wallet, or "
@@ -142,7 +151,7 @@ REQUIRED_FIELDS = (
     "hypothesis", "null_hypothesis", "exploratory_or_confirmatory",
     "experiment_class", "owner", "domain", "market_population", "forecast_family",
     "forecast_version", "feature_definitions", "signal_definitions", "data_sources",
-    "provider_policy", "inclusion_rules", "exclusion_rules", "start_condition",
+    "provider_policy", "population", "start_condition",
     "end_condition", "evaluation_horizons", "primary_metric", "secondary_metrics",
     "declared_baselines", "sample_floor", "domain_sample_floors",
     "minimum_matured_fraction", "missing_data_policy", "canceled_void_policy",
@@ -175,7 +184,7 @@ HYPOTHESIS_FIELDS = (
     "experiment_id", "title", "research_question", "hypothesis", "null_hypothesis",
     "exploratory_or_confirmatory", "experiment_class", "domain", "market_population",
     "forecast_family", "forecast_version", "feature_definitions",
-    "signal_definitions", "inclusion_rules", "exclusion_rules", "start_condition",
+    "signal_definitions", "population", "start_condition",
     "start_time", "end_condition", "evaluation_horizons", "primary_metric",
     "declared_baselines", "sample_floor", "domain_sample_floors",
     "minimum_matured_fraction", "multiple_testing_policy", "stopping_rule",
@@ -322,15 +331,26 @@ def validate_manifest(manifest: dict, *, strict: bool = True) -> ValidationResul
         if not manifest.get("minimum_matured_fraction"):
             errors.append("confirmatory experiments require minimum_matured_fraction")
 
-    # --- leakage: outcome-derived inclusion, future-information features --------
-    for key in ("inclusion_rules", "exclusion_rules"):
-        for path, text in _walk_strings(manifest.get(key)):
-            hit = _contains_token(text, OUTCOME_DERIVED_TOKENS)
-            if hit:
-                errors.append(
-                    f"{key}{('.' + path) if path else ''} references {hit!r}: "
-                    "membership must not depend on the outcome or on which cohort "
-                    "performed best")
+    # --- population: typed predicates are the executable authority -------------
+    # REGISTRY-001 guarded prose inclusion rules with a token blocklist. A review
+    # broke it with one paraphrase, and this repo's own tennis draft shipped a
+    # score-dependent exclusion. Prose is now rationale; membership is decided by
+    # a closed typed schema over an allowlist of forecast-time fields, so a
+    # forbidden predicate cannot be *expressed* rather than merely spelled
+    # differently.
+    for legacy in ("inclusion_rules", "exclusion_rules"):
+        if legacy in manifest:
+            errors.append(
+                f"{legacy} is no longer executable authority; move membership "
+                "into the typed `population` document and keep prose as "
+                "`population.rationale`")
+    try:
+        canon = ensure_registration_floor(
+            canonicalize_population(manifest.get("population")))
+        if not has_registration_floor(canon):  # pragma: no cover - defensive
+            errors.append("population is missing the registration-time floor")
+    except PredicateError as exc:
+        errors.append(f"population: {exc}")
     for path, text in _walk_strings(manifest.get("feature_definitions")):
         hit = _contains_token(text, FUTURE_INFORMATION_TOKENS)
         if hit:
@@ -446,10 +466,14 @@ def capture_immutable_references(
         return hashlib.sha256(
             canonical_json({name: value}).encode("utf-8")).hexdigest()
 
+    from app.services.experiment_population import population_reference_snapshot
+
+    canon = ensure_registration_floor(
+        canonicalize_population(manifest.get("population")))
     return {
+        "population_predicate_digest": population_digest(canon),
+        "population_references": population_reference_snapshot(root),
         "population_definition_digest": sub("market_population"),
-        "inclusion_logic_digest": sub("inclusion_rules"),
-        "exclusion_logic_digest": sub("exclusion_rules"),
         "feature_configuration_digest": sub("feature_definitions"),
         "signal_configuration_digest": sub("signal_definitions"),
         "baseline_definition_digest": sub("declared_baselines"),

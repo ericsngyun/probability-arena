@@ -41,9 +41,17 @@ def base_manifest(**over):
         "signal_definitions": {"none": "no signal gating"},
         "data_sources": ["kalshi_rest"],
         "provider_policy": "no new provider; existing read-only detail path only",
-        "inclusion_rules": ["forecast created after start_time",
-                            "domain == sports_baseball"],
-        "exclusion_rules": ["market never closes within the horizon"],
+        "population": {
+            "schema_version": 1,
+            "all": [
+                {"field": "domain", "operator": "eq", "value": "sports_baseball"},
+                {"field": "forecast_created_at",
+                 "operator": "gte_registration_time"},
+            ],
+            "none": [],
+            "window_end": "unbounded",
+            "rationale": ["prose is rationale only; membership is typed"],
+        },
         "start_condition": "first forecast created after registration",
         "end_condition": "sample floor reached and all members matured",
         "end_time": None,
@@ -78,7 +86,7 @@ class TestValidation:
 
     @pytest.mark.parametrize("field", [
         "primary_metric", "sample_floor", "stopping_rule", "declared_baselines",
-        "hypothesis", "null_hypothesis", "inclusion_rules", "exclusion_rules",
+        "hypothesis", "null_hypothesis", "population",
         "evaluation_horizons", "safety_boundary",
     ])
     def test_missing_required_field_rejected(self, field):
@@ -108,13 +116,42 @@ class TestValidation:
             multiple_testing_policy="none"))
         assert v.ok, v.errors
 
-    def test_outcome_derived_inclusion_rejected(self):
-        for rule in ("include forecasts whose outcome settled yes",
-                     "the best_performing cohort by brier",
-                     "markets where score_status == scored"):
-            v = er.validate_manifest(base_manifest(inclusion_rules=[rule]))
-            assert not v.ok, rule
-            assert any("must not depend on the outcome" in e for e in v.errors)
+    def test_legacy_prose_rules_are_no_longer_accepted(self):
+        """REGISTRY-002A demotes prose. Leaving the old keys in place would give
+        an author two sources of truth, one of which is unenforceable."""
+        for legacy in ("inclusion_rules", "exclusion_rules"):
+            v = er.validate_manifest(base_manifest(**{legacy: ["anything"]}))
+            assert not v.ok
+            assert any("no longer executable authority" in e for e in v.errors)
+
+    def test_outcome_derived_membership_is_now_inexpressible(self):
+        """The review's bypass — "include forecasts in the cohort that beat the
+        benchmark" — cannot be written at all: there is no such field."""
+        for bad_field in ("outcome", "scored_current", "brier_score",
+                          "beat_baseline", "rows_that_beat_the_benchmark"):
+            v = er.validate_manifest(base_manifest(population={
+                "schema_version": 1,
+                "all": [{"field": bad_field, "operator": "eq", "value": "x"}],
+                "none": [], "window_end": "unbounded"}))
+            assert not v.ok, bad_field
+            assert any("population:" in e for e in v.errors)
+
+    def test_population_requires_the_registration_floor_structurally(self):
+        """Omitting it must not disable prospectivity — it is injected."""
+        from app.services.experiment_predicates import (
+            canonicalize_population, ensure_registration_floor,
+            has_registration_floor)
+
+        v = er.validate_manifest(base_manifest(population={
+            "schema_version": 1,
+            "all": [{"field": "domain", "operator": "eq", "value": "x"}],
+            "none": [], "window_end": "unbounded"}))
+        assert v.ok, v.errors
+        canon = ensure_registration_floor(canonicalize_population({
+            "schema_version": 1,
+            "all": [{"field": "domain", "operator": "eq", "value": "x"}],
+            "none": [], "window_end": "unbounded"}))
+        assert has_registration_floor(canon)
 
     def test_future_information_feature_rejected(self):
         v = er.validate_manifest(base_manifest(
@@ -278,7 +315,7 @@ class TestImmutability:
             er.transition(eid, er.COLLECTING, base=tmp_path, confirm=True)
 
     def test_hypothesis_fields_are_declared(self):
-        for f in ("primary_metric", "sample_floor", "inclusion_rules", "domain",
+        for f in ("primary_metric", "sample_floor", "population", "domain",
                   "forecast_version", "stopping_rule", "start_time"):
             assert f in er.HYPOTHESIS_FIELDS
 
@@ -464,8 +501,8 @@ class TestImmutableReferences:
         er.register(base_manifest(), base=tmp_path, confirm=True, commit="cafe123")
         d = er.experiment_dir("baseball-calibration-stability", tmp_path)
         refs = json.loads((d / er.MANIFEST_FILENAME).read_text())["immutable_references"]
-        for key in ("population_definition_digest", "inclusion_logic_digest",
-                    "exclusion_logic_digest", "feature_configuration_digest",
+        for key in ("population_definition_digest", "population_predicate_digest",
+                    "population_references", "feature_configuration_digest",
                     "signal_configuration_digest", "baseline_definition_digest",
                     "primary_metric_digest", "forecast_family", "forecast_version",
                     "repository_commit", "evaluation_code_digests", "canon_digests"):
@@ -476,9 +513,12 @@ class TestImmutableReferences:
 
     def test_definition_digests_are_content_sensitive(self):
         a = er.capture_immutable_references(base_manifest())
-        b = er.capture_immutable_references(
-            base_manifest(inclusion_rules=["something wider"]))
-        assert a["inclusion_logic_digest"] != b["inclusion_logic_digest"]
+        wider = base_manifest()
+        wider["population"] = dict(wider["population"])
+        wider["population"]["all"] = list(wider["population"]["all"]) + [
+            {"field": "forecast_risk", "operator": "eq", "value": "low"}]
+        b = er.capture_immutable_references(wider)
+        assert a["population_predicate_digest"] != b["population_predicate_digest"]
         assert a["feature_configuration_digest"] == b["feature_configuration_digest"]
 
     def test_references_do_not_affect_the_manifest_digest(self, tmp_path):

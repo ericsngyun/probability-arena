@@ -16,11 +16,6 @@
   "evaluation_horizons": [
     "market close time plus a 3600s settlement grace"
   ],
-  "exclusion_rules": [
-    "market has no close time recorded",
-    "market has not matured by the evaluation horizon",
-    "member is not scored_current at evaluation"
-  ],
   "experiment_class": "domain_reliability",
   "experiment_id": "tennis-base-rate-falsification",
   "experiment_version": 1,
@@ -32,10 +27,6 @@
   "forecast_family": "any",
   "forecast_version": "as recorded per member and reported in composition",
   "hypothesis": "Brier skill versus the base-rate benchmark remains at or below zero for tennis forecasts created after start_time.",
-  "inclusion_rules": [
-    "forecast created_at >= start_time",
-    "research packet domain == sports_tennis"
-  ],
   "invalidating_conditions": [
     "any automated change to tennis forecasting during collection, which this milestone does not authorize and would end the experiment",
     "tennis arrival rate cannot reach the floor within 120 days"
@@ -50,6 +41,33 @@
   "multiple_testing_policy": "one primary metric; the directional secondary is descriptive only and cannot be promoted or substituted",
   "null_hypothesis": "Brier skill versus the base-rate benchmark is strictly positive.",
   "owner": "eric",
+  "population": {
+    "all": [
+      {
+        "field": "domain",
+        "operator": "eq",
+        "value": "sports_tennis"
+      },
+      {
+        "field": "forecast_created_at",
+        "operator": "gte_registration_time"
+      },
+      {
+        "field": "has_research_packet",
+        "operator": "eq",
+        "value": true
+      }
+    ],
+    "none": [],
+    "rationale": [
+      "Tennis forecasts created on or after registration, from any forecaster family; composition is reported rather than filtered.",
+      "REPAIRED: the draft previously excluded rows that were 'not scored_current at evaluation'. That made membership a function of the outcome pipeline's progress \u2014 the cohort would have become 'the rows that happened to get scored'. Membership now uses only forecast-time fields.",
+      "Evaluation policy, which is NOT membership: pending rows remain pending; unscorable rows are reported; sample-floor and matured-fraction rules determine evaluability.",
+      "window_end is declared 'unbounded' deliberately: the end condition is the sample floor plus matured fraction, not a calendar date. Declaring it explicitly is what stops an evaluator choosing the end after seeing results."
+    ],
+    "schema_version": 1,
+    "window_end": "unbounded"
+  },
   "primary_metric": {
     "definition": "1 - (mean Brier / base-rate-benchmark Brier)",
     "name": "brier_skill_vs_base_rate",

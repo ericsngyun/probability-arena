@@ -16,11 +16,6 @@
   "evaluation_horizons": [
     "market close time plus a 3600s settlement grace"
   ],
-  "exclusion_rules": [
-    "market has no close time recorded",
-    "market has not matured by the evaluation horizon",
-    "member is not scored_current at evaluation"
-  ],
   "experiment_class": "prospective_calibration",
   "experiment_id": "baseball-prospective-calibration-stability",
   "experiment_version": 1,
@@ -32,11 +27,6 @@
   "forecast_family": "baseball_evidence",
   "forecast_version": "v1",
   "hypothesis": "Brier skill versus the base-rate benchmark remains strictly positive for baseball forecasts created after start_time.",
-  "inclusion_rules": [
-    "forecast created_at >= start_time",
-    "research packet domain == sports_baseball",
-    "forecaster family == baseball_evidence and version == v1"
-  ],
   "invalidating_conditions": [
     "forecast_version changes during collection",
     "ENABLE_OUTCOME_SYNC_COVERAGE_REPAIR is disabled during collection",
@@ -52,6 +42,42 @@
   "multiple_testing_policy": "one primary metric; ECE is descriptive only and cannot be promoted",
   "null_hypothesis": "Brier skill versus the base-rate benchmark is at most zero.",
   "owner": "eric",
+  "population": {
+    "all": [
+      {
+        "field": "domain",
+        "operator": "eq",
+        "value": "sports_baseball"
+      },
+      {
+        "field": "forecast_created_at",
+        "operator": "gte_registration_time"
+      },
+      {
+        "field": "has_research_packet",
+        "operator": "eq",
+        "value": true
+      },
+      {
+        "field": "forecaster",
+        "operator": "eq",
+        "value": "baseball_evidence"
+      },
+      {
+        "field": "forecaster_version",
+        "operator": "eq",
+        "value": "v1"
+      }
+    ],
+    "none": [],
+    "rationale": [
+      "Baseball forecasts produced by baseball_evidence v1 on or after registration, with a research packet present.",
+      "Membership is decided ONLY by these typed forecast-time predicates. Pending outcomes remain pending; unscorable rows are reported; sample-floor and matured-fraction rules decide evaluability, never membership.",
+      "window_end is declared 'unbounded' deliberately: the end condition is the sample floor plus matured fraction, not a calendar date. Declaring it explicitly is what stops an evaluator choosing the end after seeing results."
+    ],
+    "schema_version": 1,
+    "window_end": "unbounded"
+  },
   "primary_metric": {
     "definition": "1 - (mean Brier / base-rate-benchmark Brier)",
     "name": "brier_skill_vs_base_rate",

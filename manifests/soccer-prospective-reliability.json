@@ -16,11 +16,6 @@
   "evaluation_horizons": [
     "market close time plus a 3600s settlement grace"
   ],
-  "exclusion_rules": [
-    "market has no close time recorded",
-    "market has not matured by the evaluation horizon",
-    "member is not scored_current at evaluation"
-  ],
   "experiment_class": "domain_reliability",
   "experiment_id": "soccer-prospective-reliability",
   "experiment_version": 1,
@@ -32,10 +27,6 @@
   "forecast_family": "soccer_evidence",
   "forecast_version": "v1",
   "hypothesis": "Brier skill versus the base-rate benchmark remains strictly positive for soccer forecasts created after start_time.",
-  "inclusion_rules": [
-    "forecast created_at >= start_time",
-    "research packet domain == sports_soccer"
-  ],
   "invalidating_conditions": [
     "forecast_version changes during collection",
     "soccer arrival rate falls so far that the floor cannot be reached within 90 days, in which case the experiment is retired unevaluated"
@@ -50,6 +41,43 @@
   "multiple_testing_policy": "one primary metric; ECE is descriptive only and cannot be promoted",
   "null_hypothesis": "Brier skill versus the base-rate benchmark is at most zero.",
   "owner": "eric",
+  "population": {
+    "all": [
+      {
+        "field": "domain",
+        "operator": "eq",
+        "value": "sports_soccer"
+      },
+      {
+        "field": "forecast_created_at",
+        "operator": "gte_registration_time"
+      },
+      {
+        "field": "has_research_packet",
+        "operator": "eq",
+        "value": true
+      },
+      {
+        "field": "forecaster",
+        "operator": "eq",
+        "value": "soccer_evidence"
+      },
+      {
+        "field": "forecaster_version",
+        "operator": "eq",
+        "value": "v1"
+      }
+    ],
+    "none": [],
+    "rationale": [
+      "Soccer forecasts produced by soccer_evidence v1 on or after registration.",
+      "The earlier soccer figure came from 34 members with 2.9% prevalence; this population is fixed in advance so that cannot recur.",
+      "Scoring state never affects membership.",
+      "window_end is declared 'unbounded' deliberately: the end condition is the sample floor plus matured fraction, not a calendar date. Declaring it explicitly is what stops an evaluator choosing the end after seeing results."
+    ],
+    "schema_version": 1,
+    "window_end": "unbounded"
+  },
   "primary_metric": {
     "definition": "1 - (mean Brier / base-rate-benchmark Brier)",
     "name": "brier_skill_vs_base_rate",
