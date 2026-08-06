@@ -1,6 +1,7 @@
 # PROSPECTIVE-EXPERIMENT-REGISTRY-001 — research pre-registration
 
-**Status:** implemented, reviewed, deployed dark. **Registration deferred — §11.**
+**Status:** implemented, reviewed, **dark-deployed to EVO-X2 2026-08-06**.
+**Registration deferred — §11.**
 
 The post-drain baseline made prospective research possible for the first time —
 the scored sample is finally the population rather than an id prefix. This
@@ -281,3 +282,47 @@ profitable or tradeable. If executable-price research is ever separately
 authorized, it must arrive as its own milestone with its own review — and the
 right shape is a *new* experiment class added deliberately, not a widening of
 these definitions. A registry whose boundaries drift is not a boundary.
+
+
+---
+
+## 15. EVO-X2 dark deployment — 2026-08-06T01:2xZ
+
+Mac = origin = EVO-X2 = `cb242f1`, Alembic **0027**, fast-forward only, no
+restart, no MarketOps hook, no timer.
+
+**Diff audited before deployment** (`92f9e2a..cb242f1`, 9 files): CLI, registry
+service, reliability directional clarification, three draft manifests, two test
+files, one document. Zero changes to `alembic/`, `app/config.py`,
+`app/models.py`, `marketops.py`, `outcomes.py`, `calibration.py`, `app/adapters/`,
+`infra/`, any `.service`/`.timer`, or `.env`. The only EV/trading-vocabulary
+matches in the diff are the module disclaimer and the blocklist that rejects
+that vocabulary.
+
+**CLI validation on EVO, temporary inputs only:** `list` on an empty registry;
+all three drafts `VALID` with digests **byte-identical to Mac**
+(`af207c21…`, `d706f54e…`, `ac58890c…`); `register` dry run reported
+`persisted false` and left the temporary directory **empty**; `git status`
+unchanged. Zero provider calls, zero database writes, zero events created.
+
+**Runtime health after deployment:** cycles 7971–7973 all `ok` with
+`stage_errors={}`; `distinct scored = 13,233 = total forecasts` (the coverage
+repair is still fully drained and tracking arrivals); duplicate current scores
+**0**; backup **healthy**.
+
+### One honest correction to the post-drain record
+
+Lifetime `database_locked` events are now **5, not 4**. The new event is
+`2026-08-05T15:55:02Z` — during the drain window, hours before this deployment
+and unrelated to the registry, which is inert at runtime. It was retried
+(`attempt_number: 2`, `lock_wait_ms: 32033`) and committed exactly, so nothing
+was lost. The post-drain baseline's "zero new lock events" was true when
+measured at 13:07Z and is no longer true; the coverage repair at score limit 100
+has since cost exactly one retried lock event.
+
+### Known gap in the REGISTRY-001 CLI contract
+
+`experiment-registry-report` was listed in the milestone's CLI contract and was
+**never implemented**. `validate`, `register`, `status`, `list` and `transition`
+all exist and work. This is recorded rather than quietly dropped, and belongs in
+REGISTRY-002 alongside the result-recording path.
