@@ -149,6 +149,72 @@ isolation every time, which is exactly how this presents. Anchored to the clock
 at test time. Unrelated to Kalshi, but it was corrupting the suite gate this
 milestone depends on.
 
+## 14b. Live DEMO REST evidence — 2026-08-07 (credential-free)
+
+Kalshi's demo market endpoints are public, so this much could be collected
+without a key. One bounded read-only GET to
+`https://external-api.demo.kalshi.co/trade-api/v2/markets` (HTTP 200, 413 ms).
+
+### A real defect it found
+
+```
+price_ranges: [{"start": "0.0000", "end": "1.0000", "step": "0.0100"}]
+```
+
+`PriceGrid` expected `start_dollars` / `end_dollars` / `tick_dollars`. Those are
+not names the venue sends, so **every real market raised a bare `KeyError` and
+the price-grid guard had never once executed against live data** — the control
+that decides whether a price is admissible at all. The `_dollars` suffix *is*
+real on scalar price fields (`yes_bid_dollars`), which is presumably where the
+guess came from; inside `price_ranges` it does not appear.
+
+Fixed in `aa3baa1`: real names accepted, missing fields raise `FixedPointError`
+rather than `KeyError`, and overlapping ranges are refused. The captured payload
+is pinned as a fixture.
+
+### Three assumptions it confirmed
+
+| assumption | evidence |
+|---|---|
+| `PRICE_SCALE = 10_000` | every `*_dollars` field carries exactly 4 decimals (`"0.0000"`, `"1.0000"`) |
+| `CONTRACT_SCALE = 100` | every `*_fp` field carries exactly 2 (`"0.00"`) |
+| `price_level_structure` is a display label | value is `"linear_cent"`; the `0.0100` step in `price_ranges` is what actually constrains the grid |
+
+REST field names that reconciliation depends on — `ticker`, `status`,
+`yes_bid_dollars`, `yes_ask_dollars` — are the names the venue sends.
+
+### What it did NOT settle
+
+Nothing authenticated, and nothing about the WebSocket. `use_yes_price`, the SID
+sequencing question, snapshot/delta wire shapes, entitlement and recovery all
+need the socket. Also worth recording for later: the sampled demo markets are
+entirely illiquid (all bids/asks/sizes `0.0000`/`0.00`), so demo may not produce
+a meaningful order book even once connected — the SID experiment may need
+markets chosen for activity rather than the first page of results.
+
+## 14c. Host preparation completed on EVO-X2
+
+- `/home/miko_node_001/.config/pa-secrets` created, mode `0700`, owner
+  `miko_node_001`, outside the repository, not a symlink, fully resolved.
+- `~/.config` tightened **0775 → 0750**. It was group-writable with no sticky
+  bit, which the hardened loader refuses: a writable ancestor lets the
+  credential directory be renamed out from under the permission check. Group
+  `miko_node_001` has no other members and `~` is already `0750`, so nothing
+  lost access. **Rollback: `chmod 775 ~/.config`.**
+- `~/.config/pa-secrets/install-demo-credential.sh` (mode `0700`) written: it
+  validates PEM confinement, parses the key to confirm RSA without displaying
+  it, prompts for the key ID locally, backs up `.env` outside git, writes only
+  the key ID and the PATH, and reports before/after hashes plus a key-name-only
+  diff. It refuses to run when no PEM is present.
+
+## 14d. Transport gap
+
+`app/realtime/` still contains **no transport at all** — deliberately, and
+asserted by tests. `websockets 16.0` and `httpx 0.28.1` are available on the
+host. A bounded demo session runner therefore still has to be written before
+Phases 6-16 can execute; it should live in its own module so the observer core
+stays inert and the existing guard narrows rather than being deleted.
+
 ## 15. Production credential decision (Gate 17)
 
 `MORE DEMO VALIDATION REQUIRED`
