@@ -127,13 +127,13 @@ class TestComplement:
                 fp.complement_price_units(cents)) == cents
 
     def test_sub_cent_grid_accepted(self):
-        grid = fp.PriceGrid([{"start_dollars": "0.0001", "end_dollars": "0.9999",
-                              "tick_dollars": "0.0001"}])
+        grid = fp.PriceGrid([{"start": "0.0001", "end": "0.9999",
+                              "step": "0.0001"}])
         assert grid.contains(fp.parse_price_units("0.6153"))
 
     def test_whole_cent_grid_accepted_and_off_grid_rejected(self):
-        grid = fp.PriceGrid([{"start_dollars": "0.0100", "end_dollars": "0.9900",
-                              "tick_dollars": "0.0100"}])
+        grid = fp.PriceGrid([{"start": "0.0100", "end": "0.9900",
+                              "step": "0.0100"}])
         assert grid.contains(fp.parse_price_units("0.6100"))
         with pytest.raises(fp.FixedPointError, match="off the market"):
             grid.validate(fp.parse_price_units("0.6153"))
@@ -141,15 +141,15 @@ class TestComplement:
     def test_complement_is_not_assumed_to_be_on_grid(self):
         """A complement is arithmetically exact but need not be a valid ORDER
         price; the grid decides that separately."""
-        grid = fp.PriceGrid([{"start_dollars": "0.0000", "end_dollars": "0.5000",
-                              "tick_dollars": "0.0100"}])
+        grid = fp.PriceGrid([{"start": "0.0000", "end": "0.5000",
+                              "step": "0.0100"}])
         p = fp.parse_price_units("0.4900")
         assert grid.contains(p)
         assert not grid.contains(fp.complement_price_units(p))
 
     def test_grid_does_not_key_off_the_structure_name(self):
-        grid = fp.PriceGrid([{"start_dollars": "0.0001", "end_dollars": "0.9999",
-                              "tick_dollars": "0.0001"}],
+        grid = fp.PriceGrid([{"start": "0.0001", "end": "0.9999",
+                              "step": "0.0001"}],
                             structure_name="legacy_whole_cent")
         assert grid.contains(fp.parse_price_units("0.6153")), (
             "numerical behaviour must come from price_ranges, not the label")
