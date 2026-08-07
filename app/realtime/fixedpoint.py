@@ -197,19 +197,53 @@ class PriceGrid:
     sub-cent grid starts silently rejecting valid prices.
     """
 
+    # The venue's actual field names, confirmed against live demo REST on
+    # 2026-08-07: `{"start": "0.0000", "end": "1.0000", "step": "0.0100"}`.
+    # This class previously expected `start_dollars`/`end_dollars`/
+    # `tick_dollars`, which are not names the venue sends — so every real
+    # market raised a bare KeyError and the grid guard had never once run
+    # against live data. The `_dollars` suffix does appear on scalar price
+    # fields (`yes_bid_dollars`), which is presumably where the guess came
+    # from; inside `price_ranges` it does not.
+    _FIELD_ALIASES = {
+        "start": ("start", "start_dollars"),
+        "end": ("end", "end_dollars"),
+        "step": ("step", "tick_dollars", "step_dollars"),
+    }
+
+    @classmethod
+    def _field(cls, raw: dict, logical: str) -> str:
+        for name in cls._FIELD_ALIASES[logical]:
+            if name in raw:
+                return raw[name]
+        raise FixedPointError(
+            f"price_ranges entry has no {logical!r} field; saw "
+            f"{sorted(raw)} and accept {list(cls._FIELD_ALIASES[logical])}")
+
     def __init__(self, ranges, *, structure_name: str | None = None):
         self.structure_name = structure_name
         self.ranges: list[tuple[int, int, int]] = []
         for r in ranges or []:
-            start = parse_price_units(r["start_dollars"], field="price_ranges.start")
-            end = parse_price_units(r["end_dollars"], field="price_ranges.end")
-            step = parse_price_units(r["tick_dollars"], field="price_ranges.tick")
+            if not isinstance(r, dict):
+                raise FixedPointError(
+                    f"price_ranges entry is {type(r).__name__}, not an object")
+            start = parse_price_units(self._field(r, "start"),
+                                      field="price_ranges.start")
+            end = parse_price_units(self._field(r, "end"), field="price_ranges.end")
+            step = parse_price_units(self._field(r, "step"),
+                                     field="price_ranges.step")
             if step <= 0:
-                raise FixedPointError("price_ranges tick must be positive")
+                raise FixedPointError("price_ranges step must be positive")
             if end < start:
                 raise FixedPointError("price_ranges end precedes start")
             self.ranges.append((start, end, step))
         self.ranges.sort()
+        for (a_start, a_end, _), (b_start, _, _) in zip(self.ranges,
+                                                        self.ranges[1:]):
+            if b_start <= a_end:
+                raise FixedPointError(
+                    "price_ranges overlap; which step applies to a shared price "
+                    "would be positional luck")
 
     @property
     def unconstrained(self) -> bool:

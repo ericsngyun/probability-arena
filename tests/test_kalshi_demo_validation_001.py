@@ -307,3 +307,94 @@ class TestAuditModuleIsNotPartOfTheCollector:
                 for banned in ("httpx", "requests", "aiohttp", "websockets"):
                     assert not any(n == banned or n.startswith(banned + ".")
                                    for n in names), (path, banned)
+
+
+# --- live DEMO REST wire evidence, 2026-08-07 --------------------------------------
+# Captured from https://external-api.demo.kalshi.co/trade-api/v2/markets.
+# Pinned as a fixture so the assumptions it settles cannot silently regress.
+# Values are venue market data, not credentials.
+LIVE_DEMO_MARKET = {
+    "ticker": "KXPLATINUMH-26AUG0716-T1759.49",
+    "status": "active",
+    "yes_bid_dollars": "0.0000", "yes_ask_dollars": "0.0000",
+    "no_bid_dollars": "1.0000", "no_ask_dollars": "1.0000",
+    "last_price_dollars": "0.0000",
+    "yes_bid_size_fp": "0.00", "yes_ask_size_fp": "0.00",
+    "volume_fp": "0.00", "open_interest_fp": "0.00",
+    "liquidity_dollars": "0.0000",
+    "price_level_structure": "linear_cent",
+    "price_ranges": [{"end": "1.0000", "start": "0.0000", "step": "0.0100"}],
+}
+
+
+class TestLiveDemoRestEvidence:
+    def test_price_ranges_uses_start_end_step_not_dollar_suffixed_names(self):
+        """The defect this evidence found.
+
+        `PriceGrid` expected `start_dollars`/`end_dollars`/`tick_dollars`. The
+        venue sends `start`/`end`/`step`, so every real market raised a bare
+        KeyError and the grid guard had never once run against live data. The
+        `_dollars` suffix is real on scalar price fields, which is presumably
+        where the guess came from; inside `price_ranges` it does not appear.
+        """
+        from app.realtime import fixedpoint as fp
+
+        assert set(LIVE_DEMO_MARKET["price_ranges"][0]) == {"start", "end", "step"}
+        grid = fp.PriceGrid(LIVE_DEMO_MARKET["price_ranges"],
+                            structure_name=LIVE_DEMO_MARKET["price_level_structure"])
+        assert not grid.unconstrained
+        # linear_cent: whole cents on grid, sub-cent off it.
+        grid.validate(fp.parse_price_units("0.5000"), field="probe")
+        grid.validate(fp.parse_price_units("0.0100"), field="probe")
+        with pytest.raises(fp.FixedPointError):
+            grid.validate(fp.parse_price_units("0.6153"), field="probe")
+
+    def test_missing_range_field_raises_a_typed_error_not_keyerror(self):
+        from app.realtime import fixedpoint as fp
+
+        with pytest.raises(fp.FixedPointError, match="no 'step'"):
+            fp.PriceGrid([{"start": "0.0000", "end": "1.0000"}])
+
+    def test_overlapping_ranges_are_refused(self):
+        from app.realtime import fixedpoint as fp
+
+        with pytest.raises(fp.FixedPointError, match="overlap"):
+            fp.PriceGrid([{"start": "0.0000", "end": "0.5000", "step": "0.0100"},
+                          {"start": "0.4000", "end": "1.0000", "step": "0.0100"}])
+
+    def test_live_scales_confirm_the_fixed_point_contract(self):
+        """`_dollars` fields carry 4 decimals and `_fp` fields 2 — which is
+        exactly PRICE_SCALE=10_000 and CONTRACT_SCALE=100, now confirmed on the
+        wire rather than assumed."""
+        from app.realtime import fixedpoint as fp
+
+        assert fp.PRICE_SCALE == 10_000 and fp.CONTRACT_SCALE == 100
+        for k, v in LIVE_DEMO_MARKET.items():
+            if k.endswith("_dollars"):
+                assert len(v.split(".")[1]) == 4, (k, v)
+                fp.parse_price_units(v, field=k)
+            elif k.endswith("_fp"):
+                assert len(v.split(".")[1]) == 2, (k, v)
+                fp.parse_contract_units(v, field=k)
+
+    def test_rest_field_names_match_what_reconciliation_reads(self):
+        from app.realtime import archive as ar
+        from app.realtime import book as bk
+
+        b = bk.OrderBook(LIVE_DEMO_MARKET["ticker"])
+        b.apply_snapshot({"market_ticker": LIVE_DEMO_MARKET["ticker"],
+                          "yes_dollars_fp": [], "no_dollars_fp": []}, seq=1, sid=1)
+        out = ar.reconcile_with_rest(b, LIVE_DEMO_MARKET)
+        # Identity resolves via `ticker`, and `status` is read — both confirmed
+        # present on the live payload.
+        assert out["classification"] != "identity_mismatch"
+        assert out["rest_status"] == "active"
+
+    def test_price_level_structure_is_a_label_and_keys_no_arithmetic(self):
+        from app.realtime import fixedpoint as fp
+
+        grid = fp.PriceGrid(LIVE_DEMO_MARKET["price_ranges"],
+                            structure_name="linear_cent")
+        relabelled = fp.PriceGrid(LIVE_DEMO_MARKET["price_ranges"],
+                                  structure_name="something_else_entirely")
+        assert grid.ranges == relabelled.ranges
