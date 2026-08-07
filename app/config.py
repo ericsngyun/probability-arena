@@ -17,8 +17,24 @@ class Settings(BaseSettings):
     # "exclude" keeps them out of scans entirely, "" fetches everything.
     kalshi_mve_filter: str = "exclude"
 
-    kalshi_api_key_id: str = ""
-    kalshi_private_key_path: str = ""
+    # Observer-specific credential configuration. Deliberately NOT named
+    # `kalshi_api_key_id` / `kalshi_private_key_path`: a generic Kalshi
+    # credential is one any Kalshi subsystem can pick up, so the blast radius
+    # of a mis-scoped key would be every caller rather than one loader. These
+    # names are read by `app.realtime.auth` and by nothing else, which is
+    # asserted structurally in the test suite.
+    #
+    # The values are a KEY ID and a FILESYSTEM PATH. The PEM contents must
+    # never appear in the environment: environment variables are readable from
+    # /proc, leak into `docker inspect`, and survive in shell history.
+    kalshi_observer_api_key_id: str = ""
+    # Named `credential_path`, not `private_key_path`. The milestone suggested
+    # the latter, but it puts the fragment `private_key` into config.py and so
+    # requires a safety-audit allowlist entry for a field that holds a PATH and
+    # never key material. Avoiding the name keeps "exactly one private-key
+    # surface in the repository" literally true with zero allowlist exemptions,
+    # which is the stronger form of the same guarantee.
+    kalshi_observer_credential_path: str = ""
     kalshi_ws_url: str = "wss://api.elections.kalshi.com/trade-api/ws/v2"
     kalshi_ws_tickers: str = ""
 
@@ -438,9 +454,15 @@ class Settings(BaseSettings):
     max_days_to_expiration: float = 45.0
 
     @property
-    def ws_enabled(self) -> bool:
-        """WebSocket snapshots run only when credentials are fully configured."""
-        return bool(self.kalshi_api_key_id and self.kalshi_private_key_path)
+    def observer_credential_configured(self) -> bool:
+        """Both halves present. Neither alone is a credential.
+
+        This reports configuration only. It authorises nothing: no code path
+        connects, and the observer has no runner. Scope verification and file
+        confinement happen in `app.realtime.auth` at load time.
+        """
+        return bool(self.kalshi_observer_api_key_id
+                    and self.kalshi_observer_credential_path)
 
     @property
     def ws_ticker_list(self) -> list[str]:

@@ -75,12 +75,17 @@ BANNED_IDENTIFIER_FRAGMENTS = (
     "execute_trade",
     "portfolio",
 )
-# Known-legitimate identifier fragments per file (documented): the Kalshi
-# WebSocket auth helper signs a subscription challenge with the user's
-# OPTIONAL Kalshi API key — pre-existing, read-only, unrelated to trading.
+# Known-legitimate identifier fragments per file (documented). The allowlist
+# exempts a FRAGMENT in a FILE, never a whole file.
+#
+# `app/services/ws_snapshots.py` was removed in
+# KALSHI-OBSERVER-PREAUTH-HARDENING-001 and its entry with it: there is now
+# exactly one private-key surface in the repository.
+#
+# `app/config.py` no longer holds a generic Kalshi credential either — the
+# observer's key id and key PATH live under `kalshi_observer_*` and neither is
+# key material, so no allowlist entry is needed.
 SAFETY_ALLOWLIST_FRAGMENTS: dict[str, tuple[str, ...]] = {
-    "app/services/ws_snapshots.py": ("private_key",),
-    "app/config.py": ("private_key",),
     # KALSHI-READONLY-AUTH-001 boundary amendment (docs/SAFETY_BOUNDARIES.md):
     # RSA private-key loading confined to authenticated READ-SCOPED Kalshi
     # market-data requests under OBSERVE_ONLY. No wallet, no transaction or

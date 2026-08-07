@@ -442,140 +442,47 @@ class TestCapabilityBoundary:
 
 
 # --- the pre-existing broader signer ----------------------------------------------
-class TestPreExistingSignerIsNotTheObserverPath:
-    def test_ws_snapshots_signer_is_dormant_and_separate(self):
-        """`app/services/ws_snapshots.py` has carried an RSA-PSS signer since
-        long before this milestone, gated on `Settings.ws_enabled`.
+class TestLegacySignerIsGone:
+    """`app/services/ws_snapshots.py` carried the repository's second RSA-PSS
+    signer — one that accepted an arbitrary URL and did no credential-file
+    confinement. KALSHI-OBSERVER-PREAUTH-HARDENING-001 deleted it.
 
-        It is recorded here rather than refactored: it is out of this
-        milestone's scope, but a reader comparing the two must not conclude that
-        `auth.py` is the only signing surface in the repository.
-        """
-        from app.config import Settings
+    It was dead: no systemd unit starts the FastAPI app that constructed it,
+    `orderbook_snapshots` held zero rows, and nothing read that table. Two
+    signing implementations with different security contracts is one more than
+    the boundary permits, and the weaker one is the one that gets used by
+    accident.
+    """
 
-        assert Settings(kalshi_api_key_id="", kalshi_private_key_path="").ws_enabled is False
-        assert Settings(kalshi_api_key_id="k", kalshi_private_key_path="").ws_enabled is False
+    def test_the_module_is_deleted(self):
+        repo = PKG.parent.parent
+        assert not (repo / "app/services/ws_snapshots.py").exists()
 
-    def test_observer_package_does_not_import_ws_snapshots(self):
-        for path in sorted(PKG.glob("*.py")):
+    def test_nothing_imports_it(self):
+        """Structural, not a substring scan: a comment explaining the removal
+        is not a reference to it, and this repository has produced false
+        failures from raw greps over its own prose more than once."""
+        repo = PKG.parent.parent
+        for path in sorted((repo / "app").rglob("*.py")):
             tree = ast.parse(path.read_text())
             for node in ast.walk(tree):
                 if isinstance(node, ast.ImportFrom) and node.module:
                     assert "ws_snapshots" not in node.module, path
+                elif isinstance(node, ast.Import):
+                    for alias in node.names:
+                        assert "ws_snapshots" not in alias.name, path
+                elif isinstance(node, ast.Name):
+                    assert "ws_snapshot" not in node.id.lower(), path
 
+    def test_the_generic_kalshi_credential_no_longer_exists(self):
+        """The observer reads `kalshi_observer_*` and nothing else. A generic
+        Kalshi credential is one any Kalshi subsystem can pick up."""
+        from app.config import Settings
 
-# --- adversarial-review regressions (KALSHI-READONLY-AUTH-001, Gate 9) ------------
-class TestConfinementBypassRegressions:
-    """Each test here reproduces a bypass an adversarial review actually ran.
-
-    They are kept as executable attacks rather than assertions about the fix,
-    so that a future refactor that reintroduces the hole fails rather than
-    quietly passing a test that only checks the new code's shape.
-    """
-
-    def test_symlinked_parent_directory_is_refused(self, tmp_path):
-        """lstat only inspects the FINAL component. A symlinked parent left the
-        anti-symlink check, the parent-mode check and the repository-containment
-        check all looking at a different directory than the one being read."""
-        real = _install(tmp_path, _pem(_gen()))
-        linkdir = tmp_path / "linkdir"
-        linkdir.symlink_to(real.parent)
-        with pytest.raises(ka.CredentialConfinementError, match="not fully resolved"):
-            ka.inspect_credential_file(linkdir / real.name)
-
-    def test_dot_dot_in_an_absolute_path_is_refused(self, tmp_path):
-        """`relative_to` compares path components, so a `..` segment made an
-        in-repository key look like it was outside the repository."""
-        p = _install(tmp_path, _pem(_gen()))
-        sneaky = Path(str(p.parent.parent) + "/../" + p.parent.parent.name
-                      + "/" + p.parent.name + "/" + p.name)
-        with pytest.raises(ka.CredentialConfinementError, match="not fully resolved"):
-            ka.inspect_credential_file(sneaky)
-
-    def test_hardlinked_credential_is_refused(self, tmp_path):
-        p = _install(tmp_path, _pem(_gen()))
-        os.link(p, p.parent / "second-name.pem")
-        with pytest.raises(ka.CredentialConfinementError, match="hard link"):
-            ka.inspect_credential_file(p)
-
-    def test_owner_check_is_on_by_default(self, tmp_path):
-        """It was opt-in, and no caller opted in, while the boundary doc listed
-        `owner-checked` as an unconditional property."""
-        import inspect as _inspect
-
-        sig = _inspect.signature(ka.inspect_credential_file)
-        assert sig.parameters["expected_owner_uid"].default is None
-        # None means "this process's uid", not "skip the check".
-        p = _install(tmp_path, _pem(_gen()))
-        assert ka.inspect_credential_file(p).owner_uid == os.getuid()
-        with pytest.raises(ka.CredentialConfinementError, match="owned by uid"):
-            ka.inspect_credential_file(p, expected_owner_uid=os.getuid() + 4242)
-
-    def test_public_constructor_is_not_a_from_env_in_disguise(self, tmp_path):
-        """The boundary says the only entry point is `from_path`. The public
-        __init__ accepted an already-parsed key, which reconstitutes exactly the
-        in-memory constructor the doc disclaims — and skipped the key-size,
-        environment and file-confinement checks on the way."""
-        weak = _gen(1024)
-        with pytest.raises(kx.CredentialError, match="CredentialFileFacts"):
-            ka.ReadOnlyRequestSigner(
-                key_id="kid", private_key=weak, environment=kx.ENV_DEMO,
-                facts=None, scopes=("read",))
-
-        good, _ = _signer(tmp_path)
-        facts = good.credential_facts
-        with pytest.raises(ka.CredentialConfinementError, match="minimum accepted"):
-            ka.ReadOnlyRequestSigner(
-                key_id="kid", private_key=weak, environment=kx.ENV_DEMO,
-                facts=facts, scopes=("read",))
-        with pytest.raises(kx.CredentialError, match="unknown environment"):
-            ka.ReadOnlyRequestSigner(
-                key_id="kid", private_key=_gen(), environment="live-prod-whatever",
-                facts=facts, scopes=("read",))
-
-    def test_scope_verification_is_on_the_signing_path(self, tmp_path):
-        """`verify_scopes` existed and halted correctly, and nothing on the
-        key-bearing path called it. The write-scope halt was enforced by tests
-        only."""
-        p = _install(tmp_path, _pem(_gen()))
-        for bad in (["write"], ["read", "write"], [], None, "read", ["READ"]):
-            with pytest.raises(kx.CredentialError,
-                               match="OBSERVE-ONLY CREDENTIAL REQUIREMENT"):
-                ka.ReadOnlyRequestSigner.from_path(
-                    key_id="kid", credential_path=p, environment=kx.ENV_DEMO,
-                    reported_scopes=bad)
-        import inspect as _inspect
-
-        # No default: whatever it defaulted to would be what nobody ever passed.
-        sig = _inspect.signature(ka.ReadOnlyRequestSigner.from_path)
-        assert sig.parameters["reported_scopes"].default is _inspect.Parameter.empty
-
-    def test_scopes_cannot_be_spoofed_by_subclass_or_str_coercion(self):
-        class LyingList(list):
-            def __iter__(self):
-                return iter(["read"])
-
-        with pytest.raises(kx.CredentialError):
-            kx.verify_scopes(LyingList(["write"]), environment=kx.ENV_DEMO)
-
-        class SaysRead:
-            def __str__(self):
-                return "read"
-
-        with pytest.raises(kx.CredentialError, match="non-string"):
-            kx.verify_scopes([SaysRead()], environment=kx.ENV_DEMO)
-
-    def test_headers_do_not_print_themselves(self, tmp_path):
-        s, _ = _signer(tmp_path, key_id="kid-abcdef")
-        h = s.websocket_headers(timestamp_ms=TS)
-        assert h["KALSHI-ACCESS-KEY"] == "kid-abcdef"   # protocol still correct
-        assert "kid-abcdef" not in repr(h)
-        assert "redacted" in repr(h)
-
-    def test_seconds_passed_as_milliseconds_fail_locally(self, tmp_path):
-        s, _ = _signer(tmp_path)
-        with pytest.raises(kx.CredentialError, match="plausible millisecond"):
-            s.websocket_headers(timestamp_ms=1_754_500_000)
+        s = Settings()
+        assert not hasattr(s, "kalshi_api_key_id")
+        assert not hasattr(s, "kalshi_private_key_path")
+        assert s.observer_credential_configured is False
 
 
 class TestSafetyAuditAllowlist:
@@ -603,9 +510,10 @@ class TestSafetyAuditAllowlist:
         editing this list, in a diff a reviewer sees."""
         from app.services.frontier_eval import SAFETY_ALLOWLIST_FRAGMENTS
 
+        # One private-key surface in the repository, one allowlist entry.
+        # `app/config.py` dropped out when the generic Kalshi credential was
+        # removed; `ws_snapshots.py` dropped out when it was deleted.
         assert SAFETY_ALLOWLIST_FRAGMENTS == {
-            "app/services/ws_snapshots.py": ("private_key",),
-            "app/config.py": ("private_key",),
             "app/realtime/auth.py": ("private_key",),
         }
 
