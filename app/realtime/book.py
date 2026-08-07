@@ -144,11 +144,19 @@ class OrderBook:
     """Canonical YES-denominated book for one market.
 
     Kalshi publishes two ladders, YES and NO, and they are NOT a bid/ask pair.
-    With `use_yes_price=true` both arrive on the YES price scale, and the
-    economic reading is:
+    The economic reading implemented here is:
 
-        yes-side level  -> a resting BID for YES at p
-        no-side level   -> a resting economic OFFER of YES at p
+        yes-side level at p  -> a resting BID for YES at p
+        no-side level at p   -> a resting economic OFFER of YES at (1 - p)
+
+    **`use_yes_price` is requested on every subscription and its wire effect is
+    UNVERIFIED.** If it causes the NO ladder to arrive already on the YES
+    scale, the complement above is applied twice and every ask is wrong. Two
+    guards stand in for the evidence until a demo session provides it: the
+    crossed-book check refuses the symptom, and every level retains
+    `raw_price_units` next to `normalized_yes_price_units` so archived data can
+    be reinterpreted rather than re-collected. Settling this is item 5 on the
+    demo checklist.
 
     Both raw sides are kept. `best_yes_bid` and `best_yes_ask` are derived, and
     the ask is derived from the NO ladder rather than assumed to exist on the
@@ -307,13 +315,21 @@ class OrderBook:
         return out
 
     def apply_delta(self, msg: dict, *, seq: int | None = None,
-                    sid: int | None = None) -> dict:
+                    sid: int | None = None,
+                    ordered_externally: bool = False) -> dict:
         """Apply one incremental change, refusing to continue across a gap.
+
+        `ordered_externally` is set by `SubscriptionRouter`, which has already
+        settled ordering for the whole subscription. A book must not re-check a
+        per-market sequence in that case: `seq` counts messages across every
+        market on the subscription, so a book's own view of it is full of holes
+        that are simply its siblings' traffic.
 
         Fails closed on every rejection path, not only on sequence faults.
         """
         try:
-            return self._apply_delta(msg, seq=seq, sid=sid)
+            return self._apply_delta(msg, seq=seq, sid=sid,
+                                     ordered_externally=ordered_externally)
         except BookIntegrityError:
             raise                       # already halted at the point of refusal
         except Exception as exc:
@@ -321,7 +337,8 @@ class OrderBook:
             raise
 
     def _apply_delta(self, msg: dict, *, seq: int | None = None,
-                     sid: int | None = None) -> dict:
+                     sid: int | None = None,
+                     ordered_externally: bool = False) -> dict:
         if not self.synced:
             self.stats["rejected_pre_snapshot"] += 1
             # Documented bounded rule: pre-snapshot deltas are REJECTED, not
@@ -347,7 +364,7 @@ class OrderBook:
                 f"this book is on {self.sid}; sequence numbers from a "
                 "superseded subscription are not comparable")
 
-        status = self.classify_seq(seq)
+        status = SEQ_OK if ordered_externally else self.classify_seq(seq)
         if status == SEQ_DUPLICATE:
             self.stats["duplicates"] += 1
             return {"action": "duplicate_ignored", "seq": seq}
@@ -442,21 +459,48 @@ class OrderBook:
         }
 
     def yes_scale_ladder(self) -> dict:
-        """Both ladders on one YES scale, with the raw side preserved."""
+        """Both ladders on one YES scale, with the venue's own words preserved.
+
+        Every level carries all four canonical fields:
+
+            venue_side                what the venue called the side
+            raw_price_string          the exact characters it sent
+            raw_price_units           those characters as integer units
+            normalized_yes_price_units    our YES-scale interpretation
+
+        Normalization ADDS a reading; it never replaces the venue's. Keeping
+        the raw pair means that if the `use_yes_price` convention turns out to
+        differ from what is assumed here, every archived level can be
+        reinterpreted after the fact instead of having to be re-collected —
+        which matters precisely because that convention is the one thing this
+        milestone could not verify without the demo socket.
+        """
         self._require_publishable()
-        bids = [{"price_units": p, "price": format_price_units(p),
+        bids = [{"venue_side": SIDE_YES,
+                 "raw_price_string": format_price_units(p),
+                 "raw_price_units": p,
+                 "normalized_yes_price_units": p,
+                 "price_units": p, "price": format_price_units(p),
                  "size_units": q, "raw_side": SIDE_YES,
                  "interpretation": "resting bid for YES"}
                 for p, q in sorted(self.yes.items(), reverse=True)]
-        asks = [{"price_units": complement_price_units(p),
+        asks = [{"venue_side": SIDE_NO,
+                 "raw_price_string": format_price_units(p),
+                 "raw_price_units": p,
+                 "normalized_yes_price_units": complement_price_units(p),
+                 "price_units": complement_price_units(p),
                  "price": format_price_units(complement_price_units(p)),
                  "size_units": q, "raw_side": SIDE_NO,
-                 "raw_price_units": p,
                  "interpretation": "resting economic offer of YES"}
                 for p, q in sorted(self.no.items(), reverse=True)]
         asks.sort(key=lambda level: level["price_units"])
         return {"market_ticker": self.market_ticker,
-                "generation": self.generation, "bids": bids, "asks": asks}
+                "generation": self.generation,
+                # The convention this ladder assumes, recorded alongside the
+                # data rather than only in a docstring.
+                "use_yes_price_requested": self.use_yes_price,
+                "no_side_normalization": "complement",
+                "bids": bids, "asks": asks}
 
     def checksum(self) -> str:
         """Digest of the book's full state.
@@ -488,3 +532,208 @@ class OrderBook:
         }
         return hashlib.sha256(json.dumps(
             payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+# --- subscription-level sequencing ------------------------------------------------
+
+SUB_HEALTHY = "healthy"
+SUB_GAP = "sequence_gap"
+SUB_REGRESSION = "sequence_regression"
+SUB_WRONG_SID = "wrong_sid"
+SUB_STALE_GENERATION = "stale_generation"
+SUB_MISSING_SEQ = "missing_sequence"
+SUB_AWAITING_SNAPSHOT = "awaiting_snapshot"
+
+
+class SubscriptionError(RuntimeError):
+    """A message that cannot be ordered within its subscription."""
+
+
+class SubscriptionState:
+    """Sequence integrity for ONE subscription, across ALL its markets.
+
+    Kalshi assigns `seq` per **subscription**, not per market, and one
+    subscription carries many `market_tickers`. Tracking `last_seq` on each
+    market book therefore made every book see a subsequence with a hole at
+    every message belonging to a sibling ticker: with two markets, each book
+    halted on its second message and never recovered.
+
+    So ordering lives here and routing lives below it. A book never compares
+    sequence numbers at all — it applies what this object has already accepted.
+
+    The other half of the correction is the failure mode. A `seq` hole means a
+    message was lost, and nothing in the hole tells us which market it belonged
+    to, so **every** book on this subscription is suspect. Repairing only the
+    market named in the next message would leave the others silently wrong.
+    """
+
+    def __init__(self, sid: int, *, market_tickers=(), generation: int = 1):
+        self.sid = int(sid)
+        self.generation = int(generation)
+        self.last_seq: int | None = None
+        self.subscribed_market_tickers = tuple(market_tickers)
+        self.healthy = False            # nothing is ordered until a snapshot
+        self.state_reason: str | None = SUB_AWAITING_SNAPSHOT
+        self.stats = {"accepted": 0, "duplicates": 0, "gaps": 0,
+                      "regressions": 0, "wrong_sid": 0, "stale_generation": 0,
+                      "missing_seq": 0, "recoveries": 0}
+
+    # -- lifecycle -------------------------------------------------------------
+    def _fail(self, reason: str, detail: str) -> None:
+        self.healthy = False
+        self.state_reason = reason
+        raise SubscriptionError(f"sid {self.sid}: {detail}")
+
+    def accept(self, *, sid, seq, generation=None, is_snapshot: bool = False) -> str:
+        """Validate one message against this subscription. Ordering only.
+
+        Order of checks matters: identity, then generation, then sequence. A
+        message from a superseded generation carries a sequence from a
+        different stream, so comparing it first would produce a meaningless
+        verdict about a message we were going to discard anyway.
+        """
+        if sid is None or int(sid) != self.sid:
+            self.stats["wrong_sid"] += 1
+            self._fail(SUB_WRONG_SID,
+                       f"message belongs to subscription {sid}, not {self.sid}")
+        if generation is not None and int(generation) != self.generation:
+            self.stats["stale_generation"] += 1
+            self._fail(SUB_STALE_GENERATION,
+                       f"message is from generation {generation}, this "
+                       f"subscription is on {self.generation}")
+        if seq is None:
+            self.stats["missing_seq"] += 1
+            self._fail(SUB_MISSING_SEQ,
+                       "message carries no sequence number; absent is not ordered")
+        seq = int(seq)
+
+        if is_snapshot:
+            # A snapshot re-bases the stream. It may not re-base it BACKWARDS:
+            # at-least-once redelivery on reconnect otherwise discards applied
+            # deltas and reports a clean, publishable result.
+            if self.last_seq is not None and seq < self.last_seq:
+                self._fail(SUB_REGRESSION,
+                           f"snapshot seq {seq} is behind the applied position "
+                           f"{self.last_seq}; refusing to rewind")
+            self.last_seq = seq
+            self.healthy = True
+            self.state_reason = None
+            self.stats["accepted"] += 1
+            return SEQ_OK
+
+        if not self.healthy:
+            self._fail(self.state_reason or SUB_AWAITING_SNAPSHOT,
+                       "delta received while the subscription is not healthy; "
+                       "rejected rather than buffered")
+        if self.last_seq is None:
+            self._fail(SUB_AWAITING_SNAPSHOT,
+                       "delta received before any snapshot on this subscription")
+        if seq == self.last_seq:
+            self.stats["duplicates"] += 1
+            return SEQ_DUPLICATE
+        if seq < self.last_seq:
+            self.stats["regressions"] += 1
+            self._fail(SUB_REGRESSION,
+                       f"sequence regression: expected {self.last_seq + 1}, "
+                       f"got {seq}")
+        if seq > self.last_seq + 1:
+            self.stats["gaps"] += 1
+            self._fail(SUB_GAP,
+                       f"sequence gap: expected {self.last_seq + 1}, got {seq}")
+        self.last_seq = seq
+        self.stats["accepted"] += 1
+        return SEQ_OK
+
+    def begin_recovery(self) -> None:
+        """Mark the subscription as awaiting a fresh snapshot."""
+        self.healthy = False
+        self.state_reason = SUB_AWAITING_SNAPSHOT
+        self.last_seq = None
+        self.stats["recoveries"] += 1
+
+    def supersede(self, *, market_tickers=None) -> int:
+        """Start a new generation, e.g. after a full resubscription.
+
+        The generation is what makes a straggler from the old stream
+        identifiable: its sequence numbers are from a different namespace, and
+        without this they would look like an ordinary gap.
+        """
+        self.generation += 1
+        if market_tickers is not None:
+            self.subscribed_market_tickers = tuple(market_tickers)
+        self.begin_recovery()
+        return self.generation
+
+
+class SubscriptionRouter:
+    """Dispatch: one subscription, many market books.
+
+    Sequence integrity is settled once, at the subscription level, before any
+    routing happens. This is the object that makes interleaved A/B/A traffic
+    ordinary rather than a false gap on A.
+    """
+
+    def __init__(self, subscription: SubscriptionState, *, grid=None):
+        self.subscription = subscription
+        self.grid = grid
+        self.books: dict[str, OrderBook] = {}
+
+    def book_for(self, ticker: str) -> "OrderBook":
+        book = self.books.get(ticker)
+        if book is None:
+            book = self.books[ticker] = OrderBook(ticker, grid=self.grid)
+        return book
+
+    def _unpublish_all(self, reason: str) -> None:
+        for book in self.books.values():
+            book._halt(f"subscription {self.subscription.sid}: {reason}")
+
+    def dispatch(self, record: dict) -> dict:
+        """Apply one archived/live envelope. Ordering, then routing, then apply.
+
+        A subscription-level failure unpublishes EVERY book on this
+        subscription, not just the one the failing message happened to name.
+        The lost message could have belonged to any of them.
+        """
+        etype = record.get("event_type")
+        if etype not in ("orderbook_snapshot", "orderbook_delta"):
+            return {"action": "ignored", "event_type": etype}
+        msg = (record.get("raw") or {}).get("msg") or {}
+        ticker = record.get("market_ticker") or msg.get("market_ticker")
+        is_snapshot = etype == "orderbook_snapshot"
+
+        try:
+            status = self.subscription.accept(
+                sid=record.get("sid"), seq=record.get("seq"),
+                generation=record.get("subscription_generation"),
+                is_snapshot=is_snapshot)
+        except SubscriptionError as exc:
+            self._unpublish_all(self.subscription.state_reason or str(exc))
+            raise
+        if status == SEQ_DUPLICATE:
+            return {"action": "duplicate_ignored", "seq": record.get("seq")}
+
+        if not ticker:
+            self._unpublish_all("message carried no market_ticker")
+            raise SubscriptionError(
+                f"sid {self.subscription.sid}: message at seq "
+                f"{record.get('seq')} carries no market_ticker and cannot be "
+                "routed; which book it belonged to is unknowable")
+        if (self.subscription.subscribed_market_tickers
+                and ticker not in self.subscription.subscribed_market_tickers):
+            self._unpublish_all(f"unexpected market {ticker!r}")
+            raise SubscriptionError(
+                f"sid {self.subscription.sid}: message names {ticker!r}, which "
+                "this subscription did not subscribe to")
+
+        book = self.book_for(ticker)
+        if is_snapshot:
+            return book.apply_snapshot(msg, sid=self.subscription.sid,
+                                       seq=record.get("seq"))
+        return book.apply_delta(msg, seq=record.get("seq"),
+                                sid=self.subscription.sid,
+                                ordered_externally=True)
+
+    def publishable_books(self) -> dict:
+        healthy = self.subscription.healthy
+        return {t: (b.publishable and healthy) for t, b in sorted(self.books.items())}

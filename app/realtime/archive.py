@@ -355,50 +355,59 @@ def latency_envelope(records) -> LatencyEnvelope:
 def replay(records, *, grid=None) -> dict:
     """Deterministically rebuild books from archived events.
 
+    Replay is grouped by **sid**, not by market, because that is where ordering
+    lives: `seq` counts messages across a whole subscription. Replaying each
+    market against its own sequence view put a hole at every sibling message,
+    so a two-market archive produced two permanently halted books and reported
+    it as a venue fault.
+
     Pure: no network, no credential, no database, no clock dependence. The same
     records must always produce the same per-market checksums, which is the
     acceptance test for the whole data path.
     """
-    from app.realtime.book import BookIntegrityError, OrderBook
-    from app.realtime.fixedpoint import FixedPointError
+    from app.realtime.book import SubscriptionRouter, SubscriptionState
 
-    books: dict[str, OrderBook] = {}
+    routers: dict[object, SubscriptionRouter] = {}
     faults, applied, rejected = [], 0, 0
     for r in records:
-        ticker = r.get("market_ticker")
-        if not ticker:
-            continue
         etype = r.get("event_type")
-        msg = (r.get("raw") or {}).get("msg") or {}
-        book = books.get(ticker)
-        if book is None:
-            book = books[ticker] = OrderBook(ticker, grid=grid)
+        if etype not in ("orderbook_snapshot", "orderbook_delta"):
+            continue
+        sid = r.get("sid")
+        router = routers.get(sid)
+        if router is None:
+            # Tickers are not constrained on replay: the archive is the record
+            # of what the subscription actually carried, and re-deriving the
+            # subscribe list from it would just assert the file against itself.
+            router = routers[sid] = SubscriptionRouter(
+                SubscriptionState(sid if sid is not None else 0), grid=grid)
         try:
-            if etype == "orderbook_snapshot":
-                book.apply_snapshot(msg, sid=r.get("sid"), seq=r.get("seq"))
+            out = router.dispatch(r)
+            if out.get("action") in ("snapshot", "delta"):
                 applied += 1
-            elif etype == "orderbook_delta":
-                book.apply_delta(msg, seq=r.get("seq"), sid=r.get("sid"))
-                applied += 1
-            else:
-                continue
-        # Deliberately broad: a KeyError or a TypeError from venue field drift
-        # previously escaped and aborted the whole run, so one malformed record
-        # made an entire archive unreplayable — the opposite of the
-        # tail-tolerance this module promises.
         except Exception as exc:
             rejected += 1
-            faults.append({"market_ticker": ticker, "seq": r.get("seq"),
+            faults.append({"market_ticker": r.get("market_ticker"),
+                           "sid": sid, "seq": r.get("seq"),
                            "error": f"{type(exc).__name__}: {exc}"})
+
+    books = {t: b for router in routers.values()
+             for t, b in router.books.items()}
+    publishable = {}
+    for router in routers.values():
+        publishable.update(router.publishable_books())
     return {
-        "markets": len(books), "events_applied": applied,
-        "events_rejected": rejected, "faults": faults,
+        "markets": len(books), "subscriptions": len(routers),
+        "events_applied": applied, "events_rejected": rejected, "faults": faults,
         # None for a halted book. A consumer comparing checksums without also
         # reading `publishable` would otherwise accept a torn book.
-        "checksums": {t: (b.checksum() if b.publishable else None)
-                      for t, b in sorted(books.items())},
-        "publishable": {t: b.publishable for t, b in sorted(books.items())},
-        "stats": {t: dict(b.stats) for t, b in sorted(books.items())},
+        "checksums": {t: (books[t].checksum() if publishable.get(t) else None)
+                      for t in sorted(books)},
+        "publishable": {t: publishable.get(t, False) for t in sorted(books)},
+        "stats": {t: dict(books[t].stats) for t in sorted(books)},
+        "subscription_stats": {
+            str(sid): dict(r.subscription.stats) for sid, r in sorted(
+                routers.items(), key=lambda kv: str(kv[0]))},
         "external_calls": 0, "persisted": False,
     }
 

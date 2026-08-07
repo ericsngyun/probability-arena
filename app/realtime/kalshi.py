@@ -50,7 +50,16 @@ WS_HOSTS = {
 }
 
 # --- channel allowlist ----------------------------------------------------------
+# `ticker`, not `ticker_v2`. The lifecycle channel is versioned and the ticker
+# channel is not; assuming the version suffix generalises would subscribe to a
+# channel that does not exist, which fails as silence rather than as an error.
 ALLOWED_CHANNELS = ("orderbook_delta", "ticker", "trade", "market_lifecycle_v2")
+
+# Market open/close timing is NOT promised as an explicit lifecycle message.
+# A book must not infer that a market is still open from the absence of a
+# close event — absence of a message is not evidence of state, and this is the
+# same reasoning `verify_scopes` applies to an absent scopes field.
+LIFECYCLE_GUARANTEES_EXPLICIT_OPEN_CLOSE = False
 FORBIDDEN_CHANNELS = ("fill", "market_positions", "user_orders", "communications",
                       "order_group_updates")
 
@@ -261,10 +270,44 @@ def build_subscribe(command_id: int, channels, market_tickers) -> dict:
     return {"id": int(command_id), "cmd": "subscribe", "params": params}
 
 
-def build_resubscribe_snapshot(command_id: int, sid: int) -> dict:
-    """Official resynchronisation: re-request the snapshot for a subscription."""
+# Documented recovery action. Named as a constant because the exact spelling is
+# a venue fact that has not been confirmed on the wire, and a demo session must
+# settle it before recovery is relied on — see the Gate 10 checklist.
+RECOVERY_ACTION_GET_SNAPSHOT = "get_snapshot"
+
+
+def build_get_snapshot(command_id: int, sid: int) -> dict:
+    """Recovery path 1: ask the venue to re-send the snapshot for a subscription.
+
+    Cheaper than resubscribing and keeps the sid, so books do not have to be
+    torn down. Unconfirmed on the wire; `build_resubscribe` is the fallback
+    that uses only commands we already send.
+    """
     return {"id": int(command_id), "cmd": "update_subscription",
-            "params": {"sids": [int(sid)], "action": "request_snapshot"}}
+            "params": {"sids": [int(sid)],
+                       "action": RECOVERY_ACTION_GET_SNAPSHOT}}
+
+
+def build_unsubscribe(command_id: int, sid: int) -> dict:
+    return {"id": int(command_id), "cmd": "unsubscribe",
+            "params": {"sids": [int(sid)]}}
+
+
+def build_resubscribe(command_id: int, sid: int, channels, market_tickers) -> list:
+    """Recovery path 2: unsubscribe then subscribe.
+
+    Uses only commands whose shapes are already exercised, so it is the path
+    that works even if `get_snapshot` turns out not to be a valid action. The
+    caller must supersede the subscription generation, because the new stream's
+    sequence numbers are in a different namespace from the old one's.
+    """
+    return [build_unsubscribe(command_id, sid),
+            build_subscribe(command_id + 1, channels, market_tickers)]
+
+
+def build_resubscribe_snapshot(command_id: int, sid: int) -> dict:
+    """Deprecated alias for `build_get_snapshot`, kept for existing callers."""
+    return build_get_snapshot(command_id, sid)
 
 
 class Transport:

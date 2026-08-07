@@ -19,19 +19,24 @@ from app.routers.marketops import router as marketops_router
 from app.routers.markets import router as markets_router
 from app.routers.pipeline import router as pipeline_router
 from app.routers.signals import router as signals_router
-from app.services.ws_snapshots import WsSnapshotService
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """Migrations only.
+
+    The Kalshi WebSocket snapshot service was removed in
+    KALSHI-OBSERVER-PREAUTH-HARDENING-001. It carried the repository's second
+    RSA-PSS signing implementation — one that accepted an arbitrary URL and
+    performed no credential-file confinement — and it had no consumer: no
+    systemd unit starts this API, `orderbook_snapshots` held zero rows, and
+    nothing read that table. Two signing implementations with different
+    security contracts is one more than the boundary permits.
+    """
     run_migrations()
-    ws_service = WsSnapshotService(get_settings())
-    ws_service.start()
-    app.state.ws_service = ws_service
     yield
-    await ws_service.stop()
 
 
 app = FastAPI(
@@ -53,4 +58,6 @@ app.include_router(eval_router)
 
 @app.get("/health", tags=["ops"])
 def health() -> dict:
-    return {"status": "ok", "ws_enabled": get_settings().ws_enabled}
+    return {"status": "ok",
+            "observer_credential_configured":
+                get_settings().observer_credential_configured}

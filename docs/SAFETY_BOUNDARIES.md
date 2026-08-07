@@ -29,6 +29,20 @@ generation; transaction signing; order signing; blockchain signing; order
 creation, cancellation or amendment; API-key creation, rotation or deletion;
 write-scoped credentials; and any general-purpose `sign(method, path)` API.
 
+### Update — KALSHI-OBSERVER-PREAUTH-HARDENING-001 (2026-08-07)
+
+`app/services/ws_snapshots.py` has been **deleted**. It carried the second
+RSA-PSS signer referenced below — one that accepted an arbitrary URL, reloaded
+the PEM on every call, and performed no credential-file confinement. It was
+dead code: no systemd unit starts the FastAPI app that constructed it,
+`orderbook_snapshots` held zero rows, and nothing read that table.
+
+The generic `kalshi_api_key_id` / `kalshi_private_key_path` settings are gone
+with it. The observer reads `KALSHI_OBSERVER_API_KEY_ID` and
+`KALSHI_OBSERVER_CREDENTIAL_PATH`, and nothing else reads those. There is now
+**exactly one private-key surface in the repository**, and the safety audit
+carries exactly one allowlist entry — `app/config.py` no longer needs one.
+
 ### Why the boundary had to move rather than be reinterpreted
 
 The row above was written about **custody** keys — wallets that can move funds.
@@ -46,7 +60,7 @@ meaning anything.
 
 | | |
 |---|---|
-| file | `app/realtime/auth.py` — the only file in `app/realtime/` permitted key material, enforced by an AST test over the package |
+| file | `app/realtime/auth.py` — the only file in the **repository** permitted key material, enforced by an AST test over `app/` |
 | entry point | `ReadOnlyRequestSigner.from_path` only. The constructor requires a `CredentialFileFacts`, which can only be produced by opening and validating a confined file — so it cannot be used as the `from_pem_bytes`/`from_env` this row disclaims |
 | signable input | `timestamp_ms + "GET" + "/trade-api/ws/v2"`. There is no method parameter and no path parameter on the public surface; `_signature` requires an exact `str` (a `str` subclass can define `__eq__` that defeats the allowlist) |
 | algorithm | RSA-PSS, SHA-256, MGF1(SHA-256), digest salt length, base64 |
