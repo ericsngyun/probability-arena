@@ -3,6 +3,16 @@
 **Status:** implemented, suite green, safety audit clean. **Live authenticated
 validation pending the human-installed read-only key.**
 
+> **Superseded in part by KALSHI-READONLY-AUTH-AND-VALIDATION-001.** The eight
+> required adversarial reviews ran *after* this document was written and found
+> material defects in the book, archive and latency code described below —
+> including a fail-closed promise that held for three faults and nothing else,
+> an interrupted write that lost the whole hour, and a `p99` that equalled
+> `max` for every n ≤ 100. Those are fixed. Four venue semantics remain
+> unverified and one of them makes the collector non-functional past a single
+> market. Read `docs/KALSHI_READONLY_AUTH_AND_VALIDATION_001.md` alongside this
+> file; where they disagree, that one is current.
+
 ---
 
 ## 1. Credential-scope verification
@@ -29,14 +39,18 @@ Static tests parse the AST and check **operative** string literals, excluding
 docstrings — a raw substring scan matches the module's own prose describing what
 it refuses to do, which has bitten three checks in this repository already.
 
-### The private key: removed, not excluded
+### The private key: removed, then reinstated under an explicit amendment
 
-A concrete PEM-backed signer was written, and the canonical safety audit
-correctly flagged `load_pem_private_key` as private-key handling —
-`SAFETY_BOUNDARIES.md` records that as having no implementation surface
-(ADR-002). The human decision authorizes a read-scoped key, so that boundary
-will move, but it should move in **its own reviewed step at the moment a key
-exists**, not as a side effect of a collector milestone.
+A concrete PEM-backed signer was written and removed here, on the grounds that
+`SAFETY_BOUNDARIES.md` recorded private-key handling as having no implementation
+surface (ADR-002).
+
+**That reading was wrong.** `app/services/ws_snapshots.py` has carried a working
+RSA-PSS Kalshi signer since long before this milestone, allowlisted in the
+canonical safety audit and dormant only because the credential env vars are
+empty. The row in question was written about *custody* keys. KALSHI-READONLY-
+AUTH-001 amends it explicitly and adds `app/realtime/auth.py` — see
+`docs/KALSHI_READONLY_AUTH_AND_VALIDATION_001.md` §3.
 
 Signing is therefore a seam. `canonical_signing_string` implements
 `timestamp_ms + METHOD + path` (query stripped) and is fully tested without key
