@@ -338,15 +338,19 @@ class TestCredentialAndCapability:
             kx.describe_credential(environment="production", key_id="k",
                                    scopes=["read"], key_path=p)
 
-    def test_no_private_key_is_loaded_anywhere(self):
-        """The canonical safety audit flagged the concrete PEM signer as
-        private-key handling, which SAFETY_BOUNDARIES records as having no
-        implementation surface. It was removed rather than excluded: the
-        observer is structurally incapable of touching a key, which is stronger
-        than a promise not to."""
+    def test_key_handling_is_confined_to_the_auth_module(self):
+        """Key material may exist in exactly one file.
+
+        KALSHI-READONLY-AUTH-001 amended the boundary to permit RSA loading for
+        read-scoped market-data requests, and the amendment is only meaningful
+        if the surface it opened stays one file wide. A second module quietly
+        growing a `sign` call is precisely the drift this catches.
+        """
         import ast as _ast
 
         for path in sorted(PKG.glob("*.py")):
+            if path.name == "auth.py":
+                continue
             tree = _ast.parse(path.read_text())
             names = set()
             for node in _ast.walk(tree):

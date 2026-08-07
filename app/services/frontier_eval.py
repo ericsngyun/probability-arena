@@ -81,6 +81,11 @@ BANNED_IDENTIFIER_FRAGMENTS = (
 SAFETY_ALLOWLIST_FRAGMENTS: dict[str, tuple[str, ...]] = {
     "app/services/ws_snapshots.py": ("private_key",),
     "app/config.py": ("private_key",),
+    # KALSHI-READONLY-AUTH-001 boundary amendment (docs/SAFETY_BOUNDARIES.md):
+    # RSA private-key loading confined to authenticated READ-SCOPED Kalshi
+    # market-data requests under OBSERVE_ONLY. No wallet, no transaction or
+    # order signing, no key management, no general-purpose signer.
+    "app/realtime/auth.py": ("private_key",),
 }
 
 
