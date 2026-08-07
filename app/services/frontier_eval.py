@@ -81,6 +81,11 @@ BANNED_IDENTIFIER_FRAGMENTS = (
 SAFETY_ALLOWLIST_FRAGMENTS: dict[str, tuple[str, ...]] = {
     "app/services/ws_snapshots.py": ("private_key",),
     "app/config.py": ("private_key",),
+    # KALSHI-READONLY-AUTH-001 boundary amendment (docs/SAFETY_BOUNDARIES.md):
+    # RSA private-key loading confined to authenticated READ-SCOPED Kalshi
+    # market-data requests under OBSERVE_ONLY. No wallet, no transaction or
+    # order signing, no key management, no general-purpose signer.
+    "app/realtime/auth.py": ("private_key",),
 }
 
 
@@ -593,9 +598,14 @@ class FrontierEvalService:
             for name in names:
                 lowered = name.lower()
                 for fragment in BANNED_IDENTIFIER_FRAGMENTS:
-                    if fragment in lowered and not any(
-                        allow in lowered for allow in allowed
-                    ):
+                    # The allowlist exempts the FRAGMENT, not the identifier.
+                    # Asking whether any allowed fragment appears anywhere in
+                    # the name exempted the whole file: in a file allowlisted
+                    # for `private_key`, the identifiers `wallet_private_key`,
+                    # `private_key_place_order` and
+                    # `sign_transaction_with_private_key` all passed, because
+                    # each also contains the allowed fragment.
+                    if fragment in lowered and fragment not in allowed:
                         violations.append({"file": rel, "identifier": name})
         return {
             "files_scanned": files_scanned,

@@ -338,15 +338,19 @@ class TestCredentialAndCapability:
             kx.describe_credential(environment="production", key_id="k",
                                    scopes=["read"], key_path=p)
 
-    def test_no_private_key_is_loaded_anywhere(self):
-        """The canonical safety audit flagged the concrete PEM signer as
-        private-key handling, which SAFETY_BOUNDARIES records as having no
-        implementation surface. It was removed rather than excluded: the
-        observer is structurally incapable of touching a key, which is stronger
-        than a promise not to."""
+    def test_key_handling_is_confined_to_the_auth_module(self):
+        """Key material may exist in exactly one file.
+
+        KALSHI-READONLY-AUTH-001 amended the boundary to permit RSA loading for
+        read-scoped market-data requests, and the amendment is only meaningful
+        if the surface it opened stays one file wide. A second module quietly
+        growing a `sign` call is precisely the drift this catches.
+        """
         import ast as _ast
 
-        for path in sorted(PKG.glob("*.py")):
+        for path in sorted(PKG.rglob("*.py")):
+            if path.name == "auth.py":
+                continue
             tree = _ast.parse(path.read_text())
             names = set()
             for node in _ast.walk(tree):
@@ -383,7 +387,7 @@ class TestCredentialAndCapability:
 
 
 class TestNoTradingSurface:
-    FILES = sorted(PKG.glob("*.py"))
+    FILES = sorted(PKG.rglob("*.py"))
 
     def _sources(self):
         return [(p, p.read_text()) for p in self.FILES]
@@ -569,9 +573,13 @@ class TestArchiveAndReplay:
     def test_replay_reproduces_the_live_book_exactly(self, tmp_path):
         live = bk.OrderBook("KXTEST")
         stream = self._stream()
-        live.apply_snapshot(stream[0].raw["msg"], seq=1)
+        # sid is threaded through both paths because the checksum now covers
+        # it: two books with identical ladders at different stream positions
+        # are not the same observation, and replay determinism is asserted on
+        # exactly that equality.
+        live.apply_snapshot(stream[0].raw["msg"], seq=1, sid=stream[0].sid)
         for e in stream[1:]:
-            live.apply_delta(e.raw["msg"], seq=e.seq)
+            live.apply_delta(e.raw["msg"], seq=e.seq, sid=e.sid)
         a = ar.EventArchive(tmp_path, environment="demo")
         for e in stream:
             a.append(e)
@@ -603,18 +611,25 @@ class TestArchiveAndReplay:
         for e in self._stream():
             a.append(e)
         env_ = ar.latency_envelope(a.read_all()).to_dict()
-        assert set(env_) >= {"venue_to_receive_ms", "receive_to_normalize_us",
-                             "normalize_to_book_us"}
+        assert set(env_) >= {"venue_to_receive_offset_contaminated_ms",
+                             "receive_to_normalize_us", "coverage"}
+        assert "normalize_to_book_us" not in env_
         assert set(env_["receive_to_normalize_us"]) >= {"p50", "p95", "p99", "max"}
 
     def test_rest_reconciliation_reports_and_resyncs(self):
         b = bk.OrderBook("KXTEST")
         b.apply_snapshot(snapshot_msg(yes=[["0.6000", "10.00"]],
                                       no=[["0.3500", "8.00"]]), seq=1)
-        ok = ar.reconcile_with_rest(b, {"yes_bid_dollars": "0.6000",
+        # The ticker is required: without it this reconciled one market's book
+        # against another market's payload and returned a confident verdict.
+        assert ar.reconcile_with_rest(b, {"yes_bid_dollars": "0.6000"})[
+            "classification"] == "identity_mismatch"
+        ok = ar.reconcile_with_rest(b, {"ticker": "KXTEST",
+                                        "yes_bid_dollars": "0.6000",
                                         "yes_ask_dollars": "0.6500"})
         assert ok["agrees"] and ok["action"] == "none"
-        bad = ar.reconcile_with_rest(b, {"yes_bid_dollars": "0.5900",
+        bad = ar.reconcile_with_rest(b, {"ticker": "KXTEST",
+                                         "yes_bid_dollars": "0.5900",
                                          "yes_ask_dollars": "0.6500"})
         assert not bad["agrees"] and bad["action"] == "resynchronise"
         assert bad["discrepancies"][0]["field"] == "best_yes_bid"
@@ -645,3 +660,257 @@ class TestFixtureTransport:
         t = kx.FixtureTransport([{"type": "subscribed"}])
         assert list(t.iter_frames()) == [{"type": "subscribed"}]
         assert t.connected is False
+
+
+# --- adversarial-review regressions (Gate 9) --------------------------------------
+class TestFailClosedRegressions:
+    """Each test reproduces an attack a review actually ran and observed pass.
+
+    The systematic gap the reviews found was that the suite asserted refusals
+    only for paths that already refused, and never asserted refusal for a path
+    that accepted. These are the second kind.
+    """
+
+    def _synced(self, **kw):
+        b = bk.OrderBook("KXTEST", **kw)
+        b.apply_snapshot(snapshot_msg(yes=[["0.6000", "10.00"]],
+                                      no=[["0.3500", "8.00"]]), seq=10, sid=1)
+        return b
+
+    def test_any_rejection_leaves_the_book_unpublishable(self):
+        """The invariant that catches this whole class: if apply_* raised, the
+        book must not still be advertising itself as clean."""
+        cases = [
+            ("delta", {"market_ticker": "KXTEST", "side": "sideways",
+                       "price_dollars": "0.6000", "delta_fp": "1.00"}, 11),
+            ("delta", {"market_ticker": "KXTEST", "side": "yes",
+                       "delta_fp": "1.00"}, 11),                    # missing price
+            ("delta", {"market_ticker": "KXTEST", "side": "yes",
+                       "price_dollars": "0.6000"}, 11),             # missing delta
+            ("delta", {"market_ticker": "OTHER", "side": "yes",
+                       "price_dollars": "0.6000", "delta_fp": "1.00"}, 11),
+        ]
+        for kind, msg, seq in cases:
+            b = self._synced()
+            with pytest.raises((bk.BookIntegrityError, fp.FixedPointError)):
+                b.apply_delta(msg, seq=seq, sid=1)
+            assert b.publishable is False, (kind, msg)
+            assert b.integrity_reason
+            with pytest.raises(bk.BookIntegrityError):
+                b.top_of_book()
+
+    def test_rejected_snapshot_does_not_leave_a_stale_book_publishable(self):
+        b = self._synced()
+        with pytest.raises(bk.BookIntegrityError):
+            b.apply_snapshot({"market_ticker": "KXTEST"}, seq=11)  # no ladders
+        assert b.publishable is False
+        with pytest.raises(bk.BookIntegrityError):
+            b.top_of_book()
+
+    def test_snapshot_cannot_rewind_the_book(self):
+        """At-least-once redelivery on reconnect is ordinary. Older state
+        arriving with a higher generation and publishing as current is the one
+        thing generation numbering exists to prevent."""
+        b = self._synced()
+        b.apply_delta({"market_ticker": "KXTEST", "side": "yes",
+                       "price_dollars": "0.6000", "delta_fp": "3.00"},
+                      seq=11, sid=1)
+        with pytest.raises(bk.BookIntegrityError, match="behind the applied"):
+            b.apply_snapshot(snapshot_msg(yes=[["0.5000", "1.00"]]), seq=2, sid=1)
+        assert b.publishable is False
+
+    def test_missing_sequence_is_a_fault_not_permission(self):
+        b = self._synced()
+        with pytest.raises(bk.BookIntegrityError, match="no sequence number"):
+            b.apply_delta({"market_ticker": "KXTEST", "side": "yes",
+                           "price_dollars": "0.6000", "delta_fp": "1.00"},
+                          seq=None, sid=1)
+        assert b.publishable is False
+        # And a snapshot with no seq does not silently blind the gap check.
+        b2 = bk.OrderBook("KXTEST")
+        b2.apply_snapshot(snapshot_msg(yes=[["0.6000", "1.00"]]), seq=None)
+        assert b2.publishable is False
+
+    def test_a_book_never_absorbs_another_markets_data(self):
+        b = self._synced()
+        with pytest.raises(bk.BookIntegrityError, match="another market"):
+            b.apply_snapshot(snapshot_msg(yes=[["0.6000", "1.00"]],
+                                          ticker="SOME-OTHER-MARKET"), seq=11)
+        assert b.publishable is False
+
+    def test_delta_from_a_superseded_subscription_is_refused(self):
+        """Kalshi's seq is per SUBSCRIPTION, so a straggler from an old sid
+        carries a sequence from a different namespace entirely."""
+        b = self._synced()
+        with pytest.raises(bk.BookIntegrityError, match="superseded|subscription"):
+            b.apply_delta({"market_ticker": "KXTEST", "side": "yes",
+                           "price_dollars": "0.6000", "delta_fp": "1.00"},
+                          seq=11, sid=2)
+        assert b.publishable is False
+
+    def test_crossed_book_is_refused(self):
+        b = bk.OrderBook("KXTEST")
+        with pytest.raises(bk.BookIntegrityError, match="crossed"):
+            b.apply_snapshot(snapshot_msg(yes=[["0.8000", "10.00"]],
+                                          no=[["0.9000", "5.00"]]), seq=1)
+        assert b.publishable is False
+
+    def test_duplicate_price_levels_in_a_snapshot_are_refused(self):
+        b = bk.OrderBook("KXTEST")
+        with pytest.raises(fp.FixedPointError, match="twice"):
+            b.apply_snapshot(snapshot_msg(
+                yes=[["0.6000", "10.00"], ["0.6000", "3.00"]]), seq=1)
+
+    def test_checksum_is_withheld_from_an_unpublishable_book(self):
+        b = self._synced()
+        with pytest.raises(bk.BookIntegrityError):
+            b.apply_delta({"market_ticker": "KXTEST", "side": "yes",
+                           "price_dollars": "0.6000", "delta_fp": "1.00"},
+                          seq=99, sid=1)                      # gap
+        assert b.publishable is False
+        with pytest.raises(bk.BookIntegrityError):
+            b.checksum()
+
+    def test_checksum_distinguishes_stream_position(self):
+        """Two books with identical ladders at different positions are not the
+        same observation, and checksum equality is what replay determinism is
+        asserted on."""
+        a, c = self._synced(), self._synced()
+        c.generation, c.last_seq, c.sid = 6, 782, 99
+        assert a.checksum() != c.checksum()
+
+
+class TestArchiveIntegrityRegressions:
+    def _archive(self, tmp_path, environment="demo"):
+        return ar.EventArchive(tmp_path, environment=environment)
+
+    def test_interrupted_write_loses_the_last_record_not_the_file(self, tmp_path):
+        """`fh.read()` buffers the whole member and then raises on a truncated
+        trailer, discarding everything already decoded — so an interrupted
+        write lost the entire hour while the docstring promised the opposite,
+        and `verify()` called the empty result intact."""
+        a = self._archive(tmp_path)
+        for e in TestArchiveAndReplay()._stream():
+            a.append(e)
+        path = next(tmp_path.rglob("events.jsonl.gz"))
+        raw = path.read_bytes()
+        path.write_bytes(raw[:-5])
+        records = a.read_all()
+        assert len(records) >= 3, "everything before the torn record must survive"
+        assert a.verify()["intact"] is False
+
+    def test_corrupt_gzip_does_not_raise_out_of_read_all(self, tmp_path):
+        a = self._archive(tmp_path)
+        for e in TestArchiveAndReplay()._stream():
+            a.append(e)
+        path = next(tmp_path.rglob("events.jsonl.gz"))
+        raw = bytearray(path.read_bytes())
+        raw[len(raw) // 2] ^= 0xFF
+        path.write_bytes(bytes(raw))
+        a.read_all()                        # zlib.error must not escape
+        assert a.verify()["intact"] is False
+
+    def test_tampered_record_is_rejected_on_read_not_only_in_verify(self, tmp_path):
+        """`verify()` caught tampering and nothing called it, so `replay()`
+        rebuilt a book from a rewritten record with no complaint."""
+        import gzip as _gzip
+
+        a = self._archive(tmp_path)
+        for e in TestArchiveAndReplay()._stream():
+            a.append(e)
+        path = next(tmp_path.rglob("events.jsonl.gz"))
+        with _gzip.open(path, "rt") as fh:
+            lines = fh.read().splitlines()
+        lines[0] = lines[0].replace('"0.6000"', '"0.9900"')
+        with _gzip.open(path, "wt") as fh:
+            fh.write("\n".join(lines) + "\n")
+        assert len(a.read_all()) == 3       # the tampered record is gone
+        assert a.verify()["intact"] is False
+
+    def test_a_misplaced_demo_file_is_not_read_as_production(self, tmp_path):
+        """The write-side guard is in-process only; a copy, an rsync or a
+        restore defeats it, and replaying demo events as production evidence
+        is a fabricated observation."""
+        demo = ar.EventArchive(tmp_path / "d", environment="demo")
+        for e in TestArchiveAndReplay()._stream():
+            demo.append(e)
+        src = next((tmp_path / "d").rglob("events.jsonl.gz"))
+        dst = (tmp_path / "p" / "env=production" / "venue=kalshi"
+               / "date=2026-08-06" / "hour=12")
+        dst.mkdir(parents=True)
+        dst.joinpath("events.jsonl.gz").write_bytes(src.read_bytes())
+        prod = ar.EventArchive(tmp_path / "p", environment="production")
+        assert prod.read_all() == []
+        assert prod.verify()["foreign_environment_records"] == 4
+
+    def test_venue_cannot_escape_its_path_component(self, tmp_path):
+        with pytest.raises(ar.ArchiveError, match="safe path component"):
+            ar.EventArchive(tmp_path, environment="demo",
+                            venue="../../env=production/venue=kalshi")
+
+    def test_naive_receive_time_is_refused(self, tmp_path):
+        """`astimezone()` reads a naive datetime as LOCAL time, so identical
+        events landed in different hour partitions on different hosts."""
+        a = self._archive(tmp_path)
+        with pytest.raises(ar.ArchiveError, match="timezone-aware"):
+            a.partition(datetime(2026, 8, 6, 12, 0, 0))
+
+    def test_records_are_ordered_by_instant_not_by_timestamp_text(self, tmp_path):
+        """`13:00-04:00` sorts before `12:00+00:00` as text and is five hours
+        later as an instant."""
+        earlier = datetime(2026, 8, 6, 12, 0, tzinfo=timezone.utc)
+        later = earlier + timedelta(hours=5)
+        recs = [{"collector_receive_time": later.astimezone(
+                    timezone(timedelta(hours=-4))).isoformat(), "seq": 2},
+                {"collector_receive_time": earlier.isoformat(), "seq": 1}]
+        assert [r["seq"] for r in sorted(recs, key=ar._read_order)] == [1, 2]
+
+    def test_string_seq_does_not_take_down_the_whole_read(self, tmp_path):
+        recs = [{"collector_receive_time": "2026-08-06T12:00:00+00:00", "seq": "2"},
+                {"collector_receive_time": "2026-08-06T12:00:00+00:00", "seq": 1}]
+        assert [r["seq"] for r in sorted(recs, key=ar._read_order)] == [1, "2"]
+
+    def test_one_malformed_record_does_not_abort_the_replay(self, tmp_path):
+        stream = TestArchiveAndReplay()._stream()
+        recs = [e.to_record() if hasattr(e, "to_record") else e for e in stream]
+        a = self._archive(tmp_path)
+        for e in stream:
+            a.append(e)
+        records = a.read_all()
+        records[2]["raw"]["msg"].pop("price_dollars")
+        out = ar.replay(records)            # KeyError must not escape
+        assert out["events_rejected"] >= 1 and out["faults"]
+
+
+class TestLatencyArithmetic:
+    def test_percentiles_match_a_reference_implementation(self):
+        """`int(p*n)` is a floor, which returned the (floor(p*n)+1)-th order
+        statistic — making p99 identical to max for every n <= 100."""
+        import math as _math
+
+        values = [float(i) for i in range(1, 101)]
+        q = ar._quantiles(values)
+        for name, p in (("p50", 0.50), ("p95", 0.95), ("p99", 0.99)):
+            expected = sorted(values)[_math.ceil(p * len(values)) - 1]
+            assert q[name] == expected, name
+        assert q["p99"] != q["max"] or len(values) < 100
+
+    def test_percentiles_are_withheld_when_n_cannot_support_them(self):
+        assert ar._quantiles([7.0])["p50"] is None
+        assert ar._quantiles([1.0, 3.0])["p50"] is None
+        q = ar._quantiles([float(i) for i in range(5)])
+        assert q["p50"] is not None and q["p95"] is None and q["p99"] is None
+
+    def test_empty_and_populated_hops_have_the_same_keys(self):
+        assert set(ar._quantiles([])) == set(ar._quantiles([1.0, 2.0, 3.0]))
+
+    def test_negative_samples_are_counted_never_dropped(self):
+        recs = [{"receive_monotonic_ns": 100, "normalize_monotonic_ns": 50},
+                {"receive_monotonic_ns": 100, "normalize_monotonic_ns": 200}]
+        env_ = ar.latency_envelope(recs).to_dict()
+        assert env_["receive_to_normalize_us"]["negative"] == 1
+
+    def test_the_report_states_what_it_does_not_measure(self):
+        cov = ar.latency_envelope([]).to_dict()["coverage"]
+        assert cov["observation_gaps_measured"] is False
+        assert cov["host_clock_offset_characterised"] is False

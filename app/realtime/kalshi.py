@@ -10,12 +10,14 @@ mis-scoped credential is installed**:
 * no order, portfolio, cancel, amend, or key-management route exists as a string
   in this package, so none can be requested even by accident.
 
-**No private key is loaded in this milestone at all.** A concrete PEM-backed
-signer was written and removed: the repository's canonical safety audit
-correctly flagged it as private-key handling, which SAFETY_BOUNDARIES records as
-having no implementation surface. Signing is a seam; the key-bearing
-implementation gets its own reviewed step when a key actually exists. Credential
-*metadata* (path, owner, mode) is inspected; contents never are.
+**This module holds no key material.** Signing lives in the sibling
+`auth.py` under the KALSHI-READONLY-AUTH-001 boundary amendment, which confines
+RSA private-key loading to authenticated read-scoped market-data requests. This
+module keeps the key-free half — scope verification, capability enforcement, the
+canonical signing string, subscription construction — so that the parts every
+transport path depends on can be reasoned about without key material anywhere in
+view. Credential *metadata* (path, owner, mode) is inspected here; contents
+never are.
 """
 
 from __future__ import annotations
@@ -145,11 +147,20 @@ def verify_scopes(reported: object, *, environment: str) -> tuple:
             "HALT — OBSERVE-ONLY CREDENTIAL REQUIREMENT NOT SATISFIED: the key "
             "metadata reports no scopes field. Omission is not 'read'; Kalshi "
             "keys default to broader access when scopes are omitted.")
-    if not isinstance(reported, (list, tuple)):
+    # `type(...) in` rather than isinstance: a list SUBCLASS can lie in
+    # __iter__, and a string is itself iterable — `"read"` would otherwise
+    # decompose into four single-character "scopes".
+    if type(reported) not in (list, tuple):
         raise CredentialError(
             "HALT — OBSERVE-ONLY CREDENTIAL REQUIREMENT NOT SATISFIED: scopes "
             f"is {type(reported).__name__}, not a list")
-    scopes = tuple(str(s) for s in reported)
+    # No str() coercion: an object whose __str__ returns "read" is not a scope
+    # the venue granted.
+    if any(type(s) is not str for s in reported):
+        raise CredentialError(
+            "HALT — OBSERVE-ONLY CREDENTIAL REQUIREMENT NOT SATISFIED: scopes "
+            "contains a non-string entry")
+    scopes = tuple(reported)
     unknown = [s for s in scopes if s not in ("read", "write")]
     if unknown:
         raise CredentialError(
@@ -193,23 +204,17 @@ def describe_credential(*, environment: str, key_id: str, scopes: object,
 
 
 class RequestSigner:
-    """Signing SEAM. No private key is loaded anywhere in this milestone.
+    """Signing SEAM. This base class holds no key and signs nothing.
 
     The venue signs with RSA-PSS-SHA256 over `timestamp_ms + METHOD + path`,
-    base64, sent as KALSHI-ACCESS-KEY / -TIMESTAMP / -SIGNATURE. A concrete
-    PEM-backed implementation was written and then **removed**: the repository's
-    canonical safety audit correctly flagged `load_pem_private_key` as
-    private-key handling, which `SAFETY_BOUNDARIES.md` records as having no
-    implementation surface (ADR-002).
+    base64, sent as KALSHI-ACCESS-KEY / -TIMESTAMP / -SIGNATURE. The concrete
+    implementation is `app.realtime.auth.ReadOnlyRequestSigner`, which is
+    reachable only through a confined credential path and exposes no
+    `sign(method, path)`.
 
-    The human decision authorises a read-scoped Kalshi API key, so that boundary
-    will move — but it should move in its own reviewed step, at the moment a key
-    actually exists, not as a side effect of a collector milestone. Until then
-    the observer is *structurally incapable* of touching a private key, which is
-    a stronger statement than a promise not to.
-
-    `canonical_signing_string` is kept because it is the part worth testing now
-    and it involves no key material.
+    The seam remains because the fixture, replay and archive paths must run with
+    no credential at all, and the honest way to express that is an object that
+    refuses rather than one that quietly returns empty headers.
     """
 
     def headers(self, *, method: str, path: str,

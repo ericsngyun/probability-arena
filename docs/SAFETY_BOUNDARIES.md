@@ -12,11 +12,58 @@ require crossing one must stop and report back instead of building.
 | **Paper trading / simulation** | ❌ none exists | MVP-005B, gated on MVP-005A acceptance. EDGE-ANALYSIS-001 (`edge-cohort-report`) only *measures* per-cohort gap follow-through and *reports* whether the MVP-005B gate is met — it is analysis, unlocks nothing, and advancing still requires explicit human acceptance |
 | **Portfolio sizing** | ❌ none exists | Post-paper-trading milestone with explicit human acceptance |
 | **Order placement** | ❌ none exists | A dedicated, explicitly-accepted live-trading milestone (not currently on the roadmap) |
-| **Wallet / private-key handling** | ❌ none exists (ADR-002) | A dedicated custody design + security review milestone; keys would never live in this repo/DB regardless |
+| **Wallet / private-key handling — custody** | ❌ none exists (ADR-002) | A dedicated custody design + security review milestone; keys would never live in this repo/DB regardless. **Narrowed by KALSHI-READONLY-AUTH-001 — see the amendment below: RSA *request-authentication* key loading is now permitted in exactly one file for read-scoped Kalshi market data. Wallets, custody, and transaction/order signing remain forbidden with no implementation surface.** |
 | **Live trading / execution** | ❌ none exists | Same as order placement; also requires operational controls (limits, kill switches) designed first |
 | **Autonomous trading** | ❌ none exists | Not planned; would require all of the above plus standing human-in-the-loop controls |
 | **Crypto wallets** | ❌ none exists | CRYPTO-001 shipped read-only scouting only; wallet milestones explicitly deferred |
 | **Swaps / transaction construction / signing (Jupiter or any DEX)** | ❌ none exists | WALLET-001 (policy-controlled transaction *proposal* gateway only — no signing/keys), itself gated on CRYPTO-002 (risk engine) + CRYPTO-003 (paper simulator) acceptance; much later |
+
+## Amendment KALSHI-READONLY-AUTH-001 (2026-08-06) — confined request signing
+
+**Permitted, narrowly:** RSA private-key loading solely to sign authenticated
+**read-scoped Kalshi market-data** requests under capability mode
+`OBSERVE_ONLY`.
+
+**Still forbidden, with no implementation surface:** wallets; custody; key
+generation; transaction signing; order signing; blockchain signing; order
+creation, cancellation or amendment; API-key creation, rotation or deletion;
+write-scoped credentials; and any general-purpose `sign(method, path)` API.
+
+### Why the boundary had to move rather than be reinterpreted
+
+The row above was written about **custody** keys — wallets that can move funds.
+A Kalshi API key that authenticates a read-only market-data subscription is a
+different object with a different worst case, and the two had been sharing one
+line. That ambiguity was already load-bearing in the wrong direction: an RSA-PSS
+signer has existed in `app/services/ws_snapshots.py` since long before this
+milestone, allowlisted in the canonical safety audit, so the claim that
+private-key handling had *no implementation surface anywhere* was not accurate
+when read literally. Amending the text openly is the honest fix; quietly
+deciding that the old row "obviously did not mean this" is how a boundary stops
+meaning anything.
+
+### The surface the amendment opens, exactly
+
+| | |
+|---|---|
+| file | `app/realtime/auth.py` — the only file in `app/realtime/` permitted key material, enforced by an AST test over the package |
+| entry point | `ReadOnlyRequestSigner.from_path` only. The constructor requires a `CredentialFileFacts`, which can only be produced by opening and validating a confined file — so it cannot be used as the `from_pem_bytes`/`from_env` this row disclaims |
+| signable input | `timestamp_ms + "GET" + "/trade-api/ws/v2"`. There is no method parameter and no path parameter on the public surface; `_signature` requires an exact `str` (a `str` subclass can define `__eq__` that defeats the allowlist) |
+| algorithm | RSA-PSS, SHA-256, MGF1(SHA-256), digest salt length, base64 |
+| credential file | opened with `O_NOFOLLOW`; every check runs against `fstat` on the descriptor, not on a path that can be repointed between check and read. Absolute, already-resolved (no `..`, no symlinked ancestor), regular, single-link, mode `0600` or tighter, confined parent, no group/world-writable non-sticky ancestor, outside the repository, owner-checked against this process's uid by default |
+| scope | `from_path` requires `reported_scopes` with no default and fails closed through `verify_scopes`. `verify_scopes` accepts only an exact `list`/`tuple` of exact `str` — a `list` subclass that lies in `__iter__`, and an object whose `__str__` returns `"read"`, are both refused |
+| key material | ≥2048-bit RSA, re-checked in the constructor rather than trusted from the loader; encrypted PEMs, multi-key files and non-RSA keys rejected |
+| containment | The key is held in a closure, not an attribute — there is no `_key` to reach, so the method and path locks cannot be bypassed by one attribute access. `__slots__`, no `__dict__`, pickling and copying raise, `repr` carries a fingerprint only, headers redact themselves, and parse failures are re-raised `from None` with `__context__` suppressed so neither the library's exception nor a reporter walking the context chain can quote key bytes. This bounds *accidental* egress: any code running in-process can still call the closure, and Python offers no defence against that |
+
+`ENABLE_*` flags do not gate this: nothing runs it. No timer, no service, no
+daemon and no MarketOps hook exists for the observer, and installing one is a
+separate approved milestone (KALSHI-REALTIME-OBSERVATION-001B).
+
+### What would require amending this again
+
+Signing any second route; accepting a write-scoped key; exposing a
+general-purpose signer; loading a key for any venue other than Kalshi; or
+holding key material outside `app/realtime/auth.py`.
 
 ## What "no implementation surface" means
 
