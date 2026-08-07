@@ -147,11 +147,20 @@ def verify_scopes(reported: object, *, environment: str) -> tuple:
             "HALT — OBSERVE-ONLY CREDENTIAL REQUIREMENT NOT SATISFIED: the key "
             "metadata reports no scopes field. Omission is not 'read'; Kalshi "
             "keys default to broader access when scopes are omitted.")
-    if not isinstance(reported, (list, tuple)):
+    # `type(...) in` rather than isinstance: a list SUBCLASS can lie in
+    # __iter__, and a string is itself iterable — `"read"` would otherwise
+    # decompose into four single-character "scopes".
+    if type(reported) not in (list, tuple):
         raise CredentialError(
             "HALT — OBSERVE-ONLY CREDENTIAL REQUIREMENT NOT SATISFIED: scopes "
             f"is {type(reported).__name__}, not a list")
-    scopes = tuple(str(s) for s in reported)
+    # No str() coercion: an object whose __str__ returns "read" is not a scope
+    # the venue granted.
+    if any(type(s) is not str for s in reported):
+        raise CredentialError(
+            "HALT — OBSERVE-ONLY CREDENTIAL REQUIREMENT NOT SATISFIED: scopes "
+            "contains a non-string entry")
+    scopes = tuple(reported)
     unknown = [s for s in scopes if s not in ("read", "write")]
     if unknown:
         raise CredentialError(

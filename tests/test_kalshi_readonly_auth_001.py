@@ -60,7 +60,8 @@ def _signer(tmp_path: Path, *, key=None, key_id: str = "aaaa-bbbb-cccc",
     key = key or _gen()
     p = _install(tmp_path, _pem(key))
     s = ka.ReadOnlyRequestSigner.from_path(
-        key_id=key_id, credential_path=p, environment=environment)
+        key_id=key_id, credential_path=p, environment=environment,
+        reported_scopes=["read"])
     return s, key
 
 
@@ -138,10 +139,30 @@ class TestMethodAndPathConfinement:
     def test_10_wrong_path_rejected(self, tmp_path):
         s, _ = _signer(tmp_path)
         for bad in ("/trade-api/v2/portfolio/orders", "/trade-api/ws/v1",
-                    "/trade-api/ws/v2/", "", "/"):
+                    "/trade-api/ws/v2/", "", "/", "/trade-api/ws/v2?x=1"):
             with pytest.raises(kx.CredentialError, match="allowlist"):
-                s.websocket_headers(timestamp_ms=TS, path=bad)
+                s._signature(method="GET", path=bad, timestamp_ms=TS)
         assert ka.READ_ONLY_PATH_ALLOWLIST == frozenset({"/trade-api/ws/v2"})
+        # There is no path parameter to get wrong on the public surface.
+        assert "path" not in ka.ReadOnlyRequestSigner.websocket_headers.__code__.co_varnames
+
+    def test_10b_str_subclass_cannot_smuggle_a_route_past_the_allowlist(self, tmp_path):
+        """A str subclass can define __eq__/__hash__ so that `in` succeeds while
+        the value carries a different route — and the signature would then
+        authenticate that route."""
+        s, key = _signer(tmp_path)
+
+        class EvilPath(str):
+            def __hash__(self):
+                return hash(kx.WS_PATH)
+
+            def __eq__(self, other):
+                return True
+
+        evil = EvilPath("/trade-api/v2/portfolio/orders")
+        assert evil in ka.READ_ONLY_PATH_ALLOWLIST  # the membership test alone is fooled
+        with pytest.raises(kx.CredentialError, match="allowlist"):
+            s._signature(method="GET", path=evil, timestamp_ms=TS)
 
     def test_no_general_purpose_public_signer_exists(self, tmp_path):
         s, _ = _signer(tmp_path)
@@ -149,6 +170,10 @@ class TestMethodAndPathConfinement:
         public = [n for n in dir(s) if not n.startswith("_")]
         assert "websocket_headers" in public
         assert not any("sign" in n for n in public if n != "websocket_headers")
+        # And the key itself is not an attribute: `signer._key.sign(anything)`
+        # would bypass the method and path locks in one attribute access.
+        assert not hasattr(s, "_key")
+        assert "_key" not in ka.ReadOnlyRequestSigner.__slots__
 
 
 # --- 11-14: signature correctness -------------------------------------------------
@@ -210,11 +235,12 @@ class TestSecretContainment:
 
         with caplog.at_level("DEBUG"):
             s = ka.ReadOnlyRequestSigner.from_path(
-                key_id="kid", credential_path=p, environment=kx.ENV_DEMO)
+                key_id="kid", credential_path=p, environment=kx.ENV_DEMO,
+                reported_scopes=["read"])
             h = s.websocket_headers(timestamp_ms=TS)
 
         blobs = [repr(s), str(s), repr(s.credential_facts), caplog.text,
-                 repr(h), s.public_key_pem()]
+                 repr(h), str(h), s.public_key_pem()]
         for blob in blobs:
             for line in secret_lines:
                 assert line not in blob
@@ -231,7 +257,8 @@ class TestSecretContainment:
         p = _install(tmp_path, body.encode())
         with pytest.raises(ka.CredentialConfinementError) as ei:
             ka.ReadOnlyRequestSigner.from_path(
-                key_id="kid", credential_path=p, environment=kx.ENV_DEMO)
+                key_id="kid", credential_path=p, environment=kx.ENV_DEMO,
+                reported_scopes=["read"])
         text = f"{ei.value}{ei.value.__cause__}{ei.value.__context__}"
         assert marker not in text
         assert ei.value.__cause__ is None  # `from None`: no chained original
@@ -292,19 +319,22 @@ class TestLoaderConfinement:
             p = _install(tmp_path / os.urandom(4).hex(), body)
             with pytest.raises(ka.CredentialConfinementError):
                 ka.ReadOnlyRequestSigner.from_path(
-                    key_id="kid", credential_path=p, environment=kx.ENV_DEMO)
+                    key_id="kid", credential_path=p, environment=kx.ENV_DEMO,
+                    reported_scopes=["read"])
 
     def test_20_unsupported_key_types_rejected(self, tmp_path):
         ecp = _install(tmp_path / "ec", _pem(ec.generate_private_key(ec.SECP256R1())))
         with pytest.raises(ka.CredentialConfinementError, match="requires an RSA"):
             ka.ReadOnlyRequestSigner.from_path(
-                key_id="kid", credential_path=ecp, environment=kx.ENV_DEMO)
+                key_id="kid", credential_path=ecp, environment=kx.ENV_DEMO,
+                reported_scopes=["read"])
 
     def test_20b_weak_rsa_key_rejected(self, tmp_path):
         p = _install(tmp_path / "weak", _pem(_gen(1024)))
         with pytest.raises(ka.CredentialConfinementError, match="minimum accepted"):
             ka.ReadOnlyRequestSigner.from_path(
-                key_id="kid", credential_path=p, environment=kx.ENV_DEMO)
+                key_id="kid", credential_path=p, environment=kx.ENV_DEMO,
+                reported_scopes=["read"])
         assert ka.MIN_RSA_KEY_BITS == 2048
 
     def test_20c_encrypted_pem_rejected_before_any_prompt(self, tmp_path):
@@ -316,13 +346,15 @@ class TestLoaderConfinement:
         p = _install(tmp_path / "enc", enc)
         with pytest.raises(ka.CredentialConfinementError, match="encrypted"):
             ka.ReadOnlyRequestSigner.from_path(
-                key_id="kid", credential_path=p, environment=kx.ENV_DEMO)
+                key_id="kid", credential_path=p, environment=kx.ENV_DEMO,
+                reported_scopes=["read"])
 
     def test_20d_multiple_pem_blocks_rejected(self, tmp_path):
         p = _install(tmp_path / "multi", _pem(_gen()) + _pem(_gen()))
         with pytest.raises(ka.CredentialConfinementError, match="multiple PEM"):
             ka.ReadOnlyRequestSigner.from_path(
-                key_id="kid", credential_path=p, environment=kx.ENV_DEMO)
+                key_id="kid", credential_path=p, environment=kx.ENV_DEMO,
+                reported_scopes=["read"])
 
     def test_relative_path_and_missing_file_rejected(self, tmp_path):
         with pytest.raises(ka.CredentialConfinementError, match="relative"):
@@ -350,7 +382,7 @@ class TestCapabilityBoundary:
             with pytest.raises(kx.CapabilityError):
                 ka.ReadOnlyRequestSigner.from_path(
                     key_id="kid", credential_path=p, environment=kx.ENV_DEMO,
-                    capability_mode=mode)
+                    reported_scopes=["read"], capability_mode=mode)
 
     def test_no_bytes_constructor_or_env_constructor_exists(self):
         """The only way in is a confined file path.
@@ -430,3 +462,155 @@ class TestPreExistingSignerIsNotTheObserverPath:
             for node in ast.walk(tree):
                 if isinstance(node, ast.ImportFrom) and node.module:
                     assert "ws_snapshots" not in node.module, path
+
+
+# --- adversarial-review regressions (KALSHI-READONLY-AUTH-001, Gate 9) ------------
+class TestConfinementBypassRegressions:
+    """Each test here reproduces a bypass an adversarial review actually ran.
+
+    They are kept as executable attacks rather than assertions about the fix,
+    so that a future refactor that reintroduces the hole fails rather than
+    quietly passing a test that only checks the new code's shape.
+    """
+
+    def test_symlinked_parent_directory_is_refused(self, tmp_path):
+        """lstat only inspects the FINAL component. A symlinked parent left the
+        anti-symlink check, the parent-mode check and the repository-containment
+        check all looking at a different directory than the one being read."""
+        real = _install(tmp_path, _pem(_gen()))
+        linkdir = tmp_path / "linkdir"
+        linkdir.symlink_to(real.parent)
+        with pytest.raises(ka.CredentialConfinementError, match="not fully resolved"):
+            ka.inspect_credential_file(linkdir / real.name)
+
+    def test_dot_dot_in_an_absolute_path_is_refused(self, tmp_path):
+        """`relative_to` compares path components, so a `..` segment made an
+        in-repository key look like it was outside the repository."""
+        p = _install(tmp_path, _pem(_gen()))
+        sneaky = Path(str(p.parent.parent) + "/../" + p.parent.parent.name
+                      + "/" + p.parent.name + "/" + p.name)
+        with pytest.raises(ka.CredentialConfinementError, match="not fully resolved"):
+            ka.inspect_credential_file(sneaky)
+
+    def test_hardlinked_credential_is_refused(self, tmp_path):
+        p = _install(tmp_path, _pem(_gen()))
+        os.link(p, p.parent / "second-name.pem")
+        with pytest.raises(ka.CredentialConfinementError, match="hard link"):
+            ka.inspect_credential_file(p)
+
+    def test_owner_check_is_on_by_default(self, tmp_path):
+        """It was opt-in, and no caller opted in, while the boundary doc listed
+        `owner-checked` as an unconditional property."""
+        import inspect as _inspect
+
+        sig = _inspect.signature(ka.inspect_credential_file)
+        assert sig.parameters["expected_owner_uid"].default is None
+        # None means "this process's uid", not "skip the check".
+        p = _install(tmp_path, _pem(_gen()))
+        assert ka.inspect_credential_file(p).owner_uid == os.getuid()
+        with pytest.raises(ka.CredentialConfinementError, match="owned by uid"):
+            ka.inspect_credential_file(p, expected_owner_uid=os.getuid() + 4242)
+
+    def test_public_constructor_is_not_a_from_env_in_disguise(self, tmp_path):
+        """The boundary says the only entry point is `from_path`. The public
+        __init__ accepted an already-parsed key, which reconstitutes exactly the
+        in-memory constructor the doc disclaims — and skipped the key-size,
+        environment and file-confinement checks on the way."""
+        weak = _gen(1024)
+        with pytest.raises(kx.CredentialError, match="CredentialFileFacts"):
+            ka.ReadOnlyRequestSigner(
+                key_id="kid", private_key=weak, environment=kx.ENV_DEMO,
+                facts=None, scopes=("read",))
+
+        good, _ = _signer(tmp_path)
+        facts = good.credential_facts
+        with pytest.raises(ka.CredentialConfinementError, match="minimum accepted"):
+            ka.ReadOnlyRequestSigner(
+                key_id="kid", private_key=weak, environment=kx.ENV_DEMO,
+                facts=facts, scopes=("read",))
+        with pytest.raises(kx.CredentialError, match="unknown environment"):
+            ka.ReadOnlyRequestSigner(
+                key_id="kid", private_key=_gen(), environment="live-prod-whatever",
+                facts=facts, scopes=("read",))
+
+    def test_scope_verification_is_on_the_signing_path(self, tmp_path):
+        """`verify_scopes` existed and halted correctly, and nothing on the
+        key-bearing path called it. The write-scope halt was enforced by tests
+        only."""
+        p = _install(tmp_path, _pem(_gen()))
+        for bad in (["write"], ["read", "write"], [], None, "read", ["READ"]):
+            with pytest.raises(kx.CredentialError,
+                               match="OBSERVE-ONLY CREDENTIAL REQUIREMENT"):
+                ka.ReadOnlyRequestSigner.from_path(
+                    key_id="kid", credential_path=p, environment=kx.ENV_DEMO,
+                    reported_scopes=bad)
+        import inspect as _inspect
+
+        # No default: whatever it defaulted to would be what nobody ever passed.
+        sig = _inspect.signature(ka.ReadOnlyRequestSigner.from_path)
+        assert sig.parameters["reported_scopes"].default is _inspect.Parameter.empty
+
+    def test_scopes_cannot_be_spoofed_by_subclass_or_str_coercion(self):
+        class LyingList(list):
+            def __iter__(self):
+                return iter(["read"])
+
+        with pytest.raises(kx.CredentialError):
+            kx.verify_scopes(LyingList(["write"]), environment=kx.ENV_DEMO)
+
+        class SaysRead:
+            def __str__(self):
+                return "read"
+
+        with pytest.raises(kx.CredentialError, match="non-string"):
+            kx.verify_scopes([SaysRead()], environment=kx.ENV_DEMO)
+
+    def test_headers_do_not_print_themselves(self, tmp_path):
+        s, _ = _signer(tmp_path, key_id="kid-abcdef")
+        h = s.websocket_headers(timestamp_ms=TS)
+        assert h["KALSHI-ACCESS-KEY"] == "kid-abcdef"   # protocol still correct
+        assert "kid-abcdef" not in repr(h)
+        assert "redacted" in repr(h)
+
+    def test_seconds_passed_as_milliseconds_fail_locally(self, tmp_path):
+        s, _ = _signer(tmp_path)
+        with pytest.raises(kx.CredentialError, match="plausible millisecond"):
+            s.websocket_headers(timestamp_ms=1_754_500_000)
+
+
+class TestSafetyAuditAllowlist:
+    def test_allowlist_exempts_the_fragment_not_the_whole_file(self):
+        """The audit asked whether ANY allowed fragment appeared anywhere in the
+        identifier, so in a file allowlisted for `private_key` the identifiers
+        `wallet_private_key` and `sign_transaction_with_private_key` both
+        passed. The allowlist exempts a fragment, not a file."""
+        from app.services.frontier_eval import (
+            BANNED_IDENTIFIER_FRAGMENTS, SAFETY_ALLOWLIST_FRAGMENTS,
+        )
+
+        allowed = SAFETY_ALLOWLIST_FRAGMENTS["app/realtime/auth.py"]
+        for name in ("wallet_private_key", "private_key_place_order",
+                     "sign_transaction_with_private_key",
+                     "private_key_kelly_position_size"):
+            lowered = name.lower()
+            hits = [f for f in BANNED_IDENTIFIER_FRAGMENTS
+                    if f in lowered and f not in allowed]
+            assert hits, f"{name} must still violate: {hits}"
+
+    def test_allowlist_contents_are_pinned(self):
+        """Every guard elsewhere asserts `safety_ok is True`, which an allowlist
+        addition makes true by construction. Widening the audit should require
+        editing this list, in a diff a reviewer sees."""
+        from app.services.frontier_eval import SAFETY_ALLOWLIST_FRAGMENTS
+
+        assert SAFETY_ALLOWLIST_FRAGMENTS == {
+            "app/services/ws_snapshots.py": ("private_key",),
+            "app/config.py": ("private_key",),
+            "app/realtime/auth.py": ("private_key",),
+        }
+
+    def test_audit_is_clean_on_this_branch(self):
+        from app.services.frontier_eval import FrontierEvalService
+
+        result = FrontierEvalService.safety_audit(None)
+        assert result["safety_ok"] is True, result["violations"]

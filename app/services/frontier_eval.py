@@ -598,9 +598,14 @@ class FrontierEvalService:
             for name in names:
                 lowered = name.lower()
                 for fragment in BANNED_IDENTIFIER_FRAGMENTS:
-                    if fragment in lowered and not any(
-                        allow in lowered for allow in allowed
-                    ):
+                    # The allowlist exempts the FRAGMENT, not the identifier.
+                    # Asking whether any allowed fragment appears anywhere in
+                    # the name exempted the whole file: in a file allowlisted
+                    # for `private_key`, the identifiers `wallet_private_key`,
+                    # `private_key_place_order` and
+                    # `sign_transaction_with_private_key` all passed, because
+                    # each also contains the allowed fragment.
+                    if fragment in lowered and fragment not in allowed:
                         violations.append({"file": rel, "identifier": name})
         return {
             "files_scanned": files_scanned,
