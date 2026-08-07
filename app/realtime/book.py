@@ -15,6 +15,9 @@ hardest to notice and most expensive to have trusted.
 
 from __future__ import annotations
 
+import hashlib
+import json
+
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -124,6 +127,7 @@ SEQ_OK = "ok"
 SEQ_DUPLICATE = "duplicate"
 SEQ_GAP = "gap"
 SEQ_REGRESSION = "regression"
+SEQ_MISSING = "missing_sequence"
 
 
 class BookIntegrityError(RuntimeError):
@@ -182,7 +186,13 @@ class OrderBook:
                 f"({self.integrity_reason})")
 
     def classify_seq(self, seq: int | None) -> str:
-        if seq is None or self.last_seq is None:
+        if seq is None:
+            # Absent is not ordered. A missing seq made every subsequent delta
+            # classify OK forever, gaps included, while the book still reported
+            # itself publishable — the exact reasoning `verify_scopes` applies
+            # to an absent scopes field, applied inconsistently here.
+            return SEQ_MISSING
+        if self.last_seq is None:
             return SEQ_OK
         if seq == self.last_seq:
             return SEQ_DUPLICATE
@@ -194,23 +204,87 @@ class OrderBook:
 
     # -- snapshot / delta --------------------------------------------------------
 
+    def _halt(self, reason: str) -> None:
+        """Unpublish. Every refusal in this class goes through here.
+
+        Previously only `classify_seq` faults and the negative-level check set
+        `integrity_reason`, so a parse rejection, an off-grid price or a
+        missing field left `synced=True` and the book kept serving its
+        pre-rejection top of book as current. The venue told us a level
+        changed, we dropped the message, and nothing recorded that.
+        """
+        self.synced = False
+        self.integrity_reason = reason
+
     def apply_snapshot(self, msg: dict, *, sid: int | None = None,
                        seq: int | None = None,
                        receive_time: datetime | None = None) -> dict:
-        """Replace the book wholesale and clear any integrity fault."""
-        yes_levels = self._parse_levels(msg.get("yes_dollars_fp") or [], "yes")
-        no_levels = self._parse_levels(msg.get("no_dollars_fp") or [], "no")
-        self.yes = {p: q for p, q in yes_levels if q > 0}
-        self.no = {p: q for p, q in no_levels if q > 0}
+        """Replace the book wholesale and clear any integrity fault.
+
+        Fails closed: anything that prevents the snapshot from being applied in
+        full leaves the book unpublishable. A snapshot is the resync signal, so
+        a silently dropped one leaves the previous book published indefinitely.
+        """
+        try:
+            ticker = msg.get("market_ticker")
+            if ticker is not None and ticker != self.market_ticker:
+                raise BookIntegrityError(
+                    f"{self.market_ticker}: snapshot is labelled {ticker!r}; "
+                    "a book must never absorb another market's data")
+            if seq is not None and self.last_seq is not None and seq < self.last_seq:
+                # Older state arriving with a higher generation, published as
+                # current, is the one thing generation numbering exists to
+                # prevent. At-least-once redelivery on reconnect makes this
+                # ordinary, not exotic.
+                raise BookIntegrityError(
+                    f"{self.market_ticker}: snapshot seq {seq} is behind the "
+                    f"applied position {self.last_seq}; refusing to rewind")
+            if "yes_dollars_fp" not in msg and "no_dollars_fp" not in msg:
+                # `.get(...) or []` turned an unrecognised payload into an
+                # empty book that reported itself synced and publishable —
+                # indistinguishable from a genuinely empty market.
+                raise BookIntegrityError(
+                    f"{self.market_ticker}: snapshot carries neither "
+                    "'yes_dollars_fp' nor 'no_dollars_fp'; an unparsed "
+                    "snapshot must not mark the book synced")
+            yes_levels = self._parse_levels(msg.get("yes_dollars_fp") or [], "yes")
+            no_levels = self._parse_levels(msg.get("no_dollars_fp") or [], "no")
+            yes = {p: q for p, q in yes_levels if q > 0}
+            no = {p: q for p, q in no_levels if q > 0}
+            self._require_uncrossed(yes, no)
+        except Exception as exc:
+            self._halt(f"snapshot rejected: {type(exc).__name__}: {exc}")
+            raise
+        self.yes, self.no = yes, no
+        if sid is not None and self.sid is not None and sid != self.sid:
+            self.stats["resyncs"] += 1
         self.sid = sid if sid is not None else self.sid
         self.last_seq = seq
         self.generation += 1
-        self.synced = True
-        self.integrity_reason = None
+        self.synced = seq is not None
+        self.integrity_reason = None if seq is not None else (
+            "snapshot carried no sequence number; ordering cannot be verified")
         self.snapshot_receive_time = receive_time or utcnow()
         self.stats["snapshots"] += 1
         return {"action": "snapshot", "generation": self.generation,
                 "yes_levels": len(self.yes), "no_levels": len(self.no)}
+
+    def _require_uncrossed(self, yes: dict, no: dict) -> None:
+        """A crossed book is the observable symptom of a wrong NO mapping.
+
+        It is the cheapest invariant available and the one this design most
+        needs, because the YES/NO complement is the single most likely way to
+        build a plausible, wrong book.
+        """
+        if not yes or not no:
+            return
+        bid = max(yes)
+        ask = ONE_DOLLAR_UNITS - max(no)
+        if ask < bid:
+            raise BookIntegrityError(
+                f"{self.market_ticker}: crossed book — best YES bid "
+                f"{format_price_units(bid)} exceeds derived best YES ask "
+                f"{format_price_units(ask)}")
 
     def _parse_levels(self, raw_levels, side: str):
         out = []
@@ -224,11 +298,30 @@ class OrderBook:
             # Snapshot quantities are resting sizes: never negative.
             qty = parse_contract_units(entry[1], field=f"{side}.contract_count_fp",
                                        allow_negative=False)
+            if any(price == seen for seen, _ in out):
+                raise FixedPointError(
+                    f"{self.market_ticker}: {side} level "
+                    f"{format_price_units(price)} appears twice in one "
+                    "snapshot; last-write-wins would silently lose depth")
             out.append((price, qty))
         return out
 
-    def apply_delta(self, msg: dict, *, seq: int | None = None) -> dict:
-        """Apply one incremental change, refusing to continue across a gap."""
+    def apply_delta(self, msg: dict, *, seq: int | None = None,
+                    sid: int | None = None) -> dict:
+        """Apply one incremental change, refusing to continue across a gap.
+
+        Fails closed on every rejection path, not only on sequence faults.
+        """
+        try:
+            return self._apply_delta(msg, seq=seq, sid=sid)
+        except BookIntegrityError:
+            raise                       # already halted at the point of refusal
+        except Exception as exc:
+            self._halt(f"delta rejected: {type(exc).__name__}: {exc}")
+            raise
+
+    def _apply_delta(self, msg: dict, *, seq: int | None = None,
+                     sid: int | None = None) -> dict:
         if not self.synced:
             self.stats["rejected_pre_snapshot"] += 1
             # Documented bounded rule: pre-snapshot deltas are REJECTED, not
@@ -238,16 +331,34 @@ class OrderBook:
                 f"{self.market_ticker}: delta received before any snapshot; "
                 "rejected rather than buffered")
 
+        ticker = msg.get("market_ticker")
+        if ticker is not None and ticker != self.market_ticker:
+            self._halt(f"delta is labelled {ticker!r}, not {self.market_ticker}")
+            raise BookIntegrityError(
+                f"{self.market_ticker}: delta is labelled {ticker!r}; a book "
+                "must never absorb another market's data")
+        if sid is not None and self.sid is not None and sid != self.sid:
+            # Kalshi's seq is per SUBSCRIPTION. A delta from a superseded
+            # subscription carries a seq from a different namespace, so
+            # comparing it against this book's position is meaningless.
+            self._halt(f"delta belongs to sid {sid}, book is on sid {self.sid}")
+            raise BookIntegrityError(
+                f"{self.market_ticker}: delta belongs to subscription {sid}, "
+                f"this book is on {self.sid}; sequence numbers from a "
+                "superseded subscription are not comparable")
+
         status = self.classify_seq(seq)
         if status == SEQ_DUPLICATE:
             self.stats["duplicates"] += 1
             return {"action": "duplicate_ignored", "seq": seq}
-        if status in (SEQ_GAP, SEQ_REGRESSION):
+        if status in (SEQ_GAP, SEQ_REGRESSION, SEQ_MISSING):
             self.stats["gaps" if status == SEQ_GAP else "regressions"] += 1
-            self.synced = False
-            self.integrity_reason = (
-                f"sequence {status}: expected {(self.last_seq or 0) + 1}, "
-                f"got {seq}")
+            if status == SEQ_MISSING:
+                self._halt("delta carried no sequence number; ordering cannot "
+                           "be verified and absent is not ordered")
+            else:
+                self._halt(f"sequence {status}: expected "
+                           f"{(self.last_seq or 0) + 1}, got {seq}")
             # Never silently continue. The caller must resynchronise.
             raise BookIntegrityError(
                 f"{self.market_ticker}: {self.integrity_reason}")
@@ -255,6 +366,12 @@ class OrderBook:
         side = str(msg.get("side") or "").lower()
         if side not in (SIDE_YES, SIDE_NO):
             raise FixedPointError(f"{self.market_ticker}: unknown side {side!r}")
+        if "price_dollars" not in msg or "delta_fp" not in msg:
+            # Direct subscription raised KeyError, which replay did not catch,
+            # so one malformed record made the whole archive unreplayable.
+            raise FixedPointError(
+                f"{self.market_ticker}: delta is missing 'price_dollars' or "
+                "'delta_fp'")
         price = parse_price_units(msg["price_dollars"], field="price_dollars")
         self.grid.validate(price, field="price_dollars")
         # A delta MAY be negative: that is how a level is decremented.
@@ -265,8 +382,7 @@ class OrderBook:
         current = ladder.get(price, 0)
         updated = current + change
         if updated < 0:
-            self.synced = False
-            self.integrity_reason = (
+            self._halt(
                 f"delta drove {side} {format_price_units(price)} negative "
                 f"({current} {change:+d}); the local book disagrees with the venue")
             raise BookIntegrityError(
@@ -343,9 +459,28 @@ class OrderBook:
                 "generation": self.generation, "bids": bids, "asks": asks}
 
     def checksum(self) -> str:
-        """Deterministic digest of book state, for replay equality."""
-        import hashlib
-        import json
+        """Digest of the book's full state.
+
+        Gated like every other derived view: it was the one that was not, so a
+        halted book still produced a confident digest, and `replay()` emitted
+        it as the acceptance test for the whole data path.
+
+        Generation, sequence and sid are included because two books with the
+        same ladders at different positions are not the same observation, and
+        checksum equality is exactly what replay determinism is asserted on.
+        """
+        self._require_publishable()
+        payload = {
+            "market_ticker": self.market_ticker,
+            "generation": self.generation,
+            "last_seq": self.last_seq,
+            "sid": self.sid,
+            "yes": {str(k): v for k, v in sorted(self.yes.items())},
+            "no": {str(k): v for k, v in sorted(self.no.items())},
+        }
+        return hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":"))
+            .encode("utf-8")).hexdigest()[:16]
 
         payload = {
             "market_ticker": self.market_ticker,

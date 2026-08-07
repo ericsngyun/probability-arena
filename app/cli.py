@@ -670,11 +670,21 @@ def kalshi_realtime_replay(
         for f in out["faults"][:10]:
             print(f"    {f['market_ticker']} seq={f['seq']}: {f['error']}")
     print("  latency envelope (decomposed, never one number):")
-    for hop in ("venue_to_receive_ms", "receive_to_normalize_us",
-                "normalize_to_book_us"):
+    for hop in ("venue_to_receive_offset_contaminated_ms",
+                "receive_to_normalize_us"):
         q = lat[hop]
-        print(f"    {hop:26} n={q['n']} p50={q['p50']} p95={q['p95']} "
-              f"p99={q['p99']} max={q['max']}")
+        print(f"    {hop:42} n={q['n']} p50={q['p50']} p95={q['p95']} "
+              f"p99={q['p99']} max={q['max']} mean={q['mean']} "
+              f"negative={q['negative']}")
+    cov = lat["coverage"]
+    print(f"    coverage: venue_time on {cov['records_with_venue_time']} of "
+          f"{lat['records_scanned']} records")
+    if not cov["observation_gaps_measured"]:
+        print("    NOT MEASURED: reconnect/observation gaps. Every percentile "
+              "above is conditioned on being connected.")
+    if not cov["host_clock_offset_characterised"]:
+        print("    NOT MEASURED: host clock offset. The venue hop is offset "
+              "contaminated and is evidence, not a latency.")
     return 0 if integrity["intact"] and not out["faults"] else 1
 
 
