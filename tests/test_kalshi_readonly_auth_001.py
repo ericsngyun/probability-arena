@@ -78,6 +78,18 @@ def _verify(pubkey, signature_b64: str, message: bytes) -> None:
 TS = 1_754_500_000_000
 
 
+def _params(fn) -> tuple:
+    """Parameter names only.
+
+    `co_varnames` also lists local variables, so a function that *derives*
+    `method` and `path` from a purpose appears to accept them. That would make
+    the assertion pass or fail for the wrong reason.
+    """
+    code = fn.__code__
+    return code.co_varnames[:code.co_argcount + code.co_kwonlyargcount]
+
+
+
 # --- 1-4: the signing string itself ----------------------------------------------
 class TestSigningString:
     def test_1_deterministic_fixture(self):
@@ -123,34 +135,39 @@ class TestMethodAndPathConfinement:
 
     @pytest.mark.parametrize("method", ["POST", "PUT", "PATCH", "DELETE"])
     def test_6_to_9_write_methods_rejected(self, method, tmp_path):
-        """Tests 6-9. Two independent refusals, and both are asserted.
+        """Tests 6-9.
 
-        `canonical_signing_string` refuses the method, and the signer has no
-        parameter through which a caller could supply one in the first place.
+        KALSHI-DEMO-READONLY-VALIDATION-001 replaced the method/path arguments
+        with typed purposes, so a write method is no longer *rejected* — it is
+        unreachable. Both facts are asserted: the primitive still refuses one if
+        handed it, and no parameter exists through which one could arrive.
         """
         with pytest.raises(kx.CapabilityError):
             kx.canonical_signing_string(method=method, path=ka.WS_PATH,
                                         timestamp_ms=TS)
-        s, _ = _signer(tmp_path)
-        with pytest.raises(kx.CapabilityError):
-            s._signature(method=method, path=ka.WS_PATH, timestamp_ms=TS)
-        assert "method" not in ka.ReadOnlyRequestSigner.websocket_headers.__code__.co_varnames
+        for name in ("websocket_headers", "headers_for", "_signature"):
+            assert "method" not in _params(
+                getattr(ka.ReadOnlyRequestSigner, name)), name
+        assert all(m == "GET" for m, _p in kx.AUTH_PURPOSE_ROUTES.values())
 
     def test_10_wrong_path_rejected(self, tmp_path):
-        s, _ = _signer(tmp_path)
+        """A wrong path is now unreachable rather than refused: the route comes
+        from a closed constant table keyed by purpose, so there is no parameter
+        to get wrong."""
         for bad in ("/trade-api/v2/portfolio/orders", "/trade-api/ws/v1",
                     "/trade-api/ws/v2/", "", "/", "/trade-api/ws/v2?x=1"):
-            with pytest.raises(kx.CredentialError, match="allowlist"):
-                s._signature(method="GET", path=bad, timestamp_ms=TS)
-        assert ka.READ_ONLY_PATH_ALLOWLIST == frozenset({"/trade-api/ws/v2"})
-        # There is no path parameter to get wrong on the public surface.
-        assert "path" not in ka.ReadOnlyRequestSigner.websocket_headers.__code__.co_varnames
+            assert bad not in ka.READ_ONLY_PATH_ALLOWLIST
+            assert bad not in {p for _m, p in kx.AUTH_PURPOSE_ROUTES.values()}
+        for name in ("websocket_headers", "headers_for", "_signature"):
+            assert "path" not in _params(
+                getattr(ka.ReadOnlyRequestSigner, name)), name
 
-    def test_10b_str_subclass_cannot_smuggle_a_route_past_the_allowlist(self, tmp_path):
-        """A str subclass can define __eq__/__hash__ so that `in` succeeds while
-        the value carries a different route — and the signature would then
-        authenticate that route."""
-        s, key = _signer(tmp_path)
+    def test_10b_a_route_cannot_be_smuggled_in_as_a_value(self, tmp_path):
+        """A str subclass with a lying `__eq__` previously satisfied the
+        allowlist membership test and got `/trade-api/v2/portfolio/orders`
+        signed. Typed purposes remove the injection point entirely: the caller
+        names an intent, and the route is looked up, not supplied."""
+        s, _ = _signer(tmp_path)
 
         class EvilPath(str):
             def __hash__(self):
@@ -160,9 +177,11 @@ class TestMethodAndPathConfinement:
                 return True
 
         evil = EvilPath("/trade-api/v2/portfolio/orders")
-        assert evil in ka.READ_ONLY_PATH_ALLOWLIST  # the membership test alone is fooled
-        with pytest.raises(kx.CredentialError, match="allowlist"):
-            s._signature(method="GET", path=evil, timestamp_ms=TS)
+        assert evil in ka.READ_ONLY_PATH_ALLOWLIST   # membership alone is fooled
+        with pytest.raises((kx.CapabilityError, kx.CredentialError)):
+            s.headers_for(purpose=evil, timestamp_ms=TS)
+        with pytest.raises(kx.CapabilityError):
+            kx.route_for_purpose(evil)
 
     def test_no_general_purpose_public_signer_exists(self, tmp_path):
         s, _ = _signer(tmp_path)

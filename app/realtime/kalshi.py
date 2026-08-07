@@ -25,6 +25,7 @@ from __future__ import annotations
 import os
 import stat
 from dataclasses import dataclass
+from enum import Enum
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -44,10 +45,52 @@ ENV_PRODUCTION = "production"
 ENVIRONMENTS = (ENV_DEMO, ENV_PRODUCTION)
 
 WS_PATH = "/trade-api/ws/v2"
+API_KEYS_PATH = "/trade-api/v2/api_keys"
+
 WS_HOSTS = {
     ENV_PRODUCTION: "wss://external-api-ws.kalshi.com" + WS_PATH,
-    ENV_DEMO: "wss://demo-api.kalshi.co" + WS_PATH,
+    # Corrected in KALSHI-DEMO-READONLY-VALIDATION-001 from
+    # `wss://demo-api.kalshi.co`. Neither host has been reached; both remain
+    # unverified until a demo connection is actually opened.
+    ENV_DEMO: "wss://external-api-ws.demo.kalshi.co" + WS_PATH,
 }
+
+REST_HOSTS = {
+    ENV_PRODUCTION: "https://api.elections.kalshi.com/trade-api/v2",
+    ENV_DEMO: "https://external-api.demo.kalshi.co/trade-api/v2",
+}
+
+
+class AuthPurpose(str, Enum):
+    """What a signature is FOR. The only way to obtain one.
+
+    A signer that takes a method and a path makes the credential's scope the
+    only thing standing between a caller and any route the key can reach. Here
+    the caller names an intent, and the intent maps to a constant pair
+    internally — so the set of signable requests is closed at import time and
+    is exactly as long as this enum.
+
+    Adding a member is a boundary change and needs review; that is the point of
+    making it an enum rather than an argument.
+    """
+
+    WEBSOCKET_HANDSHAKE = "websocket_handshake"
+    API_KEY_METADATA = "api_key_metadata"
+
+
+# purpose -> (method, path). Both halves are constants; neither is a parameter.
+AUTH_PURPOSE_ROUTES: dict = {
+    AuthPurpose.WEBSOCKET_HANDSHAKE: ("GET", WS_PATH),
+    AuthPurpose.API_KEY_METADATA: ("GET", API_KEYS_PATH),
+}
+
+
+def route_for_purpose(purpose) -> tuple:
+    if not isinstance(purpose, AuthPurpose):
+        raise CapabilityError(
+            f"{purpose!r} is not an AuthPurpose; signing intents are a closed "
+            "set and cannot be supplied as strings")
+    return AUTH_PURPOSE_ROUTES[purpose]
 
 # --- channel allowlist ----------------------------------------------------------
 # `ticker`, not `ticker_v2`. The lifecycle channel is versioned and the ticker

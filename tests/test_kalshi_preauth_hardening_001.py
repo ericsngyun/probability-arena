@@ -298,9 +298,15 @@ class TestCredentialIsolation:
                 if n.startswith("from_")] == ["from_path"]
         assert not hasattr(ka.ReadOnlyRequestSigner, "sign")
         code = ka.ReadOnlyRequestSigner.websocket_headers.__code__
-        assert "method" not in code.co_varnames
-        assert "path" not in code.co_varnames
-        assert ka.READ_ONLY_PATH_ALLOWLIST == frozenset({"/trade-api/ws/v2"})
+        params = code.co_varnames[:code.co_argcount + code.co_kwonlyargcount]
+        assert "method" not in params
+        assert "path" not in params
+        # KALSHI-DEMO-READONLY-VALIDATION-001 added the one-shot credential
+        # audit route. Both entries are GET, both are constants, and neither is
+        # reachable without holding the matching typed purpose.
+        assert ka.READ_ONLY_PATH_ALLOWLIST == frozenset(
+            {"/trade-api/ws/v2", "/trade-api/v2/api_keys"})
+        assert all(m == "GET" for m, _p in kx.AUTH_PURPOSE_ROUTES.values())
         assert kx.ALLOWED_HTTP_METHODS == ("GET",)
 
     def test_pem_contents_are_never_read_from_the_environment(self):
