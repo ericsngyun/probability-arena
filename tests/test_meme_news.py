@@ -113,11 +113,20 @@ class TestMemeScout:
 
     def test_velocity_scoring_from_previous_snapshot(self, session):
         # prior snapshot 2h ago: boost 100, liquidity 1000, vol1h 200
+        #
+        # Anchored to the clock AT TEST TIME, not to the module-level NOW.
+        # `boost_velocity` is computed against the real current time, so with a
+        # NOW bound at import the elapsed term grew by however long the suite
+        # took to reach this test — and `rel=1e-2` allows only ~72s of that.
+        # A full-suite run exceeds it, which made this fail intermittently and
+        # only under load.
+        started = datetime.now(timezone.utc)
         session.add(
             MemeAttentionSnapshot(
                 chain="solana", token_address="VEL", boost_amount=100.0,
                 liquidity_usd=1000.0, volume_1h_usd=200.0,
-                observed_at=NOW - timedelta(hours=2), created_at=NOW - timedelta(hours=2),
+                observed_at=started - timedelta(hours=2),
+                created_at=started - timedelta(hours=2),
                 has_social=False,
             )
         )

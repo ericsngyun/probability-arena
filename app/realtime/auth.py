@@ -41,20 +41,26 @@ from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
 from app.realtime.kalshi import (
     ENVIRONMENTS,
+    AuthPurpose,
     OBSERVE_ONLY,
     WS_PATH,
     CredentialError,
     assert_method_allowed,
     canonical_signing_string,
+    AUTH_PURPOSE_ROUTES,
     fingerprint_key_id,
     require_mode,
+    route_for_purpose,
     verify_scopes,
 )
 
 # The single reviewed read-only path. Adding an entry here is a boundary change
 # and needs its own review — that is exactly why it is a named constant and not
 # an argument default somewhere.
-READ_ONLY_PATH_ALLOWLIST: frozenset[str] = frozenset({WS_PATH})
+# Derived from the purpose table, not maintained alongside it: two lists that
+# must agree is one list too many.
+READ_ONLY_PATH_ALLOWLIST: frozenset[str] = frozenset(
+    path for _method, path in AUTH_PURPOSE_ROUTES.values())
 
 SIGNING_METHOD = "GET"
 MIN_RSA_KEY_BITS = 2048
@@ -321,7 +327,7 @@ class ReadOnlyRequestSigner:
     """
 
     __slots__ = ("_sign_bytes", "_public_key", "_key_id", "_key_id_fingerprint",
-                 "_environment", "_facts", "_scopes")
+                 "_environment", "_facts", "_scopes", "_purposes")
 
     def __init__(
         self,
@@ -331,6 +337,7 @@ class ReadOnlyRequestSigner:
         environment: str,
         facts: CredentialFileFacts,
         scopes: tuple,
+        purposes: frozenset = frozenset({AuthPurpose.WEBSOCKET_HANDSHAKE}),
         capability_mode: str = OBSERVE_ONLY,
     ) -> None:
         """Not a public entry point. Use `from_path`.
@@ -376,6 +383,14 @@ class ReadOnlyRequestSigner:
         self._environment = environment
         self._facts = facts
         self._scopes = scopes
+        # Granted at construction and never widened. The continuous observer is
+        # built with the handshake purpose only; the one-shot credential audit
+        # is a separate object that never runs inside the collector.
+        purposes = frozenset(purposes)
+        if not purposes or any(not isinstance(p, AuthPurpose) for p in purposes):
+            raise CredentialError(
+                "purposes must be a non-empty set of AuthPurpose members")
+        self._purposes = purposes
 
     # --- construction ---------------------------------------------------------
     @classmethod
@@ -386,6 +401,7 @@ class ReadOnlyRequestSigner:
         credential_path: str | os.PathLike,
         environment: str,
         reported_scopes: object,
+        purposes: frozenset = frozenset({AuthPurpose.WEBSOCKET_HANDSHAKE}),
         expected_owner_uid: int | None = None,
         capability_mode: str = OBSERVE_ONLY,
     ) -> "ReadOnlyRequestSigner":
@@ -408,10 +424,23 @@ class ReadOnlyRequestSigner:
             forbid_repo_root=_REPO_ROOT)
         key = _load_key_material(fd, facts.path)
         return cls(key_id=key_id, private_key=key, environment=environment,
-                   capability_mode=capability_mode, facts=facts, scopes=scopes)
+                   capability_mode=capability_mode, facts=facts, scopes=scopes,
+                   purposes=purposes)
 
     # --- signing --------------------------------------------------------------
-    def _signature(self, *, method: str, path: str, timestamp_ms: int) -> str:
+    def _signature(self, *, purpose: AuthPurpose, timestamp_ms: int) -> str:
+        """Sign for one granted purpose.
+
+        There is no method parameter and no path parameter. The pair comes from
+        `route_for_purpose`, which reads a module-level constant table, so a
+        caller cannot reach a route by constructing a value — only by holding a
+        purpose that was granted at construction.
+        """
+        if purpose not in self._purposes:
+            raise CredentialError(
+                f"this signer was not granted {purpose!r}; it holds "
+                f"{sorted(p.value for p in self._purposes)}")
+        method, path = route_for_purpose(purpose)
         method = assert_method_allowed(method)
         if method != SIGNING_METHOD:
             raise CredentialError(
@@ -427,30 +456,28 @@ class ReadOnlyRequestSigner:
                 f"timestamp_ms {timestamp_ms} is outside the plausible "
                 "millisecond range; seconds passed as milliseconds produce an "
                 "opaque handshake rejection at the venue instead of a local error")
-        # `type(path) is not str` rather than isinstance: a str SUBCLASS can
-        # define __eq__/__hash__ that make `in` succeed while carrying a
-        # completely different route, and the signature would then authenticate
-        # that route.
-        if type(path) is not str or path not in READ_ONLY_PATH_ALLOWLIST:
+        if path not in READ_ONLY_PATH_ALLOWLIST:
             raise CredentialError(
-                f"path {str(path)!r} is not in the reviewed read-only allowlist "
+                f"path {path!r} is not in the reviewed read-only allowlist "
                 f"{sorted(READ_ONLY_PATH_ALLOWLIST)}")
         message = canonical_signing_string(
             method=method, path=path, timestamp_ms=timestamp_ms).encode("utf-8")
         return base64.b64encode(self._sign_bytes(message)).decode("ascii")
 
-    def websocket_headers(self, *, timestamp_ms: int) -> Mapping[str, str]:
-        """Headers for the observe-only WebSocket handshake.
-
-        There is no `path` parameter. There is exactly one signable path, so
-        offering the choice would only create a way to get it wrong.
-        """
+    def headers_for(self, *, purpose: AuthPurpose,
+                    timestamp_ms: int) -> Mapping[str, str]:
+        """Signed headers for a granted purpose."""
         return _RedactingHeaders({
             "KALSHI-ACCESS-KEY": self._key_id,
             "KALSHI-ACCESS-TIMESTAMP": str(timestamp_ms),
             "KALSHI-ACCESS-SIGNATURE": self._signature(
-                method=SIGNING_METHOD, path=WS_PATH, timestamp_ms=timestamp_ms),
+                purpose=purpose, timestamp_ms=timestamp_ms),
         })
+
+    def websocket_headers(self, *, timestamp_ms: int) -> Mapping[str, str]:
+        """Headers for the observe-only WebSocket handshake."""
+        return self.headers_for(purpose=AuthPurpose.WEBSOCKET_HANDSHAKE,
+                                timestamp_ms=timestamp_ms)
 
     # --- introspection: metadata only ----------------------------------------
     @property
@@ -499,3 +526,8 @@ class ReadOnlyRequestSigner:
 
     def __deepcopy__(self, memo):
         raise TypeError("ReadOnlyRequestSigner is not copyable")
+
+
+    @property
+    def granted_purposes(self) -> frozenset:
+        return self._purposes
