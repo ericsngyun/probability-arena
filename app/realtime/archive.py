@@ -21,12 +21,21 @@ import json
 import math
 import re
 import statistics
+import threading
 import zlib
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
 from app.realtime.book import EventEnvelope
+from app.realtime.segment import (
+    EVENTS_FILENAME,
+    MANIFEST_FILENAME,
+    SegmentWriter,
+    read_segment_records,
+    verify_archive,
+    verify_chain,
+)
 from app.realtime.canonical import (
     CANONICAL_SCHEMA_VERSION,
     parse_canonical_datetime,
@@ -89,18 +98,25 @@ def _canon(obj) -> str:
 
 
 class EventArchive:
-    """Append-only gzip-JSONL, partitioned `env/venue/date/hour`.
+    """Compatibility façade over the hardened segment core.
 
-    JSONL rather than Parquet at this stage on purpose: 001A's job is to prove
-    the events are correct and replayable. Parquet's columnar benefits arrive
-    with the research archive in a later phase, and choosing a storage format
-    before the schema has stabilised would be optimising the wrong thing.
+    This class used to be an independent persistence implementation — its own
+    canonicaliser, its own digest, its own gzip append, its own tail recovery,
+    its own `verify`. That is exactly the split that let a deleted record and a
+    deleted FILE both verify as intact: two implementations that were merely
+    intended to agree, and no authoritative count to contradict.
 
-    A truncated tail is tolerated on read and reported — an interrupted write
-    loses at most the final record, never the file. Read-side digest
-    verification and the environment check are mandatory rather than opt-in:
-    an integrity control that runs only when someone remembers to call
-    `verify()` is not protecting the path that actually reads the evidence.
+    It now owns no persistence logic at all. Every write goes through one
+    `SegmentWriter` per partition, every record is chained, and every closed
+    segment is committed by an atomically published manifest. What survives
+    here is the API its callers already use, and the `env/venue/date/hour`
+    partition layout, mapped onto a segment id.
+
+    One behavioural change callers must know about: **a segment is only
+    canonical evidence once it is closed.** `close()` publishes the manifests.
+    `verify()` and `read_all()` do *not* close for you — finalising a segment
+    on the way into verification would compute the manifest from whatever the
+    file currently says, which would certify a deletion instead of detecting it.
     """
 
     def __init__(self, root: str | Path, *, environment: str, venue: str = "kalshi"):
@@ -119,7 +135,15 @@ class EventArchive:
         self.venue = venue
         self.root = Path(root)
         self.written = 0
+        self._writers: dict = {}
+        self._closed = False
+        # Lazy writer creation is itself concurrent: without this, two threads
+        # both observe "no writer yet" and both construct one, and the second
+        # hits the segment's exclusive lock. The lock below is what makes
+        # "one writer per segment" true for the *creation* step too.
+        self._writers_lock = threading.Lock()
 
+    # -- partition identity ----------------------------------------------------
     def partition(self, when: datetime) -> Path:
         if when.tzinfo is None or when.utcoffset() is None:
             raise ArchiveError(
@@ -130,133 +154,127 @@ class EventArchive:
         return (self.root / f"env={self.environment}" / f"venue={self.venue}"
                 / f"date={when:%Y-%m-%d}" / f"hour={when:%H}")
 
-    def _path_for(self, when: datetime) -> Path:
-        return self.partition(when) / "events.jsonl.gz"
+    def _segment_id(self, when: datetime) -> str:
+        when = when.astimezone(timezone.utc)
+        return f"{self.venue}.{when:%Y-%m-%d}T{when:%H}"
 
+    def _writer_for(self, when: datetime):
+        """One writer per partition, created lazily and owned exclusively."""
+        if self._closed:
+            raise ArchiveError("archive is closed; no further events accepted")
+        seg_id = self._segment_id(when)
+        writer = self._writers.get(seg_id)
+        if writer is not None:
+            return writer
+        with self._writers_lock:
+            writer = self._writers.get(seg_id)
+            if writer is not None:
+                return writer
+            writer = self._writers[seg_id] = SegmentWriter(
+                self.root, environment=self.environment, segment_id=seg_id,
+                partition_identity=str(self.partition(when).relative_to(self.root)),
+                subscription_metadata={"venue": self.venue})
+        return writer
+
+    # -- write -----------------------------------------------------------------
     def append(self, envelope: EventEnvelope) -> Path:
+        """Submit one envelope. The façade never touches a file descriptor."""
         if envelope.environment != self.environment:
             raise ArchiveError(
                 f"refusing to write a {envelope.environment!r} event into the "
                 f"{self.environment!r} archive: demo events must never become "
                 "production evidence")
         when = parse_canonical_datetime(envelope.collector_receive_time)
-        path = self._path_for(when)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        record = envelope.to_dict()
-        record["canonical_schema_version"] = CANONICAL_SCHEMA_VERSION
-        record["record_digest"] = digest_hex(record)
-        # The bytes written are the SAME bytes the digest was taken over, and
-        # the fixpoint property guarantees a reader recomputing over what it
-        # read lands on the identical value. Serialising twice through two
-        # different encoders is the defect this replaces.
-        line = canonical_bytes(record)
-        with gzip.open(path, "ab") as fh:
-            fh.write(line + b"\n")
+        writer = self._writer_for(when)
+        raw = envelope.to_dict()
+        reason = writer.submit({
+            "connection_generation": raw.get("connection_id"),
+            "subscription_id": raw.get("sid"),
+            "subscription_generation": raw.get("subscription_generation"),
+            "message_type": raw.get("event_type"),
+            "market_ticker": raw.get("market_ticker"),
+            "seq": raw.get("seq"),
+            "received_at_utc": raw.get("collector_receive_time"),
+            "received_monotonic_ns": raw.get("receive_monotonic_ns"),
+            "raw_event": raw.get("raw"),
+            "normalized_event": raw,
+        })
+        if reason is not None:
+            raise ArchiveError(f"event rejected by the writer: {reason.value}")
         self.written += 1
-        return path
+        return writer.events_path
 
-    def _read_lines(self, path) -> tuple[list, int]:
-        """Decode one partition member by member, keeping whatever survived.
+    def close(self) -> dict:
+        """Close every open segment, publishing its manifest.
 
-        `gzip.open(...).read()` buffers the whole file and then raises on a
-        truncated trailer, and the exception discards everything already
-        decoded — so an interrupted write lost the entire hour, not the final
-        record, while the docstring above promised the opposite and `verify()`
-        called the empty result intact.
-
-        `append` writes one gzip member per record, so walking members with
-        `decompressobj().unused_data` gives exactly the promised behaviour: the
-        torn member is dropped and every complete member before it is kept.
+        This is the commit point. Until it runs there is no authoritative
+        record count, and an unclosed segment is explicitly not evidence.
         """
-        lines, truncated, buf = [], 0, ""
-        try:
-            data = path.read_bytes()
-        except OSError:
-            return [], 1
-        while data:
-            dec = zlib.decompressobj(31)        # 31 = gzip wrapper
-            try:
-                chunk = dec.decompress(data) + dec.flush()
-            except (zlib.error, EOFError):
-                truncated += 1
-                break
-            if not dec.eof:                      # member ended mid-stream
-                truncated += 1
-                break
-            try:
-                buf += chunk.decode("utf-8")
-            except UnicodeDecodeError:
-                truncated += 1
-                break
-            data = dec.unused_data
-        *complete, buf = buf.split("\n")
-        lines.extend(complete)
-        if buf.strip():
-            truncated += 1      # a final line with no terminator is a torn write
-        return lines, truncated
+        manifests = {}
+        for seg_id, writer in list(self._writers.items()):
+            manifests[seg_id] = writer.close()
+        self._closed = True
+        return manifests
+
+    # -- read ------------------------------------------------------------------
+    def _segment_dirs(self) -> list:
+        env_root = self.root / f"env={self.environment}"
+        if not env_root.exists():
+            return []
+        return sorted(p for p in env_root.glob("segment=*") if p.is_dir())
 
     def read_all(self) -> list:
-        """Every archived record in deterministic order, tail-tolerant.
+        """Every readable record, in chain order, across this environment.
 
-        Digests are verified here rather than only in `verify()`. A digest that
-        is checked only when someone remembers to ask is not an integrity
-        control — `replay()` never called it, so a tampered record rebuilt a
-        book with no complaint.
+        Records whose chain or environment does not verify are dropped and
+        counted rather than returned — a reader that hands back unverified
+        evidence is the thing this milestone exists to remove.
         """
-        out, truncated, tampered, foreign = [], 0, [], 0
-        for path in sorted(self.root.rglob("events.jsonl.gz")):
-            # Compare the env= PATH COMPONENT, not a substring of the whole
-            # string: an archive rooted at .../env=demo would otherwise match
-            # its own root and read production records written beneath it.
-            try:
-                parts = path.relative_to(self.root).parts
-            except ValueError:
-                continue
-            if f"env={self.environment}" not in parts:
-                continue
-            lines, t = self._read_lines(path)
-            truncated += t
-            for line in lines:
-                if not line.strip():
-                    continue
-                try:
-                    rec = parse_canonical(line)
-                except (json.JSONDecodeError, ValueError):
-                    truncated += 1  # malformed record: drop it, keep the file
-                    continue
-                # The record's own label must agree with the partition it was
-                # found in. A file copy, an rsync or a restore can put a demo
-                # record under env=production, and replaying demo events as
-                # production evidence is a fabricated observation.
+        out, truncated, foreign, tampered = [], 0, 0, []
+        for directory in self._segment_dirs():
+            records = read_segment_records(directory / EVENTS_FILENAME)
+            seg_id = directory.name.split("segment=", 1)[-1]
+            verdict = verify_chain(records, segment_id=seg_id,
+                                   environment=self.environment)
+            if not verdict.ok:
+                tampered.append(verdict.broken_at)
+                records = records[:verdict.broken_at or 0]
+            for rec in records:
                 if rec.get("environment") != self.environment:
                     foreign += 1
                     continue
-                if not _digest_matches(rec):
-                    tampered.append(rec.get("seq"))
-                    continue
-                out.append(rec)
-        out.sort(key=_read_order)
+                out.append(rec.get("normalized_event") or rec)
         self.truncated_records = truncated
         self.tampered_records = tampered
         self.foreign_environment_records = foreign
         return out
 
     def verify(self) -> dict:
-        """Report what `read_all` had to reject.
+        """Delegate to the one canonical verifier. Fail-closed.
 
-        `intact` now accounts for truncation and foreign records. It previously
-        reported `intact: True` over a totally destroyed archive, because
-        `read_all` had silently returned zero records and `verify` only checked
-        the digests of what came back.
+        The legacy shape is preserved for existing callers, with the
+        authoritative segment verdicts alongside it.
         """
-        records = self.read_all()
-        bad = list(getattr(self, "tampered_records", []))
-        truncated = getattr(self, "truncated_records", 0)
-        foreign = getattr(self, "foreign_environment_records", 0)
-        return {"records": len(records), "mismatched": bad,
-                "intact": not bad and not truncated and not foreign,
-                "truncated_records": truncated,
-                "foreign_environment_records": foreign}
+        report = verify_archive(self.root, environment=self.environment)
+        records_read = report["records_read"]
+        intact = report["verdict"] == "VALID"
+        return {
+            "records": records_read,
+            "mismatched": [v["segment_id"] for v in report["segment_verdicts"]
+                           if not v["valid"]],
+            "intact": intact,
+            "truncated_records": max(
+                0, report["records_expected"] - records_read),
+            "foreign_environment_records": sum(
+                0 if v["environment_valid"] else 1
+                for v in report["segment_verdicts"]),
+            "verdict": report["verdict"],
+            "segments": report["segments"],
+            "closed_segments": report["closed_segments"],
+            "open_segments": report["open_segments"],
+            "invalid_segments": report["invalid_segments"],
+            "segment_verdicts": report["segment_verdicts"],
+        }
 
 
 # --- latency --------------------------------------------------------------------

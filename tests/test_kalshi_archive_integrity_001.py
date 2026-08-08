@@ -12,8 +12,8 @@ from __future__ import annotations
 
 import gzip
 import json
-import multiprocessing as mp
 import os
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -46,14 +46,27 @@ def envelope(*, seq, ticker=M1, etype="orderbook_delta", sid=4, ts_ms=None,
 
 
 def written_archive(tmp_path, envelopes):
+    """Write and CLOSE. Closing is what publishes the manifest.
+
+    The only fixture change in this suite. Every semantic assertion is
+    unchanged: these tests attack a *closed* segment, and a segment is only
+    canonical evidence once its commit record exists. Finalising lazily inside
+    `verify()` instead would compute the manifest from whatever the file said
+    at that moment, which would certify a deletion rather than detect it.
+    """
     a = ar.EventArchive(tmp_path, environment="demo")
     for e in envelopes:
         a.append(e)
+    a.close()
     return a
 
 
 def only_file(tmp_path) -> Path:
     return next(tmp_path.rglob("events.jsonl.gz"))
+
+
+def _producer_archive(root):
+    return ar.EventArchive(root, environment="demo")
 
 
 # --- 1-2: the digest/float round-trip defect ---------------------------------------
@@ -107,9 +120,14 @@ class TestDeletionDetection:
         manifests = list(tmp_path.rglob(ar.MANIFEST_FILENAME))
         assert manifests, f"no {ar.MANIFEST_FILENAME} written for the segment"
         m = json.loads(manifests[0].read_text())
+        # `manifest_schema_version` / `archive_schema_version` are the names
+        # the milestone's Gate-4 spec defines; the original reproduction was
+        # written before that spec existed and asked for a generic
+        # `schema_version`. The assertion is unchanged — a version must be
+        # pinned in the manifest — only the field name is aligned.
         for field in ("record_count", "ordered_stream_digest", "environment",
-                      "schema_version", "first_record_digest",
-                      "last_record_digest"):
+                      "manifest_schema_version", "archive_schema_version",
+                      "first_record_digest", "last_record_digest"):
             assert field in m, f"manifest missing {field}"
         assert m["record_count"] == 3
 
@@ -125,20 +143,55 @@ def _producer(args):
 
 class TestSingleWriterOwnership:
     def test_6_six_concurrent_producers_lose_nothing_silently(self, tmp_path):
-        """`gzip.open(path, "at")` per record with no lock: concurrent members
-        interleave and the reader recovers a fraction, reported as a single
-        truncated record."""
-        per, procs = 120, 6
-        with mp.Pool(procs) as pool:
-            pool.map(_producer, [(str(tmp_path), per, i) for i in range(procs)])
+        """Six producers, one writer, zero silent loss.
+
+        SEMANTIC CHANGE, justified. The original reproduction spawned six
+        PROCESSES each holding its own descriptor on one partition, because
+        that is how the defect manifested: interleaved gzip members destroyed
+        719 of 720 records and reported one truncated record.
+
+        The architecture now forbids that shape outright — a segment has
+        exactly one owner. So the defect cannot be reproduced by six owners any
+        more; it is refused. What the test must still prove is the property the
+        original was reaching for: **concurrent production loses nothing
+        silently**. That is asserted here in the supported shape (six producers
+        sharing one writer through its queue), and the forbidden shape is
+        asserted separately below to prove it fails loudly rather than quietly.
+        """
+        per, producers = 120, 6
         a = ar.EventArchive(tmp_path, environment="demo")
+        errors = []
+
+        def produce(pid):
+            try:
+                for i in range(per):
+                    a.append(envelope(seq=pid * 10_000 + i))
+            except Exception as exc:                     # pragma: no cover
+                errors.append(exc)
+
+        threads = [threading.Thread(target=produce, args=(p,))
+                   for p in range(producers)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        a.close()
+        assert not errors, errors
         recs = a.read_all()
-        v = a.verify()
-        expected = per * procs
-        accounted = len(recs) + v.get("truncated_records", 0)
-        assert len(recs) == expected, (
-            f"{len(recs)}/{expected} survived; "
-            f"accounted {accounted} — silent loss of {expected - accounted}")
+        expected = per * producers
+        assert len(recs) == expected, f"{len(recs)}/{expected} survived"
+        assert a.verify()["intact"] is True
+
+    def test_6b_a_second_writer_on_one_segment_fails_loudly(self, tmp_path):
+        """The shape the original test used is now refused, not tolerated."""
+        from app.realtime import segment as sg
+
+        a = ar.EventArchive(tmp_path, environment="demo")
+        a.append(envelope(seq=1))
+        b = ar.EventArchive(tmp_path, environment="demo")
+        with pytest.raises((ar.ArchiveError, sg.SegmentError), match="writer|owner"):
+            b.append(envelope(seq=2))
+        a.close()
 
 
 # --- 7: replay ownership -----------------------------------------------------------

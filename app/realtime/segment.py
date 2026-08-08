@@ -433,6 +433,24 @@ class SegmentWriter:
         self._shutdown = threading.Event()
 
         self.dir.mkdir(parents=True, exist_ok=True)
+        # EXCLUSIVE OWNERSHIP. One segment, one writer, enforced by the
+        # filesystem rather than by convention. Six processes each opening
+        # their own descriptor on one segment is precisely how the original
+        # archive destroyed 719 of 720 records — and a second owner must fail
+        # LOUDLY here rather than interleave gzip members and be discovered
+        # later by a reader that can no longer tell what was lost.
+        self._lock_path = self.dir / "writer.lock"
+        try:
+            self._lock_fd = os.open(
+                self._lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            os.write(self._lock_fd, f"{os.getpid()}\n".encode())
+            os.fsync(self._lock_fd)
+        except FileExistsError:
+            raise SegmentError(
+                f"segment {self.segment_id!r} already has a writer "
+                f"({self._lock_path} exists). A segment has exactly one owner; "
+                "concurrent appenders interleave gzip members and destroy the "
+                "file. Producers share one writer through its queue.") from None
         self._fh = gzip.open(self.events_path, "ab")
         self._since_flush = 0
         self._thread = threading.Thread(target=self._run, name="archive-writer",
@@ -585,7 +603,21 @@ class SegmentWriter:
             previous_segment_digest=self.previous_segment_digest)
         publish_manifest(self.dir, manifest)
         self.state = SegmentState.CLOSED
+        self._release_lock()
         return manifest
+
+    def _release_lock(self) -> None:
+        fd = getattr(self, "_lock_fd", None)
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            self._lock_fd = None
+        try:
+            self._lock_path.unlink()
+        except (OSError, AttributeError):
+            pass
 
     def read_manifest(self) -> dict:
         return parse_canonical(self.manifest_path.read_bytes())
