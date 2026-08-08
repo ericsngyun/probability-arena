@@ -470,7 +470,17 @@ class SegmentWriter:
                 f"({self._lock_path} exists). A segment has exactly one owner; "
                 "concurrent appenders interleave gzip members and destroy the "
                 "file. Producers share one writer through its queue.") from None
-        self._fh = gzip.open(self.events_path, "ab")
+        # O_NOFOLLOW for the same reason as the manifest temp: a symlinked
+        # events file would append gzip members into an arbitrary victim file.
+        if os.path.islink(self.events_path):
+            self._release_lock()
+            raise SegmentError(
+                f"{self.events_path} is a symlink; refusing to write evidence "
+                "through it")
+        _ev_fd = os.open(self.events_path,
+                         os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW
+                         | os.O_CLOEXEC, 0o600)
+        self._fh = gzip.open(os.fdopen(_ev_fd, "ab"), "ab")
         self._since_flush = 0
         self._thread = threading.Thread(target=self._run, name="archive-writer",
                                         daemon=True)
@@ -538,6 +548,9 @@ class SegmentWriter:
                 self.state = SegmentState.INVALID
                 with self._lock:
                     self.accounting.reject(RejectReason.WRITER_FAILED)
+                # Stop. Continuing appends more records after a half-written
+                # one and amplifies the corruption.
+                return
             finally:
                 self._queue.task_done()
 
@@ -587,6 +600,15 @@ class SegmentWriter:
             return self._close_locked()
 
     def _close_locked(self) -> dict:
+        try:
+            return self._close_stages()
+        except BaseException:
+            # Ownership must not leak on ANY failure path, or one mid-stream
+            # write error locks the partition out for every future process.
+            self._release_lock()
+            raise
+
+    def _close_stages(self) -> dict:
         self.state = SegmentState.CLOSING
         self._shutdown.set()
         self._thread.join(timeout=30)
@@ -658,10 +680,18 @@ class SegmentWriter:
         self._release_lock()
         return manifest
 
+    failed_stage: str | None = None
+
     def _stage(self, name: str) -> None:
         hook = self.durability_hooks.get(name)
         if hook is not None:
-            hook()
+            self.failed_stage = name
+            try:
+                hook()
+            except BaseException:
+                raise
+            else:
+                self.failed_stage = None
 
     def _release_lock(self) -> None:
         fd = getattr(self, "_lock_fd", None)
@@ -696,15 +726,49 @@ def publish_manifest(directory: Path, manifest: dict, *, stage=None) -> Path:
 
     payload = canonical_bytes(manifest)
     _s("manifest_temp_create")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+    # O_EXCL|O_NOFOLLOW: a pre-planted symlink at the temp path would otherwise
+    # let O_TRUNC destroy an arbitrary writable file and then promote that
+    # symlink to `manifest.json`, putting the commit record outside the archive
+    # entirely. `auth.py` already opens credentials this way; this adopts it.
+    try:
+        if os.path.lexists(tmp):
+            os.unlink(tmp)
+    except OSError:
+        pass
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+                 | os.O_CLOEXEC, 0o600)
     try:
         _s("manifest_write")
-        os.write(fd, payload)
+        # os.write may legally write FEWER bytes than requested — that is what
+        # partial-ENOSPC, NFS and EINTR do. Discarding the return value meant a
+        # TRUNCATED manifest was fsynced, renamed and committed, and close()
+        # then returned CLOSED over permanently unreadable evidence. Loop until
+        # the whole payload lands.
+        written = 0
+        while written < len(payload):
+            n = os.write(fd, payload[written:])
+            if n <= 0:
+                raise OSError(
+                    f"short write publishing the manifest: {written} of "
+                    f"{len(payload)} bytes")
+            written += n
         _s("manifest_fsync")
         os.fsync(fd)
     finally:
         os.close(fd)
+    # Read the temp back and verify it before promoting it to the commit
+    # record. The manifest is a few hundred bytes; not checking it is how the
+    # whole temp->fsync->rename ceremony gets defeated one level up.
+    check = parse_canonical(Path(tmp).read_bytes())
+    if not verify_manifest_self_digest(check):
+        raise SegmentError(
+            "the staged manifest does not verify against its own digest; "
+            "refusing to publish it as a commit record")
     _s("manifest_rename")
+    if os.path.islink(final):
+        raise SegmentError(
+            f"{final} is a symlink; refusing to publish a commit record "
+            "through it")
     os.replace(tmp, final)
     # After this point the manifest is VISIBLE. A directory-fsync failure here
     # means the rename may not survive a power loss, but a reader today sees a

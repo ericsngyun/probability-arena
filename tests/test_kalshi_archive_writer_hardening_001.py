@@ -287,8 +287,12 @@ class TestWriterFailure:
         w.durability_hooks["flush"] = lambda: (_ for _ in ()).throw(OSError("x"))
         with pytest.raises(sg.SegmentError):
             w.close()
-        threads = [t for t in threading.enumerate() if t.name == "archive-writer"]
-        assert not [t for t in threads if t.is_alive()], "an orphan writer survived"
+        # The writer thread returns on its first error; give it a moment to
+        # unwind rather than asserting on an instantaneous snapshot.
+        time.sleep(0.3)
+        alive = [t for t in threading.enumerate()
+                 if t.name == "archive-writer" and t.is_alive()]
+        assert not alive, "an orphan writer survived"
 
 
 # --- Gate G: exclusive ownership ---------------------------------------------------
@@ -405,3 +409,82 @@ class TestOwnershipCleanup:
         v = sg.verify_segment(seg_dir, environment=ENV, allow_open=True)
         assert v.state is not sg.SegmentState.CLOSED
         assert not v.valid, "an abandoned segment must never verify"
+
+
+class TestReview3Regressions:
+    """Findings from the crash/filesystem adversarial review."""
+
+    def test_a_short_manifest_write_never_yields_closed(self, tmp_path):
+        """BLOCKING. os.write may legally write fewer bytes than requested —
+        partial-ENOSPC, NFS and EINTR all do. Discarding the return value meant
+        a TRUNCATED manifest was fsynced, renamed and committed, and close()
+        returned CLOSED over permanently unreadable evidence."""
+        import os as _os
+
+        w = writer(tmp_path)
+        for i in range(5):
+            w.submit(fields(i))
+        real = _os.write
+
+        def half(fd, data):
+            return real(fd, data[: max(1, len(data) // 2)])
+
+        import app.realtime.segment as segmod
+        orig = segmod.os.write
+        segmod.os.write = half
+        try:
+            with pytest.raises(sg.SegmentError):
+                w.close()
+        finally:
+            segmod.os.write = orig
+        assert w.state is not sg.SegmentState.CLOSED
+        assert not sg.verify_segment(w.dir, environment=ENV, allow_open=True).valid
+
+    def test_a_symlinked_manifest_temp_cannot_truncate_another_file(self, tmp_path):
+        victim = tmp_path / "VICTIM.txt"
+        victim.write_text("important operator log\n")
+        w = writer(tmp_path)
+        w.submit(fields(1))
+        (w.dir / (sg.MANIFEST_FILENAME + sg.MANIFEST_TEMP_SUFFIX)).symlink_to(victim)
+        w.close()
+        assert victim.read_text() == "important operator log\n", "victim truncated"
+        assert not w.manifest_path.is_symlink()
+
+    def test_a_symlinked_event_file_is_refused(self, tmp_path):
+        victim = tmp_path / "VICTIM2.txt"
+        victim.write_text("do not append here\n")
+        seg = tmp_path / f"env={ENV}" / "segment=seg-link"
+        seg.mkdir(parents=True)
+        (seg / sg.EVENTS_FILENAME).symlink_to(victim)
+        with pytest.raises(sg.SegmentError, match="symlink"):
+            writer(tmp_path, segment_id="seg-link")
+        assert victim.read_text() == "do not append here\n"
+
+    def test_ownership_is_released_on_every_failure_path(self, tmp_path):
+        w = writer(tmp_path)
+        w.submit(fields(1))
+        w.durability_hooks["flush"] = lambda: (_ for _ in ()).throw(OSError("x"))
+        lock = w._lock_path
+        with pytest.raises(sg.SegmentError):
+            w.close()
+        assert not lock.exists()
+        # And the partition is not locked out for the next process.
+        w2 = writer(tmp_path, segment_id="seg-hard-next")
+        w2.close()
+
+    def test_the_writer_stops_after_its_first_error(self, tmp_path):
+        """Continuing appends more records after a half-written one and
+        amplifies the corruption."""
+        w = writer(tmp_path)
+        calls = {"n": 0}
+
+        def boom(_w):
+            calls["n"] += 1
+            raise OSError("injected")
+
+        w.pre_write_hook = boom
+        for i in range(20):
+            w.submit(fields(i))
+        time.sleep(0.5)
+        assert calls["n"] == 1, f"writer kept going after failing ({calls['n']})"
+        assert w.state is sg.SegmentState.INVALID
