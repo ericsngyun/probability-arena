@@ -27,6 +27,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from app.realtime.book import EventEnvelope
+from app.realtime.canonical import (
+    CANONICAL_SCHEMA_VERSION,
+    parse_canonical_datetime,
+    canonical_bytes,
+    digest_hex,
+    parse_canonical,
+)
 from app.realtime.fixedpoint import loads_exact
 
 # Becomes a directory component, so it must not be able to escape one.
@@ -37,9 +44,8 @@ def _digest_matches(rec: dict) -> bool:
     recorded = rec.get("record_digest")
     if not recorded:
         return False
-    recomputed = hashlib.sha256(
-        _canon({k: v for k, v in rec.items() if k != "record_digest"})
-        .encode("utf-8")).hexdigest()
+    recomputed = digest_hex({k: v for k, v in rec.items()
+                             if k != "record_digest"})
     return recorded == recomputed
 
 
@@ -73,8 +79,13 @@ class ArchiveError(RuntimeError):
 
 
 def _canon(obj) -> str:
-    return json.dumps(obj, sort_keys=True, separators=(",", ":"),
-                      ensure_ascii=True, allow_nan=False, default=str)
+    """Deprecated shim. Everything now digests over `canonical_bytes`.
+
+    Kept only so an older archive can still be *read* for diagnosis; it must
+    never be used to compute a digest that will later be re-verified, which is
+    precisely how the two-serializer defect arose.
+    """
+    return canonical_bytes(obj).decode("utf-8")
 
 
 class EventArchive:
@@ -128,14 +139,19 @@ class EventArchive:
                 f"refusing to write a {envelope.environment!r} event into the "
                 f"{self.environment!r} archive: demo events must never become "
                 "production evidence")
-        when = datetime.fromisoformat(envelope.collector_receive_time)
+        when = parse_canonical_datetime(envelope.collector_receive_time)
         path = self._path_for(when)
         path.parent.mkdir(parents=True, exist_ok=True)
         record = envelope.to_dict()
-        record["record_digest"] = hashlib.sha256(
-            _canon(record).encode("utf-8")).hexdigest()
-        with gzip.open(path, "at", encoding="utf-8") as fh:
-            fh.write(_canon(record) + "\n")
+        record["canonical_schema_version"] = CANONICAL_SCHEMA_VERSION
+        record["record_digest"] = digest_hex(record)
+        # The bytes written are the SAME bytes the digest was taken over, and
+        # the fixpoint property guarantees a reader recomputing over what it
+        # read lands on the identical value. Serialising twice through two
+        # different encoders is the defect this replaces.
+        line = canonical_bytes(record)
+        with gzip.open(path, "ab") as fh:
+            fh.write(line + b"\n")
         self.written += 1
         return path
 
@@ -204,7 +220,7 @@ class EventArchive:
                 if not line.strip():
                     continue
                 try:
-                    rec = loads_exact(line)
+                    rec = parse_canonical(line)
                 except (json.JSONDecodeError, ValueError):
                     truncated += 1  # malformed record: drop it, keep the file
                     continue
@@ -315,7 +331,7 @@ def latency_envelope(records) -> LatencyEnvelope:
     venue_negative = normalize_negative = 0
     with_venue_time = 0
     for r in records:
-        age = r.get("data_age_ms")
+        age = r.get("data_age_us")
         if age is not None:
             age = float(age)
             with_venue_time += 1
