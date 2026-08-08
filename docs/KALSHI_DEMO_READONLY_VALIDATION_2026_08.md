@@ -215,6 +215,120 @@ host. A bounded demo session runner therefore still has to be written before
 Phases 6-16 can execute; it should live in its own module so the observer core
 stays inert and the existing guard narrows rather than being deleted.
 
+## 16. AUTHENTICATED DEMO SESSION — 2026-08-08
+
+Credential installed and confined (mode 0600, owner `miko_node_001`, parent
+0700, outside the repo, fully resolved). `DEMO_LOCK_BASELINE = 6`.
+
+### A. Scope — PROVEN `["read"]`
+
+`GET /trade-api/v2/api_keys` → HTTP 200, one call. The installed key appears
+exactly once and reports exactly `["read"]`. Not taken on trust from how it was
+labelled at creation.
+
+Running this exposed a bootstrap cycle: `from_path` required proven scopes and
+the audit is what proves them. `for_scope_audit` breaks it — it grants
+`API_KEY_METADATA` only, so a bootstrap signer cannot open a socket, and records
+an `UNVERIFIED` sentinel so it cannot be mistaken for an audited credential.
+
+### B. Entitlement — YES
+
+An exactly-`["read"]` key received `subscribed` acks for all four channels, each
+on its own sid: `ticker` (1), `market_lifecycle_v2` (2), `trade` (3),
+`orderbook_delta` (4). **No credential broadening was needed or attempted.**
+
+### C. Sequencing — `SUBSCRIPTION_GLOBAL_SEQUENCE`. Deployed model CORRECT.
+
+One sid carried both markets. seq ran 1..9 contiguously across the
+*subscription*, while each market's own view had holes:
+
+```
+seq=1 snapshot M2 | seq=2 snapshot M1 | seq=3 delta M2 | seq=4 ERROR
+seq=5..8 delta M1 | seq=9 snapshot M1
+per-market: M2=[1,3]   M1=[2,5,6,7,8,9]     ← neither contiguous
+```
+
+**But a sharp edge the model missed: non-orderbook frames consume a sequence
+number.** The `error` frame took seq 4. Ignoring it without advancing the
+position made the next delta read as a gap, which would have unpublished every
+book on the subscription within seconds of connecting.
+
+### D. `use_yes_price=true` — NO levels arrive ALREADY YES-SCALED
+
+The most serious defect found. Ground truth from a `ticker` frame:
+
+```
+ticker : yes_bid 0.4700 size 5.00 | yes_ask 0.5100 size 206.00
+book   : yes_dollars_fp [["0.4700","5.00"]]
+         no_dollars_fp  [["0.5100","5.00"]] + delta +201.00 -> 206.00
+```
+
+The NO price **is** the YES ask. The code complemented it to `0.4900` —
+uncrossed, plausible, two cents wrong, on every ask. Retaining `raw_price_units`
+beside `normalized_yes_price_units` is what made this a re-read of the evidence
+rather than a re-collection.
+
+### E. `get_snapshot` — requires `market_tickers`
+
+The sids-only form returned `{"code":14,"msg":"Market Ticker required"}`, and
+that error consumed a sequence slot. With tickers supplied, recovery returned
+two snapshots cleanly on a fresh connection.
+
+### Other wire findings
+
+- An **empty book snapshot omits both ladder keys** (seq 9, after deltas emptied
+  the book). The previous fail-closed guard rejected a valid snapshot.
+- **Venue timestamps are not uniform:** `ts` is an ISO string on
+  `orderbook_delta` and epoch *seconds* on `ticker`; `ts_ms` is unambiguous on
+  both and is now read first.
+
+### F. Replay — DETERMINISTIC
+
+Network primitives blocked at import. Two replays produced identical digests
+(`4358f98b…`), identical checksums, identical top-of-book, identical
+subscription state. `external_calls=0`, `persisted=False`.
+
+### Fresh-connection re-validation, post-fix
+
+`records=4 faults=0`, subscription healthy, 0 gaps, both books publishable, and
+`KXMLBHIT` reconstructed to **bid 0.4700/5.00, ask 0.5100/5.00** — matching
+ticker truth exactly.
+
+### REST reconciliation
+
+| market | verdict |
+|---|---|
+| `KXMLBHIT-…` | **`agreement`** — book `0.4700/0.5100` == REST `0.4700/0.5100` |
+| `KXQUICKSETTLE-…` | **`unknown`** — settled to `determined` between the WS capture (01:15:52Z) and the REST read (01:18:43Z) |
+
+`price_ranges` parsed cleanly with the corrected `start/end/step` schema.
+
+### G. EVO-X2 impact — NONE MEASURABLE
+
+| | baseline | after |
+|---|---|---|
+| SQLite lock count | 6 | **6** |
+| MarketOps | ok, 37–43 s | ok, 43–49 s |
+| tick cadence | 2.25–2.50/s | 2.50/s |
+| RAM available | 32 G | 32 G |
+| disk free | 88 G | 88 G |
+
+`receive→parse` p50 9.7 µs; dispatch p50 43.6 µs, max 143.4 µs. Sample sizes are
+tiny — descriptive only, not a resource envelope.
+
+## 17. What still blocks production provisioning
+
+1. **The `unknown` REST discrepancy is unresolved.** Its cause is explainable —
+   the market settled mid-window — but `reconcile_with_rest` cannot distinguish
+   a lifecycle transition from corruption, and the milestone's own rule is that
+   an unresolved `unknown` blocks production.
+2. **The eight evidence-driven adversarial reviews have not been run** against
+   this new wire evidence.
+3. **The bounded capture was 4 records over ~2 minutes**, not the authorized
+   ≤10 min / ≤5 markets. Demo liquidity is extremely thin, so a longer window
+   and activity-selected markets are needed before the archive proves anything
+   about sustained operation.
+
 ## 15. Production credential decision (Gate 17)
 
 `MORE DEMO VALIDATION REQUIRED`
