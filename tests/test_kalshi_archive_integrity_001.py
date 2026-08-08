@@ -1,5 +1,11 @@
 """KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 — reproduction of known archive defects.
 
+Findings 7, 8 and 9 are marked `xfail(strict=True)`. They are not skipped and
+not weakened: they still execute, still assert the real property, and the strict
+flag means that when KALSHI-REPLAY-INTEGRITY-001 makes one of them pass, the
+suite FAILS with XPASS — which is the signal to remove the marker. A quiet green
+would let the next milestone finish without anyone noticing it had.
+
 Written BEFORE any implementation change, so each test discriminates the
 current failure from the intended behaviour rather than describing whatever the
 code happens to do. Findings 1-9 are expected to FAIL against 2c8f75b; 10-13 are
@@ -196,6 +202,9 @@ class TestSingleWriterOwnership:
 
 # --- 7: replay ownership -----------------------------------------------------------
 class TestReplayOwnership:
+    @pytest.mark.xfail(strict=True, reason="KALSHI-REPLAY-INTEGRITY-001 "
+                       "replay-ownership gate: replay still builds an "
+                       "unconstrained router")
     def test_7_cross_market_injection_is_refused_on_replay(self, tmp_path):
         """`replay` builds the router with no `market_tickers`, disabling the
         one guard that exists, on exactly the path it protects."""
@@ -211,6 +220,8 @@ class TestReplayOwnership:
 
 # --- 8-9: snapshot and duplicate semantics -----------------------------------------
 class TestSnapshotIdempotency:
+    @pytest.mark.xfail(strict=True, reason="KALSHI-REPLAY-INTEGRITY-001 "
+                       "snapshot-idempotency gate")
     def test_8_a_byte_identical_duplicate_snapshot_is_idempotent(self, tmp_path):
         """Kalshi redelivers snapshots on resubscribe, so this is the common
         case — and it currently re-applies, bumping `generation` and changing
@@ -221,6 +232,8 @@ class TestSnapshotIdempotency:
         assert twice["checksums"] == once["checksums"], (
             "redelivered identical snapshot changed the book checksum")
 
+    @pytest.mark.xfail(strict=True, reason="KALSHI-REPLAY-INTEGRITY-001 "
+                       "duplicate-accounting gate")
     def test_9_duplicate_events_are_counted_in_archive_statistics(self, tmp_path):
         e = envelope(seq=1)
         a = written_archive(tmp_path, [e, e])

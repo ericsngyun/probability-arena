@@ -431,8 +431,27 @@ class SegmentWriter:
         self._last_digest: str | None = None
         self._writer_error: BaseException | None = None
         self._shutdown = threading.Event()
+        # close() is reachable from several threads (a shutdown handler and an
+        # application path, say). Without this the second caller finalises an
+        # already-finalised file and the segment is destroyed by its own
+        # shutdown.
+        self._close_lock = threading.Lock()
+        self.queue_high_water = 0
+        # Injection seams. Production leaves both None; tests use them to slow
+        # the writer or fail a specific durability stage without weakening the
+        # real fsync path.
+        self.pre_write_hook = None
+        self.durability_hooks: dict = {}
 
         self.dir.mkdir(parents=True, exist_ok=True)
+        # A CLOSED segment is immutable evidence. Reopening one for append
+        # would add records its published manifest does not describe, turning a
+        # valid segment into an invalid one by ordinary use.
+        if self.manifest_path.exists():
+            raise SegmentError(
+                f"segment {self.segment_id!r} is already committed (its "
+                "manifest exists); a closed segment is immutable evidence and "
+                "cannot be reopened for writing")
         # EXCLUSIVE OWNERSHIP. One segment, one writer, enforced by the
         # filesystem rather than by convention. Six processes each opening
         # their own descriptor on one segment is precisely how the original
@@ -494,6 +513,9 @@ class SegmentWriter:
             return RejectReason.SEGMENT_NOT_OPEN
         try:
             self._queue.put(envelope_fields, timeout=self._enqueue_timeout)
+            depth = self._queue.qsize()
+            if depth > self.queue_high_water:
+                self.queue_high_water = depth
         except queue.Full:
             with self._lock:
                 self.accounting.reject(RejectReason.ENQUEUE_TIMEOUT)
@@ -520,6 +542,8 @@ class SegmentWriter:
                 self._queue.task_done()
 
     def _write_one(self, envelope_fields: dict) -> None:
+        if self.pre_write_hook is not None:
+            self.pre_write_hook(self)
         try:
             record = build_record(
                 envelope_fields=envelope_fields, segment_id=self.segment_id,
@@ -553,8 +577,16 @@ class SegmentWriter:
         anywhere before that leaves a segment with no manifest — recoverable and
         uncommitted, never falsely CLOSED.
         """
-        if self.state is SegmentState.CLOSED:
-            return self.read_manifest()
+        with self._close_lock:
+            if self.state is SegmentState.CLOSED:
+                return self.read_manifest()
+            if self.state is SegmentState.INVALID:
+                raise SegmentError(
+                    f"segment is INVALID and cannot be closed: "
+                    f"{self._writer_error!r}")
+            return self._close_locked()
+
+    def _close_locked(self) -> dict:
         self.state = SegmentState.CLOSING
         self._shutdown.set()
         self._thread.join(timeout=30)
@@ -565,14 +597,24 @@ class SegmentWriter:
             self.state = SegmentState.INVALID
             raise SegmentError(f"writer failed: {self._writer_error!r}")
 
-        # Event-file durability first.
-        self._fh.flush()
-        self._fh.close()
-        fd = os.open(self.events_path, os.O_RDONLY)
+        # Event-file durability first. Each stage is separately injectable so a
+        # failure can be attributed to the exact stage rather than collapsed
+        # into one generic error.
         try:
-            os.fsync(fd)
-        finally:
-            os.close(fd)
+            self._stage("flush")
+            self._fh.flush()
+            self._stage("fsync")
+            self._fh.close()
+            fd = os.open(self.events_path, os.O_RDONLY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        except BaseException as exc:
+            self.state = SegmentState.INVALID
+            self._writer_error = exc
+            self._release_lock()
+            raise SegmentError(f"event-file durability failed: {exc!r}") from exc
 
         # Reconcile what we believe we wrote against what is on disk.
         size = self.events_path.stat().st_size
@@ -601,10 +643,25 @@ class SegmentWriter:
             event_file_size_bytes=size, event_file_sha256=file_hash,
             subscription_metadata=self.subscription_metadata,
             previous_segment_digest=self.previous_segment_digest)
-        publish_manifest(self.dir, manifest)
+        try:
+            publish_manifest(self.dir, manifest, stage=self._stage)
+        except BaseException as exc:
+            # A manifest that did not publish means the segment is NOT closed.
+            # The distinction the docstring makes — rename succeeded but
+            # directory fsync failed — is preserved by the stage name, because
+            # the two have materially different recovery stories.
+            self.state = SegmentState.INVALID
+            self._writer_error = exc
+            self._release_lock()
+            raise SegmentError(f"manifest publication failed: {exc!r}") from exc
         self.state = SegmentState.CLOSED
         self._release_lock()
         return manifest
+
+    def _stage(self, name: str) -> None:
+        hook = self.durability_hooks.get(name)
+        if hook is not None:
+            hook()
 
     def _release_lock(self) -> None:
         fd = getattr(self, "_lock_fd", None)
@@ -623,7 +680,7 @@ class SegmentWriter:
         return parse_canonical(self.manifest_path.read_bytes())
 
 
-def publish_manifest(directory: Path, manifest: dict) -> Path:
+def publish_manifest(directory: Path, manifest: dict, *, stage=None) -> Path:
     """Temp write → fsync → atomic rename → directory fsync.
 
     Rename is the commit. Everything before it is invisible to a reader, so an
@@ -633,14 +690,27 @@ def publish_manifest(directory: Path, manifest: dict) -> Path:
     directory = Path(directory)
     tmp = directory / (MANIFEST_FILENAME + MANIFEST_TEMP_SUFFIX)
     final = directory / MANIFEST_FILENAME
+    def _s(name):
+        if stage is not None:
+            stage(name)
+
     payload = canonical_bytes(manifest)
+    _s("manifest_temp_create")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
     try:
+        _s("manifest_write")
         os.write(fd, payload)
+        _s("manifest_fsync")
         os.fsync(fd)
     finally:
         os.close(fd)
+    _s("manifest_rename")
     os.replace(tmp, final)
+    # After this point the manifest is VISIBLE. A directory-fsync failure here
+    # means the rename may not survive a power loss, but a reader today sees a
+    # committed segment — a materially different situation from failing before
+    # the rename, and reported as such rather than as one generic error.
+    _s("directory_fsync")
     dir_fd = os.open(directory, os.O_RDONLY)
     try:
         os.fsync(dir_fd)
