@@ -70,6 +70,11 @@ MIN_RSA_KEY_BITS = 2048
 # it to pass the check.
 ACCEPTED_CREDENTIAL_MODES = (0o600, 0o400)
 
+# Recorded as the scope set of a signer built by `for_scope_audit`. It is a
+# sentinel, not a scope: nothing downstream may mistake a bootstrap signer for
+# an audited credential.
+UNVERIFIED_SCOPES: tuple = ("<unverified>",)
+
 # 2001-09-09 .. 2286-11-20 in ms. Wide enough never to reject a real clock,
 # narrow enough that seconds-as-milliseconds is caught locally.
 _MIN_TIMESTAMP_MS = 1_000_000_000_000
@@ -426,6 +431,44 @@ class ReadOnlyRequestSigner:
         return cls(key_id=key_id, private_key=key, environment=environment,
                    capability_mode=capability_mode, facts=facts, scopes=scopes,
                    purposes=purposes)
+
+    @classmethod
+    def for_scope_audit(
+        cls,
+        *,
+        key_id: str,
+        credential_path: str | os.PathLike,
+        environment: str,
+        expected_owner_uid: int | None = None,
+    ) -> "ReadOnlyRequestSigner":
+        """Bootstrap constructor for the ONE-SHOT scope audit only.
+
+        `from_path` requires proven scopes, and the audit is the thing that
+        proves them — so requiring proof in order to run the proof is circular.
+        This breaks the cycle in the only safe direction.
+
+        The signer it returns is grants-limited to `API_KEY_METADATA`, so it can
+        sign exactly one GET to the key-metadata route and **cannot reach the
+        WebSocket handshake at all**. Its scopes are recorded as the
+        `UNVERIFIED_SCOPES` sentinel rather than a plausible-looking `("read",)`,
+        because a bootstrap credential that reads like an audited one is how an
+        unverified key ends up trusted.
+
+        The confinement contract is unchanged: same descriptor-based checks,
+        same key-strength floor.
+        """
+        fd, facts = _open_confined(
+            credential_path, expected_owner_uid=expected_owner_uid,
+            forbid_repo_root=_REPO_ROOT)
+        key = _load_key_material(fd, facts.path)
+        return cls(key_id=key_id, private_key=key, environment=environment,
+                   capability_mode=OBSERVE_ONLY, facts=facts,
+                   scopes=UNVERIFIED_SCOPES,
+                   purposes=frozenset({AuthPurpose.API_KEY_METADATA}))
+
+    @property
+    def scopes_are_verified(self) -> bool:
+        return self._scopes != UNVERIFIED_SCOPES
 
     # --- signing --------------------------------------------------------------
     def _signature(self, *, purpose: AuthPurpose, timestamp_ms: int) -> str:
