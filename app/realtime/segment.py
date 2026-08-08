@@ -682,14 +682,19 @@ def read_segment_records(events_path: Path) -> list:
             break                    # stream ended mid-member: nothing follows
         data = dec.unused_data
     records = []
-    for line in text.split("\n"):
-        if not line.strip():
-            continue
+    lines = [ln for ln in text.split("\n") if ln.strip()]
+    for line in lines:
         try:
             records.append(parse_canonical(line))
         except Exception:
             break                    # an unparseable line ends the readable prefix
+    # How many decodable lines the reader had to abandon. Reported rather than
+    # silently dropped: a torn tail and a clean file must not look alike.
+    read_segment_records.last_unreadable = len(lines) - len(records)
     return records
+
+
+read_segment_records.last_unreadable = 0
 
 
 # --- verification -----------------------------------------------------------------

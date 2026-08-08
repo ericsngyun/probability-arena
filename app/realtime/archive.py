@@ -97,6 +97,28 @@ def _canon(obj) -> str:
     return canonical_bytes(obj).decode("utf-8")
 
 
+def _undecodable_tail_records(events_path, decoded: int) -> int:
+    """1 when bytes remain past the decodable prefix, else 0.
+
+    A torn or malformed tail costs the incomplete terminal record; anything
+    before it is recovered. This reports that it happened rather than leaving
+    the loss invisible.
+    """
+    try:
+        raw = Path(events_path).read_bytes()
+    except OSError:
+        return 0
+    if not raw:
+        return 0
+    import gzip as _gz
+    try:
+        with _gz.open(events_path, "rb") as fh:
+            fh.read()
+    except Exception:
+        return 1
+    return 0
+
+
 class EventArchive:
     """Compatibility façade over the hardened segment core.
 
@@ -216,6 +238,20 @@ class EventArchive:
         self._closed = True
         return manifests
 
+    # -- evidence location (for operators and corruption tests) ----------------
+    def segment_paths(self) -> list:
+        """Where this environment's evidence physically lives.
+
+        Public so that operators and filesystem-corruption tests can find the
+        canonical files without hard-coding a layout. The `env=/venue=/date=/
+        hour=` tree is retired; callers that need a path should ask.
+        """
+        return [{"segment_id": d.name.split("segment=", 1)[-1],
+                 "directory": d,
+                 "events_path": d / EVENTS_FILENAME,
+                 "manifest_path": d / MANIFEST_FILENAME}
+                for d in self._segment_dirs()]
+
     # -- read ------------------------------------------------------------------
     def _segment_dirs(self) -> list:
         env_root = self.root / f"env={self.environment}"
@@ -232,8 +268,14 @@ class EventArchive:
         """
         out, truncated, foreign, tampered = [], 0, 0, []
         for directory in self._segment_dirs():
-            records = read_segment_records(directory / EVENTS_FILENAME)
+            events_path = directory / EVENTS_FILENAME
+            records = read_segment_records(events_path)
             seg_id = directory.name.split("segment=", 1)[-1]
+            # Records the reader could not decode at all (a torn or malformed
+            # tail) versus records it decoded but cannot trust (a chain break).
+            # They are different failures and are counted separately.
+            truncated += getattr(read_segment_records, "last_unreadable", 0)
+            truncated += _undecodable_tail_records(events_path, len(records))
             verdict = verify_chain(records, segment_id=seg_id,
                                    environment=self.environment)
             if not verdict.ok:
