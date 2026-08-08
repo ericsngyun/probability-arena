@@ -453,3 +453,166 @@ class TestScopeAuditBootstrap:
                 "api_keys": [{"api_key_id": "demo-key-1", "scopes": ["read"]}]},
             timestamp_ms=TS)
         assert out.proven_read_only is True and out.scopes == ("read",)
+
+
+# --- LIVE DEMO WEBSOCKET EVIDENCE, 2026-08-08 --------------------------------------
+# Frames captured verbatim from wss://external-api-ws.demo.kalshi.co/trade-api/ws/v2
+# on one bounded read-only session. Venue market data, no credential material.
+# Pinned because each one settled a question the implementation had guessed at.
+WIRE_TICKER = {
+    "type": "ticker", "sid": 1,
+    "msg": {"market_id": "29c0608a-3169-4cf1-9e08-32f241927c20",
+            "market_ticker": "KXMLBHIT-26AUG071845CINWSH-WSHNNUEZ26-1",
+            "price_dollars": "0.5000", "yes_bid_dollars": "0.4700",
+            "yes_ask_dollars": "0.5100", "volume_fp": "2.00",
+            "open_interest_fp": "2.00", "dollar_volume": 1,
+            "dollar_open_interest": 1, "yes_bid_size_fp": "5.00",
+            "yes_ask_size_fp": "206.00", "last_trade_size_fp": "1.00",
+            "ts": 1786150148, "ts_ms": 1786150148065,
+            "time": "2026-08-08T00:49:08.065758Z"}}
+WIRE_SNAPSHOT = {
+    "type": "orderbook_snapshot", "sid": 4, "seq": 1,
+    "msg": {"market_ticker": "KXMLBHIT-26AUG071845CINWSH-WSHNNUEZ26-1",
+            "market_id": "29c0608a-3169-4cf1-9e08-32f241927c20",
+            "yes_dollars_fp": [["0.4700", "5.00"]],
+            "no_dollars_fp": [["0.5100", "5.00"]]}}
+WIRE_DELTA = {
+    "type": "orderbook_delta", "sid": 4, "seq": 3,
+    "msg": {"market_ticker": "KXMLBHIT-26AUG071845CINWSH-WSHNNUEZ26-1",
+            "market_id": "29c0608a-3169-4cf1-9e08-32f241927c20",
+            "price_dollars": "0.5100", "delta_fp": "201.00", "side": "no",
+            "ts": "2026-08-08T00:49:08.065758Z", "ts_ms": 1786150148065}}
+WIRE_ERROR = {"type": "error", "sid": 4, "seq": 4,
+              "msg": {"code": 14, "msg": "Market Ticker required"}}
+WIRE_EMPTY_SNAPSHOT = {
+    "type": "orderbook_snapshot", "sid": 4, "seq": 9,
+    "msg": {"market_ticker": "KXQUICKSETTLE-07AUG26H2050-2",
+            "market_id": "0526f569-9efc-45c4-8b79-84828984f48a"}}
+MKT = "KXMLBHIT-26AUG071845CINWSH-WSHNNUEZ26-1"
+
+
+def _rec(frame, gen=1):
+    return {"event_type": frame["type"], "sid": frame.get("sid"),
+            "seq": frame.get("seq"),
+            "market_ticker": (frame.get("msg") or {}).get("market_ticker"),
+            "subscription_generation": gen, "raw": {"msg": frame["msg"]}}
+
+
+class TestLiveWebSocketEvidence:
+    def test_use_yes_price_emits_no_levels_already_on_the_yes_scale(self):
+        """Question D, settled by the venue rather than by reasoning.
+
+        The ticker frame is ground truth: yes_ask 0.5100 size 206.00. The book's
+        NO ladder holds 0.5100, and a +201.00 delta takes 5.00 to 206.00. So the
+        NO price IS the YES ask. The previous code complemented it to 0.4900 —
+        uncrossed, plausible, and two cents wrong.
+        """
+        from app.realtime import book as bk
+
+        b = bk.OrderBook(MKT)
+        b.apply_snapshot(WIRE_SNAPSHOT["msg"], sid=4, seq=1)
+        b.apply_delta(WIRE_DELTA["msg"], seq=3, sid=4, ordered_externally=True)
+        top = b.top_of_book()
+        t = WIRE_TICKER["msg"]
+        assert top["best_yes_bid"] == t["yes_bid_dollars"] == "0.4700"
+        assert top["best_yes_ask"] == t["yes_ask_dollars"] == "0.5100"
+        assert top["best_yes_bid_size"] == t["yes_bid_size_fp"] == "5.00"
+        assert top["best_yes_ask_size"] == t["yes_ask_size_fp"] == "206.00"
+
+    def test_a_non_orderbook_frame_consumes_a_sequence_number(self):
+        """Question C's sharp edge. The error frame arrived at seq 4, between
+        deltas at 3 and 5. Skipping it without advancing the position made the
+        next delta look like a gap and would have unpublished every book on the
+        subscription within seconds of connecting."""
+        from app.realtime import book as bk
+
+        # Both markets, in the real receive order: seq 2 was the sibling's
+        # snapshot, which is precisely the traffic a per-market view mistakes
+        # for a hole.
+        other = "KXQUICKSETTLE-07AUG26H2050-2"
+        sub = bk.SubscriptionState(4, market_tickers=(MKT, other))
+        r = bk.SubscriptionRouter(sub)
+        r.dispatch(_rec(WIRE_SNAPSHOT))                       # seq 1
+        sib = {"type": "orderbook_snapshot", "sid": 4, "seq": 2,
+               "msg": {"market_ticker": other,
+                       "yes_dollars_fp": [["0.3000", "100.00"]],
+                       "no_dollars_fp": [["0.7000", "100.00"]]}}
+        r.dispatch(_rec(sib))                                 # seq 2
+        r.dispatch(_rec(WIRE_DELTA))                          # seq 3
+        assert sub.last_seq == 3
+        out = r.dispatch(_rec(WIRE_ERROR))
+        assert out["action"] == "ignored"
+        assert sub.last_seq == 4, "the error frame must advance the position"
+        assert sub.healthy is True
+        nxt = dict(_rec(WIRE_DELTA)); nxt["seq"] = 5
+        r.dispatch(nxt)                      # must NOT read as a gap
+        assert sub.healthy is True
+        assert r.publishable_books() == {MKT: True, other: True}
+
+    def test_seq_is_subscription_global_not_per_market(self):
+        """Question C. One sid carried both markets; seq ran 1..9 across the
+        subscription while each market's own view had holes."""
+        observed = [(1, "orderbook_snapshot", "M2"), (2, "orderbook_snapshot", "M1"),
+                    (3, "orderbook_delta", "M2"), (4, "error", None),
+                    (5, "orderbook_delta", "M1"), (6, "orderbook_delta", "M1"),
+                    (7, "orderbook_delta", "M1"), (8, "orderbook_delta", "M1"),
+                    (9, "orderbook_snapshot", "M1")]
+        seqs = [s for s, _, _ in observed]
+        assert seqs == list(range(1, 10)), "contiguous across the SID"
+        per = {}
+        for s, _, m in observed:
+            if m:
+                per.setdefault(m, []).append(s)
+        assert per["M2"] == [1, 3] and per["M1"] == [2, 5, 6, 7, 8, 9]
+        for m, ss in per.items():
+            assert not all(b - a == 1 for a, b in zip(ss, ss[1:])), m
+
+    def test_an_empty_book_snapshot_omits_both_ladder_keys(self):
+        """Confirmed at seq 9 after deltas emptied the book. Requiring a ladder
+        key rejected a valid snapshot."""
+        from app.realtime import book as bk
+
+        b = bk.OrderBook("KXQUICKSETTLE-07AUG26H2050-2")
+        out = b.apply_snapshot(WIRE_EMPTY_SNAPSHOT["msg"], sid=4, seq=9)
+        assert out["yes_levels"] == 0 and out["no_levels"] == 0
+        assert b.publishable is True
+        assert b.top_of_book()["best_yes_bid"] is None
+
+    def test_venue_timestamp_fields_are_not_uniform_across_channels(self):
+        """`ts` means different things per channel: an ISO string on
+        orderbook_delta, epoch SECONDS on ticker. `ts_ms` is unambiguous
+        wherever it appears, so it is read first."""
+        from datetime import datetime, timezone
+
+        from app.realtime import book as bk
+
+        recv = datetime(2026, 8, 8, 0, 49, 9, tzinfo=timezone.utc)
+        for frame in (WIRE_DELTA, WIRE_TICKER):
+            env = bk.make_envelope(
+                venue="kalshi", environment="demo", channel="c",
+                message=frame, receive_time=recv, receive_mono=1)
+            assert env.venue_time is not None, frame["type"]
+            # 1786150148065 ms -> 2026-08-08T00:49:08.065Z; receive is ~935 ms later
+            assert 0 < env.data_age_ms < 2000, (frame["type"], env.data_age_ms)
+
+    def test_get_snapshot_requires_market_tickers(self):
+        """The sids-only form was rejected with code 14, and that error consumed
+        a sequence slot."""
+        from app.realtime import kalshi as kx
+
+        cmd = kx.build_get_snapshot(9, 4, [MKT])
+        assert cmd["params"]["market_tickers"] == [MKT]
+        assert cmd["params"]["action"] == "get_snapshot"
+        with pytest.raises(kx.CapabilityError, match="market ticker"):
+            kx.build_get_snapshot(9, 4, [])
+        assert WIRE_ERROR["msg"]["code"] == 14
+
+    def test_read_scope_entitles_all_four_market_data_channels(self):
+        """Question B. A key whose metadata is exactly ["read"] received
+        `subscribed` acks for every channel in the allowlist."""
+        acks = {"ticker": 1, "market_lifecycle_v2": 2, "trade": 3,
+                "orderbook_delta": 4}
+        from app.realtime import kalshi as kx
+
+        assert set(acks) == set(kx.ALLOWED_CHANNELS)
+        assert len(set(acks.values())) == 4, "each channel got its own sid"

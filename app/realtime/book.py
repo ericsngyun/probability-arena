@@ -89,20 +89,46 @@ def make_envelope(*, venue: str, environment: str, channel: str, message: dict,
                   receive_time: datetime, receive_mono: int,
                   normalized: dict | None = None) -> EventEnvelope:
     msg = message.get("msg") or {}
-    venue_time = msg.get("ts") or msg.get("timestamp")
+    # `ts_ms` FIRST. The venue's stamping is not uniform across channels —
+    # confirmed on the DEMO wire 2026-08-08:
+    #   orderbook_delta : ts = "2026-08-08T00:49:08.065758Z"  (ISO string)
+    #                     ts_ms = 1786150148065
+    #   ticker          : ts = 1786150148  (epoch SECONDS)
+    #                     ts_ms = 1786150148065, time = ISO string
+    # So `ts` alone means different things on different channels, and the old
+    # `int(ts)` silently produced a 1970 date for the ISO form and a
+    # 1000x-inflated age for the seconds form. `ts_ms` is unambiguous wherever
+    # it appears; the ISO fields are the documented fallback.
     venue_iso = None
     age_ms = None
-    if venue_time is not None:
+    dt = None
+    ts_ms = msg.get("ts_ms")
+    if isinstance(ts_ms, int) and not isinstance(ts_ms, bool):
         try:
-            # Kalshi stamps seconds or milliseconds depending on channel; both
-            # are handled explicitly rather than guessed from magnitude alone.
-            ts = int(venue_time)
-            seconds = ts / 1000 if ts > 10**11 else ts
-            dt = datetime.fromtimestamp(seconds, tz=timezone.utc)
-            venue_iso = dt.isoformat()
-            age_ms = round((receive_time - dt).total_seconds() * 1000, 3)
-        except (TypeError, ValueError, OSError):
-            venue_iso = None
+            dt = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
+        except (ValueError, OSError, OverflowError):
+            dt = None
+    if dt is None:
+        for key in ("time", "ts", "timestamp"):
+            raw = msg.get(key)
+            if isinstance(raw, str):
+                try:
+                    dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    break
+                except ValueError:
+                    dt = None
+            elif isinstance(raw, int) and not isinstance(raw, bool):
+                try:
+                    # Epoch seconds, per the `ticker` channel.
+                    dt = datetime.fromtimestamp(raw, tz=timezone.utc)
+                    break
+                except (ValueError, OSError, OverflowError):
+                    dt = None
+    if dt is not None:
+        venue_iso = dt.isoformat()
+        age_ms = round((receive_time - dt).total_seconds() * 1000, 3)
     now = utcnow()
     return EventEnvelope(
         schema_version=ENVELOPE_SCHEMA_VERSION, venue=venue,
@@ -147,16 +173,22 @@ class OrderBook:
     The economic reading implemented here is:
 
         yes-side level at p  -> a resting BID for YES at p
-        no-side level at p   -> a resting economic OFFER of YES at (1 - p)
+        no-side level at p   -> a resting OFFER of YES at p   (already YES-scaled)
 
-    **`use_yes_price` is requested on every subscription and its wire effect is
-    UNVERIFIED.** If it causes the NO ladder to arrive already on the YES
-    scale, the complement above is applied twice and every ask is wrong. Two
-    guards stand in for the evidence until a demo session provides it: the
-    crossed-book check refuses the symptom, and every level retains
-    `raw_price_units` next to `normalized_yes_price_units` so archived data can
-    be reinterpreted rather than re-collected. Settling this is item 5 on the
-    demo checklist.
+    **`use_yes_price=true` semantics, confirmed on the DEMO wire 2026-08-08.**
+    Both ladders arrive on the YES price scale; the NO-side price IS the YES
+    ask and **no complement is applied**. Ground truth from a `ticker` frame
+    for KXMLBHIT-26AUG071845CINWSH-WSHNNUEZ26-1:
+
+        ticker : yes_bid 0.4700 size 5.00 | yes_ask 0.5100 size 206.00
+        book   : yes_dollars_fp [["0.4700","5.00"]]
+                 no_dollars_fp  [["0.5100","206.00"]]   (5.00 + a +201.00 delta)
+
+    This code previously complemented the NO ladder (`1 - 0.5100 = 0.4900`) and
+    would have reported an ask two cents below the real one — uncrossed, plausible,
+    and wrong, which is exactly the failure mode the reviews predicted for this
+    flag. The complement is correct only when `use_yes_price` is NOT set, and it
+    is always set here.
 
     Both raw sides are kept. `best_yes_bid` and `best_yes_ask` are derived, and
     the ask is derived from the NO ladder rather than assumed to exist on the
@@ -247,14 +279,15 @@ class OrderBook:
                 raise BookIntegrityError(
                     f"{self.market_ticker}: snapshot seq {seq} is behind the "
                     f"applied position {self.last_seq}; refusing to rewind")
-            if "yes_dollars_fp" not in msg and "no_dollars_fp" not in msg:
-                # `.get(...) or []` turned an unrecognised payload into an
-                # empty book that reported itself synced and publishable —
-                # indistinguishable from a genuinely empty market.
+            # An EMPTY book legitimately omits both ladder keys — confirmed on
+            # the DEMO wire 2026-08-08, seq 9:
+            #   {"market_ticker": "...", "market_id": "..."}
+            # arriving after deltas had removed every level. Requiring a ladder
+            # key here rejected a valid snapshot, so the guard is now that the
+            # message must at least identify its market.
+            if not msg.get("market_ticker") and ticker is None:
                 raise BookIntegrityError(
-                    f"{self.market_ticker}: snapshot carries neither "
-                    "'yes_dollars_fp' nor 'no_dollars_fp'; an unparsed "
-                    "snapshot must not mark the book synced")
+                    f"{self.market_ticker}: snapshot identifies no market")
             yes_levels = self._parse_levels(msg.get("yes_dollars_fp") or [], "yes")
             no_levels = self._parse_levels(msg.get("no_dollars_fp") or [], "no")
             yes = {p: q for p, q in yes_levels if q > 0}
@@ -287,7 +320,7 @@ class OrderBook:
         if not yes or not no:
             return
         bid = max(yes)
-        ask = ONE_DOLLAR_UNITS - max(no)
+        ask = min(no)          # already YES-scaled under use_yes_price=true
         if ask < bid:
             raise BookIntegrityError(
                 f"{self.market_ticker}: crossed book — best YES bid "
@@ -429,13 +462,14 @@ class OrderBook:
     def best_yes_ask_units(self) -> int | None:
         """Lowest YES offer, derived from the NO ladder.
 
-        The best NO bid is the *highest* NO price; as a YES offer that is the
-        *lowest* complement. Derived, never assumed to exist on the YES side.
+        Under `use_yes_price=true` the NO ladder is already YES-scaled, so the
+        best YES offer is simply its *lowest* price. Derived from the NO side,
+        never assumed to exist on the YES one.
         """
         self._require_publishable()
         if not self.no:
             return None
-        return complement_price_units(max(self.no))
+        return min(self.no)
 
     def top_of_book(self) -> dict:
         self._require_publishable()
@@ -451,7 +485,7 @@ class OrderBook:
             "best_yes_ask": format_price_units(ask) if ask is not None else None,
             "best_yes_ask_units": ask,
             "best_yes_ask_size": (
-                format_contract_units(self.no[complement_price_units(ask)])
+                format_contract_units(self.no[ask])
                 if ask is not None else None),
             "spread_units": (ask - bid) if (bid is not None and ask is not None)
                             else None,
@@ -487,9 +521,9 @@ class OrderBook:
         asks = [{"venue_side": SIDE_NO,
                  "raw_price_string": format_price_units(p),
                  "raw_price_units": p,
-                 "normalized_yes_price_units": complement_price_units(p),
-                 "price_units": complement_price_units(p),
-                 "price": format_price_units(complement_price_units(p)),
+                 "normalized_yes_price_units": p,
+                 "price_units": p,
+                 "price": format_price_units(p),
                  "size_units": q, "raw_side": SIDE_NO,
                  "interpretation": "resting economic offer of YES"}
                 for p, q in sorted(self.no.items(), reverse=True)]
@@ -499,7 +533,7 @@ class OrderBook:
                 # The convention this ladder assumes, recorded alongside the
                 # data rather than only in a docstring.
                 "use_yes_price_requested": self.use_yes_price,
-                "no_side_normalization": "complement",
+                "no_side_normalization": "identity_yes_scaled",
                 "bids": bids, "asks": asks}
 
     def checksum(self) -> str:
@@ -697,6 +731,24 @@ class SubscriptionRouter:
         """
         etype = record.get("event_type")
         if etype not in ("orderbook_snapshot", "orderbook_delta"):
+            # NON-ORDERBOOK FRAMES STILL CONSUME A SEQUENCE NUMBER. Confirmed on
+            # the DEMO wire 2026-08-08: an `error` frame arrived as
+            #   {"type":"error","sid":4,"seq":4,...}
+            # between deltas at seq 3 and seq 5. Skipping it without advancing
+            # the position made the next delta look like a gap, which would have
+            # unpublished every book on the subscription within seconds of
+            # connecting. Ordering is a property of the SUBSCRIPTION, so it has
+            # to account for everything the subscription carries — not just the
+            # frames we happen to route.
+            if record.get("seq") is not None:
+                try:
+                    self.subscription.accept(
+                        sid=record.get("sid"), seq=record.get("seq"),
+                        generation=record.get("subscription_generation"))
+                except SubscriptionError:
+                    self._unpublish_all(
+                        self.subscription.state_reason or "sequence fault")
+                    raise
             return {"action": "ignored", "event_type": etype}
         msg = (record.get("raw") or {}).get("msg") or {}
         ticker = record.get("market_ticker") or msg.get("market_ticker")

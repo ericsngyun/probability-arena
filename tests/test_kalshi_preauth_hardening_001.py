@@ -54,9 +54,9 @@ def router(tickers=(A, B), sid=1):
 def seed(r, sid=1, generation=1):
     """One snapshot per market, on one subscription, sharing the seq stream."""
     r.dispatch(snapshot(sid=sid, seq=1, ticker=A, generation=generation,
-                        yes=[["0.6000", "10.00"]], no=[["0.3500", "8.00"]]))
+                        yes=[["0.6000", "10.00"]], no=[["0.6500", "8.00"]]))
     r.dispatch(snapshot(sid=sid, seq=2, ticker=B, generation=generation,
-                        yes=[["0.4000", "5.00"]], no=[["0.5500", "6.00"]]))
+                        yes=[["0.4000", "5.00"]], no=[["0.4500", "6.00"]]))
     return r
 
 
@@ -90,7 +90,7 @@ class TestSubscriptionSequencing:
         for t in tickers:
             seq += 1
             r.dispatch(snapshot(sid=9, seq=seq, ticker=t,
-                                yes=[["0.5000", "1.00"]], no=[["0.4000", "1.00"]]))
+                                yes=[["0.5000", "1.00"]], no=[["0.5500", "1.00"]]))
         for round_ in range(3):
             for t in tickers:
                 seq += 1
@@ -175,9 +175,10 @@ class TestRecovery:
         r = seed(router())
         with pytest.raises(bk.SubscriptionError):
             r.dispatch(delta(seq=99, ticker=A))
-        cmd = kx.build_get_snapshot(7, r.subscription.sid)
+        cmd = kx.build_get_snapshot(7, r.subscription.sid, [A, B])
         assert cmd["cmd"] == "update_subscription"
-        assert cmd["params"] == {"sids": [1], "action": "get_snapshot"}
+        assert cmd["params"] == {"sids": [1], "action": "get_snapshot",
+                                 "market_tickers": [A, B]}
         r.subscription.begin_recovery()
         assert r.subscription.last_seq is None
         r.dispatch(snapshot(seq=100, ticker=A, yes=[["0.6100", "4.00"]]))
@@ -339,7 +340,7 @@ class TestWireContract:
     def test_17_current_snapshot_schema_applies(self):
         r = router((A,))
         out = r.dispatch(snapshot(yes=[["0.6000", "10.00"]],
-                                  no=[["0.3500", "8.00"]]))
+                                  no=[["0.6500", "8.00"]]))
         assert out["yes_levels"] == 1 and out["no_levels"] == 1
         top = r.books[A].top_of_book()
         assert top["best_yes_bid"] == "0.6000"
@@ -347,7 +348,7 @@ class TestWireContract:
 
     def test_18_current_delta_schema_applies_including_optional_ts_ms(self):
         r = seed(router())
-        out = r.dispatch(delta(seq=3, ticker=A, side="no", price="0.3500",
+        out = r.dispatch(delta(seq=3, ticker=A, side="no", price="0.6500",
                                amount="-2.00", ts_ms=1_754_500_000_000))
         assert out["action"] == "delta" and out["side"] == "no"
         assert out["level_units"] == 600        # 8.00 - 2.00
@@ -378,19 +379,21 @@ class TestWireContract:
 class TestYesPriceCanonicalState:
     def test_every_level_retains_the_venue_words_and_our_reading(self):
         r = router((A,))
-        r.dispatch(snapshot(yes=[["0.6000", "10.00"]], no=[["0.3500", "8.00"]]))
+        r.dispatch(snapshot(yes=[["0.6000", "10.00"]], no=[["0.6500", "8.00"]]))
         ladder = r.books[A].yes_scale_ladder()
         assert ladder["use_yes_price_requested"] is True
-        assert ladder["no_side_normalization"] == "complement"
+        assert ladder["no_side_normalization"] == "identity_yes_scaled"
         for level in ladder["bids"] + ladder["asks"]:
             for f in ("venue_side", "raw_price_string", "raw_price_units",
                       "normalized_yes_price_units"):
                 assert f in level, (f, level)
         ask = ladder["asks"][0]
+        # Under use_yes_price=true the NO price IS the YES ask: raw and
+        # normalized are the same number, confirmed on the DEMO wire.
         assert ask["venue_side"] == "no"
-        assert ask["raw_price_units"] == 3500          # what the venue said
-        assert ask["normalized_yes_price_units"] == 6500   # our reading
-        assert ask["raw_price_string"] == "0.3500"
+        assert ask["raw_price_units"] == 6500
+        assert ask["normalized_yes_price_units"] == 6500
+        assert ask["raw_price_string"] == "0.6500"
 
     def test_a_crossed_book_still_refuses(self):
         """Standing in for the unverified `use_yes_price` convention: if the NO
@@ -398,16 +401,16 @@ class TestYesPriceCanonicalState:
         this is the symptom."""
         r = router((A,))
         with pytest.raises(bk.BookIntegrityError, match="crossed"):
-            r.dispatch(snapshot(yes=[["0.8000", "1.00"]], no=[["0.9000", "1.00"]]))
+            r.dispatch(snapshot(yes=[["0.8000", "1.00"]], no=[["0.7000", "1.00"]]))
 
 
 # --- 20: replay determinism --------------------------------------------------------
 class TestReplayDeterminism:
     def _records(self):
         out = [snapshot(seq=1, ticker=A, yes=[["0.6000", "10.00"]],
-                        no=[["0.3500", "8.00"]]),
+                        no=[["0.6500", "8.00"]]),
                snapshot(seq=2, ticker=B, yes=[["0.4000", "5.00"]],
-                        no=[["0.5500", "6.00"]])]
+                        no=[["0.4500", "6.00"]])]
         for i, (t, side, price, amt) in enumerate((
                 (A, "yes", "0.5900", "4.00"), (B, "no", "0.5600", "2.00"),
                 (A, "yes", "0.6000", "-3.00"), (B, "yes", "0.4000", "1.00")),
