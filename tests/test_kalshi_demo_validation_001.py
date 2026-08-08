@@ -398,3 +398,58 @@ class TestLiveDemoRestEvidence:
         relabelled = fp.PriceGrid(LIVE_DEMO_MARKET["price_ranges"],
                                   structure_name="something_else_entirely")
         assert grid.ranges == relabelled.ranges
+
+
+class TestScopeAuditBootstrap:
+    """`from_path` requires proven scopes and the audit is what proves them.
+
+    Requiring the proof in order to run the proof is circular; this constructor
+    breaks the cycle, and these tests pin the direction it breaks it in.
+    """
+
+    def test_bootstrap_signer_can_only_reach_the_metadata_route(self, tmp_path):
+        p = _install(tmp_path, _gen())
+        s = ka.ReadOnlyRequestSigner.for_scope_audit(
+            key_id="demo-key-1", credential_path=p, environment=kx.ENV_DEMO)
+        assert s.granted_purposes == frozenset({kx.AuthPurpose.API_KEY_METADATA})
+        s.headers_for(purpose=kx.AuthPurpose.API_KEY_METADATA, timestamp_ms=TS)
+        # It cannot open a socket even though the credential would be accepted.
+        with pytest.raises(kx.CredentialError, match="not granted"):
+            s.websocket_headers(timestamp_ms=TS)
+
+    def test_bootstrap_scopes_are_a_sentinel_not_a_plausible_value(self, tmp_path):
+        """A bootstrap credential that reads like an audited one is how an
+        unverified key ends up trusted."""
+        p = _install(tmp_path, _gen())
+        s = ka.ReadOnlyRequestSigner.for_scope_audit(
+            key_id="demo-key-1", credential_path=p, environment=kx.ENV_DEMO)
+        assert s.scopes == ka.UNVERIFIED_SCOPES
+        assert s.scopes != ("read",)
+        assert s.scopes_are_verified is False
+        audited, _ = _signer(tmp_path / "b")
+        assert audited.scopes_are_verified is True
+
+    def test_bootstrap_keeps_the_full_confinement_contract(self, tmp_path):
+        d = tmp_path / "loose"
+        d.mkdir(parents=True)
+        os.chmod(d, 0o700)
+        bad = d / "k.pem"
+        bad.write_bytes(_gen().private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption()))
+        os.chmod(bad, 0o644)          # too permissive
+        with pytest.raises(ka.CredentialConfinementError, match="mode"):
+            ka.ReadOnlyRequestSigner.for_scope_audit(
+                key_id="k", credential_path=bad, environment=kx.ENV_DEMO)
+
+    def test_the_audit_accepts_a_bootstrap_signer(self, tmp_path):
+        p = _install(tmp_path, _gen())
+        s = ka.ReadOnlyRequestSigner.for_scope_audit(
+            key_id="demo-key-1", credential_path=p, environment=kx.ENV_DEMO)
+        out = ca.audit_scopes(
+            signer=s, key_id="demo-key-1", environment=kx.ENV_DEMO,
+            fetch=lambda path, headers: {
+                "api_keys": [{"api_key_id": "demo-key-1", "scopes": ["read"]}]},
+            timestamp_ms=TS)
+        assert out.proven_read_only is True and out.scopes == ("read",)
