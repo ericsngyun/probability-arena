@@ -168,7 +168,7 @@ class TestYesNormalization:
         b = bk.OrderBook("KXTEST")
         b.apply_snapshot(snapshot_msg(
             yes=[["0.6000", "10.00"], ["0.5900", "5.00"]],
-            no=[["0.3500", "8.00"]]), seq=1)
+            no=[["0.6500", "8.00"]]), seq=1)
         assert b.best_yes_bid_units == 6000
         # best NO bid 0.35 -> YES offer at 0.65
         assert b.best_yes_ask_units == 6500
@@ -177,12 +177,12 @@ class TestYesNormalization:
     def test_ladder_preserves_raw_side_and_price(self):
         b = bk.OrderBook("KXTEST")
         b.apply_snapshot(snapshot_msg(yes=[["0.6000", "10.00"]],
-                                      no=[["0.3500", "8.00"]]), seq=1)
+                                      no=[["0.6500", "8.00"]]), seq=1)
         ladder = b.yes_scale_ladder()
         assert ladder["bids"][0]["raw_side"] == "yes"
         ask = ladder["asks"][0]
         assert ask["raw_side"] == "no"
-        assert ask["raw_price_units"] == 3500
+        assert ask["raw_price_units"] == 6500   # NO price IS the YES ask
         assert ask["price_units"] == 6500, "normalized to the YES scale"
 
     def test_normalization_is_not_destructive(self):
@@ -255,7 +255,7 @@ class TestSequenceIntegrity:
         assert b.stats["resyncs"] == 1
 
     def test_resync_command_shape(self):
-        cmd = kx.build_resubscribe_snapshot(7, sid=3)
+        cmd = kx.build_resubscribe_snapshot(7, sid=3, market_tickers=["KXTEST"])
         assert cmd["cmd"] == "update_subscription"
         assert cmd["params"]["sids"] == [3]
 
@@ -523,7 +523,7 @@ class TestNoTradingSurface:
 
 class TestArchiveAndReplay:
     def _stream(self, environment="demo"):
-        out = [env(snapshot_msg(yes=[["0.6000", "10.00"]], no=[["0.3500", "8.00"]]),
+        out = [env(snapshot_msg(yes=[["0.6000", "10.00"]], no=[["0.6500", "8.00"]]),
                    etype="orderbook_snapshot", seq=1, environment=environment,
                    when=NOW, channel="orderbook_delta")]
         for i, (side, price, delta) in enumerate((
@@ -619,7 +619,7 @@ class TestArchiveAndReplay:
     def test_rest_reconciliation_reports_and_resyncs(self):
         b = bk.OrderBook("KXTEST")
         b.apply_snapshot(snapshot_msg(yes=[["0.6000", "10.00"]],
-                                      no=[["0.3500", "8.00"]]), seq=1)
+                                      no=[["0.6500", "8.00"]]), seq=1)
         # The ticker is required: without it this reconciled one market's book
         # against another market's payload and returned a confident verdict.
         assert ar.reconcile_with_rest(b, {"yes_bid_dollars": "0.6000"})[
@@ -674,7 +674,7 @@ class TestFailClosedRegressions:
     def _synced(self, **kw):
         b = bk.OrderBook("KXTEST", **kw)
         b.apply_snapshot(snapshot_msg(yes=[["0.6000", "10.00"]],
-                                      no=[["0.3500", "8.00"]]), seq=10, sid=1)
+                                      no=[["0.6500", "8.00"]]), seq=10, sid=1)
         return b
 
     def test_any_rejection_leaves_the_book_unpublishable(self):
@@ -700,12 +700,18 @@ class TestFailClosedRegressions:
                 b.top_of_book()
 
     def test_rejected_snapshot_does_not_leave_a_stale_book_publishable(self):
+        """A snapshot with NO ladder keys is a legitimately EMPTY book, not a
+        rejection — confirmed on the DEMO wire (seq 9 arrived with only
+        market_ticker and market_id after deltas emptied the book). The
+        fail-closed case is a snapshot that identifies a DIFFERENT market."""
         b = self._synced()
-        with pytest.raises(bk.BookIntegrityError):
-            b.apply_snapshot({"market_ticker": "KXTEST"}, seq=11)  # no ladders
-        assert b.publishable is False
-        with pytest.raises(bk.BookIntegrityError):
-            b.top_of_book()
+        out = b.apply_snapshot({"market_ticker": "KXTEST"}, seq=11)
+        assert out["yes_levels"] == 0 and out["no_levels"] == 0
+        assert b.publishable is True
+        b2 = self._synced()
+        with pytest.raises(bk.BookIntegrityError, match="another market"):
+            b2.apply_snapshot({"market_ticker": "SOMEONE-ELSE"}, seq=11)
+        assert b2.publishable is False
 
     def test_snapshot_cannot_rewind_the_book(self):
         """At-least-once redelivery on reconnect is ordinary. Older state
@@ -752,7 +758,7 @@ class TestFailClosedRegressions:
         b = bk.OrderBook("KXTEST")
         with pytest.raises(bk.BookIntegrityError, match="crossed"):
             b.apply_snapshot(snapshot_msg(yes=[["0.8000", "10.00"]],
-                                          no=[["0.9000", "5.00"]]), seq=1)
+                                          no=[["0.7000", "5.00"]]), seq=1)
         assert b.publishable is False
 
     def test_duplicate_price_levels_in_a_snapshot_are_refused(self):

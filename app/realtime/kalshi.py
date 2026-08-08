@@ -319,16 +319,26 @@ def build_subscribe(command_id: int, channels, market_tickers) -> dict:
 RECOVERY_ACTION_GET_SNAPSHOT = "get_snapshot"
 
 
-def build_get_snapshot(command_id: int, sid: int) -> dict:
-    """Recovery path 1: ask the venue to re-send the snapshot for a subscription.
+def build_get_snapshot(command_id: int, sid: int, market_tickers) -> dict:
+    """Recovery path 1: ask the venue to re-send snapshots for a subscription.
 
-    Cheaper than resubscribing and keeps the sid, so books do not have to be
-    torn down. Unconfirmed on the wire; `build_resubscribe` is the fallback
-    that uses only commands we already send.
+    `market_tickers` is REQUIRED. Confirmed on the DEMO wire 2026-08-08: sending
+    only `sids` and `action` returned
+
+        {"type":"error","sid":4,"seq":4,"msg":{"code":14,"msg":"Market Ticker required"}}
+
+    and that error consumed a sequence number on the subscription, so getting
+    this shape wrong costs an ordering slot as well as the recovery.
     """
+    tickers = [str(t) for t in market_tickers or []]
+    if not tickers:
+        raise CapabilityError(
+            "get_snapshot requires at least one market ticker; the venue "
+            "rejects the sids-only form with code 14")
     return {"id": int(command_id), "cmd": "update_subscription",
             "params": {"sids": [int(sid)],
-                       "action": RECOVERY_ACTION_GET_SNAPSHOT}}
+                       "action": RECOVERY_ACTION_GET_SNAPSHOT,
+                       "market_tickers": tickers}}
 
 
 def build_unsubscribe(command_id: int, sid: int) -> dict:
@@ -348,9 +358,9 @@ def build_resubscribe(command_id: int, sid: int, channels, market_tickers) -> li
             build_subscribe(command_id + 1, channels, market_tickers)]
 
 
-def build_resubscribe_snapshot(command_id: int, sid: int) -> dict:
+def build_resubscribe_snapshot(command_id: int, sid: int, market_tickers) -> dict:
     """Deprecated alias for `build_get_snapshot`, kept for existing callers."""
-    return build_get_snapshot(command_id, sid)
+    return build_get_snapshot(command_id, sid, market_tickers)
 
 
 class Transport:
