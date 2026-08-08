@@ -137,7 +137,13 @@ class TestThresholdOverrides:
     def test_thresholds_can_be_overridden_directly(self):
         strict = EligibilityThresholds(min_liquidity=1_000_000)
         lax = EligibilityThresholds(min_liquidity=0)
-        market = make_market(liquidity=500)
+        # close_time anchored to NOW, not to the real clock. The shared fixture
+        # defaults to `datetime.now() + 7 days`, which this test then assessed
+        # against a FIXED `NOW` of 2026-07-01 — so the apparent time to
+        # expiration grew by one day per real day and eventually crossed the
+        # 45-day `expires_too_far` limit, turning a liquidity-threshold test
+        # into a calendar-dependent one.
+        market = make_market(liquidity=500, close_time=NOW + timedelta(days=7))
         assert not assess_market(market, strict, now=NOW).is_eligible
         assert assess_market(market, lax, now=NOW).is_eligible
 
