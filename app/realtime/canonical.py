@@ -80,7 +80,14 @@ def canonical_datetime(value: datetime) -> str:
         raise CanonicalError(
             "datetime must be timezone-aware; a naive value is read as LOCAL "
             "time and would canonicalise differently on different hosts")
-    utc = value.astimezone(timezone.utc)
+    try:
+        utc = value.astimezone(timezone.utc)
+    except (OverflowError, ValueError, OSError) as exc:
+        # `datetime.max` with a negative offset (or `.min` with a positive one)
+        # overflows the calendar. OverflowError is not a CanonicalError, so it
+        # escaped the writer exactly as decimal.InvalidOperation once did.
+        raise CanonicalError(
+            f"{value!r} cannot be converted to UTC: {exc!r}") from exc
     return (f"{utc.year:04d}-{utc.month:02d}-{utc.day:02d}"
             f"T{utc.hour:02d}:{utc.minute:02d}:{utc.second:02d}"
             f".{utc.microsecond:06d}Z")

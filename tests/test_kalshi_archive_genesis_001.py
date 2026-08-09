@@ -770,9 +770,72 @@ class TestAdmissionTotality:
         [1, 2, {"\udcff": 3}], ["\udcff"],
         datetime(2026, 8, 9, 12, 0),                      # naive
         datetime(2026, 8, 9, 12, 0, tzinfo=UTC),          # aware
+        # The calendar bound: astimezone() overflows, and OverflowError is not
+        # a CanonicalError, so it escaped exactly as InvalidOperation once did.
+        datetime(9999, 12, 31, 23, 59, 59, tzinfo=timezone(timedelta(hours=-5))),
+        datetime(1, 1, 1, 0, 0, tzinfo=timezone(timedelta(hours=5))),
+        {"k": datetime(9999, 12, 31, 23, 59, 59,
+                       tzinfo=timezone(timedelta(hours=-5)))},
         2**8192, -(2**8192),
         {"deep": [[[{"x": Decimal("1E+999999")}]]]},
     ]
+
+    def test_the_invariant_is_generative_not_enumerated(self):
+        """Randomised sweep, because a hand-written corpus is what kept failing.
+
+        Five rounds, five holes, each found by someone else's sweep and each
+        "fixed" by adding one more value to a list. This builds thousands of
+        values from every branch of the encoder — including KEY positions, which
+        is where the fifth hole was — and asserts the implication directly.
+        """
+        import random
+
+        rng = random.Random(20260809)
+        tz_bad = [timezone(timedelta(hours=h)) for h in (-23, -5, 5, 23)]
+
+        def leaf():
+            return rng.choice([
+                None, True, False,
+                rng.randint(-(2**70), 2**70), rng.randint(2**8190, 2**8200),
+                rng.choice(["", "ok", "é", "𐀀", "\udcff", "a\udcffb"]),
+                Decimal(rng.choice(["0", "0.51", "-1.5", "1E+30", "1E+4097",
+                                    "1E-4097", "NaN", "Infinity"])),
+                rng.choice([1.5, 1e30, float("nan")]),
+                datetime(2026, 8, 9, 12, tzinfo=UTC),
+                datetime(9999, 12, 31, 23, 59, 59, tzinfo=rng.choice(tz_bad)),
+                datetime(1, 1, 1, 0, 0, tzinfo=rng.choice(tz_bad)),
+                datetime(2026, 8, 9, 12),
+            ])
+
+        def build(depth=0):
+            if depth >= 3 or rng.random() < 0.4:
+                return leaf()
+            kind = rng.random()
+            if kind < 0.45:
+                # Keys drawn from the SAME generator as values.
+                out = {}
+                for _ in range(rng.randint(1, 4)):
+                    k = leaf()
+                    out[k if isinstance(k, str) else repr(k)] = build(depth + 1)
+                if rng.random() < 0.25:
+                    out["\udcff"] = build(depth + 1)     # hostile key
+                return out
+            if kind < 0.8:
+                return [build(depth + 1) for _ in range(rng.randint(0, 4))]
+            return tuple(build(depth + 1) for _ in range(rng.randint(0, 3)))
+
+        checked = admitted = 0
+        for _ in range(4000):
+            value = build()
+            checked += 1
+            reason = sg.non_canonical_reason(value)      # must never raise
+            if reason is not None:
+                continue
+            admitted += 1
+            cn.canonical_bytes(value)                    # must never raise
+            cn.assert_fixpoint(value)
+        assert checked == 4000
+        assert admitted > 200, f"corpus admitted only {admitted}; too weak"
 
     @pytest.mark.parametrize("value", CORPUS, ids=lambda v: repr(v)[:40])
     def test_admitted_values_always_serialise(self, value):
@@ -919,7 +982,15 @@ class TestSalvageAndResidue:
         out = verdict(tmp_path)
         assert out["abandoned_segments"], "crash residue must not be invisible"
         assert out["abandoned_segments"][0]["segment_id"] == "kalshi.seg-A"
-        assert any("ABANDONED_EVIDENCE" in r for r in out["reasons"])
+        # REPORTED, not gating. Making it a `reason` turned an ordinary
+        # crash-and-restart — during which the writer itself creates the
+        # quarantine file — into a total replay outage, with `read_verified()`
+        # refusing untouched committed segments and no command to clear it.
+        assert any("ABANDONED_EVIDENCE" in w for w in out["warnings"])
+        assert not any("ABANDONED_EVIDENCE" in r for r in out["reasons"])
+        assert out["verdict"] == "VALID", out["reasons"]
+        store = ar.EventArchive(tmp_path, environment=ENV, venue="kalshi")
+        assert len(store.read_verified()) == 2, "committed evidence must remain readable"
 
 
 class TestLegacyMultiMember:

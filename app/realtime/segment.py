@@ -276,6 +276,42 @@ class RejectReason(str, Enum):
 
 
 def non_canonical_reason(value, _path: str = "") -> str | None:
+    """Why this value cannot become evidence, or None.
+
+    THE INVARIANT: `non_canonical_reason(x) is None` implies
+    `canonical_bytes(x)` succeeds. It holds by CONSTRUCTION now, because this
+    asks the encoder instead of re-deriving its preconditions.
+
+    Five consecutive review rounds found a hole here and every one was the same
+    mistake — a hand-maintained mirror of `canonical.py`'s rules that had
+    drifted. float; then the Decimal exponent; then a lone surrogate in a str;
+    then an unbounded int; then a lone surrogate in a mapping KEY; then a naive
+    datetime; then a datetime at the calendar bound whose `astimezone`
+    overflows. Each fix added one more precondition and the next sweep found the
+    next gap. Enumeration cannot close a class whose membership is defined
+    somewhere else.
+
+    The structural walk below is kept only as a FAST PATH that yields a precise
+    diagnostic path (`raw_event.depth[0].price`). The encoder is then run for
+    real, and if the two disagree the ENCODER wins — which is the direction
+    every one of those five bugs went.
+    """
+    structural = _structural_reason(value, _path)
+    if structural is not None:
+        return structural
+    try:
+        canonical_bytes(value)
+    except CanonicalError as exc:
+        return f"{_path or 'value'} is not canonically representable: {exc}"
+    except Exception as exc:              # noqa: BLE001 - a refusal, not a crash
+        # A hostile `tzinfo` whose `utcoffset()` raises used to make THIS
+        # function raise rather than return a reason.
+        return (f"{_path or 'value'} could not be canonically encoded "
+                f"({type(exc).__name__}: {exc})")
+    return None
+
+
+def _structural_reason(value, _path: str = "") -> str | None:
     """Why this value cannot become evidence, or None. Type walk, no encoding.
 
     `canonical.py` refuses `float` because a float written bare and re-read as
@@ -339,7 +375,12 @@ def non_canonical_reason(value, _path: str = "") -> str | None:
         # `canonical_datetime` refuses a naive value (it would read as LOCAL
         # time and canonicalise differently per host). Admission has to mirror
         # that precondition or it is not total.
-        if value.tzinfo is None or value.utcoffset() is None:
+        try:
+            offset = value.utcoffset()
+        except Exception as exc:          # noqa: BLE001 - hostile tzinfo
+            return (f"{_path or 'value'} has a tzinfo whose utcoffset() raised "
+                    f"({type(exc).__name__}: {exc})")
+        if value.tzinfo is None or offset is None:
             return (f"{_path or 'value'} is a naive datetime; it must be "
                     "timezone-aware to be canonically representable")
         return None
@@ -509,6 +550,14 @@ def verify_chain(records, *, segment_id: str, environment: str) -> ChainVerdict:
     for index, raw in enumerate(records):
         try:
             record = parse_record(raw)
+        except CanonicalError as exc:
+            # A tampered numeric literal made this PUBLIC per-segment verifier
+            # die instead of returning a verdict. `canonical.py` names the
+            # anti-pattern: a tamper-evidence path that crashes on
+            # attacker-controlled input is fail-open by crash. `verify_archive`
+            # caught it one layer up; every direct caller did not.
+            return ChainVerdict(False, index, first, last, stream, index,
+                                f"record is not canonically encodable: {exc}")
         except RecordSchemaError as exc:
             return ChainVerdict(False, index, first, last, stream, index, str(exc))
         if record["segment_id"] != segment_id:
@@ -1692,7 +1741,18 @@ def verify_segment(directory, *, environment: str, allow_open: bool = False,
         root = directory.parent.parent
     if root is not None:
         for path in (events_path, manifest_path):
-            if not path.exists() and not path.is_symlink():
+            try:
+                present = os.path.lexists(path)
+            except OSError as exc:
+                # `Path.exists()` propagates EACCES. It escaped this public
+                # function AND `recover_current_head`, and `verify_archive`'s
+                # outer catch then masked every other finding, reporting
+                # `segment_verdicts: 0` and `records_expected: 0` — asserting
+                # "nothing was lost" by omission.
+                return SegmentVerdict(
+                    seg_id, SegmentState.INVALID, False,
+                    [f"{path.name} could not be examined: {exc}"])
+            if not present:
                 continue
             reason = containment_reason(root, path)
             if reason is not None:
@@ -1887,7 +1947,7 @@ _VERDICT_KEYS = (
     "generations_present", "segments", "closed_segments", "open_segments",
     "uncommitted_segments", "abandoned_segments", "invalid_segments",
     "orphaned_committed_segments", "records_expected", "records_read",
-    "segment_verdicts", "reasons", "verdict",
+    "segment_verdicts", "reasons", "warnings", "verdict",
 )
 
 
@@ -1901,8 +1961,11 @@ def _abandoned_residue(env_dir: Path) -> list:
             for f in sorted(d.glob(f"{EVENTS_FILENAME}.abandoned.*")):
                 out.append({"segment_id": d.name.split("segment=", 1)[-1],
                             "file": f.name, "bytes": f.stat().st_size})
-    except OSError:
-        return out
+    except OSError as exc:
+        # Never a silent partial list — that is the same "nothing was lost by
+        # omission" this helper exists to stop.
+        out.append({"segment_id": None, "file": None, "bytes": 0,
+                    "error": repr(exc)})
     return out
 
 
@@ -1922,7 +1985,7 @@ def _empty_verdict(environment: str, **over) -> dict:
            "abandoned_segments": [], "invalid_segments": 0,
            "orphaned_committed_segments": [], "records_expected": 0,
            "records_read": 0, "segment_verdicts": [], "reasons": [],
-           "verdict": "INVALID"}
+           "warnings": [], "verdict": "INVALID"}
     out.update(over)
     return out
 
@@ -2145,13 +2208,20 @@ def _verify_archive_inner(root, *, environment: str, expected_archive_id,
             "archive_segments_digest does not match the ordered segments "
             "(deletion, insertion or reorder present this way)")
 
+    # Residue is REPORTED, never gating. Making it a `reason` turned an ordinary
+    # OOM-kill or deploy into a total replay outage: the quarantine file is
+    # written by the writer itself on every crash-and-restart, so the verifier
+    # condemned the archive for the writer's own correct behaviour and
+    # `read_verified()` then refused untouched, fully committed segments. It is
+    # not evidence and it cannot hide a deletion, so it is a warning.
     residue = _abandoned_residue(env_dir)
+    warnings = []
     if residue:
-        reasons.append(
+        warnings.append(
             f"ABANDONED_EVIDENCE: {len(residue)} quarantined event file(s) "
-            f"({sum(r['bytes'] for r in residue)} bytes) remain from an "
-            "interrupted writer; they are not covered by any manifest. Salvage "
-            "or discard them explicitly.")
+            f"({sum(r.get('bytes') or 0 for r in residue)} bytes) remain from "
+            "an interrupted writer; they are not covered by any manifest. "
+            "Salvage or discard them explicitly before removal.")
     invalid = [r for r in results if r.state is SegmentState.INVALID]
     return _empty_verdict(
         environment,
@@ -2169,7 +2239,8 @@ def _verify_archive_inner(root, *, environment: str, expected_archive_id,
         # successor then commits it — so the residue always lands in a
         # committed directory, which the pop had already removed. 256
         # recoverable records were reported as VALID with empty reasons.
-        abandoned_segments=_abandoned_residue(env_dir),
+        abandoned_segments=residue,
+        warnings=warnings,
         invalid_segments=len(invalid),
         orphaned_committed_segments=orphaned,
         records_expected=sum(e["record_count"] or 0 for e in expected),
