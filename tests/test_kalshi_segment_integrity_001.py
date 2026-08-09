@@ -348,11 +348,22 @@ class TestSingleWriter:
     def test_producers_never_hold_a_file_descriptor(self):
         """Structural: `submit` must not touch the filesystem at all."""
         import ast
-        import inspect
+        from pathlib import Path
 
-        import textwrap
-
-        tree = ast.parse(textwrap.dedent(inspect.getsource(sg.SegmentWriter.submit)))
+        # Locate `submit` by parsing the FILE, not via inspect.getsource.
+        # getsource resolves the function's line number through linecache,
+        # which refreshes on mtime while the already-imported code object keeps
+        # its original co_firstlineno. Editing segment.py during a suite run
+        # therefore made this test read a DIFFERENT function: any edit shifting
+        # submit by >=11 lines returned `_open_events`/`_write_one` and failed
+        # with exactly "submit() touches open/gzip/_fh". That is a non-hermetic
+        # test, not a product defect, and it is the demonstrated mechanism
+        # behind "one randomized run failed, the next passed".
+        module = ast.parse(Path(sg.__file__).read_text())
+        cls = next(n for n in module.body
+                   if isinstance(n, ast.ClassDef) and n.name == "SegmentWriter")
+        tree = next(n for n in cls.body
+                    if isinstance(n, ast.FunctionDef) and n.name == "submit")
         names = {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
         names |= {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
         for banned in ("open", "write", "gzip", "flush", "fsync", "_fh"):

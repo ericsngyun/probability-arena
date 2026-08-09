@@ -209,6 +209,38 @@ def assert_fixpoint(value) -> bytes:
     return first
 
 
+def coerce_canonical(value):
+    """Make an opaque venue payload canonically representable. Lossless on floats.
+
+    `canonical_bytes` refuses `float` and that refusal is right: a float written
+    bare and re-read as `Decimal` re-serialises differently, so the digest could
+    never match. But `json.loads` produces a float for every fractional number
+    the venue sends, so the refusal fired on ORDINARY traffic — the writer
+    caught the error, booked the event as dropped-after-acceptance, and the
+    segment still committed as `close_status: "clean"`. The producer was told
+    the event was accepted and it never reached the archive.
+
+    Refusing at the digest layer and coercing at the ingress boundary is the
+    combination that holds: `repr()` of a Python float round-trips exactly, so
+    `Decimal(repr(f))` preserves the value and lands on stable canonical text.
+    Only the opaque venue payloads go through here; the pinned envelope columns
+    stay strictly typed.
+    """
+    if isinstance(value, bool) or value is None:
+        return value
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            raise CanonicalError(
+                f"{value!r} is not a value; NaN and Infinity are not JSON and "
+                "cannot be evidence")
+        return Decimal(repr(value))
+    if isinstance(value, Mapping):
+        return {k: coerce_canonical(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [coerce_canonical(v) for v in value]
+    return value
+
+
 def is_canonical_decimal_text(text: str) -> bool:
     return isinstance(text, str) and bool(_DECIMAL_TEXT_RE.match(text))
 

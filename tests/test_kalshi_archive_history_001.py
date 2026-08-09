@@ -430,14 +430,99 @@ class TestReview1Regressions:
         build_archive(tmp_path, segments=("A", "B", "C"))
         shutil.rmtree(seg_dir(tmp_path, "C"))
         sg.head_path(tmp_path, ENV).unlink()
-        for name in ("A", "B"):
-            m = cn.parse_canonical(
-                (seg_dir(tmp_path, name) / sg.MANIFEST_FILENAME).read_bytes())
-            sg.commit_segment_to_head(tmp_path, ENV,
-                                      archive_identity="kalshi-realtime",
-                                      manifest=m)
+        with pytest.raises(sg.ArchiveHeadError, match="retained history log"):
+            for name in ("A", "B"):
+                m = cn.parse_canonical(
+                    (seg_dir(tmp_path, name) / sg.MANIFEST_FILENAME).read_bytes())
+                sg.commit_segment_to_head(tmp_path, ENV,
+                                          archive_identity="kalshi-realtime",
+                                          manifest=m)
         out = verdict(tmp_path)
         assert out["verdict"] == "INVALID", "head rebuild by discovery survived"
+
+    @pytest.mark.parametrize("victim", ["A", "B", "C"])
+    def test_h1_rebuild_with_the_log_ALSO_deleted_is_refused(self, tmp_path, victim):
+        """The attack the two regressions above encode the attacker forgetting.
+
+        Both of them left `archive-head.log` in place, so both passed while one
+        additional `rm` defeated them: delete the head AND the log, replay
+        `commit_segment_to_head` over the surviving manifests, and the archive
+        verified VALID with a segment missing — `records_expected` silently
+        dropping from 100 to 75 — without recomputing a single record digest,
+        chain link or manifest digest. Rewriting two files was the whole attack,
+        and it used the exported commit function rather than forging anything.
+        """
+        build_archive(tmp_path, segments=("A", "B", "C"))
+        shutil.rmtree(seg_dir(tmp_path, victim))
+        env_dir = sg.head_path(tmp_path, ENV).parent
+        sg.head_path(tmp_path, ENV).unlink()
+        (env_dir / sg.ARCHIVE_HEAD_LOG_FILENAME).unlink()
+        survivors = [n for n in ("A", "B", "C") if n != victim]
+        with pytest.raises(sg.ArchiveHeadError, match="already committed on disk"):
+            for name in survivors:
+                m = cn.parse_canonical(
+                    (seg_dir(tmp_path, name) / sg.MANIFEST_FILENAME).read_bytes())
+                sg.commit_segment_to_head(tmp_path, ENV,
+                                          archive_identity="kalshi-realtime",
+                                          manifest=m)
+        assert verdict(tmp_path)["verdict"] == "INVALID", \
+            "head rebuild by discovery survived"
+
+    def test_h1_substituting_a_fabricated_segment_is_refused(self, tmp_path):
+        """The same rebuild, but the deleted segment is REPLACED by a forgery.
+
+        `read_verified()` served 80 records of which 5 were fabricated, as
+        canonical evidence, with the archive reporting VALID.
+        """
+        build_archive(tmp_path, segments=("A", "B", "C"))
+        shutil.rmtree(seg_dir(tmp_path, "B"))
+        forged = sg.SegmentWriter(
+            tmp_path, environment=ENV, segment_id="kalshi.seg-B",
+            partition_identity="venue=kalshi/date=2026-08-08/hour=B",
+            subscription_metadata={"venue": "kalshi"}, commit_to_head=False)
+        for i in range(99):
+            forged.submit(fields(i))
+        forged.close()
+        env_dir = sg.head_path(tmp_path, ENV).parent
+        sg.head_path(tmp_path, ENV).unlink()
+        (env_dir / sg.ARCHIVE_HEAD_LOG_FILENAME).unlink()
+        with pytest.raises(sg.ArchiveHeadError, match="already committed on disk"):
+            for name in ("A", "B", "C"):
+                m = cn.parse_canonical(
+                    (seg_dir(tmp_path, name) / sg.MANIFEST_FILENAME).read_bytes())
+                sg.commit_segment_to_head(tmp_path, ENV,
+                                          archive_identity="kalshi-realtime",
+                                          manifest=m)
+        assert verdict(tmp_path)["verdict"] == "INVALID"
+
+    def test_h1_torn_commit_is_repairable_and_not_called_tampering(self, tmp_path):
+        """Crash between the log append and the head rename.
+
+        Three reviewers found the previous ordering independently: the log was
+        appended AFTER the rename, so an ordinary SIGKILL — or a plain ENOSPC
+        on the log — left the head ahead of the log and the verifier called
+        intact evidence HEAD_ROLLBACK. Permanently, because the head is
+        immutable and the retry hit the duplicate-segment guard. A false
+        accusation of tampering is the one thing this cannot afford.
+        """
+        build_archive(tmp_path, segments=("A", "B"))
+        head_before = sg.head_path(tmp_path, ENV).read_bytes()
+        build_archive(tmp_path, segments=("C",))
+        # Roll the head back to before C: the log is now one entry ahead, which
+        # is exactly the on-disk state a crash between the two steps leaves.
+        sg.head_path(tmp_path, ENV).write_bytes(head_before)
+        out = verdict(tmp_path)
+        assert out["verdict"] == "INVALID"
+        assert any("HEAD_COMMIT_INCOMPLETE" in r for r in out["reasons"]), out["reasons"]
+        assert not any("HEAD_ROLLBACK" in r for r in out["reasons"]), out["reasons"]
+        # And it is REPAIRABLE, which the previous ordering never was: re-run
+        # the commit to roll the head forward. The log append is idempotent on
+        # head_digest, so the entry is not duplicated.
+        m = cn.parse_canonical(
+            (seg_dir(tmp_path, "C") / sg.MANIFEST_FILENAME).read_bytes())
+        sg.commit_segment_to_head(tmp_path, ENV,
+                                  archive_identity="kalshi-realtime", manifest=m)
+        assert verdict(tmp_path)["verdict"] == "VALID"
 
     def test_m2_head_entry_facts_must_agree_with_the_manifest(self, archive):
         head = sg.read_head(archive, ENV)
@@ -463,3 +548,171 @@ class TestReview1Regressions:
         out = verdict(archive)
         assert out["verdict"] == "INVALID"
         assert any("undeclared" in r for r in out["reasons"])
+
+
+# --- Final review round: the three reviewers' remaining findings -------------------
+class TestFinalRoundRegressions:
+    """One test per demonstrated defect from the final independent review round.
+
+    Every one of these reproduced against the previous revision. They are here
+    because the fix is only worth as much as the falsification that motivated it.
+    """
+
+    # -- Review 3 B-1 / Review 1 MED-2: containment on the VERIFY side -------------
+    @pytest.mark.parametrize("victim", ["events.jsonl.gz", "manifest.json"])
+    def test_a_symlinked_segment_artifact_is_not_certified_valid(
+            self, tmp_path, victim):
+        """`assert_contained` had three call sites, all on the write side.
+
+        The write side refusing a symlink says nothing about the file a reader
+        is handed later. Planting the link after the writer had gone put the
+        evidence outside the root and `verify_archive` returned VALID with no
+        reasons at all.
+        """
+        build_archive(tmp_path, segments=("A", "B"))
+        outside = tmp_path.parent / f"outside-{victim}"
+        target = seg_dir(tmp_path, "B") / victim
+        shutil.move(str(target), str(outside))
+        target.symlink_to(outside)
+        out = verdict(tmp_path)
+        assert out["verdict"] == "INVALID", f"{victim} escaped the root"
+        assert any("bounded by the archive root" in r for r in out["reasons"]), \
+            out["reasons"]
+
+    def test_a_symlinked_head_log_is_not_certified_valid(self, tmp_path):
+        """`read_head` guarded the head; `_verify_head_against_log` read the log
+        with a bare `read_bytes()`. The log is the ONLY anti-rollback control."""
+        build_archive(tmp_path, segments=("A", "B"))
+        env_dir = sg.head_path(tmp_path, ENV).parent
+        log = env_dir / sg.ARCHIVE_HEAD_LOG_FILENAME
+        outside = tmp_path.parent / "outside-head.log"
+        shutil.move(str(log), str(outside))
+        log.symlink_to(outside)
+        out = verdict(tmp_path)
+        assert out["verdict"] == "INVALID"
+        assert any("bounded by the archive root" in r for r in out["reasons"]), \
+            out["reasons"]
+
+    # -- Review 1 HI-1 / Review 2 B2-5: a live collector is not a tamper alarm -----
+    def test_a_segment_still_being_written_does_not_invalidate_the_archive(
+            self, tmp_path):
+        """The NORMAL state of a running collector: one closed hour, one open.
+
+        This reported INVALID with `ORPHANED_COMMITTED_SEGMENT` — the grafting
+        reason — and `read_verified()` refused the hour that WAS committed, so
+        the archive was unreadable through its own canonical API for as long as
+        it was collecting, and the single tamper signal fired continuously.
+        """
+        build_archive(tmp_path, segments=("A",))
+        live = sg.SegmentWriter(
+            tmp_path, environment=ENV, segment_id="kalshi.seg-LIVE",
+            partition_identity="venue=kalshi/date=2026-08-08/hour=LIVE",
+            subscription_metadata={"venue": "kalshi"})
+        try:
+            for i in range(3):
+                assert live.submit(fields(i)) is None
+            out = verdict(tmp_path)
+            assert out["verdict"] == "VALID", out["reasons"]
+            assert out["uncommitted_open_segments"] == ["kalshi.seg-LIVE"]
+            assert out["orphaned_committed_segments"] == []
+            store = ar.EventArchive(tmp_path, environment=ENV, venue="kalshi")
+            assert len(store.read_verified()) == 4
+        finally:
+            live.close()
+
+    def test_a_crashed_segment_is_ABANDONED_not_orphaned(self, tmp_path):
+        """No commit record and no live writer is the residue of a crash, and
+        it is a different event from a graft. One alarm for four states meant an
+        operator could not tell 'adopt this' from 'delete this'."""
+        build_archive(tmp_path, segments=("A",))
+        crashed = seg_dir(tmp_path, "A").parent / "segment=kalshi.seg-DEAD"
+        crashed.mkdir()
+        (crashed / sg.EVENTS_FILENAME).write_bytes(b"\x1f\x8b\x08\x00truncated")
+        out = verdict(tmp_path)
+        assert out["verdict"] == "INVALID"
+        assert out["abandoned_segments"] == ["kalshi.seg-DEAD"]
+        assert any("ABANDONED_SEGMENT" in r for r in out["reasons"]), out["reasons"]
+
+    # -- Review 1 MED-1: a verifier must always return a verdict -------------------
+    @pytest.mark.parametrize("segments", [["x"], {"a": 1}, [None], [[]]])
+    def test_a_malformed_head_segment_list_returns_a_verdict(self, archive, segments):
+        """`head["segments"] = ["x"]` raised AttributeError out of the middle of
+        the walk, `read_verified()` propagated it, and the CLI — catching only
+        (ArchiveError, OSError) — turned corruption into a traceback."""
+        head = sg.read_head(archive, ENV)
+        head["segments"] = segments
+        head["head_digest"] = cn.digest_hex({k: head[k] for k in sg.HEAD_FIELDS})
+        sg.head_path(archive, ENV).write_bytes(cn.canonical_bytes(head))
+        out = verdict(archive)
+        assert out["verdict"] == "INVALID"
+
+    @pytest.mark.parametrize("payload", [b"[]\n", b"null\n", b"not json\n"])
+    def test_a_malformed_head_log_line_returns_a_verdict(self, archive, payload):
+        log = sg.head_path(archive, ENV).parent / sg.ARCHIVE_HEAD_LOG_FILENAME
+        log.write_bytes(payload + log.read_bytes())
+        out = verdict(archive)
+        assert out["verdict"] == "INVALID"
+
+    def test_a_torn_final_log_line_is_a_torn_append_not_an_edit(self, archive):
+        """A partial final line is the tail of the same crash the write-ahead
+        ordering exists to survive; a malformed INTERIOR line is an edit."""
+        log = sg.head_path(archive, ENV).parent / sg.ARCHIVE_HEAD_LOG_FILENAME
+        with open(log, "ab") as fh:
+            fh.write(b'{"generation": 4, "head_di')
+        out = verdict(archive)
+        assert out["verdict"] == "VALID", out["reasons"]
+
+    # -- Review 1 MED-3: the manifest envelope is closed ---------------------------
+    def test_an_undeclared_manifest_field_is_refused(self, archive):
+        """`manifest_digest` covers a fixed field list, so an arbitrary key sat
+        outside every digest and every head commitment and still verified."""
+        path = seg_dir(archive, "A") / sg.MANIFEST_FILENAME
+        manifest = cn.parse_canonical(path.read_bytes())
+        manifest["operator_note"] = "adopted from backup"
+        manifest["manifest_digest"] = cn.digest_hex(
+            {k: manifest[k] for k in sg.MANIFEST_FIELDS})
+        path.write_bytes(cn.canonical_bytes(manifest))
+        v = sg.verify_segment(seg_dir(archive, "A"), environment=ENV)
+        assert not v.valid
+        assert any("undeclared top-level field" in r for r in v.reasons), v.reasons
+
+    # -- Review 1 MED-5: previous_segment_digest is not a usable trap --------------
+    def test_a_populated_previous_segment_digest_is_refused(self, archive):
+        path = seg_dir(archive, "B") / sg.MANIFEST_FILENAME
+        manifest = cn.parse_canonical(path.read_bytes())
+        manifest["previous_segment_digest"] = "de" * 32
+        manifest["manifest_digest"] = cn.digest_hex(
+            {k: manifest[k] for k in sg.MANIFEST_FIELDS})
+        path.write_bytes(cn.canonical_bytes(manifest))
+        v = sg.verify_segment(seg_dir(archive, "B"), environment=ENV)
+        assert not v.valid
+        assert any("previous_segment_digest" in r for r in v.reasons), v.reasons
+
+    def test_the_writer_no_longer_accepts_a_predecessor_argument(self):
+        import inspect
+        params = inspect.signature(sg.SegmentWriter.__init__).parameters
+        assert "previous_segment_digest" not in params
+
+    # -- Review 1 MED-4: read order is COMMITTED order -----------------------------
+    def test_records_are_read_in_committed_order_not_directory_order(self, tmp_path):
+        """Verification walked the head; reading walked sorted(glob(...)). Two
+        traversal rules merely intended to agree is the pattern this milestone
+        exists to remove."""
+        for name in ("Z-late", "A-early"):        # committed Z first, sorts last
+            w = sg.SegmentWriter(
+                tmp_path, environment=ENV, segment_id=f"kalshi.seg-{name}",
+                partition_identity=f"venue=kalshi/date=2026-08-08/hour={name}",
+                subscription_metadata={"venue": "kalshi"})
+            for i in range(2):
+                f = fields(i, ticker=name)
+                # `_read_records` returns each record's normalized_event, so
+                # the marker has to live there to survive the read.
+                f["normalized_event"] = {"raw_price_units": 5100, "segment": name}
+                w.submit(f)
+            w.close()
+        head = sg.read_head(tmp_path, ENV)
+        committed = [e["segment_id"] for e in head["segments"]]
+        assert committed == ["kalshi.seg-Z-late", "kalshi.seg-A-early"]
+        store = ar.EventArchive(tmp_path, environment=ENV, venue="kalshi")
+        seen = [r.get("segment") for r in store.read_verified()]
+        assert seen == ["Z-late", "Z-late", "A-early", "A-early"], seen

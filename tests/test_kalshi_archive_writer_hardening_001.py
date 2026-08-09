@@ -107,13 +107,20 @@ class TestBackpressure:
     def test_backpressure_relieves_and_later_submissions_succeed(self, tmp_path):
         """Saturate, then let the writer catch up: the archive must keep working
         rather than staying wedged."""
+        # Block the writer on an Event rather than racing it with a sleep. The
+        # sleep version let the writer drain both queue slots inside one
+        # enqueue timeout, so whether backpressure occurred at all was a coin
+        # flip — it failed 5 runs in 15 standalone. A test that only sometimes
+        # exercises the condition it names is not evidence either way.
         w = writer(tmp_path, queue_maxsize=2, enqueue_timeout_s=0.01)
-        slow = {"on": True}
-        w.pre_write_hook = lambda _w: time.sleep(0.004 if slow["on"] else 0)
+        gate = threading.Event()
+        w.pre_write_hook = lambda _w: gate.wait(5)
         first = [w.submit(fields(i)) for i in range(120)]
         assert any(r is not None for r in first), "no backpressure was induced"
-        slow["on"] = False
-        time.sleep(0.4)                                   # writer catches up
+        gate.set()
+        deadline = time.monotonic() + 5
+        while w._queue.qsize() and time.monotonic() < deadline:
+            time.sleep(0.005)                             # writer catches up
         later = [w.submit(fields(1000 + i)) for i in range(20)]
         assert any(r is None for r in later), "writer never recovered"
         w.close()
@@ -276,10 +283,46 @@ class TestWriterFailure:
         assert w.submit(bad) is None            # accepted into the queue
         for i in range(3):
             w.submit(fields(i + 10))
-        w.close()
+        # The writer survives — that half of the contract was right. What was
+        # wrong is what close() then did: `rejected_after_accept` sat on the
+        # CREDIT side of the reconciliation identity, so this segment published
+        # `close_status: "clean"` with `lossless() == True` and the archive
+        # verified VALID while an event the producer had been told was accepted
+        # was missing. Lost-but-reported-clean is exactly what the accounting
+        # model forbids, and the manifest carries no accounting at all, so
+        # nothing durable could ever have recorded the drop.
+        with pytest.raises(sg.SegmentError, match="accepted from a producer"):
+            w.close()
         assert w.accounting.rejections.get("serialization_failure") == 1
         assert w.accounting.reconciles(), w.accounting.to_dict()
-        assert sg.verify_segment(w.dir, environment=ENV).valid
+        assert w.accounting.rejected_after_accept == 1
+        assert not w.manifest_path.exists(), "a dropped event was published clean"
+
+    def test_an_ordinary_venue_float_is_not_dropped_after_acceptance(self, tmp_path):
+        """The root cause: refusing floats is right, but venue JSON is full of them.
+
+        `json.loads` yields a float for every fractional number Kalshi sends, so
+        the canonical refusal fired on ORDINARY traffic. Coercing at the ingress
+        boundary and refusing at the digest layer is the combination that holds.
+        """
+        from app.realtime import archive as ar
+
+        store = ar.EventArchive(tmp_path, environment=ENV, venue="kalshi")
+        stamp = cn.canonical_datetime(NOW)
+        env = ar.EventEnvelope(
+            schema_version=1, venue="kalshi", environment=ENV, channel="ticker",
+            event_type="ticker", market_ticker="KXA", market_id="KXA", sid=4,
+            seq=1, venue_time=stamp, collector_receive_time=stamp,
+            normalization_time=stamp, receive_monotonic_ns=1_000_000,
+            normalize_monotonic_ns=1_000_100, data_age_us=100,
+            implementation_version="test",
+            raw={"price": 0.51, "depth": [{"p": 1.25}], "ts": 1786150148065},
+            normalized={"raw_price_units": 5100})
+        store.append(env)
+        manifests = store.close()
+        seg = next(iter(manifests.values()))
+        assert seg["record_count"] == 1, "an ordinary venue float was dropped"
+        assert sg.verify_archive(tmp_path, environment=ENV)["verdict"] == "VALID"
 
     def test_no_replacement_writer_is_started_behind_the_caller(self, tmp_path):
         w = writer(tmp_path)
@@ -299,7 +342,7 @@ class TestWriterFailure:
 class TestExclusiveOwnership:
     def test_second_writer_same_process_fails_loudly(self, tmp_path):
         a = writer(tmp_path)
-        with pytest.raises(sg.SegmentError, match="already has a writer"):
+        with pytest.raises(sg.SegmentError, match="already has a LIVE writer"):
             writer(tmp_path)
         assert a.healthy, "the incumbent must stay healthy"
         a.close()
@@ -331,7 +374,7 @@ class TestExclusiveOwnership:
         r = subprocess.run([sys.executable, "-c", code], capture_output=True,
                            text=True, cwd=str(Path(sg.__file__).parents[2]))
         assert r.returncode != 0
-        assert "already has a writer" in r.stderr
+        assert "already has a LIVE writer" in r.stderr
         assert a.healthy
         a.close()
 
@@ -341,7 +384,7 @@ class TestExclusiveOwnership:
         alias = tmp_path / "sub" / ".."
         alias.parent.mkdir(exist_ok=True)
         for spelling in (str(tmp_path) + "/", str(alias), str(tmp_path.resolve())):
-            with pytest.raises(sg.SegmentError, match="already has a writer"):
+            with pytest.raises(sg.SegmentError, match="already has a LIVE writer"):
                 sg.SegmentWriter(spelling, environment=ENV, segment_id="seg-hard",
                                  partition_identity="p")
         a.close()

@@ -32,6 +32,7 @@ from app.realtime.segment import (
     EVENTS_FILENAME,
     MANIFEST_FILENAME,
     SegmentWriter,
+    read_head,
     read_segment_records,
     verify_archive,
     verify_chain,
@@ -40,6 +41,7 @@ from app.realtime.canonical import (
     CANONICAL_SCHEMA_VERSION,
     parse_canonical_datetime,
     canonical_bytes,
+    coerce_canonical,
     digest_hex,
     parse_canonical,
 )
@@ -218,8 +220,12 @@ class EventArchive:
             "seq": raw.get("seq"),
             "received_at_utc": raw.get("collector_receive_time"),
             "received_monotonic_ns": raw.get("receive_monotonic_ns"),
-            "raw_event": raw.get("raw"),
-            "normalized_event": raw,
+            # The two opaque venue payloads are coerced; every pinned column
+            # above stays strictly typed. A fractional number anywhere in a
+            # Kalshi frame arrives as a float and would otherwise be dropped
+            # AFTER the producer had been told the event was accepted.
+            "raw_event": coerce_canonical(raw.get("raw")),
+            "normalized_event": coerce_canonical(raw),
         })
         if reason is not None:
             raise ArchiveError(f"event rejected by the writer: {reason.value}")
@@ -232,10 +238,26 @@ class EventArchive:
         This is the commit point. Until it runs there is no authoritative
         record count, and an unclosed segment is explicitly not evidence.
         """
-        manifests = {}
+        # Every writer gets its own attempt. This loop used to be unguarded, so
+        # one transient error on one hour discarded the commit of every other
+        # hour: fully written, healthy evidence in three other partitions was
+        # left OPEN with its lock still held and no manifest, and a second
+        # close() re-raised the FIRST writer's error forever. One failure must
+        # not decide the fate of unrelated evidence.
+        manifests, failures = {}, {}
         for seg_id, writer in list(self._writers.items()):
-            manifests[seg_id] = writer.close()
+            try:
+                manifests[seg_id] = writer.close()
+            except Exception as exc:            # noqa: BLE001 - aggregated below
+                failures[seg_id] = exc
         self._closed = True
+        self.close_failures = failures
+        if failures:
+            raise ArchiveError(
+                f"{len(failures)} of {len(failures) + len(manifests)} segment(s) "
+                f"failed to close: "
+                f"{ {k: repr(v) for k, v in failures.items()} }; the remaining "
+                f"{len(manifests)} were committed")
         return manifests
 
     # -- evidence location (for operators and corruption tests) ----------------
@@ -283,6 +305,24 @@ class EventArchive:
         """
         return self._read_records()
 
+    def _committed_segment_dirs(self) -> list:
+        """Segment directories in the order the archive head committed them."""
+        env_root = self.root / f"env={self.environment}"
+        try:
+            head = read_head(self.root, self.environment)
+        except Exception:                     # noqa: BLE001 - verified elsewhere
+            head = None
+        if not isinstance(head, dict) or not isinstance(head.get("segments"), list):
+            return self._segment_dirs()
+        ordered = []
+        for entry in head["segments"]:
+            if not isinstance(entry, dict):
+                continue
+            d = env_root / f"segment={entry.get('segment_id')}"
+            if d.is_dir() and not d.is_symlink():
+                ordered.append(d)
+        return ordered
+
     def read_all(self) -> list:
         """Deprecated alias for `read_verified`. Fails closed like it does."""
         return self.read_verified()
@@ -295,7 +335,13 @@ class EventArchive:
         evidence is the thing this milestone exists to remove.
         """
         out, truncated, foreign, tampered = [], 0, 0, []
-        for directory in self._segment_dirs():
+        # Read in COMMITTED order, not in directory-name order. Verification
+        # walked `head["segments"]` while reading walked `sorted(glob(...))`,
+        # so a segment committed out of lexical order — reachable whenever the
+        # first event for a later partition arrives first — verified in one
+        # order and was replayed in another. Two traversal rules merely
+        # intended to agree is the pattern this milestone exists to remove.
+        for directory in self._committed_segment_dirs():
             events_path = directory / EVENTS_FILENAME
             records = read_segment_records(events_path)
             seg_id = directory.name.split("segment=", 1)[-1]

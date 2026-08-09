@@ -129,20 +129,69 @@ def assert_contained(root: Path, target: Path) -> Path:
     manifest and the authoritative head outside the configured root while
     verification still reported VALID — the archive root stopped bounding the
     evidence.
+
+    The target is matched against the root BOTH as given and as resolved. A
+    caller that passes an unresolved root (`/tmp/...` on macOS, or the kind of
+    symlinked `BACKUP_DIR` an operator actually configures) previously got a
+    bare `ValueError` out of `relative_to` — raised from the orphan repair
+    path, which is the one route out of a crash between manifest publish and
+    head commit.
+
+    This is a path-based check, not `openat` on a pinned dirfd: a component
+    swapped between here and the subsequent open is NOT prevented. Verification
+    catches such a swap afterwards, so the property is tamper-EVIDENT, not
+    race-free, and it is stated that way deliberately.
     """
-    root = Path(root).resolve()
-    parts = Path(target).relative_to(root).parts
-    current = root
-    for part in parts:
+    root_raw = Path(root)
+    root_res = root_raw.resolve()
+    target = Path(target)
+    # Three spellings, because callers legitimately mix them: the root as
+    # configured, the root resolved, and a target reached through a symlinked
+    # ancestor of the root itself (macOS `/tmp` and `/var` are symlinks, and a
+    # symlinked BACKUP_DIR is an ordinary operator choice). Resolving the
+    # target does not weaken the check — containment is decided here, and the
+    # component walk below still runs against the real path.
+    for candidate, base in ((target, root_raw), (target, root_res),
+                            (target.resolve() if target.exists() else target,
+                             root_res)):
+        try:
+            parts = candidate.relative_to(base).parts
+            break
+        except ValueError:
+            continue
+    else:
+        raise SegmentError(f"{target} is outside the archive root {root_raw}")
+    current = root_res
+    last = len(parts) - 1
+    for i, part in enumerate(parts):
         current = current / part
         if current.is_symlink():
             raise SegmentError(
                 f"{current} is a symlink; no path component between the "
                 "archive root and its segments may be a link, or the root "
                 "stops bounding the evidence")
-        if current.exists() and not current.is_dir() and current != Path(target):
+        if i != last and current.exists() and not current.is_dir():
             raise SegmentError(f"{current} is not a directory")
-    return Path(target)
+    return target
+
+
+def containment_reason(root, target) -> str | None:
+    """`assert_contained` as a verification reason rather than an exception.
+
+    The verify side had NO containment check at all. `assert_contained` existed
+    and was called three times, every one of them on the write side, so a
+    symlink planted at `events.jsonl.gz`, `manifest.json` or `archive-head.log`
+    AFTER the writer finished put the evidence outside the root while
+    `verify_archive` still returned VALID with no reasons. Content digests
+    still caught edits to the external target, but the root had stopped
+    bounding the bytes — which is the property backup, retention and permission
+    controls are scoped to.
+    """
+    try:
+        assert_contained(root, target)
+    except SegmentError as exc:
+        return str(exc)
+    return None
 
 
 class SegmentError(RuntimeError):
@@ -151,6 +200,25 @@ class SegmentError(RuntimeError):
 
 class RecordSchemaError(SegmentError):
     """A record that cannot be trusted to mean what it says."""
+
+
+class DurabilityNotProvenError(SegmentError):
+    """The rename landed; the directory fsync that would prove it did not.
+
+    A distinct type because the recovery story is materially different and the
+    operator has to be able to tell. Before the rename, the artifact does not
+    exist and there is nothing to reconcile. After the rename but before the
+    directory fsync, a reader TODAY sees a committed artifact that may not
+    survive a power loss — the bytes are in place, their durability is not
+    proven.
+
+    Both cases previously raised `SegmentError("manifest publication failed:
+    OSError(28, ...)")`, byte-identical at the same errno. The only carrier of
+    the distinction was `failed_stage`, an in-RAM attribute that dies with the
+    process and appears in no exception, no log and no file — so the
+    distinction the design claimed to make was unavailable to the operator who
+    needed it. The test asserting it asserted something else.
+    """
 
 
 class SegmentState(str, Enum):
@@ -488,7 +556,7 @@ class SegmentWriter:
     def __init__(self, root, *, environment: str, segment_id: str,
                  partition_identity: str, subscription_metadata: dict | None = None,
                  queue_maxsize: int = 10_000, enqueue_timeout_s: float = 1.0,
-                 flush_every: int = 256, previous_segment_digest: str | None = None,
+                 flush_every: int = 256,
                  archive_identity: str = "kalshi-realtime",
                  commit_to_head: bool = True):
         if environment not in _ENVIRONMENTS:
@@ -510,7 +578,10 @@ class SegmentWriter:
         #
         # Ordering now lives ONLY in the head entry, resolved at commit time
         # under the head lock, where the order is actually decided.
-        self.previous_segment_digest = previous_segment_digest
+        # Not a parameter any more. A constructor argument that is written into
+        # the commit record and checked by nothing is a trap: the next caller to
+        # pass it will believe it means something.
+        self.previous_segment_digest = None
         self.root = Path(root).resolve()
         self.dir = (self.root / f"env={environment}" / f"segment={self.segment_id}")
         self.events_path = self.dir / EVENTS_FILENAME
@@ -543,6 +614,9 @@ class SegmentWriter:
         # event accepted into a queue nobody would drain — and close() then
         # published close_status "clean" over the loss.
         self._admission = threading.Lock()
+        # Producers blocked on a full queue, counted under `_admission`. close()
+        # waits for this to reach zero so a put in flight is never stranded.
+        self._pending_waiters = 0
         self.queue_high_water = 0
         # Injection seams. Production leaves both None; tests use them to slow
         # the writer or fail a specific durability stage without weakening the
@@ -568,21 +642,28 @@ class SegmentWriter:
         # archive destroyed 719 of 720 records — and a second owner must fail
         # LOUDLY here rather than interleave gzip members and be discovered
         # later by a reader that can no longer tell what was lost.
+        # Ownership is held by an flock ON TOP OF the lock file, not by the
+        # file's mere existence. An O_EXCL file does not survive its owner:
+        # after a SIGKILL the file remained, nothing read the pid inside it, and
+        # every later process was refused — so a collector that died at 12:07
+        # could not write another byte to the 12:00 partition for the rest of
+        # the hour, and `append()` raised on every event. The kernel drops an
+        # flock when the holding process dies, which makes "stale" and "live"
+        # distinguishable instead of identical. `_head_lock` two hundred lines
+        # below already did it this way.
         self._lock_path = self.dir / "writer.lock"
-        try:
-            self._lock_fd = os.open(
-                self._lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-            os.write(self._lock_fd, f"{os.getpid()}\n".encode())
-            os.fsync(self._lock_fd)
-        except FileExistsError:
-            raise SegmentError(
-                f"segment {self.segment_id!r} already has a writer "
-                f"({self._lock_path} exists). A segment has exactly one owner; "
-                "concurrent appenders interleave gzip members and destroy the "
-                "file. Producers share one writer through its queue.") from None
+        self._acquire_ownership()
+        # An abandoned events file with no manifest is the residue of a crash.
+        # Appending to it opened a SECOND gzip member behind an unterminated
+        # first one and destroyed the records that were still recoverable —
+        # 2000 readable records became 1058, and on a small segment 6 became 0.
+        # The prior round's claimed "tombstone" did not exist in the code.
         # O_NOFOLLOW for the same reason as the manifest temp: a symlinked
         # events file would append gzip members into an arbitrary victim file.
+        # Both steps are inside the guard: ownership must not leak when
+        # construction fails after the lock was taken.
         try:
+            self._quarantine_abandoned_events()
             self._open_events()
         except BaseException:
             self._release_lock()
@@ -591,6 +672,62 @@ class SegmentWriter:
         self._thread = threading.Thread(target=self._run, name="archive-writer",
                                         daemon=True)
         self._thread.start()
+
+    def _acquire_ownership(self) -> None:
+        """One segment, one live writer — enforced by the kernel, not by a file.
+
+        Six processes each opening their own descriptor on one segment is
+        precisely how the original archive destroyed 719 of 720 records. A
+        second LIVE owner must fail loudly here rather than interleave gzip
+        members and be discovered later by a reader that can no longer tell
+        what was lost. A DEAD owner must not brick the partition forever.
+        """
+        fd = os.open(self._lock_path,
+                     os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC,
+                     0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(fd)
+            raise SegmentError(
+                f"segment {self.segment_id!r} already has a LIVE writer "
+                f"({self._lock_path} is flocked by a running process). A "
+                "segment has exactly one owner; concurrent appenders interleave "
+                "gzip members and destroy the file. Producers share one writer "
+                "through its queue.") from None
+        self._lock_fd = fd
+        try:
+            os.ftruncate(fd, 0)
+            write_all(fd, f"{os.getpid()}\n".encode())
+            os.fsync(fd)
+        except OSError:
+            # The lock is what confers ownership; the pid inside it is a
+            # diagnostic. Failing to record the diagnostic is not a reason to
+            # refuse to write evidence.
+            pass
+
+    def _quarantine_abandoned_events(self) -> None:
+        if self.manifest_path.exists():
+            return
+        # Refuse a symlink BEFORE touching it. Quarantining first would rename
+        # the link out of the way and then open a fresh real file, turning the
+        # symlink refusal into a silent success.
+        if os.path.islink(self.events_path):
+            raise SegmentError(
+                f"{self.events_path} is a symlink; refusing to write evidence "
+                "through it")
+        try:
+            if not self.events_path.exists() or self.events_path.stat().st_size == 0:
+                return
+        except OSError:
+            return
+        stamp = canonical_datetime(datetime.now(timezone.utc)).replace(":", "")
+        target = self.events_path.with_name(
+            f"{EVENTS_FILENAME}.abandoned.{stamp}")
+        os.replace(self.events_path, target)
+        self.quarantined_events_path = target
+
+    quarantined_events_path: Path | None = None
 
     def _open_events(self) -> None:
         if os.path.islink(self.events_path):
@@ -637,25 +774,50 @@ class SegmentWriter:
             with self._lock:
                 self.accounting.reject(RejectReason.SEGMENT_NOT_OPEN)
             return RejectReason.SEGMENT_NOT_OPEN
-        try:
-            # Admission: re-check state and put under one lock, so "accepted"
-            # and "will be drained" cannot come apart.
-            with self._admission:
-                if self._shutdown.is_set() or self.state is not SegmentState.OPEN:
-                    with self._lock:
-                        self.accounting.reject(RejectReason.SHUTDOWN_IN_PROGRESS)
-                    return RejectReason.SHUTDOWN_IN_PROGRESS
-                self._queue.put(envelope_fields, timeout=self._enqueue_timeout)
+        # Admission: re-check state and enqueue under one lock, so "accepted"
+        # and "will be drained" cannot come apart. The lock is held for a
+        # NON-BLOCKING put only. Holding it across the timed put serialised the
+        # producers behind each other's full timeouts — 8 producers at a 0.5s
+        # timeout measured 4.58s per submit, and close() waited 4.55s before it
+        # could even declare CLOSING. Bounded backpressure that scales with the
+        # number of producers is not bounded.
+        with self._admission:
+            if self._shutdown.is_set() or self.state is not SegmentState.OPEN:
+                with self._lock:
+                    self.accounting.reject(RejectReason.SHUTDOWN_IN_PROGRESS)
+                return RejectReason.SHUTDOWN_IN_PROGRESS
+            try:
+                self._queue.put_nowait(envelope_fields)
+            except queue.Full:
+                self._pending_waiters += 1
+            else:
                 with self._lock:
                     self.accounting.accepted += 1
-            depth = self._queue.qsize()
-            if depth > self.queue_high_water:
-                self.queue_high_water = depth
+                self._note_depth()
+                return None
+        # Queue full: wait OUTSIDE the admission gate. close() cannot finish
+        # while `_pending_waiters` is non-zero, so a producer blocked here still
+        # cannot be accepted into a queue nobody will drain.
+        try:
+            self._queue.put(envelope_fields, timeout=self._enqueue_timeout)
         except queue.Full:
+            with self._admission:
+                self._pending_waiters -= 1
             with self._lock:
                 self.accounting.reject(RejectReason.ENQUEUE_TIMEOUT)
             return RejectReason.ENQUEUE_TIMEOUT
+        with self._admission:
+            self._pending_waiters -= 1
+            with self._lock:
+                self.accounting.accepted += 1
+        self._note_depth()
         return None
+
+    def _note_depth(self) -> None:
+        with self._lock:
+            depth = self._queue.qsize()
+            if depth > self.queue_high_water:
+                self.queue_high_water = depth
 
     # -- writer side -----------------------------------------------------------
     def _run(self) -> None:
@@ -721,14 +883,45 @@ class SegmentWriter:
             if self.state is SegmentState.CLOSED:
                 return self.read_manifest()
             if self.state is SegmentState.INVALID:
+                # Seal the accounting FIRST. This branch short-circuited before
+                # the drain loop ever ran, so a writer-thread failure left every
+                # still-queued event — 197 of 200 in the reviewer's probe — in
+                # no terminal state at all, and whether it did depended on a
+                # race between two lines in `_run`. The most important failure
+                # mode had nondeterministic accounting.
+                self._seal_accounting()
                 # Release here too. This is the path a mid-stream writer error
                 # takes, and it was the one path still leaking ownership —
                 # leaving the partition unwritable by every future process.
                 self._release_lock()
                 raise SegmentError(
                     f"segment is INVALID and cannot be closed: "
-                    f"{self._writer_error!r}")
+                    f"{self._writer_error!r} {self.accounting.to_dict()}")
             return self._close_locked()
+
+    def _seal_accounting(self) -> None:
+        """Drain the backlog into `lost` and stop admitting. Idempotent."""
+        with self._admission:
+            self._shutdown.set()
+        deadline = time.monotonic() + self._enqueue_timeout + 1.0
+        while time.monotonic() < deadline:
+            with self._admission:
+                if self._pending_waiters == 0:
+                    break
+            time.sleep(0.005)
+        thread = getattr(self, "_thread", None)
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=1.0)
+        drained = 0
+        while True:
+            try:
+                self._queue.get_nowait()
+                drained += 1
+            except queue.Empty:
+                break
+        if drained:
+            with self._lock:
+                self.accounting.lost += drained
 
     def _close_locked(self) -> dict:
         try:
@@ -745,6 +938,15 @@ class SegmentWriter:
         with self._admission:
             self.state = SegmentState.CLOSING
             self._shutdown.set()
+        # Producers already blocked on a full queue are outside the admission
+        # gate. Wait for them before joining, or their put lands after the
+        # writer has returned and becomes silent loss.
+        deadline = time.monotonic() + self._enqueue_timeout + 1.0
+        while time.monotonic() < deadline:
+            with self._admission:
+                if self._pending_waiters == 0:
+                    break
+            time.sleep(0.005)
         self._thread.join(timeout=30)
         if self._thread.is_alive():
             # B4: do NOT release ownership here. Releasing while the writer is
@@ -781,6 +983,19 @@ class SegmentWriter:
             raise SegmentError(
                 "refusing to publish a segment whose accounting does not "
                 f"reconcile losslessly: {self.accounting.to_dict()}")
+        # A post-acceptance drop is a loss the PRODUCER was told did not happen.
+        # `rejected_after_accept` sat on the credit side of the identity, so a
+        # single unserialisable payload produced `close_status: "clean"`,
+        # `lossless() == True` and archive VALID over a missing event — the
+        # exact lost-but-reported-clean state the model forbids. The manifest
+        # carries no accounting at all, so nothing durable could ever record it.
+        if self.accounting.rejected_after_accept:
+            self.state = SegmentState.INVALID
+            raise SegmentError(
+                f"{self.accounting.rejected_after_accept} event(s) were "
+                "accepted from a producer and then dropped by the writer; "
+                "refusing to publish this segment as a clean close: "
+                f"{self.accounting.to_dict()}")
 
         # Event-file durability first. Each stage is separately injectable so a
         # failure can be attributed to the exact stage rather than collapsed
@@ -830,15 +1045,22 @@ class SegmentWriter:
             previous_segment_digest=self.previous_segment_digest)
         try:
             publish_manifest(self.dir, manifest, stage=self._stage)
-        except BaseException as exc:
-            # A manifest that did not publish means the segment is NOT closed.
-            # The distinction the docstring makes — rename succeeded but
-            # directory fsync failed — is preserved by the stage name, because
-            # the two have materially different recovery stories.
+        except DurabilityNotProvenError as exc:
+            # Rename succeeded: the manifest IS on disk and a reader sees a
+            # committed segment. Propagate the distinct type rather than
+            # flattening it into the generic failure, which is what made the
+            # two indistinguishable to an operator.
             self.state = SegmentState.INVALID
             self._writer_error = exc
             self._release_lock()
-            raise SegmentError(f"manifest publication failed: {exc!r}") from exc
+            raise
+        except BaseException as exc:
+            # A manifest that did not publish means the segment is NOT closed.
+            self.state = SegmentState.INVALID
+            self._writer_error = exc
+            self._release_lock()
+            raise SegmentError(f"manifest publication failed at stage "
+                               f"{self.failed_stage!r}: {exc!r}") from exc
         # The segment is now independently verifiable. Only then does it enter
         # the archive's committed history — a segment that is not itself
         # evidence must never be recorded as part of the archive.
@@ -885,11 +1107,40 @@ class SegmentWriter:
 
     _ownership_held_by_live_writer = False
 
-    def _release_lock(self) -> None:
-        if getattr(self, "_ownership_held_by_live_writer", False):
+    def _close_fh(self) -> None:
+        """Close the gzip handle. Every `raise` path out of close() leaked it.
+
+        The leak is also what made an abandoned segment unrecoverable: the
+        successor writer opened its own descriptor while the predecessor's was
+        still open on the same file.
+        """
+        fh = getattr(self, "_fh", None)
+        if fh is None:
             return
+        try:
+            fh.close()
+        except Exception:                       # noqa: BLE001 - already failing
+            pass
+        self._fh = None
+
+    def _release_lock(self) -> None:
+        # Guard on the THREAD, not on a flag. The flag was set on exactly one
+        # of the paths where the writer can still be running, so forcing the
+        # segment INVALID from elsewhere released ownership under a live writer
+        # and admitted a second one — the dual-writer condition this lock
+        # exists to prevent.
+        thread = getattr(self, "_thread", None)
+        if thread is not None and thread.is_alive():
+            self._ownership_held_by_live_writer = True
+            return
+        self._ownership_held_by_live_writer = False
+        self._close_fh()
         fd = getattr(self, "_lock_fd", None)
         if fd is not None:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
             try:
                 os.close(fd)
             except OSError:
@@ -963,11 +1214,13 @@ def publish_manifest(directory: Path, manifest: dict, *, stage=None) -> Path:
     # committed segment — a materially different situation from failing before
     # the rename, and reported as such rather than as one generic error.
     _s("directory_fsync")
-    dir_fd = os.open(directory, os.O_RDONLY)
     try:
-        os.fsync(dir_fd)
-    finally:
-        os.close(dir_fd)
+        _fsync_directory(directory)
+    except OSError as exc:
+        raise DurabilityNotProvenError(
+            f"{final} was renamed into place and IS visible to readers, but the "
+            f"directory fsync that would prove it survives a crash failed: "
+            f"{exc!r}. The segment is committed; its durability is not proven.")
     return final
 
 
@@ -992,7 +1245,21 @@ def read_segment_records(events_path: Path) -> list:
         out = []
         try:
             for i in range(0, len(data), 65536):
-                out.append(dec.decompress(data[i:i + 65536]))
+                # Per-CHUNK, because `decompress()` raising discards its return
+                # value and the whole 64 KiB chunk with it. On mid-stream
+                # corruption that cost 942 of 2000 records, and on a small
+                # segment it cost every record — while the docstring claimed
+                # the complete prefix was preserved. Retry the failing chunk in
+                # small increments to recover the bytes before the fault.
+                try:
+                    out.append(dec.decompress(data[i:i + 65536]))
+                except (zlib.error, EOFError):
+                    for j in range(i, min(i + 65536, len(data)), 512):
+                        try:
+                            out.append(dec.decompress(data[j:j + 512]))
+                        except (zlib.error, EOFError):
+                            break
+                    raise
             out.append(dec.flush())
         except (zlib.error, EOFError):
             pass                     # keep the prefix decoded before the fault
@@ -1088,12 +1355,22 @@ def _head_genesis(environment: str, archive_identity: str) -> str:
 
 
 def build_head(*, environment: str, archive_identity: str,
-               previous_head: dict | None, segments: list) -> dict:
+               previous_head: dict | None, segments: list,
+               updated_at: str | None = None) -> dict:
     """Build the next head from the PREVIOUS authoritative head plus a segment.
 
     Never from whatever segments happen to be on disk. Regenerating the head by
     discovery would certify exactly the deletion and grafting it exists to
-    detect — the verifier would simply agree with whatever survived.
+    detect — the verifier would simply agree with whatever survived. That rule
+    is now enforced rather than merely stated: see
+    `_refuse_head_bootstrap_over_existing_evidence`.
+
+    `updated_at` is the head's only non-deterministic input, and completing a
+    commit that a crash interrupted has to reproduce the head the retained log
+    already recorded — a head that differs only in its timestamp has a
+    different digest, which would leave the log with two entries at one
+    generation and the archive unrepairable. So the log carries the stamp and
+    the repair path passes it back.
     """
     fold = _head_genesis(environment, archive_identity)
     for entry in segments:
@@ -1110,7 +1387,8 @@ def build_head(*, environment: str, archive_identity: str,
         "terminal_segment_digest": segments[-1]["manifest_digest"] if segments else None,
         "archive_segments_digest": fold,
         "previous_head_digest": (previous_head or {}).get("head_digest"),
-        "updated_at": canonical_datetime(datetime.now(timezone.utc)),
+        "updated_at": updated_at or canonical_datetime(
+            datetime.now(timezone.utc)),
     }
     head["head_digest"] = digest_hex({k: head[k] for k in HEAD_FIELDS})
     return head
@@ -1197,37 +1475,117 @@ def publish_head(root, environment: str, head: dict, *, stage=None) -> Path:
     if staged.get("generation") != head["generation"]:
         raise ArchiveHeadError("staged head generation does not match")
 
+    # H-1: the published head is recorded in a retained log. previous_head_digest
+    # and generation were folded into head_digest and then compared to nothing,
+    # because no prior head was kept — they could not be checked even in
+    # principle. Without this, rolling the head back to a retained earlier
+    # generation makes TAIL TRUNCATION free, which is the one deletion the
+    # segment predecessor links cannot catch.
+    #
+    # WRITE-AHEAD, and this ordering is the whole point. The log used to be
+    # appended AFTER the rename, so a crash in between — an ordinary SIGKILL,
+    # or a plain ENOSPC on the log — left the head at generation N with the log
+    # at N-1, which `_verify_head_against_log` read as HEAD_ROLLBACK. An intact
+    # archive was permanently accused of tampering with no repair path, because
+    # the head is immutable and the retry hit the duplicate-segment guard.
+    # Three reviewers found it independently.
+    #
+    # Log-then-rename inverts the failure into the recoverable direction: the
+    # log may legitimately be ONE entry ahead of the head, meaning a commit was
+    # in flight. A log BEHIND the head is still a rollback and still fatal.
+    _s("head_log_append")
+    log = directory / ARCHIVE_HEAD_LOG_FILENAME
+    if os.path.islink(log):
+        raise ArchiveHeadError(
+            f"{log} is a symlink; refusing to write the retained head history "
+            "through it")
+    already = _read_head_log(directory)
+    if not (already.entries and
+            already.entries[-1].get("head_digest") == head["head_digest"]):
+        line = canonical_bytes(
+            {"generation": head["generation"],
+             "head_digest": head["head_digest"],
+             "previous_head_digest": head["previous_head_digest"],
+             "segment_count": head["segment_count"],
+             # Which segment this generation was committing. Without it, a
+             # crash mid-commit and a one-generation rollback are the same
+             # three numbers and cannot be told apart.
+             "terminal_segment_id": (head["segments"][-1]["segment_id"]
+                                     if head.get("segments") else None),
+             # The head's only non-deterministic input, so that completing an
+             # interrupted commit reproduces the same head rather than a
+             # second one at the same generation.
+             "updated_at": head["updated_at"]}) + b"\n"
+        log_existed = log.exists()
+        log_fd = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_APPEND
+                         | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+        try:
+            write_all(log_fd, line)
+            os.fsync(log_fd)
+        finally:
+            os.close(log_fd)
+        if not log_existed:
+            # The log's own directory entry has to be durable too, or a crash
+            # on the very first publish loses the file and the archive comes
+            # back as "no archive head log" — INVALID, for a clean archive.
+            _fsync_directory(directory)
+
     _s("head_rename")
     if os.path.islink(final):
         raise ArchiveHeadError(
             f"{final} is a symlink; refusing to publish the head through it")
     os.replace(tmp, final)
     _s("head_directory_fsync")
+    _fsync_directory(directory)
+    return final
+
+
+def _fsync_directory(directory: Path) -> None:
     dir_fd = os.open(directory, os.O_RDONLY | os.O_CLOEXEC)
     try:
         os.fsync(dir_fd)
     finally:
         os.close(dir_fd)
 
-    # H-1: append the published head to a retained log. previous_head_digest
-    # and generation were folded into head_digest and then compared to nothing,
-    # because no prior head was kept — they could not be checked even in
-    # principle. Without this, rolling the head back to a retained earlier
-    # generation (or rebuilding it by discovery) makes TAIL TRUNCATION free,
-    # which is the one deletion the segment predecessor links cannot catch.
-    log = directory / ARCHIVE_HEAD_LOG_FILENAME
-    line = canonical_bytes({"generation": head["generation"],
-                            "head_digest": head["head_digest"],
-                            "previous_head_digest": head["previous_head_digest"],
-                            "segment_count": head["segment_count"]}) + b"\n"
-    log_fd = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_APPEND
-                     | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
-    try:
-        write_all(log_fd, line)
-        os.fsync(log_fd)
-    finally:
-        os.close(log_fd)
-    return final
+
+@dataclass
+class _HeadLog:
+    entries: list = field(default_factory=list)
+    reasons: list = field(default_factory=list)
+    torn_tail: bool = False
+
+
+def _read_head_log(directory: Path) -> _HeadLog:
+    """Parse the retained head history, tolerating exactly one torn last line.
+
+    An append that was interrupted mid-line is the tail of the same crash the
+    write-ahead ordering exists to survive, so a partial FINAL line is discarded
+    as an unfinished record. A malformed INTERIOR line is not survivable and
+    stays fatal — that is editing, not tearing.
+    """
+    out = _HeadLog()
+    log = Path(directory) / ARCHIVE_HEAD_LOG_FILENAME
+    if not log.exists():
+        return out
+    raw = [ln for ln in log.read_bytes().split(b"\n") if ln.strip()]
+    for i, line in enumerate(raw):
+        try:
+            entry = parse_canonical(line)
+        except Exception:
+            if i == len(raw) - 1:
+                out.torn_tail = True
+                break
+            out.reasons.append(
+                f"archive head log line {i} is unreadable; a malformed "
+                "interior entry is an edit, not a torn append")
+            return out
+        if not isinstance(entry, dict):
+            out.reasons.append(
+                f"archive head log line {i} is a {type(entry).__name__}, "
+                "not an object")
+            return out
+        out.entries.append(entry)
+    return out
 
 
 def head_lock_path(root, environment: str) -> Path:
@@ -1283,6 +1641,9 @@ def _commit_segment_to_head_locked(root, environment: str, *,
         raise ArchiveHeadError(
             "the existing archive head fails its own digest; refusing to "
             "extend a history that is already untrustworthy")
+    if previous is None:
+        _refuse_head_bootstrap_over_existing_evidence(
+            root, environment, segment_id=manifest["segment_id"])
     segments = list(previous["segments"]) if previous else []
     entry = {
         "segment_id": manifest["segment_id"],
@@ -1297,10 +1658,102 @@ def _commit_segment_to_head_locked(root, environment: str, *,
         raise ArchiveHeadError(
             f"segment {entry['segment_id']!r} is already in the archive head")
     segments.append(entry)
+    # Completing a commit the crash interrupted: the retained log already
+    # recorded the head that was about to be published, so reproduce THAT head
+    # rather than a second one at the same generation with a later timestamp.
+    resume_at = None
+    tail = _read_head_log(head_path(root, environment).parent).entries
+    if tail:
+        last = tail[-1]
+        if (last.get("previous_head_digest") == (previous or {}).get("head_digest")
+                and last.get("terminal_segment_id") == entry["segment_id"]
+                and last.get("generation") == (
+                    (previous["generation"] + 1) if previous else 1)):
+            resume_at = last.get("updated_at")
     head = build_head(environment=environment, archive_identity=archive_identity,
-                      previous_head=previous, segments=segments)
+                      previous_head=previous, segments=segments,
+                      updated_at=resume_at)
     publish_head(root, environment, head, stage=stage)
     return head
+
+
+def _has_live_writer(directory: Path) -> bool:
+    """Is a process holding this segment's writer lock right now?
+
+    The lock file's existence answers nothing — it outlives its owner. The
+    flock does not, so taking it and immediately dropping it is what
+    distinguishes "a collector is filling this segment" from "a crash left this
+    behind". Read-only: a lock we take here is released before returning.
+    """
+    lock = Path(directory) / "writer.lock"
+    if not lock.exists() or lock.is_symlink():
+        return False
+    try:
+        fd = os.open(lock, os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError:
+        return False
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return True                    # held by someone else: a live writer
+    else:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return False
+    finally:
+        os.close(fd)
+
+
+def _refuse_head_bootstrap_over_existing_evidence(root, environment: str, *,
+                                                  segment_id: str) -> None:
+    """A first commit is only a first commit on an archive that has no history.
+
+    The module claimed the head is "never rebuilt from whatever segments happen
+    to be on disk", but nothing enforced it, and the commit function is
+    exported. Three commands — `rm archive-head.json`, `rm archive-head.log`,
+    then replay `commit_segment_to_head` over the surviving manifests —
+    regenerated a history that verified VALID with a middle segment deleted, or
+    with a fabricated segment substituted, which `read_verified()` then served
+    as canonical. Not one record digest, chain link or manifest digest had to
+    be recomputed: rewriting two files was enough.
+
+    So bootstrapping is refused whenever the archive already carries evidence.
+
+    SCOPE, stated honestly: this closes the rebuild through the production API.
+    It does NOT make the archive tamper-PROOF. Every digest here is unkeyed and
+    every commitment lives under the same root the writer can write, so an
+    attacker who forges `archive-head.json` and `archive-head.log` directly
+    still wins. Nothing inside the directory can fix that. Establishing a root
+    of trust the writer cannot rewrite — an append-only external sink, a
+    second host, or a signature whose key is not on this box — is a design
+    decision, not a patch, and it is not made here.
+    """
+    directory = head_path(root, environment).parent
+    if (directory / ARCHIVE_HEAD_LOG_FILENAME).exists():
+        raise ArchiveHeadError(
+            "the archive head is absent but its retained history log is "
+            "present: this archive HAS published a history and the head that "
+            "committed it is gone. Refusing to bootstrap a replacement — that "
+            "is precisely how a rebuilt head certifies a deletion. Restore the "
+            "head from backup.")
+    # Only segments with NO live writer count. On a genuinely new archive
+    # several writers close at once: the head lock serialises them, so the
+    # first to take it can legitimately see other manifests already published
+    # by peers that have not yet reached their own commit — and those peers
+    # still hold their writer locks. Segments whose owner is gone are a
+    # different thing entirely: history that was already committed.
+    others = sorted(
+        d.name.split("segment=", 1)[-1]
+        for d in directory.glob("segment=*")
+        if d.is_dir() and not d.is_symlink()
+        and d.name.split("segment=", 1)[-1] != segment_id
+        and (d / MANIFEST_FILENAME).exists()
+        and not _has_live_writer(d))
+    if others:
+        raise ArchiveHeadError(
+            f"refusing to start a new archive history over {len(others)} "
+            f"segment(s) that are already committed on disk ({others[:5]}): a "
+            "head built by discovery certifies exactly the deletion and "
+            "grafting it exists to detect. Restore the head from backup.")
 
 
 def _partition_for_segment(segment_id: str, environment: str) -> str | None:
@@ -1326,8 +1779,8 @@ def _partition_for_segment(segment_id: str, environment: str) -> str | None:
     return f"env={environment}/venue={venue}/date={date}/hour={hour}"
 
 
-def verify_segment(directory, *, environment: str,
-                   allow_open: bool = False) -> SegmentVerdict:
+def verify_segment(directory, *, environment: str, allow_open: bool = False,
+                   root=None) -> SegmentVerdict:
     """Verify one segment against its manifest.
 
     A missing manifest is INVALID rather than "probably still open", and a
@@ -1340,6 +1793,21 @@ def verify_segment(directory, *, environment: str,
     events_path = directory / EVENTS_FILENAME
     manifest_path = directory / MANIFEST_FILENAME
     reasons: list = []
+
+    # Containment on the VERIFY side. `assert_contained` was called three times,
+    # all of them on the write side, so a symlink planted at the events file or
+    # the manifest after the writer had gone put the evidence outside the root
+    # and this function still returned valid. The write side refusing a symlink
+    # says nothing about the file a reader is handed later.
+    if root is not None:
+        for path in (events_path, manifest_path):
+            if not path.exists() and not path.is_symlink():
+                continue
+            reason = containment_reason(root, path)
+            if reason is not None:
+                return SegmentVerdict(
+                    seg_id, SegmentState.INVALID, False,
+                    [f"{path.name} is not bounded by the archive root: {reason}"])
 
     has_events = events_path.exists()
     if not manifest_path.exists():
@@ -1471,9 +1939,28 @@ def verify_segment(directory, *, environment: str,
         reasons.append(
             f"subscription_metadata venue {meta_venue!r} contradicts the "
             f"segment id's venue ({seg_venue!r})")
+    # The manifest envelope is CLOSED, like the record and head envelopes. It
+    # was the only one left open: `manifest_digest` covers a fixed field list,
+    # so an arbitrary extra key could be injected into the commit record, be
+    # outside every digest and every head commitment, and still verify VALID.
+    unknown = sorted(set(manifest) - set(MANIFEST_FIELDS)
+                     - {"manifest_digest", "subscription_metadata"})
+    if unknown:
+        reasons.append(
+            f"manifest carries undeclared top-level field(s) {unknown}; the "
+            "commit record's envelope is closed at this schema version")
+
     # previous_segment_digest is NOT verified here and is not written by the
     # writer: a segment cannot know its own place in history at the moment it
-    # opens. The head entry carries the link, resolved at commit time.
+    # opens. The head entry carries the link, resolved at commit time. It stays
+    # in the schema for that reason and must therefore be EMPTY — left merely
+    # unchecked it was a field a future caller could populate believing it
+    # meant something, while nothing read it.
+    if manifest.get("previous_segment_digest") is not None:
+        reasons.append(
+            "previous_segment_digest is set, but ordering is asserted by the "
+            "head entry; a value here is not verified by anything and must "
+            "not be mistaken for provenance")
 
     # A legitimately empty segment is valid ONLY when its manifest declares it.
     if v.records_read == 0 and v.records_expected != 0:
@@ -1486,19 +1973,19 @@ def verify_segment(directory, *, environment: str,
 
 def _verify_head_against_log(root, environment: str, head: dict) -> list:
     """The head must be the newest one this archive published, and it must chain."""
-    log = head_path(root, environment).parent / ARCHIVE_HEAD_LOG_FILENAME
+    directory = head_path(root, environment).parent
+    log = directory / ARCHIVE_HEAD_LOG_FILENAME
+    reason = containment_reason(root, log)
+    if reason is not None:
+        return [f"archive head log is not bounded by the archive root: {reason}"]
     if not log.exists():
         return ["no archive head log: without a retained head history, a "
                 "rolled-back or rebuilt head cannot be distinguished from the "
                 "current one"]
-    entries = []
-    for line in log.read_bytes().split(b"\n"):
-        if not line.strip():
-            continue
-        try:
-            entries.append(parse_canonical(line))
-        except Exception:
-            return ["archive head log is unreadable"]
+    parsed = _read_head_log(directory)
+    if parsed.reasons:
+        return list(parsed.reasons)
+    entries = parsed.entries
     if not entries:
         return ["archive head log is empty"]
     out = []
@@ -1513,11 +2000,41 @@ def _verify_head_against_log(root, environment: str, head: dict) -> list:
         out.append(f"archive head log generations are not contiguous: "
                    f"{generations}")
     newest = entries[-1]
-    if head.get("head_digest") != newest.get("head_digest"):
-        out.append(
-            f"the current head is generation {head.get('generation')} but the "
-            f"archive last published generation {newest.get('generation')} "
-            "(HEAD_ROLLBACK or a head rebuilt outside the commit path)")
+    if head.get("head_digest") == newest.get("head_digest"):
+        return out
+    # The log is written BEFORE the head rename, so a log exactly one entry
+    # ahead of the head is EITHER a commit that was in flight when the process
+    # died OR a head rolled back by one generation. Those look identical in the
+    # log alone, so the log alone cannot decide it: a first attempt at this
+    # accepted both and made single-generation rollback free.
+    #
+    # The discriminator is on disk. A torn commit leaves the segment it was
+    # committing published and orphaned; a rollback-plus-deletion does not.
+    # Either way the archive is NOT in a committed state and does not verify —
+    # but a torn commit is REPAIRABLE by re-running the commit (the log append
+    # is idempotent on head_digest), whereas the head being immutable was what
+    # made the previous ordering's failure permanent.
+    if (len(entries) >= 2
+            and entries[-2].get("head_digest") == head.get("head_digest")
+            and newest.get("previous_head_digest") == head.get("head_digest")):
+        in_flight = newest.get("terminal_segment_id")
+        published = (in_flight and (directory / f"segment={in_flight}"
+                                    / MANIFEST_FILENAME).exists())
+        if published:
+            out.append(
+                f"HEAD_COMMIT_INCOMPLETE: the retained history records "
+                f"generation {newest.get('generation')} committing segment "
+                f"{in_flight!r}, whose manifest IS published, but the head is "
+                f"still at generation {head.get('generation')}. This is a crash "
+                "between the log append and the head rename. Re-run the commit "
+                "for that segment to roll the head forward.")
+            return out
+    out.append(
+        f"the current head is generation {head.get('generation')} with digest "
+        f"{str(head.get('head_digest'))[:12]}, but the archive last published "
+        f"generation {newest.get('generation')} with digest "
+        f"{str(newest.get('head_digest'))[:12]} "
+        "(HEAD_ROLLBACK or a head rebuilt outside the commit path)")
     return out
 
 
@@ -1602,6 +2119,19 @@ def verify_archive(root, *, environment: str) -> dict:
                        f"{environment!r}")
 
     expected = head.get("segments") or []
+    # A verifier that RAISES on a malformed head is a verifier that cannot
+    # report corruption. `head["segments"] = ["x"]`, a dict, or a head-log line
+    # of `null` each produced an AttributeError out of the middle of the walk,
+    # which `read_verified()` propagated and the CLI — catching only
+    # (ArchiveError, OSError) — turned into a traceback. Corruption is a
+    # verdict, not an exception.
+    if not isinstance(expected, list):
+        expected = []
+        reasons.append(
+            f"head segments is a {type(head.get('segments')).__name__}, not a list")
+    elif not all(isinstance(e, dict) for e in expected):
+        reasons.append("head segments contains entries that are not objects")
+        expected = [e for e in expected if isinstance(e, dict)]
     results, previous_commitment = [], None
     fold = _head_genesis(head.get("environment"), head.get("archive_identity"))
 
@@ -1614,10 +2144,14 @@ def verify_archive(root, *, environment: str) -> dict:
                 f"{index} but is MISSING from the archive")
             continue
         verdict = verify_segment(directory, environment=environment,
-                                 allow_open=False)
+                                 allow_open=False, root=root)
         results.append(verdict)
         if not verdict.valid:
-            reasons.append(f"segment {seg_id!r} does not verify")
+            # Carry the segment's OWN reasons up. "does not verify" alone made
+            # an operator open a second tool to learn whether the evidence was
+            # edited, truncated, or had walked outside the archive root.
+            reasons.append(f"segment {seg_id!r} does not verify: "
+                           f"{'; '.join(verdict.reasons)}")
             continue
         manifest = parse_canonical(
             (directory / MANIFEST_FILENAME).read_bytes())
@@ -1650,12 +2184,33 @@ def verify_archive(root, *, environment: str) -> dict:
         previous_commitment = commitment
         fold = fold_segments_digest(fold, commitment)
 
-    if discovered:
-        # Present on disk, absent from the committed history. Never silently
-        # incorporated — that is how a grafted segment becomes evidence.
+    # Present on disk, absent from the committed history. Never silently
+    # incorporated — that is how a grafted segment becomes evidence. But the
+    # four ways this happens are not the same event, and collapsing them into
+    # one alarm meant the NORMAL state of a running collector — one closed hour
+    # plus one hour still open — reported INVALID with a tamper reason, and
+    # `read_verified()` refused the committed hour. The archive was unreadable
+    # through its own canonical API for as long as it was collecting, and the
+    # single tamper signal fired continuously, which trains an operator to
+    # ignore it.
+    open_now, orphaned, abandoned = [], [], []
+    for seg_id, directory in sorted(discovered.items()):
+        if not (directory / MANIFEST_FILENAME).exists():
+            # No commit record. A live flock means a writer is filling it right
+            # now; no live writer means it was abandoned by a crash.
+            (open_now if _has_live_writer(directory) else abandoned).append(seg_id)
+        else:
+            orphaned.append(seg_id)
+    if orphaned:
         reasons.append(
-            f"ORPHANED_COMMITTED_SEGMENT: {sorted(discovered)} exist on disk "
-            "but are not in the archive head")
+            f"ORPHANED_COMMITTED_SEGMENT: {orphaned} are committed evidence on "
+            "disk but are not in the archive head — either a crash between the "
+            "manifest publish and the head commit (adoptable) or a graft (not). "
+            "Compare each against the head's expected order before adopting.")
+    if abandoned:
+        reasons.append(
+            f"ABANDONED_SEGMENT: {abandoned} have no commit record and no live "
+            "writer; they are the residue of a crash and are not evidence")
 
     if head.get("segment_count") != len(expected):
         reasons.append("head segment_count does not match its own segment list")
@@ -1678,9 +2233,11 @@ def verify_archive(root, *, environment: str) -> dict:
         "head_digest": head.get("head_digest"),
         "segments": len(expected),
         "closed_segments": len(closed),
-        "open_segments": 0,
+        "open_segments": len(open_now),
+        "uncommitted_open_segments": open_now,
+        "abandoned_segments": abandoned,
         "invalid_segments": len(invalid),
-        "orphaned_committed_segments": sorted(discovered),
+        "orphaned_committed_segments": orphaned,
         "records_expected": sum(e.get("record_count") or 0 for e in expected),
         "records_read": sum(r.records_read for r in results),
         "segment_verdicts": [r.to_dict() for r in results],
