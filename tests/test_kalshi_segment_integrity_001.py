@@ -17,6 +17,29 @@ import pytest
 from app.realtime import canonical as cn
 from app.realtime import segment as sg
 
+
+def _init_archive(root, environment="demo"):
+    """Archives are brought into existence EXPLICITLY, exactly as an operator does.
+
+    The collector cannot do this, and that is the point: "the head is missing,
+    therefore this is a new archive" was the inference that let a rebuilt
+    history certify its own deletions. Tests initialize on purpose.
+    """
+    from app.realtime import archive_head as _ah
+    try:
+        _ah.initialize_archive(Path(root), environment,
+                               archive_identity="kalshi-realtime")
+    except _ah.ArchiveHeadError:
+        pass                       # already initialized in this test
+    return root
+
+
+def _arch(root, **kw):
+    from app.realtime import archive as _ar
+    _init_archive(root, kw.get("environment", "demo"))
+    return _ar.EventArchive(root, **kw)
+
+
 UTC = timezone.utc
 NOW = datetime(2026, 8, 8, 12, 0, tzinfo=UTC)
 ENV = "demo"
@@ -40,6 +63,7 @@ def fields(i, ticker="KXA", seq=None, mtype="orderbook_delta"):
 
 
 def write_segment(root, n=6, segment_id=SEG, meta=None):
+    _init_archive(root)
     w = sg.SegmentWriter(root, environment=ENV, segment_id=segment_id,
                          partition_identity="date=2026-08-08/hour=12",
                          subscription_metadata=meta or {"market_tickers": ["KXA"]})
@@ -241,6 +265,7 @@ class TestManifest:
 # --- Gate 5/7: lifecycle and crash consistency -------------------------------------
 class TestLifecycleAndCrash:
     def test_state_progression(self, tmp_path):
+        _init_archive(tmp_path)
         w = sg.SegmentWriter(tmp_path, environment=ENV, segment_id=SEG,
                              partition_identity="p")
         assert w.state is sg.SegmentState.OPEN and w.accepting
@@ -250,6 +275,7 @@ class TestLifecycleAndCrash:
         assert w.submit(fields(1)) is sg.RejectReason.SHUTDOWN_IN_PROGRESS
 
     def test_an_open_segment_is_not_canonical_evidence(self, tmp_path):
+        _init_archive(tmp_path)
         w = sg.SegmentWriter(tmp_path, environment=ENV, segment_id=SEG,
                              partition_identity="p")
         w.submit(fields(0))
@@ -300,6 +326,7 @@ class TestLifecycleAndCrash:
 # --- Gate 6: single writer ---------------------------------------------------------
 class TestSingleWriter:
     def test_accounting_reconciles_under_concurrency(self, tmp_path):
+        _init_archive(tmp_path)
         w = sg.SegmentWriter(tmp_path, environment=ENV, segment_id=SEG,
                              partition_identity="p", queue_maxsize=2048)
         per, producers = 500, 6
@@ -320,12 +347,14 @@ class TestSingleWriter:
         w.close()
         assert not errors
         acc = w.accounting
-        assert acc.generated == per * producers
-        assert acc.reconciles(), acc.to_dict()
+        assert acc.attempted == per * producers
+        assert acc.admission_holds() and acc.disposition_holds(), acc.to_dict()
+        assert acc.clean(), acc.to_dict()
         assert acc.written == len(records_of(w))
         assert sg.verify_segment(w.dir, environment=ENV).valid
 
     def test_queue_overflow_is_rejected_not_dropped(self, tmp_path):
+        _init_archive(tmp_path)
         w = sg.SegmentWriter(tmp_path, environment=ENV, segment_id=SEG,
                              partition_identity="p", queue_maxsize=1,
                              enqueue_timeout_s=0.01)
@@ -337,6 +366,7 @@ class TestSingleWriter:
             assert all(r is sg.RejectReason.ENQUEUE_TIMEOUT for r in rejected)
 
     def test_a_failed_writer_stops_accepting_evidence(self, tmp_path):
+        _init_archive(tmp_path)
         w = sg.SegmentWriter(tmp_path, environment=ENV, segment_id=SEG,
                              partition_identity="p")
         w._writer_error = RuntimeError("disk full")

@@ -109,13 +109,20 @@ def canonical_decimal(value: Decimal) -> str:
     if not value.is_finite():
         raise CanonicalError(f"{value!r} is not finite")
     normalised = value.normalize()
-    # `exponent` only; the tuple's other members are unused, and unpacking a
-    # name like `sign` here trips the repository's key-handling AST guard —
-    # which is the guard doing its job, not a false positive to suppress.
-    exponent = normalised.as_tuple().exponent
-    if isinstance(exponent, int) and exponent > 0:
-        normalised = normalised.quantize(Decimal(1))
-    text = format(normalised, "f")
+    # `format(x, "f")` already renders a positive exponent in full — `1E+30`
+    # becomes `1000000000000000000000000000000` — so the quantize that used to
+    # sit here was redundant AND actively harmful: `quantize` is evaluated in
+    # the current decimal context, whose default precision is 28 digits, so any
+    # value at or above ~1e28 raised `decimal.InvalidOperation`. That is an
+    # ArithmeticError rather than a CanonicalError, so it escaped the writer's
+    # handler, killed the writer thread, and destroyed the whole segment over
+    # one ordinary venue number.
+    try:
+        text = format(normalised, "f")
+    except ArithmeticError as exc:              # pragma: no cover - defensive
+        raise CanonicalError(
+            f"{value!r} cannot be rendered as canonical decimal text: {exc!r}"
+        ) from exc
     if "." in text:
         text = text.rstrip("0").rstrip(".")
     if text in ("", "-", "-0"):

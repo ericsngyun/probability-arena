@@ -20,6 +20,29 @@ from app.realtime import book as bk
 from app.realtime import fixedpoint as fp
 from app.realtime import kalshi as kx
 
+
+def _init_archive(root, environment="demo"):
+    """Archives are brought into existence EXPLICITLY, exactly as an operator does.
+
+    The collector cannot do this, and that is the point: "the head is missing,
+    therefore this is a new archive" was the inference that let a rebuilt
+    history certify its own deletions. Tests initialize on purpose.
+    """
+    from app.realtime import archive_head as _ah
+    try:
+        _ah.initialize_archive(Path(root), environment,
+                               archive_identity="kalshi-realtime")
+    except _ah.ArchiveHeadError:
+        pass                       # already initialized in this test
+    return root
+
+
+def _arch(root, **kw):
+    from app.realtime import archive as _ar
+    _init_archive(root, kw.get("environment", "demo"))
+    return _ar.EventArchive(root, **kw)
+
+
 NOW = datetime(2026, 8, 6, 12, 0, tzinfo=timezone.utc)
 PKG = Path("app/realtime")
 
@@ -537,7 +560,7 @@ class TestArchiveAndReplay:
         return out
 
     def test_archive_round_trips_and_verifies(self, tmp_path):
-        a = ar.EventArchive(tmp_path, environment="demo")
+        a = _arch(tmp_path, environment="demo")
         for e in self._stream():
             a.append(e)
         a.close()
@@ -546,7 +569,7 @@ class TestArchiveAndReplay:
         assert v["intact"] and v["records"] == 4
 
     def test_demo_events_cannot_enter_a_production_archive(self, tmp_path):
-        prod = ar.EventArchive(tmp_path, environment="production")
+        prod = _arch(tmp_path, environment="production")
         with pytest.raises(ar.ArchiveError, match="never become"):
             prod.append(self._stream(environment="demo")[0])
 
@@ -558,8 +581,8 @@ class TestArchiveAndReplay:
         environment's segments live under its own root, and neither reads the
         other's records.
         """
-        demo = ar.EventArchive(tmp_path, environment="demo")
-        prod = ar.EventArchive(tmp_path, environment="production")
+        demo = _arch(tmp_path, environment="demo")
+        prod = _arch(tmp_path, environment="production")
         for e in self._stream(environment="demo"):
             demo.append(e)
         demo.close()
@@ -570,7 +593,7 @@ class TestArchiveAndReplay:
         assert prod.read_unverified_diagnostic() == []
 
     def test_replay_is_deterministic(self, tmp_path):
-        a = ar.EventArchive(tmp_path, environment="demo")
+        a = _arch(tmp_path, environment="demo")
         for e in self._stream():
             a.append(e)
         a.close()
@@ -591,7 +614,7 @@ class TestArchiveAndReplay:
         live.apply_snapshot(stream[0].raw["msg"], seq=1, sid=stream[0].sid)
         for e in stream[1:]:
             live.apply_delta(e.raw["msg"], seq=e.seq, sid=e.sid)
-        a = ar.EventArchive(tmp_path, environment="demo")
+        a = _arch(tmp_path, environment="demo")
         for e in stream:
             a.append(e)
         a.close()
@@ -600,7 +623,7 @@ class TestArchiveAndReplay:
     def test_replay_surfaces_a_gap_rather_than_absorbing_it(self, tmp_path):
         stream = self._stream()
         stream[2].seq = 99          # punch a hole
-        a = ar.EventArchive(tmp_path, environment="demo")
+        a = _arch(tmp_path, environment="demo")
         for e in stream:
             a.append(e)
         a.close()
@@ -610,7 +633,7 @@ class TestArchiveAndReplay:
         assert out["publishable"]["KXTEST"] is False
 
     def test_malformed_tail_loses_one_record_not_the_file(self, tmp_path):
-        a = ar.EventArchive(tmp_path, environment="demo")
+        a = _arch(tmp_path, environment="demo")
         for e in self._stream():
             a.append(e)
         a.close()
@@ -621,7 +644,7 @@ class TestArchiveAndReplay:
         assert a.truncated_records == 1
 
     def test_latency_is_decomposed_not_a_single_number(self, tmp_path):
-        a = ar.EventArchive(tmp_path, environment="demo")
+        a = _arch(tmp_path, environment="demo")
         for e in self._stream():
             a.append(e)
         a.close()
@@ -661,7 +684,7 @@ class TestArchiveAndReplay:
             assert banned not in mods
 
     def test_archive_output_is_secret_free(self, tmp_path):
-        a = ar.EventArchive(tmp_path, environment="demo")
+        a = _arch(tmp_path, environment="demo")
         for e in self._stream():
             a.append(e)
         a.close()
@@ -804,7 +827,7 @@ class TestFailClosedRegressions:
 
 class TestArchiveIntegrityRegressions:
     def _archive(self, tmp_path, environment="demo"):
-        return ar.EventArchive(tmp_path, environment=environment)
+        return _arch(tmp_path, environment=environment)
 
     def test_interrupted_write_loses_the_last_record_not_the_file(self, tmp_path):
         """`fh.read()` buffers the whole member and then raises on a truncated
@@ -864,7 +887,7 @@ class TestArchiveIntegrityRegressions:
         """The write-side guard is in-process only; a copy, an rsync or a
         restore defeats it, and replaying demo events as production evidence
         is a fabricated observation."""
-        demo = ar.EventArchive(tmp_path / "d", environment="demo")
+        demo = _arch(tmp_path / "d", environment="demo")
         for e in TestArchiveAndReplay()._stream():
             demo.append(e)
         src = demo.segment_paths()[0]["events_path"]
@@ -872,18 +895,29 @@ class TestArchiveIntegrityRegressions:
                / "date=2026-08-06" / "hour=12")
         dst.mkdir(parents=True)
         dst.joinpath("events.jsonl.gz").write_bytes(src.read_bytes())
-        prod = ar.EventArchive(tmp_path / "p", environment="production")
+        prod = _arch(tmp_path / "p", environment="production")
         # The property is unchanged — demo records never become production
         # evidence. Under the segment layout a transplanted file also carries a
         # segment id and manifest that do not belong to it, so it is rejected
         # earlier than the record-level environment check and never counted as
         # a "foreign record" that was read.
         assert prod.read_unverified_diagnostic() == []
-        assert prod.verify()["intact"] is False
+        assert prod.read_verified() == []
+        # `intact` is no longer the carrier of this property. An initialized
+        # archive with no committed segments is genuinely intact — that used to
+        # report INVALID only because an archive with no head was invalid by
+        # construction, which is a different fact that happened to coincide.
+        # What matters is that the transplanted bytes are not evidence: they sit
+        # in a path the archive does not recognise, so no segment claims them
+        # and no reader returns them.
+        from app.realtime import segment as _sg
+        out = _sg.verify_archive(tmp_path / "p", environment="production")
+        assert out["records_read"] == 0 and out["segments"] == 0
+        assert out["orphaned_committed_segments"] == []
 
     def test_venue_cannot_escape_its_path_component(self, tmp_path):
         with pytest.raises(ar.ArchiveError, match="safe path component"):
-            ar.EventArchive(tmp_path, environment="demo",
+            _arch(tmp_path, environment="demo",
                             venue="../../env=production/venue=kalshi")
 
     def test_naive_receive_time_is_refused(self, tmp_path):

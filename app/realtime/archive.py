@@ -32,16 +32,20 @@ from app.realtime.segment import (
     EVENTS_FILENAME,
     MANIFEST_FILENAME,
     SegmentWriter,
-    read_head,
     read_segment_records,
     verify_archive,
     verify_chain,
+)
+from app.realtime.archive_head import (
+    ArchiveNotInitializedError,
+    initialize_archive,
+    load_authoritative_head,
+    read_genesis,
 )
 from app.realtime.canonical import (
     CANONICAL_SCHEMA_VERSION,
     parse_canonical_datetime,
     canonical_bytes,
-    coerce_canonical,
     digest_hex,
     parse_canonical,
 )
@@ -143,7 +147,11 @@ class EventArchive:
     file currently says, which would certify a deletion instead of detecting it.
     """
 
-    def __init__(self, root: str | Path, *, environment: str, venue: str = "kalshi"):
+    def __init__(self, root: str | Path, *, environment: str, venue: str = "kalshi",
+                 expected_archive_id: str | None = None,
+                 max_segment_records: int | None = None,
+                 max_segment_age_s: float | None = None,
+                 max_segment_bytes: int | None = None):
         from app.realtime.kalshi import ENVIRONMENTS
 
         if environment not in ENVIRONMENTS:
@@ -166,6 +174,27 @@ class EventArchive:
         # hits the segment's exclusive lock. The lock below is what makes
         # "one writer per segment" true for the *creation* step too.
         self._writers_lock = threading.Lock()
+        # Rotation policy, passed through to every writer. All-optional: the
+        # production thresholds come from measurement, not from a number
+        # invented here. What is no longer acceptable is committing nothing
+        # until process shutdown — a collector running for a day held every
+        # hour open, and a SIGKILL lost all of them at once.
+        self.max_segment_records = max_segment_records
+        self.max_segment_age_s = max_segment_age_s
+        self.max_segment_bytes = max_segment_bytes
+        self.expected_archive_id = expected_archive_id
+        self.rotations = 0
+        # A partition's CURRENT segment id, which diverges from the partition
+        # id as soon as it rotates.
+        self._live_segment_id: dict = {}
+        self._rotations_for: dict = {}
+        # The archive must already exist. A collector consumes an initialized
+        # archive and can never bring one into existence: "the head is missing,
+        # therefore this is a new archive" is the inference that let a rebuilt
+        # history certify its own deletions.
+        self.genesis = read_genesis(self.root, self.environment,
+                                    expected_archive_id=expected_archive_id)
+        self.archive_id = self.genesis["archive_id"]
 
     # -- partition identity ----------------------------------------------------
     def partition(self, when: datetime) -> Path:
@@ -186,18 +215,39 @@ class EventArchive:
         """One writer per partition, created lazily and owned exclusively."""
         if self._closed:
             raise ArchiveError("archive is closed; no further events accepted")
-        seg_id = self._segment_id(when)
+        base = self._segment_id(when)
+        seg_id = self._live_segment_id.get(base, base)
         writer = self._writers.get(seg_id)
-        if writer is not None:
+        if writer is not None and not writer.rotation_due:
             return writer
         with self._writers_lock:
+            seg_id = self._live_segment_id.get(base, base)
             writer = self._writers.get(seg_id)
+            if writer is not None and writer.rotation_due:
+                # Rotation: commit what we have and start a fresh segment, so a
+                # crash costs the OPEN segment rather than every hour since the
+                # process started. The rotated segment keeps the partition and
+                # takes a suffixed id, because a segment id is immutable
+                # evidence and a committed one may never be reopened — the
+                # partition's CURRENT id has to be remembered, or the next
+                # event walks straight back into the closed segment.
+                writer.close()
+                self._rotations_for[base] = self._rotations_for.get(base, 0) + 1
+                self.rotations += 1
+                self._writers.pop(seg_id, None)
+                seg_id = f"{base}.r{self._rotations_for[base]:04d}"
+                self._live_segment_id[base] = seg_id
+                writer = None
             if writer is not None:
                 return writer
             writer = self._writers[seg_id] = SegmentWriter(
                 self.root, environment=self.environment, segment_id=seg_id,
                 partition_identity=str(self.partition(when).relative_to(self.root)),
-                subscription_metadata={"venue": self.venue})
+                subscription_metadata={"venue": self.venue},
+                expected_archive_id=self.expected_archive_id,
+                max_records=self.max_segment_records,
+                max_age_s=self.max_segment_age_s,
+                max_bytes=self.max_segment_bytes)
         return writer
 
     # -- write -----------------------------------------------------------------
@@ -220,12 +270,14 @@ class EventArchive:
             "seq": raw.get("seq"),
             "received_at_utc": raw.get("collector_receive_time"),
             "received_monotonic_ns": raw.get("receive_monotonic_ns"),
-            # The two opaque venue payloads are coerced; every pinned column
-            # above stays strictly typed. A fractional number anywhere in a
-            # Kalshi frame arrives as a float and would otherwise be dropped
-            # AFTER the producer had been told the event was accepted.
-            "raw_event": coerce_canonical(raw.get("raw")),
-            "normalized_event": coerce_canonical(raw),
+            "raw_event": raw.get("raw"),
+            # `raw` is dropped from the normalized copy: `to_dict()` carries it,
+            # so every record stored the venue payload TWICE — 41% of the two
+            # payload fields was a byte-identical duplicate that no reader ever
+            # touched. RAW-PAYLOAD-STORAGE-001 already settled this question in
+            # this repository; shipping a new evidence store that reintroduces
+            # it was not a decision left open.
+            "normalized_event": {k: v for k, v in raw.items() if k != "raw"},
         })
         if reason is not None:
             raise ArchiveError(f"event rejected by the writer: {reason.value}")
@@ -309,7 +361,10 @@ class EventArchive:
         """Segment directories in the order the archive head committed them."""
         env_root = self.root / f"env={self.environment}"
         try:
-            head = read_head(self.root, self.environment)
+            head = load_authoritative_head(
+                self.root, self.environment,
+                expected_archive_id=self.expected_archive_id
+            ).generation_record
         except Exception:                     # noqa: BLE001 - verified elsewhere
             head = None
         if not isinstance(head, dict) or not isinstance(head.get("segments"), list):
@@ -359,7 +414,16 @@ class EventArchive:
                 if rec.get("environment") != self.environment:
                     foreign += 1
                     continue
-                out.append(rec.get("normalized_event") or rec)
+                # Reassemble the envelope from the ONE stored copy of the venue
+                # payload. `normalized_event` no longer carries `raw` — storing
+                # it in both fields duplicated the highest-volume artifact in
+                # every record for no reader — so the authoritative `raw_event`
+                # is grafted back on here, at read time, where it costs nothing.
+                envelope = rec.get("normalized_event")
+                if isinstance(envelope, dict):
+                    out.append({**envelope, "raw": rec.get("raw_event")})
+                else:
+                    out.append(envelope or rec)
         self.truncated_records = truncated
         self.tampered_records = tampered
         self.foreign_environment_records = foreign

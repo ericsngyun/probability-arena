@@ -28,6 +28,29 @@ import pytest
 from app.realtime import archive as ar
 from app.realtime import book as bk
 
+
+def _init_archive(root, environment="demo"):
+    """Archives are brought into existence EXPLICITLY, exactly as an operator does.
+
+    The collector cannot do this, and that is the point: "the head is missing,
+    therefore this is a new archive" was the inference that let a rebuilt
+    history certify its own deletions. Tests initialize on purpose.
+    """
+    from app.realtime import archive_head as _ah
+    try:
+        _ah.initialize_archive(Path(root), environment,
+                               archive_identity="kalshi-realtime")
+    except _ah.ArchiveHeadError:
+        pass                       # already initialized in this test
+    return root
+
+
+def _arch(root, **kw):
+    from app.realtime import archive as _ar
+    _init_archive(root, kw.get("environment", "demo"))
+    return _ar.EventArchive(root, **kw)
+
+
 NOW = datetime(2026, 8, 8, 12, 0, tzinfo=timezone.utc)
 M1, M2 = "KXA-TEST", "KXB-TEST"
 
@@ -60,7 +83,7 @@ def written_archive(tmp_path, envelopes):
     `verify()` instead would compute the manifest from whatever the file said
     at that moment, which would certify a deletion rather than detect it.
     """
-    a = ar.EventArchive(tmp_path, environment="demo")
+    a = _arch(tmp_path, environment="demo")
     for e in envelopes:
         a.append(e)
     a.close()
@@ -72,7 +95,7 @@ def only_file(tmp_path) -> Path:
 
 
 def _producer_archive(root):
-    return ar.EventArchive(root, environment="demo")
+    return _arch(root, environment="demo")
 
 
 # --- 1-2: the digest/float round-trip defect ---------------------------------------
@@ -141,7 +164,7 @@ class TestDeletionDetection:
 # --- 6: concurrent writers ---------------------------------------------------------
 def _producer(args):
     root, n, pid = args
-    a = ar.EventArchive(root, environment="demo")
+    a = _arch(root, environment="demo")
     for i in range(n):
         a.append(envelope(seq=pid * 10_000 + i, ts_ms=None))
     return n
@@ -165,7 +188,7 @@ class TestSingleWriterOwnership:
         asserted separately below to prove it fails loudly rather than quietly.
         """
         per, producers = 120, 6
-        a = ar.EventArchive(tmp_path, environment="demo")
+        a = _arch(tmp_path, environment="demo")
         errors = []
 
         def produce(pid):
@@ -192,9 +215,9 @@ class TestSingleWriterOwnership:
         """The shape the original test used is now refused, not tolerated."""
         from app.realtime import segment as sg
 
-        a = ar.EventArchive(tmp_path, environment="demo")
+        a = _arch(tmp_path, environment="demo")
         a.append(envelope(seq=1))
-        b = ar.EventArchive(tmp_path, environment="demo")
+        b = _arch(tmp_path, environment="demo")
         with pytest.raises((ar.ArchiveError, sg.SegmentError), match="writer|owner"):
             b.append(envelope(seq=2))
         a.close()

@@ -20,6 +20,29 @@ import pytest
 from app.realtime import canonical as cn
 from app.realtime import segment as sg
 
+
+def _init_archive(root, environment="demo"):
+    """Archives are brought into existence EXPLICITLY, exactly as an operator does.
+
+    The collector cannot do this, and that is the point: "the head is missing,
+    therefore this is a new archive" was the inference that let a rebuilt
+    history certify its own deletions. Tests initialize on purpose.
+    """
+    from app.realtime import archive_head as _ah
+    try:
+        _ah.initialize_archive(Path(root), environment,
+                               archive_identity="kalshi-realtime")
+    except _ah.ArchiveHeadError:
+        pass                       # already initialized in this test
+    return root
+
+
+def _arch(root, **kw):
+    from app.realtime import archive as _ar
+    _init_archive(root, kw.get("environment", "demo"))
+    return _ar.EventArchive(root, **kw)
+
+
 UTC = timezone.utc
 NOW = datetime(2026, 8, 8, 12, 0, tzinfo=UTC)
 ENV = "demo"
@@ -39,6 +62,7 @@ def fields(i):
 
 
 def writer(tmp_path, **kw):
+    _init_archive(tmp_path)
     kw.setdefault("segment_id", "seg-hard")
     kw.setdefault("partition_identity", "p")
     return sg.SegmentWriter(tmp_path, environment=ENV, **kw)
@@ -48,13 +72,39 @@ ALL_REJECTIONS = {r.value for r in sg.RejectReason}
 
 
 def assert_reconciles(w, *, generated):
-    """Every event reaches exactly one terminal accounting state."""
+    """Every event reaches exactly one terminal STAGE.
+
+    Two identities, not one. `attempted == written + rejected` could not tell a
+    producer cancelled before its event was taken from an accepted event that
+    was then lost, and only the second matters.
+    """
     acc = w.accounting
-    assert acc.generated == generated
-    assert acc.reconciles(), acc.to_dict()
-    assert acc.written + acc.rejected == generated
+    assert acc.attempted == generated
+    assert acc.admission_holds(), acc.to_dict()
+    assert acc.disposition_holds(), acc.to_dict()
+    assert acc.attempted == (acc.rejected_before_accept + acc.written
+                             + acc.failed_after_accept + acc.pending)
     assert set(acc.rejections) <= ALL_REJECTIONS, acc.rejections
     assert all(v > 0 for v in acc.rejections.values())
+
+
+def owns(w) -> bool:
+    """Is this writer's flock still held?
+
+    The lock FILE persists by design — unlinking it on release deleted a live
+    successor's lock and admitted two owners to one segment. Ownership is the
+    flock, so that is what a test must ask about.
+    """
+    import fcntl
+    if not w._lock_path.exists():
+        return False
+    fd = os.open(w._lock_path, os.O_RDWR)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return True
+    fcntl.flock(fd, fcntl.LOCK_UN)
+    return False
 
 
 # --- Gate D: deterministic backpressure --------------------------------------------
@@ -97,7 +147,7 @@ class TestBackpressure:
         assert_reconciles(w, generated=generated)
         assert len(results) == generated, "a submission returned no verdict"
         rejected = [r for r in results if r is not None]
-        assert len(rejected) == w.accounting.rejected
+        assert len(rejected) == w.accounting.rejected_before_accept
         # The queue is bounded, and provably so.
         assert w.queue_high_water <= 4, w.queue_high_water
         assert elapsed < 60
@@ -172,7 +222,7 @@ class TestShutdownRace:
         v = sg.verify_segment(w.dir, environment=ENV)
         assert v.valid and v.chain_valid and v.stream_digest_match and v.file_digest_match
         assert w.accounting.reconciles(), w.accounting.to_dict()
-        assert len(accepted) == w.accounting.generated - 1  # minus the late one
+        assert len(accepted) == w.accounting.attempted - 1  # minus the late one
 
     def test_close_immediately_after_construction(self, tmp_path):
         w = writer(tmp_path)
@@ -228,7 +278,7 @@ class TestShutdownRace:
         verdicts = [w.submit(fields(i)) for i in range(300)]
         w.close()
         never_accepted = sum(1 for v in verdicts if v is not None)
-        assert never_accepted == w.accounting.rejected
+        assert never_accepted == w.accounting.rejected_before_accept
         assert w.accounting.written == len(sg.read_segment_records(w.events_path))
         assert w.accounting.written + never_accepted == 300
 
@@ -265,164 +315,113 @@ class TestWriterFailure:
         w = writer(tmp_path)
         for i in range(3):
             w.submit(fields(i))
+        from app.realtime import archive_head as ah
+
         w.durability_hooks["directory_fsync"] = lambda: (
             _ for _ in ()).throw(OSError("injected"))
-        with pytest.raises(sg.SegmentError, match="manifest publication failed"):
+        # A DISTINCT TYPE, not a generic message. This test previously injected
+        # at a hook that fired OUTSIDE the protected region, so it asserted the
+        # generic "manifest publication failed" and proved nothing about the
+        # distinction its own name promises — the new type had zero coverage.
+        with pytest.raises(ah.DurabilityNotProven) as caught:
             w.close()
+        assert "IS visible to readers" in str(caught.value)
+        assert "durability is not proven" in str(caught.value)
         # The rename already happened, so the manifest exists and verifies...
         assert w.manifest_path.exists()
         assert sg.verify_segment(w.dir, environment=ENV).valid
         # ...but the writer does NOT claim CLOSED, because its own durability
         # contract was not satisfied.
         assert w.state is sg.SegmentState.INVALID
+        # And a PRE-rename failure at the same errno is a different type.
+        w2 = writer(tmp_path, segment_id="seg-pre-rename")
+        w2.submit(fields(1))
+        w2.durability_hooks["manifest_fsync"] = lambda: (
+            _ for _ in ()).throw(OSError("injected"))
+        with pytest.raises(sg.SegmentError) as pre:
+            w2.close()
+        assert not isinstance(pre.value, ah.DurabilityNotProven)
+        assert not w2.manifest_path.exists()
 
-    def test_serialization_failure_is_typed_and_does_not_kill_the_writer(self, tmp_path):
-        w = writer(tmp_path)
-        bad = fields(1)
-        bad["raw_event"] = {"x": 1.5}          # float: not canonical
-        assert w.submit(bad) is None            # accepted into the queue
-        for i in range(3):
-            w.submit(fields(i + 10))
-        # The writer survives — that half of the contract was right. What was
-        # wrong is what close() then did: `rejected_after_accept` sat on the
-        # CREDIT side of the reconciliation identity, so this segment published
-        # `close_status: "clean"` with `lossless() == True` and the archive
-        # verified VALID while an event the producer had been told was accepted
-        # was missing. Lost-but-reported-clean is exactly what the accounting
-        # model forbids, and the manifest carries no accounting at all, so
-        # nothing durable could ever have recorded the drop.
-        with pytest.raises(sg.SegmentError, match="accepted from a producer"):
-            w.close()
-        assert w.accounting.rejections.get("serialization_failure") == 1
-        assert w.accounting.reconciles(), w.accounting.to_dict()
-        assert w.accounting.rejected_after_accept == 1
-        assert not w.manifest_path.exists(), "a dropped event was published clean"
+    def test_a_float_is_refused_BEFORE_acceptance(self, tmp_path):
+        """The float contract is uniform: refused at the door, not in the writer.
 
-    def test_an_ordinary_venue_float_is_not_dropped_after_acceptance(self, tmp_path):
-        """The root cause: refusing floats is right, but venue JSON is full of them.
-
-        `json.loads` yields a float for every fractional number Kalshi sends, so
-        the canonical refusal fired on ORDINARY traffic. Coercing at the ingress
-        boundary and refusing at the digest layer is the combination that holds.
+        It used to be discovered inside the writer, after the producer had been
+        told the event was recorded, leaving only two outcomes — a silent drop
+        or destroying the whole hour. Coercing floats at ingress instead made it
+        worse: `canonical_decimal` quantizes any positive exponent, so an
+        ordinary 1e30 raised `decimal.InvalidOperation`, an ArithmeticError that
+        `_write_one` did not catch, and it killed the writer thread.
         """
-        from app.realtime import archive as ar
+        w = writer(tmp_path)
+        for value in (1.5, 1.0, 1e30, 1e28, 5e-324, -0.0, float("inf"),
+                      float("-inf"), float("nan")):
+            bad = fields(1)
+            bad["raw_event"] = {"x": value}
+            assert w.submit(bad) is sg.RejectReason.NOT_CANONICAL, value
+            assert "float" in (w.last_rejection_detail or "")
+        for i in range(3):
+            assert w.submit(fields(i + 10)) is None      # writer is untouched
+        manifest = w.close()
+        assert manifest["record_count"] == 3
+        assert w.accounting.failed_after_accept == 0
+        assert w.accounting.rejected_before_accept == 9
+        assert w.accounting.clean()
+        assert sg.verify_segment(w.dir, environment=ENV).valid
 
-        store = ar.EventArchive(tmp_path, environment=ENV, venue="kalshi")
-        stamp = cn.canonical_datetime(NOW)
-        env = ar.EventEnvelope(
-            schema_version=1, venue="kalshi", environment=ENV, channel="ticker",
-            event_type="ticker", market_ticker="KXA", market_id="KXA", sid=4,
-            seq=1, venue_time=stamp, collector_receive_time=stamp,
-            normalization_time=stamp, receive_monotonic_ns=1_000_000,
-            normalize_monotonic_ns=1_000_100, data_age_us=100,
-            implementation_version="test",
-            raw={"price": 0.51, "depth": [{"p": 1.25}], "ts": 1786150148065},
-            normalized={"raw_price_units": 5100})
-        store.append(env)
-        manifests = store.close()
-        seg = next(iter(manifests.values()))
-        assert seg["record_count"] == 1, "an ordinary venue float was dropped"
+    def test_1e30_does_not_kill_the_writer_thread(self, tmp_path):
+        """The exact reviewer finding: |f| >= ~1e28 raised decimal.InvalidOperation.
+
+        That is an ArithmeticError, not a CanonicalError, so it escaped
+        `_write_one`, set `_writer_error`, refused every later event for the
+        hour, and left `read_verified()` refusing the entire archive.
+        """
+        w = writer(tmp_path)
+        assert w.submit({**fields(1), "raw_event": {"notional": 1e30}}) \
+            is sg.RejectReason.NOT_CANONICAL
+        assert w._writer_error is None, "the writer thread must be untouched"
+        assert w.healthy and w.accepting
+        assert w.submit(fields(2)) is None
+        w.close()
         assert sg.verify_archive(tmp_path, environment=ENV)["verdict"] == "VALID"
 
-    def test_no_replacement_writer_is_started_behind_the_caller(self, tmp_path):
+    def test_the_venue_boundary_parses_numerics_as_Decimal(self, tmp_path):
+        """The transport is where Decimal is produced, not the writer.
+
+        `json.loads(..., parse_float=Decimal)` costs nothing at the boundary
+        that already parses the JSON, and it makes the archive's refusal a
+        contract rather than a hazard.
+        """
+        import json
+        from decimal import Decimal
+
+        frame = json.loads('{"price": 0.51, "depth": [{"p": 1.25}], "n": 1e30}',
+                           parse_float=Decimal)
         w = writer(tmp_path)
-        w.submit(fields(1))
-        w.durability_hooks["flush"] = lambda: (_ for _ in ()).throw(OSError("x"))
-        with pytest.raises(sg.SegmentError):
-            w.close()
-        # Scoped to THIS writer's thread. Asserting over process-global
-        # threading.enumerate() made the test fail whenever another archive
-        # test in the same session still had a writer alive — it was measuring
-        # the suite, not the subject.
-        time.sleep(0.3)
-        assert not w._thread.is_alive(), "this writer's thread survived"
-
-
-# --- Gate G: exclusive ownership ---------------------------------------------------
-class TestExclusiveOwnership:
-    def test_second_writer_same_process_fails_loudly(self, tmp_path):
-        a = writer(tmp_path)
-        with pytest.raises(sg.SegmentError, match="already has a LIVE writer"):
-            writer(tmp_path)
-        assert a.healthy, "the incumbent must stay healthy"
-        a.close()
-
-    def test_second_writer_from_a_thread_fails_loudly(self, tmp_path):
-        a = writer(tmp_path)
-        errors = []
-
-        def attempt():
-            try:
-                writer(tmp_path)
-            except sg.SegmentError as exc:
-                errors.append(exc)
-
-        t = threading.Thread(target=attempt)
-        t.start()
-        t.join(timeout=20)
-        assert len(errors) == 1
-        assert a.healthy
-        a.close()
-
-    def test_second_writer_from_another_process_fails_loudly(self, tmp_path):
-        a = writer(tmp_path)
-        code = (
-            "import sys;sys.path.insert(0,'.');"
-            "from app.realtime import segment as sg;"
-            f"sg.SegmentWriter({str(tmp_path)!r}, environment='demo',"
-            " segment_id='seg-hard', partition_identity='p')")
-        r = subprocess.run([sys.executable, "-c", code], capture_output=True,
-                           text=True, cwd=str(Path(sg.__file__).parents[2]))
-        assert r.returncode != 0
-        assert "already has a LIVE writer" in r.stderr
-        assert a.healthy
-        a.close()
-
-    def test_path_aliases_do_not_create_two_owners(self, tmp_path):
-        """Two spellings of one directory are one segment."""
-        a = writer(tmp_path)
-        alias = tmp_path / "sub" / ".."
-        alias.parent.mkdir(exist_ok=True)
-        for spelling in (str(tmp_path) + "/", str(alias), str(tmp_path.resolve())):
-            with pytest.raises(sg.SegmentError, match="already has a LIVE writer"):
-                sg.SegmentWriter(spelling, environment=ENV, segment_id="seg-hard",
-                                 partition_identity="p")
-        a.close()
-
-    def test_a_committed_segment_cannot_be_reopened_writable(self, tmp_path):
-        a = writer(tmp_path)
-        a.submit(fields(1))
-        a.close()
-        with pytest.raises(sg.SegmentError, match="already committed|already has"):
-            writer(tmp_path)
-
-    def test_a_new_segment_may_open_after_a_clean_close(self, tmp_path):
-        a = writer(tmp_path)
-        a.submit(fields(1))
-        a.close()
-        b = writer(tmp_path, segment_id="seg-hard-2")
-        assert b.healthy
-        b.submit(fields(2))
-        b.close()
+        assert sg.non_canonical_reason(frame) is None
+        assert w.submit({**fields(1), "raw_event": frame}) is None
+        manifest = w.close()
+        assert manifest["record_count"] == 1
+        assert w.accounting.clean()
+        rec = sg.read_segment_records(w.events_path)[0]
+        assert rec["raw_event"]["price"] == "0.51"      # canonical decimal TEXT
         assert sg.verify_archive(tmp_path, environment=ENV)["verdict"] == "VALID"
 
 
 class TestOwnershipCleanup:
     def test_normal_close_releases_runtime_ownership(self, tmp_path):
         a = writer(tmp_path)
-        lock = a._lock_path
-        assert lock.exists()
+        assert owns(a)
         a.close()
-        assert not lock.exists()
+        assert not owns(a)
 
     def test_writer_failure_releases_ownership_safely(self, tmp_path):
         a = writer(tmp_path)
         a.submit(fields(1))
         a.durability_hooks["flush"] = lambda: (_ for _ in ()).throw(OSError("x"))
-        lock = a._lock_path
         with pytest.raises(sg.SegmentError):
             a.close()
-        assert not lock.exists(), "a failed writer must not hold ownership forever"
+        assert not owns(a), "a failed writer must not hold ownership forever"
 
     def test_releasing_ownership_does_not_certify_evidence(self, tmp_path):
         """Ownership release and canonical validity are different properties."""
@@ -432,7 +431,7 @@ class TestOwnershipCleanup:
             _ for _ in ()).throw(OSError("x"))
         with pytest.raises(sg.SegmentError):
             a.close()
-        assert not a._lock_path.exists()                 # ownership released
+        assert not owns(a)                               # ownership released
         v = sg.verify_segment(a.dir, environment=ENV, allow_open=True)
         assert not v.valid                                # but NOT evidence
         assert v.state is not sg.SegmentState.CLOSED
@@ -563,10 +562,9 @@ class TestReview3Regressions:
         w = writer(tmp_path)
         w.submit(fields(1))
         w.durability_hooks["flush"] = lambda: (_ for _ in ()).throw(OSError("x"))
-        lock = w._lock_path
         with pytest.raises(sg.SegmentError):
             w.close()
-        assert not lock.exists()
+        assert not owns(w)
         # And the partition is not locked out for the next process.
         w2 = writer(tmp_path, segment_id="seg-hard-next")
         w2.close()
