@@ -36,7 +36,19 @@ from app.services.edge_precheck import (
     EdgePrecheckService,
 )
 
-NOW = datetime.now(timezone.utc)
+def now():
+    """The clock, read when a test RUNS — not when the module is imported.
+
+    This was `NOW = datetime.now(timezone.utc)` at module scope. Tests seed data
+    relative to it while the service computes its window from the real clock at
+    call time, so a boundary crossing anywhere inside a ~6-minute suite run
+    detaches the two. It passes in isolation in 2s, which reads exactly like a
+    flake and is not one.
+
+    Fourth instance of this pattern in this repository, after meme_news,
+    threshold and ops_013.
+    """
+    return datetime.now(timezone.utc)
 TICKER = "KXMLBTOTAL-26JUL021915STLATL-18"
 
 
@@ -66,7 +78,7 @@ def seed_forecast(
         confidence=confidence,
         evidence_depth=evidence_depth,
         forecast_risk="medium",
-        created_at=NOW - timedelta(seconds=age_seconds),
+        created_at=now() - timedelta(seconds=age_seconds),
     )
     session.add(row)
     session.commit()
@@ -81,7 +93,7 @@ def seed_tick(
     liquidity=2_000,
     age_seconds=30,
 ) -> MarketPriceTick:
-    observed = NOW - timedelta(seconds=age_seconds)
+    observed = now() - timedelta(seconds=age_seconds)
     bid = int(round((midpoint - spread / 200) * 100))
     row = MarketPriceTick(
         market_ticker=ticker,
@@ -107,7 +119,7 @@ def seed_resolution(session, ticker=TICKER, tradeability="researchable"):
         clarity_score=0.9,
         resolution_risk="low",
         tradeability=tradeability,
-        created_at=NOW,
+        created_at=now(),
     )
     session.add(row)
     session.commit()
@@ -127,7 +139,7 @@ def service(**cfg) -> EdgePrecheckService:
 class TestGapMath:
     def test_positive_gap_signed_and_abs(self, session):
         forecast = seed_all(session, probability=0.62)
-        row = service().precheck_forecast(session, forecast, now=NOW)
+        row = service().precheck_forecast(session, forecast, now=now())
         assert row.probability_gap == pytest.approx(0.12)
         assert row.abs_probability_gap == pytest.approx(0.12)
         assert row.market_midpoint == 0.50
@@ -135,7 +147,7 @@ class TestGapMath:
 
     def test_negative_gap_preserved(self, session):
         forecast = seed_all(session, probability=0.38)
-        row = service().precheck_forecast(session, forecast, now=NOW)
+        row = service().precheck_forecast(session, forecast, now=now())
         assert row.probability_gap == pytest.approx(-0.12)
         assert row.abs_probability_gap == pytest.approx(0.12)
         assert row.status == STATUS_WATCHLIST
@@ -143,7 +155,7 @@ class TestGapMath:
     def test_missing_market_snapshot_yields_null_gap(self, session):
         seed_resolution(session)
         forecast = seed_forecast(session)  # no tick at all
-        row = service().precheck_forecast(session, forecast, now=NOW)
+        row = service().precheck_forecast(session, forecast, now=now())
         assert row.probability_gap is None
         assert row.market_midpoint is None
         assert row.status == STATUS_INVALID_STALE_SNAPSHOT
@@ -155,61 +167,61 @@ class TestGapMath:
 class TestStatuses:
     def test_not_source_backed(self, session):
         forecast = seed_all(session, evidence_depth="template_only")
-        row = service().precheck_forecast(session, forecast, now=NOW)
+        row = service().precheck_forecast(session, forecast, now=now())
         assert row.status == STATUS_INVALID_NOT_SOURCE_BACKED
 
     def test_low_confidence(self, session):
         forecast = seed_all(session, confidence=0.55)
-        row = service().precheck_forecast(session, forecast, now=NOW)
+        row = service().precheck_forecast(session, forecast, now=now())
         assert row.status == STATUS_INVALID_LOW_CONFIDENCE
 
     def test_wide_spread(self, session):
         seed_resolution(session)
         seed_tick(session, spread=15)
         forecast = seed_forecast(session)
-        row = service().precheck_forecast(session, forecast, now=NOW)
+        row = service().precheck_forecast(session, forecast, now=now())
         assert row.status == STATUS_INVALID_WIDE_SPREAD
 
     def test_low_liquidity(self, session):
         seed_resolution(session)
         seed_tick(session, liquidity=100)
         forecast = seed_forecast(session)
-        row = service().precheck_forecast(session, forecast, now=NOW)
+        row = service().precheck_forecast(session, forecast, now=now())
         assert row.status == STATUS_INVALID_LOW_LIQUIDITY
 
     def test_stale_forecast_sports_uses_tighter_threshold(self, session):
         forecast = seed_all(session, age_seconds=400)  # >300s sports limit, <900s general
-        row = service().precheck_forecast(session, forecast, now=NOW)
+        row = service().precheck_forecast(session, forecast, now=now())
         assert row.status == STATUS_INVALID_STALE_FORECAST
         assert row.raw_context["max_forecast_age_applied"] == 300
 
     def test_fresh_sports_forecast_passes(self, session):
         forecast = seed_all(session, age_seconds=200)
-        row = service().precheck_forecast(session, forecast, now=NOW)
+        row = service().precheck_forecast(session, forecast, now=now())
         assert row.status == STATUS_WATCHLIST
 
     def test_stale_market_snapshot(self, session):
         seed_resolution(session)
         seed_tick(session, age_seconds=300)  # > 120s
         forecast = seed_forecast(session)
-        row = service().precheck_forecast(session, forecast, now=NOW)
+        row = service().precheck_forecast(session, forecast, now=now())
         assert row.status == STATUS_INVALID_STALE_SNAPSHOT
 
     def test_resolution_risk_for_avoid_and_missing(self, session):
         seed_resolution(session, tradeability="avoid")
         seed_tick(session)
         forecast = seed_forecast(session)
-        row = service().precheck_forecast(session, forecast, now=NOW)
+        row = service().precheck_forecast(session, forecast, now=now())
         assert row.status == STATUS_INVALID_RESOLUTION
 
         other = seed_forecast(session, ticker="NO-RESOLUTION-MKT")
         seed_tick(session, ticker="NO-RESOLUTION-MKT")
-        row = service().precheck_forecast(session, other, now=NOW)
+        row = service().precheck_forecast(session, other, now=now())
         assert STATUS_INVALID_RESOLUTION in row.invalidation_reasons
 
     def test_no_gap_below_threshold(self, session):
         forecast = seed_all(session, probability=0.52)  # gap 0.02 < 0.05
-        row = service().precheck_forecast(session, forecast, now=NOW)
+        row = service().precheck_forecast(session, forecast, now=now())
         assert row.status == STATUS_NO_GAP
         assert row.invalidation_reasons == []
 
@@ -219,7 +231,7 @@ class TestStatuses:
         forecast = seed_forecast(
             session, evidence_depth="template_only", confidence=0.4, age_seconds=5000
         )  # no tick either
-        row = service().precheck_forecast(session, forecast, now=NOW)
+        row = service().precheck_forecast(session, forecast, now=now())
         assert row.status == STATUS_INVALID_RESOLUTION  # first in precedence
         assert row.invalidation_reasons == [
             STATUS_INVALID_RESOLUTION,
@@ -235,7 +247,7 @@ class TestStatuses:
 class TestPersistence:
     def _measure(self, session, svc):
         forecast = seed_forecast(session)
-        return svc.precheck_forecast(session, forecast, now=NOW)
+        return svc.precheck_forecast(session, forecast, now=now())
 
     def test_watchlist_until_persistence_threshold(self, session):
         seed_resolution(session)
@@ -254,10 +266,10 @@ class TestPersistence:
         seed_resolution(session)
         seed_tick(session)
         svc = service(required_persistence_snapshots=3)
-        svc.precheck_forecast(session, seed_forecast(session, probability=0.62), now=NOW)
-        svc.precheck_forecast(session, seed_forecast(session, probability=0.62), now=NOW)
+        svc.precheck_forecast(session, seed_forecast(session, probability=0.62), now=now())
+        svc.precheck_forecast(session, seed_forecast(session, probability=0.62), now=now())
         flipped = svc.precheck_forecast(
-            session, seed_forecast(session, probability=0.38), now=NOW
+            session, seed_forecast(session, probability=0.38), now=now()
         )
         assert flipped.status == STATUS_WATCHLIST
         assert flipped.persistence_count == 1
@@ -269,7 +281,7 @@ class TestPersistence:
         self._measure(session, svc)
         self._measure(session, svc)
         # an invalid measurement lands between (low confidence)
-        svc.precheck_forecast(session, seed_forecast(session, confidence=0.3), now=NOW)
+        svc.precheck_forecast(session, seed_forecast(session, confidence=0.3), now=now())
         fourth = self._measure(session, svc)
         assert fourth.status == STATUS_WATCHLIST
         assert fourth.persistence_count == 1
@@ -300,7 +312,7 @@ class TestBatchAndAudit:
         seed_tick(session, ticker="OTHER-MKT")
         other = seed_forecast(session, ticker="OTHER-MKT")
 
-        snapshots = service().run_batch(session, limit=10, now=NOW)
+        snapshots = service().run_batch(session, limit=10, now=now())
         assert len(snapshots) == 2
         by_ticker = {s.market_ticker: s for s in snapshots}
         assert by_ticker[TICKER].forecast_id == newest.id
@@ -308,7 +320,7 @@ class TestBatchAndAudit:
 
     def test_snapshot_is_fully_auditable(self, session):
         forecast = seed_all(session)
-        row = service().precheck_forecast(session, forecast, now=NOW)
+        row = service().precheck_forecast(session, forecast, now=now())
         assert row.thresholds["min_abs_gap"] == 0.05
         assert "domain:sports_baseball" in row.tags
         assert "market_type:total" in row.tags
@@ -326,14 +338,14 @@ class TestBatchAndAudit:
             market_ticker=TICKER,
             signal_type="price_move_threshold",
             signal_status="forecast_refreshed",
-            observed_at=NOW,
+            observed_at=now(),
             reason="seeded",
             refreshed_forecast_id=forecast.id,
-            created_at=NOW,
+            created_at=now(),
         )
         session.add(signal)
         session.commit()
-        row = service().precheck_forecast(session, forecast, now=NOW)
+        row = service().precheck_forecast(session, forecast, now=now())
         assert row.signal_id == signal.id
 
 
@@ -342,9 +354,9 @@ class TestReport:
         seed_resolution(session)
         seed_tick(session)
         svc = service()
-        svc.precheck_forecast(session, seed_forecast(session, probability=0.62), now=NOW)
+        svc.precheck_forecast(session, seed_forecast(session, probability=0.62), now=now())
         svc.precheck_forecast(
-            session, seed_forecast(session, probability=0.38, confidence=0.3), now=NOW
+            session, seed_forecast(session, probability=0.38, confidence=0.3), now=now()
         )
         report = EdgePrecheckReportService().build(session)
         assert report.total_snapshots == 2
@@ -362,7 +374,7 @@ class TestReport:
         import re
 
         forecast = seed_all(session)
-        service().precheck_forecast(session, forecast, now=NOW)
+        service().precheck_forecast(session, forecast, now=now())
         session.commit()
         report = EdgePrecheckReportService().build(session)
         text = report.model_dump_json().lower()
@@ -555,7 +567,7 @@ class TestTargetedModes:
         seed_resolution(session, ticker="OTHER-MKT")
 
         snapshots = service().create_for_forecast_ids(
-            session, [first.id, second.id, 9999], now=NOW
+            session, [first.id, second.id, 9999], now=now()
         )
         # explicit requests honored regardless of depth; unknown id skipped
         assert len(snapshots) == 2
@@ -566,10 +578,10 @@ class TestTargetedModes:
     def test_dedupe_window_prevents_remeasurement(self, session):
         forecast = seed_all(session)
         svc = service(dedupe_seconds=120)
-        assert len(svc.create_for_forecast_ids(session, [forecast.id], now=NOW)) == 1
-        assert svc.create_for_forecast_ids(session, [forecast.id], now=NOW) == []
+        assert len(svc.create_for_forecast_ids(session, [forecast.id], now=now())) == 1
+        assert svc.create_for_forecast_ids(session, [forecast.id], now=now()) == []
         # outside the window it measures again
-        later = NOW + timedelta(seconds=121)
+        later = now() + timedelta(seconds=121)
         assert len(svc.create_for_forecast_ids(session, [forecast.id], now=later)) == 1
 
     def _seed_marketops_run(self, session, started_minutes_ago=5.0, finished_minutes_ago=4.0):
@@ -577,9 +589,9 @@ class TestTargetedModes:
 
         run = MarketOpsRun(
             status="ok",
-            started_at=NOW - timedelta(minutes=started_minutes_ago),
-            finished_at=NOW - timedelta(minutes=finished_minutes_ago),
-            created_at=NOW - timedelta(minutes=started_minutes_ago),
+            started_at=now() - timedelta(minutes=started_minutes_ago),
+            finished_at=now() - timedelta(minutes=finished_minutes_ago),
+            created_at=now() - timedelta(minutes=started_minutes_ago),
         )
         session.add(run)
         session.commit()
@@ -592,11 +604,11 @@ class TestTargetedModes:
             market_ticker=forecast.market_ticker,
             signal_type="price_move_threshold",
             signal_status="forecast_refreshed",
-            observed_at=NOW,
+            observed_at=now(),
             reason="seeded",
             refreshed_forecast_id=forecast.id,
-            processed_at=NOW - timedelta(minutes=processed_minutes_ago),
-            created_at=NOW,
+            processed_at=now() - timedelta(minutes=processed_minutes_ago),
+            created_at=now(),
         )
         session.add(signal)
         session.commit()
@@ -611,7 +623,7 @@ class TestTargetedModes:
         outside = seed_forecast(session, ticker="OUTSIDE-MKT", age_seconds=10)
         self._link_signal(session, outside, processed_minutes_ago=0.1)  # after run finished
 
-        snapshots = service().create_for_marketops_run(session, run_id=run.id, now=NOW)
+        snapshots = service().create_for_marketops_run(session, run_id=run.id, now=now())
         assert [s.forecast_id for s in snapshots] == [in_run.id]
 
     def test_marketops_run_mode_window_fallback_and_source_filter(self, session):
@@ -626,7 +638,7 @@ class TestTargetedModes:
         )
         seed_forecast(session, ticker="LATE-MKT", age_seconds=10)  # outside window
 
-        snapshots = service().create_for_marketops_run(session, run_id=run.id, now=NOW)
+        snapshots = service().create_for_marketops_run(session, run_id=run.id, now=now())
         # no signal linkage -> created_at window; template filtered by
         # target_only_source_backed=true
         assert [s.forecast_id for s in snapshots] == [in_window_backed.id]
@@ -639,13 +651,13 @@ class TestTargetedModes:
         forecast = seed_forecast(session, age_seconds=270)
         self._link_signal(session, forecast)
 
-        snapshots = service().create_for_marketops_run(session, now=NOW)  # run_id=None
+        snapshots = service().create_for_marketops_run(session, now=now())  # run_id=None
         assert len(snapshots) == 1
         assert snapshots[0].forecast_id == forecast.id
         assert latest.id is not None
 
     def test_no_marketops_run_yields_nothing(self, session):
-        assert service().create_for_marketops_run(session, now=NOW) == []
+        assert service().create_for_marketops_run(session, now=now()) == []
 
     def test_recent_refreshed_signals_mode(self, session):
         seed_resolution(session)
@@ -657,12 +669,12 @@ class TestTargetedModes:
         template = seed_forecast(session, ticker="TPL-MKT", evidence_depth="template_only")
         self._link_signal(session, template)
 
-        snapshots = service().create_for_recent_refreshed_signals(session, limit=10, now=NOW)
+        snapshots = service().create_for_recent_refreshed_signals(session, limit=10, now=now())
         # template filtered by target_only_source_backed
         assert [s.forecast_id for s in snapshots] == [backed.id]
 
         loose = service(target_only_source_backed=False)
-        more = loose.create_for_recent_refreshed_signals(session, limit=10, now=NOW)
+        more = loose.create_for_recent_refreshed_signals(session, limit=10, now=now())
         assert len(more) == 1  # backed deduped (just measured); template now included
         assert more[0].forecast_id == template.id
 
@@ -671,12 +683,12 @@ class TestTargetedModes:
         seed_tick(session)
         svc = service(required_persistence_snapshots=1)
         rows = [
-            svc.precheck_forecast(session, seed_forecast(session), now=NOW),  # candidate
+            svc.precheck_forecast(session, seed_forecast(session), now=now()),  # candidate
             svc.precheck_forecast(
-                session, seed_forecast(session, probability=0.51), now=NOW
+                session, seed_forecast(session, probability=0.51), now=now()
             ),  # no_gap
             svc.precheck_forecast(
-                session, seed_forecast(session, confidence=0.3), now=NOW
+                session, seed_forecast(session, confidence=0.3), now=now()
             ),  # invalid
         ]
         from app.services.edge_precheck import summarize_snapshots
@@ -695,5 +707,5 @@ class TestTargetedModes:
         seed_tick(session)
         seed_forecast(session)
         seed_forecast(session)  # same ticker: latest-per-ticker dedup
-        snapshots = service().run_batch(session, limit=10, now=NOW)
+        snapshots = service().run_batch(session, limit=10, now=now())
         assert len(snapshots) == 1

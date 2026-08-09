@@ -108,7 +108,17 @@ def canonical_decimal(value: Decimal) -> str:
         raise CanonicalError(f"expected Decimal, got {type(value).__name__}")
     if not value.is_finite():
         raise CanonicalError(f"{value!r} is not finite")
-    normalised = value.normalize()
+    try:
+        normalised = value.normalize()
+    except ArithmeticError as exc:
+        # `normalize()` sat OUTSIDE the guard below, so decimal.Overflow — an
+        # ArithmeticError, not a CanonicalError — escaped into the WRITER and,
+        # worse, into verify_chain / verify_archive / read_verified. A
+        # tamper-evidence path that dies on a tampered numeric literal is
+        # fail-open by crash.
+        raise CanonicalError(
+            f"{value!r} cannot be normalised to canonical decimal text: {exc!r}"
+        ) from exc
     # `format(x, "f")` already renders a positive exponent in full — `1E+30`
     # becomes `1000000000000000000000000000000` — so the quantize that used to
     # sit here was redundant AND actively harmful: `quantize` is evaluated in

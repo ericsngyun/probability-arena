@@ -112,11 +112,14 @@ class TestFixtureIsRealEvidence:
 
     def test_the_head_was_built_incrementally_not_by_discovery(self, archive):
         rec = ah.load_authoritative_head(archive, ENV).generation_record
-        assert [e["segment_id"] for e in rec["segments"]] == [
+        chain = [ah.read_generation(archive, ENV, g) for g in range(1, 4)]
+        assert [r["committed_segment_id"] for r in chain] == [
             "kalshi.seg-A", "kalshi.seg-B", "kalshi.seg-C"]
         assert rec["generation"] == 3
         assert rec["head_digest"] == ah.head_digest_of(rec)
-        # One immutable record per generation, 0..3 — genesis included.
+        # Generation N is reached by N transitions and holds N segments. That
+        # equality is what makes a re-minted shorter history contradict itself.
+        assert rec["segment_count"] == rec["generation"] == 3
         assert ah.present_generations(archive, ENV) == [0, 1, 2, 3]
 
 

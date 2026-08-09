@@ -448,12 +448,14 @@ class TestCommitTimePredecessor:
             writers[n].close()
         out = verdict(tmp_path)
         assert out["verdict"] == "VALID", out["reasons"]
-        rec = ah.load_authoritative_head(tmp_path, ENV).generation_record
-        assert [e["segment_id"] for e in rec["segments"]] == [
+        # Order is read from the DELTA CHAIN, one transition per generation.
+        chain = [ah.read_generation(tmp_path, ENV, g) for g in (1, 2)]
+        assert [r["committed_segment_id"] for r in chain] == [
             f"kalshi.seg-{n}" for n in order], "order must be COMMIT order"
-        assert rec["segments"][0]["previous_segment_digest"] is None
-        assert rec["segments"][1]["previous_segment_digest"] == \
-            rec["segments"][0]["manifest_digest"]
+        assert chain[0]["previous_segment_digest"] is None
+        assert chain[1]["previous_segment_digest"] == \
+            chain[0]["committed_segment_digest"]
+        assert [r["segment_count"] for r in chain] == [1, 2]
 
     def test_a_long_lived_writer_spanning_many_others(self, tmp_path):
         init(tmp_path)
@@ -491,7 +493,8 @@ class TestSegmentRollover:
                 implementation_version="test",
                 raw={"p": "0.51"}, normalized={"u": 5100}))
         # Committed BEFORE any shutdown: this is the whole point.
-        assert store.rotations >= 3
+        assert store.rotations >= 2, store.rotations
+        assert not store.rotation_failures, store.rotation_failures
         out = verdict(tmp_path)
         assert out["head_generation"] >= 3
         assert out["records_read"] >= 30

@@ -244,6 +244,12 @@ def _fsync_directory(directory: Path) -> None:
 # omitted root DERIVES one instead of silently skipping containment.
 _DERIVE_ROOT = object()
 
+# Bounds chosen so canonical text stays a few hundred bytes and every operation
+# stays inside the default decimal context. A venue number outside this is not
+# a price; it is a contract violation, and it is refused before acceptance.
+_MAX_DECIMAL_EXPONENT = 4096
+_MAX_DECIMAL_DIGITS = 512
+
 
 class SegmentState(str, Enum):
     OPEN = "OPEN"
@@ -292,7 +298,24 @@ def non_canonical_reason(value, _path: str = "") -> str | None:
         return (f"{_path or 'value'} is a float ({value!r}); floats are not "
                 "canonically representable. Parse venue JSON with "
                 "parse_float=Decimal before submitting.")
-    if isinstance(value, (int, str, Decimal, datetime)):
+    if isinstance(value, Decimal):
+        # Bound the exponent HERE, before acceptance. A canonically-typed
+        # Decimal with a huge exponent was admitted and then destroyed the whole
+        # segment at close, which made the "clean or nothing" close policy
+        # indefensible: it is only defensible if admission is total.
+        if not value.is_finite():
+            return f"{_path or 'value'} is a non-finite Decimal ({value!r})"
+        exponent = value.as_tuple().exponent
+        if isinstance(exponent, int) and not (-_MAX_DECIMAL_EXPONENT
+                                              <= exponent
+                                              <= _MAX_DECIMAL_EXPONENT):
+            return (f"{_path or 'value'} has decimal exponent {exponent}, "
+                    f"outside the canonical range +/-{_MAX_DECIMAL_EXPONENT}")
+        if len(value.as_tuple().digits) > _MAX_DECIMAL_DIGITS:
+            return (f"{_path or 'value'} has more than {_MAX_DECIMAL_DIGITS} "
+                    "significant digits")
+        return None
+    if isinstance(value, (int, str, datetime)):
         return None
     if isinstance(value, Mapping):
         for k, v in value.items():
@@ -1452,9 +1475,14 @@ def read_segment_records(events_path: Path) -> list:
     import zlib
 
     events_path = Path(events_path)
-    if not events_path.exists():
+    try:
+        if not events_path.is_file():
+            return []
+        data = events_path.read_bytes()
+    except OSError:
+        # Mode-0, a directory in place of the file, or any other filesystem
+        # refusal. A reader that raises here takes the whole verdict down.
         return []
-    data = events_path.read_bytes()
     text = ""
     while data:
         decoded, consumed, eof = _decompress_prefix(data)
@@ -1550,6 +1578,7 @@ from app.realtime.archive_head import (             # noqa: E402
     read_current_head,
     read_genesis,
     read_generation,
+    verify_transition,
     recover_current_head,
     segment_commitment,
 )
@@ -1639,6 +1668,12 @@ def verify_segment(directory, *, environment: str, allow_open: bool = False,
     except Exception as exc:
         return SegmentVerdict(seg_id, SegmentState.INVALID, False,
                               [f"manifest is unreadable ({type(exc).__name__})"])
+    if not isinstance(manifest, dict):
+        # Valid JSON, wrong container. `archive_head._read_json` already carried
+        # this guard; the one artifact a reader is handed directly did not.
+        return SegmentVerdict(
+            seg_id, SegmentState.INVALID, False,
+            [f"manifest is a {type(manifest).__name__}, not an object"])
 
     v = SegmentVerdict(seg_id, SegmentState.INVALID, False, reasons)
     v.manifest_valid = verify_manifest_self_digest(manifest)
@@ -1818,22 +1853,43 @@ def _empty_verdict(environment: str, **over) -> dict:
 
 
 def verify_archive(root, *, environment: str, expected_archive_id: str | None = None,
-                   minimum_generation: int | None = None) -> dict:
+                   minimum_generation: int | None = None,
+                   expected_head_digest: str | None = None) -> dict:
     """Verify the archive against its COMMITTED history, rooted in its genesis.
 
-    Three things are checked in order, and each one is only meaningful because
-    the one before it held: the genesis is the archive we were configured for;
-    the current head points at a generation record that exists and chains back
-    to generation 0; and every segment that generation asserts is present and
-    verifies against its own commitment.
+    The history is reconstructed by walking the generation chain from 0 to N and
+    applying each delta, and every step must be exactly one valid transition
+    from the one before it. That is what stops a reduced history from being
+    re-minted: dropping a segment drops a GENERATION, and a no-op generation
+    minted to restore the counter contradicts its own segment count.
 
-    `minimum_generation` is the hook for an anchor OUTSIDE this root. Everything
-    else here lives under a directory the writer can write, so an attacker who
-    removes the tail segments, removes their generation records and rewrites the
-    pointer leaves a shorter history that is internally consistent. A monitor
-    that remembers the last generation it saw supplies the one fact the archive
-    cannot supply about itself.
+    `minimum_generation` and `expected_head_digest` are the hooks for an anchor
+    OUTSIDE this root. Everything else lives under a directory the writer can
+    write. A monitor that remembers `(generation, head_digest)` pins content;
+    one that remembers only the generation pins a counter, which is weaker and
+    is why both are accepted.
+
+    This function does not raise. Corruption is a verdict.
     """
+    try:
+        return _verify_archive_inner(
+            root, environment=environment, expected_archive_id=expected_archive_id,
+            minimum_generation=minimum_generation,
+            expected_head_digest=expected_head_digest)
+    except Exception as exc:                  # noqa: BLE001 - reported as a verdict
+        # A verifier that raises cannot report corruption, and every caller that
+        # catches only the domain error turns tampering into a traceback. Five
+        # shapes reached this before it existed: a mode-0 or directory events
+        # file, a mode-0 segment directory, a mode-0 `heads/`, and a manifest
+        # that is valid JSON but not an object.
+        return _empty_verdict(
+            environment, head_state="VERIFICATION_FAILED",
+            reasons=[f"verification could not complete: "
+                     f"{type(exc).__name__}: {exc}"])
+
+
+def _verify_archive_inner(root, *, environment: str, expected_archive_id,
+                          minimum_generation, expected_head_digest) -> dict:
     root = Path(root)
     env_dir = root / f"env={environment}"
     if env_dir.is_symlink():
@@ -1849,15 +1905,18 @@ def verify_archive(root, *, environment: str, expected_archive_id: str | None = 
     state = head_state(root, environment, expected_archive_id=expected_archive_id)
     discovered = {}
     if env_dir.is_dir():
-        for d in sorted(env_dir.glob("segment=*")):
+        try:
+            children = sorted(env_dir.glob("segment=*"))
+        except OSError as exc:
+            return _empty_verdict(
+                environment, head_state="ROOT_UNREADABLE",
+                reasons=[f"the environment directory is unreadable: {exc!r}"])
+        for d in children:
             if d.is_symlink() or not d.is_dir():
                 continue
             discovered[d.name.split("segment=", 1)[-1]] = d
 
     if state["state"] != "CURRENT":
-        # NOT_INITIALIZED / GENESIS_INVALID / RECOVERY_REQUIRED / HEAD_INVALID /
-        # STALE_HEAD. Every one of these is a named, actionable condition — not
-        # an invitation to work out what the history "should" have been.
         return _empty_verdict(
             environment, head_state=state["state"],
             archive_id=state.get("archive_id"),
@@ -1875,52 +1934,63 @@ def verify_archive(root, *, environment: str, expected_archive_id: str | None = 
             f"HISTORY_TRUNCATED: the archive is at generation "
             f"{record['generation']} but was last observed at generation "
             f"{minimum_generation}; the tail of this history is missing")
+    if expected_head_digest is not None and record["head_digest"] != expected_head_digest:
+        reasons.append(
+            f"HISTORY_REWRITTEN: generation {record['generation']} has digest "
+            f"{str(record['head_digest'])[:12]}, but the anchor records "
+            f"{str(expected_head_digest)[:12]} at or before this generation")
 
-    # The chain must be whole from 0 to the current generation. A missing
-    # generation record is a deletion of an immutable commitment.
-    expected_generations = list(range(record["generation"] + 1))
-    missing = [g for g in expected_generations if g not in generations]
+    # Walk the chain and REBUILD the committed order from the deltas. Each step
+    # must be one valid transition; nothing is taken on the record's own word.
+    expected: list = []
+    missing = [g for g in range(record["generation"] + 1) if g not in generations]
     if missing:
         reasons.append(
             f"head generation record(s) {missing[:8]} are missing; the chain "
             "from genesis to the current head is not whole")
-    previous_digest = None
-    for gen in expected_generations:
-        if gen in missing:
-            previous_digest = None
-            continue
-        try:
-            rec = read_generation(root, environment, gen)
-        except ArchiveHeadError as exc:
-            reasons.append(f"head generation {gen}: {exc}")
-            previous_digest = None
-            continue
-        if rec.get("archive_id") != archive_id:
-            reasons.append(
-                f"head generation {gen} belongs to archive "
-                f"{rec.get('archive_id')!r}, not {archive_id!r}")
-        if gen > 0 and rec.get("previous_head_digest") != previous_digest:
-            reasons.append(
-                f"head generation {gen} does not chain from generation "
-                f"{gen - 1}")
-        previous_digest = rec.get("head_digest")
-
-    expected = record.get("segments") or []
-    if not isinstance(expected, list):
-        reasons.append("the head generation's segment list is not a list")
-        expected = []
     else:
-        bad = [e for e in expected if not isinstance(e, dict)]
-        if bad:
-            reasons.append("the head generation's segment list contains "
-                           "entries that are not objects")
-            expected = [e for e in expected if isinstance(e, dict)]
+        previous = None
+        for gen in range(record["generation"] + 1):
+            try:
+                rec = read_generation(root, environment, gen)
+            except ArchiveHeadError as exc:
+                reasons.append(f"head generation {gen}: {exc}")
+                break
+            if rec.get("archive_id") != archive_id:
+                reasons.append(
+                    f"head generation {gen} belongs to archive "
+                    f"{rec.get('archive_id')!r}, not {archive_id!r}")
+                break
+            if rec.get("environment") != environment:
+                reasons.append(
+                    f"head generation {gen} declares environment "
+                    f"{rec.get('environment')!r}, not {environment!r}")
+                break
+            if gen == 0:
+                if rec.get("segment_count") != 0 or rec.get("committed_segment_id"):
+                    reasons.append("generation 0 is not an empty archive")
+                    break
+            else:
+                problems = verify_transition(previous, rec)
+                if problems:
+                    reasons.extend(problems)
+                    break
+                expected.append({
+                    "segment_id": rec["committed_segment_id"],
+                    "manifest_digest": rec["committed_segment_digest"],
+                    "record_count": rec["committed_record_count"],
+                    "partition_identity": rec["committed_partition_identity"],
+                    "previous_segment_digest": rec["previous_segment_digest"],
+                })
+            previous = rec
+        if previous is not None and previous.get("head_digest") != record["head_digest"]:
+            reasons.append("the walked chain does not end at the current head")
 
     results, previous_commitment = [], None
     fold = digest_hex({"archive_id": archive_id, "environment": environment,
                        "purpose": "archive-segments-fold"})
     for index, entry in enumerate(expected):
-        seg_id = entry.get("segment_id")
+        seg_id = entry["segment_id"]
         directory = discovered.pop(seg_id, None)
         if directory is None:
             reasons.append(
@@ -1934,46 +2004,41 @@ def verify_archive(root, *, environment: str, expected_archive_id: str | None = 
             reasons.append(f"segment {seg_id!r} does not verify: "
                            f"{'; '.join(verdict.reasons)}")
             continue
-        manifest = parse_canonical((directory / MANIFEST_FILENAME).read_bytes())
+        try:
+            manifest = parse_canonical((directory / MANIFEST_FILENAME).read_bytes())
+        except Exception as exc:              # noqa: BLE001 - reported
+            reasons.append(f"segment {seg_id!r} manifest unreadable: {exc!r}")
+            continue
+        if not isinstance(manifest, dict):
+            reasons.append(f"segment {seg_id!r} manifest is not an object")
+            continue
         commitment = segment_commitment(manifest)
-        if commitment != entry.get("manifest_digest"):
+        if commitment != entry["manifest_digest"]:
             reasons.append(
                 f"segment {seg_id!r} does not match the commitment the head "
                 "records for it (substituted or rebuilt)")
-        # Ordering is asserted by the head ENTRY, resolved at commit time under
-        # the archive lock. A writer cannot know its place in history when it
-        # opens: writers are lazy and overlap, so two hours both opened against
-        # an empty head, both recorded predecessor None, and every ordinary
-        # rollover produced a permanently INVALID archive.
-        if entry.get("previous_segment_digest") != previous_commitment:
+        if entry["previous_segment_digest"] != previous_commitment:
             reasons.append(
                 f"segment {seg_id!r} is recorded after predecessor "
-                f"{entry.get('previous_segment_digest')!r}, but the preceding "
+                f"{entry['previous_segment_digest']!r}, but the preceding "
                 f"committed segment is {previous_commitment!r}")
-        if entry.get("record_count") != manifest.get("record_count"):
+        if entry["record_count"] != manifest.get("record_count"):
             reasons.append(
-                f"head entry for {seg_id!r} claims {entry.get('record_count')} "
+                f"head entry for {seg_id!r} claims {entry['record_count']} "
                 f"records, the manifest says {manifest.get('record_count')}")
-        if entry.get("partition_identity") != manifest.get("partition_identity"):
+        if entry["partition_identity"] != manifest.get("partition_identity"):
             reasons.append(
                 f"head entry for {seg_id!r} claims partition "
-                f"{entry.get('partition_identity')!r}, the manifest says "
+                f"{entry['partition_identity']!r}, the manifest says "
                 f"{manifest.get('partition_identity')!r}")
         previous_commitment = commitment
         fold = fold_segments_digest(fold, commitment)
 
-    # Leftovers. A segment with a MANIFEST is committed evidence that the
-    # history does not mention — either a crash between the manifest publish
-    # and the head commit, or a graft — and the two are genuinely ambiguous, so
-    # it stays fatal and is never silently adopted.
-    #
-    # A segment WITHOUT a manifest is not evidence at all: it cannot hide a
-    # deletion (the head states what must exist) and it cannot be grafted in
-    # (no commit record). It is reported and does not affect the verdict. It
-    # used to be fatal and decided by probing a lock file, which meant any
-    # crash left the archive permanently INVALID with `read_verified()`
-    # refusing every healthy segment beside it — and made an attacker-writable
-    # lock file part of an integrity decision.
+    # A segment with a MANIFEST is committed evidence the history does not
+    # mention — a crash between the manifest publish and the head commit, or a
+    # graft. Genuinely ambiguous, so it stays fatal and is never adopted
+    # silently. A segment WITHOUT one is not evidence at all: it cannot hide a
+    # deletion (the head states what must exist) and it cannot be grafted in.
     orphaned = sorted(s for s, d in discovered.items()
                       if (d / MANIFEST_FILENAME).exists())
     uncommitted = sorted(s for s in discovered if s not in orphaned)
@@ -1982,21 +2047,13 @@ def verify_archive(root, *, environment: str, expected_archive_id: str | None = 
             f"ORPHANED_COMMITTED_SEGMENT: {orphaned} are committed evidence on "
             "disk that the archive head does not mention — either a crash "
             "between the manifest publish and the head commit, or a graft. "
-            "Resolve each explicitly; neither is adopted automatically.")
+            "Resolve each explicitly with the archive-adopt or archive-discard "
+            "operation; neither is adopted automatically.")
 
-    if record.get("segment_count") != len(expected):
-        reasons.append("the head generation's segment_count does not match its "
-                       "own segment list")
-    if fold != record.get("archive_segments_digest"):
+    if not missing and record.get("archive_segments_digest") != fold and expected:
         reasons.append(
             "archive_segments_digest does not match the ordered segments "
             "(deletion, insertion or reorder present this way)")
-    if expected:
-        if record.get("first_segment_digest") != expected[0].get("manifest_digest"):
-            reasons.append("first_segment_digest does not match position 0")
-        if record.get("terminal_segment_digest") != expected[-1].get("manifest_digest"):
-            reasons.append("terminal_segment_digest does not match the last "
-                           "committed segment")
 
     invalid = [r for r in results if r.state is SegmentState.INVALID]
     return _empty_verdict(
@@ -2010,10 +2067,12 @@ def verify_archive(root, *, environment: str, expected_archive_id: str | None = 
         closed_segments=len([r for r in results if r.state is SegmentState.CLOSED]),
         open_segments=len(uncommitted),
         uncommitted_segments=uncommitted,
-        abandoned_segments=[],
+        abandoned_segments=sorted(
+            f.name for d in discovered.values() if d.is_dir()
+            for f in d.glob(f"{EVENTS_FILENAME}.abandoned.*")),
         invalid_segments=len(invalid),
         orphaned_committed_segments=orphaned,
-        records_expected=sum(e.get("record_count") or 0 for e in expected),
+        records_expected=sum(e["record_count"] or 0 for e in expected),
         records_read=sum(r.records_read for r in results),
         segment_verdicts=[r.to_dict() for r in results],
         reasons=reasons,

@@ -101,20 +101,38 @@ GENESIS_FIELDS = (
     "created_at",                # when the archive was brought into existence
 )
 
+# A generation record is a DELTA: exactly one transition from N-1.
+#
+# It used to embed the whole ordered segment list, and that was the defect. The
+# verifier checked only `archive_id` and `previous_head_digest` between
+# generations, so nothing tied the generation NUMBER to the segment COUNT — an
+# attacker deleted a middle segment, re-minted generations 1..N with the
+# shortened list, repointed, and the archive verified VALID with the genesis
+# byte-identical and both `expected_archive_id` and `minimum_generation`
+# satisfied. Twelve records became eight.
+#
+# As a delta the arithmetic does the work instead of a comparison anyone can
+# forget to write: generation N asserts `segment_count == N`, so a history that
+# is one segment shorter is one GENERATION shorter, and a no-op generation
+# minted to restore the counter contradicts its own segment count. It also
+# makes the records O(1) rather than O(N) — the embedded list reached 75 KiB per
+# record and 9.5 MiB of heads at 250 segments, which for an hourly cadence is
+# ~11.8 GB/year of head records alone.
 HEAD_GENERATION_FIELDS = (
     "schema_version",
     "canonical_schema_version",
-    "archive_id",                # binds the generation to THIS archive's genesis
-    "environment",
-    "generation",                # position in the chain; file name mirrors it
-    "previous_head_digest",      # chain link to generation N-1 (None at 0)
-    "segment_count",             # what this generation asserts must exist
-    "segments",                  # the ordered commitments themselves
-    "first_segment_digest",      # position-0 commitment, checked against segments
-    "terminal_segment_digest",   # the predecessor the NEXT segment will record
-    "archive_segments_digest",   # ordered fold; deletion/insert/reorder show here
-    "committed_segment_id",      # which segment this generation added (None at 0)
-    "committed_segment_digest",  # and its commitment, so the pair is pinned
+    "archive_id",                 # binds the generation to THIS archive's genesis
+    "environment",                # demo evidence must never become production
+    "generation",                 # position in the chain; the file name mirrors it
+    "previous_head_digest",       # chain link to generation N-1 (None at 0)
+    "segment_count",              # cumulative; MUST equal `generation`
+    "committed_segment_id",       # the one segment this transition adds (None at 0)
+    "committed_segment_digest",   # its commitment
+    "committed_record_count",     # so the head's claim is checkable without the manifest
+    "committed_partition_identity",
+    "previous_segment_digest",    # the predecessor at COMMIT time — the chain order
+    "first_segment_digest",       # position 0, carried forward unchanged
+    "archive_segments_digest",    # cumulative position-bound fold
     "created_at",
 )
 
@@ -398,18 +416,39 @@ def initialize_archive(root, environment: str, *, archive_identity: str,
         "created_at": canonical_datetime(datetime.now(timezone.utc)),
     }
     genesis["genesis_digest"] = genesis_digest_of(genesis)
+
+    # ORDER MATTERS, and the previous order was a permanent brick. Linking the
+    # genesis FIRST meant a crash before generation 0 left an archive that could
+    # not move: `head_state` said RECOVERY_REQUIRED, recovery refused ("no head
+    # generation records at all"), re-initialization refused ("already
+    # initialized"), and commit refused. Worse, `EventArchive.__init__` checks
+    # only the genesis, so every collector restart accepted events, published a
+    # manifest, and only then discovered the head was unusable — burning another
+    # unresolvable orphan each time.
+    #
+    # Publishing generation 0 and the pointer first inverts it: a crash before
+    # the genesis link leaves NOT_INITIALIZED, which initialization may
+    # legitimately re-run. "Genesis exists" now IMPLIES "generation 0 and the
+    # pointer exist".
+    zero = _build_generation_zero(archive_id=genesis["archive_id"],
+                                  environment=environment)
+    existing_zero = generation_path(root, environment, 0)
+    if os.path.lexists(existing_zero):
+        # A previous interrupted initialization already created it. Adopt it
+        # only if it is genuinely generation 0 of an archive with no genesis.
+        durable = read_generation(root, environment, 0)
+        if durable.get("segment_count") != 0:
+            raise ArchiveHeadError(
+                f"{existing_zero} exists and is not an empty generation 0; "
+                "refusing to initialize over it")
+        zero = durable
+    else:
+        _publish_generation(root, environment, zero)
+    _publish_current_head(root, environment, zero)
+
     payload = canonical_bytes(genesis)
     tmp = _stage_bytes(directory, GENESIS_FILENAME, payload)
     _publish_create_once(tmp, path, label="genesis")
-
-    # Generation 0 is explicit: an initialized archive with no segments is a
-    # real, verifiable state, distinct from an archive whose history is gone.
-    zero = _build_generation(
-        archive_id=genesis["archive_id"], environment=environment,
-        generation=0, previous_head_digest=None, segments=[],
-        committed_segment_id=None, committed_segment_digest=None)
-    _publish_generation(root, environment, zero)
-    _publish_current_head(root, environment, zero)
     return genesis
 
 
@@ -431,6 +470,12 @@ def read_genesis(root, environment: str, *,
             "explicit archive initialization for a genuinely new root, or "
             "restore the genesis from backup.")
     genesis = _read_json(path, what="archive genesis")
+    unknown = sorted(set(genesis) - set(GENESIS_FIELDS) - {"genesis_digest"})
+    if unknown:
+        raise ArchiveHeadError(
+            f"genesis carries undeclared top-level field(s) {unknown}; the "
+            "envelope is closed at this schema version, so an extra key would "
+            "sit outside every digest and every commitment")
     if genesis.get("genesis_digest") != genesis_digest_of(genesis):
         raise ArchiveHeadError(
             "the archive genesis fails its own digest; the root of trust is "
@@ -454,31 +499,101 @@ def read_genesis(root, environment: str, *,
 # --- head generations -------------------------------------------------------------
 
 
-def _build_generation(*, archive_id: str, environment: str, generation: int,
-                      previous_head_digest: str | None, segments: list,
-                      committed_segment_id: str | None,
-                      committed_segment_digest: str | None) -> dict:
-    fold = _segments_genesis(archive_id, environment)
-    for entry in segments:
-        fold = fold_segments_digest(fold, entry["manifest_digest"])
+def _build_generation_zero(*, archive_id: str, environment: str) -> dict:
     head = {
         "schema_version": HEAD_SCHEMA_VERSION,
         "canonical_schema_version": CANONICAL_SCHEMA_VERSION,
         "archive_id": archive_id,
         "environment": environment,
-        "generation": generation,
-        "previous_head_digest": previous_head_digest,
-        "segment_count": len(segments),
-        "segments": segments,
-        "first_segment_digest": segments[0]["manifest_digest"] if segments else None,
-        "terminal_segment_digest": segments[-1]["manifest_digest"] if segments else None,
-        "archive_segments_digest": fold,
-        "committed_segment_id": committed_segment_id,
-        "committed_segment_digest": committed_segment_digest,
+        "generation": 0,
+        "previous_head_digest": None,
+        "segment_count": 0,
+        "committed_segment_id": None,
+        "committed_segment_digest": None,
+        "committed_record_count": None,
+        "committed_partition_identity": None,
+        "previous_segment_digest": None,
+        "first_segment_digest": None,
+        "archive_segments_digest": _segments_genesis(archive_id, environment),
         "created_at": canonical_datetime(datetime.now(timezone.utc)),
     }
     head["head_digest"] = head_digest_of(head)
     return head
+
+
+def _build_generation(*, previous: dict, manifest: dict) -> dict:
+    """The next generation as ONE transition from `previous`. Nothing else."""
+    commitment = segment_commitment(manifest)
+    head = {
+        "schema_version": HEAD_SCHEMA_VERSION,
+        "canonical_schema_version": CANONICAL_SCHEMA_VERSION,
+        "archive_id": previous["archive_id"],
+        "environment": previous["environment"],
+        "generation": previous["generation"] + 1,
+        "previous_head_digest": previous["head_digest"],
+        "segment_count": previous["segment_count"] + 1,
+        "committed_segment_id": manifest["segment_id"],
+        "committed_segment_digest": commitment,
+        "committed_record_count": manifest["record_count"],
+        "committed_partition_identity": manifest["partition_identity"],
+        # Resolved HERE, under the archive lock, where the order is decided. A
+        # writer cannot know its place in history when it opens: writers are
+        # lazy and overlap, so two hours both opened against an empty head and
+        # both recorded predecessor None, and every ordinary rollover produced a
+        # permanently INVALID archive.
+        "previous_segment_digest": previous["committed_segment_digest"],
+        "first_segment_digest": (previous["first_segment_digest"]
+                                 if previous["generation"] else commitment),
+        "archive_segments_digest": fold_segments_digest(
+            previous["archive_segments_digest"], commitment),
+        "created_at": canonical_datetime(datetime.now(timezone.utc)),
+    }
+    head["head_digest"] = head_digest_of(head)
+    return head
+
+
+def verify_transition(previous: dict, current: dict) -> list:
+    """Is `current` exactly one valid transition from `previous`?
+
+    This is the check whose absence let a reduced history be re-minted into an
+    apparently valid one. Every clause below is an equality the writer actually
+    maintains, so a history that skipped, dropped or fabricated a step
+    contradicts one of them.
+    """
+    out = []
+    gen = current.get("generation")
+    if gen != previous.get("generation", -1) + 1:
+        out.append(f"generation {gen} does not follow {previous.get('generation')}")
+    if current.get("previous_head_digest") != previous.get("head_digest"):
+        out.append(f"generation {gen} does not chain from its predecessor")
+    if current.get("segment_count") != (previous.get("segment_count") or 0) + 1:
+        out.append(
+            f"generation {gen} claims {current.get('segment_count')} segments; "
+            f"exactly one segment is added per generation, so it must be "
+            f"{(previous.get('segment_count') or 0) + 1}")
+    if current.get("segment_count") != gen:
+        out.append(
+            f"generation {gen} claims {current.get('segment_count')} segments; "
+            "generation N is reached by N transitions and must hold N segments "
+            "(a re-minted shorter history presents exactly this way)")
+    if current.get("previous_segment_digest") != previous.get("committed_segment_digest"):
+        out.append(f"generation {gen} records the wrong predecessor segment")
+    expected_fold = fold_segments_digest(
+        previous.get("archive_segments_digest"),
+        current.get("committed_segment_digest"))
+    if current.get("archive_segments_digest") != expected_fold:
+        out.append(
+            f"generation {gen} archive_segments_digest does not extend its "
+            "predecessor (deletion, insertion or reorder presents this way)")
+    expected_first = (previous.get("first_segment_digest")
+                      if previous.get("generation") else
+                      current.get("committed_segment_digest"))
+    if current.get("first_segment_digest") != expected_first:
+        out.append(f"generation {gen} first_segment_digest was rewritten")
+    for field in ("archive_id", "environment"):
+        if current.get(field) != previous.get(field):
+            out.append(f"generation {gen} {field} differs from its predecessor")
+    return out
 
 
 def _publish_generation(root, environment: str, head: dict, *, stage=None) -> Path:
@@ -504,6 +619,19 @@ def read_generation(root, environment: str, generation: int) -> dict:
     if not os.path.lexists(path):
         raise ArchiveHeadError(f"head generation {generation} is missing")
     head = _read_json(path, what=f"head generation {generation}")
+    unknown = sorted(set(head) - set(HEAD_GENERATION_FIELDS) - {"head_digest"})
+    if unknown:
+        raise ArchiveHeadError(
+            f"head generation {generation} carries undeclared top-level "
+            f"field(s) {unknown}; the envelope is closed at this schema version")
+    if head.get("schema_version") != HEAD_SCHEMA_VERSION:
+        raise ArchiveHeadError(
+            f"head generation {generation} schema_version "
+            f"{head.get('schema_version')!r} is not {HEAD_SCHEMA_VERSION}")
+    if not isinstance(head.get("generation"), int) or isinstance(head.get("generation"), bool):
+        raise ArchiveHeadError(
+            f"head generation {generation} declares a non-integer generation "
+            f"{head.get('generation')!r}")
     if head.get("head_digest") != head_digest_of(head):
         raise ArchiveHeadError(
             f"head generation {generation} fails its own digest")
@@ -557,6 +685,17 @@ def read_current_head(root, environment: str) -> dict:
             "bootstrapped. Either a head transition was interrupted (run "
             "recovery) or the current head was removed (restore it).")
     pointer = _read_json(path, what="current archive head")
+    unknown = sorted(set(pointer) - set(CURRENT_HEAD_FIELDS) - {"current_head_digest"})
+    if unknown:
+        raise ArchiveHeadError(
+            f"the current head carries undeclared top-level field(s) {unknown}; "
+            "the envelope is closed at this schema version")
+    gen = pointer.get("generation")
+    if not isinstance(gen, int) or isinstance(gen, bool) or gen < 0:
+        # `generation_path` formats this with %016d, so a str/list/None escaped
+        # as a raw ValueError/TypeError out of every monitor and every reader.
+        raise ArchiveHeadError(
+            f"the current head declares a non-integer generation {gen!r}")
     if pointer.get("current_head_digest") != current_head_digest_of(pointer):
         raise ArchiveHeadError("the current archive head fails its own digest")
     if pointer.get("schema_version") != CURRENT_HEAD_SCHEMA_VERSION:
@@ -606,59 +745,57 @@ def _commit_locked(root, environment: str, *, manifest: dict,
                    expected_archive_id: str | None, stage=None) -> dict:
     genesis = read_genesis(root, environment,
                            expected_archive_id=expected_archive_id)
-    archive_id = genesis["archive_id"]
-    try:
-        current = load_authoritative_head(
-            root, environment, expected_archive_id=expected_archive_id)
-    except HeadRecoveryRequired:
-        # The pointer is gone. This is Case D: an initialized archive whose
-        # current head vanished. Never bootstrap; recovery is explicit.
-        raise
+    current = load_authoritative_head(
+        root, environment, expected_archive_id=expected_archive_id)
     previous = current.generation_record
     generation = previous["generation"] + 1
 
-    entry = {
-        "segment_id": manifest["segment_id"],
-        "manifest_digest": segment_commitment(manifest),
-        "partition_identity": manifest["partition_identity"],
-        "record_count": manifest["record_count"],
-        # Assigned HERE, at commit time, under the archive lock. The writer
-        # cannot know its place in history when it opens — writers are lazy and
-        # overlap, so two hours both opened against an empty head and both
-        # recorded predecessor None, and every ordinary rollover produced a
-        # permanently INVALID archive.
-        "previous_segment_digest": previous["terminal_segment_digest"],
-    }
-    if any(e["segment_id"] == entry["segment_id"] for e in previous["segments"]):
+    if manifest.get("environment") != environment:
         raise ArchiveHeadError(
-            f"segment {entry['segment_id']!r} is already in the archive head")
+            f"refusing to commit a {manifest.get('environment')!r} segment into "
+            f"the {environment!r} archive")
+    if _segment_already_committed(root, environment, previous,
+                                  manifest["segment_id"]):
+        raise ArchiveHeadError(
+            f"segment {manifest['segment_id']!r} is already in the archive head")
 
-    head = _build_generation(
-        archive_id=archive_id, environment=environment, generation=generation,
-        previous_head_digest=previous["head_digest"],
-        segments=list(previous["segments"]) + [entry],
-        committed_segment_id=entry["segment_id"],
-        committed_segment_digest=entry["manifest_digest"])
+    head = _build_generation(previous=previous, manifest=manifest)
 
     existing = generation_path(root, environment, generation)
     if os.path.lexists(existing):
-        # A previous attempt durably created this generation and died before
-        # the pointer moved. Finish THAT transition rather than minting a
-        # second one — the record on disk is the commitment, and it is
-        # immutable.
+        # A previous attempt durably created this generation and died before the
+        # pointer moved. Finish THAT transition rather than minting a second
+        # one: the record on disk is the commitment, and it is immutable.
         durable = read_generation(root, environment, generation)
-        if durable.get("committed_segment_digest") != entry["manifest_digest"]:
+        if durable.get("committed_segment_digest") != head["committed_segment_digest"]:
             raise ArchiveHeadError(
                 f"head generation {generation} already exists and commits "
                 f"segment {durable.get('committed_segment_id')!r}, not "
-                f"{entry['segment_id']!r}. Complete or resolve that transition "
-                "before committing this segment.")
+                f"{manifest['segment_id']!r}. Complete or resolve that "
+                "transition before committing this segment.")
         head = durable
     else:
         _publish_generation(root, environment, head, stage=stage)
 
     _publish_current_head(root, environment, head, stage=stage)
     return head
+
+
+def _segment_already_committed(root, environment: str, head: dict,
+                               segment_id: str) -> bool:
+    """Walk the delta chain backwards looking for this segment id.
+
+    O(N) reads rather than an O(1) list membership test, which is the cost of
+    dropping the embedded segment list. It runs once per commit, under the
+    archive lock, against records that are a few hundred bytes each.
+    """
+    generation = head.get("generation") or 0
+    while generation > 0:
+        rec = read_generation(root, environment, generation)
+        if rec.get("committed_segment_id") == segment_id:
+            return True
+        generation -= 1
+    return False
 
 
 def commit_segment(root, environment: str, *, manifest: dict,
@@ -745,7 +882,12 @@ def head_state(root, environment: str, *,
         return {"state": "NOT_INITIALIZED", "reason": str(exc)}
     except ArchiveHeadError as exc:
         return {"state": "GENESIS_INVALID", "reason": str(exc)}
-    present = present_generations(root, environment)
+    try:
+        present = present_generations(root, environment)
+    except OSError as exc:
+        return {"state": "HEAD_INVALID",
+                "reason": f"the heads directory is unreadable: {exc!r}",
+                "archive_id": genesis["archive_id"], "generations": []}
     try:
         head = load_authoritative_head(root, environment,
                                        expected_archive_id=expected_archive_id)
@@ -754,6 +896,10 @@ def head_state(root, environment: str, *,
                 "archive_id": genesis["archive_id"], "generations": present}
     except ArchiveHeadError as exc:
         return {"state": "HEAD_INVALID", "reason": str(exc),
+                "archive_id": genesis["archive_id"], "generations": present}
+    except Exception as exc:                  # noqa: BLE001 - a verdict, not a crash
+        return {"state": "HEAD_INVALID",
+                "reason": f"{type(exc).__name__}: {exc}",
                 "archive_id": genesis["archive_id"], "generations": present}
     newest = present[-1] if present else None
     if newest is not None and newest > head.generation:

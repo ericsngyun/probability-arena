@@ -31,6 +31,7 @@ from app.realtime.book import EventEnvelope
 from app.realtime.segment import (
     EVENTS_FILENAME,
     MANIFEST_FILENAME,
+    SegmentState,
     SegmentWriter,
     read_segment_records,
     verify_archive,
@@ -184,6 +185,8 @@ class EventArchive:
         self.max_segment_bytes = max_segment_bytes
         self.expected_archive_id = expected_archive_id
         self.rotations = 0
+        self.rotation_failures: list = []
+        self._retiring: dict = {}
         # A partition's CURRENT segment id, which diverges from the partition
         # id as soon as it rotates.
         self._live_segment_id: dict = {}
@@ -212,34 +215,46 @@ class EventArchive:
         return f"{self.venue}.{when:%Y-%m-%d}T{when:%H}"
 
     def _writer_for(self, when: datetime):
-        """One writer per partition, created lazily and owned exclusively."""
+        """One LIVE writer per partition, rotated without ever exposing a closer.
+
+        Wall-clock hour is partition METADATA, not segment identity. Several
+        segments may live inside one hour, and the partition's current segment
+        id is resolved against disk rather than remembered only in RAM — a
+        collector that restarted inside an hour it had already committed used to
+        walk straight back into the committed segment and raise on every event
+        for the rest of that hour, which negated rotation entirely.
+        """
         if self._closed:
             raise ArchiveError("archive is closed; no further events accepted")
         base = self._segment_id(when)
-        seg_id = self._live_segment_id.get(base, base)
-        writer = self._writers.get(seg_id)
-        if writer is not None and not writer.rotation_due:
+        writer = self._writers.get(self._live_segment_id.get(base, base))
+        if writer is not None and writer.state is SegmentState.OPEN \
+                and not writer.rotation_due:
             return writer
+
+        retiring = None
         with self._writers_lock:
+            if self._closed:
+                raise ArchiveError("archive is closed; no further events accepted")
             seg_id = self._live_segment_id.get(base, base)
             writer = self._writers.get(seg_id)
-            if writer is not None and writer.rotation_due:
-                # Rotation: commit what we have and start a fresh segment, so a
-                # crash costs the OPEN segment rather than every hour since the
-                # process started. The rotated segment keeps the partition and
-                # takes a suffixed id, because a segment id is immutable
-                # evidence and a committed one may never be reopened — the
-                # partition's CURRENT id has to be remembered, or the next
-                # event walks straight back into the closed segment.
-                writer.close()
-                self._rotations_for[base] = self._rotations_for.get(base, 0) + 1
-                self.rotations += 1
-                self._writers.pop(seg_id, None)
-                seg_id = f"{base}.r{self._rotations_for[base]:04d}"
-                self._live_segment_id[base] = seg_id
-                writer = None
-            if writer is not None:
+            if writer is not None and writer.state is SegmentState.OPEN \
+                    and not writer.rotation_due:
                 return writer
+            if writer is not None:
+                # Hand nobody a CLOSING writer. Returning one meant every other
+                # producer was told `shutdown_in_progress` for the duration of
+                # the close: 2,023 of 2,400 events rejected under 8 producers.
+                # The successor is installed FIRST and the predecessor is closed
+                # outside the lock, so admissions switch atomically and the
+                # drain never blocks the hot path.
+                retiring = writer
+                self._writers.pop(seg_id, None)
+                # Still holds its flock and has not published a manifest yet, so
+                # the successor must not be handed the same id.
+                self._retiring[seg_id] = writer
+            seg_id = self._next_segment_id(base)
+            self._live_segment_id[base] = seg_id
             writer = self._writers[seg_id] = SegmentWriter(
                 self.root, environment=self.environment, segment_id=seg_id,
                 partition_identity=str(self.partition(when).relative_to(self.root)),
@@ -248,7 +263,40 @@ class EventArchive:
                 max_records=self.max_segment_records,
                 max_age_s=self.max_segment_age_s,
                 max_bytes=self.max_segment_bytes)
+        if retiring is not None:
+            # Outside the lock: this drains and commits, and it must not stall
+            # appends for every other partition.
+            try:
+                retiring.close()
+                self.rotations += 1
+            except Exception as exc:            # noqa: BLE001 - recorded
+                # One partition's failed rotation must not wedge the archive:
+                # the successor is already installed and admitting.
+                self.rotation_failures.append((retiring.segment_id, repr(exc)))
+            finally:
+                with self._writers_lock:
+                    self._retiring.pop(retiring.segment_id, None)
         return writer
+
+    def _next_segment_id(self, base: str) -> str:
+        """The first id in this partition that is not already committed evidence.
+
+        Resolved against DISK, so it survives a process restart. A committed
+        segment is immutable and may never be reopened, and an in-memory
+        rotation counter always restarted at `base`, which rotation guarantees
+        is committed.
+        """
+        env_dir = self.root / f"env={self.environment}"
+        for n in range(0, 10_000):
+            candidate = base if n == 0 else f"{base}.r{n:04d}"
+            directory = env_dir / f"segment={candidate}"
+            if (directory / MANIFEST_FILENAME).exists():
+                continue
+            if candidate in self._writers or candidate in self._retiring:
+                continue
+            return candidate
+        raise ArchiveError(
+            f"partition {base!r} has exhausted 10000 segment ids in one run")
 
     # -- write -----------------------------------------------------------------
     def append(self, envelope: EventEnvelope) -> Path:
@@ -296,13 +344,20 @@ class EventArchive:
         # left OPEN with its lock still held and no manifest, and a second
         # close() re-raised the FIRST writer's error forever. One failure must
         # not decide the fate of unrelated evidence.
+        # Set `_closed` UNDER the lock and BEFORE snapshotting. It used to be
+        # set after the loop, and `_writer_for` read it outside the lock, so an
+        # append racing close() created a brand-new writer that close() never
+        # saw: the producer was told the event was written, close() reported
+        # success, the archive verified VALID, and the event was gone.
+        with self._writers_lock:
+            self._closed = True
+            pending = list(self._writers.items()) + list(self._retiring.items())
         manifests, failures = {}, {}
-        for seg_id, writer in list(self._writers.items()):
+        for seg_id, writer in pending:
             try:
                 manifests[seg_id] = writer.close()
             except Exception as exc:            # noqa: BLE001 - aggregated below
                 failures[seg_id] = exc
-        self._closed = True
         self.close_failures = failures
         if failures:
             raise ArchiveError(
@@ -341,7 +396,8 @@ class EventArchive:
         runs only when a caller remembers to ask is not protecting the path
         that actually reads the evidence.
         """
-        report = verify_archive(self.root, environment=self.environment)
+        report = verify_archive(self.root, environment=self.environment,
+                                expected_archive_id=self.expected_archive_id)
         if report["verdict"] != "VALID":
             raise ArchiveError(
                 "refusing to return canonical evidence from an archive that "
@@ -435,7 +491,8 @@ class EventArchive:
         The legacy shape is preserved for existing callers, with the
         authoritative segment verdicts alongside it.
         """
-        report = verify_archive(self.root, environment=self.environment)
+        report = verify_archive(self.root, environment=self.environment,
+                                expected_archive_id=self.expected_archive_id)
         records_read = report["records_read"]
         intact = report["verdict"] == "VALID"
         return {
