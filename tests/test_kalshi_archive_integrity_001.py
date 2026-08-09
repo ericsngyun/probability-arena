@@ -248,8 +248,14 @@ class TestMustNotRegress:
         a = written_archive(tmp_path, [envelope(seq=i) for i in range(1, 7)])
         p = only_file(tmp_path)
         p.write_bytes(p.read_bytes()[:-5])
-        recs = a.read_all()
+        # Recovery is a SALVAGE property, asserted through the salvage API. The
+        # canonical read is asserted to refuse the same archive, so this
+        # migration strengthens the test: previously nothing stopped a torn
+        # archive being served as canonical evidence.
+        recs = a.read_unverified_diagnostic()
         assert len(recs) >= 5, "a torn tail must lose only the incomplete record"
+        with pytest.raises(ar.ArchiveError):
+            a.read_verified()
 
     def test_11_physical_reorder_is_detected(self, tmp_path):
         recs = [envelope(seq=i, etype=("orderbook_snapshot" if i == 1
@@ -269,7 +275,12 @@ class TestMustNotRegress:
         rec["environment"] = "production"
         with gzip.open(p, "wt") as fh:
             fh.write(json.dumps(rec) + "\n")
-        assert a.read_all() == []
+        # Detection is now a REFUSAL rather than an empty list — a stronger
+        # statement of the same property: a foreign-environment record never
+        # reaches a caller, and the canonical path says so out loud.
+        with pytest.raises(ar.ArchiveError):
+            a.read_verified()
+        assert a.read_unverified_diagnostic() == []
         assert a.verify()["intact"] is False
 
     def test_13_a_malformed_complete_record_is_detected(self, tmp_path):

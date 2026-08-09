@@ -1090,21 +1090,27 @@ def commit_segment_to_head(root, environment: str, *, archive_identity: str,
     return head
 
 
-def _partition_for_segment(segment_id: str) -> str | None:
-    """`kalshi.2026-08-08T12` -> `env=.../venue=kalshi/date=2026-08-08/hour=12`.
+def _partition_for_segment(segment_id: str, environment: str) -> str | None:
+    """`kalshi.2026-08-08T12` -> `env=demo/venue=kalshi/date=2026-08-08/hour=12`.
 
-    The segment id is bound by the directory name and by every record's
-    genesis, so deriving the partition from it means a relabelled
-    partition_identity contradicts the records rather than merely the manifest.
+    Mirrors exactly what `EventArchive.partition()` produces relative to the
+    archive root — including the `env=` component, whose omission in an earlier
+    revision made every production-shaped segment fail this check.
+
+    The segment id is bound by the directory name AND by every record's genesis,
+    so deriving the partition from it means a relabelled partition_identity
+    contradicts the records rather than merely the manifest. Segment ids that do
+    not carry a venue.dateThour shape return None and are simply not constrained
+    this way — a test-shaped id is not evidence of tampering.
     """
     try:
         venue, stamp = segment_id.split(".", 1)
         date, hour = stamp.split("T", 1)
     except ValueError:
         return None
-    if not (venue and date and hour):
+    if not (venue and date and hour) or "-" not in date:
         return None
-    return f"venue={venue}/date={date}/hour={hour}"
+    return f"env={environment}/venue={venue}/date={date}/hour={hour}"
 
 
 def verify_segment(directory, *, environment: str,
@@ -1208,7 +1214,8 @@ def verify_segment(directory, *, environment: str,
     # partition_identity: bound to the segment id, which is itself bound by the
     # directory name AND by every record's genesis. Relabelling the partition
     # therefore contradicts the records.
-    expected_partition = _partition_for_segment(manifest.get("segment_id") or "")
+    expected_partition = _partition_for_segment(
+        manifest.get("segment_id") or "", manifest.get("environment") or environment)
     declared_partition = manifest.get("partition_identity")
     if expected_partition and declared_partition != expected_partition:
         reasons.append(
