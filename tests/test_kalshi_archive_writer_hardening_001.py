@@ -425,7 +425,8 @@ class TestReview3Regressions:
             write = staticmethod(fn)
         return orig, _Shim
 
-    def test_repeated_short_writes_converge_and_commit_completely(self, tmp_path):
+    def test_repeated_short_writes_converge_and_commit_completely(
+            self, tmp_path, monkeypatch):
         """os.write may legally write fewer bytes than asked — partial-ENOSPC,
         NFS and EINTR all do. The old code discarded the return value, so a
         TRUNCATED manifest was fsynced, renamed and committed and close()
@@ -446,11 +447,9 @@ class TestReview3Regressions:
             calls["n"] += 1
             return real(fd, data[: max(1, len(data) // 3)])
 
-        segmod.os.write = dribble
-        try:
-            manifest = w.close()
-        finally:
-            segmod.os.write = real
+        monkeypatch.setattr(segmod.os, "write", dribble)
+        manifest = w.close()
+        monkeypatch.undo()
         assert calls["n"] > 1, "the loop never had to retry"
         assert w.state is sg.SegmentState.CLOSED
         v = sg.verify_segment(w.dir, environment=ENV)
@@ -460,7 +459,8 @@ class TestReview3Regressions:
         assert sg.verify_manifest_self_digest(
             cn.parse_canonical(w.manifest_path.read_bytes()))
 
-    def test_zero_byte_progress_is_refused_rather_than_looping_forever(self, tmp_path):
+    def test_zero_byte_progress_is_refused_rather_than_looping_forever(
+            self, tmp_path, monkeypatch):
         """A write that reports no progress is a terminal condition, not a
         reason to spin."""
         import app.realtime.segment as segmod
@@ -468,16 +468,14 @@ class TestReview3Regressions:
         w = writer(tmp_path)
         w.submit(fields(1))
         real = segmod.os.write
-        segmod.os.write = lambda fd, data: 0
-        try:
-            with pytest.raises(sg.SegmentError):
-                w.close()
-        finally:
-            segmod.os.write = real
+        monkeypatch.setattr(segmod.os, "write", lambda fd, data: 0)
+        with pytest.raises(sg.SegmentError):
+            w.close()
+        monkeypatch.undo()
         assert w.state is not sg.SegmentState.CLOSED
         assert not sg.verify_segment(w.dir, environment=ENV, allow_open=True).valid
 
-    def test_a_partial_write_then_enospc_never_commits(self, tmp_path):
+    def test_a_partial_write_then_enospc_never_commits(self, tmp_path, monkeypatch):
         import app.realtime.segment as segmod
 
         w = writer(tmp_path)
@@ -491,12 +489,10 @@ class TestReview3Regressions:
                 return real(fd, data[: len(data) // 2])
             raise OSError(28, "No space left on device")
 
-        segmod.os.write = partial_then_enospc
-        try:
-            with pytest.raises(sg.SegmentError):
-                w.close()
-        finally:
-            segmod.os.write = real
+        monkeypatch.setattr(segmod.os, "write", partial_then_enospc)
+        with pytest.raises(sg.SegmentError):
+            w.close()
+        monkeypatch.undo()
         assert w.state is not sg.SegmentState.CLOSED
         assert not sg.verify_segment(w.dir, environment=ENV, allow_open=True).valid
 

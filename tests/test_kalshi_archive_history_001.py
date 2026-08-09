@@ -319,3 +319,147 @@ class TestB2ProvenanceAttacks:
     def test_a_relabelled_segment_also_fails_the_archive(self, archive):
         self._relabel(archive, "B", "partition_identity", "venue=x/date=y/hour=z")
         assert verdict(archive)["verdict"] == "INVALID"
+
+
+class TestReview1Regressions:
+    """The cases whose absence hid two BLOCKING defects.
+
+    Both were reachable by ordinary operation and invisible to the original
+    suite because its fixture only ever opened one writer at a time and closed
+    it before opening the next.
+    """
+
+    def test_b1_an_hour_rollover_produces_a_valid_archive(self, tmp_path):
+        """B-1. `previous_segment_digest` was read from the head at OPEN and
+        validated against the head's real order at CLOSE. EventArchive creates
+        writers lazily and keeps them open, so two overlapping hours both opened
+        while the head was empty and both recorded predecessor None — every
+        collector run crossing an hour boundary produced a permanently INVALID
+        archive. Intact evidence the verifier called tampered.
+        """
+        from app.realtime import book as bk
+
+        a = ar.EventArchive(tmp_path, environment=ENV)
+        for hour, base in ((12, 0), (13, 100)):
+            for i in range(3):
+                when = datetime(2026, 8, 8, hour, 0, tzinfo=UTC) + timedelta(seconds=i)
+                a.append(bk.make_envelope(
+                    venue="kalshi", environment=ENV, channel="orderbook_delta",
+                    message={"type": "orderbook_delta", "sid": 4, "seq": base + i,
+                             "msg": {"market_ticker": "KXA", "price_dollars": "0.51",
+                                     "delta_fp": "1.00", "side": "no",
+                                     "ts_ms": 1786150148065 + i}},
+                    receive_time=when, receive_mono=1_000_000 + base + i))
+        a.close()
+        out = verdict(tmp_path)
+        assert out["verdict"] == "VALID", out["reasons"]
+        assert out["segments"] == 2
+        assert len(a.read_verified()) == 6      # and it is readable
+
+    def test_b1_interleaved_hours_still_verify(self, tmp_path):
+        """Writers stay open across partitions, so closes need not follow opens."""
+        from app.realtime import book as bk
+
+        a = ar.EventArchive(tmp_path, environment=ENV)
+        for i in range(6):
+            hour = 12 if i % 2 == 0 else 13     # alternate, both writers open
+            when = datetime(2026, 8, 8, hour, 0, tzinfo=UTC) + timedelta(seconds=i)
+            a.append(bk.make_envelope(
+                venue="kalshi", environment=ENV, channel="orderbook_delta",
+                message={"type": "orderbook_delta", "sid": 4, "seq": i,
+                         "msg": {"market_ticker": "KXA", "price_dollars": "0.51",
+                                 "delta_fp": "1.00", "side": "no"}},
+                receive_time=when, receive_mono=1_000_000 + i))
+        a.close()
+        out = verdict(tmp_path)
+        assert out["verdict"] == "VALID", out["reasons"]
+
+    def test_b2_concurrent_head_commits_lose_nothing(self, tmp_path):
+        """B-2. commit_segment_to_head was an unserialized read-modify-write
+        over one shared temp path: concurrent closes clobbered each other's
+        staging file and silently dropped commits, leaving a history that omits
+        a durably committed segment and cannot be repaired."""
+        import threading
+
+        writers = [
+            sg.SegmentWriter(tmp_path, environment=ENV,
+                             segment_id=f"kalshi.2026-08-08T{h:02d}",
+                             partition_identity=(
+                                 f"env={ENV}/venue=kalshi/date=2026-08-08/hour={h:02d}"),
+                             subscription_metadata={"venue": "kalshi"})
+            for h in range(1, 7)]
+        for w in writers:
+            w.submit(fields(1))
+        errors = []
+
+        def close(w):
+            try:
+                w.close()
+            except Exception as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=close, args=(w,)) for w in writers]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=60)
+        assert not errors, errors
+        head = sg.read_head(tmp_path, ENV)
+        assert head["segment_count"] == 6, "a head commit was lost"
+        assert head["generation"] == 6
+        assert len({e["segment_id"] for e in head["segments"]}) == 6
+        out = verdict(tmp_path)
+        assert out["verdict"] == "VALID", out["reasons"]
+
+    def test_h1_rollback_plus_deletion_is_caught_by_the_head_log(self, tmp_path):
+        """The one deletion segment predecessor links cannot catch: truncate the
+        tail AND roll the head back to the generation that predates it."""
+        build_archive(tmp_path, segments=("A", "B"))
+        gen2 = cn.canonical_bytes(sg.read_head(tmp_path, ENV))
+        build_archive(tmp_path, segments=("C",))
+        assert verdict(tmp_path)["verdict"] == "VALID"
+        shutil.rmtree(seg_dir(tmp_path, "C"))
+        sg.head_path(tmp_path, ENV).write_bytes(gen2)
+        out = verdict(tmp_path)
+        assert out["verdict"] == "INVALID", "rollback + deletion survived"
+        assert any("HEAD_ROLLBACK" in r for r in out["reasons"]), out["reasons"]
+
+    def test_h1_a_head_rebuilt_by_discovery_is_caught(self, tmp_path):
+        """Rebuilding the head over the survivors after deleting the tail was a
+        two-line operation through the production API."""
+        build_archive(tmp_path, segments=("A", "B", "C"))
+        shutil.rmtree(seg_dir(tmp_path, "C"))
+        sg.head_path(tmp_path, ENV).unlink()
+        for name in ("A", "B"):
+            m = cn.parse_canonical(
+                (seg_dir(tmp_path, name) / sg.MANIFEST_FILENAME).read_bytes())
+            sg.commit_segment_to_head(tmp_path, ENV,
+                                      archive_identity="kalshi-realtime",
+                                      manifest=m)
+        out = verdict(tmp_path)
+        assert out["verdict"] == "INVALID", "head rebuild by discovery survived"
+
+    def test_m2_head_entry_facts_must_agree_with_the_manifest(self, archive):
+        head = sg.read_head(archive, ENV)
+        head["segments"][1]["record_count"] = 100_000
+        head["head_digest"] = cn.digest_hex({k: head[k] for k in sg.HEAD_FIELDS})
+        sg.head_path(archive, ENV).write_bytes(cn.canonical_bytes(head))
+        out = verdict(archive)
+        assert out["verdict"] == "INVALID"
+
+    def test_m3_a_malformed_head_returns_a_verdict_rather_than_raising(self, archive):
+        """A verdict function must always return a verdict."""
+        for payload in (b"[]", b"not json", b"null"):
+            sg.head_path(archive, ENV).write_bytes(payload)
+            out = verdict(archive)
+            assert out["verdict"] == "INVALID"
+            assert out["reasons"]
+
+    def test_m1_head_envelope_is_closed(self, archive):
+        head = sg.read_head(archive, ENV)
+        head["operator_note"] = "fabricated"
+        head["head_digest"] = cn.digest_hex({k: head[k] for k in sg.HEAD_FIELDS})
+        sg.head_path(archive, ENV).write_bytes(cn.canonical_bytes(head))
+        out = verdict(archive)
+        assert out["verdict"] == "INVALID"
+        assert any("undeclared" in r for r in out["reasons"])
