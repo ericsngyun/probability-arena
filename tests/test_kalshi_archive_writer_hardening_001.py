@@ -414,29 +414,89 @@ class TestOwnershipCleanup:
 class TestReview3Regressions:
     """Findings from the crash/filesystem adversarial review."""
 
-    def test_a_short_manifest_write_never_yields_closed(self, tmp_path):
-        """BLOCKING. os.write may legally write fewer bytes than requested —
-        partial-ENOSPC, NFS and EINTR all do. Discarding the return value meant
-        a TRUNCATED manifest was fsynced, renamed and committed, and close()
-        returned CLOSED over permanently unreadable evidence."""
-        import os as _os
+    def _patched_write(self, fn):
+        import app.realtime.segment as segmod
+
+        orig = segmod.os.write
+
+        class _Shim:
+            def __getattr__(inner, name):
+                return getattr(segmod.os, name)
+            write = staticmethod(fn)
+        return orig, _Shim
+
+    def test_repeated_short_writes_converge_and_commit_completely(self, tmp_path):
+        """os.write may legally write fewer bytes than asked — partial-ENOSPC,
+        NFS and EINTR all do. The old code discarded the return value, so a
+        TRUNCATED manifest was fsynced, renamed and committed and close()
+        returned CLOSED over unreadable evidence.
+
+        The contract is convergence, not refusal: repeated partial writes must
+        loop until every byte lands, and the segment must commit COMPLETELY.
+        """
+        import app.realtime.segment as segmod
 
         w = writer(tmp_path)
         for i in range(5):
             w.submit(fields(i))
-        real = _os.write
+        real = segmod.os.write
+        calls = {"n": 0}
 
-        def half(fd, data):
-            return real(fd, data[: max(1, len(data) // 2)])
+        def dribble(fd, data):
+            calls["n"] += 1
+            return real(fd, data[: max(1, len(data) // 3)])
 
+        segmod.os.write = dribble
+        try:
+            manifest = w.close()
+        finally:
+            segmod.os.write = real
+        assert calls["n"] > 1, "the loop never had to retry"
+        assert w.state is sg.SegmentState.CLOSED
+        v = sg.verify_segment(w.dir, environment=ENV)
+        assert v.valid, v.reasons
+        assert manifest["record_count"] == 5
+        # And the committed manifest is complete, not truncated.
+        assert sg.verify_manifest_self_digest(
+            cn.parse_canonical(w.manifest_path.read_bytes()))
+
+    def test_zero_byte_progress_is_refused_rather_than_looping_forever(self, tmp_path):
+        """A write that reports no progress is a terminal condition, not a
+        reason to spin."""
         import app.realtime.segment as segmod
-        orig = segmod.os.write
-        segmod.os.write = half
+
+        w = writer(tmp_path)
+        w.submit(fields(1))
+        real = segmod.os.write
+        segmod.os.write = lambda fd, data: 0
         try:
             with pytest.raises(sg.SegmentError):
                 w.close()
         finally:
-            segmod.os.write = orig
+            segmod.os.write = real
+        assert w.state is not sg.SegmentState.CLOSED
+        assert not sg.verify_segment(w.dir, environment=ENV, allow_open=True).valid
+
+    def test_a_partial_write_then_enospc_never_commits(self, tmp_path):
+        import app.realtime.segment as segmod
+
+        w = writer(tmp_path)
+        w.submit(fields(1))
+        real = segmod.os.write
+        state = {"first": True}
+
+        def partial_then_enospc(fd, data):
+            if state["first"]:
+                state["first"] = False
+                return real(fd, data[: len(data) // 2])
+            raise OSError(28, "No space left on device")
+
+        segmod.os.write = partial_then_enospc
+        try:
+            with pytest.raises(sg.SegmentError):
+                w.close()
+        finally:
+            segmod.os.write = real
         assert w.state is not sg.SegmentState.CLOSED
         assert not sg.verify_segment(w.dir, environment=ENV, allow_open=True).valid
 
