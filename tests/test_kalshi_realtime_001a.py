@@ -567,14 +567,14 @@ class TestArchiveAndReplay:
         prod_dirs = {str(x["directory"]) for x in prod.segment_paths()}
         assert demo_dirs and not (demo_dirs & prod_dirs)
         assert all("env=demo" in d for d in demo_dirs)
-        assert prod.read_all() == []
+        assert prod.read_unverified_diagnostic() == []
 
     def test_replay_is_deterministic(self, tmp_path):
         a = ar.EventArchive(tmp_path, environment="demo")
         for e in self._stream():
             a.append(e)
         a.close()
-        records = a.read_all()
+        records = a.read_unverified_diagnostic()
         first, second = ar.replay(records), ar.replay(records)
         assert first["checksums"] == second["checksums"]
         assert first["events_applied"] == 4 and first["events_rejected"] == 0
@@ -595,7 +595,7 @@ class TestArchiveAndReplay:
         for e in stream:
             a.append(e)
         a.close()
-        assert ar.replay(a.read_all())["checksums"]["KXTEST"] == live.checksum()
+        assert ar.replay(a.read_unverified_diagnostic())["checksums"]["KXTEST"] == live.checksum()
 
     def test_replay_surfaces_a_gap_rather_than_absorbing_it(self, tmp_path):
         stream = self._stream()
@@ -604,7 +604,7 @@ class TestArchiveAndReplay:
         for e in stream:
             a.append(e)
         a.close()
-        out = ar.replay(a.read_all())
+        out = ar.replay(a.read_unverified_diagnostic())
         assert out["events_rejected"] >= 1
         assert any("gap" in f["error"] for f in out["faults"])
         assert out["publishable"]["KXTEST"] is False
@@ -617,7 +617,7 @@ class TestArchiveAndReplay:
         path = a.segment_paths()[0]["events_path"]
         with gzip.open(path, "at", encoding="utf-8") as fh:
             fh.write('{"truncated": \n')
-        assert len(a.read_all()) == 4
+        assert len(a.read_unverified_diagnostic()) == 4
         assert a.truncated_records == 1
 
     def test_latency_is_decomposed_not_a_single_number(self, tmp_path):
@@ -625,7 +625,7 @@ class TestArchiveAndReplay:
         for e in self._stream():
             a.append(e)
         a.close()
-        env_ = ar.latency_envelope(a.read_all()).to_dict()
+        env_ = ar.latency_envelope(a.read_unverified_diagnostic()).to_dict()
         assert set(env_) >= {"venue_to_receive_offset_contaminated_ms",
                              "receive_to_normalize_us", "coverage"}
         assert "normalize_to_book_us" not in env_
@@ -665,7 +665,7 @@ class TestArchiveAndReplay:
         for e in self._stream():
             a.append(e)
         a.close()
-        blob = json.dumps(a.read_all()).lower()
+        blob = json.dumps(a.read_unverified_diagnostic()).lower()
         for needle in ("private key", "begin rsa", "kalshi-access-signature",
                        "api_key", "secret", "password"):
             assert needle not in blob
@@ -818,7 +818,7 @@ class TestArchiveIntegrityRegressions:
         path = a.segment_paths()[0]["events_path"]
         raw = path.read_bytes()
         path.write_bytes(raw[:-5])
-        records = a.read_all()
+        records = a.read_unverified_diagnostic()
         assert len(records) >= 3, "everything before the torn record must survive"
         assert a.verify()["intact"] is False
 
@@ -831,7 +831,7 @@ class TestArchiveIntegrityRegressions:
         raw = bytearray(path.read_bytes())
         raw[len(raw) // 2] ^= 0xFF
         path.write_bytes(bytes(raw))
-        a.read_all()                        # zlib.error must not escape
+        a.read_unverified_diagnostic()                        # zlib.error must not escape
         assert a.verify()["intact"] is False
 
     def test_tampered_record_is_rejected_on_read_not_only_in_verify(self, tmp_path):
@@ -854,7 +854,7 @@ class TestArchiveIntegrityRegressions:
         # be trusted either — the old reader dropped only the edited record and
         # returned the rest. The semantic assertion is unchanged: a tampered
         # record never reaches a caller, and verification fails.
-        returned = a.read_all()
+        returned = a.read_unverified_diagnostic()
         assert all(r.get("raw", {}).get("msg", {}).get("yes_dollars_fp")
                    != [["0.9900", "5.00"]] for r in returned)
         assert len(returned) < 4
@@ -878,7 +878,7 @@ class TestArchiveIntegrityRegressions:
         # segment id and manifest that do not belong to it, so it is rejected
         # earlier than the record-level environment check and never counted as
         # a "foreign record" that was read.
-        assert prod.read_all() == []
+        assert prod.read_unverified_diagnostic() == []
         assert prod.verify()["intact"] is False
 
     def test_venue_cannot_escape_its_path_component(self, tmp_path):
@@ -915,7 +915,7 @@ class TestArchiveIntegrityRegressions:
         for e in stream:
             a.append(e)
         a.close()
-        records = a.read_all()
+        records = a.read_unverified_diagnostic()
         records[2]["raw"]["msg"].pop("price_dollars")
         out = ar.replay(records)            # KeyError must not escape
         assert out["events_rejected"] >= 1 and out["faults"]

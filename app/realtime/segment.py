@@ -94,6 +94,30 @@ RECORD_FIELDS = (
 REQUIRED_RECORD_FIELDS = RECORD_FIELDS + ("record_digest",)
 
 
+def write_all(fd: int, payload: bytes) -> int:
+    """Write every byte or raise. The one primitive for commitment bytes.
+
+    `os.write` may legally write fewer bytes than asked — partial-ENOSPC, NFS
+    and EINTR all do it. Discarding the return value is how a TRUNCATED manifest
+    got fsynced, renamed and committed while `close()` reported CLOSED over
+    unreadable evidence. Zero progress is terminal rather than a reason to spin:
+    a writer that reports no progress will not make progress by being asked
+    again.
+    """
+    total = len(payload)
+    written = 0
+    while written < total:
+        try:
+            n = os.write(fd, payload[written:])
+        except InterruptedError:
+            continue                      # EINTR: retry, it is not a failure
+        if n <= 0:
+            raise OSError(
+                f"write reported no progress after {written} of {total} bytes")
+        written += n
+    return written
+
+
 class SegmentError(RuntimeError):
     """A segment operation that would compromise the evidence."""
 
@@ -198,6 +222,18 @@ def parse_record(raw: dict) -> dict:
     missing = [f for f in REQUIRED_RECORD_FIELDS if f not in raw]
     if missing:
         raise RecordSchemaError(f"record is missing {missing}")
+    # The envelope is CLOSED. record_digest covers a declared field list, so an
+    # unknown top-level key rides entirely outside the digest — data inside a
+    # record that "passes its own digest" but was never committed to. Venue
+    # extensibility belongs inside raw_event/normalized_event, which stay
+    # opaque and ARE digest-bound as whole values.
+    unknown = sorted(set(raw) - set(REQUIRED_RECORD_FIELDS))
+    if unknown:
+        raise RecordSchemaError(
+            f"record carries undeclared top-level field(s) {unknown}; the v1 "
+            "envelope is closed, and an undeclared key is not covered by "
+            "record_digest. Extending the envelope requires a new "
+            "schema_version, not permissive parsing")
     if raw.get("environment") not in _ENVIRONMENTS:
         raise RecordSchemaError(f"unknown environment {raw.get('environment')!r}")
     if not isinstance(raw.get("receive_ordinal"), int):
@@ -401,13 +437,24 @@ class SegmentWriter:
     def __init__(self, root, *, environment: str, segment_id: str,
                  partition_identity: str, subscription_metadata: dict | None = None,
                  queue_maxsize: int = 10_000, enqueue_timeout_s: float = 1.0,
-                 flush_every: int = 256, previous_segment_digest: str | None = None):
+                 flush_every: int = 256, previous_segment_digest: str | None = None,
+                 archive_identity: str = "kalshi-realtime",
+                 commit_to_head: bool = True):
         if environment not in _ENVIRONMENTS:
             raise SegmentError(f"unknown environment {environment!r}")
         self.environment = environment
         self.segment_id = safe_segment_id(segment_id)
         self.partition_identity = partition_identity
         self.subscription_metadata = subscription_metadata or {}
+        self.archive_identity = archive_identity
+        self.commit_to_head = commit_to_head
+        # The predecessor is taken from the AUTHORITATIVE head, not from the
+        # caller: a segment that names its own predecessor is asserting its
+        # place in history rather than being told it.
+        if previous_segment_digest is None and commit_to_head:
+            _head = read_head(Path(root).resolve(), environment)
+            previous_segment_digest = (
+                _head.get("terminal_segment_digest") if _head else None)
         self.previous_segment_digest = previous_segment_digest
         self.root = Path(root).resolve()
         self.dir = (self.root / f"env={environment}" / f"segment={self.segment_id}")
@@ -676,6 +723,31 @@ class SegmentWriter:
             self._writer_error = exc
             self._release_lock()
             raise SegmentError(f"manifest publication failed: {exc!r}") from exc
+        # The segment is now independently verifiable. Only then does it enter
+        # the archive's committed history — a segment that is not itself
+        # evidence must never be recorded as part of the archive.
+        if self.commit_to_head:
+            independent = verify_segment(self.dir, environment=self.environment)
+            if not independent.valid:
+                self.state = SegmentState.INVALID
+                self._release_lock()
+                raise SegmentError(
+                    "segment does not verify after publication; refusing to "
+                    f"commit it to the archive head: {independent.reasons}")
+            try:
+                commit_segment_to_head(
+                    self.root, self.environment,
+                    archive_identity=self.archive_identity,
+                    manifest=manifest, stage=self._stage)
+            except BaseException as exc:
+                # The segment IS committed; the history is not. That is an
+                # ORPHANED_COMMITTED_SEGMENT, which verify_archive reports
+                # explicitly rather than absorbing.
+                self.state = SegmentState.INVALID
+                self._release_lock()
+                raise SegmentError(
+                    f"archive head update failed after segment commit "
+                    f"(ORPHANED_COMMITTED_SEGMENT): {exc!r}") from exc
         self.state = SegmentState.CLOSED
         self._release_lock()
         return manifest
@@ -739,19 +811,7 @@ def publish_manifest(directory: Path, manifest: dict, *, stage=None) -> Path:
                  | os.O_CLOEXEC, 0o600)
     try:
         _s("manifest_write")
-        # os.write may legally write FEWER bytes than requested — that is what
-        # partial-ENOSPC, NFS and EINTR do. Discarding the return value meant a
-        # TRUNCATED manifest was fsynced, renamed and committed, and close()
-        # then returned CLOSED over permanently unreadable evidence. Loop until
-        # the whole payload lands.
-        written = 0
-        while written < len(payload):
-            n = os.write(fd, payload[written:])
-            if n <= 0:
-                raise OSError(
-                    f"short write publishing the manifest: {written} of "
-                    f"{len(payload)} bytes")
-            written += n
+        write_all(fd, payload)
         _s("manifest_fsync")
         os.fsync(fd)
     finally:
@@ -860,6 +920,193 @@ class SegmentVerdict:
         return d
 
 
+# --- PART 1/2: the archive head — an authoritative, committed inventory -----------
+
+ARCHIVE_HEAD_FILENAME = "archive-head.json"
+HEAD_SCHEMA_VERSION = 1
+
+HEAD_FIELDS = (
+    "schema_version", "canonical_schema_version", "environment",
+    "archive_identity", "generation", "segment_count", "segments",
+    "first_segment_digest", "terminal_segment_digest",
+    "archive_segments_digest", "previous_head_digest", "updated_at",
+)
+
+
+class ArchiveHeadError(SegmentError):
+    """The archive's committed history does not describe what is on disk."""
+
+
+def segment_commitment(manifest: dict) -> str:
+    """A segment's identity as the archive commits to it.
+
+    The manifest's own digest: it already binds record_count, first/last record
+    digests, the stream digest and the file hash, so committing to it commits
+    to all of them transitively.
+    """
+    return manifest["manifest_digest"]
+
+
+def fold_segments_digest(previous: str, commitment: str) -> str:
+    """Position-bound fold, so reordering segments changes the result."""
+    return hashlib.sha256(
+        (previous + "|" + commitment).encode("utf-8")).hexdigest()
+
+
+def _head_genesis(environment: str, archive_identity: str) -> str:
+    return "head-genesis:" + digest_hex(
+        {"environment": environment, "archive_identity": archive_identity})
+
+
+def build_head(*, environment: str, archive_identity: str,
+               previous_head: dict | None, segments: list) -> dict:
+    """Build the next head from the PREVIOUS authoritative head plus a segment.
+
+    Never from whatever segments happen to be on disk. Regenerating the head by
+    discovery would certify exactly the deletion and grafting it exists to
+    detect — the verifier would simply agree with whatever survived.
+    """
+    fold = _head_genesis(environment, archive_identity)
+    for entry in segments:
+        fold = fold_segments_digest(fold, entry["manifest_digest"])
+    head = {
+        "schema_version": HEAD_SCHEMA_VERSION,
+        "canonical_schema_version": CANONICAL_SCHEMA_VERSION,
+        "environment": environment,
+        "archive_identity": archive_identity,
+        "generation": (previous_head["generation"] + 1) if previous_head else 1,
+        "segment_count": len(segments),
+        "segments": segments,
+        "first_segment_digest": segments[0]["manifest_digest"] if segments else None,
+        "terminal_segment_digest": segments[-1]["manifest_digest"] if segments else None,
+        "archive_segments_digest": fold,
+        "previous_head_digest": (previous_head or {}).get("head_digest"),
+        "updated_at": canonical_datetime(datetime.now(timezone.utc)),
+    }
+    head["head_digest"] = digest_hex({k: head[k] for k in HEAD_FIELDS})
+    return head
+
+
+def verify_head_self_digest(head: dict) -> bool:
+    recorded = head.get("head_digest")
+    if not isinstance(recorded, str):
+        return False
+    try:
+        return recorded == digest_hex({k: head.get(k) for k in HEAD_FIELDS})
+    except (CanonicalError, KeyError):
+        return False
+
+
+def head_path(root, environment: str) -> Path:
+    return Path(root) / f"env={environment}" / ARCHIVE_HEAD_FILENAME
+
+
+def read_head(root, environment: str) -> dict | None:
+    path = head_path(root, environment)
+    if not path.exists():
+        return None
+    return parse_canonical(path.read_bytes())
+
+
+def publish_head(root, environment: str, head: dict, *, stage=None) -> Path:
+    """Stage -> write_all -> fsync -> VERIFY STAGED BYTES -> rename -> dir fsync.
+
+    Reading the staged artifact back is not a substitute for correct write
+    handling — `write_all` already guarantees completeness — it is a second,
+    independent statement that what is about to become the commit record is the
+    thing we meant to commit.
+    """
+    def _s(name):
+        if stage is not None:
+            stage(name)
+
+    directory = head_path(root, environment).parent
+    directory.mkdir(parents=True, exist_ok=True)
+    final = directory / ARCHIVE_HEAD_FILENAME
+    tmp = directory / (ARCHIVE_HEAD_FILENAME + MANIFEST_TEMP_SUFFIX)
+    payload = canonical_bytes(head)
+
+    _s("head_temp_create")
+    try:
+        if os.path.lexists(tmp):
+            os.unlink(tmp)
+    except OSError:
+        pass
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+                 | os.O_CLOEXEC, 0o600)
+    try:
+        _s("head_write")
+        write_all(fd, payload)
+        _s("head_fsync")
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+    _s("head_verify")
+    staged = parse_canonical(Path(tmp).read_bytes())
+    if not verify_head_self_digest(staged):
+        raise ArchiveHeadError(
+            "the staged archive head does not verify against its own digest; "
+            "refusing to publish it as the history commit record")
+    if staged.get("generation") != head["generation"]:
+        raise ArchiveHeadError("staged head generation does not match")
+
+    _s("head_rename")
+    if os.path.islink(final):
+        raise ArchiveHeadError(
+            f"{final} is a symlink; refusing to publish the head through it")
+    os.replace(tmp, final)
+    _s("head_directory_fsync")
+    dir_fd = os.open(directory, os.O_RDONLY | os.O_CLOEXEC)
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
+    return final
+
+
+def commit_segment_to_head(root, environment: str, *, archive_identity: str,
+                           manifest: dict, stage=None) -> dict:
+    """Append one committed segment to the archive's authoritative history."""
+    previous = read_head(root, environment)
+    if previous is not None and not verify_head_self_digest(previous):
+        raise ArchiveHeadError(
+            "the existing archive head fails its own digest; refusing to "
+            "extend a history that is already untrustworthy")
+    segments = list(previous["segments"]) if previous else []
+    entry = {
+        "segment_id": manifest["segment_id"],
+        "manifest_digest": segment_commitment(manifest),
+        "partition_identity": manifest["partition_identity"],
+        "record_count": manifest["record_count"],
+    }
+    if any(e["segment_id"] == entry["segment_id"] for e in segments):
+        raise ArchiveHeadError(
+            f"segment {entry['segment_id']!r} is already in the archive head")
+    segments.append(entry)
+    head = build_head(environment=environment, archive_identity=archive_identity,
+                      previous_head=previous, segments=segments)
+    publish_head(root, environment, head, stage=stage)
+    return head
+
+
+def _partition_for_segment(segment_id: str) -> str | None:
+    """`kalshi.2026-08-08T12` -> `env=.../venue=kalshi/date=2026-08-08/hour=12`.
+
+    The segment id is bound by the directory name and by every record's
+    genesis, so deriving the partition from it means a relabelled
+    partition_identity contradicts the records rather than merely the manifest.
+    """
+    try:
+        venue, stamp = segment_id.split(".", 1)
+        date, hour = stamp.split("T", 1)
+    except ValueError:
+        return None
+    if not (venue and date and hour):
+        return None
+    return f"venue={venue}/date={date}/hour={hour}"
+
+
 def verify_segment(directory, *, environment: str,
                    allow_open: bool = False) -> SegmentVerdict:
     """Verify one segment against its manifest.
@@ -952,6 +1199,61 @@ def verify_segment(directory, *, environment: str,
     if not v.subscription_metadata_match:
         reasons.append("subscription metadata does not match its digest")
 
+    # --- PROVENANCE (B2) ---------------------------------------------------
+    # "The manifest says X and its digest agrees with X" is self-consistency,
+    # not verification: an attacker who edits a field and recomputes the digest
+    # satisfies it trivially. Every field below is checked against a source the
+    # manifest does not control.
+    #
+    # partition_identity: bound to the segment id, which is itself bound by the
+    # directory name AND by every record's genesis. Relabelling the partition
+    # therefore contradicts the records.
+    expected_partition = _partition_for_segment(manifest.get("segment_id") or "")
+    declared_partition = manifest.get("partition_identity")
+    if expected_partition and declared_partition != expected_partition:
+        reasons.append(
+            f"partition_identity {declared_partition!r} is not the partition "
+            f"derived from segment_id ({expected_partition!r})")
+
+    # opened_at / closed_at: bracket the actual record times. Operational
+    # fields, so the constraint is an envelope, not equality — the writer opens
+    # before the first record arrives and closes after the last.
+    times = [r.get("received_at_utc") for r in records
+             if isinstance(r.get("received_at_utc"), str)]
+    opened, closed = manifest.get("opened_at"), manifest.get("closed_at")
+    if isinstance(opened, str) and isinstance(closed, str):
+        if opened > closed:
+            reasons.append("opened_at is after closed_at")
+        # `closed_at` IS record-bound: the writer cannot close before the last
+        # record it wrote arrived.
+        if times and closed < max(times):
+            reasons.append(
+                "closed_at is before the last record's receive time")
+        # `opened_at` is NOT record-bound, and asserting that it was is a
+        # mistake this check originally made. Writers are created LAZILY on the
+        # first append, so the first record is genuinely received before the
+        # segment opens. It is an operational field: constrained against
+        # closed_at, and otherwise operator/writer-declared.
+    else:
+        reasons.append("opened_at/closed_at are not canonical timestamps")
+
+    if manifest.get("writer_version") != WRITER_VERSION:
+        reasons.append(
+            f"writer_version {manifest.get('writer_version')!r} is not a "
+            f"version this verifier knows ({WRITER_VERSION!r})")
+    if manifest.get("close_status") not in ("clean",):
+        reasons.append(f"close_status {manifest.get('close_status')!r} is not "
+                       "a recognised value")
+    # subscription_metadata.venue must agree with the segment id's venue prefix.
+    meta_venue = (manifest.get("subscription_metadata") or {}).get("venue")
+    seg_venue = (manifest.get("segment_id") or "").split(".", 1)[0]
+    if meta_venue is not None and seg_venue and meta_venue != seg_venue:
+        reasons.append(
+            f"subscription_metadata venue {meta_venue!r} contradicts the "
+            f"segment id's venue ({seg_venue!r})")
+    # previous_segment_digest is NOT verifiable from the segment alone — only
+    # the archive head knows the real predecessor. verify_archive checks it.
+
     # A legitimately empty segment is valid ONLY when its manifest declares it.
     if v.records_read == 0 and v.records_expected != 0:
         reasons.append("archive is empty but the manifest expects records")
@@ -962,25 +1264,114 @@ def verify_segment(directory, *, environment: str,
 
 
 def verify_archive(root, *, environment: str) -> dict:
-    """Verify every segment under an environment root. Fail-closed verdict."""
+    """Verify the archive against its COMMITTED history, not against discovery.
+
+    The previous version verified whatever segment directories happened to
+    survive, which is why a whole segment could be deleted — or a valid foreign
+    segment grafted in — while every survivor stayed individually valid and the
+    archive still reported VALID. The head is the authoritative statement of
+    which segments must exist, in what order, with what terminal commitment.
+    """
     root = Path(root)
     env_root = root / f"env={environment}"
-    segments = (sorted(p for p in env_root.glob("segment=*") if p.is_dir())
-                if env_root.exists() else [])
-    results = [verify_segment(p, environment=environment, allow_open=True)
-               for p in segments]
+    reasons: list = []
+    discovered = {}
+    if env_root.exists():
+        for d in sorted(env_root.glob("segment=*")):
+            # Do not follow a symlinked segment directory: it would place
+            # evidence outside the archive root while still verifying.
+            if d.is_symlink() or not d.is_dir():
+                reasons.append(f"{d.name} is not a real directory")
+                continue
+            discovered[d.name.split("segment=", 1)[-1]] = d
+
+    head = read_head(root, environment)
+    if head is None:
+        return {"environment": environment, "verdict": "INVALID",
+                "reasons": ["no archive head: the archive has no committed "
+                            "history, so nothing states which segments are "
+                            "supposed to exist"],
+                "segments": len(discovered), "closed_segments": 0,
+                "open_segments": 0, "invalid_segments": 0,
+                "orphaned_committed_segments": sorted(discovered),
+                "records_expected": 0, "records_read": 0,
+                "segment_verdicts": []}
+    if not verify_head_self_digest(head):
+        reasons.append("archive head fails its own digest")
+    if head.get("environment") != environment:
+        reasons.append(f"head environment {head.get('environment')!r} != "
+                       f"{environment!r}")
+
+    expected = head.get("segments") or []
+    results, previous_commitment = [], None
+    fold = _head_genesis(head.get("environment"), head.get("archive_identity"))
+
+    for index, entry in enumerate(expected):
+        seg_id = entry.get("segment_id")
+        directory = discovered.pop(seg_id, None)
+        if directory is None:
+            reasons.append(
+                f"segment {seg_id!r} is committed in the head at position "
+                f"{index} but is MISSING from the archive")
+            continue
+        verdict = verify_segment(directory, environment=environment,
+                                 allow_open=False)
+        results.append(verdict)
+        if not verdict.valid:
+            reasons.append(f"segment {seg_id!r} does not verify")
+            continue
+        manifest = parse_canonical(
+            (directory / MANIFEST_FILENAME).read_bytes())
+        commitment = segment_commitment(manifest)
+        if commitment != entry.get("manifest_digest"):
+            reasons.append(
+                f"segment {seg_id!r} does not match the commitment the head "
+                "records for it (substituted or rebuilt)")
+        # PART 2: the predecessor link must match the AUTHORITATIVE previous
+        # segment, not merely whatever the manifest claims.
+        declared_prev = manifest.get("previous_segment_digest")
+        if declared_prev != previous_commitment:
+            reasons.append(
+                f"segment {seg_id!r} names predecessor {declared_prev!r}, but "
+                f"the head's previous segment commits to {previous_commitment!r}")
+        previous_commitment = commitment
+        fold = fold_segments_digest(fold, commitment)
+
+    if discovered:
+        # Present on disk, absent from the committed history. Never silently
+        # incorporated — that is how a grafted segment becomes evidence.
+        reasons.append(
+            f"ORPHANED_COMMITTED_SEGMENT: {sorted(discovered)} exist on disk "
+            "but are not in the archive head")
+
+    if head.get("segment_count") != len(expected):
+        reasons.append("head segment_count does not match its own segment list")
+    if fold != head.get("archive_segments_digest"):
+        reasons.append(
+            "archive_segments_digest does not match the ordered segments "
+            "(deletion, insertion or reorder present this way)")
+    if expected:
+        if head.get("first_segment_digest") != expected[0].get("manifest_digest"):
+            reasons.append("head first_segment_digest does not match position 0")
+        if head.get("terminal_segment_digest") != expected[-1].get("manifest_digest"):
+            reasons.append("head terminal_segment_digest does not match the last "
+                           "committed segment")
+
     closed = [r for r in results if r.state is SegmentState.CLOSED]
-    open_ = [r for r in results if r.state is SegmentState.OPEN]
     invalid = [r for r in results if r.state is SegmentState.INVALID]
     return {
         "environment": environment,
-        "segments": len(results),
+        "head_generation": head.get("generation"),
+        "head_digest": head.get("head_digest"),
+        "segments": len(expected),
         "closed_segments": len(closed),
-        "open_segments": len(open_),
+        "open_segments": 0,
         "invalid_segments": len(invalid),
-        "records_expected": sum(r.records_expected or 0 for r in results),
+        "orphaned_committed_segments": sorted(discovered),
+        "records_expected": sum(e.get("record_count") or 0 for e in expected),
         "records_read": sum(r.records_read for r in results),
         "segment_verdicts": [r.to_dict() for r in results],
-        # An archive with no segments has proven nothing.
-        "verdict": "VALID" if (results and not invalid and not open_) else "INVALID",
+        "reasons": reasons,
+        "verdict": "VALID" if (expected and not reasons and not invalid)
+                   else "INVALID",
     }

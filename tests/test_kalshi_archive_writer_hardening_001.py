@@ -287,12 +287,12 @@ class TestWriterFailure:
         w.durability_hooks["flush"] = lambda: (_ for _ in ()).throw(OSError("x"))
         with pytest.raises(sg.SegmentError):
             w.close()
-        # The writer thread returns on its first error; give it a moment to
-        # unwind rather than asserting on an instantaneous snapshot.
+        # Scoped to THIS writer's thread. Asserting over process-global
+        # threading.enumerate() made the test fail whenever another archive
+        # test in the same session still had a writer alive — it was measuring
+        # the suite, not the subject.
         time.sleep(0.3)
-        alive = [t for t in threading.enumerate()
-                 if t.name == "archive-writer" and t.is_alive()]
-        assert not alive, "an orphan writer survived"
+        assert not w._thread.is_alive(), "this writer's thread survived"
 
 
 # --- Gate G: exclusive ownership ---------------------------------------------------

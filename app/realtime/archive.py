@@ -259,7 +259,35 @@ class EventArchive:
             return []
         return sorted(p for p in env_root.glob("segment=*") if p.is_dir())
 
+    def read_verified(self) -> list:
+        """Canonical evidence. Verifies the archive first and fails closed.
+
+        `read_all` used to serve a cleanly re-gzipped truncation with a clean
+        bill of health, and it is the API that feeds replay. Verification that
+        runs only when a caller remembers to ask is not protecting the path
+        that actually reads the evidence.
+        """
+        report = verify_archive(self.root, environment=self.environment)
+        if report["verdict"] != "VALID":
+            raise ArchiveError(
+                "refusing to return canonical evidence from an archive that "
+                f"does not verify: {report.get('reasons')}")
+        return self._read_records()
+
+    def read_unverified_diagnostic(self) -> list:
+        """Salvage read for diagnosis ONLY.
+
+        Never canonical, never replayable, never complete. It exists so an
+        operator can look at a broken archive, and it is named so that no
+        caller can reach for it by accident while meaning the other thing.
+        """
+        return self._read_records()
+
     def read_all(self) -> list:
+        """Deprecated alias for `read_verified`. Fails closed like it does."""
+        return self.read_verified()
+
+    def _read_records(self) -> list:
         """Every readable record, in chain order, across this environment.
 
         Records whose chain or environment does not verify are dropped and
