@@ -336,11 +336,26 @@ def non_canonical_reason(value, _path: str = "") -> str | None:
                     f"bits, beyond the canonical bound of {_MAX_INT_BITS}")
         return None
     if isinstance(value, datetime):
+        # `canonical_datetime` refuses a naive value (it would read as LOCAL
+        # time and canonicalise differently per host). Admission has to mirror
+        # that precondition or it is not total.
+        if value.tzinfo is None or value.utcoffset() is None:
+            return (f"{_path or 'value'} is a naive datetime; it must be "
+                    "timezone-aware to be canonically representable")
         return None
     if isinstance(value, Mapping):
         for k, v in value.items():
             if not isinstance(k, str):
                 return f"{_path or 'value'} has a non-string key {k!r}"
+            # KEYS go through the same check as values. The UTF-8 guard was
+            # added to the value branch only, so a lone surrogate in a KEY
+            # position — which `json.loads` decodes without complaint — was
+            # still admitted and still destroyed the whole segment: 501 events
+            # lost, `verify_archive` VALID with empty reasons. Patching the
+            # leaf instead of the invariant is why this recurred.
+            key_problem = non_canonical_reason(k, f"{_path}.<key>" if _path else "<key>")
+            if key_problem is not None:
+                return key_problem
             found = non_canonical_reason(v, f"{_path}.{k}" if _path else k)
             if found is not None:
                 return found
@@ -1876,6 +1891,21 @@ _VERDICT_KEYS = (
 )
 
 
+def _abandoned_residue(env_dir: Path) -> list:
+    """Quarantined crash residue anywhere under the environment root."""
+    out = []
+    try:
+        for d in sorted(env_dir.glob("segment=*")):
+            if not d.is_dir() or d.is_symlink():
+                continue
+            for f in sorted(d.glob(f"{EVENTS_FILENAME}.abandoned.*")):
+                out.append({"segment_id": d.name.split("segment=", 1)[-1],
+                            "file": f.name, "bytes": f.stat().st_size})
+    except OSError:
+        return out
+    return out
+
+
 def _empty_verdict(environment: str, **over) -> dict:
     """One shape, always.
 
@@ -1908,7 +1938,7 @@ def verify_archive(root, *, environment: str, expected_archive_id: str | None = 
     re-minted: dropping a segment drops a GENERATION, and a no-op generation
     minted to restore the counter contradicts its own segment count.
 
-    `minimum_generation` and `expected_head_digest` are the hooks for an anchor
+    `minimum_generation` and `expected_head` are the hooks for an anchor
     OUTSIDE this root. Everything else lives under a directory the writer can
     write. A monitor that remembers `(generation, head_digest)` pins content;
     one that remembers only the generation pins a counter, which is weaker and
@@ -2115,6 +2145,13 @@ def _verify_archive_inner(root, *, environment: str, expected_archive_id,
             "archive_segments_digest does not match the ordered segments "
             "(deletion, insertion or reorder present this way)")
 
+    residue = _abandoned_residue(env_dir)
+    if residue:
+        reasons.append(
+            f"ABANDONED_EVIDENCE: {len(residue)} quarantined event file(s) "
+            f"({sum(r['bytes'] for r in residue)} bytes) remain from an "
+            "interrupted writer; they are not covered by any manifest. Salvage "
+            "or discard them explicitly.")
     invalid = [r for r in results if r.state is SegmentState.INVALID]
     return _empty_verdict(
         environment,
@@ -2127,9 +2164,12 @@ def _verify_archive_inner(root, *, environment: str, expected_archive_id,
         closed_segments=len([r for r in results if r.state is SegmentState.CLOSED]),
         open_segments=len(uncommitted),
         uncommitted_segments=uncommitted,
-        abandoned_segments=sorted(
-            f.name for d in discovered.values() if d.is_dir()
-            for f in d.glob(f"{EVENTS_FILENAME}.abandoned.*")),
+        # Every segment directory, not the residue of `discovered.pop(...)`.
+        # Quarantine happens when a crashed segment id is REUSED, and the
+        # successor then commits it — so the residue always lands in a
+        # committed directory, which the pop had already removed. 256
+        # recoverable records were reported as VALID with empty reasons.
+        abandoned_segments=_abandoned_residue(env_dir),
         invalid_segments=len(invalid),
         orphaned_committed_segments=orphaned,
         records_expected=sum(e["record_count"] or 0 for e in expected),

@@ -21,6 +21,9 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import json
+from decimal import Decimal
+
 import pytest
 
 from app.realtime import archive as ar
@@ -742,3 +745,212 @@ class TestContainment:
         with pytest.raises(OSError):
             with ah.archive_lock(tmp_path, ENV):
                 pass
+
+
+# --- Round 5: the properties three reviewers asked for --------------------------
+class TestAdmissionTotality:
+    """`non_canonical_reason(x) is None` MUST imply `canonical_bytes` succeeds.
+
+    Three consecutive rounds patched this one value type at a time — float,
+    then Decimal exponent, then str, then int — and each time the next round
+    found another hole: a lone surrogate in a mapping KEY, then a naive
+    datetime. Each hole cost an entire segment (501 accepted events) while
+    `verify_archive` reported VALID with empty reasons. Only the property
+    closes it, so the property is the test.
+    """
+
+    CORPUS = [
+        None, True, False, 0, -1, 2**63, "", "ok", "é", "\U0001f600",
+        Decimal("0"), Decimal("0.51"), Decimal("-1.5"), Decimal("1E+30"),
+        Decimal("1E+4096"), Decimal("1E-4096"), Decimal("1E+999999"),
+        Decimal("NaN"), Decimal("Infinity"),
+        1.5, 1e30, float("nan"), float("inf"),
+        "\udcff", "a\udcffb", "𐀀",
+        {"k": 1}, {"\udcff": 1}, {"nested": {"\udcff": "v"}},
+        [1, 2, {"\udcff": 3}], ["\udcff"],
+        datetime(2026, 8, 9, 12, 0),                      # naive
+        datetime(2026, 8, 9, 12, 0, tzinfo=UTC),          # aware
+        2**8192, -(2**8192),
+        {"deep": [[[{"x": Decimal("1E+999999")}]]]},
+    ]
+
+    @pytest.mark.parametrize("value", CORPUS, ids=lambda v: repr(v)[:40])
+    def test_admitted_values_always_serialise(self, value):
+        reason = sg.non_canonical_reason(value)
+        if reason is not None:
+            return                                # refused: nothing to prove
+        cn.canonical_bytes({"v": value})          # must not raise
+        cn.assert_fixpoint({"v": value})
+
+    def test_a_surrogate_KEY_is_refused_before_acceptance(self, tmp_path):
+        """The exact reproduction: one venue-controlled byte in a KEY.
+
+        `json.loads` decodes a lone surrogate in a key position without
+        complaint, and the UTF-8 guard had been applied to values only.
+        """
+        init(tmp_path)
+        w = sg.SegmentWriter(tmp_path, environment=ENV, segment_id="seg-key",
+                             partition_identity="p", commit_to_head=False)
+        bad = fields(1)
+        bad["raw_event"] = {"market_ticker": "KXA", "\udcff": "x"}
+        assert w.submit(bad) is sg.RejectReason.NOT_CANONICAL
+        for i in range(3):
+            assert w.submit(fields(i + 10)) is None
+        m = w.close()
+        assert m["record_count"] == 3
+        assert w.accounting.clean()
+
+    def test_a_naive_datetime_is_refused_before_acceptance(self, tmp_path):
+        init(tmp_path)
+        w = sg.SegmentWriter(tmp_path, environment=ENV, segment_id="seg-naive",
+                             partition_identity="p", commit_to_head=False)
+        bad = fields(1)
+        bad["raw_event"] = {"t": datetime(2026, 8, 9, 12, 0)}
+        assert w.submit(bad) is sg.RejectReason.NOT_CANONICAL
+        assert "naive" in (w.last_rejection_detail or "")
+        w.close()
+
+
+class TestExternalAnchor:
+    """`expected_head` is the ONLY defence against the accepted residual.
+
+    It shipped with zero callers and zero tests, and its signature changed in
+    the same commit. Without these, the next refactor removes it silently.
+    """
+
+    def _archive(self, tmp_path):
+        init(tmp_path)
+        build(tmp_path, ["A", "B", "C"], per=4)
+        return ah.load_authoritative_head(tmp_path, ENV).generation_record
+
+    def test_an_anchor_permits_honest_growth(self, tmp_path):
+        rec = self._archive(tmp_path)
+        anchor = (rec["generation"], rec["head_digest"])
+        build(tmp_path, ["D", "E"], per=4)            # honest commits after it
+        out = verdict(tmp_path, expected_head=anchor)
+        assert out["verdict"] == "VALID", out["reasons"]
+
+    def test_an_anchor_detects_a_full_chain_remint(self, tmp_path):
+        rec = self._archive(tmp_path)
+        anchor = (rec["generation"], rec["head_digest"])
+        # Re-mint the whole chain in a different order: every manifest and the
+        # genesis stay byte-identical and nothing is forged.
+        for f in ah.heads_dir(tmp_path, ENV).glob("*.json"):
+            if f.name != "0000000000000000.json":
+                f.unlink()
+        prev = ah.read_generation(tmp_path, ENV, 0)
+        for name in ("kalshi.seg-C", "kalshi.seg-A", "kalshi.seg-B"):
+            m = cn.parse_canonical(
+                (tmp_path / f"env={ENV}" / f"segment={name}"
+                 / "manifest.json").read_bytes())
+            prev = ah._build_generation(previous=prev, manifest=m)
+            ah._publish_generation(tmp_path, ENV, prev)
+        ah._publish_current_head(tmp_path, ENV, prev)
+        assert verdict(tmp_path)["verdict"] == "VALID"      # the accepted limit
+        out = verdict(tmp_path, expected_head=anchor)
+        assert out["verdict"] == "INVALID"
+        assert any("HISTORY_REWRITTEN" in r for r in out["reasons"]), out["reasons"]
+
+    def test_an_anchor_beyond_the_head_is_truncation(self, tmp_path):
+        rec = self._archive(tmp_path)
+        out = verdict(tmp_path, expected_head=(rec["generation"] + 5, "0" * 64))
+        assert out["verdict"] == "INVALID"
+        assert any("HISTORY_TRUNCATED" in r for r in out["reasons"]), out["reasons"]
+
+    def test_a_wrong_digest_at_the_anchor_generation_is_rewriting(self, tmp_path):
+        rec = self._archive(tmp_path)
+        out = verdict(tmp_path, expected_head=(rec["generation"], "0" * 64))
+        assert out["verdict"] == "INVALID"
+        assert any("HISTORY_REWRITTEN" in r for r in out["reasons"]), out["reasons"]
+
+
+class TestInitializationIsIdempotent:
+    """The generation-0 brick recurred in three consecutive rounds.
+
+    Every one was a crash between publishing generation 0 and linking the
+    genesis, followed by re-running initialization — which is what the
+    docstring tells the operator to do.
+    """
+
+    def test_reinit_after_a_crash_before_the_genesis_link(self, tmp_path):
+        # Exactly the on-disk state that window leaves.
+        zero = ah._build_generation_zero(archive_id="a" * 32, environment=ENV)
+        ah.heads_dir(tmp_path, ENV).mkdir(parents=True)
+        ah._publish_generation(tmp_path, ENV, zero)
+        ah._publish_current_head(tmp_path, ENV, zero)
+        assert not ah.genesis_path(tmp_path, ENV).exists()
+        assert verdict(tmp_path)["head_state"] == "NOT_INITIALIZED"
+
+        genesis = init(tmp_path)                       # the documented remedy
+        assert genesis["archive_id"] == "a" * 32, "the durable identity must win"
+        assert verdict(tmp_path)["verdict"] == "VALID"
+        build(tmp_path, ["A"], per=2)                  # and it can move forward
+        assert verdict(tmp_path)["verdict"] == "VALID"
+
+    def test_a_foreign_generation_zero_is_refused(self, tmp_path):
+        zero = ah._build_generation_zero(archive_id="b" * 32, environment=ENV)
+        ah.heads_dir(tmp_path, ENV).mkdir(parents=True)
+        ah._publish_generation(tmp_path, ENV, zero)
+        with pytest.raises(ah.ArchiveIdentityMismatch):
+            ah.initialize_archive(tmp_path, ENV,
+                                  archive_identity="kalshi-realtime",
+                                  archive_id="c" * 32)
+
+
+class TestSalvageAndResidue:
+    def test_diagnostic_read_still_works_on_head_level_damage(self, tmp_path):
+        """Removing the glob fallback broke the reader that exists for this."""
+        init(tmp_path)
+        build(tmp_path, ["A", "B"], per=3)
+        store = ar.EventArchive(tmp_path, environment=ENV, venue="kalshi")
+        ah.current_head_path(tmp_path, ENV).unlink()
+        with pytest.raises(ar.ArchiveError):
+            store.read_verified()                      # canonical: refuses
+        salvaged = store.read_unverified_diagnostic()  # salvage: still works
+        assert len(salvaged) == 6
+        assert store.diagnostic_order_unauthenticated is True
+
+    def test_quarantined_residue_in_a_committed_segment_is_reported(self, tmp_path):
+        init(tmp_path)
+        build(tmp_path, ["A"], per=2)
+        seg = tmp_path / f"env={ENV}" / "segment=kalshi.seg-A"
+        (seg / f"{sg.EVENTS_FILENAME}.abandoned.2026-08-09T000000Z").write_bytes(
+            b"\x1f\x8b" + b"x" * 500)
+        out = verdict(tmp_path)
+        assert out["abandoned_segments"], "crash residue must not be invisible"
+        assert out["abandoned_segments"][0]["segment_id"] == "kalshi.seg-A"
+        assert any("ABANDONED_EVIDENCE" in r for r in out["reasons"])
+
+
+class TestLegacyMultiMember:
+    def test_every_gzip_member_is_imported(self, tmp_path):
+        """One `_decompress_prefix` call kept only the FIRST member.
+
+        A legacy collector that appends writes one member per flush, so this
+        dropped two thirds of a realistic corpus while the provenance record
+        certified that nothing was lost.
+        """
+        import gzip as gz
+
+        from app.realtime import legacy_import as li
+        src = tmp_path / "legacy" / f"env={ENV}" / "venue=kalshi" / "d" / "h"
+        src.mkdir(parents=True)
+        path = src / sg.EVENTS_FILENAME
+        with open(path, "wb") as raw:
+            for member in range(3):
+                with gz.GzipFile(fileobj=raw, mode="wb") as fh:
+                    for i in range(100):
+                        fh.write(json.dumps({
+                            "event_type": "orderbook_delta", "market_ticker": "KXA",
+                            "sid": 4, "seq": member * 100 + i,
+                            "collector_receive_time":
+                                f"2026-07-01T0{member}:00:{i % 60:02d}.000000Z",
+                            "receive_monotonic_ns": 1_000_000 + i,
+                            "raw": {"p": "0.51"}}).encode() + b"\n")
+        plan = li.migrate_legacy_archive(tmp_path / "legacy", tmp_path / "dest",
+                                         environment=ENV)
+        assert plan["records_readable"] == 300, plan["records_readable"]
+        assert plan["torn_files"] == [] and plan["empty_files"] == []
+        out = li.migrate_legacy_archive(tmp_path / "legacy", tmp_path / "dest",
+                                        environment=ENV, confirm=True)
+        assert out["records_imported"] == 300

@@ -37,7 +37,6 @@ they were not.
 
 from __future__ import annotations
 
-import gzip
 import hashlib
 import json
 import os
@@ -104,6 +103,8 @@ class LegacyScan:
     last_timestamp: str | None = None
     files: list = field(default_factory=list)
     torn_files: list = field(default_factory=list)
+    empty_files: list = field(default_factory=list)
+    undecodable_files: list = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -119,6 +120,8 @@ class LegacyScan:
             # Named explicitly: a source whose tail could not be decoded is not
             # a source that contained nothing.
             "torn_files": list(self.torn_files),
+            "empty_files": list(self.empty_files),
+            "undecodable_files": list(self.undecodable_files),
         }
 
 
@@ -153,14 +156,25 @@ def _read_legacy_records(path: Path) -> tuple:
     # `records_rejected: 0`, so the provenance record affirmatively stated that
     # nothing had been lost while 165 recoverable records went missing.
     try:
-        decoded, _consumed, _eof = _decompress_prefix(path.read_bytes())
+        data = path.read_bytes()
     except OSError as exc:
         return [], 0, {f"unreadable:{type(exc).__name__}": 1}
-    try:
-        raw = decoded
-        gzip.BadGzipFile           # referenced so the import stays meaningful
-    except Exception:              # pragma: no cover - defensive
-        return [], 0, {"unreadable:decode": 1}
+    # LOOP over members. A legacy file written by an appending collector holds
+    # one gzip member per flush, and calling `_decompress_prefix` once kept only
+    # the first: 100 of 300 records imported, with `torn_files` empty and
+    # `records_refused_at_import` 0, so the provenance record certified that
+    # nothing was lost. That is the failure this replaced, at twice the size.
+    chunks, complete = [], True
+    while data:
+        decoded, consumed, eof = _decompress_prefix(data)
+        chunks.append(decoded)
+        if not eof:
+            complete = False
+            break
+        data = data[consumed:] if consumed else b""
+    raw = b"".join(chunks)
+    if not complete:
+        reasons["torn:incomplete_member"] = 1
     for line in raw.split(b"\n"):
         if not line.strip():
             continue
@@ -189,8 +203,15 @@ def scan_legacy(source) -> LegacyScan:
         scan.files.append(rel)
         scan.artifact_digests[rel] = _file_digest(path)
         records, rejected, reasons = _read_legacy_records(path)
-        if any(k.startswith("unreadable") for k in reasons) or not records:
+        # Torn is not the same as empty, and neither is the same as
+        # undecodable. Reporting all three as "torn" made a valid empty file
+        # indistinguishable from a truncated one.
+        if any(k.startswith("unreadable") for k in reasons):
+            scan.undecodable_files.append(rel)
+        elif any(k.startswith("torn") for k in reasons):
             scan.torn_files.append(rel)
+        elif not records:
+            scan.empty_files.append(rel)
         scan.records_readable += len(records)
         scan.records_rejected += rejected
         for k, v in reasons.items():
@@ -275,6 +296,15 @@ def migrate_legacy_archive(source, dest, *, environment: str,
             expected_archive_id=genesis["archive_id"])
         try:
             for rec in records:
+                source_env = rec.get("environment")
+                if source_env is not None and source_env != environment:
+                    # "demo evidence must never become production" is stated
+                    # three times in archive_head.py; this was the one place it
+                    # was enforceable and wasn't.
+                    refused += 1
+                    refusal_reasons["environment_mismatch"] = \
+                        refusal_reasons.get("environment_mismatch", 0) + 1
+                    continue
                 fields = _legacy_to_envelope(rec)
                 reason = non_canonical_reason(fields)
                 if reason is not None:

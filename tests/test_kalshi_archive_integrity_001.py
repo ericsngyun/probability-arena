@@ -217,10 +217,21 @@ class TestSingleWriterOwnership:
 
         a = _arch(tmp_path, environment="demo")
         a.append(envelope(seq=1))
+        held = next(iter(a._writers))
+        # The invariant is one writer per SEGMENT, and it still fails loudly.
+        with pytest.raises(sg.SegmentError, match="LIVE writer"):
+            sg.SegmentWriter(tmp_path, environment="demo", segment_id=held,
+                             partition_identity="p", commit_to_head=False)
+        # A second COLLECTOR routes to a fresh segment in the same partition
+        # rather than losing every event. Assigning the live id before the
+        # writer existed used to wedge the partition for the rest of the hour
+        # on any rolling restart — 20 of 20 appends failed.
         b = _arch(tmp_path, environment="demo")
-        with pytest.raises((ar.ArchiveError, sg.SegmentError), match="writer|owner"):
-            b.append(envelope(seq=2))
+        b.append(envelope(seq=2))
+        assert next(iter(b._writers)) != held
+        b.close()
         a.close()
+        assert sg.verify_archive(tmp_path, environment="demo")["verdict"] == "VALID"
 
 
 # --- 7: replay ownership -----------------------------------------------------------

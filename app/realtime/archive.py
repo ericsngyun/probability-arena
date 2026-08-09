@@ -31,6 +31,7 @@ from app.realtime.book import EventEnvelope
 from app.realtime.segment import (
     EVENTS_FILENAME,
     MANIFEST_FILENAME,
+    SegmentError,
     SegmentState,
     SegmentWriter,
     read_segment_records,
@@ -187,6 +188,8 @@ class EventArchive:
         self.expected_archive_id = expected_archive_id
         self.rotations = 0
         self.rotation_failures: list = []
+        self.missing_committed_segments: list = []
+        self.diagnostic_order_unauthenticated = False
         self._retiring: dict = {}
         # A partition's CURRENT segment id, which diverges from the partition
         # id as soon as it rotates.
@@ -254,16 +257,42 @@ class EventArchive:
                 # Still holds its flock and has not published a manifest yet, so
                 # the successor must not be handed the same id.
                 self._retiring[seg_id] = writer
-            seg_id = self._next_segment_id(base)
-            self._live_segment_id[base] = seg_id
-            writer = self._writers[seg_id] = SegmentWriter(
-                self.root, environment=self.environment, segment_id=seg_id,
-                partition_identity=str(self.partition(when).relative_to(self.root)),
-                subscription_metadata={"venue": self.venue},
-                expected_archive_id=self.expected_archive_id,
-                max_records=self.max_segment_records,
-                max_age_s=self.max_segment_age_s,
-                max_bytes=self.max_segment_bytes)
+            # Construct FIRST, then publish the id. Assigning
+            # `_live_segment_id` before the constructor meant a writer.lock held
+            # by ANOTHER process left the partition pointing at an id with no
+            # writer, and `_next_segment_id` re-derived that same blocked id
+            # forever — every event lost for the rest of a rolling restart.
+            writer = last_error = None
+            for candidate in self._candidate_segment_ids(base):
+                try:
+                    writer = SegmentWriter(
+                        self.root, environment=self.environment,
+                        segment_id=candidate,
+                        partition_identity=str(
+                            self.partition(when).relative_to(self.root)),
+                        subscription_metadata={"venue": self.venue},
+                        expected_archive_id=self.expected_archive_id,
+                        max_records=self.max_segment_records,
+                        max_age_s=self.max_segment_age_s,
+                        max_bytes=self.max_segment_bytes)
+                except SegmentError as exc:
+                    # A foreign flock means the id is in use, not that the
+                    # partition is dead. Advance to the next one.
+                    last_error = exc
+                    continue
+                except OSError as exc:
+                    self.rotation_failures.append((candidate, repr(exc)))
+                    raise ArchiveError(
+                        f"could not open segment {candidate!r}: {exc!r}") from exc
+                seg_id = candidate
+                self._live_segment_id[base] = seg_id
+                self._writers[seg_id] = writer
+                break
+            if writer is None:
+                self.rotation_failures.append((base, repr(last_error)))
+                raise ArchiveError(
+                    f"every candidate segment id for partition {base!r} is "
+                    f"held by a live writer: {last_error!r}")
         if retiring is not None:
             # Outside the lock: this drains and commits, and it must not stall
             # appends for every other partition.
@@ -278,6 +307,18 @@ class EventArchive:
                 with self._writers_lock:
                     self._retiring.pop(retiring.segment_id, None)
         return writer
+
+    def _candidate_segment_ids(self, base: str):
+        """Every id this partition may use, in order, skipping committed ones."""
+        env_dir = self.root / f"env={self.environment}"
+        for n in range(0, 10_000):
+            candidate = base if n == 0 else f"{base}.r{n:04d}"
+            directory = env_dir / f"segment={candidate}"
+            if (directory / MANIFEST_FILENAME).exists():
+                continue
+            if candidate in self._writers or candidate in self._retiring:
+                continue
+            yield candidate
 
     def _next_segment_id(self, base: str) -> str:
         """The first id in this partition that is not already committed evidence.
@@ -412,47 +453,56 @@ class EventArchive:
         operator can look at a broken archive, and it is named so that no
         caller can reach for it by accident while meaning the other thing.
         """
-        return self._read_records()
+        return self._read_records(strict=False)
 
-    def _committed_segment_dirs(self) -> list:
+    def _committed_segment_dirs(self, *, strict: bool = True) -> list:
         """Segment directories in the order the archive head COMMITTED them.
 
-        This walks the generation chain. It used to read `head["segments"]` and
-        fall back to `sorted(glob(...))` when that key was absent — and the
-        delta refactor DELETED that key, so the guard fired on every archive and
-        the fallback became the only path. Two reviewers found it independently.
-        The consequences were exactly the two defects this milestone exists to
-        close: a manifest-less directory (which the verifier documents as "not
-        evidence at all") was served as canonical evidence, and replay order
-        stopped matching committed order.
+        `strict=True` (the canonical path) walks the generation chain and
+        REFUSES if the history cannot be resolved. A silent downgrade to
+        directory order is the unsafe default in a tamper-evidence store, and
+        it is what previously served manifest-less forged segments as evidence.
 
-        The fallback is gone. A reader that cannot resolve the committed history
-        must REFUSE, because a silent downgrade from "authenticated order" to
-        "whatever is on disk" is the unsafe default in a tamper-evidence store.
+        `strict=False` is for `read_unverified_diagnostic` ONLY. Removing the
+        fallback outright broke the salvage reader for exactly the archives it
+        exists to inspect — a deleted pointer or generation record made it
+        raise. Salvage falls back to directory order and sets
+        `diagnostic_order_unauthenticated`, so a caller can never mistake it
+        for committed order.
         """
         env_root = self.root / f"env={self.environment}"
         try:
             head = load_authoritative_head(
                 self.root, self.environment,
                 expected_archive_id=self.expected_archive_id)
-        except Exception as exc:              # noqa: BLE001 - refuse, never glob
-            raise ArchiveError(
-                f"refusing to read: the committed history could not be "
-                f"resolved ({type(exc).__name__}: {exc})") from exc
-        ordered = []
-        for gen in range(1, head.generation_record["generation"] + 1):
-            rec = read_generation(self.root, self.environment, gen)
-            seg_id = rec.get("committed_segment_id")
-            d = env_root / f"segment={seg_id}"
-            if d.is_dir() and not d.is_symlink():
-                ordered.append(d)
-        return ordered
+            ordered, missing = [], []
+            for gen in range(1, head.generation_record["generation"] + 1):
+                rec = read_generation(self.root, self.environment, gen)
+                seg_id = rec.get("committed_segment_id")
+                d = env_root / f"segment={seg_id}"
+                if d.is_dir() and not d.is_symlink():
+                    ordered.append(d)
+                else:
+                    # Counted, never silently skipped: "nothing was lost" must
+                    # not be asserted by omission.
+                    missing.append(seg_id)
+            self.missing_committed_segments = missing
+            self.diagnostic_order_unauthenticated = False
+            return ordered
+        except Exception as exc:              # noqa: BLE001 - see strict rules
+            if strict:
+                raise ArchiveError(
+                    f"refusing to read: the committed history could not be "
+                    f"resolved ({type(exc).__name__}: {exc})") from exc
+            self.diagnostic_order_unauthenticated = True
+            self.missing_committed_segments = []
+            return self._segment_dirs()
 
     def read_all(self) -> list:
         """Deprecated alias for `read_verified`. Fails closed like it does."""
         return self.read_verified()
 
-    def _read_records(self) -> list:
+    def _read_records(self, *, strict: bool = True) -> list:
         """Every readable record, in chain order, across this environment.
 
         Records whose chain or environment does not verify are dropped and
@@ -466,7 +516,7 @@ class EventArchive:
         # first event for a later partition arrives first — verified in one
         # order and was replayed in another. Two traversal rules merely
         # intended to agree is the pattern this milestone exists to remove.
-        for directory in self._committed_segment_dirs():
+        for directory in self._committed_segment_dirs(strict=strict):
             events_path = directory / EVENTS_FILENAME
             records = read_segment_records(events_path)
             seg_id = directory.name.split("segment=", 1)[-1]

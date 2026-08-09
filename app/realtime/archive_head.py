@@ -72,9 +72,12 @@ generations chain, pinning one generation pins every generation before it.
 not stop reordering, substitution or insertion, all of which can grow past it.
 Prefer `expected_head`.
 
-**Not pinned at all.** `archive_identity`, `created_at` and
+**Not pinned at all.** `archive_identity`, `created_at`/`updated_at` and
 `canonical_schema_version` in every artifact, and `environment` in the pointer:
-self-digest only, freely relabelled. Nothing reads them for verification.
+self-digest only, freely relabelled. Nothing reads them for verification. So the
+"any edit to a single artifact" claim above holds for every field EXCEPT these —
+an earlier revision of this paragraph asserted it without the exception and was
+wrong about `updated_at`.
 
 No arrangement of files under a root the writer can write can close the
 full-chain re-mint. That requires either a key the writer does not hold or an
@@ -428,7 +431,7 @@ def initialize_archive(root, environment: str, *, archive_identity: str,
     heads.mkdir(parents=True, exist_ok=True)
     assert_contained(root, heads)
 
-    archive_id = archive_id or uuid.uuid4().hex
+    requested_id = archive_id
 
     # ORDER MATTERS, and the previous order was a permanent brick. Linking the
     # genesis FIRST meant a crash before generation 0 left an archive that could
@@ -443,7 +446,6 @@ def initialize_archive(root, environment: str, *, archive_identity: str,
     # the genesis link leaves NOT_INITIALIZED, which initialization may
     # legitimately re-run. "Genesis exists" now IMPLIES "generation 0 and the
     # pointer exist".
-    zero = _build_generation_zero(archive_id=archive_id, environment=environment)
     existing_zero = generation_path(root, environment, 0)
     if os.path.lexists(existing_zero):
         # A previous interrupted initialization already created it. Adopt the
@@ -462,14 +464,23 @@ def initialize_archive(root, environment: str, *, archive_identity: str,
             raise ArchiveIdentityMismatch(
                 f"{existing_zero} belongs to environment "
                 f"{durable.get('environment')!r}, not {environment!r}")
-        if archive_id is not None and durable.get("archive_id") != archive_id:
+        # Compare against what the CALLER asked for, which may be None. The
+        # previous version minted a fresh uuid4 thirty-six lines earlier and
+        # then compared the durable record against that random value, so the
+        # match was impossible and `archive_id = durable[...]` was unreachable
+        # for every default caller. Third occurrence of this brick, and it was
+        # always a one-line ordering error.
+        if requested_id is not None and durable.get("archive_id") != requested_id:
             raise ArchiveIdentityMismatch(
                 f"{existing_zero} belongs to archive "
                 f"{durable.get('archive_id')!r}, but initialization was asked "
-                f"for {archive_id!r}")
+                f"for {requested_id!r}")
         archive_id = durable["archive_id"]
         zero = durable
     else:
+        archive_id = requested_id or uuid.uuid4().hex
+        zero = _build_generation_zero(archive_id=archive_id,
+                                      environment=environment)
         _publish_generation(root, environment, zero)
 
     # The genesis is built AFTER the identity is settled, so "genesis exists"
@@ -894,10 +905,11 @@ def recover_current_head(root, environment: str, *,
                 seg_id = record.get("committed_segment_id")
                 seg_dir = env_root(root, environment) / f"segment={seg_id}"
                 from app.realtime.segment import MANIFEST_FILENAME, verify_segment
-                if not (seg_dir / MANIFEST_FILENAME).exists():
+                if not _manifest_present(seg_dir):
                     raise ArchiveHeadError(
                         f"head generation {present[-1]} commits segment "
-                        f"{seg_id!r}, whose manifest is not on disk")
+                        f"{seg_id!r}, whose manifest is not on disk or is "
+                        "unreadable")
                 verdict = verify_segment(seg_dir, environment=environment,
                                          root=root)
                 if not verdict.valid:
@@ -930,11 +942,11 @@ def recover_current_head(root, environment: str, *,
         seg_id = candidate.get("committed_segment_id")
         seg_dir = env_root(root, environment) / f"segment={seg_id}"
         from app.realtime.segment import MANIFEST_FILENAME, verify_segment
-        if not (seg_dir / MANIFEST_FILENAME).exists():
+        if not _manifest_present(seg_dir):
             raise ArchiveHeadError(
                 f"head generation {nxt} commits segment {seg_id!r}, whose "
-                "manifest is not on disk; refusing to advance the head to a "
-                "generation whose evidence is absent")
+                "manifest is not on disk or is unreadable; refusing to advance "
+                "the head to a generation whose evidence is absent")
         verdict = verify_segment(seg_dir, environment=environment, root=root)
         if not verdict.valid:
             raise ArchiveHeadError(
@@ -942,6 +954,15 @@ def recover_current_head(root, environment: str, *,
                 f"not verify: {verdict.reasons}")
         _publish_current_head(root, environment, candidate)
         return candidate
+
+
+def _manifest_present(seg_dir) -> bool:
+    """`Path.exists()` raises EACCES; the repair path must not die on it."""
+    from app.realtime.segment import MANIFEST_FILENAME
+    try:
+        return os.path.lexists(Path(seg_dir) / MANIFEST_FILENAME)
+    except OSError:
+        return False
 
 
 def head_state(root, environment: str, *,
