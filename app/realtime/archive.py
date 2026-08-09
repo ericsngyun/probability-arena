@@ -549,14 +549,28 @@ class EventArchive:
         self.foreign_environment_records = foreign
         return out
 
-    def verify(self) -> dict:
+    def verify(self, *, expected_head: tuple | None = None,
+               minimum_generation: int | None = None) -> dict:
         """Delegate to the one canonical verifier. Fail-closed.
 
         The legacy shape is preserved for existing callers, with the
-        authoritative segment verdicts alongside it.
+        authoritative segment verdicts alongside it — and now with everything
+        the module knows. This wrapper rebuilt its dict field by field, so when
+        crash residue was demoted from a gating `reason` to a non-gating
+        `warning`, the operator-facing path lost the ONLY signal that it
+        existed: `intact: True` with 20,717 bytes of recoverable evidence on
+        disk and nothing naming it. Demoting was right; deleting the signal was
+        not.
+
+        It also took no parameters, so `expected_head` — the one control the
+        accepted threat model depends on — was unreachable from the object a
+        collector actually holds.
         """
-        report = verify_archive(self.root, environment=self.environment,
-                                expected_archive_id=self.expected_archive_id)
+        report = verify_archive(
+            self.root, environment=self.environment,
+            expected_archive_id=self.expected_archive_id,
+            expected_head=expected_head,
+            minimum_generation=minimum_generation)
         records_read = report["records_read"]
         intact = report["verdict"] == "VALID"
         return {
@@ -575,6 +589,18 @@ class EventArchive:
             "open_segments": report["open_segments"],
             "invalid_segments": report["invalid_segments"],
             "segment_verdicts": report["segment_verdicts"],
+            # Forwarded rather than re-derived, so nothing the verifier knows
+            # can be lost on the way to the caller again.
+            "head_state": report.get("head_state"),
+            "head_generation": report.get("head_generation"),
+            "reasons": report.get("reasons", []),
+            "warnings": report.get("warnings", []),
+            "abandoned_segments": report.get("abandoned_segments", []),
+            "uncommitted_segments": report.get("uncommitted_segments", []),
+            "orphaned_committed_segments": report.get(
+                "orphaned_committed_segments", []),
+            "missing_committed_segments": getattr(
+                self, "missing_committed_segments", []),
         }
 
 

@@ -43,7 +43,7 @@ import queue
 import re
 import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -296,10 +296,18 @@ def non_canonical_reason(value, _path: str = "") -> str | None:
     real, and if the two disagree the ENCODER wins — which is the direction
     every one of those five bugs went.
     """
-    structural = _structural_reason(value, _path)
-    if structural is not None:
-        return structural
     try:
+        # The WALK is inside the guard too. It was outside, so an exception from
+        # `value.items()` or `enumerate(value)` reached the producer raw —
+        # `attempted` incremented with no terminal booking, the identity
+        # violated, close() refusing to publish, and the whole segment lost with
+        # verify_archive reporting VALID. That is this milestone's signature
+        # failure, produced by the commit whose thesis was "stop patching the
+        # leaf": the `utcoffset()` leaf was guarded and the walk calling it was
+        # not.
+        structural = _structural_reason(value, _path)
+        if structural is not None:
+            return structural
         canonical_bytes(value)
     except CanonicalError as exc:
         return f"{_path or 'value'} is not canonically representable: {exc}"
@@ -394,21 +402,33 @@ def _structural_reason(value, _path: str = "") -> str | None:
             # still admitted and still destroyed the whole segment: 501 events
             # lost, `verify_archive` VALID with empty reasons. Patching the
             # leaf instead of the invariant is why this recurred.
-            key_problem = non_canonical_reason(k, f"{_path}.<key>" if _path else "<key>")
+            # Recurse into the WALK, not the wrapper. Recursing into the
+            # wrapper re-ran `canonical_bytes` over every subtree — 603 full
+            # encodes for one orderbook snapshot, 3.4x the bytes re-encoded,
+            # end-to-end throughput 946 -> 362 rec/s on venue-controlled input.
+            # The invariant is established by the single root-level encode.
+            key_problem = _structural_reason(
+                k, f"{_path}.<key>" if _path else "<key>")
             if key_problem is not None:
                 return key_problem
-            found = non_canonical_reason(v, f"{_path}.{k}" if _path else k)
+            found = _structural_reason(v, f"{_path}.{k}" if _path else k)
             if found is not None:
                 return found
         return None
-    if isinstance(value, (list, tuple)):
+    if isinstance(value, (list, tuple)) or (
+            isinstance(value, Sequence) and not isinstance(value, (str, bytes))):
+        # Mirror `_encode`'s Sequence branch. Refusing `range`/`deque`/custom
+        # Sequences here made the walk STRICTER than the encoder — "the encoder
+        # wins" has to hold in both directions or the fast path is a second,
+        # disagreeing implementation again.
         for i, v in enumerate(value):
-            found = non_canonical_reason(v, f"{_path}[{i}]")
+            found = _structural_reason(v, f"{_path}[{i}]")
             if found is not None:
                 return found
         return None
-    return (f"{_path or 'value'} is a {type(value).__name__}, which has no "
-            "canonical representation")
+    # Anything else: say nothing here and let the encoder decide, so the walk
+    # can never be the stricter of the two.
+    return None
 
 
 # --- Gate 2: the record envelope --------------------------------------------------
@@ -1712,6 +1732,21 @@ def _partition_for_segment(segment_id: str, environment: str) -> str | None:
     return f"env={environment}/venue={venue}/date={date}/hour={hour}"
 
 
+def _presence(path) -> tuple:
+    """(present, reason). Never raises — a verdict function cannot afford to.
+
+    `Path.exists()` propagates EACCES; `os.path.lexists` swallows it and answers
+    False, which is a different lie. Both were wrong in this file.
+    """
+    try:
+        os.lstat(path)
+        return True, None
+    except FileNotFoundError:
+        return False, None
+    except OSError as exc:
+        return None, f"{Path(path).name} could not be examined: {exc}"
+
+
 def verify_segment(directory, *, environment: str, allow_open: bool = False,
                    root=_DERIVE_ROOT) -> SegmentVerdict:
     """Verify one segment against its manifest.
@@ -1741,17 +1776,9 @@ def verify_segment(directory, *, environment: str, allow_open: bool = False,
         root = directory.parent.parent
     if root is not None:
         for path in (events_path, manifest_path):
-            try:
-                present = os.path.lexists(path)
-            except OSError as exc:
-                # `Path.exists()` propagates EACCES. It escaped this public
-                # function AND `recover_current_head`, and `verify_archive`'s
-                # outer catch then masked every other finding, reporting
-                # `segment_verdicts: 0` and `records_expected: 0` — asserting
-                # "nothing was lost" by omission.
-                return SegmentVerdict(
-                    seg_id, SegmentState.INVALID, False,
-                    [f"{path.name} could not be examined: {exc}"])
+            present, why = _presence(path)
+            if why is not None:
+                return SegmentVerdict(seg_id, SegmentState.INVALID, False, [why])
             if not present:
                 continue
             reason = containment_reason(root, path)
@@ -1760,8 +1787,18 @@ def verify_segment(directory, *, environment: str, allow_open: bool = False,
                     seg_id, SegmentState.INVALID, False,
                     [f"{path.name} is not bounded by the archive root: {reason}"])
 
-    has_events = events_path.exists()
-    if not manifest_path.exists():
+    # THESE are the calls that actually raise. The previous fix wrapped
+    # `os.path.lexists`, which swallows OSError internally and can never raise,
+    # so the guard was unreachable dead code nine lines above the defect — and
+    # `lexists` returning False on EACCES also made the containment loop skip
+    # past a path it could not stat. Two reviewers reproduced it verbatim.
+    has_events, why = _presence(events_path)
+    if why is not None:
+        return SegmentVerdict(seg_id, SegmentState.INVALID, False, [why])
+    manifest_present, why = _presence(manifest_path)
+    if why is not None:
+        return SegmentVerdict(seg_id, SegmentState.INVALID, False, [why])
+    if not manifest_present:
         if allow_open and has_events:
             return SegmentVerdict(
                 seg_id, SegmentState.OPEN, False,
@@ -1953,20 +1990,33 @@ _VERDICT_KEYS = (
 
 def _abandoned_residue(env_dir: Path) -> list:
     """Quarantined crash residue anywhere under the environment root."""
-    out = []
+    out, errors = [], []
     try:
-        for d in sorted(env_dir.glob("segment=*")):
+        children = sorted(env_dir.glob("segment=*"))
+    except OSError as exc:
+        return [], [repr(exc)]
+    for d in children:
+        try:
             if not d.is_dir() or d.is_symlink():
                 continue
-            for f in sorted(d.glob(f"{EVENTS_FILENAME}.abandoned.*")):
-                out.append({"segment_id": d.name.split("segment=", 1)[-1],
-                            "file": f.name, "bytes": f.stat().st_size})
-    except OSError as exc:
-        # Never a silent partial list — that is the same "nothing was lost by
-        # omission" this helper exists to stop.
-        out.append({"segment_id": None, "file": None, "bytes": 0,
-                    "error": repr(exc)})
-    return out
+            files = sorted(d.glob(f"{EVENTS_FILENAME}.abandoned.*"))
+        except OSError as exc:
+            errors.append(f"{d.name}: {exc!r}")
+            continue
+        for f in files:
+            # Per FILE. The guard was outside both loops, so one dangling
+            # symlink dropped 7,000 bytes of real residue in LATER directories
+            # and the sentinel it left was then counted as a file — a wrong
+            # count and a wrong byte total, which is worse than the silent
+            # truncation it replaced.
+            try:
+                size = f.stat().st_size
+            except OSError as exc:
+                errors.append(f"{d.name}/{f.name}: {exc!r}")
+                continue
+            out.append({"segment_id": d.name.split("segment=", 1)[-1],
+                        "file": f.name, "bytes": size})
+    return out, errors
 
 
 def _empty_verdict(environment: str, **over) -> dict:
@@ -2020,8 +2070,21 @@ def verify_archive(root, *, environment: str, expected_archive_id: str | None = 
         # shapes reached this before it existed: a mode-0 or directory events
         # file, a mode-0 segment directory, a mode-0 `heads/`, and a manifest
         # that is valid JSON but not an object.
+        # Carry what the head DOES state, so a partial-visibility failure never
+        # reports "records_expected: 0" — that asserts "nothing was lost" by
+        # omission, which is the class this milestone exists to remove.
+        expected_records = 0
+        try:
+            rec = head_state(root, environment,
+                             expected_archive_id=expected_archive_id)
+            if rec.get("state") == "CURRENT":
+                expected_records = rec["head"].generation_record.get(
+                    "segment_count") or 0
+        except Exception:                     # noqa: BLE001 - best effort only
+            pass
         return _empty_verdict(
             environment, head_state="VERIFICATION_FAILED",
+            records_expected=expected_records,
             reasons=[f"verification could not complete: "
                      f"{type(exc).__name__}: {exc}"])
 
@@ -2081,6 +2144,17 @@ def _verify_archive_inner(root, *, environment: str, expected_archive_id,
     anchor_gen = anchor_digest = None
     if expected_head is not None:
         anchor_gen, anchor_digest = expected_head
+        # `expected_head` is the ONE control the accepted guarantee depends on.
+        # A negative generation passed the "< anchor_gen" test and never matched
+        # `gen == anchor_gen`, so the anchor was silently inert while a monitor
+        # believed it was pinning.
+        if (not isinstance(anchor_gen, int) or isinstance(anchor_gen, bool)
+                or anchor_gen < 0 or not isinstance(anchor_digest, str)):
+            return _empty_verdict(
+                environment, head_state="INVALID_ANCHOR",
+                reasons=[f"expected_head={expected_head!r} is not a "
+                         "(non-negative int, str) pair; refusing to verify "
+                         "against an anchor that cannot be applied"])
         if record["generation"] < anchor_gen:
             reasons.append(
                 f"HISTORY_TRUNCATED: the archive is at generation "
@@ -2193,7 +2267,7 @@ def _verify_archive_inner(root, *, environment: str, expected_archive_id,
     # silently. A segment WITHOUT one is not evidence at all: it cannot hide a
     # deletion (the head states what must exist) and it cannot be grafted in.
     orphaned = sorted(s for s, d in discovered.items()
-                      if (d / MANIFEST_FILENAME).exists())
+                      if _presence(d / MANIFEST_FILENAME)[0])
     uncommitted = sorted(s for s in discovered if s not in orphaned)
     if orphaned:
         reasons.append(
@@ -2214,7 +2288,7 @@ def _verify_archive_inner(root, *, environment: str, expected_archive_id,
     # condemned the archive for the writer's own correct behaviour and
     # `read_verified()` then refused untouched, fully committed segments. It is
     # not evidence and it cannot hide a deletion, so it is a warning.
-    residue = _abandoned_residue(env_dir)
+    residue, residue_errors = _abandoned_residue(env_dir)
     warnings = []
     if residue:
         warnings.append(
@@ -2222,6 +2296,10 @@ def _verify_archive_inner(root, *, environment: str, expected_archive_id,
             f"({sum(r.get('bytes') or 0 for r in residue)} bytes) remain from "
             "an interrupted writer; they are not covered by any manifest. "
             "Salvage or discard them explicitly before removal.")
+    if residue_errors:
+        warnings.append(
+            f"RESIDUE_SCAN_INCOMPLETE: {len(residue_errors)} path(s) could not "
+            f"be scanned for quarantined evidence: {residue_errors[:3]}")
     invalid = [r for r in results if r.state is SegmentState.INVALID]
     return _empty_verdict(
         environment,

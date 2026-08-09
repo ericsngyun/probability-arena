@@ -1025,3 +1025,179 @@ class TestLegacyMultiMember:
         out = li.migrate_legacy_archive(tmp_path / "legacy", tmp_path / "dest",
                                         environment=ENV, confirm=True)
         assert out["records_imported"] == 300
+
+
+class TestVerifierTotality:
+    """The EACCES class, which shipped twice with a guard on the wrong call.
+
+    Round 5 wrapped `os.path.lexists`, which swallows OSError internally and can
+    never raise, nine lines above the two `Path.exists()` calls that do. Two
+    reviewers reproduced it verbatim. There was no test either time.
+    """
+
+    def _archive(self, tmp_path):
+        init(tmp_path)
+        build(tmp_path, ["A", "B", "C"], per=4)
+        return tmp_path
+
+    @pytest.mark.parametrize("victim", ["events.jsonl.gz", "manifest.json", "."])
+    def test_verify_segment_returns_a_verdict_on_eacces(self, tmp_path, victim):
+        self._archive(tmp_path)
+        seg = seg_dir(tmp_path, "A")
+        target = seg if victim == "." else seg / victim
+        os.chmod(target, 0o000)
+        try:
+            # The property is: RETURNS A VERDICT, never raises. The exact reason
+            # differs by victim — an unreadable directory cannot be lstat'd, a
+            # mode-0 file can, so it surfaces later as an unreadable manifest or
+            # a record-count mismatch. All three are verdicts.
+            v = sg.verify_segment(seg, environment=ENV, root=tmp_path)
+            assert not v.valid
+            assert v.reasons, "a refusal must say why"
+            assert v.state is sg.SegmentState.INVALID
+            out = sg.verify_archive(tmp_path, environment=ENV)
+            assert out["verdict"] == "INVALID"
+        finally:
+            os.chmod(target, 0o755)
+
+    def test_an_unreadable_directory_does_not_mask_a_real_deletion(self, tmp_path):
+        """One chmod erased three concrete reasons and reported
+        `records_expected: 0` — "nothing was lost", by omission."""
+        self._archive(tmp_path)
+        shutil.rmtree(seg_dir(tmp_path, "B"))
+        before = verdict(tmp_path)
+        assert any("kalshi.seg-B" in r for r in before["reasons"])
+        os.chmod(seg_dir(tmp_path, "C"), 0o000)
+        try:
+            after = verdict(tmp_path)
+            assert any("kalshi.seg-B" in r for r in after["reasons"]), after["reasons"]
+            assert after["records_expected"] == before["records_expected"]
+        finally:
+            os.chmod(seg_dir(tmp_path, "C"), 0o755)
+
+    def test_recover_current_head_never_leaks_a_raw_oserror(self, tmp_path):
+        init(tmp_path)
+        build(tmp_path, ["A", "B"], per=2)
+        ah._publish_current_head(tmp_path, ENV, ah.read_generation(tmp_path, ENV, 1))
+        os.chmod(seg_dir(tmp_path, "B"), 0o000)
+        try:
+            with pytest.raises(ah.ArchiveHeadError):
+                ah.recover_current_head(tmp_path, ENV)
+        except OSError:                       # pragma: no cover - the defect
+            pytest.fail("recover_current_head leaked a raw OSError")
+        finally:
+            os.chmod(seg_dir(tmp_path, "B"), 0o755)
+
+
+class TestAdmissionIsBounded:
+    def test_exactly_one_encoder_call_per_admission(self, monkeypatch):
+        """The by-construction fix recursed into the WRAPPER, so every subtree
+        was re-encoded: 603 calls for one orderbook snapshot, 946 -> 362 rec/s
+        end to end on venue-controlled input."""
+        calls = {"n": 0}
+        real = cn.canonical_bytes
+
+        def counting(value):
+            calls["n"] += 1
+            return real(value)
+
+        monkeypatch.setattr(sg, "canonical_bytes", counting)
+        book = {"levels": [{"px": str(i), "sz": str(i)} for i in range(60)],
+                "meta": {"a": {"b": {"c": "d"}}}}
+        sg.non_canonical_reason({"raw_event": book})
+        assert calls["n"] == 1, f"{calls['n']} encoder calls; must be exactly 1"
+
+        deep = {"x": 1}
+        for _ in range(120):
+            deep = {"n": deep}
+        calls["n"] = 0
+        sg.non_canonical_reason(deep)
+        assert calls["n"] == 1, calls["n"]
+
+    def test_admission_never_raises_even_from_the_walk(self, tmp_path):
+        """The walk was called OUTSIDE the try, so `items()` raising reached the
+        producer raw: `attempted` incremented with no terminal booking, the
+        identity violated, close() refusing, the whole segment lost with
+        verify_archive reporting VALID."""
+        class HostileMapping(dict):
+            def items(self):
+                raise RuntimeError("hostile items()")
+
+        class HostileSeq(list):
+            def __iter__(self):
+                raise RuntimeError("hostile __iter__")
+
+        for hostile in (HostileMapping(a=1), HostileSeq([1, 2])):
+            reason = sg.non_canonical_reason(hostile)
+            assert reason is not None and isinstance(reason, str)
+
+        init(tmp_path)
+        w = sg.SegmentWriter(tmp_path, environment=ENV, segment_id="seg-hostile",
+                             partition_identity="p", commit_to_head=False)
+        for i in range(5):
+            assert w.submit(fields(i)) is None
+        bad = fields(99)
+        bad["raw_event"] = HostileMapping(a=1)
+        assert w.submit(bad) is sg.RejectReason.NOT_CANONICAL
+        acc = w.accounting
+        assert acc.attempted == acc.rejected_before_accept + acc.accepted
+        m = w.close()
+        assert m["record_count"] == 5
+        assert acc.clean()
+
+    def test_the_walk_is_never_stricter_than_the_encoder(self):
+        """`_encode` accepts any Sequence; the walk accepted only list/tuple and
+        short-circuited first, so it refused values the encoder would take.
+        "The encoder wins" has to hold in BOTH directions."""
+        from collections import deque
+        for value in (deque([1, 2, 3]), range(4), (1, 2)):
+            reason = sg.non_canonical_reason(value)
+            assert reason is None, f"{value!r} refused by the walk: {reason}"
+            cn.canonical_bytes(value)
+
+
+class TestAnchorInputValidation:
+    @pytest.mark.parametrize("anchor", [(-1, "x"), (True, "x"), (0, 123),
+                                        ("2", "x"), (1, None)])
+    def test_a_malformed_anchor_fails_closed(self, tmp_path, anchor):
+        """A negative generation passed the `< anchor_gen` test and never matched
+        `gen == anchor_gen`, so the anchor was silently inert while a monitor
+        believed it was pinning."""
+        init(tmp_path)
+        build(tmp_path, ["A"], per=2)
+        out = sg.verify_archive(tmp_path, environment=ENV, expected_head=anchor)
+        assert out["verdict"] == "INVALID"
+        assert out["head_state"] == "INVALID_ANCHOR"
+
+
+class TestResidueAccounting:
+    def test_one_unreadable_entry_does_not_drop_later_residue(self, tmp_path):
+        """The guard sat outside both loops, so one dangling symlink dropped
+        7,000 bytes of residue in LATER directories and its sentinel was then
+        counted as a file — a wrong count and a wrong byte total."""
+        init(tmp_path)
+        build(tmp_path, ["A", "B", "C"], per=2)
+        (seg_dir(tmp_path, "A") / f"{sg.EVENTS_FILENAME}.abandoned.1").write_bytes(b"x" * 5000)
+        (seg_dir(tmp_path, "C") / f"{sg.EVENTS_FILENAME}.abandoned.1").write_bytes(b"y" * 7000)
+        (seg_dir(tmp_path, "B") / f"{sg.EVENTS_FILENAME}.abandoned.1").symlink_to(
+            tmp_path / "does-not-exist")
+        out = verdict(tmp_path)
+        found = {r["segment_id"]: r["bytes"] for r in out["abandoned_segments"]
+                 if r.get("segment_id")}
+        assert found.get("kalshi.seg-A") == 5000
+        assert found.get("kalshi.seg-C") == 7000, "later residue was dropped"
+        assert any("RESIDUE_SCAN_INCOMPLETE" in w for w in out["warnings"])
+
+    def test_the_facade_surfaces_residue_and_accepts_an_anchor(self, tmp_path):
+        """Demoting residue to a warning was right; deleting the only signal the
+        operator-facing wrapper carried was not."""
+        init(tmp_path)
+        build(tmp_path, ["A"], per=2)
+        (seg_dir(tmp_path, "A") / f"{sg.EVENTS_FILENAME}.abandoned.1").write_bytes(b"z" * 99)
+        store = ar.EventArchive(tmp_path, environment=ENV, venue="kalshi")
+        report = store.verify()
+        assert report["abandoned_segments"], "residue invisible on the facade"
+        assert any("ABANDONED_EVIDENCE" in w for w in report["warnings"])
+        assert report["intact"] is True
+        rec = ah.load_authoritative_head(tmp_path, ENV).generation_record
+        assert store.verify(expected_head=(rec["generation"], "0" * 64))["intact"] is False
