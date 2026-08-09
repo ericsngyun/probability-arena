@@ -47,6 +47,8 @@ from pathlib import Path
 
 from app.realtime.archive_head import (
     ArchiveHeadError,
+    _publish_replace,
+    _stage_bytes,
     genesis_path,
     initialize_archive,
     read_genesis,
@@ -59,6 +61,8 @@ from app.realtime.canonical import (
 )
 from app.realtime.segment import (
     EVENTS_FILENAME,
+    _decompress_prefix,
+    assert_contained,
     SegmentError,
     SegmentWriter,
     non_canonical_reason,
@@ -99,6 +103,7 @@ class LegacyScan:
     first_timestamp: str | None = None
     last_timestamp: str | None = None
     files: list = field(default_factory=list)
+    torn_files: list = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -111,6 +116,9 @@ class LegacyScan:
             "first_timestamp": self.first_timestamp,
             "last_timestamp": self.last_timestamp,
             "files": list(self.files),
+            # Named explicitly: a source whose tail could not be decoded is not
+            # a source that contained nothing.
+            "torn_files": list(self.torn_files),
         }
 
 
@@ -138,11 +146,21 @@ def _legacy_files(source: Path) -> list:
 def _read_legacy_records(path: Path) -> tuple:
     """Decode a legacy gzip event file. Returns (records, rejected, reasons)."""
     records, rejected, reasons = [], 0, {}
+    # `gzip.open(...).read()` discards the ENTIRE decompressed prefix on
+    # EOFError — the exact defect `_decompress_prefix` exists to fix,
+    # reintroduced here in new code that did not call it. A torn tail is the
+    # ordinary residue of a crashed legacy collector, and the importer reported
+    # `records_rejected: 0`, so the provenance record affirmatively stated that
+    # nothing had been lost while 165 recoverable records went missing.
     try:
-        with gzip.open(path, "rb") as fh:
-            raw = fh.read()
-    except (OSError, EOFError, gzip.BadGzipFile) as exc:
+        decoded, _consumed, _eof = _decompress_prefix(path.read_bytes())
+    except OSError as exc:
         return [], 0, {f"unreadable:{type(exc).__name__}": 1}
+    try:
+        raw = decoded
+        gzip.BadGzipFile           # referenced so the import stays meaningful
+    except Exception:              # pragma: no cover - defensive
+        return [], 0, {"unreadable:decode": 1}
     for line in raw.split(b"\n"):
         if not line.strip():
             continue
@@ -171,6 +189,8 @@ def scan_legacy(source) -> LegacyScan:
         scan.files.append(rel)
         scan.artifact_digests[rel] = _file_digest(path)
         records, rejected, reasons = _read_legacy_records(path)
+        if any(k.startswith("unreadable") for k in reasons) or not records:
+            scan.torn_files.append(rel)
         scan.records_readable += len(records)
         scan.records_rejected += rejected
         for k, v in reasons.items():
@@ -198,10 +218,15 @@ def migrate_legacy_archive(source, dest, *, environment: str,
     would be imported, and touches nothing.
     """
     source, dest = Path(source), Path(dest)
-    if source.resolve() == dest.resolve():
+    src_r, dst_r = source.resolve(), dest.resolve()
+    if src_r == dst_r or src_r in dst_r.parents or dst_r in src_r.parents:
+        # "The legacy source is opened read-only and never written" was false
+        # when the destination was nested inside the source: 13 new files
+        # appeared under the source tree.
         raise LegacyImportError(
-            "source and destination are the same directory; a legacy import "
-            "creates a NEW governed archive and never rewrites the source")
+            "source and destination overlap (same directory, or one contains "
+            "the other); a legacy import creates a NEW governed archive "
+            "elsewhere and never writes into the source")
     scan = scan_legacy(source)
 
     plan = {
@@ -281,8 +306,21 @@ def migrate_legacy_archive(source, dest, *, environment: str,
     }
     provenance["provenance_digest"] = digest_hex(
         {k: v for k, v in provenance.items() if k != "provenance_digest"})
-    out = dest / f"env={environment}" / PROVENANCE_FILENAME
-    out.write_bytes(canonical_bytes(provenance))
+    # The one write in `app/realtime/` that bypassed `write_all` — no
+    # O_NOFOLLOW, no containment check, no temp+rename, mode 0644 while every
+    # other artifact is 0600. It followed a planted symlink and clobbered a file
+    # OUTSIDE the root: attack 26 against a containment suite that refuses the
+    # other 25.
+    directory = dest / f"env={environment}"
+    assert_contained(dest, directory)
+    out = directory / PROVENANCE_FILENAME
+    if os.path.islink(out):
+        raise LegacyImportError(
+            f"{out} is a symlink; refusing to write the provenance record "
+            "through it")
+    payload = canonical_bytes(provenance)
+    tmp = _stage_bytes(directory, PROVENANCE_FILENAME, payload)
+    _publish_replace(tmp, out, label="legacy_provenance")
     return provenance
 
 

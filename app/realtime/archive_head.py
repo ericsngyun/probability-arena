@@ -43,21 +43,42 @@ generation record that was already durably created.
 
 ## Threat model, stated exactly
 
-Tamper-EVIDENT against partial or local mutation of history: deleting a segment,
-deleting or rewriting a generation record, grafting a foreign segment, rolling
-the current head back to an earlier generation, relabelling provenance, or
-replacing the archive with one minted elsewhere (its `archive_id` will not match
-the identity the collector and the verifier are configured with).
+Corrected for the third time, because this section has overclaimed in every
+previous revision and a reviewer has caught it every time. What follows is what
+the code demonstrably does, not what the design aspires to.
 
-NOT tamper-PROOF against an attacker who can rewrite EVERY commitment in the
-root *and* the configured root of trust together. Every digest here is unkeyed
-and every artifact lives under a root the writer can write. In particular, an
-attacker who deletes the tail segments, deletes their generation records, and
-rewrites the current head leaves a shorter history that is internally consistent.
-`verify_archive` accepts a `minimum_generation` for exactly this: a monitor that
-records the last generation it observed supplies an anchor from outside the
-root. Without such an anchor, tail truncation is not detectable from inside the
-archive, and no arrangement of files under a writable root can change that.
+**Pinned without any external input.** A history that is SHORTER than it claims.
+Generation N asserts `segment_count == N`, so dropping a segment drops a
+generation, and a no-op generation minted to restore the counter contradicts its
+own segment count. Also: any edit to a single artifact, since manifests,
+generation records and the pointer must agree with each other.
+
+**Pinned only with the external constant `expected_archive_id`.** An archive
+minted elsewhere and moved into place. Without that constant the genesis file is
+a LABEL, not an anchor — `genesis_digest` is unkeyed and recomputable, so an
+attacker forges a genesis as easily as reading one.
+
+**Pinned only with the external anchor `expected_head=(generation, digest)`.**
+The committed ORDER and the committed SET of segments. An attacker who rewrites
+every generation record and the pointer — leaving the genesis and every manifest
+byte-identical, and needing to forge nothing — can reorder committed history, or
+substitute and insert segments while preserving the generation count. This is
+NOT covered by "an attacker who rewrites the root of trust", which earlier
+revisions of this comment claimed as the only residual. It is a full-chain
+re-mint, and it is defeated only by an anchor held outside this root. Because
+generations chain, pinning one generation pins every generation before it.
+
+`minimum_generation` pins a COUNTER and nothing else. It stops shrinkage; it does
+not stop reordering, substitution or insertion, all of which can grow past it.
+Prefer `expected_head`.
+
+**Not pinned at all.** `archive_identity`, `created_at` and
+`canonical_schema_version` in every artifact, and `environment` in the pointer:
+self-digest only, freely relabelled. Nothing reads them for verification.
+
+No arrangement of files under a root the writer can write can close the
+full-chain re-mint. That requires either a key the writer does not hold or an
+append-only sink it cannot rewrite, and this module implements neither.
 """
 
 from __future__ import annotations
@@ -407,15 +428,7 @@ def initialize_archive(root, environment: str, *, archive_identity: str,
     heads.mkdir(parents=True, exist_ok=True)
     assert_contained(root, heads)
 
-    genesis = {
-        "schema_version": GENESIS_SCHEMA_VERSION,
-        "canonical_schema_version": CANONICAL_SCHEMA_VERSION,
-        "archive_id": archive_id or uuid.uuid4().hex,
-        "environment": environment,
-        "archive_identity": archive_identity,
-        "created_at": canonical_datetime(datetime.now(timezone.utc)),
-    }
-    genesis["genesis_digest"] = genesis_digest_of(genesis)
+    archive_id = archive_id or uuid.uuid4().hex
 
     # ORDER MATTERS, and the previous order was a permanent brick. Linking the
     # genesis FIRST meant a crash before generation 0 left an archive that could
@@ -430,20 +443,46 @@ def initialize_archive(root, environment: str, *, archive_identity: str,
     # the genesis link leaves NOT_INITIALIZED, which initialization may
     # legitimately re-run. "Genesis exists" now IMPLIES "generation 0 and the
     # pointer exist".
-    zero = _build_generation_zero(archive_id=genesis["archive_id"],
-                                  environment=environment)
+    zero = _build_generation_zero(archive_id=archive_id, environment=environment)
     existing_zero = generation_path(root, environment, 0)
     if os.path.lexists(existing_zero):
-        # A previous interrupted initialization already created it. Adopt it
-        # only if it is genuinely generation 0 of an archive with no genesis.
+        # A previous interrupted initialization already created it. Adopt the
+        # record AND ITS IDENTITY. The first version of this adopted the record
+        # while the genesis kept a freshly minted uuid4, so the two essentially
+        # never matched and two of the three crash windows produced a
+        # permanently HEAD_INVALID archive with every remedy closed — worse than
+        # the brick it replaced, and plantable by dropping a foreign empty
+        # generation 0 into a virgin root.
         durable = read_generation(root, environment, 0)
-        if durable.get("segment_count") != 0:
+        if durable.get("segment_count") != 0 or durable.get("committed_segment_id"):
             raise ArchiveHeadError(
                 f"{existing_zero} exists and is not an empty generation 0; "
                 "refusing to initialize over it")
+        if durable.get("environment") != environment:
+            raise ArchiveIdentityMismatch(
+                f"{existing_zero} belongs to environment "
+                f"{durable.get('environment')!r}, not {environment!r}")
+        if archive_id is not None and durable.get("archive_id") != archive_id:
+            raise ArchiveIdentityMismatch(
+                f"{existing_zero} belongs to archive "
+                f"{durable.get('archive_id')!r}, but initialization was asked "
+                f"for {archive_id!r}")
+        archive_id = durable["archive_id"]
         zero = durable
     else:
         _publish_generation(root, environment, zero)
+
+    # The genesis is built AFTER the identity is settled, so "genesis exists"
+    # implies "generation 0 exists AND agrees with it".
+    genesis = {
+        "schema_version": GENESIS_SCHEMA_VERSION,
+        "canonical_schema_version": CANONICAL_SCHEMA_VERSION,
+        "archive_id": archive_id,
+        "environment": environment,
+        "archive_identity": archive_identity,
+        "created_at": canonical_datetime(datetime.now(timezone.utc)),
+    }
+    genesis["genesis_digest"] = genesis_digest_of(genesis)
     _publish_current_head(root, environment, zero)
 
     payload = canonical_bytes(genesis)
@@ -832,6 +871,39 @@ def recover_current_head(root, environment: str, *,
                     "records at all; its history is gone and cannot be "
                     "reconstructed from the segments on disk") from None
             record = read_generation(root, environment, present[-1])
+            # The SAME checks the pointer-intact branch applies. Deleting one
+            # file must not downgrade recovery from verified to trusting: a
+            # planted generation with a foreign archive_id, a broken chain or a
+            # phantom segment was adopted and WRITTEN, converting a recoverable
+            # RECOVERY_REQUIRED into an unrecoverable HEAD_INVALID.
+            if record.get("archive_id") != genesis["archive_id"]:
+                raise ArchiveIdentityMismatch(
+                    f"head generation {present[-1]} belongs to a different "
+                    "archive than the genesis; refusing to adopt it")
+            if present != list(range(present[-1] + 1)):
+                raise ArchiveHeadError(
+                    f"head generations {present} are not contiguous from 0; "
+                    "refusing to adopt the newest as the current head")
+            if present[-1] > 0:
+                prior = read_generation(root, environment, present[-1] - 1)
+                problems = verify_transition(prior, record)
+                if problems:
+                    raise ArchiveHeadError(
+                        f"head generation {present[-1]} is not a valid "
+                        f"transition: {problems}")
+                seg_id = record.get("committed_segment_id")
+                seg_dir = env_root(root, environment) / f"segment={seg_id}"
+                from app.realtime.segment import MANIFEST_FILENAME, verify_segment
+                if not (seg_dir / MANIFEST_FILENAME).exists():
+                    raise ArchiveHeadError(
+                        f"head generation {present[-1]} commits segment "
+                        f"{seg_id!r}, whose manifest is not on disk")
+                verdict = verify_segment(seg_dir, environment=environment,
+                                         root=root)
+                if not verdict.valid:
+                    raise ArchiveHeadError(
+                        f"head generation {present[-1]} commits segment "
+                        f"{seg_id!r}, which does not verify: {verdict.reasons}")
             _publish_current_head(root, environment, record)
             return record
         current = read_generation(root, environment, pointer["generation"])

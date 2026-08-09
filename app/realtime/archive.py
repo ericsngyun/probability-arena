@@ -41,6 +41,7 @@ from app.realtime.archive_head import (
     ArchiveNotInitializedError,
     initialize_archive,
     load_authoritative_head,
+    read_generation,
     read_genesis,
 )
 from app.realtime.canonical import (
@@ -414,22 +415,35 @@ class EventArchive:
         return self._read_records()
 
     def _committed_segment_dirs(self) -> list:
-        """Segment directories in the order the archive head committed them."""
+        """Segment directories in the order the archive head COMMITTED them.
+
+        This walks the generation chain. It used to read `head["segments"]` and
+        fall back to `sorted(glob(...))` when that key was absent — and the
+        delta refactor DELETED that key, so the guard fired on every archive and
+        the fallback became the only path. Two reviewers found it independently.
+        The consequences were exactly the two defects this milestone exists to
+        close: a manifest-less directory (which the verifier documents as "not
+        evidence at all") was served as canonical evidence, and replay order
+        stopped matching committed order.
+
+        The fallback is gone. A reader that cannot resolve the committed history
+        must REFUSE, because a silent downgrade from "authenticated order" to
+        "whatever is on disk" is the unsafe default in a tamper-evidence store.
+        """
         env_root = self.root / f"env={self.environment}"
         try:
             head = load_authoritative_head(
                 self.root, self.environment,
-                expected_archive_id=self.expected_archive_id
-            ).generation_record
-        except Exception:                     # noqa: BLE001 - verified elsewhere
-            head = None
-        if not isinstance(head, dict) or not isinstance(head.get("segments"), list):
-            return self._segment_dirs()
+                expected_archive_id=self.expected_archive_id)
+        except Exception as exc:              # noqa: BLE001 - refuse, never glob
+            raise ArchiveError(
+                f"refusing to read: the committed history could not be "
+                f"resolved ({type(exc).__name__}: {exc})") from exc
         ordered = []
-        for entry in head["segments"]:
-            if not isinstance(entry, dict):
-                continue
-            d = env_root / f"segment={entry.get('segment_id')}"
+        for gen in range(1, head.generation_record["generation"] + 1):
+            rec = read_generation(self.root, self.environment, gen)
+            seg_id = rec.get("committed_segment_id")
+            d = env_root / f"segment={seg_id}"
             if d.is_dir() and not d.is_symlink():
                 ordered.append(d)
         return ordered

@@ -249,6 +249,7 @@ _DERIVE_ROOT = object()
 # a price; it is a contract violation, and it is refused before acceptance.
 _MAX_DECIMAL_EXPONENT = 4096
 _MAX_DECIMAL_DIGITS = 512
+_MAX_INT_BITS = 8192
 
 
 class SegmentState(str, Enum):
@@ -315,7 +316,26 @@ def non_canonical_reason(value, _path: str = "") -> str | None:
             return (f"{_path or 'value'} has more than {_MAX_DECIMAL_DIGITS} "
                     "significant digits")
         return None
-    if isinstance(value, (int, str, datetime)):
+    if isinstance(value, str):
+        # A lone surrogate is legal JSON and venue-controlled, and it was
+        # ADMITTED and then killed the segment at close: 501 accepted events
+        # lost, `verify_archive` reporting VALID with empty reasons — a total
+        # collector failure indistinguishable from an idle collector. Admission
+        # is only a contract if it is total.
+        try:
+            value.encode("utf-8", "strict")
+        except UnicodeEncodeError as exc:
+            return (f"{_path or 'value'} is a str that is not UTF-8 encodable "
+                    f"({exc.reason} at {exc.start})")
+        return None
+    if isinstance(value, int):
+        # The int twin of the Decimal digit bound, which was added while this
+        # was left open. Reachable from any normalizer that computes an integer.
+        if value.bit_length() > _MAX_INT_BITS:
+            return (f"{_path or 'value'} is an integer of {value.bit_length()} "
+                    f"bits, beyond the canonical bound of {_MAX_INT_BITS}")
+        return None
+    if isinstance(value, datetime):
         return None
     if isinstance(value, Mapping):
         for k, v in value.items():
@@ -898,10 +918,19 @@ class SegmentWriter:
         # thread plus a shutdown handler destroyed the segment 18 times in 30.
         with self._admission:
             if self._sealed:
-                with self._lock:
-                    self.accounting.attempted += 1
-                    self.accounting.reject_before_accept(
-                        RejectReason.SHUTDOWN_IN_PROGRESS)
+                # Counted INSIDE `_inflight` too. A post-seal rejection used to
+                # move `attempted` after close() had observed `_inflight == 0`,
+                # so close() reconciled against counters that were still
+                # changing and refused provably clean segments 8-18% of the time
+                # under contention.
+                self._inflight += 1
+                try:
+                    with self._lock:
+                        self.accounting.attempted += 1
+                        self.accounting.reject_before_accept(
+                            RejectReason.SHUTDOWN_IN_PROGRESS)
+                finally:
+                    self._inflight -= 1
                 return RejectReason.SHUTDOWN_IN_PROGRESS
             with self._lock:
                 self.accounting.attempted += 1
@@ -1146,26 +1175,32 @@ class SegmentWriter:
         # the queue rather than inferred from the difference between counters —
         # so a drift between what the writer believes and what is actually
         # undrained is detected here instead of disappearing into the identity.
+        # ONE snapshot, taken under the lock. `reconciles()`/`clean()` read
+        # three fields without synchronisation, so the reconciliation could
+        # observe a torn triple even when every identity held.
         self._measure_pending()
+        with self._lock:
+            snapshot = WriterAccounting(**{
+                k: v for k, v in vars(self.accounting).items()})
         if self._writer_error is not None:
             self.state = SegmentState.INVALID
             raise SegmentError(f"writer failed: {self._writer_error!r} "
                                f"{self.accounting.to_dict()}")
-        if not self.accounting.reconciles():
+        if not snapshot.reconciles():
             self.state = SegmentState.INVALID
             raise SegmentError(
                 "refusing to publish a segment whose accounting does not "
-                f"reconcile: {self.accounting.to_dict()}")
+                f"reconcile: {snapshot.to_dict()}")
         # `clean` is the ONLY state in which this may be published as evidence.
         # An accepted-but-unwritten event is a loss the producer was told did
         # not happen, and it must never appear behind close_status "clean".
-        if not self.accounting.clean():
+        if not snapshot.clean():
             self.state = SegmentState.INVALID
             raise SegmentError(
-                f"{self.accounting.failed_after_accept} accepted event(s) were "
-                f"not written and {self.accounting.pending} were never drained; "
+                f"{snapshot.failed_after_accept} accepted event(s) were "
+                f"not written and {snapshot.pending} were never drained; "
                 "refusing to publish this segment as a clean close: "
-                f"{self.accounting.to_dict()}")
+                f"{snapshot.to_dict()}")
 
         # Event-file durability first. Each stage is separately injectable so a
         # failure can be attributed to the exact stage rather than collapsed
@@ -1718,9 +1753,19 @@ def verify_segment(directory, *, environment: str, allow_open: bool = False,
         if not ok:
             reasons.append(f"{name} does not match the manifest")
 
-    size = events_path.stat().st_size
+    try:
+        size = events_path.stat().st_size
+        actual_digest = file_sha256(events_path)
+    except OSError as exc:
+        # A mode-0 or directory events file used to raise straight out of the
+        # public verifier and out of `recover_current_head`, so the documented
+        # repair path died with a raw OSError that no operator tool catches.
+        reasons.append(f"event file is unreadable ({type(exc).__name__}: {exc})")
+        v.valid = False
+        v.state = SegmentState.INVALID
+        return v
     v.file_size_match = size == manifest.get("event_file_size_bytes")
-    v.file_digest_match = file_sha256(events_path) == manifest.get("event_file_sha256")
+    v.file_digest_match = actual_digest == manifest.get("event_file_sha256")
     if not v.file_size_match:
         reasons.append(f"event file size {size} != manifest "
                        f"{manifest.get('event_file_size_bytes')}")
@@ -1854,7 +1899,7 @@ def _empty_verdict(environment: str, **over) -> dict:
 
 def verify_archive(root, *, environment: str, expected_archive_id: str | None = None,
                    minimum_generation: int | None = None,
-                   expected_head_digest: str | None = None) -> dict:
+                   expected_head: tuple | None = None) -> dict:
     """Verify the archive against its COMMITTED history, rooted in its genesis.
 
     The history is reconstructed by walking the generation chain from 0 to N and
@@ -1875,7 +1920,7 @@ def verify_archive(root, *, environment: str, expected_archive_id: str | None = 
         return _verify_archive_inner(
             root, environment=environment, expected_archive_id=expected_archive_id,
             minimum_generation=minimum_generation,
-            expected_head_digest=expected_head_digest)
+            expected_head=expected_head)
     except Exception as exc:                  # noqa: BLE001 - reported as a verdict
         # A verifier that raises cannot report corruption, and every caller that
         # catches only the domain error turns tampering into a traceback. Five
@@ -1889,7 +1934,7 @@ def verify_archive(root, *, environment: str, expected_archive_id: str | None = 
 
 
 def _verify_archive_inner(root, *, environment: str, expected_archive_id,
-                          minimum_generation, expected_head_digest) -> dict:
+                          minimum_generation, expected_head) -> dict:
     root = Path(root)
     env_dir = root / f"env={environment}"
     if env_dir.is_symlink():
@@ -1934,11 +1979,20 @@ def _verify_archive_inner(root, *, environment: str, expected_archive_id,
             f"HISTORY_TRUNCATED: the archive is at generation "
             f"{record['generation']} but was last observed at generation "
             f"{minimum_generation}; the tail of this history is missing")
-    if expected_head_digest is not None and record["head_digest"] != expected_head_digest:
-        reasons.append(
-            f"HISTORY_REWRITTEN: generation {record['generation']} has digest "
-            f"{str(record['head_digest'])[:12]}, but the anchor records "
-            f"{str(expected_head_digest)[:12]} at or before this generation")
+    # `expected_head` is a (generation, digest) PAIR. The first version of this
+    # compared only against the CURRENT head while its message claimed "at or
+    # before this generation", so one honest commit after the anchor was taken
+    # produced a false HISTORY_REWRITTEN and no monitor could use it on a live
+    # archive. Because generations chain, pinning generation g pins everything
+    # 0..g while permitting honest growth past it.
+    anchor_gen = anchor_digest = None
+    if expected_head is not None:
+        anchor_gen, anchor_digest = expected_head
+        if record["generation"] < anchor_gen:
+            reasons.append(
+                f"HISTORY_TRUNCATED: the archive is at generation "
+                f"{record['generation']} but the anchor records generation "
+                f"{anchor_gen}")
 
     # Walk the chain and REBUILD the committed order from the deltas. Each step
     # must be one valid transition; nothing is taken on the record's own word.
@@ -1982,6 +2036,12 @@ def _verify_archive_inner(root, *, environment: str, expected_archive_id,
                     "partition_identity": rec["committed_partition_identity"],
                     "previous_segment_digest": rec["previous_segment_digest"],
                 })
+            if anchor_gen is not None and gen == anchor_gen \
+                    and rec.get("head_digest") != anchor_digest:
+                reasons.append(
+                    f"HISTORY_REWRITTEN: generation {gen} has digest "
+                    f"{str(rec.get('head_digest'))[:12]}, but the anchor "
+                    f"records {str(anchor_digest)[:12]} for that generation")
             previous = rec
         if previous is not None and previous.get("head_digest") != record["head_digest"]:
             reasons.append("the walked chain does not end at the current head")
