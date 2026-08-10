@@ -194,7 +194,13 @@ def test_limit_smaller_than_the_universe_reports_what_it_dropped(session):
     The pass must not claim to have considered more than it did."""
     for i in range(10):
         _mint(session, f"tok-cap-{i}", born_hours_ago=30)
-    r = run_scheduled_reconciliation(session, settings=_settings(), limit=3)
+    # NEW-HIGH-2 fix: batch_size must be < limit (the default batch_size of
+    # 5 would otherwise trip the new invalid_batch_size guard against this
+    # small a limit) — explicit batch_size=1 keeps this test's own point
+    # (truncation reporting) isolated from that unrelated guard.
+    r = run_scheduled_reconciliation(
+        session, settings=_settings(), limit=3, batch_size=1,
+    )
     assert r["tokens_considered"] == 3
     assert r["selection_limit"] == 3
     # the docstring's actual claim: the pass must NAME what it dropped. Before
@@ -588,6 +594,75 @@ def test_negative_limit_is_refused_not_treated_as_unbounded(session):
     assert _outcome(session, "tok-neg-0") is None
 
 
+def test_zero_batch_size_is_refused_not_treated_as_one_monolithic_batch(session):
+    """NEW-HIGH-2 fix (third Lane-B review, SQLite coexistence). Measured
+    pre-fix: `batch_size=0` -> `status='ok'`, one "batch" silently became
+    the WHOLE pass (the pre-milestone monolithic transaction this milestone
+    exists to remove), reported as healthy."""
+    for i in range(5):
+        _mint(session, f"tok-batch0-{i}", born_hours_ago=30)
+    r = run_scheduled_reconciliation(
+        session, settings=_settings(), limit=10, batch_size=0,
+    )
+    assert r["status"] == "invalid_batch_size"
+    assert r["tokens_considered"] == 0
+    assert _outcome(session, "tok-batch0-0") is None
+
+
+def test_negative_batch_size_is_refused_not_a_silent_green_no_op(session):
+    """NEW-HIGH-2 fix. Measured pre-fix: `batch_size=-5` -> `status='ok'`,
+    `tokens_processed=0`, CLI exit 0 — a green unit that reconciled
+    NOTHING, the exact failure class this milestone exists to remove."""
+    for i in range(5):
+        _mint(session, f"tok-batchneg-{i}", born_hours_ago=30)
+    r = run_scheduled_reconciliation(
+        session, settings=_settings(), limit=10, batch_size=-5,
+    )
+    assert r["status"] == "invalid_batch_size"
+    assert r["tokens_considered"] == 0
+
+
+def test_batch_size_at_or_above_limit_is_refused_not_a_silent_collapse(session):
+    """NEW-HIGH-2 fix. A batch_size >= the selection limit means the FIRST
+    batch alone consumes the whole selection — silently restoring the
+    single-transaction pass this milestone exists to remove, and the write-
+    lock safety argument the whole batching mechanism rests on."""
+    for i in range(5):
+        _mint(session, f"tok-batcheqlimit-{i}", born_hours_ago=30)
+    r = run_scheduled_reconciliation(
+        session, settings=_settings(), limit=10, batch_size=10,
+    )
+    assert r["status"] == "invalid_batch_size"
+    assert r["tokens_considered"] == 0
+    r2 = run_scheduled_reconciliation(
+        session, settings=_settings(), limit=10, batch_size=50,
+    )
+    assert r2["status"] == "invalid_batch_size"
+
+
+def test_negative_max_duration_seconds_is_refused(session):
+    """LOW-3 fix (third Lane-B review). A NEGATIVE deadline is nonsensical
+    (a deadline before the pass even started) and must be refused — unlike
+    0.0, which is the intentional 'already past due, stop after exactly one
+    batch' sentinel several other tests use deliberately."""
+    for i in range(5):
+        _mint(session, f"tok-negdeadline-{i}", born_hours_ago=30)
+    r = run_scheduled_reconciliation(
+        session, settings=_settings(), limit=10, batch_size=2,
+        max_duration_seconds=-1.0,
+    )
+    assert r["status"] == "invalid_max_duration_seconds"
+    assert r["tokens_considered"] == 0
+
+    # 0.0 must still be ACCEPTED (the existing deadline-stop tests rely on
+    # this remaining true).
+    r2 = run_scheduled_reconciliation(
+        session, settings=_settings(), limit=10, batch_size=2,
+        max_duration_seconds=0.0,
+    )
+    assert r2["status"] != "invalid_max_duration_seconds"
+
+
 def test_window_guard_accounts_for_the_scheduling_interval(session):
     """36h clears the closing edge but not the edge plus one 6h interval: a
     token born 37h ago matures and leaves the window between two passes."""
@@ -797,7 +872,12 @@ def test_backlog_is_reported_even_when_it_cannot_all_be_worked(session):
         ))
     session.flush()
 
-    r = run_scheduled_reconciliation(session, settings=_settings(), limit=2)
+    # NEW-HIGH-2 fix: explicit batch_size=1 — the default batch_size (5)
+    # would otherwise trip the new invalid_batch_size guard against this
+    # small a limit, which is not what this test is pinning.
+    r = run_scheduled_reconciliation(
+        session, settings=_settings(), limit=2, batch_size=1,
+    )
     assert r["backlog_size"] == 6
     assert r["work_available"] == 6
     assert r["status"] == "truncated"
@@ -852,39 +932,67 @@ def test_default_batch_size_is_actually_used_when_unset(session):
         session, settings=_settings(crypto_tape_reconciler_limit=1000),
     )
     assert r["status"] == "ok"
-    assert r["batch_size"] == 25
-    assert r["batches_committed"] == 2  # ceil(30 / 25)
+    assert r["batch_size"] == 5
+    assert r["batches_committed"] == 6  # ceil(30 / 5)
     assert r["tokens_processed"] == 30
 
 
 def test_shipped_write_coordination_constants_are_pinned():
-    """NEW-H2 mutation-battery fix (third re-review). A full-suite mutation
-    battery found that widening RECONCILE_BATCH_SIZE (25 -> 5000) or
-    RECONCILE_MAX_DURATION_SECONDS (20 -> 300) — either the module constant
-    OR the matching Settings field default — left the ENTIRE crypto suite
-    green, because 5000 exceeds the 2000 selection limit and silently
-    restores the pre-milestone single-transaction-pass shape. These are the
-    numbers that ARE the write-lock safety argument (see the milestone doc's
-    "Write-lock defect" section); pin them exactly, plus the invariant that
-    makes the batch size meaningful against the selection cap."""
+    """NEW-H2 mutation-battery fix (third re-review), strengthened per
+    NEW-HIGH-1/NEW-HIGH-3 (third Lane-B review, SQLite coexistence). A
+    full-suite mutation battery found that widening RECONCILE_BATCH_SIZE
+    (originally 25 -> 5000) or RECONCILE_MAX_DURATION_SECONDS (20 -> 300) —
+    either the module constant OR the matching Settings field default —
+    left the ENTIRE crypto suite green, because 5000 exceeds the 2000
+    selection limit and silently restores the pre-milestone
+    single-transaction-pass shape. These are the numbers that ARE the
+    write-lock safety argument; pin them exactly, plus
+    `RECONCILE_POST_BATCH_YIELD_SECONDS`, plus a STRENGTHENED invariant.
+
+    NEW-HIGH-1 lowered the shipped batch size default from 25 to 5 (the
+    reviewer's measured stopgap against a 62x-slower host; 25 produced
+    26.3-36.5s single-batch write-lock holds there, one trial over the 30s
+    busy_timeout, and could not converge against the birth rate at all —
+    see crypto_tape.py's comment on `RECONCILE_BATCH_SIZE` for the full
+    measurement and why this is a stopgap, not a structural time-based fix).
+
+    NEW-HIGH-3: the OLD invariant (`batch_size < limit`) was nearly
+    vacuous — limit=30 and limit=26 both stayed green even though
+    `batch_size=25` against `limit=26` means the FIRST batch alone is
+    22 tokens short of exhausting the entire selection, i.e. one or two
+    batches consume the whole pass, exactly the single-transaction shape
+    this invariant's own docstring claims to prevent. Strengthened to
+    require at least `MIN_BATCHES` batches' worth of headroom below the
+    selection limit."""
     from app.config import Settings
     from app.services.crypto_tape import (
         RECONCILE_BATCH_SIZE,
         RECONCILE_MAX_DURATION_SECONDS,
+        RECONCILE_POST_BATCH_YIELD_SECONDS,
     )
 
-    assert RECONCILE_BATCH_SIZE == 25
+    assert RECONCILE_BATCH_SIZE == 5
     assert RECONCILE_MAX_DURATION_SECONDS == 20.0
+    assert RECONCILE_POST_BATCH_YIELD_SECONDS == 0.05
 
     defaults = Settings()
-    assert defaults.crypto_tape_reconciler_batch_size == 25
+    assert defaults.crypto_tape_reconciler_batch_size == 5
     assert defaults.crypto_tape_reconciler_max_duration_seconds == 20.0
-    # the invariant that makes batching meaningful: if the batch size ever
-    # grows to meet or exceed the selection limit, a single "batch" IS the
-    # whole pass again — silently restoring the single-transaction shape
-    # this milestone exists to remove.
-    assert defaults.crypto_tape_reconciler_batch_size < defaults.crypto_tape_reconciler_limit
-    assert RECONCILE_BATCH_SIZE < defaults.crypto_tape_reconciler_limit
+    # Strengthened invariant (NEW-HIGH-3): batching is only meaningful if
+    # the selection limit leaves room for SEVERAL batches, not just
+    # "more than one token's worth" above the batch size. Requires at
+    # least MIN_BATCHES batches to fit under the default limit.
+    MIN_BATCHES = 20
+    for batch_size, limit in (
+        (defaults.crypto_tape_reconciler_batch_size,
+         defaults.crypto_tape_reconciler_limit),
+        (RECONCILE_BATCH_SIZE, defaults.crypto_tape_reconciler_limit),
+    ):
+        assert batch_size * MIN_BATCHES <= limit, (
+            f"batch_size={batch_size} against limit={limit} leaves room for "
+            f"fewer than {MIN_BATCHES} batches — too close to the "
+            "single-transaction shape this milestone exists to remove"
+        )
 
 
 def test_manual_path_defaults_to_one_commit_for_the_whole_pass(session):
@@ -1747,31 +1855,120 @@ def test_batched_pass_real_commit_count_via_after_commit_listener(session):
     assert len(commits) == 5  # run row + 3 batches + finalize — REAL commits
 
 
+def test_blocked_ms_captures_time_even_with_zero_lock_retry_events(session):
+    """NEW-MEDIUM-2 fix (third Lane-B review, SQLite coexistence).
+    `lock_retry_events` only increments on a CAUGHT-and-retried
+    OperationalError — a commit attempt that spends real wall time blocked
+    inside SQLite's busy handler but eventually succeeds on its FIRST
+    attempt reports `lock_retry_events=0` despite genuinely being blocked.
+    Measured pre-fix with a real external holder: a 40s external hold
+    produced `status=partial` with `lock_retry_events=0`. This simulates
+    that shape with a monkeypatched `commit()` that sleeps (real wall time)
+    before succeeding — no exception, so `lock_retry_events` stays 0 — and
+    asserts `blocked_ms` still reflects the real elapsed time via a direct
+    `perf_counter` measurement, not via the retry-event counter."""
+    import time as _time
+
+    for i in range(5):
+        _mint(session, f"tok-blockedms-{i}", born_hours_ago=30, liquidity=10_000.0)
+
+    real_commit = type(session).commit
+    SIMULATED_BLOCK_SECONDS = 0.05
+
+    def slow_but_successful_commit(self):
+        _time.sleep(SIMULATED_BLOCK_SECONDS)
+        return real_commit(self)
+
+    import unittest.mock as _mock
+
+    with _mock.patch.object(type(session), "commit", slow_but_successful_commit):
+        rec = CryptoLifecycleTapeRecorder()
+        r = rec.run_once(
+            session, limit=5, hours=48, batch_size=5,
+        )
+
+    assert r["status"] == "ok"
+    assert r["lock_retry_events"] == 0, (
+        "the OLD (undercounting) signal must stay 0 here — that is the "
+        "whole point of this test"
+    )
+    # `batch_size=5` puts run_once in CHUNKED mode (run-row creation, the
+    # one batch, and finalize are each a separate real, slowed commit), so
+    # blocked_ms accumulates at least one slowed commit's worth of time.
+    assert r["blocked_ms"] >= int(SIMULATED_BLOCK_SECONDS * 1000)
+
+
 def test_post_batch_yield_sleeps_the_named_duration_after_each_real_commit(session):
-    """NEW-H1 fix (third re-review). A short sleep AFTER each real batch
+    """NEW-H1 fix (third re-review), strengthened per NEW-HIGH-3 (third
+    Lane-B review, SQLite coexistence). A short sleep AFTER each real batch
     commit gives a waiting competing writer a genuine chance to win the lock
-    race — see `RECONCILE_POST_BATCH_YIELD_SECONDS`. This pins that it is
-    invoked exactly once per REAL committed batch (not per dry-run
-    "batch", which never commits) with exactly the named constant's value,
-    via an injected sleeper — no wall-clock timing dependency."""
+    race — see `RECONCILE_POST_BATCH_YIELD_SECONDS`.
+
+    The ORIGINAL version of this test filtered observed sleeps by equality
+    with the SAME constant it was supposedly pinning
+    (`s == RECONCILE_POST_BATCH_YIELD_SECONDS`) — self-referential: mutating
+    the constant to 0.0, to 1e-6, or moving the sleep call BEFORE the commit
+    (the exact ordering mistake this milestone's commit message says made
+    competitor waits WORSE) all left the test green, because the filter
+    just tracks whatever the constant currently is. This version:
+      1. Pins the LITERAL value 0.05 (not the imported constant) and that it
+         is > 0.
+      2. Asserts the ORDERING behaviourally: an `after_commit` listener and
+         the injected sleeper both append to the SAME shared event log, and
+         each batch's sleep must appear immediately after that batch's
+         commit in the log — not before, not decoupled from it."""
     from app.services.crypto_tape import RECONCILE_POST_BATCH_YIELD_SECONDS
+    from sqlalchemy import event
 
     for i in range(23):
         _mint(session, f"tok-yield-{i}", born_hours_ago=30, liquidity=10_000.0)
 
-    sleeps: list[float] = []
+    events: list[tuple[str, float | None]] = []
+
+    @event.listens_for(session, "after_commit")
+    def _record_commit(sess):
+        events.append(("commit", None))
 
     def _sleeper(seconds: float) -> None:
-        sleeps.append(seconds)
+        events.append(("sleep", seconds))
 
-    r = run_scheduled_reconciliation(
-        session, settings=_settings(crypto_tape_reconciler_limit=1000),
-        batch_size=10, sleeper=_sleeper,
-    )
+    try:
+        r = run_scheduled_reconciliation(
+            session, settings=_settings(crypto_tape_reconciler_limit=1000),
+            batch_size=10, sleeper=_sleeper,
+        )
+    finally:
+        event.remove(session, "after_commit", _record_commit)
+
     assert r["status"] == "ok"
     assert r["batches_committed"] == 3  # ceil(23 / 10)
-    yield_sleeps = [s for s in sleeps if s == RECONCILE_POST_BATCH_YIELD_SECONDS]
-    assert len(yield_sleeps) == 3  # exactly one per real committed batch
+
+    # exact literal value, not the imported constant — a mutated constant
+    # cannot silently satisfy this assertion by redefining what "correct"
+    # means.
+    assert RECONCILE_POST_BATCH_YIELD_SECONDS == 0.05
+    assert RECONCILE_POST_BATCH_YIELD_SECONDS > 0
+
+    sleep_events = [(kind, val) for kind, val in events if kind == "sleep"]
+    assert len(sleep_events) == 3  # exactly one per real committed batch
+    assert all(val == 0.05 for _, val in sleep_events)
+
+    # ORDERING: the run-row-creation commit is the first "commit" in the
+    # log and has no paired sleep (only BATCH commits get the yield) — so
+    # every "sleep" event must be immediately preceded by a "commit" event,
+    # with no commit ever immediately followed by anything other than its
+    # own sleep or the run.
+    commit_indices = [i for i, (kind, _) in enumerate(events) if kind == "commit"]
+    sleep_indices = [i for i, (kind, _) in enumerate(events) if kind == "sleep"]
+    assert len(commit_indices) == 5  # run row + 3 batches + finalize
+    # the 3 batch commits are indices 1, 2, 3 (0 = run row creation, 4 =
+    # finalize) — each must be IMMEDIATELY followed by its sleep.
+    batch_commit_indices = commit_indices[1:4]
+    for commit_idx in batch_commit_indices:
+        assert commit_idx + 1 in sleep_indices, (
+            f"commit at event index {commit_idx} was not immediately "
+            f"followed by a sleep — events={events}"
+        )
 
 
 def test_dry_run_batches_committed_reports_zero_real_commits(session):
@@ -2162,6 +2359,68 @@ def test_integrity_error_reports_concurrent_write_conflict_not_a_traceback(
     monkeypatch.setattr(type(session), "commit", real_commit)
     r2 = run_scheduled_reconciliation(session, settings=_settings())
     assert r2["status"] == "ok"
+
+
+def test_unrecognized_operational_error_reports_db_error_not_a_traceback(
+    session, monkeypatch,
+):
+    """NEW-MEDIUM-1 fix (third Lane-B review, SQLite coexistence). A
+    competing writer under real rollback-journal contention was measured to
+    produce "unable to open database file" (SQLITE_CANTOPEN) — a real
+    OperationalError shape the DB_LOCKED_* retry ladder's busy_timeout does
+    not retry, and which `_is_db_locked` did not match either (pre-fix).
+    Even with the predicate broadened to recognize that specific text (see
+    `_is_db_locked`'s own test coverage), an OperationalError with text the
+    predicate has NEVER seen must still get a typed result, not an uncaught
+    traceback with batches already durably committed and the run row
+    orphaned at status='running'. This uses text the predicate deliberately
+    does NOT recognize, to pin the LAST-resort `except OperationalError`
+    arm specifically (not the broadened `_is_db_locked` branch above it)."""
+    _mint(session, "tok-unknownoperror", born_hours_ago=30, liquidity=10_000.0)
+
+    real_commit = type(session).commit
+
+    def weird_failing_commit(self):
+        raise OperationalError(
+            "INSERT ...", {}, Exception("some SQLite error text nobody has ever seen")
+        )
+
+    monkeypatch.setattr(type(session), "commit", weird_failing_commit)
+
+    r = run_scheduled_reconciliation(session, settings=_settings())
+    assert r["status"] == "db_error"
+    assert r["error"]
+    assert "some SQLite error text nobody has ever seen" in r["error"]
+
+    # session must be usable afterwards (proves rollback happened)
+    monkeypatch.setattr(type(session), "commit", real_commit)
+    r2 = run_scheduled_reconciliation(session, settings=_settings())
+    assert r2["status"] == "ok"
+
+
+def test_is_db_locked_recognizes_cantopen_and_disk_io_error_text():
+    """NEW-MEDIUM-1 fix. `_is_db_locked` must recognize the additional
+    contention-adjacent SQLite failure modes a real competing writer was
+    measured to produce, not just the original SQLITE_BUSY text."""
+    from app.services.crypto_tape import _is_db_locked
+
+    assert _is_db_locked(
+        OperationalError("x", {}, Exception("unable to open database file"))
+    )
+    assert _is_db_locked(
+        OperationalError("x", {}, Exception("disk I/O error"))
+    )
+    assert _is_db_locked(
+        OperationalError("x", {}, Exception("database schema has changed"))
+    )
+    # still recognizes the original text
+    assert _is_db_locked(
+        OperationalError("x", {}, Exception("database is locked"))
+    )
+    # and still does NOT swallow an unrelated error as "lock contention"
+    assert not _is_db_locked(
+        OperationalError("x", {}, Exception("no such table: crypto_tokens"))
+    )
 
 
 def test_systemd_unit_timeout_start_sec_matches_the_computed_worst_case():

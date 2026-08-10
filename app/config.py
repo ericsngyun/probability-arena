@@ -404,16 +404,30 @@ class Settings(BaseSettings):
     # 30s busy_timeout, not a small fraction of it. The internal deadline
     # keeps one pass from running indefinitely (the remainder simply becomes
     # next-pass backlog, never lost — see `unreconciled_backlog`).
-    # `crypto_tape_reconciler_batch_size` is the MEASURED B1 profile default
-    # (see the CRYPTO-COVERAGE-REPAIR-001 debugging session, ~1s write phase
-    # at 25 tokens/batch) — change only with a fresh benchmark.
+    # `crypto_tape_reconciler_batch_size` was the MEASURED B1 profile
+    # default (~1s write phase at 25 tokens/batch on a dev Mac) — NEW-HIGH-1
+    # fix (third Lane-B review, SQLite coexistence, DO NOT ACTIVATE finding):
+    # that measurement does not transfer to a slower host. The 20s deadline
+    # cannot bound a single batch's hold (only evaluated BETWEEN batches),
+    # so batch_size alone determines the worst-case write-lock hold, and
+    # that hold scales with host per-token cost, not a portable constant.
+    # At the reviewer's measured EVO-speed multiplier, batch_size=25
+    # produced 26.3-36.5s holds (one of three trials exceeded the 30s
+    # busy_timeout) and could not converge against the birth rate at all.
+    # Lowered to the reviewer's measured stopgap of 5 (4.56-5.32s worst case
+    # at the same host speed, unchanged competitor throughput, better duty
+    # cycle) — still a COUNT-based bound, not a time-based one; see
+    # `RECONCILE_BATCH_SIZE`'s comment in crypto_tape.py for the real fix
+    # this stopgap defers. Change only after measuring a real batch's hold
+    # on the TARGET host (`crypto-tape-reconcile --batch-size N --dry-run`),
+    # never by trusting this default on an unmeasured host.
     # `crypto_tape_reconciler_max_duration_seconds` is a CHOSEN bound, NOT a
     # measured one: the milestone doc itself states the scheduled path's
     # actual end-to-end wall-clock duration on EVO-X2 has not been
     # re-measured since the batching change. Do not treat it as validated;
     # `crypto-tape-reconcile --max-duration-seconds N --dry-run` exists
     # specifically to measure a real full pass before trusting this default.
-    crypto_tape_reconciler_batch_size: int = 25
+    crypto_tape_reconciler_batch_size: int = 5
     crypto_tape_reconciler_max_duration_seconds: float = 20.0
 
     # Crypto risk engine (CRYPTO-002) — read-only risk INTELLIGENCE only.

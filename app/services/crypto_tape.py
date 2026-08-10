@@ -205,7 +205,33 @@ ABORT_DB_LOCKED = "database_locked"
 # RECONCILE_MAX_DURATION_SECONDS (below) plus one batch — NOT the per-batch
 # hold duration, and NOT the "~3%" figure that per-batch hold alone would
 # suggest.
-RECONCILE_BATCH_SIZE = 25
+#
+# NEW-HIGH-1 fix (third Lane-B review, SQLite coexistence — DO NOT ACTIVATE
+# reason). This is a per-TOKEN-COUNT constant, and the 20s deadline above
+# CANNOT bound a single batch's hold — it is only evaluated BETWEEN batches
+# (see the deadline check in `_assemble_pass_locked`'s batch loop), so with
+# one batch in flight there is nothing for the deadline, or the post-batch
+# yield, to interrupt. A batch's wall-clock hold tracks
+# `batch_size x per-token cost`, and per-token cost is HOST-SPEED dependent,
+# not something this constant can be calibrated against once and trusted
+# everywhere: at the dev-Mac speed this shipped at, 25 tokens was measured
+# safely under the 30s busy_timeout; at the reviewer's measured EVO-speed
+# multiplier (~62x slower per token), the SAME batch_size=25 produced
+# 26.3-36.5s holds — one of three trials exceeded the 30s busy_timeout
+# outright — and a full pass converges only ~25 tokens/6h-tick against
+# ~405 new births/day, so the reconciler could never converge on that host
+# at this constant. Lowered to the reviewer's measured stopgap (5): at the
+# same EVO-speed multiplier, batch_size=5 held 4.56-5.32s worst case (5-7x
+# better), with unchanged competitor throughput and a better duty cycle.
+# This is still a COUNT-based bound, not a time-based one — the reviewer's
+# preferred long-term fix (check the deadline INSIDE the batch loop between
+# tokens, or derive batch_size at runtime from a measured per-token wall
+# time) is NOT implemented here; this constant change is a stopgap, not a
+# structural fix. The pre-activation runbook step is, and must stay,
+# "measure a real batch's hold on the target host and set batch_size so the
+# hold stays comfortably under the busy_timeout" — never "trust this
+# default on an unmeasured host".
+RECONCILE_BATCH_SIZE = 5
 # Internal wall-clock deadline for one `run_once` call. None = unbounded
 # (existing manual-path behaviour, unchanged). The scheduled path sets this so
 # one pass can never run indefinitely; remaining tokens simply stay backlog
@@ -241,18 +267,29 @@ RECONCILE_MAX_DURATION_SECONDS = 20.0
 # busy handler loses the lock race against ~80 back-to-back short write
 # transactions almost as easily as against one long one, because each of
 # this pass's re-acquisitions is another chance for the handler to lose.
-# Measured fix (session-only benchmark evidence, see the milestone doc's
-# evidentiary-status note): inserting a short sleep AFTER each batch commits
-# (tried BEFORE the commit first — that made competitor waits WORSE, a
-# harness-ordering mistake, not a design choice) gives a genuinely idle
-# window for a waiting competitor to actually win the lock race, at the cost
-# of fewer tokens processed per pass (recoverable by raising the deadline or
-# lowering the cadence — the reconciler is the interruptible party here, the
-# watcher is not). Measured, 4 reps: competitor max wait 7.49-12.68s ->
-# 0.156-0.870s; competitor writes 15-19 -> 102-119; write-lock duty cycle
-# 0.83-0.87 -> 0.35-0.57. A 10-40x reduction in worst-case competing-writer
-# wait for ~3 lines. Applied only in chunked mode, only after a REAL commit
-# (never after a dry-run "commit", which never happens).
+# Applying a short sleep AFTER each batch commits (tried BEFORE the commit
+# first — that made competitor waits WORSE, a harness-ordering mistake, not
+# a design choice) gives a genuinely idle window for a waiting competitor to
+# actually win the lock race, at the cost of fewer tokens processed per pass
+# (recoverable by raising the deadline or lowering the cadence — the
+# reconciler is the interruptible party here, the watcher is not).
+#
+# NEW-HIGH-4 fix (third Lane-B review, SQLite coexistence): the ORIGINAL
+# specific figures here ("competitor max wait 7.49-12.68s -> 0.156-0.870s, a
+# 10-40x reduction") were session-only ad-hoc benchmark evidence and did NOT
+# reproduce under an independent 4-trial-each measurement: that review
+# measured max wait 0.01-10.80s -> 0.47-4.47s (a ~2.4x reduction in the
+# worst case, not 10-40x), competitor writes 84-261 -> 144-238 (LOWER than
+# the monolithic comparison's 328-378 — no throughput improvement), and
+# WORSE typical (p95) waits: 0.00-1.43s -> 0.42-0.61s. The qualitative shape
+# is still believed correct — this converts a rare-and-huge wait
+# distribution into a frequent-and-moderate one, which is probably the
+# right trade for a shared host that needs bounded worst-case latency more
+# than it needs zero average latency — but the specific numbers are NOT
+# reproducible evidence and must not be cited as measured fact. No
+# committed benchmark harness exists yet to re-derive them (see the
+# milestone doc's evidentiary-status note); until one does, treat this as a
+# qualitative, not quantitative, claim.
 RECONCILE_POST_BATCH_YIELD_SECONDS = 0.05
 # Overlap guard: a coordination-only flock file, one per chain, living next to
 # the sqlite file itself (or the system temp dir for non-sqlite/in-memory
@@ -1755,6 +1792,7 @@ class CryptoLifecycleTapeRecorder:
                     "examples": [], "batches_committed": 0,
                     "batch_size": batch_size, "stop_reason": "overlap",
                     "lock_retry_events": 0,
+                    "blocked_ms": 0,
                     "backlog_outcomes_written": 0,
                     "error": (
                         f"another crypto-tape reconciliation pass already "
@@ -1862,6 +1900,24 @@ class CryptoLifecycleTapeRecorder:
         # (see `_process_batch`'s own comment) — accumulated across every
         # chunk actually committed in this pass.
         backlog_outcomes_written_total = 0
+        # NEW-MEDIUM-2 fix (third Lane-B review, SQLite coexistence):
+        # `lock_retry_events` only increments on a CAUGHT-and-retried
+        # OperationalError — a pass genuinely blocked by a real external
+        # holder for the ENTIRE duration of `sqlite_busy_timeout_ms` on a
+        # single attempt (no second attempt ever needed because the first
+        # one, eventually, succeeds) reports `lock_retry_events=0` while
+        # having actually spent up to 30s blocked inside SQLite's busy
+        # handler. Measured: a 40s external hold produced `status=partial
+        # (stop_reason=deadline)` with `lock_retry_events=0`, understating
+        # how much of that 43.9s pass wall time was spent blocked, not
+        # doing work — and this same commit newly PERSISTS
+        # `lock_retry_events` to `run.config.write_coordination` and PRINTS
+        # it, turning a known-undercounting signal into an active
+        # misinformation surface. `blocked_seconds` is measured directly
+        # with `time.perf_counter()` around every commit/prepare attempt
+        # (successful or not) — it counts ALL time spent waiting on SQLite,
+        # not just attempts that were retried.
+        blocked_seconds = 0.0
         stop_reason: str | None = None
 
         run: CryptoTokenLifecycleRun | None = None
@@ -1885,10 +1941,12 @@ class CryptoLifecycleTapeRecorder:
                 def _prepare_run_creation() -> None:
                     session.add(run)
 
+                _t0 = time.perf_counter()
                 ok, attempts = self._commit_with_retry(
                     session, _prepare_run_creation, max_lock_attempts,
                     lock_retry_seconds, sleeper,
                 )
+                blocked_seconds += time.perf_counter() - _t0
                 lock_retry_events += max(0, attempts - 1)
                 # Capture the PK right after the run-row creation commit —
                 # see the module-level comment on `run_id` above.
@@ -1912,6 +1970,7 @@ class CryptoLifecycleTapeRecorder:
                         "examples": [], "batches_committed": 0,
                         "batch_size": batch_size, "stop_reason": "contention",
                         "lock_retry_events": lock_retry_events,
+                        "blocked_ms": int(blocked_seconds * 1000),
                         "backlog_outcomes_written": 0,
                         "error": (
                             f"database is locked; exhausted {max_lock_attempts} "
@@ -1945,6 +2004,12 @@ class CryptoLifecycleTapeRecorder:
                 if chunked:
                     result = None
                     for attempt in range(1, max_lock_attempts + 1):
+                        # NEW-MEDIUM-2 fix: measure wall time spent in THIS
+                        # attempt's process+commit — including a successful
+                        # first attempt that itself spent real time inside
+                        # SQLite's busy handler before winning the lock —
+                        # not just attempts that were caught and retried.
+                        _attempt_t0 = time.perf_counter()
                         try:
                             result = self._process_batch(
                                 session, chunk, run=run, started=started,
@@ -1956,6 +2021,7 @@ class CryptoLifecycleTapeRecorder:
                             )
                             if not dry_run:
                                 session.commit()
+                                blocked_seconds += time.perf_counter() - _attempt_t0
                                 # NEW-H1 fix: yield the write lock briefly
                                 # AFTER a real commit so a waiting competing
                                 # writer gets a genuine chance to win the
@@ -1963,6 +2029,7 @@ class CryptoLifecycleTapeRecorder:
                                 sleeper(RECONCILE_POST_BATCH_YIELD_SECONDS)
                             break
                         except OperationalError as exc:
+                            blocked_seconds += time.perf_counter() - _attempt_t0
                             session.rollback()
                             result = None
                             if _is_db_locked(exc):
@@ -2038,6 +2105,7 @@ class CryptoLifecycleTapeRecorder:
                 "batch_size": batch_size,
                 "stop_reason": stop_reason,
                 "lock_retry_events": lock_retry_events,
+                "blocked_ms": int(blocked_seconds * 1000),
                 "backlog_outcomes_written": backlog_outcomes_written_total,
                 "_births": births_seen,
             }
@@ -2170,19 +2238,44 @@ class CryptoLifecycleTapeRecorder:
                             # contention history died with journal rotation
                             # on a host with documented lock contention.
                             # Persisted here so it survives.
+                            #
+                            # NEW-MEDIUM-2 fix (third Lane-B review, SQLite
+                            # coexistence): `lock_retry_events` alone
+                            # UNDERCOUNTS real blocked time — a pass fully
+                            # blocked for up to `sqlite_busy_timeout_ms` on a
+                            # single attempt that eventually succeeds
+                            # reports 0 retries despite real, substantial
+                            # blocked wall time (measured: a 40s external
+                            # hold produced `lock_retry_events=0`).
+                            # `blocked_ms_before_finalize` is the directly
+                            # `perf_counter`-measured lower bound as of this
+                            # point in the pass (run-row creation + every
+                            # batch attempt) — it does NOT yet include this
+                            # finalize commit's own attempt time, since that
+                            # has not happened yet when this closure runs;
+                            # the fully-inclusive `blocked_ms` is on the
+                            # RETURNED summary dict (see `run_once`'s
+                            # in-memory result), just not re-persisted here
+                            # to avoid a second write after this same commit.
                             "write_coordination": {
                                 "lock_retry_events": lock_retry_events,
                                 "batches_committed": batches_committed,
+                                "blocked_ms_before_finalize": int(
+                                    blocked_seconds * 1000
+                                ),
                             },
                         }
                         session.add(run)
 
+                _finalize_t0 = time.perf_counter()
                 ok, attempts = self._commit_with_retry(
                     session, _prepare_finalize, max_lock_attempts,
                     lock_retry_seconds, sleeper,
                 )
+                blocked_seconds += time.perf_counter() - _finalize_t0
                 lock_retry_events += max(0, attempts - 1)
                 summary["lock_retry_events"] = lock_retry_events
+                summary["blocked_ms"] = int(blocked_seconds * 1000)
                 if not ok:
                     # The token batches already committed are real, durable,
                     # correct work — only the run row's own bookkeeping commit
@@ -2472,9 +2565,28 @@ def new_token_ids_for_run(
 
 
 def _is_db_locked(exc: BaseException | None) -> bool:
-    """True when `exc` is (or wraps) a SQLite 'database is locked' error.
-    Handles both SQLAlchemy OperationalError (via .orig) and raw
-    sqlite3.OperationalError."""
+    """True when `exc` is (or wraps) a SQLite write-contention error that
+    the DB_LOCKED_* retry ladder can plausibly recover from by waiting and
+    retrying. Handles both SQLAlchemy OperationalError (via .orig) and raw
+    sqlite3.OperationalError.
+
+    NEW-MEDIUM-1 fix (third Lane-B review, SQLite coexistence): this
+    predicate used to match ONLY "database is locked" / "database table is
+    locked" (SQLITE_BUSY). A real competing writer under rollback-journal
+    contention was measured to also produce "unable to open database file"
+    (SQLITE_CANTOPEN) — busy_timeout does not retry that error class, this
+    predicate did not match it either, so it fell through every typed
+    handler (not locked, not LockUnavailableError, not IntegrityError) and
+    re-raised as an uncaught Python traceback — with batches already
+    durably committed and the run row orphaned at status='running': the
+    same shape as the BLOCKING-1/2 lazy-load escapes, on a sibling error
+    class. Broadened to also match "unable to open database file", "disk
+    i/o error", and "database schema has changed" — all transient,
+    contention-adjacent SQLite failure modes worth one more retry attempt
+    rather than an immediate crash. (Also see `_handle_batch_operational_
+    error`'s final catch-all, which now maps ANY OperationalError this
+    predicate does not recognize to a typed `status="db_error"` result
+    instead of letting it escape uncaught.)"""
     if exc is None:
         return False
     parts = [str(exc)]
@@ -2482,7 +2594,16 @@ def _is_db_locked(exc: BaseException | None) -> bool:
     if orig is not None:
         parts.append(str(orig))
     text = " ".join(parts).lower()
-    return "database is locked" in text or "database table is locked" in text
+    return any(
+        marker in text
+        for marker in (
+            "database is locked",
+            "database table is locked",
+            "unable to open database file",
+            "disk i/o error",
+            "database schema has changed",
+        )
+    )
 
 
 def _marketops_degraded(session: Session) -> bool:
@@ -2721,6 +2842,45 @@ def run_scheduled_reconciliation(
             RECONCILE_MAX_DURATION_SECONDS,
         )
     )
+    # NEW-HIGH-2 fix (third Lane-B review, SQLite coexistence).
+    # `batch_size` IS the write-lock safety argument this whole milestone
+    # rests on, and — unlike `limit` (validated at :2716 above) — it was
+    # completely unvalidated. Measured: `batch_size=0` -> one "batch" is the
+    # WHOLE pass (Python slicing `tokens[i:i+0]` never advances, so the
+    # chunking loop degenerates); `batch_size=-5` -> `status="ok"`,
+    # `tokens_processed=0`, CLI exit 0 — a green unit that reconciled
+    # NOTHING, the exact failure class this milestone exists to remove;
+    # `batch_size=5000` (>= a typical `limit`) -> same monolithic-pass
+    # collapse the `limit` check above already guards against on the OTHER
+    # side of the ratio. `app/cli.py` added two new ways to set this
+    # (`--batch-size` and the `.env`/Settings default), which is what made
+    # this reachable by any operator, not just direct callers.
+    if batch < 1:
+        return _refused(
+            "invalid_batch_size", f"batch_size {batch} must be >= 1"
+        )
+    if batch >= cap:
+        return _refused(
+            "invalid_batch_size",
+            f"batch_size {batch} >= selection limit {cap} restores the "
+            "single-transaction pass this milestone exists to remove",
+        )
+    # LOW-3 fix (same review): `max_duration_seconds <= 0` degenerates the
+    # deadline check (`_now() >= deadline` is true before the first batch
+    # even starts, in the `chunked and ... and tokens_processed > 0` guard —
+    # actually the `tokens_processed > 0` guard means a <=0 deadline is
+    # SAFE at the first batch, but `0.0` is also the intentional
+    # "already-past-due" sentinel several existing tests use deliberately
+    # (`test_deadline_stops_the_pass_between_batches_not_mid_batch`,
+    # `test_scheduled_reconciliation_reports_partial_status_not_ok`) to stop
+    # after exactly one batch. A NEGATIVE deadline has no such legitimate
+    # use and is nonsensical (a deadline before the pass even started);
+    # reject only that, not 0.0.
+    if deadline_seconds is not None and deadline_seconds < 0:
+        return _refused(
+            "invalid_max_duration_seconds",
+            f"max_duration_seconds {deadline_seconds} must be >= 0",
+        )
     try:
         summary = rec.run_once(
             session, limit=cap, hours=hours, dry_run=dry_run,
@@ -2782,6 +2942,26 @@ def run_scheduled_reconciliation(
                 f"unique-constraint conflict during reconciliation, most "
                 f"likely a race with a concurrent tape writer outside the "
                 f"overlap lock (e.g. the exact-cycle anchor feed): {exc}",
+            )
+        if isinstance(exc, OperationalError):
+            # NEW-MEDIUM-1 fix (third Lane-B review, SQLite coexistence).
+            # `_is_db_locked` is a string-match HEURISTIC over known SQLite
+            # error text; it cannot enumerate every OperationalError shape a
+            # competing writer under real contention can produce. Before
+            # this fix, any OperationalError that predicate did not
+            # recognize fell through every typed handler above (not locked,
+            # not LockUnavailableError, not IntegrityError) and re-raised as
+            # an uncaught Python traceback — with batches already durably
+            # committed and the run row orphaned at status='running': the
+            # same shape as the BLOCKING-1/2 lazy-load escapes fixed
+            # earlier, on a sibling error path. This is deliberately the
+            # LAST arm, after every more-specific OperationalError shape
+            # above has had a chance to match, so it never masks a more
+            # actionable classification.
+            return _refused(
+                "db_error",
+                f"unrecognized SQLite OperationalError during reconciliation "
+                f"(batches already committed, if any, are durable): {exc}",
             )
         raise
 

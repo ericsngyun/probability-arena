@@ -143,9 +143,24 @@ unscheduled.
   enable --now probability-arena-crypto-reconcile.timer`
 - Verify dark: `journalctl --user -u probability-arena-crypto-reconcile.service
   -n 20 --no-pager` should show `status=disabled  external_calls=0  no-op`.
+- **DO NOT ACTIVATE without first completing the batch-size measurement step
+  below (third Lane-B review, SQLite coexistence, NEW-HIGH-1).** The 20s
+  internal deadline does NOT bound a single batch's write-lock hold — it is
+  only evaluated BETWEEN batches — so the hold is governed entirely by
+  `crypto_tape_reconciler_batch_size x per-token cost on the target host`,
+  and per-token cost is not portable across hosts. The shipped default was
+  originally 25 (a dev-Mac measurement); at the reviewer's measured EVO-speed
+  multiplier the SAME value produced 26.3-36.5s holds — one of three trials
+  exceeded the 30s `sqlite_busy_timeout_ms` outright — and a full pass
+  converged only ~25 tokens per 6h tick against ~405 new births/day, so the
+  reconciler could never converge on that host at all. The shipped default
+  is now 5 (the reviewer's measured stopgap: 4.56-5.32s worst-case hold at
+  the same host speed, unchanged competitor throughput, better duty cycle) —
+  this is still a COUNT-based bound, not a time-based one, and is NOT a
+  substitute for measuring on the actual target host before enabling.
 - It is a **SQLite writer**, but not a single long transaction: the scheduled
   path commits in bounded batches (`crypto_tape_reconciler_batch_size`,
-  default 25 tokens) instead of one transaction for the whole pass, and stops
+  default 5 tokens) instead of one transaction for the whole pass, and stops
   at an internal wall-clock deadline
   (`crypto_tape_reconciler_max_duration_seconds`, default 20s).
   **Two different metrics, do not conflate them (third review, NEW-H2).
@@ -198,6 +213,18 @@ unscheduled.
     plus the underlying `CRYPTO_TAPE_RECONCILER_{WINDOW_HOURS,LIMIT,
     BATCH_SIZE,MAX_DURATION_SECONDS}` settings are documented in
     `docs/FEATURE_FLAGS.md` and `.env.example`.
+  - **Required batch-size-hold measurement (NEW-HIGH-1, mandatory before
+    enabling on any host, including EVO-X2):** the deadline measurement
+    above tells you the PASS's wall time; it says nothing about a single
+    BATCH's write-lock hold, which is the number that actually matters for
+    a competing writer's worst-case wait when the deadline can't help (one
+    batch in flight). Time one real batch commit on the target host (e.g.
+    instrument `_process_batch`'s commit with a `perf_counter` pair, or run
+    `--batch-size N --limit N --max-duration-seconds 600` so the whole pass
+    IS one batch and read `duration_ms`), and set
+    `CRYPTO_TAPE_RECONCILER_BATCH_SIZE` so that measured hold stays
+    comfortably under `sqlite_busy_timeout_ms` (30s) — never trust the
+    shipped default on an unmeasured host.
   It runs `Nice=10 IOWeight=20` and aborts when the latest MarketOps run
   errored. Exit code is non-zero on a refused, truncated, partial, locked, or
   overlap-skipped pass — a green unit that reconciled nothing is exactly the
@@ -448,6 +475,32 @@ wallet/swap/signing/execution/sizing/paper trading.
    # Real sessions require explicit approval per invocation (long-lived
    # foreground process on a shared host — run inside tmux/screen).
 ```
+
+**NEW-MEDIUM-4 note (third Lane-B review, SQLite coexistence): net host
+exposure to monolithic manual-path transactions went UP with this change, not
+down.** Each manual `crypto-tape-run-once` capture inside a `crypto-tape-session`
+still runs `run_once` with `batch_size=None` (the LEGACY, unbatched,
+single-transaction shape — see `_assemble_pass_locked`'s docstring; only the
+SCHEDULED reconciler opts into batching), so at production density each
+capture is still a single multi-second-to-minutes-long write transaction. This
+milestone's CRYPTO-COVERAGE-REPAIR-001 fix made `run_tape_session` no longer
+ABORT the whole session on the first `status="skipped_overlap"` capture (a
+collision with the scheduled reconciler's per-chain lock) — instead that one
+capture is skipped and the session continues. Before that fix, a session that
+collided with the reconciler on its first capture died immediately (1
+monolithic transaction attempted, 0 completed); after it, a full 6h/12-capture
+session now runs potentially all 12 monolithic transactions to completion. This
+is the correct behavioural fix for the session's own stated purpose (a
+transient collision with a legitimate concurrent pass should not kill an
+otherwise-healthy session), but it means a manual session now holds MORE total
+write-lock time against the host, not less, than before this milestone. At
+EVO-X2 speed these individual captures can be minutes long (see the
+`crypto-tape-run-once --dry-run` pre-activation measurement above for how to
+gauge real capture duration on this host). Prefer the scheduled, batched
+reconciler for routine reconciliation; reserve manual `crypto-tape-session` for
+targeted windows (e.g. the World Cup/prime-live-window use noted above), run
+it inside tmux/screen, and budget for the FULL planned session duration's
+worth of monolithic-transaction exposure, not just the first capture's.
 
 **Lock contention guidance (CRYPTO-TAPE-CADENCE-002).** The host's
 baseline/watcher/MarketOps writers share the SQLite write lock, so a capture's

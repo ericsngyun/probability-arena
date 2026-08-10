@@ -161,14 +161,26 @@ percentage figure elsewhere in this doc).**
 **MEDIUM — evidentiary status of every number in this section (36.9s/35.79s/
 97%, 8.5-40.8s -> 0.16-1.73s at 2000 tokens, 6.79s/6.75s, 8.10s/8.18s,
 13.68s/9.88s, 9.12s/0.076s).** These come from an ad-hoc benchmark script
-built and run during the reviewer's debugging session; no such harness is
-committed to this repository. Treat every one of these figures as
-**session-only evidence** — reproducible in shape (the write-starvation
-mechanism they document is architecturally sound and independently
-corroborated by the per-batch-commit test suite's `after_commit` listener),
-but not independently re-runnable from this repo as committed. Do not cite
-them as a standing, repo-verified benchmark; re-measure with a purpose-built,
-clearly-marked, non-production harness before relying on exact figures.
+built and run during the reviewer's debugging session; no such harness was
+committed to this repository at the time this note was written. Treat every
+one of these figures as **session-only evidence** — reproducible in shape
+(the write-starvation mechanism they document is architecturally sound and
+independently corroborated by the per-batch-commit test suite's
+`after_commit` listener), but not independently re-runnable from this repo
+as committed. Do not cite them as a standing, repo-verified benchmark;
+re-measure with a purpose-built, clearly-marked, non-production harness
+before relying on exact figures.
+**Update (third Lane-B review, SQLite coexistence — "most important missing
+test"): `scripts/crypto_reconcile_lock_bench.py` is now committed** — a real
+second-PROCESS competing writer against a throwaway scratch SQLite file,
+instrumented with the reconciler's own `blocked_ms`. It is explicitly a
+disposable tool (clearly marked, refuses to run against any path that looks
+like a real deployment DB) — it exists to let anyone RE-DERIVE these
+figures on their own host before trusting a default, not to replace the
+"session-only evidence" caveat above with a false sense of committed-and-
+verified precision. The figures above are still not re-verified by it as of
+this writing; running it is the required step before citing exact numbers
+for a new host or a new constant value.
 
 The pass used to be a single write transaction: `_assemble_pass` flushed the
 run row before the token loop and committed once at the end. Measured at
@@ -355,10 +367,23 @@ hold — SQLite's busy handler loses the lock race against many short
 transactions almost as easily as one long one. A short sleep AFTER each real
 batch commit (`RECONCILE_POST_BATCH_YIELD_SECONDS`, currently 0.05s — tried
 BEFORE the commit first, which made things worse) gives a genuinely idle
-window for a waiting writer to win the race: measured competitor max wait
-7.49-12.68s -> 0.156-0.870s, a 10-40x reduction, at the cost of fewer tokens
-per pass (recoverable via the deadline/cadence, since the reconciler — not
-the watcher — is the interruptible party).
+window for a waiting writer to win the race, at the cost of fewer tokens per
+pass (recoverable via the deadline/cadence, since the reconciler — not the
+watcher — is the interruptible party). **Correction (NEW-HIGH-4, third
+Lane-B review, SQLite coexistence):** the originally-cited specific figures
+("competitor max wait 7.49-12.68s -> 0.156-0.870s, a 10-40x reduction") were
+session-only ad-hoc benchmark evidence and did NOT reproduce under an
+independent 4-trial-each measurement — that review measured a ~2.4x
+worst-case reduction (0.01-10.80s -> 0.47-4.47s), no throughput improvement
+(competitor writes 84-261 -> 144-238, lower than the monolithic
+comparison's 328-378), and WORSE typical waits (p95 0.00-1.43s ->
+0.42-0.61s). The qualitative direction — trading a rare-and-huge wait
+distribution for a frequent-and-moderate one — is still believed correct
+and is probably the right trade for bounded worst-case latency on a shared
+host, but the specific numbers above are NOT reproducible evidence; no
+committed benchmark harness exists yet to re-derive them (see the
+evidentiary-status note two paragraphs below). Treat this as a qualitative
+claim only until one does.
 
 **HIGH-2 — the two constants that ARE the safety argument were unpinned.** A
 full-suite mutation battery found that widening `RECONCILE_BATCH_SIZE`
@@ -436,9 +461,12 @@ corrected in `crypto_tape.py`.
   than left implying a row-budget reduction that never happens; the row
   budget is restated as `2 x tokens_processed`.
 - Every ad-hoc-benchmark-derived figure in this doc, `crypto_tape.py`, and
-  `app/config.py` is now explicitly marked session-only evidence (no
-  committed benchmark harness reproduces them) rather than presented as a
-  standing, repo-verified measurement.
+  `app/config.py` is now explicitly marked session-only evidence rather than
+  presented as a standing, repo-verified measurement. `scripts/
+  crypto_reconcile_lock_bench.py` (added third Lane-B review, SQLite
+  coexistence) is a disposable, non-production harness that can re-derive
+  these figures on any given host — see the note above for what it does and
+  does not prove.
 
 **Not closed (flagged, not forced through):** elapsed-blocked instrumentation
 (M1 — nearly all real blocking is absorbed by SQLite's own busy_timeout, not

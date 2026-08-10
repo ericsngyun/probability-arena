@@ -21,7 +21,13 @@
 Description=Run Probability Arena crypto survival reconciliation every 6 hours
 
 [Timer]
-OnCalendar=*-*-* 03,09,15,21:20:00
+# NEW-LOW fix (third Lane-B review, SQLite coexistence): was `:20:00`,
+# which sits directly on the 5-minute MarketOps grid (OnUnitActiveSec=5min
+# from an OnBootSec=2min anchor lands on :02, :07, :12, :17, :22, ... on
+# many boot alignments, and separately can land on :20 exactly depending on
+# boot time) — an odd, non-multiple-of-5 offset avoids sitting on that grid
+# at all, on any boot alignment.
+OnCalendar=*-*-* 03,09,15,21:07:00
 RandomizedDelaySec=300
 # Persistent=false deliberately: a missed pass is harmless (the window carries
 # 12h of slack past the 36h closing edge, and state-driven backlog selection

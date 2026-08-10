@@ -48,6 +48,28 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname
 TOP_N_PRINTED = 20
 
 
+# NEW-HIGH-2 fix (third Lane-B review, SQLite coexistence). `batch_size` IS
+# the write-lock safety argument the crypto tape reconciler rests on
+# (`run_scheduled_reconciliation` now validates it at runtime too — see
+# app/services/crypto_tape.py), and `--max-duration-seconds` gates how long
+# a single write-lock-holding pass can run. Fail fast at ARGPARSE time with
+# a clear CLI error, rather than only at the deeper `_refused()` call —
+# an operator typo (`--batch-size 0`, `--batch-size -5`) should never even
+# reach a DB session.
+def _positive_int_arg(raw: str) -> int:
+    value = int(raw)
+    if value < 1:
+        raise argparse.ArgumentTypeError(f"must be >= 1, got {value}")
+    return value
+
+
+def _non_negative_float_arg(raw: str) -> float:
+    value = float(raw)
+    if value < 0:
+        raise argparse.ArgumentTypeError(f"must be >= 0, got {value}")
+    return value
+
+
 async def scan(
     limit: int | None = None,
     adapter: KalshiRestAdapter | None = None,
@@ -2976,6 +2998,11 @@ async def crypto_tape_reconcile(
         print(
             f"batches_committed={r.get('batches_committed')}  "
             f"lock_retry_events={r.get('lock_retry_events')}  "
+            # NEW-MEDIUM-2 fix (third Lane-B review, SQLite coexistence):
+            # lock_retry_events alone UNDERCOUNTS real blocked time — see
+            # crypto_tape.py's comment on `blocked_seconds` for the measured
+            # gap (a 40s external hold produced lock_retry_events=0).
+            f"blocked_ms={r.get('blocked_ms')}  "
             f"tape_run_id={r.get('tape_run_id')}"
         )
         print(
@@ -7751,18 +7778,22 @@ def build_parser() -> argparse.ArgumentParser:
              "(manual operator use; does not enable the timer)",
     )
     tape_reconcile_parser.add_argument(
-        "--batch-size", type=int, default=None,
-        help="HIGH-2: override crypto_tape_reconciler_batch_size for this "
-             "one invocation (tokens committed per batch)",
+        "--batch-size", type=_positive_int_arg, default=None,
+        help="HIGH-2/NEW-HIGH-2: override crypto_tape_reconciler_batch_size "
+             "for this one invocation (tokens committed per batch). Must be "
+             ">= 1 (argparse-validated) and, at runtime, < the selection "
+             "limit — batch_size >= limit collapses the pass back into a "
+             "single monolithic transaction.",
     )
     tape_reconcile_parser.add_argument(
-        "--max-duration-seconds", type=float, default=None,
-        help="HIGH-2: override crypto_tape_reconciler_max_duration_seconds "
+        "--max-duration-seconds", type=_non_negative_float_arg, default=None,
+        help="HIGH-2/LOW-3: override crypto_tape_reconciler_max_duration_seconds "
              "for this one invocation. Needed to measure a FULL, untruncated "
              "dry run on a host where the default 20s deadline is too tight "
              "for the actual per-pass work — without this flag --dry-run is "
              "chunked at the same 20s deadline as a real pass and can itself "
-             "report dry_run_partial",
+             "report dry_run_partial. Must be >= 0 (0.0 intentionally means "
+             "'already past due' — stop after exactly one batch).",
     )
     tape_report_parser = subparsers.add_parser(
         "crypto-tape-report",
