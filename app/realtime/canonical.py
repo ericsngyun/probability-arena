@@ -63,6 +63,44 @@ _DT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$")
 _DECIMAL_TEXT_RE = re.compile(r"^-?(?:0|[1-9]\d*)(?:\.\d+)?$")
 
 
+class CapabilityLimits:
+    """The ONE canonical capability contract for every bounded structure.
+
+    `_MAX_DECIMAL_DIGITS = 512` used to live only in `segment.py`, while the
+    encoder's real working precision (the ambient `decimal` context, 28) was
+    an entirely separate number nobody had to keep in sync -- that drift IS
+    the defect A2 fixed. This class exists so the same class of drift cannot
+    happen again for any OTHER bounded shape: nesting depth, mapping size,
+    sequence size, string length, or numeric size. Both admission
+    (`segment.py`'s structural walk) and the encoder (`_encode` below) import
+    these values rather than declaring their own copies, so a test comparing
+    `segment._MAX_SEQUENCE_ELEMENTS is CapabilityLimits.MAX_SEQUENCE_ELEMENTS`
+    (or any sibling) fails the moment the two are ever defined independently.
+
+    The encoder enforces every one of these bounds ITSELF, unconditionally --
+    not only when reached through admission. A container that iterates
+    finitely once (satisfying admission's structural walk) and infinitely on
+    every later call passes admission cleanly and then hangs a *standalone*
+    `canonical_bytes()` call with no bound in the walk alone to catch it; the
+    bound has to live in the encoder to close that gap.
+    """
+
+    # 256 is comfortably above any legitimate venue payload's nesting (an
+    # existing gate test, test_kalshi_archive_genesis_001.py's
+    # TestAdmissionIsBounded, exercises 120 levels as a legitimately admitted
+    # depth) and comfortably below where Python's own C-stack recursion limit
+    # would intervene (default 1000, and this walk uses only a few frames per
+    # level), so a bound here is a deliberate refusal rather than a
+    # coincidental RecursionError either way.
+    MAX_DEPTH = 256
+    MAX_MAPPING_ELEMENTS = 1_000_000
+    MAX_SEQUENCE_ELEMENTS = 1_000_000
+    MAX_STRING_LENGTH = 1_000_000
+    MAX_DECIMAL_EXPONENT = 4096
+    MAX_DECIMAL_DIGITS = 512
+    MAX_INT_BITS = 8192
+
+
 class CanonicalError(ValueError):
     """A value that cannot be represented canonically."""
 
@@ -115,45 +153,91 @@ def canonical_decimal(value: Decimal) -> str:
         raise CanonicalError(f"expected Decimal, got {type(value).__name__}")
     if not value.is_finite():
         raise CanonicalError(f"{value!r} is not finite")
-    try:
-        normalised = value.normalize()
-    except ArithmeticError as exc:
-        # `normalize()` sat OUTSIDE the guard below, so decimal.Overflow — an
-        # ArithmeticError, not a CanonicalError — escaped into the WRITER and,
-        # worse, into verify_chain / verify_archive / read_verified. A
-        # tamper-evidence path that dies on a tampered numeric literal is
-        # fail-open by crash.
+    # CONTEXT-INDEPENDENT by construction: this operates directly on the
+    # sign/digits/exponent triple (`as_tuple()`), never on `Decimal.normalize()`
+    # or any other operation evaluated in the AMBIENT decimal context. The
+    # ambient context's precision (default 28 significant digits) used to be
+    # exactly what `normalize()` rounded to, silently, for any admitted value
+    # with more digits than that — even though admission
+    # (`segment.py:_MAX_DECIMAL_DIGITS`) advertises a 512-digit capability.
+    # `int(digit_string)` below is exact for any number of digits: Python ints
+    # are arbitrary precision, so parsing decimal digit characters into one
+    # never rounds, no matter how large. That is what makes this
+    # context-independent — no `decimal` arithmetic of any kind is performed,
+    # so there is no context, ambient or explicit, left to round anything.
+    sign, digits, exponent = value.as_tuple()
+    if not isinstance(exponent, int):
+        # `is_finite()` above already excludes Infinity ('F') and NaN ('n'/'N')
+        # exponents; this is defensive only.
         raise CanonicalError(
-            f"{value!r} cannot be normalised to canonical decimal text: {exc!r}"
-        ) from exc
-    # `format(x, "f")` already renders a positive exponent in full — `1E+30`
-    # becomes `1000000000000000000000000000000` — so the quantize that used to
-    # sit here was redundant AND actively harmful: `quantize` is evaluated in
-    # the current decimal context, whose default precision is 28 digits, so any
-    # value at or above ~1e28 raised `decimal.InvalidOperation`. That is an
-    # ArithmeticError rather than a CanonicalError, so it escaped the writer's
-    # handler, killed the writer thread, and destroyed the whole segment over
-    # one ordinary venue number.
-    try:
-        text = format(normalised, "f")
-    except ArithmeticError as exc:              # pragma: no cover - defensive
+            f"{value!r} has a non-integer exponent {exponent!r}")
+    # BOUNDED, unconditionally -- the encoder must refuse a value outside the
+    # shared capability contract even when called directly, bypassing
+    # admission's own copy of this same check (segment.py's structural walk).
+    # Before this, the encoder had no ceiling of its own at all: admission
+    # advertised a capability the encoder never actually enforced, which is
+    # the drift class A2 closed for the ambient-precision case specifically.
+    if not (-CapabilityLimits.MAX_DECIMAL_EXPONENT
+            <= exponent <= CapabilityLimits.MAX_DECIMAL_EXPONENT):
         raise CanonicalError(
-            f"{value!r} cannot be rendered as canonical decimal text: {exc!r}"
-        ) from exc
-    if "." in text:
-        text = text.rstrip("0").rstrip(".")
-    if text in ("", "-", "-0"):
-        text = "0"
+            f"{value!r} has decimal exponent {exponent}, outside the "
+            f"canonical range +/-{CapabilityLimits.MAX_DECIMAL_EXPONENT}")
+    if len(digits) > CapabilityLimits.MAX_DECIMAL_DIGITS:
+        raise CanonicalError(
+            f"{value!r} has more than {CapabilityLimits.MAX_DECIMAL_DIGITS} "
+            "significant digits")
+    coefficient = int("".join(str(d) for d in digits)) if digits else 0
+    if coefficient == 0:
+        return "0"
+    digit_str = str(coefficient)
+    if exponent >= 0:
+        text = digit_str + ("0" * exponent)
+    else:
+        point = len(digit_str) + exponent
+        if point <= 0:
+            text = "0." + ("0" * -point) + digit_str
+        else:
+            text = digit_str[:point] + "." + digit_str[point:]
+        if "." in text:
+            text = text.rstrip("0").rstrip(".")
+    if sign:
+        text = "-" + text
     return text
 
 
-def _encode(value):
-    """Map a Python value onto its canonical JSON-representable form."""
+def _check_str(value: str, what: str = "string") -> str:
+    """Bound a str against the shared capability contract before it is used
+    as a canonical value or a mapping key. Applied unconditionally in the
+    encoder -- not only when reached through admission."""
+    if len(value) > CapabilityLimits.MAX_STRING_LENGTH:
+        raise CanonicalError(
+            f"{what} of length {len(value)} exceeds the canonical bound of "
+            f"{CapabilityLimits.MAX_STRING_LENGTH} characters")
+    return value
+
+
+def _encode(value, _depth: int = 0):
+    """Map a Python value onto its canonical JSON-representable form.
+
+    BOUNDED on every axis in `CapabilityLimits`, unconditionally -- this
+    function is the encoder, and it is the encoder that has to prove
+    termination, not merely the admission walk that usually runs before it.
+    A container that iterates finitely once (satisfying admission) and
+    infinitely on every later call passes admission cleanly and then hangs a
+    *standalone* `canonical_bytes()` call otherwise; every recursive branch
+    below counts its own iteration and its own depth rather than trusting
+    `__len__` (which a hostile container can misreport) or trusting that
+    admission already checked.
+    """
     # bool before int: `isinstance(True, int)` is True, and silently writing
     # `1` for `True` would make two distinct values share a digest.
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        if value.bit_length() > CapabilityLimits.MAX_INT_BITS:
+            raise CanonicalError(
+                f"integer of {value.bit_length()} bits exceeds the "
+                f"canonical bound of {CapabilityLimits.MAX_INT_BITS} bits")
         return value
     if isinstance(value, float):
         raise CanonicalError(
@@ -166,19 +250,41 @@ def _encode(value):
     if isinstance(value, datetime):
         return canonical_datetime(value)
     if isinstance(value, str):
-        return value
+        return _check_str(value)
     if isinstance(value, Mapping):
+        if _depth >= CapabilityLimits.MAX_DEPTH:
+            raise CanonicalError(
+                f"mapping nesting exceeds the canonical depth bound of "
+                f"{CapabilityLimits.MAX_DEPTH}")
         out = {}
+        count = 0
         for k, v in value.items():
+            count += 1
+            if count > CapabilityLimits.MAX_MAPPING_ELEMENTS:
+                raise CanonicalError(
+                    f"mapping has more than "
+                    f"{CapabilityLimits.MAX_MAPPING_ELEMENTS} elements")
             if not isinstance(k, str):
                 raise CanonicalError(
                     f"mapping key {k!r} is {type(k).__name__}; canonical keys "
                     "must be strings so ordering is total and unambiguous")
-            out[k] = _encode(v)
+            _check_str(k, "mapping key")
+            out[k] = _encode(v, _depth + 1)
         return out
     if isinstance(value, (list, tuple)) or (
             isinstance(value, Sequence) and not isinstance(value, (str, bytes))):
-        return [_encode(v) for v in value]
+        if _depth >= CapabilityLimits.MAX_DEPTH:
+            raise CanonicalError(
+                f"sequence nesting exceeds the canonical depth bound of "
+                f"{CapabilityLimits.MAX_DEPTH}")
+        out = []
+        for i, v in enumerate(value):
+            if i >= CapabilityLimits.MAX_SEQUENCE_ELEMENTS:
+                raise CanonicalError(
+                    f"sequence has more than "
+                    f"{CapabilityLimits.MAX_SEQUENCE_ELEMENTS} elements")
+            out.append(_encode(v, _depth + 1))
+        return out
     raise CanonicalError(
         f"{type(value).__name__} has no canonical representation; add one "
         "deliberately rather than letting it fall through to repr()")

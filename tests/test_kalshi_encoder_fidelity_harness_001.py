@@ -123,70 +123,75 @@ def _fields(i, raw_event, ts=None):
 
 
 # =====================================================================
-# 1. THE KNOWN DEFECT, REPRODUCED EXACTLY: canonical_decimal() silently
-#    corrupts ordinary venue values whose significant-digit count exceeds
-#    the AMBIENT decimal context (default prec=28), because
-#    canonical.py:119 calls value.normalize() with no explicit context,
-#    while admission (segment.py:371, _MAX_DECIMAL_DIGITS=512) advertises
-#    a much larger capability. Every value below is well inside the
-#    admitted 512-digit envelope.
+# 1. THE FORMER DEFECT, NOW REPAIRED (KALSHI-ARCHIVE-CORE-REMEDIATION-002 A2):
+#    canonical_decimal() used to silently corrupt ordinary venue values whose
+#    significant-digit count exceeded the AMBIENT decimal context (default
+#    prec=28), because canonical.py:119 called value.normalize() with no
+#    explicit context, while admission (segment.py:371,
+#    _MAX_DECIMAL_DIGITS=512) advertised a much larger capability. Every
+#    value below is well inside the admitted 512-digit envelope, and per the
+#    class's own prior instruction ("the defect no longer reproduces (good --
+#    update this harness)") these are updated to pin the REPAIR: the encoder
+#    now operates directly on value.as_tuple() (sign/digits/exponent) via
+#    exact Python-int text formatting, so it performs no `decimal` context
+#    arithmetic at all and cannot be rounded by an ambient precision.
 # =====================================================================
 
 class TestKnownDefectDecimalCorruption:
-    """Reproduces, does not fix. See canonical.py line ~119."""
+    """Formerly reproduced the corruption; now pins the repair. See
+    canonical.py's canonical_decimal() docstring/comments."""
 
     EXACT_COUNTEREXAMPLES = [
-        # (input text, forbidden output -- the corruption the task names)
-        ("1.000000000000000000000000000000001", "1"),
-        ("9" * 40, str(10 ** 40)),
+        # (input text, the value that must now survive EXACTLY)
+        ("1.000000000000000000000000000000001",
+         "1.000000000000000000000000000000001"),
+        ("9" * 40, "9" * 40),
         ("12345678901234567890123456789012345",
-         "12345678901234567890123456790000000"),
+         "12345678901234567890123456789012345"),
     ]
 
-    @pytest.mark.parametrize("raw,forbidden", EXACT_COUNTEREXAMPLES)
-    def test_ordinary_value_is_silently_changed(self, raw, forbidden):
+    @pytest.mark.parametrize("raw,expected", EXACT_COUNTEREXAMPLES)
+    def test_ordinary_value_is_preserved_exactly(self, raw, expected):
         d = Decimal(raw)
         text = cn.canonical_decimal(d)
-        assert text == forbidden, (
-            f"expected the KNOWN corruption {forbidden!r}, got {text!r} -- "
-            "either the defect no longer reproduces (good -- update this "
-            "harness) or reproduces differently than documented")
-        assert Decimal(text) != d, (
-            "the corrupted text happens to still equal the original value; "
-            "this specific input no longer demonstrates the defect")
+        assert text == expected, (
+            f"expected the value preserved as {expected!r}, got {text!r} -- "
+            "the repair regressed")
+        assert Decimal(text) == d, (
+            "canonical_decimal() must be an exact round trip for every "
+            "admitted Decimal")
 
-    @pytest.mark.parametrize("raw,_forbidden", EXACT_COUNTEREXAMPLES)
+    @pytest.mark.parametrize("raw,_expected", EXACT_COUNTEREXAMPLES)
     def test_admission_reports_ADMITTED_none_canonical_reason_is_none(
-            self, raw, _forbidden):
+            self, raw, _expected):
         """THE INVARIANT non_canonical_reason claims to hold --
         `non_canonical_reason(x) is None` implies `canonical_bytes(x)`
-        succeeds -- holds here. What it does NOT claim, and what is false,
-        is that canonical_bytes(x) preserves x's value."""
+        succeeds -- holds here, AND (post-repair) canonical_bytes(x) also
+        preserves x's exact value."""
         d = Decimal(raw)
         assert sg.non_canonical_reason({"price": d}) is None
 
-    @pytest.mark.parametrize("raw,forbidden", EXACT_COUNTEREXAMPLES)
-    def test_digest_is_taken_over_the_corrupted_text(self, raw, forbidden):
+    @pytest.mark.parametrize("raw,expected", EXACT_COUNTEREXAMPLES)
+    def test_digest_is_taken_over_the_exact_text(self, raw, expected):
         d = Decimal(raw)
-        digest_of_corrupted_value = cn.digest_hex({"price": d})
-        digest_of_forbidden_text = cn.digest_hex({"price": forbidden})
-        # canonical_decimal(d) == forbidden (proven above), and canonical
+        digest_of_value = cn.digest_hex({"price": d})
+        digest_of_expected_text = cn.digest_hex({"price": expected})
+        # canonical_decimal(d) == expected (proven above), and canonical
         # encoding of a Decimal IS that text, so the record's digest is
-        # identical to the digest of the WRONG value re-submitted as a str
-        # everywhere the encoder would see a Decimal equal to `forbidden`.
-        assert digest_of_corrupted_value == cn.digest_hex(
+        # identical to the digest of the value's own exact canonical text --
+        # not, as before the repair, the digest of a silently rounded value.
+        assert digest_of_value == cn.digest_hex(
             {"price": cn.canonical_decimal(d)})
-        assert digest_of_corrupted_value == digest_of_forbidden_text
+        assert digest_of_value == digest_of_expected_text
 
-    @pytest.mark.parametrize("raw,forbidden", EXACT_COUNTEREXAMPLES)
-    def test_verify_chain_reports_VALID_over_the_corrupted_value(
-            self, raw, forbidden, tmp_path):
-        """End-to-end: write a record carrying the corrupting Decimal through
-        the real writer, close the segment, and show verify_chain /
-        verify_segment / verify_archive all report VALID. The corruption
-        happened BEFORE the digest was computed, so nothing downstream --
-        not the chain, not the manifest, not the archive head -- can ever
-        see it. This is what "undetectable after the fact" means."""
+    @pytest.mark.parametrize("raw,expected", EXACT_COUNTEREXAMPLES)
+    def test_verify_chain_reports_VALID_over_the_exact_value(
+            self, raw, expected, tmp_path):
+        """End-to-end: write a record carrying the Decimal through the real
+        writer, close the segment, and show verify_chain / verify_segment /
+        verify_archive all report VALID over the EXACT value -- the archived
+        text now equals the submitted value digit-for-digit, not a rounded
+        stand-in."""
         _init_archive(tmp_path)
         w = sg.SegmentWriter(tmp_path, environment="demo",
                              segment_id="seg-decimal-defect",
@@ -199,10 +204,10 @@ class TestKnownDefectDecimalCorruption:
 
         records = sg.read_segment_records(w.events_path)
         archived_price_text = records[0]["raw_event"]["price"]
-        assert archived_price_text == forbidden, (
-            "the archive did not store the corrupted text; the defect did "
-            "not reproduce through the real writer path")
-        assert Decimal(archived_price_text) != original
+        assert archived_price_text == expected, (
+            "the archive did not store the exact text; the repair "
+            "regressed")
+        assert Decimal(archived_price_text) == original
 
         chain = sg.verify_chain(records, segment_id="seg-decimal-defect",
                                 environment="demo")
@@ -212,17 +217,17 @@ class TestKnownDefectDecimalCorruption:
         archv = sg.verify_archive(tmp_path, environment="demo")
         assert archv["verdict"] == "VALID", archv
 
-    def test_producer_instructed_path_reproduces_it(self):
+    def test_producer_instructed_path_is_now_exact(self):
         """The module docstring instructs producers to reach Decimal via
-        `json.loads(wire, parse_float=Decimal)`. Confirm the defect
-        reproduces along that exact path, not just via Decimal(str(...))."""
+        `json.loads(wire, parse_float=Decimal)`. Confirm the repair holds
+        along that exact path, not just via Decimal(str(...))."""
         import json
         wire = '{"price": 1.000000000000000000000000000000001}'
         parsed = json.loads(wire, parse_float=Decimal)
         assert isinstance(parsed["price"], Decimal)
         text = cn.canonical_decimal(parsed["price"])
-        assert text == "1"
-        assert Decimal(text) != parsed["price"]
+        assert text == "1.000000000000000000000000000000001"
+        assert Decimal(text) == parsed["price"]
 
 
 # =====================================================================
@@ -249,16 +254,14 @@ class TestCoreDecimalFidelityProperty:
             f"fidelity violated for {len(failures)} in-precision seeds "
             f"(unexpected): {failures[:5]}")
 
-    @pytest.mark.xfail(
-        strict=True, reason=(
-            "KNOWN DEFECT (canonical.py ~line 119): canonical_decimal() "
-            "normalizes in the AMBIENT decimal context (prec=28) instead of "
-            "a context sized to the value, so any admitted Decimal with "
-            ">28 significant digits (up to the admitted 512-digit bound) is "
-            "silently rounded. This xfail is the regression trap: it must "
-            "start FAILING (i.e. flip to an unexpected pass) the day this "
-            "is fixed, at which point delete the marker."))
     def test_beyond_ambient_precision_is_the_known_defect(self):
+        """REPAIRED (KALSHI-ARCHIVE-CORE-REMEDIATION-002 A2): canonical_decimal()
+        no longer performs any `decimal` arithmetic in the ambient context --
+        it operates directly on `value.as_tuple()` (sign/digits/exponent) and
+        builds the text via exact Python-int formatting, so precision beyond
+        the ambient 28-digit context (up to the admitted 512-digit bound) is
+        preserved exactly. The xfail marker is removed: this must now hold as
+        a true property, the same as the in-precision corpus above."""
         failures = []
         for seed in gen.seeds(CORPUS_N, CORPUS_BASE_SEED + 100_000):
             rng = gen.make_rng(seed)
@@ -270,9 +273,8 @@ class TestCoreDecimalFidelityProperty:
             if not rb.decimal_fidelity_holds(d, cn.canonical_decimal):
                 failures.append((seed, d))
         assert not failures, (
-            f"(expected-to-fail assertion) fidelity held for a >28-digit "
-            f"corpus of {CORPUS_N} seeds -- listing the (seed, value) pairs "
-            f"that DID corrupt so the failure is reproducible: "
+            f"fidelity violated for {len(failures)}/{CORPUS_N} >28-digit "
+            f"seeds (unexpected -- the repair should hold for all of them): "
             f"{failures[:10]}")
 
 
@@ -300,15 +302,12 @@ class TestSingleSourceOfTruthCapability:
             "ambient context, not by a fix -- see the xfail below for the "
             "real regression trap")
 
-    @pytest.mark.xfail(
-        strict=True, reason=(
-            "the DEFINITION test: _MAX_DECIMAL_DIGITS (512, segment.py) and "
-            "the encoder's real capability (decimal.getcontext().prec, 28, "
-            "canonical.py) are not one source of truth. This must fail "
-            "today and start passing only once admission and the encoder "
-            "share the same constant (e.g. the encoder runs inside a "
-            "localcontext sized from _MAX_DECIMAL_DIGITS)."))
     def test_admission_capability_equals_encoder_capability(self):
+        """REPAIRED (A2): canonical_decimal() no longer consults
+        decimal.getcontext().prec (ambient or otherwise) at all -- it works
+        digit-for-digit off `as_tuple()`, so it has no precision ceiling of
+        its own to drift from `_MAX_DECIMAL_DIGITS`. A Decimal at exactly the
+        admitted digit ceiling now survives the encoder unchanged."""
         max_digits = sg._MAX_DECIMAL_DIGITS
         digits = "7" * max_digits
         d = Decimal(digits)
@@ -317,6 +316,76 @@ class TestSingleSourceOfTruthCapability:
             "a Decimal at exactly the admitted digit ceiling must survive "
             "the encoder unchanged if the two limits were actually one "
             "source of truth")
+
+
+# =====================================================================
+# 3b. THE SHARED CAPABILITY CONTRACT, GENERALISED (A3): admission
+#    (segment.py) and the encoder (canonical.py) must consume the exact same
+#    object for EVERY bounded structure -- depth, mapping size, sequence
+#    size, string length, decimal digits/exponent, int bits -- not just the
+#    Decimal-digit case A2 fixed. `is` identity (not `==`) is asserted
+#    deliberately: two independently-declared constants can be numerically
+#    equal by coincidence and still be two sources of truth that drift the
+#    next time either one is edited alone. Identity is only possible if
+#    segment.py imports the value rather than redeclaring it.
+# =====================================================================
+
+class TestSharedCapabilityContractCannotDiverge:
+    """A test that fails the moment admission and the encoder are EVER
+    allowed to declare their own copy of a bound, for any of the shapes the
+    capability contract covers."""
+
+    @pytest.mark.parametrize("name", [
+        "MAX_DEPTH", "MAX_MAPPING_ELEMENTS", "MAX_SEQUENCE_ELEMENTS",
+        "MAX_STRING_LENGTH", "MAX_DECIMAL_EXPONENT", "MAX_DECIMAL_DIGITS",
+        "MAX_INT_BITS",
+    ])
+    def test_segment_bound_is_the_same_object_as_the_encoder_bound(self, name):
+        encoder_value = getattr(cn.CapabilityLimits, name)
+        segment_attr = "_" + name          # e.g. "_MAX_DEPTH"
+        segment_value = getattr(sg, segment_attr)
+        assert segment_value is encoder_value, (
+            f"segment.{segment_attr} and canonical.CapabilityLimits.{name} "
+            "are not the same object -- admission and the encoder have "
+            "drifted apart for this bound, which is exactly the class of "
+            "defect A2 found for Decimal digits specifically")
+
+    def test_mapping_and_sequence_bounds_agree_with_each_other(self):
+        """Not literally required to be equal, but MUST both exist and both
+        be sourced from the one contract -- pinning that the historical
+        asymmetry (Sequence bounded, Mapping not) cannot recur silently."""
+        assert cn.CapabilityLimits.MAX_MAPPING_ELEMENTS == \
+            cn.CapabilityLimits.MAX_SEQUENCE_ELEMENTS
+        assert sg._MAX_MAPPING_ELEMENTS is cn.CapabilityLimits.MAX_MAPPING_ELEMENTS
+        assert sg._MAX_SEQUENCE_ELEMENTS is cn.CapabilityLimits.MAX_SEQUENCE_ELEMENTS
+
+    def test_encoder_enforces_every_bound_even_called_directly(self):
+        """The core A3 property, stated once for every shape: canonical_bytes
+        called directly (no admission in front of it) must refuse a value
+        beyond each bound, not merely accept-and-hang or accept-and-corrupt.
+        """
+        # depth
+        deeply_nested = {"x": 1}
+        for _ in range(cn.CapabilityLimits.MAX_DEPTH + 10):
+            deeply_nested = {"n": deeply_nested}
+        with pytest.raises(cn.CanonicalError):
+            cn.canonical_bytes(deeply_nested)
+        # mapping size
+        wide_mapping = {f"k{i}": 1
+                        for i in range(cn.CapabilityLimits.MAX_MAPPING_ELEMENTS + 1)}
+        with pytest.raises(cn.CanonicalError):
+            cn.canonical_bytes(wide_mapping)
+        # string length
+        with pytest.raises(cn.CanonicalError):
+            cn.canonical_bytes("x" * (cn.CapabilityLimits.MAX_STRING_LENGTH + 1))
+        # int bits
+        with pytest.raises(cn.CanonicalError):
+            cn.canonical_bytes(1 << (cn.CapabilityLimits.MAX_INT_BITS + 1))
+        # decimal digits (direct encoder call, not through admission)
+        over_digit_bound = Decimal(
+            "7" * (cn.CapabilityLimits.MAX_DECIMAL_DIGITS + 1))
+        with pytest.raises(cn.CanonicalError):
+            cn.canonical_bytes(over_digit_bound)
 
 
 # =====================================================================
@@ -683,13 +752,14 @@ print("REFUSED:" + str(r) if r is not None else "RESULT:ADMITTED-unexpected")
             f"the bounded walk took {v.duration_s:.2f}s -- slower than "
             "expected but still bounded")
 
-    def test_unbounded_mapping_walk_on_an_infinite_mapping_HANGS(self):
-        """KNOWN DEFECT: _MAX_SEQUENCE_ELEMENTS bounds the Sequence branch
-        (segment.py:441) but has NO twin on the Mapping branch
-        (segment.py:408's `for k, v in value.items()` has no counter at
-        all). An admission-time Mapping whose iteration never terminates
-        hangs the admission walk forever. This MUST be classified TIMEOUT
-        by the parent, never REFUSED or COMPLETED."""
+    def test_unbounded_mapping_walk_on_an_infinite_mapping_is_now_REFUSED(
+            self):
+        """REPAIRED (KALSHI-ARCHIVE-CORE-REMEDIATION-002 A3): the Mapping
+        branch of the admission walk (segment.py's `_structural_reason`) now
+        counts its own elements against `_MAX_MAPPING_ELEMENTS`, the same way
+        the Sequence branch always did -- closing the asymmetry. An
+        admission-time Mapping whose iteration never terminates now
+        terminates the walk with a controlled refusal instead of hanging."""
         body = """
 from collections.abc import Mapping
 from app.realtime import segment as sg
@@ -706,23 +776,30 @@ class InfiniteMapping(Mapping):
             i += 1
 
 r = sg.non_canonical_reason(InfiniteMapping())
-print("RESULT:" + str(r))
+print("REFUSED:" + str(r) if r is not None else "RESULT:ADMITTED-unexpected")
 """
         v = run_script(body, timeout_s=_HANG_TIMEOUT_S, repo_root=REPO_ROOT)
-        assert v.classification == "TIMEOUT", (
-            f"expected the admission walk to hang on an infinite Mapping "
-            f"(the known asymmetry with the Sequence branch); got "
-            f"{v.classification} instead: stdout={v.stdout!r}")
+        assert v.classification == "REFUSED", (
+            f"expected the now-bounded admission walk to refuse the "
+            f"infinite Mapping; got {v.classification} instead: "
+            f"stdout={v.stdout!r}")
+        assert "elements" in v.stdout, v.stdout
+        assert v.duration_s < _HANG_TIMEOUT_S, (
+            f"the bounded walk took {v.duration_s:.2f}s -- slower than "
+            "expected but still bounded")
 
-    def test_finite_first_iteration_infinite_second_HANGS_in_the_encoder(
+    def test_finite_first_iteration_infinite_second_is_now_REFUSED_by_the_encoder(
             self):
-        """The design runs the encoder INSIDE the gate: non_canonical_reason
-        itself walks a candidate value TWICE (a bounded structural fast
-        path, then a real canonical_bytes() call). A container that is
-        finite on its first two __iter__() calls but infinite on any call
-        after that PASSES admission cleanly (both internal walks see the
-        finite shape) and then hangs the THIRD walk -- the encoder running
-        again later, e.g. in the writer thread at actual write time."""
+        """REPAIRED (A3): the encoder (`canonical.py`'s `_encode`) now bounds
+        its own Sequence and Mapping branches unconditionally, counting
+        elements against the SAME `CapabilityLimits` the admission walk
+        uses -- so it no longer matters that admission's two internal passes
+        happened to see a finite shape. A container that is finite on its
+        first two `__iter__()` calls but infinite on any call after that
+        still passes admission cleanly, but the THIRD walk -- the standalone
+        `canonical_bytes()` call, e.g. the writer thread at actual write
+        time -- now terminates with a controlled `CanonicalError` instead of
+        hanging."""
         body = """
 from collections.abc import Sequence
 from app.realtime import segment as sg
@@ -750,49 +827,82 @@ r = sg.non_canonical_reason(obj)
 import sys
 sys.stderr.write("ADMISSION:" + str(r) + "\\n")
 sys.stderr.flush()
-b = cn.canonical_bytes(obj)     # simulates the writer thread's later, separate encode
-print("RESULT:" + repr(b))
+try:
+    b = cn.canonical_bytes(obj)     # simulates the writer thread's later, separate encode
+    print("RESULT:" + repr(b))
+except cn.CanonicalError as exc:
+    print("REFUSED:" + str(exc))
 """
         v = run_script(body, timeout_s=_HANG_TIMEOUT_S, repo_root=REPO_ROOT)
-        assert v.classification == "TIMEOUT", (
+        assert v.classification == "REFUSED", (
             f"expected admission to ADMIT (both internal passes finite) and "
-            f"then the standalone canonical_bytes() call to hang on the "
-            f"third pass; got {v.classification}: stderr={v.stderr!r}")
+            f"then the standalone canonical_bytes() call to be REFUSED by "
+            f"the now-bounded encoder; got {v.classification}: "
+            f"stdout={v.stdout!r} stderr={v.stderr!r}")
+        assert "elements" in v.stdout, v.stdout
         assert "ADMISSION:None" in v.stderr, (
-            f"expected admission to have printed ADMITTED before the hang; "
-            f"stderr so far: {v.stderr!r}")
+            f"expected admission to have printed ADMITTED before the "
+            f"encoder's own bound fired later; stderr so far: {v.stderr!r}")
+        assert v.duration_s < _HANG_TIMEOUT_S, (
+            f"the bounded encoder took {v.duration_s:.2f}s -- slower than "
+            "expected but still bounded")
 
     def test_deep_recursion_is_refused_gracefully_by_non_canonical_reason(
             self):
-        """non_canonical_reason() wraps its whole body in a broad `except
-        Exception`, so a RecursionError raised deep inside the structural
-        walk becomes a returned reason, not a crash. Control case (no
-        defect) -- verified in-process since it does not hang."""
+        """REPAIRED (A3): the structural walk now counts nesting depth
+        against `_MAX_DEPTH` (shared with the encoder via
+        `CapabilityLimits`), so a 3000-deep structure is refused by the
+        explicit depth bound long before Python's own recursion limit would
+        raise `RecursionError`. `non_canonical_reason()`'s broad `except
+        Exception` remains as defense in depth for any OTHER path that could
+        still raise `RecursionError` (e.g. a value shaped in a way the depth
+        counter does not see), but the common case is now a deliberate,
+        bounded refusal rather than an incidental one."""
         value = 1
         for _ in range(3000):
             value = [value]
         reason = sg.non_canonical_reason(value)
-        assert reason is not None and "RecursionError" in reason
+        assert reason is not None and "depth" in reason.lower()
 
-    def test_deep_recursion_escapes_close_as_a_BARE_RecursionError(
+    def test_deep_recursion_no_longer_escapes_close_as_a_bare_RecursionError(
             self, tmp_path):
-        """KNOWN DEFECT: subscription_metadata (a SegmentWriter constructor
-        argument, never passed through non_canonical_reason at all) is
-        digested at close() time via build_manifest -> digest_hex ->
-        canonical_bytes with NO recursion guard and no broad except above
-        it. Deep nesting there escapes close() as a bare RecursionError
-        instead of the SegmentError every other close()-time failure is
-        normalised into."""
+        """REPAIRED (A5): subscription_metadata is now routed through the
+        SAME bounded canonicalization contract admission uses for
+        envelope_fields (non_canonical_reason, checked in the SegmentWriter
+        constructor). Deep nesting is refused at CONSTRUCTION time -- before
+        any record is ever accepted -- as a typed SegmentError, never a bare
+        RecursionError."""
         _init_archive(tmp_path)
         deeply_nested = {"x": 1}
         for _ in range(3000):
             deeply_nested = {"n": deeply_nested}
-        w = sg.SegmentWriter(tmp_path, environment="demo",
+        with pytest.raises(sg.SegmentError, match="subscription_metadata"):
+            sg.SegmentWriter(tmp_path, environment="demo",
                              segment_id="seg-deep-recursion",
                              partition_identity="date=2026-08-08/hour=12",
                              subscription_metadata=deeply_nested)
+
+    def test_deep_metadata_mutated_after_construction_surfaces_as_SegmentError_at_close(
+            self, tmp_path):
+        """Defense in depth for the same class of defect: even if
+        subscription_metadata is mutated in place AFTER construction (the
+        same live-reference hazard `submit()` has for event payloads, out of
+        this remediation's scope to fix generally), close()'s own
+        build_manifest -> digest_hex -> canonical_bytes call is bounded (A3)
+        and any CanonicalError it raises is normalised into a SegmentError,
+        never a bare RecursionError or an unbounded hang."""
+        _init_archive(tmp_path)
+        metadata = {"x": 1}
+        w = sg.SegmentWriter(tmp_path, environment="demo",
+                             segment_id="seg-deep-recursion-mutated",
+                             partition_identity="date=2026-08-08/hour=12",
+                             subscription_metadata=metadata)
         assert w.submit(_fields(0, {"price": "0.51"})) is None
-        with pytest.raises(RecursionError):
+        deeply_nested = {"x": 1}
+        for _ in range(3000):
+            deeply_nested = {"n": deeply_nested}
+        metadata["n"] = deeply_nested       # mutate the live dict in place
+        with pytest.raises(sg.SegmentError, match="subscription_metadata"):
             w.close()
 
     @pytest.mark.skipif(not EXHAUSTIVE, reason=(

@@ -123,7 +123,7 @@ class TestFourWindowsReproduceDeterministically:
         violations = 0
         for i in range(DETERMINISTIC_REPEATS):
             w = new_writer(tmp_path, f"a-{i}")
-            pt = target(SEGMENT_FILE, "submit", 1040, label="window-a")
+            pt = target(SEGMENT_FILE, "submit", 1090, label="window-a")
             escaped = None
             try:
                 with LineBoundaryInjector(pt):
@@ -150,7 +150,7 @@ class TestFourWindowsReproduceDeterministically:
         violations = 0
         for i in range(DETERMINISTIC_REPEATS):
             w = new_writer(tmp_path, f"b-{i}")
-            pt = target(SEGMENT_FILE, "_admit", 1090, label="window-b")
+            pt = target(SEGMENT_FILE, "_admit", 1140, label="window-b")
             try:
                 with LineBoundaryInjector(pt):
                     w.submit(fields(99))
@@ -174,14 +174,14 @@ class TestFourWindowsReproduceDeterministically:
         assert violations == DETERMINISTIC_REPEATS, (
             f"window (b) reproduced {violations}/{DETERMINISTIC_REPEATS} times")
 
-    @pytest.mark.parametrize("lineno", [1091, 1109, 1110, 1111],
+    @pytest.mark.parametrize("lineno", [1141, 1159, 1160, 1161],
                              ids=["admit-before-note-depth", "note-depth-l1",
                                   "note-depth-l2", "note-depth-l3"])
     def test_window_c_double_booked_accepted_and_rejected(self, tmp_path, lineno):
         """(c) fault lands after `accepted += 1` (at the `_note_depth()`
         call boundary, or at three different points inside `_note_depth`
         itself) — the event is booked BOTH accepted and rejected."""
-        funcname = "_admit" if lineno == 1091 else "_note_depth"
+        funcname = "_admit" if lineno == 1141 else "_note_depth"
         violations = 0
         for i in range(DETERMINISTIC_REPEATS):
             w = new_writer(tmp_path, f"c-{lineno}-{i}")
@@ -214,7 +214,7 @@ class TestFourWindowsReproduceDeterministically:
         violations = 0
         for i in range(DETERMINISTIC_REPEATS):
             w = new_writer(tmp_path, f"d-{i}")
-            pt = target(SEGMENT_FILE, "submit", 1056, label="window-d-second-fault")
+            pt = target(SEGMENT_FILE, "submit", 1106, label="window-d-second-fault")
             try:
                 with LineBoundaryInjector(pt):
                     w.submit({**fields(99), "raw_event": Hostile(a=1)})
@@ -240,8 +240,8 @@ class TestNegativeControlsDoNotOverFire:
     report them clean, or it would not be discriminating anything."""
 
     @pytest.mark.parametrize("funcname,lineno,label", [
-        ("submit", 1042, "before calling _admit"),
-        ("_admit", 1085, "before put_nowait"),
+        ("submit", 1092, "before calling _admit"),
+        ("_admit", 1135, "before put_nowait"),
     ])
     def test_safe_boundary_stays_clean(self, tmp_path, funcname, lineno, label):
         for i in range(5):
@@ -258,14 +258,14 @@ class TestNegativeControlsDoNotOverFire:
             assert manifest["record_count"] == 5
 
     def test_second_fault_after_terminal_booking_is_a_true_negative(self, tmp_path):
-        """Line 1058 — right before the handler's own `raise` — is reached
+        """Line 1108 — right before the handler's own `raise` — is reached
         only via a genuine first fault (`Hostile`, same as window (d)'s
         setup). By then `reject_before_accept` has ALREADY completed, so a
         second fault landing exactly here is the true-negative twin of
         window (d)'s violation: nothing left to interrupt."""
         for i in range(5):
             w = new_writer(tmp_path, f"safe-1058-{i}")
-            pt = target(SEGMENT_FILE, "submit", 1058, label="already-terminal")
+            pt = target(SEGMENT_FILE, "submit", 1108, label="already-terminal")
             try:
                 with LineBoundaryInjector(pt):
                     w.submit({**fields(99), "raw_event": Hostile(a=1)})

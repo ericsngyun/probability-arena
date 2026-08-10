@@ -53,6 +53,7 @@ from pathlib import Path
 from app.realtime.canonical import (
     CANONICAL_SCHEMA_VERSION,
     CanonicalError,
+    CapabilityLimits,
     canonical_bytes,
     canonical_datetime,
     digest_hex,
@@ -253,15 +254,23 @@ def _fsync_directory(directory: Path) -> None:
 # omitted root DERIVES one instead of silently skipping containment.
 _DERIVE_ROOT = object()
 
-# Bounds chosen so canonical text stays a few hundred bytes and every operation
-# stays inside the default decimal context. A venue number outside this is not
-# a price; it is a contract violation, and it is refused before acceptance.
-_MAX_DECIMAL_EXPONENT = 4096
-_MAX_DECIMAL_DIGITS = 512
-_MAX_INT_BITS = 8192
-# Sibling bound to the Decimal/int limits. Nothing the venue can send is
-# legitimately this wide, and an unbounded walk is a liveness defect.
-_MAX_SEQUENCE_ELEMENTS = 1_000_000
+# SINGLE SOURCE OF TRUTH: every bound below is imported FROM
+# `canonical.CapabilityLimits`, not redeclared. Redeclaring the same number
+# in two places is exactly how the Decimal-digit defect happened -- this
+# module advertised 512 digits while the encoder's real working precision was
+# an unrelated 28 -- so nothing here may define its own literal. A test
+# (`test_kalshi_encoder_fidelity_harness_001.py`) asserts these are the same
+# OBJECT as `CapabilityLimits`'s attributes, not merely equal by coincidence,
+# so an admission bound and the encoder's bound can never independently drift
+# again for ANY of these shapes: decimal digits, decimal exponent, int bits,
+# sequence size, mapping size, string length, or nesting depth.
+_MAX_DECIMAL_EXPONENT = CapabilityLimits.MAX_DECIMAL_EXPONENT
+_MAX_DECIMAL_DIGITS = CapabilityLimits.MAX_DECIMAL_DIGITS
+_MAX_INT_BITS = CapabilityLimits.MAX_INT_BITS
+_MAX_SEQUENCE_ELEMENTS = CapabilityLimits.MAX_SEQUENCE_ELEMENTS
+_MAX_MAPPING_ELEMENTS = CapabilityLimits.MAX_MAPPING_ELEMENTS
+_MAX_STRING_LENGTH = CapabilityLimits.MAX_STRING_LENGTH
+_MAX_DEPTH = CapabilityLimits.MAX_DEPTH
 
 
 class SegmentState(str, Enum):
@@ -331,7 +340,7 @@ def non_canonical_reason(value, _path: str = "") -> str | None:
     return None
 
 
-def _structural_reason(value, _path: str = "") -> str | None:
+def _structural_reason(value, _path: str = "", _depth: int = 0) -> str | None:
     """Why this value cannot become evidence, or None. Type walk, no encoding.
 
     `canonical.py` refuses `float` because a float written bare and re-read as
@@ -383,6 +392,10 @@ def _structural_reason(value, _path: str = "") -> str | None:
         except UnicodeEncodeError as exc:
             return (f"{_path or 'value'} is a str that is not UTF-8 encodable "
                     f"({exc.reason} at {exc.start})")
+        if len(value) > _MAX_STRING_LENGTH:
+            return (f"{_path or 'value'} is a string of length {len(value)}, "
+                    f"beyond the canonical bound of {_MAX_STRING_LENGTH} "
+                    "characters")
         return None
     if isinstance(value, int):
         # The int twin of the Decimal digit bound, which was added while this
@@ -405,7 +418,22 @@ def _structural_reason(value, _path: str = "") -> str | None:
                     "timezone-aware to be canonically representable")
         return None
     if isinstance(value, Mapping):
+        if _depth >= _MAX_DEPTH:
+            return (f"{_path or 'value'} nesting exceeds the canonical depth "
+                    f"bound of {_MAX_DEPTH}")
+        # BOUNDED, the same way the Sequence branch below always was. Before
+        # this, a Mapping's `.items()` had NO counter at all — only the
+        # Sequence branch did — so an admission-time Mapping whose iteration
+        # never terminates (a hostile `__iter__` that ignores its own
+        # `__len__`) hung the admission walk forever. That asymmetry is what
+        # this closes: both container branches now count their own elements
+        # rather than trusting `__len__`.
+        count = 0
         for k, v in value.items():
+            count += 1
+            if count > _MAX_MAPPING_ELEMENTS:
+                return (f"{_path or 'value'} has more than "
+                        f"{_MAX_MAPPING_ELEMENTS} elements")
             if not isinstance(k, str):
                 return f"{_path or 'value'} has a non-string key {k!r}"
             # KEYS go through the same check as values. The UTF-8 guard was
@@ -420,15 +448,19 @@ def _structural_reason(value, _path: str = "") -> str | None:
             # end-to-end throughput 946 -> 362 rec/s on venue-controlled input.
             # The invariant is established by the single root-level encode.
             key_problem = _structural_reason(
-                k, f"{_path}.<key>" if _path else "<key>")
+                k, f"{_path}.<key>" if _path else "<key>", _depth + 1)
             if key_problem is not None:
                 return key_problem
-            found = _structural_reason(v, f"{_path}.{k}" if _path else k)
+            found = _structural_reason(
+                v, f"{_path}.{k}" if _path else k, _depth + 1)
             if found is not None:
                 return found
         return None
     if isinstance(value, (list, tuple)) or (
             isinstance(value, Sequence) and not isinstance(value, (str, bytes))):
+        if _depth >= _MAX_DEPTH:
+            return (f"{_path or 'value'} nesting exceeds the canonical depth "
+                    f"bound of {_MAX_DEPTH}")
         # Mirror `_encode`'s Sequence branch — but BOUNDED. Mirroring it
         # faithfully moved unbounded iteration into the pre-acceptance path:
         # `range(10**9)`, or any registered Sequence whose `__getitem__` never
@@ -441,7 +473,7 @@ def _structural_reason(value, _path: str = "") -> str | None:
             if i >= _MAX_SEQUENCE_ELEMENTS:
                 return (f"{_path or 'value'} has more than "
                         f"{_MAX_SEQUENCE_ELEMENTS} elements")
-            found = _structural_reason(v, f"{_path}[{i}]")
+            found = _structural_reason(v, f"{_path}[{i}]", _depth + 1)
             if found is not None:
                 return found
         return None
@@ -803,7 +835,25 @@ class SegmentWriter:
         self.environment = environment
         self.segment_id = safe_segment_id(segment_id)
         self.partition_identity = partition_identity
-        self.subscription_metadata = subscription_metadata or {}
+        # ROUTED THROUGH THE SAME BOUNDED CANONICALIZATION CONTRACT as every
+        # event `submit()`s. `subscription_metadata` used to bypass admission
+        # entirely: it flowed straight from this constructor argument into
+        # `build_manifest` -> `digest_hex` -> `canonical_bytes` at close()
+        # time, with no normalization above it and nothing to convert a deep
+        # `RecursionError` (or, before A3, an unbounded hostile container)
+        # into anything but a bare builtin exception out of close(). Gating it
+        # HERE, with the identical `non_canonical_reason` admission uses for
+        # `envelope_fields`, means there is no separate, weaker metadata
+        # serializer: the same contract, the same bounds, the same typed
+        # rejection. A failure now surfaces at construction, as a
+        # `SegmentError`, before any record is ever accepted.
+        metadata = subscription_metadata or {}
+        bad = non_canonical_reason(metadata)
+        if bad is not None:
+            raise SegmentError(
+                f"subscription_metadata is not canonically representable: "
+                f"{bad}")
+        self.subscription_metadata = metadata
         self.archive_identity = archive_identity
         # The archive this writer is configured for. A root that holds a
         # different archive_id is not this archive, however consistent it looks
@@ -1356,17 +1406,35 @@ class SegmentWriter:
             raise SegmentError(f"chain reconciliation failed: {verdict.reason}")
 
         self.closed_at = canonical_datetime(datetime.now(timezone.utc))
-        manifest = build_manifest(
-            environment=self.environment, segment_id=self.segment_id,
-            partition_identity=self.partition_identity,
-            opened_at=self.opened_at, closed_at=self.closed_at,
-            record_count=verdict.record_count,
-            first_record_digest=verdict.first_record_digest,
-            last_record_digest=verdict.last_record_digest,
-            ordered_stream_digest=verdict.ordered_stream_digest,
-            event_file_size_bytes=size, event_file_sha256=file_hash,
-            subscription_metadata=self.subscription_metadata,
-            previous_segment_digest=self.previous_segment_digest)
+        try:
+            manifest = build_manifest(
+                environment=self.environment, segment_id=self.segment_id,
+                partition_identity=self.partition_identity,
+                opened_at=self.opened_at, closed_at=self.closed_at,
+                record_count=verdict.record_count,
+                first_record_digest=verdict.first_record_digest,
+                last_record_digest=verdict.last_record_digest,
+                ordered_stream_digest=verdict.ordered_stream_digest,
+                event_file_size_bytes=size, event_file_sha256=file_hash,
+                subscription_metadata=self.subscription_metadata,
+                previous_segment_digest=self.previous_segment_digest)
+        except CanonicalError as exc:
+            # `subscription_metadata` is admitted at construction (above), so
+            # reaching here means it was mutated in place after admission --
+            # the same live-reference class of defect `submit()` has (out of
+            # this remediation's scope to fix generally), just on the
+            # metadata path instead of an event payload. Whatever the cause,
+            # `build_manifest` -> `digest_hex` -> `canonical_bytes` is now
+            # BOUNDED (A3): it can never escape as a bare `RecursionError` or
+            # an unbounded hang, only as a `CanonicalError` here, which this
+            # normalises into the same typed failure every other close()-time
+            # defect surfaces as.
+            self.state = SegmentState.INVALID
+            self._writer_error = exc
+            self._release_lock()
+            raise SegmentError(
+                f"subscription_metadata could not be canonically digested "
+                f"at close: {exc!r}") from exc
         try:
             publish_manifest(self.dir, manifest, stage=self._stage)
         except DurabilityNotProven as exc:
