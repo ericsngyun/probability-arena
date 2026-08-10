@@ -146,66 +146,33 @@ def cell_id(cell: dict) -> str:
 
 CELL_TIMEOUT_OVERRIDES = {}
 
-# `EventArchive._writer_for` treats every `SegmentError` from
-# `_candidate_segment_ids` (including "the root does not bound this path",
-# which a symlinked `env=<name>/` produces on EVERY candidate) as "this id
-# collided with a live writer, try the next one", and retries up to 10,000
-# times before giving up with a typed `ArchiveError`. That is a REAL finding
-# -- O(10,000) filesystem attempts to reach a verdict that was knowable on
-# the FIRST one -- but its wall-clock cost is load-dependent (measured
-# between 2s and >20s across otherwise-identical runs on this host) in a
-# way no fixed timeout can bound without either being flaky (too tight) or
-# slowing down every other cell in the suite (too generous as a blanket
-# default). Rather than assert a specific bound this harness cannot make
-# deterministic, this ONE cell is excluded from the automated matrix and
-# characterized separately, un-asserted, in
-# `TestDiscrimination`-adjacent diagnostics -- see the harness report for
-# the measured range. This is the one cell in the entire (artifact, shape,
-# entry point) space this harness could not turn into a deterministic
-# pass/fail assertion.
-EXCLUDED_CELLS = {
-    ("env_dir", "symlink_to_dir", "archive_append"),
-}
+# KALSHI-ARCHIVE-CORE-REMEDIATION-002 A1/A1.4: `EventArchive._writer_for`
+# used to treat every `SegmentError` from `_candidate_segment_ids`
+# (including "the root does not bound this path", which a symlinked
+# `env=<name>/` produced on EVERY candidate) as "this id collided with a
+# live writer, try the next one", and retried up to 10,000 times before
+# giving up with a typed `ArchiveError` -- O(10,000) filesystem attempts,
+# 2s to >20s measured, to reach a verdict that was knowable on the FIRST
+# one. `archive.py::EventArchive._check_partition_writable` now checks
+# `env_dir` containment ONCE, before any candidate id is even constructed,
+# so a permanently invalid partition location fails immediately with a
+# typed `ArchiveError` instead of entering the retry loop at all --
+# measured at 0.06s post-fix (was 2-20s+), so this cell is no longer
+# excluded and runs in the ordinary matrix.
+EXCLUDED_CELLS = set()
 
 
 # --- known-defect cells --------------------------------------------------------
 #
-# Every one of these was FOUND by an early, unrestricted run of the generic
-# matrix (`test_matrix_cell_is_total`) -- they are not hand-picked to match
-# the milestone's five findings, they are what the sweep actually turned up.
-# Each maps to the KNOWN-DEFECT ledger entry in
-# `tests/test_kalshi_fs_totality_harness_001.py::TestKnownDefectLedger` that
-# gives the minimal, dedicated reproduction and root cause. Marking them here
-# keeps `test_matrix_cell_is_total` GREEN by default (the ledger is the
-# canonical place a reader goes to see "yes, this is known, here is why")
-# while still running every one of these cells on every invocation, with
-# `strict=True`: if production is ever fixed, the corresponding cell starts
-# unexpectedly PASSING, `xfail(strict=True)` turns THAT into a failure, and
-# the fix and this table go out of sync loudly rather than silently.
-KNOWN_DEFECT_CELLS = {
-    # Defect #3: a FIFO at any head artifact hangs every reader that touches
-    # it, because `archive_head._read_json` gates only on `is_symlink()`.
-    ("genesis", "fifo", "verify_archive"): "defect_003",
-    ("genesis", "fifo", "archive_verify"): "defect_003",
-    ("genesis", "fifo", "head_state"): "defect_003",
-    ("genesis", "fifo", "load_authoritative_head"): "defect_003",
-    ("genesis", "fifo", "recover_current_head"): "defect_003",
-    ("genesis", "fifo", "archive_append"): "defect_003",
-    ("current_head", "fifo", "verify_archive"): "defect_003",
-    ("current_head", "fifo", "head_state"): "defect_003",
-    ("current_head", "fifo", "load_authoritative_head"): "defect_003",
-    ("current_head", "fifo", "recover_current_head"): "defect_003",
-    ("generation_record", "fifo", "verify_archive"): "defect_003",
-    ("generation_record", "fifo", "head_state"): "defect_003",
-    ("generation_record", "fifo", "load_authoritative_head"): "defect_003",
-    ("generation_record", "fifo", "recover_current_head"): "defect_003",
-    # A FIFO at the events file: `archive.py::_undecodable_tail_records`
-    # (defect #4's home) is reached via the diagnostic salvage path even
-    # though the fixed `read_segment_records` call right before it in the
-    # same function correctly refuses a FIFO via `is_file()`.
-    ("events_file", "fifo", "archive_read_unverified_diagnostic"): "defect_004_sibling",
-    # Defect #5-family: an unreadable SEGMENT DIRECTORY (not just an
-    # unreadable manifest FILE, which is defect #5a) makes append()'s
-    # candidate-id scan raise a raw PermissionError the same way.
-    ("segment_dir", "mode_000_dir", "archive_append"): "defect_005a_directory_variant",
-}
+# EMPTY as of KALSHI-ARCHIVE-CORE-REMEDIATION-002 A1: every cell that was
+# here (defects #1-#3, #4's FIFO sibling, and the #5a directory variant) now
+# verifies TOTAL like every other cell in the matrix, closed at the class
+# (one shared `evidence_fs` primitive per failure mode: `presence`,
+# `containment_reason`, `safe_enumerate`, `bounded_read`), not patched one
+# instance at a time. See `TestKnownDefectLedger` in
+# `tests/test_kalshi_fs_totality_harness_001.py` for the dedicated,
+# now-FIXED-behaviour reproduction of each, and `app/realtime/evidence_fs.py`
+# for the shared abstraction. Kept as an empty dict, not deleted, so a
+# future regression has an established place to register a new entry rather
+# than inventing the convention again.
+KNOWN_DEFECT_CELLS = {}

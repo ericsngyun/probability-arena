@@ -53,6 +53,7 @@ from app.realtime.canonical import (
     parse_canonical,
 )
 from app.realtime.fixedpoint import loads_exact
+from app.realtime import evidence_fs
 
 # Becomes a directory component, so it must not be able to escape one.
 _VENUE_RE = re.compile(r"^[a-z0-9_-]+$")
@@ -112,16 +113,24 @@ def _undecodable_tail_records(events_path, decoded: int) -> int:
     A torn or malformed tail costs the incomplete terminal record; anything
     before it is recovered. This reports that it happened rather than leaving
     the loss invisible.
+
+    Routed through `evidence_fs.bounded_read`/`open_bounded_gzip`, not a raw
+    `Path.read_bytes()` + `gzip.open(events_path)`: this call sits three
+    lines below `read_segment_records` (its sibling call in the same salvage
+    read), which correctly refuses a device node or FIFO via `is_file()`
+    before opening it -- this one had no such guard, so `events.jsonl.gz`
+    symlinked to `/dev/zero` (reachable only via the diagnostic salvage read,
+    which deliberately does not enforce containment) read forever, allocating
+    without bound. `bounded_read` proves the target resolves to a regular
+    file and is under a fixed size bound BEFORE any byte is read, so neither
+    a hang nor an unbounded allocation is reachable from here regardless of
+    what the salvage path is pointed at.
     """
-    try:
-        raw = Path(events_path).read_bytes()
-    except OSError:
+    raw, why = evidence_fs.bounded_read(events_path)
+    if why is not None or not raw:
         return 0
-    if not raw:
-        return 0
-    import gzip as _gz
     try:
-        with _gz.open(events_path, "rb") as fh:
+        with evidence_fs.open_bounded_gzip(events_path) as fh:
             fh.read()
     except Exception:
         return 1
@@ -308,13 +317,57 @@ class EventArchive:
                     self._retiring.pop(retiring.segment_id, None)
         return writer
 
+    def _check_partition_writable(self, env_dir: Path, base: str) -> None:
+        """Refuse a PERMANENTLY invalid partition location once, up front.
+
+        KALSHI-ARCHIVE-CORE-REMEDIATION-002 A1.4: a symlinked `env=<name>/`
+        makes `SegmentWriter.__init__`'s containment check raise
+        `SegmentError` for EVERY candidate id, identically -- and
+        `_writer_for`'s retry loop cannot tell "this id collided with a live
+        writer" (transient; try the next one) apart from "this location can
+        never be written to" (permanent; no candidate will ever succeed), so
+        it retried up to 10,000 times, at a measured cost of 2-20+ seconds,
+        to reach a verdict that was knowable on the FIRST attempt. Checking
+        containment on `env_dir` itself, once, before any candidate is even
+        constructed, makes the permanently-invalid case fail immediately
+        with a typed `ArchiveError` and leaves the transient-collision retry
+        loop in `_candidate_segment_ids` for the case it actually exists for.
+        """
+        present, why = evidence_fs.presence(env_dir)
+        if why is not None:
+            raise ArchiveError(
+                f"cannot determine whether partition {base!r} is writable: "
+                f"{why}")
+        if not present:
+            return
+        reason = evidence_fs.containment_reason(self.root, env_dir)
+        if reason is not None:
+            raise ArchiveError(
+                f"partition {base!r} cannot be written: {reason}")
+
     def _candidate_segment_ids(self, base: str):
-        """Every id this partition may use, in order, skipping committed ones."""
+        """Every id this partition may use, in order, skipping committed ones.
+
+        Per-candidate manifest presence is checked with `evidence_fs.presence`
+        rather than `Path.exists()`: `Path.exists()` swallows every OSError
+        EXCEPT `EACCES`, so an unreadable segment directory (the manifest
+        file itself unreadable, or the directory that contains it) let a raw
+        `PermissionError` escape from here, uncaught and untyped, straight out
+        of `append()`. `presence` is total, so an unexaminable candidate now
+        raises the same typed `ArchiveError` every other failure in this
+        generator raises, instead of a bare builtin exception.
+        """
         env_dir = self.root / f"env={self.environment}"
+        self._check_partition_writable(env_dir, base)
         for n in range(0, 10_000):
             candidate = base if n == 0 else f"{base}.r{n:04d}"
             directory = env_dir / f"segment={candidate}"
-            if (directory / MANIFEST_FILENAME).exists():
+            present, why = evidence_fs.presence(directory / MANIFEST_FILENAME)
+            if why is not None:
+                raise ArchiveError(
+                    f"cannot determine whether segment {candidate!r} is "
+                    f"already committed: {why}")
+            if present:
                 continue
             if candidate in self._writers or candidate in self._retiring:
                 continue
@@ -329,10 +382,16 @@ class EventArchive:
         is committed.
         """
         env_dir = self.root / f"env={self.environment}"
+        self._check_partition_writable(env_dir, base)
         for n in range(0, 10_000):
             candidate = base if n == 0 else f"{base}.r{n:04d}"
             directory = env_dir / f"segment={candidate}"
-            if (directory / MANIFEST_FILENAME).exists():
+            present, why = evidence_fs.presence(directory / MANIFEST_FILENAME)
+            if why is not None:
+                raise ArchiveError(
+                    f"cannot determine whether segment {candidate!r} is "
+                    f"already committed: {why}")
+            if present:
                 continue
             if candidate in self._writers or candidate in self._retiring:
                 continue
@@ -425,10 +484,25 @@ class EventArchive:
 
     # -- read ------------------------------------------------------------------
     def _segment_dirs(self) -> list:
+        """Every segment directory found on disk. Diagnostic order ONLY --
+        see `_committed_segment_dirs` for the authenticated one.
+
+        `evidence_fs.presence`/`safe_enumerate`, not `Path.exists()`/
+        `Path.glob()`: `.exists()` propagates `EACCES` and `.glob()`
+        swallows it, so this diagnostic listing failed two different ways
+        depending on which guard a caller remembered. Total here means the
+        same thing it does everywhere else in this module: an unreadable
+        environment directory reports no segments rather than raising or
+        silently pretending the archive is empty with no signal either way.
+        """
         env_root = self.root / f"env={self.environment}"
-        if not env_root.exists():
+        present, why = evidence_fs.presence(env_root)
+        if why is not None or not present:
             return []
-        return sorted(p for p in env_root.glob("segment=*") if p.is_dir())
+        children, err = evidence_fs.safe_enumerate(env_root, "segment=*")
+        if err is not None:
+            return []
+        return sorted(p for p in children if p.is_dir())
 
     def read_verified(self) -> list:
         """Canonical evidence. Verifies the archive first and fails closed.

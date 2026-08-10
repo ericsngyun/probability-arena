@@ -735,6 +735,15 @@ class TestContainment:
             sg.assert_contained(tmp_path, tmp_path / "a" / ".." / ".." / "evil")
 
     def test_the_archive_lock_refuses_a_symlink(self, tmp_path):
+        """KALSHI-ARCHIVE-CORE-REMEDIATION-002 A1 (defect #5b): the raw
+        `OSError` (`O_NOFOLLOW` -> `ELOOP`) `os.open` raises for a symlinked
+        lock path is now caught and re-raised as the module's own typed
+        `ArchiveHeadError`, the same way every other filesystem refusal in
+        this module is -- a raw, untyped `OSError` escaping a `with
+        archive_lock(...)` block is exactly the uncaught-traceback defect
+        class this milestone closes, not a property this test should keep
+        pinning to the untyped shape.
+        """
         init(tmp_path)
         lock = ah.archive_lock_path(tmp_path, ENV)
         if lock.exists():
@@ -742,7 +751,7 @@ class TestContainment:
         outside = tmp_path.parent / "outside.lock"
         outside.touch()
         lock.symlink_to(outside)
-        with pytest.raises(OSError):
+        with pytest.raises(ah.ArchiveHeadError):
             with ah.archive_lock(tmp_path, ENV):
                 pass
 

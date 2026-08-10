@@ -126,10 +126,26 @@ class LegacyScan:
 
 
 def _file_digest(path: Path) -> str:
+    """Digest one legacy source file. Raises `LegacyImportError`, never a
+    raw `OSError`.
+
+    KALSHI-ARCHIVE-CORE-REMEDIATION-002 A1: `scan_legacy` digests every file
+    BEFORE it calls `_read_legacy_records` (which does catch `OSError`), so
+    an unreadable legacy file (mode 0, permission revoked mid-scan) let a
+    bare `PermissionError` escape from here, uncaught and untyped, straight
+    out of `scan_legacy` -- the one place in this module where a source file
+    the importer cannot even read did not surface as this module's own
+    typed error like every other refusal here does.
+    """
     h = hashlib.sha256()
-    with open(path, "rb") as fh:
-        for chunk in iter(lambda: fh.read(1 << 20), b""):
-            h.update(chunk)
+    try:
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+    except OSError as exc:
+        raise LegacyImportError(
+            f"{path} could not be read while scanning the legacy source: "
+            f"{exc!r}") from exc
     return h.hexdigest()
 
 

@@ -121,16 +121,29 @@ def test_matrix_cell_is_total(cell):
 
 
 class TestKnownDefectLedger:
-    def test_defect_001_symlinked_grafted_segment_hides_orphan(self):
-        """A grafted (uncommitted) segment directory is fatal
-        (`ORPHANED_COMMITTED_SEGMENT`) as a real directory, and INVISIBLE --
-        VALID, zero reasons -- as a symlink to an identical directory.
+    """FIXED, KALSHI-ARCHIVE-CORE-REMEDIATION-002 A1: every test below is
+    now a characterization of the CORRECTED behaviour, not the defect. Each
+    docstring keeps the original root-cause description as a permanent
+    record of what was wrong; the assertions were flipped forward, per this
+    module's own docstring's stated mechanism, the moment `evidence_fs`
+    closed the underlying class in `app/realtime/{segment,archive_head,
+    archive,legacy_import}.py`.
+    """
 
-        Root cause: `segment.py`'s two outer enumeration loops
+    def test_defect_001_symlinked_grafted_segment_hides_orphan(self):
+        """FIXED. A grafted (uncommitted) segment directory is fatal both
+        as a real directory (`ORPHANED_COMMITTED_SEGMENT`) and as a symlink
+        to identical content (`SYMLINKED_SEGMENT_DIRECTORY`) -- no longer
+        silently VALID.
+
+        Original root cause: `segment.py`'s two outer enumeration loops
         (`_verify_archive_inner` at the `env_dir.glob("segment=*")` call,
-        and its twin in `_abandoned_residue`) both `continue` past any
-        `d.is_symlink()`, so a symlinked segment directory is never even
-        added to `discovered` and therefore never reaches the orphan check.
+        and its twin in `_abandoned_residue`) both `continue`d past any
+        `d.is_symlink()` BEFORE `d` was added to `discovered`, so a
+        symlinked segment directory never reached the orphan check at all.
+        Both loops now enumerate through `evidence_fs.safe_enumerate` and
+        record a symlinked segment directory as its own fatal reason
+        (`SYMLINKED_SEGMENT_DIRECTORY`) instead of skipping it.
         """
         import shutil
 
@@ -171,37 +184,52 @@ class TestKnownDefectLedger:
         assert real_result["detail"]["verdict"] == "INVALID"
         assert grafted_id in real_result["detail"]["orphaned_committed_segments"]
 
-        # As a SYMLINK to the SAME content: the defect.
+        # As a SYMLINK to the SAME content: now ALSO fatal, by name.
         root2 = af.make_short_root()
         try:
             layout2 = af.build_healthy_archive(root2)
-            _graft(root2, layout2["env_dir"], layout2["segment_dir"],
-                  as_symlink=True)
+            grafted_id2 = _graft(root2, layout2["env_dir"], layout2["segment_dir"],
+                                 as_symlink=True)
             sym_result = run_cell("verify_archive", root=root2,
                                   environment="demo")
         finally:
             af.teardown_root(root2)
             af.teardown_root(root2.parent / f"{root2.name}-side")
         assert sym_result["classification"] == "RETURNED"
-        # THE DEFECT: silently VALID, zero reasons, the graft is invisible.
-        assert sym_result["detail"]["verdict"] == "VALID", (
-            "defect #1 did not reproduce -- if this now fails, "
-            "segment.py's symlink handling in the outer enumeration may "
-            "have been fixed; update this ledger entry")
-        assert sym_result["detail"]["reasons"] == []
+        # FIXED: no longer silently VALID -- the symlinked graft is named,
+        # fatal, and never adopted as either committed or uncommitted
+        # evidence.
+        assert sym_result["detail"]["verdict"] == "INVALID", (
+            "defect #1 regressed -- segment.py's symlink handling in the "
+            "outer enumeration should make a symlinked segment directory "
+            "fatal, not silently VALID; full result: " + repr(sym_result))
+        assert any("SYMLINKED_SEGMENT_DIRECTORY" in r
+                  and grafted_id2 in r for r in sym_result["detail"]["reasons"])
+        # It is refused outright, not silently adopted as committed
+        # evidence either -- it never enters `discovered` at all, so it is
+        # not counted as an orphan (a real directory grafted the same way
+        # IS an orphan; a symlinked one is refused before that question is
+        # ever asked).
         assert sym_result["detail"]["orphaned_committed_segments"] == []
 
     def test_defect_002_execute_only_env_dir_zeroes_residue_warning(self):
-        """Real crash residue (7000 bytes) is reported as an
-        `ABANDONED_EVIDENCE` warning when `env=<name>/` is readable, and
-        SILENTLY DISAPPEARS -- verdict stays VALID, warnings become `[]`,
-        with no `RESIDUE_SCAN_INCOMPLETE` diagnostic either -- when
-        `env=<name>/` is execute-only (0o111).
+        """FIXED. An execute-only `env=<name>/` (0o111: traversable by name,
+        not listable) now makes `verify_archive` report `INVALID` /
+        `ROOT_UNREADABLE` instead of silently going VALID with the residue
+        warning zeroed out -- "cannot be examined" is no longer downgraded
+        to benign.
 
-        Root cause: `Path.glob` swallows the `PermissionError` that
-        `os.scandir` raises internally and returns `[]`, so the
+        Original root cause: `Path.glob` swallows the `PermissionError`
+        that `os.scandir` raises internally and returns `[]`, so the
         `except OSError` guard immediately below the call in
-        `_abandoned_residue` (segment.py:2048) is dead code.
+        `_abandoned_residue` was dead code, and the identical pattern in
+        `_verify_archive_inner`'s own outer enumeration was too. Both now
+        enumerate through `evidence_fs.safe_enumerate`, which uses
+        `os.scandir` directly and is honest about `EACCES` -- the outer
+        segment-directory listing in `_verify_archive_inner` now fails
+        closed with a `ROOT_UNREADABLE` verdict the moment it cannot be
+        listed, rather than reaching the residue scan at all with a
+        false-empty view of the directory.
         """
         from app.realtime import archive_head as ah
 
@@ -233,13 +261,23 @@ class TestKnownDefectLedger:
         finally:
             af.teardown_root(root)
 
-        assert after["detail"]["verdict"] == "VALID"
-        # THE DEFECT: 7000 bytes of real, unresolved crash residue, and the
-        # verifier says nothing about it -- not even that it could not look.
-        assert after["detail"]["warnings"] == [], (
-            "defect #2 did not reproduce -- if this now fails, "
-            "_abandoned_residue's enumeration guard may have been fixed; "
-            "update this ledger entry")
+        # FIXED: the verifier fails CLOSED instead of silently going VALID
+        # with the residue vanished. "Cannot enumerate the environment
+        # directory" makes it impossible to know whether 7,000 bytes of
+        # crash residue -- or an orphaned committed segment -- is hiding in
+        # there, so it is reported as ROOT_UNREADABLE, not benign.
+        assert after["detail"]["verdict"] == "INVALID", (
+            "defect #2 regressed -- an unreadable environment directory "
+            "should fail the verdict closed, not report VALID; full "
+            "result: " + repr(after))
+        assert after["detail"]["head_state"] == "ROOT_UNREADABLE"
+        assert any("could not be enumerated" in r
+                  for r in after["detail"]["reasons"])
+        # And the warning that DID appear when the directory was readable is
+        # gone -- not because residue vanished, but because verification
+        # never got far enough to look, and it says so rather than pretending
+        # otherwise.
+        assert after["detail"]["warnings"] == []
 
     @pytest.mark.parametrize("artifact,path_key", [
         ("genesis", "genesis_path"),
@@ -248,14 +286,19 @@ class TestKnownDefectLedger:
     ])
     def test_defect_003_fifo_head_artifact_hangs_forever(self, artifact,
                                                           path_key):
-        """A FIFO at ANY head artifact hangs `head_state()` forever.
+        """FIXED. A FIFO at ANY head artifact now returns a typed
+        `head_state()` classification within the wall clock instead of
+        hanging forever.
 
-        Root cause: `archive_head.py::_read_json` gates only on
-        `path.is_symlink()`, never on `segment._presence` (which is the
-        primitive that DOES check `stat.S_ISREG`/`S_ISDIR`/`S_ISLNK` and
-        refuses a FIFO/socket/device by name instead of blocking on it).
-        A blocking `open()` inside `read_bytes()` never returns control to
-        Python, so no in-process deadline could ever have caught this.
+        Original root cause: `archive_head.py::_read_json` gated only on
+        `path.is_symlink()`, never on the shared presence primitive (which
+        checks `stat.S_ISREG`/`S_ISDIR`/`S_ISLNK` and refuses a FIFO/
+        socket/device BY NAME instead of blocking on it). A blocking
+        `open()` inside `read_bytes()` never returned control to Python, so
+        no in-process deadline could ever have caught this. `_read_json`
+        now routes through `evidence_fs.presence`/`bounded_read`, which
+        proves the target is a regular file by `stat` -- never blocking --
+        before any `open()` is attempted.
         """
         root = af.make_short_root()
         side = root.parent / f"{root.name}-side"
@@ -270,11 +313,14 @@ class TestKnownDefectLedger:
             af.teardown_root(root)
             af.teardown_root(side)
 
-        assert result["classification"] == "TIMEOUT", (
-            f"defect #3 did not reproduce for {artifact} -- if this now "
-            "fails because the call RETURNED or RAISED instead of hanging, "
-            "_read_json may have been fixed to route through _presence; "
-            "update this ledger entry. Full result: " + repr(result))
+        assert result["classification"] == "RETURNED", (
+            f"defect #3 regressed for {artifact} -- head_state() should "
+            "classify a FIFO head artifact without hanging or raising; "
+            "full result: " + repr(result))
+        assert result["detail"]["state"] in (
+            "GENESIS_INVALID", "HEAD_INVALID"), (
+            f"unexpected head_state for a FIFO {artifact}: {result}")
+        assert "not a regular file" in (result["detail"].get("reason") or "")
 
     @pytest.mark.skipif(
         os.environ.get("KALSHI_FS_TOTALITY_ALLOW_DEV_ZERO") != "1",
@@ -282,17 +328,24 @@ class TestKnownDefectLedger:
                "so this is opt-in only (KALSHI_FS_TOTALITY_ALLOW_DEV_ZERO=1) "
                "-- see runner.DEV_ZERO_TIMEOUT_S")
     def test_defect_004_dev_zero_events_file_is_unbounded(self):
-        """`events.jsonl.gz` symlinked to `/dev/zero` makes
-        `archive.py::_undecodable_tail_records`'s
-        `Path(events_path).read_bytes()` try to read forever, allocating
+        """FIXED. `events.jsonl.gz` symlinked to `/dev/zero` no longer
+        blocks `archive_read_unverified_diagnostic` -- it returns within
+        the wall clock.
+
+        Original root cause: `archive.py::_undecodable_tail_records`'s
+        `Path(events_path).read_bytes()` tried to read forever, allocating
         without bound, three lines below a SIBLING call
-        (`segment.py::read_segment_records`) that correctly checks
-        `is_file()` first and would refuse a device node outright.
+        (`segment.py::read_segment_records`) that correctly checked
+        `is_file()` first and refused a device node outright.
+        `_undecodable_tail_records` now routes through
+        `evidence_fs.bounded_read`, which proves the target resolves to a
+        regular file (a character device fails this) and is under a fixed
+        size bound BEFORE any byte is read.
 
         `read_verified()` cannot reach this call (containment catches the
         symlink first, by design); `read_unverified_diagnostic()` -- the
         salvage path, which deliberately does not enforce containment --
-        can, and does.
+        can, and now returns cleanly instead of hanging.
         """
         root = af.make_short_root()
         side = root.parent / f"{root.name}-side"
@@ -307,19 +360,23 @@ class TestKnownDefectLedger:
             af.teardown_root(root)
             af.teardown_root(side)
 
-        assert result["classification"] == "TIMEOUT", (
-            "defect #4 did not reproduce -- if this now fails because the "
-            "call returned within the timeout, `_undecodable_tail_records` "
-            "may have grown a size cap or an `is_file()` guard; update "
-            "this ledger entry. Full result: " + repr(result))
+        assert result["classification"] == "RETURNED", (
+            "defect #4 regressed -- a /dev/zero-symlinked events file "
+            "should be refused (not a regular file) before any unbounded "
+            "read, not hang; full result: " + repr(result))
 
     def test_defect_005a_append_raises_raw_permission_error(self):
-        """`EventArchive.append()` lets a raw `PermissionError` escape,
-        unwrapped, when the CURRENT segment directory becomes unreadable --
-        `archive.py::_candidate_segment_ids`'s
-        `(directory / MANIFEST_FILENAME).exists()` (line 317) propagates
-        `EACCES` because `Path.exists()` only swallows
-        `ENOENT`/`ENOTDIR`/`EBADF`/`ELOOP`, not `EACCES`.
+        """FIXED. `EventArchive.append()` now raises a typed `ArchiveError`,
+        not a raw `PermissionError`, when the CURRENT segment directory
+        becomes unreadable.
+
+        Original root cause: `archive.py::_candidate_segment_ids`'s
+        `(directory / MANIFEST_FILENAME).exists()` propagated `EACCES`
+        because `Path.exists()` only swallows `ENOENT`/`ENOTDIR`/`EBADF`/
+        `ELOOP`, not `EACCES`. `_candidate_segment_ids` now checks presence
+        with `evidence_fs.presence`, which is total, and raises `ArchiveError`
+        for an unexaminable candidate instead of letting the raw `OSError`
+        propagate.
         """
         root = af.make_short_root()
         try:
@@ -333,20 +390,23 @@ class TestKnownDefectLedger:
         finally:
             af.teardown_root(root)
 
-        assert result["classification"] == "RAISED"
-        assert result["exception_module"] == "builtins", (
-            "defect #5a did not reproduce -- if this now fails because the "
-            "exception is typed (e.g. ArchiveError), append()'s candidate-id "
-            "scan may have been wrapped; update this ledger entry. "
-            f"Full result: {result}")
-        assert result["exception_type"] == "PermissionError"
+        assert result["classification"] == "RAISED", (
+            "defect #5a regressed -- full result: " + repr(result))
+        assert result["exception_module"] == "app.realtime.archive", (
+            "defect #5a regressed -- append() should raise its own typed "
+            f"ArchiveError, not a raw exception. Full result: {result}")
+        assert result["exception_type"] == "ArchiveError"
 
     def test_defect_005b_recover_current_head_raises_raw_permission_error(
             self):
-        """`recover_current_head()` is not total either: with `env=<name>/`
-        unreadable, `archive_lock()`'s `os.open(..., O_CREAT, ...)` on
-        `archive.lock` raises a raw `PermissionError` before any of the
-        function's own typed error handling runs.
+        """FIXED. `recover_current_head()` now raises a typed
+        `ArchiveHeadError`, not a raw `PermissionError`, when `env=<name>/`
+        is unreadable.
+
+        Original root cause: `archive_lock()`'s `os.open(..., O_CREAT, ...)`
+        on `archive.lock` raised a raw `PermissionError` before any of the
+        function's own typed error handling ran. `archive_lock` now wraps
+        that `os.open` call and re-raises `ArchiveHeadError`.
         """
         root = af.make_short_root()
         try:
@@ -360,25 +420,30 @@ class TestKnownDefectLedger:
         finally:
             af.teardown_root(root)
 
-        assert result["classification"] == "RAISED"
-        assert result["exception_module"] == "builtins", (
-            "defect #5b did not reproduce -- if this now fails because the "
-            "exception is typed, recover_current_head may have been made "
-            "total; update this ledger entry. Full result: " + repr(result))
-        assert result["exception_type"] == "PermissionError"
+        assert result["classification"] == "RAISED", (
+            "defect #5b regressed -- full result: " + repr(result))
+        assert result["exception_module"] == "app.realtime.archive_head", (
+            "defect #5b regressed -- recover_current_head should raise its "
+            f"own typed ArchiveHeadError. Full result: {result}")
+        assert result["exception_type"] == "ArchiveHeadError"
 
     def test_defect_005c_read_genesis_misreports_eacces_as_not_initialized(
             self):
-        """`head_state()` reports `NOT_INITIALIZED` for a genuinely
-        initialized, fully intact archive whose `env=<name>/` directory
-        merely became unreadable -- indistinguishable, to the caller, from
-        an archive whose root of trust was actually deleted.
+        """FIXED. `head_state()` no longer reports `NOT_INITIALIZED` for a
+        genuinely initialized, fully intact archive whose `env=<name>/`
+        directory merely became unreadable -- it now reports
+        `GENESIS_INVALID`, distinct from a genuinely missing archive.
 
-        Root cause: `os.path.lexists`, used throughout `archive_head.py`
-        for existence checks, swallows EVERY `OSError` internally,
-        including `EACCES`. `read_genesis`'s
+        Original root cause: `os.path.lexists`, used throughout
+        `archive_head.py` for existence checks, swallows EVERY `OSError`
+        internally, including `EACCES`, so `read_genesis`'s
         `if not os.path.lexists(path): raise ArchiveNotInitializedError`
-        cannot distinguish "gone" from "denied".
+        could not distinguish "gone" from "denied". `read_genesis` now
+        checks `evidence_fs.presence`, which carries that distinction, and
+        raises the (non-`NotInitialized`) `ArchiveHeadError` base class for
+        "cannot be examined" -- the orphan-semantics principle this
+        milestone's A1.3 states explicitly: "cannot be examined" is NEVER
+        "does not exist".
         """
         root = af.make_short_root()
         try:
@@ -392,26 +457,27 @@ class TestKnownDefectLedger:
             af.teardown_root(root)
 
         assert result["classification"] == "RETURNED"
-        # THE DEFECT: a real, permission-denied (not deleted) archive is
-        # reported exactly like one that was never created.
-        assert result["detail"]["state"] == "NOT_INITIALIZED", (
-            "defect #5c did not reproduce -- if this now fails, read_genesis "
-            "may have been changed to distinguish EACCES from ENOENT; "
-            "update this ledger entry. Full result: " + repr(result))
+        # FIXED: a real, permission-denied (not deleted) archive is no
+        # longer indistinguishable from one that was never created.
+        assert result["detail"]["state"] == "GENESIS_INVALID", (
+            "defect #5c regressed -- an unreadable (not missing) genesis "
+            "must never report NOT_INITIALIZED; full result: " + repr(result))
+        assert "could not be examined" in result["detail"]["reason"]
 
     def test_defect_006_scan_legacy_raises_raw_permission_error(self):
-        """FOUND BY THIS HARNESS, not pre-specified in the milestone: a
-        legacy-format events file that is unreadable (mode 000) makes
-        `legacy_import.scan_legacy()` raise a raw `PermissionError`, not the
-        module's own `LegacyImportError`.
+        """FIXED. FOUND BY THIS HARNESS, not pre-specified in the
+        milestone: a legacy-format events file that is unreadable (mode
+        000) now makes `legacy_import.scan_legacy()` raise the module's own
+        `LegacyImportError`, not a raw `PermissionError`.
 
-        Root cause: `scan_legacy` digests each file with `_file_digest()`
-        (`with open(path, "rb") as fh: ...`, no `try/except OSError`)
-        BEFORE it calls `_read_legacy_records()`, which DOES catch
-        `OSError`. The file passed `_legacy_files()`'s `is_file()` /
-        `is_symlink()` filter (a mode-000 regular file is still a regular
-        file by `stat`), so nothing upstream of `_file_digest` catches this
-        either.
+        Original root cause: `scan_legacy` digested each file with
+        `_file_digest()` (`with open(path, "rb") as fh: ...`, no
+        `try/except OSError`) BEFORE it called `_read_legacy_records()`,
+        which DOES catch `OSError`. The file passed `_legacy_files()`'s
+        `is_file()`/`is_symlink()` filter (a mode-000 regular file is still
+        a regular file by `stat`), so nothing upstream of `_file_digest`
+        caught this either. `_file_digest` now catches `OSError` and raises
+        `LegacyImportError`.
         """
         root = af.make_short_root()
         try:
@@ -425,13 +491,12 @@ class TestKnownDefectLedger:
         finally:
             af.teardown_root(root)
 
-        assert result["classification"] == "RAISED"
-        assert result["exception_module"] == "builtins", (
-            "defect #6 did not reproduce -- if this now fails because the "
-            "exception is typed (LegacyImportError), _file_digest may have "
-            "grown an OSError guard; update this ledger entry. "
-            f"Full result: {result}")
-        assert result["exception_type"] == "PermissionError"
+        assert result["classification"] == "RAISED", (
+            "defect #6 regressed -- full result: " + repr(result))
+        assert result["exception_module"] == "app.realtime.legacy_import", (
+            "defect #6 regressed -- scan_legacy should raise its own typed "
+            f"LegacyImportError. Full result: {result}")
+        assert result["exception_type"] == "LegacyImportError"
 
 
 # --- 3. static AST audit -------------------------------------------------------
@@ -492,7 +557,10 @@ _LEGACY_SHAPES_AND_EXPECTATION = (
     ("fifo", False),             # same -- `is_file()` in `_legacy_files`
                                   # filters a FIFO out before any read is
                                   # attempted, so this is TOTAL, not a hang
-    ("mode_000_file", "KNOWN_DEFECT_006"),
+    # FIXED (defect #6): `_file_digest` now catches `OSError` and raises
+    # `LegacyImportError`, so this is an ordinary typed-raise cell like
+    # every other shape in this table, not a special case.
+    ("mode_000_file", True),
     ("corrupt_gzip", True),      # reported as a torn file, not fatal
     ("truncated_gzip", True),
 )
@@ -513,32 +581,33 @@ def test_legacy_source_scan_is_total(shape, expectation):
         af.teardown_root(root)
         af.teardown_root(side)
 
-    if expectation == "KNOWN_DEFECT_006":
-        # See TestKnownDefectLedger.test_defect_006 for the dedicated,
-        # minimal reproduction. Asserted here too (not xfailed) because this
-        # parametrization is the coverage claim: "scan_legacy is total
-        # across shapes", and it currently is NOT, for this one shape.
-        assert result["classification"] == "RAISED"
-        assert result["exception_module"] == "builtins"
-        assert result["exception_type"] == "PermissionError"
-        return
-
     ok, reason = classify_cell("scan_legacy", result)
     assert ok, f"scan_legacy/{shape}: {reason}\nfull result: {result}"
 
 
-@pytest.mark.skip(reason=(
-    "diagnostic only, not an assertion -- see matrix.EXCLUDED_CELLS. "
-    "env_dir::symlink_to_dir::archive_append is a REAL finding (10,000 "
-    "real filesystem attempts before EventArchive._writer_for gives up "
-    "and raises a typed ArchiveError, because it treats "
-    "'this path can never work' the same as 'this id is momentarily "
-    "busy, try the next one') whose wall-clock cost this harness measured "
-    "as load-dependent -- 2s to over 20s across otherwise-identical runs "
-    "on the same host -- and therefore could not turn into a deterministic "
-    "pass/fail bound. Run manually with -m 'not skip' or by removing this "
-    "decorator to see the measured duration on a given host."))
-def test_diagnostic_only_env_dir_symlink_append_retry_cost():
+def test_writer_for_refuses_a_permanently_invalid_partition_immediately():
+    """FORMERLY diagnostic-only (see git history): `env_dir::symlink_to_dir::
+    archive_append` used to cost up to 10,000 real filesystem attempts --
+    2s to over 20s measured, load-dependent, across otherwise-identical
+    runs on the same host -- before `EventArchive._writer_for` gave up and
+    raised a typed `ArchiveError`, because it treated "this path can never
+    work" (a symlinked `env=<name>/`, permanently invalid for every
+    candidate id) identically to "this id is momentarily busy, try the next
+    one" (an ordinary single-writer collision). That made the cell's
+    wall-clock cost load-dependent in a way no fixed timeout could bound
+    without being either flaky or generous enough to slow down every other
+    cell in the suite, so it was excluded from the automated matrix and
+    only measured here, unasserted.
+
+    `EventArchive._check_partition_writable` now checks `env_dir`
+    containment ONCE, before any candidate id is even constructed, so the
+    permanently-invalid case fails immediately instead of entering the
+    retry loop at all. This is now FAST and DETERMINISTIC, so it is a real
+    assertion (a hard upper bound well under the old measured range, not a
+    tight flake-prone one) instead of a diagnostic print, and the cell it
+    reproduces is back in `matrix.build_cells()`'s ordinary space (see
+    `matrix.EXCLUDED_CELLS`, now empty).
+    """
     import time
 
     from tests.harness_filesystem_totality import archive_fixture as af
@@ -552,13 +621,22 @@ def test_diagnostic_only_env_dir_symlink_append_retry_cost():
         apply_shape(layout, "env_dir", "symlink_to_dir")
         t0 = time.monotonic()
         result = run_cell("archive_append", root=root, environment="demo",
-                          timeout_s=60.0)
+                          timeout_s=10.0)
         elapsed = time.monotonic() - t0
     finally:
         af.teardown_root(root)
         af.teardown_root(side)
-    print(f"env_dir::symlink_to_dir::archive_append took {elapsed:.2f}s: "
-         f"{result}")
+    assert result["classification"] == "RAISED", (
+        f"expected an immediate typed raise, got: {result}")
+    assert result["exception_module"] == "app.realtime.archive"
+    assert result["exception_type"] == "ArchiveError"
+    # Measured post-fix at ~0.06s; 5s leaves generous headroom for a loaded
+    # CI host while still being nowhere near the old 2-20s+ retry-storm
+    # range -- a regression back to the retry storm would blow past this.
+    assert elapsed < 5.0, (
+        f"partition-writability check took {elapsed:.2f}s -- "
+        "the up-front containment check in `_check_partition_writable` may "
+        "have regressed back into the per-candidate retry loop")
 
 
 # --- 4. discrimination: good passes, bad is caught, hangs are really killed --

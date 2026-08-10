@@ -60,6 +60,7 @@ from app.realtime.canonical import (
     parse_canonical,
     parse_canonical_datetime,
 )
+from app.realtime import evidence_fs
 
 RECORD_SCHEMA_VERSION = 1
 MANIFEST_SCHEMA_VERSION = 1
@@ -126,69 +127,29 @@ def write_all(fd: int, payload: bytes) -> int:
 def assert_contained(root: Path, target: Path) -> Path:
     """Every component between root and target must be a real directory.
 
-    `Path(root).resolve()` resolves the ROOT, not its children, and
-    `mkdir(parents=True, exist_ok=True)` happily traverses a symlinked
-    `env=<name>` component. A planted symlink there put every record, every
-    manifest and the authoritative head outside the configured root while
-    verification still reported VALID — the archive root stopped bounding the
-    evidence.
-
-    The target is matched against the root BOTH as given and as resolved. A
-    caller that passes an unresolved root (`/tmp/...` on macOS, or the kind of
-    symlinked `BACKUP_DIR` an operator actually configures) previously got a
-    bare `ValueError` out of `relative_to` — raised from the orphan repair
-    path, which is the one route out of a crash between manifest publish and
-    head commit.
-
-    This is a path-based check, not `openat` on a pinned dirfd: a component
-    swapped between here and the subsequent open is NOT prevented. Verification
-    catches such a swap afterwards, so the property is tamper-EVIDENT, not
-    race-free, and it is stated that way deliberately.
+    A2/A3, KALSHI-ARCHIVE-CORE-REMEDIATION-002: the containment WALK itself —
+    the raw `os.lstat`/`Path.is_symlink`/`Path.resolve` calls that decide
+    whether `target` is bounded by `root` — now lives in ONE place,
+    `evidence_fs.assert_contained`, not here. This wrapper exists only to
+    preserve the exception type every existing caller in this codebase
+    already catches (`SegmentError`): `evidence_fs` raises its own
+    filesystem-layer `EvidenceAccessError`, which is deliberately NOT a
+    `SegmentError`, because `evidence_fs` has no notion of what a segment is
+    and must not invent domain exceptions for callers it cannot see. Losing
+    that type at every one of `assert_contained`'s eight call sites (three of
+    them inside `SegmentWriter.__init__`'s single-writer-ownership retry
+    logic in `archive.py::_writer_for`, which specifically catches
+    `SegmentError` to mean "try the next candidate id") would silently change
+    which retries happen. Translating it back here, once, is cheaper than
+    auditing and updating every caller.
     """
-    root_raw = Path(root)
-    root_res = root_raw.resolve()
-    target = Path(target)
-    # Three spellings, because callers legitimately mix them: the root as
-    # configured, the root resolved, and a target reached through a symlinked
-    # ancestor of the root itself (macOS `/tmp` and `/var` are symlinks, and a
-    # symlinked BACKUP_DIR is an ordinary operator choice). Resolving the
-    # target does not weaken the check — containment is decided here, and the
-    # component walk below still runs against the real path.
-    for candidate, base in ((target, root_raw), (target, root_res),
-                            (target.resolve() if target.exists() else target,
-                             root_res)):
-        try:
-            parts = candidate.relative_to(base).parts
-            break
-        except ValueError:
-            continue
-    else:
-        raise SegmentError(f"{target} is outside the archive root {root_raw}")
-    if ".." in parts:
-        # `pathlib` does not collapse `..`, and the component walk below only
-        # rejects symlinks and non-directories — `..` is neither, so
-        # `root/a/../../evil` was reported as contained. Not reachable from
-        # today's callers, but this is an exported containment primitive whose
-        # docstring promises the opposite.
-        raise SegmentError(
-            f"{target} contains a '..' component; containment is decided by "
-            "the path as written, so an unresolved parent reference is refused")
-    current = root_res
-    last = len(parts) - 1
-    for i, part in enumerate(parts):
-        current = current / part
-        if current.is_symlink():
-            raise SegmentError(
-                f"{current} is a symlink; no path component between the "
-                "archive root and its segments may be a link, or the root "
-                "stops bounding the evidence")
-        if i != last and current.exists() and not current.is_dir():
-            raise SegmentError(f"{current} is not a directory")
-    return target
+    try:
+        return evidence_fs.assert_contained(root, target)
+    except evidence_fs.EvidenceAccessError as exc:
+        raise SegmentError(str(exc)) from exc
 
 
 def containment_reason(root, target) -> str | None:
-    """Total by contract — see the OSError arm below."""
     """`assert_contained` as a verification reason rather than an exception.
 
     The verify side had NO containment check at all. `assert_contained` existed
@@ -199,20 +160,13 @@ def containment_reason(root, target) -> str | None:
     still caught edits to the external target, but the root had stopped
     bounding the bytes — which is the property backup, retention and permission
     controls are scoped to.
+
+    Total by contract, delegated to `evidence_fs.containment_reason`, which
+    is total for the same reason this function used to need its own OSError
+    arm: `assert_contained` stats the target eagerly, so it can raise EACCES
+    for exactly the reason the caller's guard was meant to stop.
     """
-    try:
-        assert_contained(root, target)
-    except SegmentError as exc:
-        return str(exc)
-    except OSError as exc:
-        # `assert_contained` stats the target (see the eager `target.exists()`
-        # in its candidate tuple), so it raises EACCES for exactly the reason
-        # the caller's guard was meant to stop. Three consecutive rounds moved
-        # that guard one call closer to the raise without asking which call
-        # actually raises; making THIS function total closes the class instead
-        # of the instance.
-        return f"{Path(target).name} could not be examined: {exc}"
-    return None
+    return evidence_fs.containment_reason(root, target)
 
 
 class SegmentError(RuntimeError):
@@ -2006,26 +1960,13 @@ def _partition_for_segment(segment_id: str, environment: str) -> str | None:
 def _presence(path) -> tuple:
     """(present, reason). Never raises — a verdict function cannot afford to.
 
-    `Path.exists()` propagates EACCES; `os.path.lexists` swallows it and answers
-    False, which is a different lie. Both were wrong in this file.
+    Delegates to `evidence_fs.presence`, the one primitive every canonical
+    archive module now shares. `Path.exists()` propagates EACCES;
+    `os.path.lexists` swallows it and answers False, which is a different
+    lie — that distinction is exactly why this indirection exists rather
+    than every module re-deriving it from `os.lstat` on its own.
     """
-    import stat as _stat
-    try:
-        st = os.lstat(path)
-    except FileNotFoundError:
-        return False, None
-    except OSError as exc:
-        return None, f"{Path(path).name} could not be examined: {exc}"
-    if not (_stat.S_ISREG(st.st_mode) or _stat.S_ISDIR(st.st_mode)
-            or _stat.S_ISLNK(st.st_mode)):
-        # A FIFO, socket or device node at an evidence path answered "present"
-        # to `lstat` and then blocked the reader FOREVER — no verdict, no
-        # timeout, a monitor that never returns. A hang is strictly worse than
-        # the traceback this helper was written to remove. `present_generations`
-        # already had the right pattern (`child.is_file()`); nothing else did.
-        return None, (f"{Path(path).name} is not a regular file "
-                      f"(mode {_stat.S_IFMT(st.st_mode):#o})")
-    return True, None
+    return evidence_fs.presence(path)
 
 
 def verify_segment(directory, *, environment: str, allow_open: bool = False,
@@ -2091,8 +2032,12 @@ def verify_segment(directory, *, environment: str, allow_open: bool = False,
              "and reconstructing one would certify the loss"],
             None, len(read_segment_records(events_path)) if has_events else 0)
 
+    manifest_bytes, why = evidence_fs.bounded_read(manifest_path)
+    if why is not None:
+        return SegmentVerdict(seg_id, SegmentState.INVALID, False,
+                              [f"manifest is unreadable ({why})"])
     try:
-        manifest = parse_canonical(manifest_path.read_bytes())
+        manifest = parse_canonical(manifest_bytes)
     except Exception as exc:
         return SegmentVerdict(seg_id, SegmentState.INVALID, False,
                               [f"manifest is unreadable ({type(exc).__name__})"])
@@ -2278,20 +2223,37 @@ _VERDICT_KEYS = (
 
 
 def _abandoned_residue(env_dir: Path) -> list:
-    """Quarantined crash residue anywhere under the environment root."""
+    """Quarantined crash residue anywhere under the environment root.
+
+    Enumeration goes through `evidence_fs.safe_enumerate`, not `Path.glob`:
+    `Path.glob` swallows the `PermissionError` `os.scandir` raises
+    internally, so a mode-0 directory returned an empty list with no error
+    and 7,000 bytes of real residue vanished under a VALID verdict — the
+    per-file guard below was right; the ENUMERATION guard never fired
+    because it could never fire.
+
+    A symlinked segment directory is reported as an incomplete scan rather
+    than silently skipped (the twin of the fix in `_verify_archive_inner`):
+    residue hidden behind a symlinked directory is neither confirmed absent
+    nor examined, and a scan that cannot tell the difference must say so.
+    """
     out, errors = [], []
-    try:
-        children = sorted(env_dir.glob("segment=*"))
-    except OSError as exc:
-        return [], [repr(exc)]
-    for d in children:
+    children, err = evidence_fs.safe_enumerate(env_dir, "segment=*")
+    if err is not None:
+        return [], [err]
+    for d in sorted(children):
+        if d.is_symlink():
+            errors.append(
+                f"{d.name}: symlinked segment directory is not bounded by "
+                "the archive root and is not scanned for quarantined evidence")
+            continue
+        if not d.is_dir():
+            continue
         try:
-            if not d.is_dir() or d.is_symlink():
-                continue
-            # `Path.glob` swallows PermissionError from `os.scandir`, so a
-            # mode-0 directory returned an empty list with no error and 7,000
-            # bytes of real residue vanished under a VALID verdict. The per-file
-            # guard was right; the ENUMERATION guard never fired.
+            # `os.scandir` here, not `evidence_fs.safe_enumerate`: the filter
+            # is on FILENAME PREFIX, not a glob pattern, and this loop already
+            # handles its own OSError -- see the identical honesty argument in
+            # `safe_enumerate`'s docstring, which is what this call mirrors.
             files = sorted(
                 Path(e.path) for e in os.scandir(d)
                 if e.name.startswith(f"{EVENTS_FILENAME}.abandoned."))
@@ -2398,42 +2360,67 @@ def _verify_archive_inner(root, *, environment: str, expected_archive_id,
                           minimum_generation, expected_head) -> dict:
     root = Path(root)
     env_dir = root / f"env={environment}"
+    env_present, env_why = evidence_fs.presence(env_dir)
+    if env_why is not None:
+        return _empty_verdict(
+            environment, head_state="ROOT_UNREADABLE", reasons=[env_why])
     if env_dir.is_symlink():
         return _empty_verdict(
             environment, head_state="ROOT_NOT_CONTAINED",
             reasons=[f"{env_dir} is a symlink; the archive root does not bound "
                      "this evidence"])
-    reason = containment_reason(root, env_dir) if env_dir.exists() else None
+    reason = containment_reason(root, env_dir) if env_present else None
     if reason is not None:
         return _empty_verdict(environment, head_state="ROOT_NOT_CONTAINED",
                               reasons=[reason])
 
     state = head_state(root, environment, expected_archive_id=expected_archive_id)
     discovered = {}
+    # A symlinked segment directory is FATAL, not invisible. It used to be
+    # skipped by this same loop (`d.is_symlink(): continue`) before `d` was
+    # ever added to `discovered`, so it never reached the orphan check below
+    # -- a grafted (uncommitted) segment directory was `ORPHANED_COMMITTED_
+    # SEGMENT` as a real directory and silently VALID, zero reasons, as a
+    # symlink to identical content. Enumeration itself goes through
+    # `evidence_fs.safe_enumerate`, not `Path.glob`, for the same reason
+    # `_abandoned_residue` does: `Path.glob` swallows the `PermissionError`
+    # `os.scandir` raises internally, so an execute-only environment
+    # directory returned an empty list with no error and every segment in it
+    # vanished from accounting with no diagnostic that anything was missed.
+    symlinked_segments: list = []
     if env_dir.is_dir():
-        try:
-            children = sorted(env_dir.glob("segment=*"))
-        except OSError as exc:
+        children, err = evidence_fs.safe_enumerate(env_dir, "segment=*")
+        if err is not None:
             return _empty_verdict(
-                environment, head_state="ROOT_UNREADABLE",
-                reasons=[f"the environment directory is unreadable: {exc!r}"])
-        for d in children:
-            if d.is_symlink() or not d.is_dir():
+                environment, head_state="ROOT_UNREADABLE", reasons=[err])
+        for d in sorted(children):
+            if d.is_symlink():
+                symlinked_segments.append(d.name.split("segment=", 1)[-1])
+                continue
+            if not d.is_dir():
                 continue
             discovered[d.name.split("segment=", 1)[-1]] = d
+
+    symlink_reasons = [
+        f"SYMLINKED_SEGMENT_DIRECTORY: {seg!r} is a symlink; the archive "
+        "root does not bound this evidence, so it is never adopted as "
+        "committed or uncommitted evidence -- resolve it explicitly before "
+        "this archive can verify"
+        for seg in symlinked_segments]
 
     if state["state"] != "CURRENT":
         return _empty_verdict(
             environment, head_state=state["state"],
             archive_id=state.get("archive_id"),
             generations_present=state.get("generations", []),
-            reasons=[f"{state['state']}: {state.get('reason', '')}"])
+            reasons=[f"{state['state']}: {state.get('reason', '')}"]
+            + symlink_reasons)
 
     head = state["head"]
     record = head.generation_record
     archive_id = head.genesis["archive_id"]
     generations = state["generations"]
-    reasons: list = []
+    reasons: list = list(symlink_reasons)
 
     if minimum_generation is not None and record["generation"] < minimum_generation:
         reasons.append(
@@ -2537,8 +2524,12 @@ def _verify_archive_inner(root, *, environment: str, expected_archive_id,
             reasons.append(f"segment {seg_id!r} does not verify: "
                            f"{'; '.join(verdict.reasons)}")
             continue
+        manifest_bytes, why = evidence_fs.bounded_read(directory / MANIFEST_FILENAME)
+        if why is not None:
+            reasons.append(f"segment {seg_id!r} manifest unreadable: {why}")
+            continue
         try:
-            manifest = parse_canonical((directory / MANIFEST_FILENAME).read_bytes())
+            manifest = parse_canonical(manifest_bytes)
         except Exception as exc:              # noqa: BLE001 - reported
             reasons.append(f"segment {seg_id!r} manifest unreadable: {exc!r}")
             continue

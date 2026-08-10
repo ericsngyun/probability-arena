@@ -1,13 +1,23 @@
 """Static AST audit: every raw filesystem-presence call in the canonical
 archive modules, classified, against an explicit allowlist.
 
-The milestone's requirement is specific: no production module under
-`app/realtime/` may touch a canonical evidence path except through the
-shared total primitives `segment._presence` / `segment.containment_reason`
-(and, transitively, `segment.assert_contained`). This module does not (and
-cannot, from pure AST) prove that requirement holds -- proving it would
-require alias/points-to analysis this codebase does not have. What it CAN
-do, and does, is:
+KALSHI-ARCHIVE-CORE-REMEDIATION-002 A1: the milestone's requirement is now
+enforced by construction, not merely by convention. `app/realtime/
+evidence_fs.py` is the ONE evidence-filesystem abstraction every canonical
+archive module (`archive.py`, `archive_head.py`, `segment.py`,
+`legacy_import.py`) routes through for presence, containment, bounded
+reads, and safe enumeration -- and it is now itself AUDITED, alongside
+those four, specifically so that a NEW raw filesystem call added to the
+one module that is supposed to be the sole home for such calls is exactly
+as visible to this sweep as a new raw call added anywhere else. Before A1,
+`segment._presence` and `segment.containment_reason` existed but NO
+production reader in `archive_head.py` or `archive.py` ever called either
+one -- that gap, not a missing primitive, was the root cause the eight
+prior remediation rounds kept re-discovering one instance at a time.
+
+This module does not (and cannot, from pure AST) prove the routing
+invariant holds -- proving it would require alias/points-to analysis this
+codebase does not have. What it CAN do, and does, is:
 
 1. Enumerate every call to a filesystem-presence/read primitive
    (`Path.glob`, `Path.exists`, `Path.is_file`, `Path.is_dir`,
@@ -21,10 +31,10 @@ do, and does, is:
 
 A NEW occurrence not on the allowlist FAILS the test. This is a tripwire
 for regressions, not a proof of the invariant -- see the harness report for
-which of the allowlisted entries are themselves already-known defects
-(e.g. `archive_head._read_json`'s `path.is_symlink()` gates a `read_bytes()`
-that can hang forever on a FIFO; it is allowlisted because it EXISTS today,
-not because it is correct).
+which of the allowlisted entries are write-side (segment ownership,
+durable publication) and therefore legitimately out of the READ-path
+totality this milestone targets, versus which are `evidence_fs`'s own
+foundational primitives.
 """
 
 from __future__ import annotations
@@ -39,6 +49,12 @@ AUDITED_MODULES = (
     "app/realtime/archive_head.py",
     "app/realtime/segment.py",
     "app/realtime/legacy_import.py",
+    # The abstraction itself. Every raw filesystem primitive the other four
+    # modules used to call directly now lives HERE -- so a new raw call
+    # anywhere else in those four modules is a regression back toward the
+    # pre-A1 pattern, and a new raw call added IN HERE, outside the six
+    # reviewed primitives below, is exactly as much a review event as either.
+    "app/realtime/evidence_fs.py",
 )
 
 PATH_METHOD_NAMES = {
@@ -150,27 +166,25 @@ def scan_all() -> list:
 
 # --- the allowlist ------------------------------------------------------------
 #
-# (module, enclosing qualname, call description). Generated from the audited
-# state of commit 1203663 (worktree/kalshi-archive-replay-integrity) and
-# reviewed by hand against the source above. Anything NOT in this set is a
-# NEW evidence-path access this harness has not seen before, and the test
-# using it fails until a human adds it here deliberately.
+# (module, enclosing qualname, call description). Re-generated from the
+# audited state after KALSHI-ARCHIVE-CORE-REMEDIATION-002 A1 and reviewed by
+# hand against the source above. Anything NOT in this set is a NEW
+# evidence-path access this harness has not seen before, and the test using
+# it fails until a human adds it here deliberately.
 #
-# Three entries are marked KNOWN-DEFECT inline: they are on the allowlist
-# because they exist today, not because they are correct. Fixing them
-# should NOT require touching this file (removing a bad call site never
-# needs allowlist surgery); adding a new *raw* call site anywhere else will.
+# Every entry that used to carry a `KNOWN-DEFECT` marker is GONE from this
+# table, not merely un-marked: the call sites that produced defects #1-#6
+# were themselves removed (their raw `Path.glob`/`.read_bytes()`/
+# `os.path.lexists` calls no longer exist in these four files) rather than
+# patched in place, because the fix was to route them through
+# `evidence_fs`'s shared primitives -- which is why `evidence_fs.py` is now
+# its own audited module with its own six-entry section below, rather than
+# these calls simply vanishing from the sweep with nothing to show for it.
 ALLOWLIST = {
     # --- archive.py -------------------------------------------------------
-    ("app/realtime/archive.py", "EventArchive._candidate_segment_ids", "<expr>.exists(...)"),  # KNOWN-DEFECT #5
     ("app/realtime/archive.py", "EventArchive._committed_segment_dirs", "<expr>.is_dir(...)"),
     ("app/realtime/archive.py", "EventArchive._committed_segment_dirs", "<expr>.is_symlink(...)"),
-    ("app/realtime/archive.py", "EventArchive._next_segment_id", "<expr>.exists(...)"),         # KNOWN-DEFECT #5
-    ("app/realtime/archive.py", "EventArchive._segment_dirs", "<expr>.exists(...)"),
-    ("app/realtime/archive.py", "EventArchive._segment_dirs", "<expr>.glob(...)"),
     ("app/realtime/archive.py", "EventArchive._segment_dirs", "<expr>.is_dir(...)"),
-    ("app/realtime/archive.py", "_undecodable_tail_records", "<expr>.read_bytes(...)"),  # KNOWN-DEFECT #4
-    ("app/realtime/archive.py", "_undecodable_tail_records", "gzip.open(...)"),
 
     # --- archive_head.py ---------------------------------------------------
     ("app/realtime/archive_head.py", "_commit_locked", "os.path.lexists(...)"),
@@ -179,24 +193,22 @@ ALLOWLIST = {
     ("app/realtime/archive_head.py", "_publish_create_once", "<expr>.is_symlink(...)"),
     ("app/realtime/archive_head.py", "_publish_generation", "<expr>.read_bytes(...)"),
     ("app/realtime/archive_head.py", "_publish_replace", "<expr>.is_symlink(...)"),
-    # KNOWN-DEFECT #3: `_read_json` gates ONLY on `is_symlink()`, not on the
-    # `_presence` primitive, so `read_bytes()` on a FIFO at any head artifact
-    # hangs forever. Allowlisted because it exists today, not because it is
-    # total -- the fix is routing this through `_presence` before it opens
-    # anything, which is out of scope for this harness (test-only change).
+    # `_read_json` now gates on `evidence_fs.presence` (total) before ever
+    # checking `is_symlink()`; this one remaining call is the deliberate
+    # containment refusal -- head artifacts must never themselves BE a
+    # symlink, independent of what they would resolve to -- not a guard in
+    # front of an unbounded `read_bytes()` any more (that read is now
+    # `evidence_fs.bounded_read`, which does not appear as a raw call here
+    # because it lives in `evidence_fs.py`).
     ("app/realtime/archive_head.py", "_read_json", "<expr>.is_symlink(...)"),
-    ("app/realtime/archive_head.py", "_read_json", "<expr>.read_bytes(...)"),
     ("app/realtime/archive_head.py", "_stage_bytes", "<expr>.read_bytes(...)"),
     ("app/realtime/archive_head.py", "_stage_bytes", "os.open(...)"),
     ("app/realtime/archive_head.py", "_stage_bytes", "os.path.lexists(...)"),
+    # Write-side lock acquisition, not an evidence READ -- see the function's
+    # own comment: a raw `PermissionError` from this `os.open` is now caught
+    # and re-raised as `ArchiveHeadError` (defect #5b), which changes the
+    # exception boundary, not the call site, so no allowlist entry moved.
     ("app/realtime/archive_head.py", "archive_lock", "os.open(...)"),
-    # KNOWN-DEFECT #5c: `os.path.lexists` swallows EVERY `OSError`,
-    # including `EACCES` -- so a genesis an operator cannot READ (permission
-    # revoked, not deleted) is misreported by `read_genesis` as
-    # `ArchiveNotInitializedError` / `head_state() == "NOT_INITIALIZED"`,
-    # which is precisely the "missing genesis is never a new archive"
-    # inference this module's docstring says must never be drawn from a
-    # false signal.
     ("app/realtime/archive_head.py", "initialize_archive", "os.path.lexists(...)"),
     ("app/realtime/archive_head.py", "present_generations", "<expr>.is_dir(...)"),
     ("app/realtime/archive_head.py", "present_generations", "<expr>.is_file(...)"),
@@ -204,15 +216,18 @@ ALLOWLIST = {
     ("app/realtime/archive_head.py", "present_generations", "<expr>.iterdir(...)"),
     ("app/realtime/archive_head.py", "read_current_head", "os.path.lexists(...)"),
     ("app/realtime/archive_head.py", "read_generation", "os.path.lexists(...)"),
-    ("app/realtime/archive_head.py", "read_genesis", "os.path.lexists(...)"),   # KNOWN-DEFECT #5c
     ("app/realtime/archive_head.py", "recover_current_head", "os.path.lexists(...)"),
+    # `read_genesis`'s own `os.path.lexists(path)` existence check is GONE
+    # (defect #5c): it now calls `evidence_fs.presence`, which distinguishes
+    # "missing" from "cannot be examined" -- the property `os.path.lexists`
+    # cannot carry, since it swallows every `OSError` including `EACCES`.
 
     # --- legacy_import.py: reads a NON-canonical, read-only external source.
     # Out of the canonical-evidence-path invariant by design (the module's
     # own docstring: "the legacy source is opened read-only ... never
     # written, moved or deleted"), listed here so a NEW access inside this
     # file is still visible to a reviewer even though it is not gated by
-    # `_presence`.
+    # `evidence_fs`.
     ("app/realtime/legacy_import.py", "_file_digest", "open(...)"),
     ("app/realtime/legacy_import.py", "_legacy_files", "<expr>.is_dir(...)"),
     ("app/realtime/legacy_import.py", "_legacy_files", "<expr>.is_file(...)"),
@@ -222,19 +237,18 @@ ALLOWLIST = {
     ("app/realtime/legacy_import.py", "migrate_legacy_archive", "<expr>.resolve(...)"),
     ("app/realtime/legacy_import.py", "migrate_legacy_archive", "os.path.lexists(...)"),
 
-    # --- segment.py: the primitives themselves -----------------------------
-    ("app/realtime/segment.py", "assert_contained", "<expr>.exists(...)"),
-    ("app/realtime/segment.py", "assert_contained", "<expr>.is_dir(...)"),
-    ("app/realtime/segment.py", "assert_contained", "<expr>.is_symlink(...)"),
-    ("app/realtime/segment.py", "assert_contained", "<expr>.resolve(...)"),
-    ("app/realtime/segment.py", "_presence", "os.lstat(...)"),
+    # --- segment.py: `assert_contained`/`containment_reason`/`_presence` are
+    # now thin delegations to `evidence_fs` (see that module's section
+    # below) and make NO raw filesystem call of their own any more -- there
+    # is deliberately nothing left to allowlist for them here.
     ("app/realtime/segment.py", "_fsync_directory", "os.open(...)"),
 
     # --- segment.py: writer-side (owns its OWN segment; the flock in
     # `_acquire_ownership` is the single-writer guarantee this whole area
     # depends on, so a symlink/FIFO/permission probe here is a probe against
     # the writer, which this harness's matrix does not target -- append()'s
-    # candidate-id scan is covered above under archive.py).
+    # candidate-id scan is covered above under archive.py, and now routes
+    # through `evidence_fs.presence`).
     ("app/realtime/segment.py", "SegmentWriter.__init__", "<expr>.exists(...)"),
     ("app/realtime/segment.py", "SegmentWriter.__init__", "<expr>.resolve(...)"),
     ("app/realtime/segment.py", "SegmentWriter._acquire_ownership", "os.open(...)"),
@@ -248,29 +262,48 @@ ALLOWLIST = {
     ("app/realtime/segment.py", "publish_manifest", "os.open(...)"),
     ("app/realtime/segment.py", "publish_manifest", "os.path.lexists(...)"),
 
-    # --- segment.py: read_segment_records -- the sibling `_undecodable_tail_
-    # records` in archive.py was supposed to mirror this `is_file()` guard
-    # and does not (KNOWN-DEFECT #4).
+    # --- segment.py: read_segment_records -- unchanged; already correctly
+    # checked `is_file()` before reading (the property `_undecodable_tail_
+    # records`'s sibling call in `archive.py` was missing -- fixed by
+    # routing THAT call through `evidence_fs.bounded_read` instead, so it no
+    # longer appears as a raw call in `archive.py` at all).
     ("app/realtime/segment.py", "read_segment_records", "<expr>.is_file(...)"),
     ("app/realtime/segment.py", "read_segment_records", "<expr>.read_bytes(...)"),
 
-    # --- segment.py: verify_segment -- reads manifest bytes directly once
-    # presence is already proven total by its own `_presence` calls.
-    ("app/realtime/segment.py", "verify_segment", "<expr>.read_bytes(...)"),
-
-    # --- segment.py: KNOWN-DEFECT -- the outer enumeration glob calls that
-    # swallow EACCES silently (finding #2) and skip symlinked directories
-    # outright (finding #1). Allowlisted because they exist; NOT because
-    # they are total.
-    ("app/realtime/segment.py", "_abandoned_residue", "<expr>.glob(...)"),      # KNOWN-DEFECT #2 (line 2048)
-    ("app/realtime/segment.py", "_abandoned_residue", "<expr>.is_dir(...)"),    # KNOWN-DEFECT #1 (twin of :2185)
+    # --- segment.py: the outer enumeration loops now route through
+    # `evidence_fs.safe_enumerate` (honest about EACCES; fixes finding #2)
+    # and record -- rather than silently `continue` past -- a symlinked
+    # segment directory (fixes finding #1). The `is_symlink()`/`is_dir()`
+    # calls that remain are the DISCOVERY-loop classification of each
+    # enumerated child, not the enumeration itself.
     ("app/realtime/segment.py", "_abandoned_residue", "<expr>.is_symlink(...)"),
-    ("app/realtime/segment.py", "_abandoned_residue", "os.scandir(...)"),
-    ("app/realtime/segment.py", "_verify_archive_inner", "<expr>.exists(...)"),
-    ("app/realtime/segment.py", "_verify_archive_inner", "<expr>.glob(...)"),   # KNOWN-DEFECT #2 (line 2179)
+    ("app/realtime/segment.py", "_abandoned_residue", "<expr>.is_dir(...)"),
+    ("app/realtime/segment.py", "_abandoned_residue", "os.scandir(...)"),  # filename-prefix filter, not a glob pattern -- see its own docstring
+    ("app/realtime/segment.py", "_verify_archive_inner", "<expr>.is_symlink(...)"),
     ("app/realtime/segment.py", "_verify_archive_inner", "<expr>.is_dir(...)"),
-    ("app/realtime/segment.py", "_verify_archive_inner", "<expr>.is_symlink(...)"),  # KNOWN-DEFECT #1 (line 2185)
-    ("app/realtime/segment.py", "_verify_archive_inner", "<expr>.read_bytes(...)"),
+
+    # --- evidence_fs.py: the abstraction's own foundational primitives. ---
+    # These SIX are, deliberately, the only raw filesystem-presence/read
+    # calls anywhere in the four canonical archive modules' evidence path.
+    # `presence` uses `os.lstat` (never follows the final component, so it
+    # cannot itself block on a FIFO by opening it); `assert_contained` walks
+    # the path component-by-component with `is_symlink`/`exists`/`is_dir`,
+    # matching a candidate spelling of the target against the root with
+    # `resolve` (twice: once for the root, once for a target that itself
+    # exists); `safe_enumerate` uses `os.scandir` directly because it is
+    # honest about `EACCES`, unlike `Path.glob`; `bounded_read` uses
+    # `os.stat` (follows symlinks, to see what a chain ultimately resolves
+    # to) then a guarded `open` -- never called until the `stat` has already
+    # proven the target is a regular file under the size bound.
+    ("app/realtime/evidence_fs.py", "presence", "os.lstat(...)"),
+    ("app/realtime/evidence_fs.py", "assert_contained", "<expr>.resolve(...)"),
+    ("app/realtime/evidence_fs.py", "assert_contained", "<expr>.exists(...)"),
+    ("app/realtime/evidence_fs.py", "assert_contained", "<expr>.is_symlink(...)"),
+    ("app/realtime/evidence_fs.py", "assert_contained", "<expr>.is_dir(...)"),
+    ("app/realtime/evidence_fs.py", "safe_enumerate", "os.scandir(...)"),
+    ("app/realtime/evidence_fs.py", "is_regular_file", "os.stat(...)"),
+    ("app/realtime/evidence_fs.py", "bounded_read", "os.stat(...)"),
+    ("app/realtime/evidence_fs.py", "bounded_read", "open(...)"),
 }
 
 

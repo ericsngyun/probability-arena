@@ -110,6 +110,7 @@ from app.realtime.canonical import (
     digest_hex,
     parse_canonical,
 )
+from app.realtime import evidence_fs
 
 GENESIS_FILENAME = "archive-genesis.json"
 CURRENT_HEAD_FILENAME = "archive-head.json"
@@ -247,8 +248,21 @@ def archive_lock(root, environment: str, timeout_s: float = 30.0):
     """
     path = archive_lock_path(root, environment)
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC,
-                 0o600)
+    try:
+        fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC,
+                     0o600)
+    except OSError as exc:
+        # A raw `PermissionError` used to escape here unwrapped whenever
+        # `env=<name>/` became unreadable (mode 0, an operator lockdown, a
+        # transient permission slip): `recover_current_head` and every other
+        # caller of this lock got a bare builtin exception instead of the
+        # typed `ArchiveHeadError` every other failure in this module raises,
+        # which is a fatal-crash defect regardless of how the lock itself is
+        # acquired. This is a write-side primitive, not an evidence READ, so
+        # it stays a direct `os.open` call rather than routing through
+        # `evidence_fs` -- only the exception boundary changes.
+        raise ArchiveHeadError(
+            f"cannot acquire the archive head lock at {path}: {exc!r}") from exc
     deadline = time.monotonic() + timeout_s
     try:
         while True:
@@ -366,13 +380,30 @@ def _publish_replace(tmp: Path, final: Path, *, stage=None, label: str) -> None:
 
 
 def _read_json(path: Path, *, what: str) -> dict:
-    if path.is_symlink():
+    """Read one canonical JSON artifact, total against the filesystem.
+
+    KALSHI-ARCHIVE-CORE-REMEDIATION-002 A1: this used to gate ONLY on
+    `path.is_symlink()` before an unconditional `path.read_bytes()` — so a
+    FIFO, a socket, or a symlink to either at ANY head artifact (genesis,
+    the current-head pointer, or a generation record: every reader of this
+    function) blocked forever inside `read_bytes()`'s `open()` call, with no
+    verdict, no timeout and no way for an in-process deadline to notice a
+    blocked syscall. Routing through `evidence_fs.bounded_read` closes the
+    class: it proves the target resolves to a regular file, by `stat`, before
+    any `open()` is attempted, so nothing this function reads can ever hang
+    or grow the process without bound.
+    """
+    present, why = evidence_fs.presence(path)
+    if why is not None:
+        raise ArchiveHeadError(f"{what} is unreadable: {why}")
+    if present and path.is_symlink():
         raise ArchiveHeadError(
             f"{path} is a symlink; the {what} must live inside the archive root")
+    data, why = evidence_fs.bounded_read(path)
+    if why is not None:
+        raise ArchiveHeadError(f"{what} is unreadable: {why}")
     try:
-        value = parse_canonical(path.read_bytes())
-    except OSError as exc:
-        raise ArchiveHeadError(f"{what} is unreadable: {exc!r}") from exc
+        value = parse_canonical(data)
     except Exception as exc:                      # noqa: BLE001 - reported
         raise ArchiveHeadError(
             f"{what} is not canonical JSON ({type(exc).__name__})") from exc
@@ -518,7 +549,24 @@ def read_genesis(root, environment: str, *,
     found an archive whose root of trust is gone.
     """
     path = genesis_path(root, environment)
-    if not os.path.lexists(path):
+    # `evidence_fs.presence`, not `os.path.lexists`: "cannot be examined" is
+    # NOT "does not exist". `os.path.lexists` swallows EVERY `OSError`
+    # internally, including `EACCES`, so a genuinely initialized, fully
+    # intact archive whose `env=<name>/` directory merely became unreadable
+    # (permission revoked, not deleted) was reported here exactly like an
+    # archive whose root of trust was never created -- indistinguishable to
+    # every caller, including `head_state()`, whose `NOT_INITIALIZED` state
+    # exists specifically to mean "run initialization here", which permission
+    # denial must never invite.
+    present, why = evidence_fs.presence(path)
+    if why is not None:
+        raise ArchiveHeadError(
+            f"the archive genesis at {path} could not be examined: {why}. "
+            "This is NOT the same as a missing genesis -- the root of trust "
+            "may be fully intact and merely unreadable by this process; "
+            "restore read access before concluding anything about this "
+            "archive's history.")
+    if not present:
         raise ArchiveNotInitializedError(
             f"no genesis marker at {path}. This archive was never initialized, "
             "or its root of trust has been removed. A missing genesis is NEVER "
