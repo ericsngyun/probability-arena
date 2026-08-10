@@ -537,13 +537,61 @@ class TestSurvivalLabels:
         )
         assert out["labels"]["graduated_or_migrated"] is None
 
-    def test_final_after_last_horizon_window_closes(self, session):
+    def test_final_after_last_horizon_window_closes_when_observed(self, session):
+        """CRYPTO-COVERAGE-REPAIR-001 B5 — `final=True` is correct once the
+        24h window has closed AND a real answer was actually recorded
+        (`survived_24h is not None`): this is the OBSERVED TERMINAL case."""
         anchor = NOW - timedelta(hours=37)  # past 24h * (1 + 0.5) = 36h
+        token = add_token(session, first_seen=anchor)
+        tick = self._tick(anchor + timedelta(hours=24), liq=10_000.0)
+        out = recorder().compute_survival(
+            self._birth(anchor), make_sources(token, ticks=[tick]), NOW
+        )
+        assert out["labels"]["survived_24h"] is not None
+        assert out["final"] is True
+        assert out["details"]["finality"] == "observed_terminal"
+
+    def test_not_final_when_window_closed_but_evidence_still_within_retention(
+        self, session,
+    ):
+        """CRYPTO-COVERAGE-REPAIR-001 B5 regression pin — the defect this
+        fix removes: age alone used to set `final=True` the instant the 24h
+        window closed, with NO regard for whether the evidence had actually
+        been observed. Because `exclude_final=True` is exactly what the
+        scheduled reconciler uses to pick which tokens to revisit, that
+        permanently wrote off any token whose evidence simply hadn't been
+        reconciled yet — the review that opened this milestone measured
+        this at 27.9% of the backlog. Here the 24h window has closed (37h
+        old) with NO evidence at all, but the closing edge (anchor + 36h)
+        has not yet aged past `crypto_retention_days` (7 days default) — the
+        evidence, if it exists, has not been pruned yet and a future
+        reconciliation pass could still recover it. `final` must stay
+        False so the token is NOT excluded from future passes."""
+        anchor = NOW - timedelta(hours=37)
         token = add_token(session, first_seen=anchor)
         out = recorder().compute_survival(
             self._birth(anchor), make_sources(token), NOW
         )
+        assert out["labels"]["survived_24h"] is None
+        assert out["final"] is False
+        assert out["details"]["finality"] == "still_recoverable"
+
+    def test_final_once_evidence_window_is_truly_retention_lost(self, session):
+        """CRYPTO-COVERAGE-REPAIR-001 B5 — once the 24h window's closing
+        edge (anchor + 36h) is itself older than `crypto_retention_days`,
+        any tick that could ever have satisfied it has been pruned by
+        `retention.py` — the evidence is genuinely, permanently gone, not
+        merely un-reconciled. `final=True` here is the honest answer, with
+        `finality="retention_lost"` distinguishing it from a real
+        measurement (`observed_terminal`) — never silently identical."""
+        anchor = NOW - timedelta(days=10)  # closing edge (anchor+36h) is ~8.5d old
+        token = add_token(session, first_seen=anchor)
+        out = recorder().compute_survival(
+            self._birth(anchor), make_sources(token), NOW
+        )
+        assert out["labels"]["survived_24h"] is None
         assert out["final"] is True
+        assert out["details"]["finality"] == "retention_lost"
 
     def test_final_outcome_not_overwritten_by_later_runs(self, session):
         seed_full_token(session, first_seen=NOW - timedelta(hours=2))

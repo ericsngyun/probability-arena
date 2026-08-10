@@ -63,7 +63,13 @@ def run_migrations(database_url: str | None = None) -> None:
     config.set_main_option("script_location", str(PROJECT_ROOT / "alembic"))
     config.set_main_option("sqlalchemy.url", url)
 
-    engine = create_engine(url)
+    # CRYPTO-COVERAGE-REPAIR-001 B11 — this engine previously had no
+    # `connect_args`, so this inspection query (and, before the matching
+    # alembic/env.py fix, the actual migration `command.upgrade` call) ran at
+    # Python's incidental 5s `sqlite3` default rather than this app's
+    # declared `sqlite_busy_timeout_ms` (30s). Same busy policy as every
+    # other SQLite writer in this codebase — see `connect_args_for`.
+    engine = create_engine(url, connect_args=connect_args_for(url))
     try:
         inspector = inspect(engine)
         legacy = inspector.has_table("markets") and not inspector.has_table("alembic_version")

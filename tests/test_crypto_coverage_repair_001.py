@@ -1953,6 +1953,32 @@ def test_post_batch_yield_sleeps_the_named_duration_after_each_real_commit(sessi
     assert len(sleep_events) == 3  # exactly one per real committed batch
     assert all(val == 0.05 for _, val in sleep_events)
 
+    # B9 (CRYPTO-COVERAGE-REPAIR-001 debugger pass): the ORDERING claim in
+    # this test's own docstring ("each batch's sleep must appear immediately
+    # after that batch's commit") was previously asserted only in prose, not
+    # in code — the count/value checks above pass identically whether the
+    # sleep happens before or after its batch's commit. Proven by mutation:
+    # temporarily swapping the `session.commit()` / `sleeper(...)` call order
+    # in `_assemble_pass` (the exact regression this milestone's commit
+    # message warns made competitor waits WORSE) left every assertion above
+    # green. Assert the real interleaving: there are 5 commits — the run-row
+    # creation commit (chunked mode commits it via `_commit_with_retry`), 3
+    # batch commits each immediately followed by a sleep, and the finalize
+    # commit at the end with no paired sleep (nothing left to yield to once
+    # the pass has already finished).
+    commit_positions = [i for i, (kind, _) in enumerate(events) if kind == "commit"]
+    sleep_positions = [i for i, (kind, _) in enumerate(events) if kind == "sleep"]
+    assert len(commit_positions) == 5  # run-row creation + 3 batches + finalize
+    assert len(sleep_positions) == 3
+    batch_commit_positions = commit_positions[1:4]  # exclude run-row creation and finalize
+    for sleep_pos, batch_commit_pos in zip(sleep_positions, batch_commit_positions):
+        assert sleep_pos == batch_commit_pos + 1, (
+            "a batch's post-commit yield must be logged IMMEDIATELY after "
+            "that batch's own commit, not decoupled from it or moved before it"
+        )
+    # the finalize commit (the last one) has no sleep after it.
+    assert commit_positions[-1] == len(events) - 1
+
     # ORDERING: the run-row-creation commit is the first "commit" in the
     # log and has no paired sleep (only BATCH commits get the yield) — so
     # every "sleep" event must be immediately preceded by a "commit" event,

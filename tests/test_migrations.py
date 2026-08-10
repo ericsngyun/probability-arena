@@ -2,6 +2,7 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, inspect
 
+from app.config import get_settings
 from app.db import PROJECT_ROOT, Base, run_migrations
 
 
@@ -290,14 +291,121 @@ def test_0013_adds_signal_workflow_fields(tmp_path):
     assert "refreshed_forecast_id" not in downgraded
 
 
+def _column_specs(url: str, table: str) -> dict:
+    engine = create_engine(url)
+    try:
+        return {col["name"]: col for col in inspect(engine).get_columns(table)}
+    finally:
+        engine.dispose()
+
+
+def _type_family(sa_type) -> str:
+    """CRYPTO-COVERAGE-REPAIR-001 B12 — a coarse, dialect-tolerant type
+    family used to catch a genuinely wrong migrated column type (e.g. a
+    model's Integer column landing as TEXT in the migrated schema) without
+    being brittle to SQLite's affinity-based reflection (DATETIME/TIMESTAMP,
+    BOOLEAN/INTEGER-affinity, etc. are legitimately different concrete
+    SQLAlchemy classes for the "same" declared intent). `None` means "cannot
+    classify" (a custom TypeDecorator such as RawJSON) — callers must skip
+    the family check in that case rather than guess."""
+    try:
+        py = sa_type.python_type
+    except NotImplementedError:
+        return None
+    if py is bool:
+        return "bool"
+    if py in (int,):
+        return "int"
+    if py in (float,):
+        return "float"
+    if py is str:
+        return "str"
+    if py.__name__ in ("datetime", "date", "time"):
+        return "temporal"
+    return py.__name__
+
+
+# CRYPTO-COVERAGE-REPAIR-001 B12 — pre-existing nullable drift this
+# strengthened test DISCOVERED (not introduced): 13 columns across several
+# unrelated milestones (MEME-MAS, Polymarket observation, cross-venue
+# comparability, crypto horizon cohorts) declare `nullable=False` on the ORM
+# model but the deployed migration never added the matching NOT NULL
+# constraint. Fixing 13 migrations across unrelated lanes — each needing its
+# own backfill/data-safety review before tightening a live column — is a
+# separate, dedicated milestone's work, not an in-scope shotgun edit here.
+# This allowlist keeps today's real gaps from silently regressing further
+# (nothing may be ADDED to this set without justification) while still
+# making the check strict for every other column, including any new one:
+# a freshly introduced nullable mismatch anywhere else still fails loudly.
+_KNOWN_NULLABLE_DRIFT = {
+    ("meme_attention_snapshots", "chain"),
+    ("meme_attention_snapshots", "token_address"),
+    ("meme_catalyst_events", "source"),
+    ("meme_catalyst_events", "subject_type"),
+    ("meme_catalyst_events", "subject_ref"),
+    ("meme_catalyst_events", "catalyst_type"),
+    ("domain_market_inventory_snapshots", "domain"),
+    ("polymarket_markets", "market_id"),
+    ("polymarket_orderbook_snapshots", "token_id"),
+    ("polymarket_domain_inventory_snapshots", "domain"),
+    ("cross_venue_market_candidates", "match_label"),
+    ("crypto_horizon_cohort_members", "cohort_id"),
+    ("crypto_horizon_observations", "cohort_id"),
+}
+
+
 def test_migrated_schema_matches_orm_metadata(tmp_path):
-    """Every ORM-mapped column must exist in the migrated schema."""
+    """Every ORM-mapped column must exist in the migrated schema, with a
+    compatible type, length/width, and nullability — not just the same name.
+
+    CRYPTO-COVERAGE-REPAIR-001 B12 fix: the original version of this test
+    compared column NAMES only (`orm_names <= migrated_names`), so a model
+    declaring `String(32)` over a migrated `VARCHAR(16)` — a real
+    truncation-risk defect an application could hit in production without
+    ever seeing a migration-time error — passed silently. This version also
+    asserts: nullability matches (except `_KNOWN_NULLABLE_DRIFT`'s
+    pre-existing, out-of-scope debt — see its docstring); a model's declared
+    String/Text length is <= the migrated column's length (narrower storage
+    than the model promises is a real defect; migrated columns are allowed
+    to be AT LEAST as wide, matching how this repo's own migrations have
+    widened columns over time, e.g. migration 0028's
+    CryptoTokenLifecycleRun.status); and, where classifiable, the two
+    columns' coarse type family (bool/int/float/str/temporal) agrees.
+    Custom TypeDecorator columns (`python_type` raises
+    `NotImplementedError`, e.g. `RawJSON`) skip the family check — there is
+    no dialect-neutral way to classify them from reflection alone — but
+    still get the name/nullability/length checks."""
     url = f"sqlite:///{tmp_path}/parity.db"
     run_migrations(url)
     for table in Base.metadata.tables.values():
-        migrated = _columns(url, table.name)
-        orm = {col.name for col in table.columns}
-        assert orm <= migrated, f"{table.name} missing columns: {orm - migrated}"
+        migrated = _column_specs(url, table.name)
+        for col in table.columns:
+            assert col.name in migrated, (
+                f"{table.name}.{col.name} missing from migrated schema"
+            )
+            db_col = migrated[col.name]
+            if (table.name, col.name) not in _KNOWN_NULLABLE_DRIFT:
+                assert bool(db_col["nullable"]) == bool(col.nullable), (
+                    f"{table.name}.{col.name}: nullable mismatch — "
+                    f"model={col.nullable} migrated={db_col['nullable']}"
+                )
+            model_len = getattr(col.type, "length", None)
+            if model_len is not None:
+                db_len = getattr(db_col["type"], "length", None)
+                assert db_len is not None and db_len >= model_len, (
+                    f"{table.name}.{col.name}: model declares length "
+                    f"{model_len} but migrated column is {db_col['type']!r} "
+                    f"(length {db_len}) — narrower migrated storage than "
+                    f"the model contract promises"
+                )
+            model_family = _type_family(col.type)
+            db_family = _type_family(db_col["type"])
+            if model_family is not None and db_family is not None:
+                assert model_family == db_family, (
+                    f"{table.name}.{col.name}: type family mismatch — "
+                    f"model={col.type!r} ({model_family}) "
+                    f"migrated={db_col['type']!r} ({db_family})"
+                )
 
 
 def test_downgrade_to_0001_restores_legacy_columns(tmp_path):
@@ -446,3 +554,112 @@ def test_0018_creates_and_drops_frontier_eval_runs(tmp_path):
             "window_end", "summary", "warnings"} <= _columns(url, "frontier_eval_runs")
     command.downgrade(_config(url), "0017")
     assert "frontier_eval_runs" not in _tables(url)
+
+
+def test_migration_under_a_real_blocking_lock_waits_the_declared_policy_then_fails_cleanly(
+    tmp_path, monkeypatch,
+):
+    """CRYPTO-COVERAGE-REPAIR-001 B11 — alembic/env.py:40's engine used to be
+    built with NO `connect_args`, so a migration hitting a real writer lock
+    waited at Python's INCIDENTAL `sqlite3` default (5s), not this app's
+    deliberately reviewed `sqlite_busy_timeout_ms` policy (30s in
+    production; every other SQLite writer in this codebase goes through
+    `app.db.connect_args_for`, which reads that same setting). The same gap
+    existed at app/db.py:66's inspection engine. Fixed by threading
+    `connect_args_for(url)` into both.
+
+    Proof, with a REAL second connection holding `BEGIN EXCLUSIVE` (blocks
+    readers too, not just writers — see the crypto-tape reconciler's own
+    real-lock tests for why `BEGIN IMMEDIATE` alone is not enough to prove
+    this): with the declared busy timeout overridden (via
+    `SQLITE_BUSY_TIMEOUT_MS`, which both `alembic/env.py` and `app/db.py`
+    read through `get_settings()`) to a value BELOW Python's 5s incidental
+    default, `run_migrations` against a real held lock must fail in
+    ROUGHLY that declared window, not silently pad out to 5s. That is the
+    exact signal that would go undetected if `connect_args_for` were ever
+    dropped again: this test's assertion on the observed wait window is the
+    thing that actually distinguishes "used the declared policy" from
+    "used Python's incidental default" — a test that only checked
+    "eventually raises OperationalError" would pass under either.
+
+    Also asserts no partial-upgrade: the DB was already at `head` before the
+    lock was taken, so a failed re-upgrade attempt must leave the schema
+    revision exactly where it was — never a half-applied migration."""
+    import sqlite3
+    import time
+
+    from alembic.config import Config as AlembicConfig
+    from alembic.script import ScriptDirectory
+    from sqlalchemy.exc import OperationalError
+
+    url = f"sqlite:///{tmp_path}/locked_migration.db"
+    db_path = tmp_path / "locked_migration.db"
+    run_migrations(url)  # bring to head while unlocked
+
+    config = _config(url)
+    script = ScriptDirectory.from_config(config)
+    head_before = script.get_current_head()
+
+    def _current_rev() -> str | None:
+        engine = create_engine(url)
+        try:
+            with engine.connect() as conn:
+                row = conn.exec_driver_sql(
+                    "SELECT version_num FROM alembic_version"
+                ).fetchone()
+                return row[0] if row else None
+        finally:
+            engine.dispose()
+
+    assert _current_rev() == head_before
+
+    declared_timeout_seconds = 1.2
+    monkeypatch.setenv("SQLITE_BUSY_TIMEOUT_MS", str(int(declared_timeout_seconds * 1000)))
+    # `get_settings` is `@lru_cache`d (module-global, persists across the
+    # whole test session) — the FIRST `run_migrations(url)` call above
+    # already resolved and cached a `Settings()` (default
+    # `sqlite_busy_timeout_ms=30000`, or whatever an earlier test in this
+    # session cached first). Without clearing it here, the env override
+    # above would be silently ignored and this test would validate nothing
+    # (it would still "pass" against the real, uncontrolled default —
+    # exactly the kind of false-positive this milestone's tests exist to
+    # avoid). Restore the cache afterward so this test cannot poison any
+    # other test's settings for the rest of the session.
+    get_settings.cache_clear()
+
+    holder = sqlite3.connect(str(db_path), timeout=0.2)
+    holder.execute("BEGIN EXCLUSIVE")
+    try:
+        t0 = time.perf_counter()
+        raised = None
+        try:
+            run_migrations(url)
+        except OperationalError as exc:
+            raised = exc
+        elapsed = time.perf_counter() - t0
+    finally:
+        holder.rollback()
+        holder.close()
+        monkeypatch.undo()
+        get_settings.cache_clear()
+
+    assert raised is not None, (
+        "run_migrations must fail cleanly under a real held lock, not "
+        "silently proceed or hang"
+    )
+    assert "locked" in str(raised).lower()
+    # The bound this test exists to prove: the observed wait tracks the
+    # DECLARED policy (1.2s), not Python's incidental 5s default. A
+    # generous but still discriminating window: comfortably above the
+    # declared timeout (retry/inspection overhead) yet well short of the
+    # 5s default this fix removes.
+    assert declared_timeout_seconds <= elapsed < 4.0, (
+        f"elapsed={elapsed:.2f}s did not track the declared "
+        f"{declared_timeout_seconds}s busy-timeout policy — if this creeps "
+        f"toward 5s, `connect_args_for` has stopped being threaded into "
+        f"the migration engine(s) again"
+    )
+
+    # No partial upgrade: revision unchanged (already at head; the failed
+    # attempt touched nothing).
+    assert _current_rev() == head_before

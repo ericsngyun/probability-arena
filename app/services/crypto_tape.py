@@ -544,11 +544,21 @@ class CryptoTapeConfig:
     default_limit: int = 25
     default_window_hours: int = 48
     lock_dir: Path | None = None  # resolved lazily from settings if None
+    # CRYPTO-COVERAGE-REPAIR-001 B5 — how long crypto_price_ticks survives
+    # before retention.py prunes it (Settings.crypto_retention_days). Needed
+    # by `compute_survival` to tell a token whose 24h evidence is genuinely,
+    # permanently GONE apart from one whose evidence window has merely
+    # closed but might still be un-reconciled, un-pruned evidence sitting in
+    # the DB right now — see `compute_survival`'s finality classification.
+    retention_days: int = 7
 
     @classmethod
     def from_settings(cls, settings: Settings | None = None) -> "CryptoTapeConfig":
         s = settings or get_settings()
-        return cls(chain=s.crypto_chain, lock_dir=_resolve_lock_dir(s))
+        return cls(
+            chain=s.crypto_chain, lock_dir=_resolve_lock_dir(s),
+            retention_days=int(getattr(s, "crypto_retention_days", 7)),
+        )
 
 
 @dataclass
@@ -1240,8 +1250,54 @@ class CryptoLifecycleTapeRecorder:
         if gap_reasons:
             details["gap_reasons"] = sorted(set(gap_reasons))
 
-        # final once the 24h window (plus tolerance) has fully closed
-        final = now >= anchor + timedelta(minutes=1440 * (1 + HORIZON_TOLERANCE))
+        # CRYPTO-COVERAGE-REPAIR-001 B5 — finality classification.
+        #
+        # Before this fix, `final` was AGE ALONE: `now >= anchor + 36h`, full
+        # stop. That conflates three genuinely different situations under
+        # one flag, and because `exclude_final=True` is exactly what the
+        # scheduled reconciler uses to select which tokens to (re)visit, a
+        # wrongly-final token is NEVER looked at again:
+        #   * OBSERVED TERMINAL — `survived_24h` actually got a real answer.
+        #     The measurement is done; `final=True` is correct.
+        #   * RETENTION-LOST — the 24h window closed, no answer was ever
+        #     recorded, AND even the latest possible qualifying tick (one
+        #     landing right at the closing edge, `anchor + 36h`) would by now
+        #     be older than `crypto_retention_days` and therefore already
+        #     pruned by `retention.py`. This evidence is truly, permanently
+        #     gone — `final=True` is the honest (if unhappy) answer, not a
+        #     guess, and is worth its own classification so a reader can
+        #     tell "measured: no" apart from "we gave up".
+        #   * STILL-RECOVERABLE — the 24h window closed, no answer was ever
+        #     recorded, but the closing edge has NOT yet aged past
+        #     `crypto_retention_days`. This is the exact shape the review
+        #     that opened this milestone measured at 27.9% of the backlog:
+        #     a real, already-persisted tick sitting inside the tolerance
+        #     window, simply never joined because nothing ever ran
+        #     `run_once` on the token. Marking it `final` here would
+        #     permanently exclude it from every future reconciliation pass
+        #     (`exclude_final=True`) even though the very next pass could
+        #     recover it. `final` MUST stay False so it keeps being
+        #     selected until either it matures or its evidence window
+        #     genuinely expires into RETENTION-LOST.
+        closing_edge = anchor + timedelta(minutes=1440 * (1 + HORIZON_TOLERANCE))
+        window_closed = now >= closing_edge
+        if not window_closed:
+            final = False
+            finality = "not_yet_due"
+        elif labels["survived_24h"] is not None:
+            final = True
+            finality = "observed_terminal"
+        else:
+            retention_days = getattr(self, "config", None) and self.config.retention_days
+            retention_days = retention_days if retention_days is not None else 7
+            retention_cutoff = now - timedelta(days=retention_days)
+            if closing_edge < retention_cutoff:
+                final = True
+                finality = "retention_lost"
+            else:
+                final = False
+                finality = "still_recoverable"
+        details["finality"] = finality
         return {"labels": labels, "details": details, "final": final}
 
     # --- one assembly pass ----------------------------------------------------
