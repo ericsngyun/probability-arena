@@ -2822,9 +2822,18 @@ async def crypto_tape_run_once(
                     )
                 return r["tokens_validated"]
             return -1
-        r = CryptoLifecycleTapeRecorder().run_once(
-            session, limit=limit, hours=hours, dry_run=dry_run
-        )
+        from app.services.crypto_tape import LockUnavailableError
+
+        try:
+            r = CryptoLifecycleTapeRecorder().run_once(
+                session, limit=limit, hours=hours, dry_run=dry_run
+            )
+        except LockUnavailableError as exc:
+            # MEDIUM fix: an unwritable/missing lock directory must surface
+            # as a typed refused status, not an uncaught traceback.
+            print("crypto lifecycle tape — research infrastructure only, never advice")
+            print(f"status=lock_unavailable  external_calls=0  error={exc}")
+            return -1
         print("crypto lifecycle tape — research infrastructure only, never advice")
         print(f"status={r['status']}  external_calls={r['external_calls']}")
         if r.get("error"):
@@ -2867,7 +2876,8 @@ async def crypto_tape_run_once(
 
 async def crypto_tape_reconcile(
     dry_run: bool = False, force: bool = False, hours: int | None = None,
-    limit: int | None = None, session=None,
+    limit: int | None = None, batch_size: int | None = None,
+    max_duration_seconds: float | None = None, session=None,
 ) -> int:
     """CRYPTO-COVERAGE-REPAIR-001 scheduled provider-free reconciliation: one
     bounded pass that revisits already-persisted tokens whose survival horizons
@@ -2887,8 +2897,21 @@ async def crypto_tape_reconcile(
 
         session = get_sessionmaker()()
     try:
+        # HIGH-2: only forward batch_size/max_duration_seconds when the
+        # caller actually set them — omitting the kwarg entirely when None is
+        # semantically identical to run_scheduled_reconciliation (which
+        # itself falls back to settings on None), but keeps this a true
+        # pass-through for callers/tests that patch
+        # run_scheduled_reconciliation and rely on kwargs.setdefault(...) for
+        # keys the CLI did not explicitly set.
+        extra_kwargs = {}
+        if batch_size is not None:
+            extra_kwargs["batch_size"] = batch_size
+        if max_duration_seconds is not None:
+            extra_kwargs["max_duration_seconds"] = max_duration_seconds
         r = run_scheduled_reconciliation(
-            session, dry_run=dry_run, force=force, window_hours=hours, limit=limit
+            session, dry_run=dry_run, force=force, window_hours=hours, limit=limit,
+            **extra_kwargs,
         )
         print("crypto tape reconciliation — research infrastructure only, never advice")
         if r["status"] == "disabled":
@@ -2898,7 +2921,8 @@ async def crypto_tape_reconcile(
             )
             return 0
         if r["status"] in ("invalid_window", "invalid_limit", "marketops_degraded",
-                           "db_locked", "skipped_overlap", "skipped_contention"):
+                           "db_locked", "skipped_overlap", "skipped_contention",
+                           "lock_unavailable", "concurrent_write_conflict"):
             # Non-zero: a unit that reconciles nothing must never look healthy.
             print(f"status={r['status']}  external_calls=0  error={r['error']}")
             return -1
@@ -2912,9 +2936,16 @@ async def crypto_tape_reconcile(
         print(
             f"tokens_considered={r['tokens_considered']}  "
             f"universe_size={r.get('universe_size')}  "
+            f"backlog_size={r.get('backlog_size')}  "
+            f"backlog_processed={r.get('backlog_processed')}  "
             f"truncated={r.get('truncated')}  "
             f"omitted={r.get('tokens_omitted')}  "
             f"stop_reason={r.get('stop_reason')}"
+        )
+        print(
+            f"batches_committed={r.get('batches_committed')}  "
+            f"lock_retry_events={r.get('lock_retry_events')}  "
+            f"tape_run_id={r.get('tape_run_id')}"
         )
         print(
             f"outcomes_updated={r.get('outcomes_updated')}  "
@@ -7687,6 +7718,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="run a single pass even when the scheduling flag is off "
              "(manual operator use; does not enable the timer)",
     )
+    tape_reconcile_parser.add_argument(
+        "--batch-size", type=int, default=None,
+        help="HIGH-2: override crypto_tape_reconciler_batch_size for this "
+             "one invocation (tokens committed per batch)",
+    )
+    tape_reconcile_parser.add_argument(
+        "--max-duration-seconds", type=float, default=None,
+        help="HIGH-2: override crypto_tape_reconciler_max_duration_seconds "
+             "for this one invocation. Needed to measure a FULL, untruncated "
+             "dry run on a host where the default 20s deadline is too tight "
+             "for the actual per-pass work — without this flag --dry-run is "
+             "chunked at the same 20s deadline as a real pass and can itself "
+             "report dry_run_partial",
+    )
     tape_report_parser = subparsers.add_parser(
         "crypto-tape-report",
         help="Lifecycle tape report: coverage, survival labels, actor patterns "
@@ -8483,6 +8528,8 @@ def main(argv: list[str] | None = None) -> int:
             crypto_tape_reconcile(
                 dry_run=args.dry_run, force=args.force,
                 hours=args.hours, limit=args.limit,
+                batch_size=args.batch_size,
+                max_duration_seconds=args.max_duration_seconds,
             )
         )
         return 0 if n >= 0 else 1

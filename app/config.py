@@ -380,8 +380,12 @@ class Settings(BaseSettings):
     # and selection is oldest-first so any truncation drops the UNMATURED tail
     # rather than the matured tokens the pass exists to reconcile.
     crypto_tape_reconciler_limit: int = 2000
-    # CRYPTO-COVERAGE-REPAIR-001 B3/B6 — write-coordination hardening. The
-    # measured blocker: one commit for the whole pass held SQLite's write
+    # CRYPTO-COVERAGE-REPAIR-001 B3/B6 — write-coordination hardening.
+    # MEDIUM: every figure below is session-only evidence from an ad-hoc,
+    # non-committed benchmark script — see the "evidentiary status" note in
+    # docs/milestones/CRYPTO-COVERAGE-REPAIR-001.md's Write-lock defect
+    # section before citing exact numbers elsewhere.
+    # The measured blocker: one commit for the whole pass held SQLite's write
     # lock for 36.9s at production density, blocking a competing writer 97%
     # of a 30s busy_timeout. Bounded batches keep each individual commit's
     # lock hold to a small fraction of a second — that part is real and
@@ -399,9 +403,16 @@ class Settings(BaseSettings):
     # not the per-commit hold — at the shipped default that is >=67% of a
     # 30s busy_timeout, not a small fraction of it. The internal deadline
     # keeps one pass from running indefinitely (the remainder simply becomes
-    # next-pass backlog, never lost — see `unreconciled_backlog`). Both
-    # default to the values `app.services.crypto_tape` measured; change only
-    # with a fresh benchmark.
+    # next-pass backlog, never lost — see `unreconciled_backlog`).
+    # `crypto_tape_reconciler_batch_size` is the MEASURED B1 profile default
+    # (see the CRYPTO-COVERAGE-REPAIR-001 debugging session, ~1s write phase
+    # at 25 tokens/batch) — change only with a fresh benchmark.
+    # `crypto_tape_reconciler_max_duration_seconds` is a CHOSEN bound, NOT a
+    # measured one: the milestone doc itself states the scheduled path's
+    # actual end-to-end wall-clock duration on EVO-X2 has not been
+    # re-measured since the batching change. Do not treat it as validated;
+    # `crypto-tape-reconcile --max-duration-seconds N --dry-run` exists
+    # specifically to measure a real full pass before trusting this default.
     crypto_tape_reconciler_batch_size: int = 25
     crypto_tape_reconciler_max_duration_seconds: float = 20.0
 

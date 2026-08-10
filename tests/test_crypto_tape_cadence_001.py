@@ -213,6 +213,35 @@ class TestSession:
         # the skipped one — it did not fast-forward or hang
         assert len(sleeper.calls) == 2
 
+    async def test_skipped_overlap_capture_does_not_count_a_row_written(self, session):
+        """NEW-L1 fix. `rows_written_before_abort` counted "1" (the run row)
+        for EVERY capture in the summary, including a `skipped_overlap`
+        capture — which by definition writes NOTHING (the pass never got
+        past the flock). Overcounted by 1 per skipped capture. This mints a
+        real capture, a skipped-overlap capture that writes nothing, and a
+        third real capture, then checks the exact row total: 2 real captures
+        x (1 run row + 2 births + 10 snapshots + 10 actors + 10 outcomes =
+        33) = 66, NOT 67."""
+        fake = FakeRecorder(results=[
+            {"status": "ok", "tokens_considered": 10, "external_calls": 0,
+             "birth_events_created": 2, "snapshots_created": 10,
+             "actor_observations_created": 10, "outcomes_updated": 10,
+             "survival_label_mix": {}, "tape_run_id": 1},
+            {"status": "skipped_overlap", "tokens_considered": 0,
+             "external_calls": 0, "survival_label_mix": {}, "tape_run_id": None},
+            {"status": "ok", "tokens_considered": 10, "external_calls": 0,
+             "birth_events_created": 2, "snapshots_created": 10,
+             "actor_observations_created": 10, "outcomes_updated": 10,
+             "survival_label_mix": {}, "tape_run_id": 2},
+        ])
+        sleeper = FakeSleeper()
+        r = await run_tape_session(
+            session, recorder=fake, duration_hours=1, interval_min=20,
+            sleeper=sleeper,
+        )
+        assert r["capture_statuses"] == ["ok", "skipped_overlap", "ok"]
+        assert r["rows_written_before_abort"] == 66  # NOT 67
+
     async def test_abort_on_marketops_degradation(self, session):
         session.add(MarketOpsRun(status="error"))
         session.flush()

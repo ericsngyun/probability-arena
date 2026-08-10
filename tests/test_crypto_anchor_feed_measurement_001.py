@@ -525,9 +525,18 @@ async def test_hook_failure_never_fails_marketops(shared_db, monkeypatch, fail_f
 
 
 def test_no_migration_added():
+    """CRYPTO-HORIZON-ANCHOR-FEED-MEASUREMENT-001 itself added no migration —
+    0027 (CRYPTO-HORIZON-OBS-001) was the tip when this milestone shipped and
+    must still exist unchanged. CRYPTO-COVERAGE-REPAIR-001 (a later, separate
+    milestone) legitimately adds 0028 — a data-safe column-width widen on
+    `crypto_token_lifecycle_runs.status` for its own new write-coordination
+    statuses — so this no longer asserts "0027 is the global latest forever",
+    only that the anchor-feed milestone's own boundary (0027 present, no
+    0027-adjacent anchor-feed migration) holds."""
     versions = sorted(
         p.name for p in (REPO / "alembic" / "versions").glob("[0-9]*.py"))
-    assert versions and versions[-1].startswith("0027")
+    assert any(v.startswith("0027") for v in versions)
+    assert any(v.startswith("0028") for v in versions)
 
 
 @pytest.mark.asyncio

@@ -12,3 +12,5 @@ htmlcov/
 *.pem
 *.key
 data/
+.DS_Store
+.vscode/

@@ -20,10 +20,10 @@ def _isolate_sqlite_telemetry(tmp_path, monkeypatch):
     _telemetry_sink._sink = None
 
 
-@pytest.fixture(autouse=True)
-def _isolate_crypto_tape_overlap_lock(tmp_path, monkeypatch):
-    """CRYPTO-COVERAGE-REPAIR-001 NEW-M4: `_resolve_lock_dir` derives the
-    reconciliation overlap flock's directory from `settings.database_url`.
+@pytest.fixture(scope="session", autouse=True)
+def _isolate_crypto_tape_overlap_lock(tmp_path_factory):
+    """CRYPTO-COVERAGE-REPAIR-001 NEW-M4/NEW-M1: `_resolve_lock_dir` derives
+    the reconciliation overlap flock's directory from `settings.database_url`.
     On any host where `.env` sets a real sqlite DATABASE_URL (production,
     EVO, some CI configurations), a Settings object built without an
     explicit `database_url` override — which is how every crypto-tape test's
@@ -33,14 +33,30 @@ def _isolate_crypto_tape_overlap_lock(tmp_path, monkeypatch):
     `probability-arena-crypto-reconcile.timer` uses: the real timer could get
     `skipped_overlap`-failed by the test suite, and the suite could be
     blocked by the real timer for its duration. Force every crypto-tape
-    overlap lock any test takes into a per-test tmp_path, unconditionally —
+    overlap lock any test takes into an isolated tmp dir, unconditionally —
     tests that pass their own explicit `lock_dir` (via `CryptoTapeConfig`)
     are unaffected, since `_resolve_lock_dir` is only reached when no
-    explicit `lock_dir` was given."""
+    explicit `lock_dir` was given.
+
+    NEW-M1 fix: this used to be FUNCTION-scoped, which pytest sets up only
+    among other function-scoped fixtures — a module- or session-scoped
+    fixture belonging to some other test module is instantiated BEFORE
+    function-scoped fixtures and would see the real, unpatched
+    `_resolve_lock_dir` (reproduced with a faithful defeat-test copy: a
+    module-scoped fixture bypassed the patch and leaked a lock file into the
+    fake prod dir). pytest sets up fixtures in strict scope order —
+    session-scoped before package/module/class/function-scoped — regardless
+    of the dependency graph, so making this fixture session-scoped guarantees
+    it patches BEFORE any narrower-scoped fixture anywhere in the suite can
+    run. The suite runs sequentially (no xdist), so one shared session-wide
+    lock dir is safe — each test's flock is released when the test's own
+    `with` block exits, before the next test starts."""
     import app.services.crypto_tape as tape_mod
 
-    lock_dir = tmp_path / "crypto-tape-overlap-lock"
-    monkeypatch.setattr(tape_mod, "_resolve_lock_dir", lambda settings=None: lock_dir)
+    lock_dir = tmp_path_factory.mktemp("crypto-tape-overlap-lock")
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(tape_mod, "_resolve_lock_dir", lambda settings=None: lock_dir)
+        yield
 
 
 @pytest.fixture

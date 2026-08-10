@@ -37,9 +37,19 @@ IOWeight=20
 # plus at most one in-flight batch; that combined figure — NOT the per-batch
 # write-lock hold — is the honest bound on how long a competing writer can be
 # blocked, and at the shipped default it is >=67% of the 30s busy_timeout.
-# This TimeoutStartSec value is a separate, tighter, hard outer bound on the
-# whole unit invocation.
-TimeoutStartSec=10min
+# MEDIUM fix (third re-review, M2): `run_scheduled_reconciliation` never
+# overrides `max_lock_attempts`/`lock_retry_seconds`, so DB_LOCKED_MAX_ATTEMPTS
+# (3) / DB_LOCKED_RETRY_SECONDS (3.0s) apply, and the deadline is only
+# checked BETWEEN batches, not during one — a single in-flight batch's own
+# retry ladder can consume up to 3 x sqlite_busy_timeout_ms (30s) + 2 x 3s =
+# ~96s before giving up, and the SEPARATE finalize-commit retry ladder can
+# add another ~96s worst case on top of the 20s deadline. Honest worst-case
+# bound: ~20s (deadline) + ~96s (one in-flight batch) + ~96s (finalize) =
+# ~212s (~3.5min), not the "10 minutes" this value previously stated with no
+# derivation. TimeoutStartSec is tightened to comfortably (not tightly)
+# exceed that computed bound, rather than SIGKILLing a legitimate in-flight
+# retry ladder mid-write.
+TimeoutStartSec=5min
 
 [Install]
 WantedBy=default.target

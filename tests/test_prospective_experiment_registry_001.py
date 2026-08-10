@@ -496,8 +496,11 @@ class TestSafetySurface:
             assert banned not in src, f"registry must not couple to {banned}"
 
     def test_no_migration_added(self):
+        # this milestone itself added no migration (head was 0027 when it
+        # shipped); CRYPTO-COVERAGE-REPAIR-001 (later, unrelated) legitimately
+        # adds 0028 — a data-safe column-width widen — so 0028 is accepted too.
         versions = sorted(p.name for p in Path("alembic/versions").glob("0*.py"))
-        assert versions[-1].startswith("0027")
+        assert versions[-1].startswith(("0027", "0028"))
 
     def test_no_timer_or_daemon_added(self):
         src = Path(self.FILE).read_text()

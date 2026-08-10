@@ -148,7 +148,11 @@ unscheduled.
   default 25 tokens) instead of one transaction for the whole pass, and stops
   at an internal wall-clock deadline
   (`crypto_tape_reconciler_max_duration_seconds`, default 20s).
-  **Two different metrics, do not conflate them (third review, NEW-H2):**
+  **Two different metrics, do not conflate them (third review, NEW-H2).
+  MEDIUM: every figure in this bullet is session-only evidence from an
+  ad-hoc, non-committed benchmark script — see docs/milestones/
+  CRYPTO-COVERAGE-REPAIR-001.md's Write-lock defect section for the full
+  evidentiary-status note before citing exact numbers:**
   - The per-commit **write-lock hold** genuinely collapsed: measured
     8.5-40.8s max hold in the legacy single-transaction shape down to
     0.16-1.73s at 2000 tokens with batching.
@@ -173,6 +177,27 @@ unscheduled.
     reference only, NOT current behaviour: one single-transaction dry run
     measured 105.2s for 819 tokens on EVO-X2 — that shape is what this fix
     replaced.)
+  - **Required pre-activation measurement, and how to actually run it
+    (HIGH-2 fix):** `run_scheduled_reconciliation` always supplies a
+    `batch_size`, so `crypto-tape-reconcile --dry-run` is chunked and trips
+    the SAME 20s deadline a real pass would — on EVO-X2 that means a plain
+    `--dry-run` cannot measure a full, untruncated pass; it reports
+    `status=dry_run_partial` (exit 1) once it hits the deadline. Use the
+    `--max-duration-seconds` flag added for exactly this to raise the
+    deadline for one measurement invocation only (it does not change the
+    `.env` default):
+    ```bash
+    .venv/bin/python -m app.cli crypto-tape-reconcile --force --dry-run \
+      --hours 48 --max-duration-seconds 600
+    # status=dry_run (not dry_run_partial) proves the pass completed
+    # end-to-end; read its real wall time from duration_ms and use that,
+    # not the 20s default, to judge whether the deadline is generous.
+    ```
+    `--batch-size` is also available (`crypto-tape-reconcile --batch-size N`)
+    for measuring alternate batch shapes without touching `.env`. Both flags
+    plus the underlying `CRYPTO_TAPE_RECONCILER_{WINDOW_HOURS,LIMIT,
+    BATCH_SIZE,MAX_DURATION_SECONDS}` settings are documented in
+    `docs/FEATURE_FLAGS.md` and `.env.example`.
   It runs `Nice=10 IOWeight=20` and aborts when the latest MarketOps run
   errored. Exit code is non-zero on a refused, truncated, partial, locked, or
   overlap-skipped pass — a green unit that reconciled nothing is exactly the
@@ -202,9 +227,15 @@ unscheduled.
     was written. Distinct from `partial`/`stop_reason=contention`, which
     means some batches DID get through before contention stopped it.
 - Row cost: each pass appends ~2 rows per token considered (a lifecycle snapshot
-  and an actor observation). Neither table is pruned by `retention.py`. Budget
-  roughly 2 MB/day at the shipped defaults and revisit retention before raising
-  the cadence.
+  and an actor observation) — `skip_redundant_when_final` does NOT reduce this
+  on the scheduled path (it is structurally inert there; see the milestone doc's
+  HIGH-3 note). Neither table is pruned by `retention.py`. `tokens_considered`
+  per pass is bounded by `crypto_tape_reconciler_max_duration_seconds`
+  (deadline-capped, not just selection-capped), and the milestone's earlier
+  "1.048 MiB per pass ≈ 4.19 MiB/day" figure predates both that deadline and
+  the HIGH-1 age-exclusion fix — it is NOT current. Do not budget against it;
+  re-measure real per-pass row growth once the flag is flipped, against a real
+  4x/day cadence, before revisiting retention or raising the cadence.
 
 **Provider gate (CRYPTO-DISCOVERY-PROVIDER-GATE-001).** `crypto-scan-once` and
 `crypto-risk-assess` are now **fail-closed**: a bare command prints a zero-call

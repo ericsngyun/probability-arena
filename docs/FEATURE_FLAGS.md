@@ -26,6 +26,10 @@ Rollout discipline: one flag at a time, per `docs/EVO_X2_RUNBOOK.md`.
 | `ENABLE_PIPELINE_RETENTION` | false | Appends a `retention` stage to baseline runs |
 | `ENABLE_CRYPTO_SCOUT` | false | Reserved for crypto loop/timer use (none exists in CRYPTO-001); manual `crypto-scan-once` is always allowed |
 | `ENABLE_CRYPTO_TAPE_RECONCILER` | false | CRYPTO-COVERAGE-REPAIR-001: gates the scheduled provider-free survival reconciler (6h timer). Zero external calls, no provider budget. Off = no reconciliation, no migration, no write |
+| `CRYPTO_TAPE_RECONCILER_WINDOW_HOURS` | 48 | Steady-state lookback window; refused (`invalid_window`) if shorter than the longest horizon's closing edge (36h) plus one scheduling interval (6h) |
+| `CRYPTO_TAPE_RECONCILER_LIMIT` | 2000 | Selection cap covering the window plus aged-out backlog; a shortfall reports `status=truncated` (non-zero exit) rather than silently dropping work; CLI override `--limit` |
+| `CRYPTO_TAPE_RECONCILER_BATCH_SIZE` | 25 | Tokens committed per write transaction (bounds write-lock hold duration, not a competing writer's worst-case wait — see `docs/EVO_X2_RUNBOOK.md`); CLI override `--batch-size` |
+| `CRYPTO_TAPE_RECONCILER_MAX_DURATION_SECONDS` | 20.0 | Internal wall-clock deadline for one pass; the rest becomes next-pass backlog (`status=partial`). This is a CHOSEN bound, not yet re-measured end-to-end on EVO-X2 production density — CLI override `--max-duration-seconds` lets `--dry-run` measure a full, untruncated pass before trusting the default (without it, `--dry-run` is chunked at this same deadline and can itself report `dry_run_partial`) |
 | `ENABLE_CRYPTO_RISK_PROVIDER` | false | Token risk assessments + risk signals (holder_risk/rug_risk/suspicious_supply_control); provider `CRYPTO_RISK_PROVIDER=mock` is the only CRYPTO-001 implementation |
 | `ENABLE_HELIUS` | false | **Reserved only** — no Helius adapter exists in CRYPTO-001 |
 | `ENABLE_MARKETOPS_AUTOPILOT` | false | The `marketops-loop` / timer only; `marketops-run-once` is always allowed manually. Read-only coordination — cannot trade, paper trade, calculate EV, or move money |

@@ -396,7 +396,10 @@ python -m app.cli crypto-tape-run-once --limit 25 --hours 48 --dry-run  # comput
 python -m app.cli crypto-tape-run-once --limit 25 --hours 48            # persist ONLY lifecycle tape rows
 python -m app.cli crypto-tape-report --hours 24 --top 5                 # coverage, survival labels, actor patterns
 python -m app.cli crypto-tape-session --duration-hours 6 --interval-min 30 --limit 25 [--dry-run]  # bounded repeated passes (CRYPTO-TAPE-CADENCE-001)
+python -m app.cli crypto-tape-reconcile [--dry-run] [--force] [--hours N] [--limit N] [--batch-size N] [--max-duration-seconds N]  # CRYPTO-COVERAGE-REPAIR-001 scheduled reconciler (default OFF via ENABLE_CRYPTO_TAPE_RECONCILER)
 ```
+
+**Exit codes (CRYPTO-COVERAGE-REPAIR-001):** `crypto-tape-run-once` and `crypto-tape-reconcile` return non-zero for any status other than `ok`/`dry_run`/`disabled` — including `partial`, `truncated`, `skipped_overlap`, `skipped_contention`, `dry_run_partial`, and `lock_unavailable` — because a unit that reconciled nothing must never look healthy. This is a deliberate change from earlier tape-CLI behavior (which only distinguished success/exception); scripts and unit files that treat any non-crash exit as success should check the printed `status=` line, not just the return code alone predating this milestone.
 
 **Session helper (CRYPTO-TAPE-CADENCE-001):** `crypto-tape-session` runs a fixed, hard-capped number of `run_once` passes in ONE invocation with a sleep between, then exits — not a timer, not a daemon, never autonomous. It exists because survival horizons only mature when the tape observes tokens repeatedly (CRYPTO-RETROSPECT-001 found provider gaps dominating for exactly this reason). Hard caps: duration ≤36h, interval clamped 15–120 min, ≤144 captures/session; aborts on abnormal pass status or a detectable MarketOps error. Each pass is the same derived, zero-external-call assembly. `--dry-run` prints the planned schedule and runs exactly one dry probe — nothing persisted, no sleeping. The session summary reports captures, rows written, horizon maturity (known/unknown per horizon), and the provider-gap share trend across captures.
 

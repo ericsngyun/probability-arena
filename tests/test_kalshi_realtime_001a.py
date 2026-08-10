@@ -514,8 +514,11 @@ class TestNoTradingSurface:
                     assert b not in i, f"{p}: {i}"
 
     def test_no_migration_added(self):
+        # this milestone itself added no migration (head was 0027 when it
+        # shipped); CRYPTO-COVERAGE-REPAIR-001 (later, unrelated) legitimately
+        # adds 0028 — a data-safe column-width widen — so 0028 is accepted too.
         versions = sorted(x.name for x in Path("alembic/versions").glob("0*.py"))
-        assert versions[-1].startswith("0027")
+        assert versions[-1].startswith(("0027", "0028"))
 
 
 # --- 28-35: archive, replay, reconciliation -------------------------------------

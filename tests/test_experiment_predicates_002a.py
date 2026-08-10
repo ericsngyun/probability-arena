@@ -495,8 +495,13 @@ class TestSafetySurface:
             assert banned not in attrs, f"reads attribute {banned}"
 
     def test_no_migration_added(self):
+        # REGISTRY-002A itself added no migration (head was 0027 when this
+        # shipped). CRYPTO-COVERAGE-REPAIR-001 (a later, unrelated
+        # milestone) legitimately adds 0028 — a data-safe column-width widen
+        # — so 0028 is an accepted head too; anything past that would be a
+        # real, unreviewed scope violation of THIS test's boundary.
         versions = sorted(p.name for p in Path("alembic/versions").glob("0*.py"))
-        assert versions[-1].startswith("0027")
+        assert versions[-1].startswith(("0027", "0028"))
 
     def test_no_timer_daemon_or_marketops_hook(self):
         for rel in self.FILES:

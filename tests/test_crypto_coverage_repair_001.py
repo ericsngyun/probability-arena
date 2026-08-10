@@ -19,6 +19,7 @@ tick landed inside the canonical window) and still RECONCILIATION-uncovered
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 from sqlalchemy import create_engine
@@ -37,12 +38,14 @@ from app.models import (
 from app.services.crypto_tape import (
     HORIZON_TOLERANCE,
     HORIZONS,
+    SHORTEST_HORIZON_CLOSING_EDGE_MINUTES,
     SURVIVAL_LIQUIDITY_FRACTION,
     CryptoLifecycleTapeRecorder,
     CryptoTapeConfig,
     run_scheduled_reconciliation,
 )
 
+REPO = Path(__file__).resolve().parents[1]
 CHAIN = "solana"
 
 
@@ -449,8 +452,15 @@ def test_truncation_is_loud_and_drops_the_unmatured_tail(session):
     for i in range(5):
         born = _mint(session, f"tok-matured-{i}", born_hours_ago=40, liquidity=10_000.0)
         _tick_at(session, f"tok-matured-{i}", born + timedelta(hours=24), liquidity=9_000.0)
+    # HIGH-1: "fresh" here must still be OLDER than
+    # SHORTEST_HORIZON_CLOSING_EDGE_MINUTES (22.5min) or the scheduled path's
+    # age-exclusion would drop these from selection entirely (which is
+    # correct behaviour, but not what THIS test is pinning — it pins
+    # selection-limit truncation ordering, not the age exclusion, which has
+    # its own dedicated tests below). 1h clears that bar with margin while
+    # staying far short of the 24h+tolerance finality edge.
     for i in range(50):
-        _mint(session, f"tok-fresh-{i}", born_hours_ago=0.1)
+        _mint(session, f"tok-fresh-{i}", born_hours_ago=1)
 
     r = run_scheduled_reconciliation(session, settings=_settings(), limit=10)
 
@@ -714,9 +724,13 @@ def test_final_outcomes_are_not_re_selected_as_backlog(session):
 # --- B3 chunked commits -------------------------------------------------------
 
 def test_scheduled_pass_commits_in_bounded_batches(session):
-    """Default `crypto_tape_reconciler_batch_size` bounds each committed
-    transaction to a small number of tokens instead of one commit for the
-    whole pass."""
+    """NEW-H2 docstring fix (third re-review). This test's ORIGINAL title
+    claimed to test the DEFAULT `crypto_tape_reconciler_batch_size`, but it
+    passes `batch_size=10` explicitly — an OVERRIDE, not the default — so it
+    never actually exercised the shipped default at all. It pins the
+    override mechanism (commits in bounded transactions of the GIVEN size);
+    see `test_default_batch_size_is_actually_used_when_unset` below for a
+    genuine default-value test."""
     for i in range(23):
         _mint(session, f"tok-batch-{i}", born_hours_ago=30, liquidity=10_000.0)
 
@@ -728,6 +742,53 @@ def test_scheduled_pass_commits_in_bounded_batches(session):
     assert r["batch_size"] == 10
     assert r["batches_committed"] == 3  # ceil(23 / 10)
     assert r["tokens_processed"] == 23
+
+
+def test_default_batch_size_is_actually_used_when_unset(session):
+    """NEW-H2 fix (third re-review). Genuine default-value test: no
+    `batch_size` override, so `run_scheduled_reconciliation` must fall back
+    to `crypto_tape_reconciler_batch_size` from settings (RECONCILE_BATCH_SIZE
+    == 25, pinned below)."""
+    for i in range(30):
+        _mint(session, f"tok-defaultbatch-{i}", born_hours_ago=30, liquidity=10_000.0)
+
+    r = run_scheduled_reconciliation(
+        session, settings=_settings(crypto_tape_reconciler_limit=1000),
+    )
+    assert r["status"] == "ok"
+    assert r["batch_size"] == 25
+    assert r["batches_committed"] == 2  # ceil(30 / 25)
+    assert r["tokens_processed"] == 30
+
+
+def test_shipped_write_coordination_constants_are_pinned():
+    """NEW-H2 mutation-battery fix (third re-review). A full-suite mutation
+    battery found that widening RECONCILE_BATCH_SIZE (25 -> 5000) or
+    RECONCILE_MAX_DURATION_SECONDS (20 -> 300) — either the module constant
+    OR the matching Settings field default — left the ENTIRE crypto suite
+    green, because 5000 exceeds the 2000 selection limit and silently
+    restores the pre-milestone single-transaction-pass shape. These are the
+    numbers that ARE the write-lock safety argument (see the milestone doc's
+    "Write-lock defect" section); pin them exactly, plus the invariant that
+    makes the batch size meaningful against the selection cap."""
+    from app.config import Settings
+    from app.services.crypto_tape import (
+        RECONCILE_BATCH_SIZE,
+        RECONCILE_MAX_DURATION_SECONDS,
+    )
+
+    assert RECONCILE_BATCH_SIZE == 25
+    assert RECONCILE_MAX_DURATION_SECONDS == 20.0
+
+    defaults = Settings()
+    assert defaults.crypto_tape_reconciler_batch_size == 25
+    assert defaults.crypto_tape_reconciler_max_duration_seconds == 20.0
+    # the invariant that makes batching meaningful: if the batch size ever
+    # grows to meet or exceed the selection limit, a single "batch" IS the
+    # whole pass again — silently restoring the single-transaction shape
+    # this milestone exists to remove.
+    assert defaults.crypto_tape_reconciler_batch_size < defaults.crypto_tape_reconciler_limit
+    assert RECONCILE_BATCH_SIZE < defaults.crypto_tape_reconciler_limit
 
 
 def test_manual_path_defaults_to_one_commit_for_the_whole_pass(session):
@@ -869,6 +930,86 @@ def test_two_connection_file_backed_busy_timeout_and_retry_ladder(tmp_path):
     assert r2["tokens_considered"] == 1
     verify_session.close()
     engine.dispose()
+
+
+def test_real_lock_hit_during_finalize_is_caught_not_raised(tmp_path):
+    """NEW-B1 regression pin (third re-review, SQLite/concurrency). This is
+    deliberately NOT a monkeypatched `session.commit()` — every existing
+    contention test in this file patches `commit` to raise, so `prepare()`
+    (called OUTSIDE `_commit_with_retry`'s try, pre-fix) never meets a REAL
+    lock and this defect was invisible to the whole suite.
+
+    Reproduction: a real second SQLite connection acquires `BEGIN IMMEDIATE`
+    right after the run row AND the first token batch have ALREADY committed
+    durably (via a real `after_commit` listener, not a timer) — so contention
+    hits both the SECOND batch's retry ladder and, once that's exhausted,
+    the FINALIZE step's retry ladder. `_prepare_finalize` stages several
+    OTHER dirty `run.*` attribute writes before reading the (now-expired,
+    post-rollback) `run.config` attribute; that read used to autoflush the
+    dirty session into the same real lock, raising OperationalError from
+    INSIDE `prepare()` — which pre-fix propagated straight past the retry
+    ladder and out of `run_once` itself as an uncaught exception, instead of
+    the typed `partial`/`skipped_contention` result this ladder exists to
+    produce. This asserts `run_once` returns NORMALLY with a typed result —
+    not that it raises."""
+    import sqlite3
+
+    from sqlalchemy import create_engine, event
+    from sqlalchemy.orm import sessionmaker
+
+    db_path = tmp_path / "real_lock_during_finalize.db"
+    engine = create_engine(f"sqlite:///{db_path}", connect_args={"timeout": 0.2})
+    Base.metadata.create_all(engine)
+    Factory = sessionmaker(bind=engine)
+    seed_session = Factory()
+    for i in range(10):
+        _mint(seed_session, f"tok-reallock-{i}", born_hours_ago=30, liquidity=10_000.0)
+    seed_session.commit()
+    seed_session.close()
+
+    worker_session = Factory()
+    rec = CryptoLifecycleTapeRecorder(
+        CryptoTapeConfig(chain=CHAIN, lock_dir=tmp_path)
+    )
+    holder: dict = {"conn": None}
+    commits_seen = {"n": 0}
+
+    @event.listens_for(worker_session, "after_commit")
+    def _acquire_real_lock_after_first_batch(sess):
+        # commit #1 = the run-row creation, commit #2 = the FIRST token
+        # batch. Acquire the external lock right after that second commit,
+        # so at least one full batch is durably committed before any
+        # contention hits — matching the reproduced failure shape exactly
+        # (the reviewer measured 150/750 tokens already durable when the
+        # uncaught exception hit).
+        commits_seen["n"] += 1
+        if commits_seen["n"] == 2 and holder["conn"] is None:
+            c = sqlite3.connect(str(db_path), timeout=0.2)
+            c.execute("BEGIN IMMEDIATE")
+            c.execute("UPDATE crypto_tokens SET last_seen_at = last_seen_at")
+            holder["conn"] = c
+
+    try:
+        r = rec.run_once(
+            worker_session, limit=10, hours=48,
+            batch_size=3, max_lock_attempts=3, lock_retry_seconds=0.05,
+            sleeper=lambda seconds: None,
+        )
+    finally:
+        event.remove(worker_session, "after_commit", _acquire_real_lock_after_first_batch)
+        if holder["conn"] is not None:
+            holder["conn"].rollback()
+            holder["conn"].close()
+        worker_session.close()
+        engine.dispose()
+
+    # The whole point: a typed result, never an uncaught exception, and at
+    # least the first batch's durable progress is reflected honestly.
+    assert r["status"] in ("partial", "skipped_contention")
+    assert r["error"]
+    if r["status"] == "partial":
+        assert r["batches_committed"] >= 1
+        assert r["tokens_processed"] >= 3
 
 
 # --- B6 internal deadline ------------------------------------------------------
@@ -1125,6 +1266,159 @@ def test_backlog_recovers_a_token_that_was_never_reconciled_at_all(session):
     assert o is not None and o.survived_24h is True
 
 
+# --- fourth review: NEW-H1 the backlog is a one-way trapdoor behind the
+# in-window head under a binding deadline ------------------------------------
+
+def test_backlog_makes_forward_progress_under_a_binding_deadline(session):
+    """NEW-H1 fix. `run_once` built the selected token list as
+    [in-window oldest->newest] + [aged-out backlog oldest->newest], and a
+    binding deadline stops a chunked pass in LIST order. So the backlog —
+    which `unreconciled_backlog`'s own docstring calls the evidence "closest
+    to being pruned" — was processed LAST and, once the in-window head alone
+    exceeded one pass's per-deadline throughput (the structural steady state
+    HIGH-1 targets), was NEVER reached: a one-way trapdoor where aged-out
+    tokens could only accumulate. This reproduces that shape at small scale
+    (a non-empty in-window head that would consume the ENTIRE per-pass batch
+    budget under the old ordering, plus a non-empty backlog) and asserts the
+    count of RECONCILED BACKLOG tokens strictly increases pass over pass —
+    not merely `count(outcomes)`, which the in-window head alone could
+    satisfy while the backlog silently starved."""
+    batch = 5
+    backlog_n = 20
+    in_window_n = 20
+
+    # Backlog: aged OUT of the 48h window, past the 36h finality edge, so one
+    # touch finalizes each — the evidence closest to being pruned.
+    for i in range(backlog_n):
+        born = _mint(
+            session, f"tok-h1-backlog-{i:02d}", born_hours_ago=60 + i,
+            liquidity=10_000.0,
+        )
+        _tick_at(
+            session, f"tok-h1-backlog-{i:02d}", born + timedelta(hours=24),
+            liquidity=9_000.0,
+        )
+    # In-window head: well past the HIGH-1 age-exclusion floor, but far short
+    # of finality — this is the population that, under the OLD ordering,
+    # would consume every batch of every deadline-bound pass before the
+    # backlog was ever reached.
+    for i in range(in_window_n):
+        _mint(session, f"tok-h1-inwindow-{i:02d}", born_hours_ago=30)
+
+    settings = _settings(crypto_tape_reconciler_limit=1000)
+
+    def backlog_final_count() -> int:
+        return sum(
+            1 for i in range(backlog_n)
+            if (o := _outcome(session, f"tok-h1-backlog-{i:02d}")) is not None
+            and o.final
+        )
+
+    counts = [backlog_final_count()]
+    # exactly enough passes to drain the backlog (20 / 5 = 4) and no more —
+    # one pass past that would start consuming the in-window head, which
+    # would defeat the "in-window untouched" assertion below for a reason
+    # unrelated to the fix this test pins.
+    for _ in range(backlog_n // batch):
+        r = run_scheduled_reconciliation(
+            session, settings=settings, batch_size=batch, max_duration_seconds=0.0,
+        )
+        assert r["status"] in ("ok", "partial")
+        counts.append(backlog_final_count())
+        # observable even without inspecting the DB directly (journal-visible)
+        assert r["backlog_processed"] >= 0
+
+    assert counts == sorted(counts)  # never regresses
+    assert len(set(counts)) == len(counts)  # STRICTLY increasing every pass
+    assert counts[-1] == backlog_n  # the whole backlog eventually drains
+
+    # the in-window head must NOT have been touched yet by these
+    # backlog-first passes — proving the reordering, not just eventual
+    # coverage, is what changed (an in-window outcome row would only appear
+    # once backlog work in front of it is exhausted).
+    assert all(
+        _outcome(session, f"tok-h1-inwindow-{i:02d}") is None
+        for i in range(in_window_n)
+    )
+
+
+def test_age_zero_tokens_are_not_selected_by_the_scheduled_path(session):
+    """HIGH-1 fix, selection-level pin. `compute_survival` only sets `final`
+    at the 24h+tolerance edge, so under `exclude_final=True` ALONE every
+    token younger than that stays selectable forever — including tokens with
+    NO horizon due at all yet (not even 15m). Those are pure waste: they can
+    never be finalized on this pass and re-selecting them wastes wall-clock
+    budget that should go to genuinely reconcilable tokens. This mints
+    several tokens younger than `SHORTEST_HORIZON_CLOSING_EDGE_MINUTES`
+    alongside one eligible token and proves only the eligible one is
+    selected — distinguishing "nothing selected because the window is empty"
+    from "age-0 tokens specifically excluded"."""
+    for i in range(5):
+        _mint(session, f"tok-age0-{i}", born_hours_ago=0.01)  # ~36 seconds old
+    _mint(session, "tok-age-eligible", born_hours_ago=1)  # well past 22.5m
+
+    r = run_scheduled_reconciliation(session, settings=_settings())
+    assert r["status"] == "ok"
+    assert r["tokens_considered"] == 1
+    assert r["universe_size"] == 1
+
+    for i in range(5):
+        assert _outcome(session, f"tok-age0-{i}") is None  # never touched
+    assert _outcome(session, "tok-age-eligible") is not None
+
+
+def test_manual_path_still_selects_age_zero_tokens_unlike_the_scheduled_path(session):
+    """Contrast case: `min_age_minutes` is opt-in — the manual/CLI `run_once`
+    path (default `min_age_minutes=None`) must keep selecting age-0 tokens
+    exactly as before; only `run_scheduled_reconciliation` opts in."""
+    _mint(session, "tok-age0-manual", born_hours_ago=0.01)
+
+    rec = CryptoLifecycleTapeRecorder()
+    r = rec.run_once(session, limit=25, hours=48)
+    assert r["status"] == "ok"
+    assert r["tokens_considered"] == 1
+    assert _outcome(session, "tok-age0-manual") is not None
+
+
+def test_repeated_passes_reach_ok_once_backlog_is_drained(session):
+    """HIGH-1 fix. Before this fix, `partial` was the STRUCTURAL steady state
+    for a deadline-bound scheduled pass — there was no configuration in
+    which repeated invocations ever converged to a clean `ok`, because
+    (pre NEW-H1) the backlog was never even reached, and non-final tokens
+    were reselected forever. This pins the positive case the review asked
+    for directly: a finite, draining backlog (each token finalizes the first
+    time it is touched) under a binding per-pass deadline must converge to
+    `status=ok` within a bounded number of passes — not stay `partial`
+    forever — once all genuinely reconcilable work is exhausted."""
+    batch = 5
+    n = 12
+    for i in range(n):
+        born = _mint(
+            session, f"tok-converge-{i:02d}", born_hours_ago=60 + i,
+            liquidity=10_000.0,
+        )
+        _tick_at(
+            session, f"tok-converge-{i:02d}", born + timedelta(hours=24),
+            liquidity=9_000.0,
+        )
+
+    settings = _settings(crypto_tape_reconciler_limit=1000)
+    statuses = []
+    for _ in range(6):
+        r = run_scheduled_reconciliation(
+            session, settings=settings, batch_size=batch, max_duration_seconds=0.0,
+        )
+        statuses.append(r["status"])
+        if r["status"] == "ok":
+            break
+
+    assert "partial" in statuses  # it genuinely had to stop early at least once
+    assert statuses[-1] == "ok"  # but it CONVERGES — not perpetual partial
+    assert all(
+        _outcome(session, f"tok-converge-{i:02d}").final for i in range(n)
+    )
+
+
 # --- second review: NEW-B3 the commit itself must be pinned, not inferred ---
 
 def test_batched_pass_real_commit_count_via_after_commit_listener(session):
@@ -1157,6 +1451,66 @@ def test_batched_pass_real_commit_count_via_after_commit_listener(session):
     assert r["status"] == "ok"
     assert r["batches_committed"] == 3  # ceil(23 / 10)
     assert len(commits) == 5  # run row + 3 batches + finalize — REAL commits
+
+
+def test_post_batch_yield_sleeps_the_named_duration_after_each_real_commit(session):
+    """NEW-H1 fix (third re-review). A short sleep AFTER each real batch
+    commit gives a waiting competing writer a genuine chance to win the lock
+    race — see `RECONCILE_POST_BATCH_YIELD_SECONDS`. This pins that it is
+    invoked exactly once per REAL committed batch (not per dry-run
+    "batch", which never commits) with exactly the named constant's value,
+    via an injected sleeper — no wall-clock timing dependency."""
+    from app.services.crypto_tape import RECONCILE_POST_BATCH_YIELD_SECONDS
+
+    for i in range(23):
+        _mint(session, f"tok-yield-{i}", born_hours_ago=30, liquidity=10_000.0)
+
+    sleeps: list[float] = []
+
+    def _sleeper(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    r = run_scheduled_reconciliation(
+        session, settings=_settings(crypto_tape_reconciler_limit=1000),
+        batch_size=10, sleeper=_sleeper,
+    )
+    assert r["status"] == "ok"
+    assert r["batches_committed"] == 3  # ceil(23 / 10)
+    yield_sleeps = [s for s in sleeps if s == RECONCILE_POST_BATCH_YIELD_SECONDS]
+    assert len(yield_sleeps) == 3  # exactly one per real committed batch
+
+
+def test_dry_run_batches_committed_reports_zero_real_commits(session):
+    """NEW-M2 fix. In CHUNKED dry-run mode `session.commit()` is never
+    called (guarded by `if not dry_run` in the batch loop) — a dry run must
+    never write. `batches_committed` used to be incremented from the loop
+    ITERATION regardless of `dry_run`, so a truncated-by-nothing dry run over
+    23 tokens / batch_size 10 reported `batches_committed=3` while a real
+    `after_commit` listener observed ZERO commits — indistinguishable from a
+    real pass in the CLI output. Grounded: `batches_committed` must be 0 for
+    any dry run, verified against the SAME listener used above."""
+    from sqlalchemy import event
+
+    for i in range(23):
+        _mint(session, f"tok-drycommit-{i}", born_hours_ago=30, liquidity=10_000.0)
+    commits: list[int] = []
+
+    @event.listens_for(session, "after_commit")
+    def _count(sess):
+        commits.append(1)
+
+    try:
+        r = run_scheduled_reconciliation(
+            session, settings=_settings(crypto_tape_reconciler_limit=1000),
+            batch_size=10, dry_run=True,
+        )
+    finally:
+        event.remove(session, "after_commit", _count)
+
+    assert r["status"] == "dry_run"
+    assert r["tokens_processed"] == 23
+    assert len(commits) == 0  # dry-run NEVER commits — the ground truth
+    assert r["batches_committed"] == 0  # must match the ground truth, not 3
 
 
 def test_deadline_stopped_batch_commits_are_durable_across_a_fresh_session(tmp_path):
@@ -1270,6 +1624,29 @@ def test_dry_run_stopped_by_the_deadline_reports_dry_run_partial_not_dry_run(ses
     assert "dry-run probe stopped early" in r["error"]
     # dry-run never writes, regardless of status
     assert session.query(CryptoTokenSurvivalOutcome).count() == 0
+
+
+def test_dry_run_outcomes_updated_excludes_already_final_tokens(session):
+    """NEW-M3 fix. In the REAL (non-dry-run) branch an already-final outcome
+    is never counted in `outcomes_updated` (`if not outcome.final: ...
+    outcomes += 1`). The dry-run branch used to count unconditionally
+    (`elif dry_run: outcomes += 1`), overstating `outcomes_updated` for every
+    already-final token a dry-run probe merely re-examined. Harmless on the
+    SCHEDULED path only because `exclude_final=True` already removes those
+    tokens from selection; the MANUAL path (`run_once` without
+    `exclude_final`, exercised directly here) has no such protection."""
+    born = _mint(session, "tok-m3-final", born_hours_ago=40, liquidity=10_000.0)
+    _tick_at(session, "tok-m3-final", born + timedelta(hours=24), liquidity=9_000.0)
+
+    rec = CryptoLifecycleTapeRecorder()
+    real = rec.run_once(session, limit=25, hours=48)
+    assert real["status"] == "ok"
+    assert _outcome(session, "tok-m3-final").final is True
+
+    probe = rec.run_once(session, limit=25, hours=48, dry_run=True)
+    assert probe["status"] == "dry_run"
+    assert probe["tokens_considered"] == 1  # manual path still re-examines it
+    assert probe["outcomes_updated"] == 0  # but nothing NEW was learned
 
 
 def test_cli_dry_run_stopped_by_the_deadline_does_not_exit_0(session, monkeypatch):
@@ -1388,7 +1765,7 @@ def test_zero_batches_committed_is_skipped_contention_not_partial(
 
 # --- third review NEW-M4: the overlap lock must not touch the real DB dir ---
 
-def test_overlap_lock_dir_is_isolated_from_a_real_sqlite_database_url(tmp_path):
+def test_overlap_lock_dir_is_isolated_from_a_real_sqlite_database_url():
     """NEW-M4 regression pin. `_resolve_lock_dir` derives the overlap lock's
     directory from `settings.database_url`. On a host where `.env` sets a
     real sqlite path (production, EVO, some CI configurations), a Settings
@@ -1396,17 +1773,116 @@ def test_overlap_lock_dir_is_isolated_from_a_real_sqlite_database_url(tmp_path):
     `database_url` — would otherwise resolve the lock to that REAL data
     directory: running this suite there would take the SAME
     `.crypto-tape-reconcile-{chain}.lock` file the production timer uses.
-    `tests/conftest.py::_isolate_crypto_tape_overlap_lock` (autouse) must
-    force it into an isolated tmp_path instead; this proves that isolation
-    is actually ACTIVE during test collection, not just present in
-    conftest.py's source and silently not wired up."""
+    `tests/conftest.py::_isolate_crypto_tape_overlap_lock` (autouse,
+    session-scoped per NEW-M1) must force it into an isolated tmp dir
+    instead; this proves that isolation is actually ACTIVE during test
+    collection, not just present in conftest.py's source and silently not
+    wired up. (Session-scoped: the isolated dir is stable across the whole
+    run, not per-test, so this compares against a second `_resolve_lock_dir`
+    call rather than a hardcoded per-test `tmp_path`.)"""
     from app.services.crypto_tape import _resolve_lock_dir
 
+    baseline = _resolve_lock_dir(None)
     # shaped exactly like a real deployed .env would set it (relative sqlite
     # path under the repo's data/ directory) — the case NEW-M4 measured.
     fake_prod_settings = Settings(
         database_url="sqlite:///./data/probability_arena.db"
     )
     resolved = _resolve_lock_dir(fake_prod_settings)
-    assert resolved == tmp_path / "crypto-tape-overlap-lock"
+    assert resolved == baseline  # same patched dir regardless of settings
     assert "data" not in resolved.parts
+
+
+# --- MEDIUM fix: an unopenable lock file must be a typed status, not a
+# traceback --------------------------------------------------------------
+
+def test_unopenable_lock_directory_reports_lock_unavailable_not_a_traceback(
+    session, monkeypatch, tmp_path,
+):
+    """MEDIUM fix. `_reconcile_overlap_lock` used to let a failed `os.open`
+    (unwritable/missing lock directory) propagate as a raw `OSError`, which
+    `run_scheduled_reconciliation` re-raised straight through — an
+    unwritable DB directory on a production host would crash the unit
+    instead of producing a typed, refused status the CLI/journal can act on.
+    This forces the lock FILE PATH itself to collide with a pre-existing
+    DIRECTORY (a portable way to make `os.open` fail with EISDIR without
+    relying on filesystem permission semantics that differ under a
+    root/CI user) and asserts a `lock_unavailable` status, not an
+    exception."""
+    import app.services.crypto_tape as tape_mod
+
+    _mint(session, "tok-lockunavailable", born_hours_ago=30, liquidity=10_000.0)
+
+    lock_dir = tmp_path / "lock-dir"
+    lock_dir.mkdir()
+    # pre-create a DIRECTORY at the exact path the lock file would open —
+    # os.open(..., O_CREAT | O_RDWR) on a directory raises OSError (EISDIR)
+    # on every POSIX platform, regardless of user/permissions.
+    (lock_dir / tape_mod.RECONCILE_LOCK_FILENAME.format(chain=CHAIN)).mkdir()
+    monkeypatch.setattr(tape_mod, "_resolve_lock_dir", lambda settings=None: lock_dir)
+
+    r = run_scheduled_reconciliation(session, settings=_settings())
+    assert r["status"] == "lock_unavailable"
+    assert r["error"]
+    assert session.query(CryptoTokenSurvivalOutcome).count() == 0  # nothing written
+
+
+def test_integrity_error_reports_concurrent_write_conflict_not_a_traceback(
+    session, monkeypatch,
+):
+    """NEW-H3 fix (third re-review). The exact-cycle anchor feed
+    (`record_discovery_run`) deliberately opts out of the B4 overlap lock
+    (`use_overlap_lock=False`), so the overlap lock does NOT by itself close
+    a race against it — HIGH-1's age-disjointness is the real mitigation,
+    and this is the residual safety net if that mitigation is ever defeated.
+    A real IntegrityError (unique-constraint violation on
+    `ix_crypto_birth_chain_token`) is NOT an OperationalError, so the
+    DB_LOCKED_* retry ladder does not apply to it — before this fix it
+    propagated straight past `run_scheduled_reconciliation`'s error handling
+    as an uncaught exception, which would kill the systemd unit with a
+    traceback instead of a typed, journal-visible refused status."""
+    from sqlalchemy.exc import IntegrityError
+
+    _mint(session, "tok-integrityrace", born_hours_ago=30, liquidity=10_000.0)
+
+    real_commit = type(session).commit
+
+    def racing_commit(self):
+        raise IntegrityError(
+            "INSERT INTO crypto_token_birth_events ...", {},
+            Exception(
+                "UNIQUE constraint failed: crypto_token_birth_events.chain, "
+                "crypto_token_birth_events.token_address"
+            ),
+        )
+
+    monkeypatch.setattr(type(session), "commit", racing_commit)
+
+    r = run_scheduled_reconciliation(session, settings=_settings())
+    assert r["status"] == "concurrent_write_conflict"
+    assert r["error"]
+    assert "unique-constraint" in r["error"].lower() or "UNIQUE" in r["error"]
+
+    # the session must be usable afterwards (proves rollback happened) —
+    # restore the real commit and confirm a normal pass still works.
+    monkeypatch.setattr(type(session), "commit", real_commit)
+    r2 = run_scheduled_reconciliation(session, settings=_settings())
+    assert r2["status"] == "ok"
+
+
+def test_systemd_unit_timeout_start_sec_matches_the_computed_worst_case():
+    """MEDIUM fix (third re-review, M2). `TimeoutStartSec` on the reconcile
+    unit must be a value derived from the ACTUAL worst-case retry-ladder
+    math (deadline + one in-flight batch's retry ladder + the finalize
+    retry ladder, all at the real 30s busy_timeout — see the unit file's own
+    comment), not an arbitrary round number. Pinned so a future edit cannot
+    silently drift the timeout below its own justification without touching
+    this test."""
+    unit_path = (
+        REPO / "infra" / "systemd" / "user"
+        / "probability-arena-crypto-reconcile.service"
+    )
+    text = unit_path.read_text()
+    assert "TimeoutStartSec=5min" in text
+    # the derivation itself must still be documented, not just the number
+    assert "~212s" in text or "212s" in text

@@ -671,8 +671,11 @@ class TestSafetySurface:
                     "backfill must not assign a settlement field directly")
 
     def test_no_migration_added(self):
+        # this milestone itself added no migration (head was 0027 when it
+        # shipped); CRYPTO-COVERAGE-REPAIR-001 (later, unrelated) legitimately
+        # adds 0028 — a data-safe column-width widen — so 0028 is accepted too.
         versions = sorted(p.name for p in Path("alembic/versions").glob("0*.py"))
-        assert versions[-1].startswith("0027"), (
+        assert versions[-1].startswith(("0027", "0028")), (
             f"unexpected migration added: {versions[-1]}")
 
     def test_report_and_backfill_are_registered_in_the_cli(self):

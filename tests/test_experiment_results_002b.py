@@ -497,8 +497,11 @@ class TestSafetySurface:
         assert "** 2" not in src and "**2" not in src
 
     def test_no_migration_hook_or_timer(self):
+        # this milestone itself added no migration (head was 0027 when it
+        # shipped); CRYPTO-COVERAGE-REPAIR-001 (later, unrelated) legitimately
+        # adds 0028 — a data-safe column-width widen — so 0028 is accepted too.
         versions = sorted(p.name for p in Path("alembic/versions").glob("0*.py"))
-        assert versions[-1].startswith("0027")
+        assert versions[-1].startswith(("0027", "0028"))
         src = Path(self.FILE).read_text()
         for banned in ("systemd", "crontab", "daemon", "MarketOps", "marketops"):
             assert banned not in src

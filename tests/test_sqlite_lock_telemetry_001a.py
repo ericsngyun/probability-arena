@@ -599,11 +599,15 @@ def test_no_retry_policy_change(telemetry_dir, file_db, monkeypatch):
 
 
 def test_no_migration_added():
+    # SQLITE-LOCK-TELEMETRY-001A itself added no migration (head was 0027
+    # when it shipped); CRYPTO-COVERAGE-REPAIR-001 (later, unrelated)
+    # legitimately adds 0028 — a data-safe column-width widen — so 0028 is
+    # accepted too.
     versions = sorted(
         Path(p).name for p in glob.glob("alembic/versions/[0-9]*.py"))
     assert versions, "alembic versions must be visible from repo root"
-    assert versions[-1].startswith("0027"), (
-        "SQLITE-LOCK-TELEMETRY-001A must not add a migration; head must stay 0027"
+    assert versions[-1].startswith(("0027", "0028")), (
+        "SQLITE-LOCK-TELEMETRY-001A must not add a migration; head must stay 0027/0028"
     )
 
 

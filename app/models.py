@@ -1260,7 +1260,12 @@ class CryptoTokenLifecycleRun(Base):
     __tablename__ = "crypto_token_lifecycle_runs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    status: Mapped[str] = mapped_column(String(16), default="running")  # running|ok|error
+    # running|ok|dry_run|error|partial|truncated|skipped_overlap|
+    # skipped_contention|dry_run_partial (CRYPTO-COVERAGE-REPAIR-001 B3/B4/B5/
+    # B6 write-coordination statuses; widened to 32 chars in migration 0028
+    # -- "skipped_contention" alone is 18 chars, longer than the original
+    # running|ok|error vocabulary this column was sized for)
+    status: Mapped[str] = mapped_column(String(32), default="running")
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     duration_ms: Mapped[int | None] = mapped_column(Integer)

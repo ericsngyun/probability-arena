@@ -31,9 +31,9 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.engine import make_url
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
 from app.config import Settings, get_settings
@@ -96,6 +96,13 @@ HORIZONS: tuple[tuple[str, int], ...] = (
 )
 # an observation counts for a horizon if within +/- this fraction of it
 HORIZON_TOLERANCE = 0.5
+# CRYPTO-COVERAGE-REPAIR-001 HIGH-1: the SHORTEST horizon's own closing edge —
+# derived from HORIZONS/HORIZON_TOLERANCE, never hardcoded. A token younger
+# than this has no horizon due yet (not even 15m), so it cannot be finalized
+# and re-selecting it wastes every scheduled pass forever (see
+# `min_age_minutes` on `_universe`/`run_once`, opt-in on the scheduled path
+# only).
+SHORTEST_HORIZON_CLOSING_EDGE_MINUTES = min(m for _, m in HORIZONS) * (1 + HORIZON_TOLERANCE)
 # CRYPTO-COVERAGE-REPAIR-001: the scheduled reconciler's interval, kept here
 # rather than only in the systemd unit so the window guard can require that the
 # window outlasts the closing edge PLUS one interval. If the unit's OnCalendar
@@ -126,6 +133,19 @@ STATUS_DRY_RUN_PARTIAL = "dry_run_partial"        # a dry-run probe that was
     # run, so this is distinct from STATUS_PARTIAL (which implies some
     # batches committed); it exists so a truncated probe never reports plain
     # "dry_run", which looks indistinguishable from a complete one.
+STATUS_LOCK_UNAVAILABLE = "lock_unavailable"      # MEDIUM fix: the overlap
+    # lock FILE itself could not be opened (unwritable/missing lock
+    # directory, permission error) — distinct from `skipped_overlap` (another
+    # pass legitimately holds the lock). Previously this raised an uncaught
+    # traceback instead of a typed, refused status.
+STATUS_CONCURRENT_WRITE_CONFLICT = "concurrent_write_conflict"  # NEW-H3 fix:
+    # a real `IntegrityError` (unique-constraint violation), not an
+    # `OperationalError` — the DB_LOCKED_* retry ladder never applies. This
+    # is the exact shape a live race against `record_discovery_run` (which
+    # deliberately opts out of the overlap lock) produces if the HIGH-1
+    # age-exclusion mitigation is ever defeated by a clock/timing edge.
+    # Caught and reported as a typed, non-zero-exit status instead of an
+    # uncaught traceback that would kill the systemd unit.
 
 BONDING_LAUNCHPAD = "launchpad_curve"
 BONDING_AMM = "amm_pool"
@@ -144,7 +164,10 @@ DB_LOCKED_MAX_ATTEMPTS = 3       # total tries per capture (1 + 2 retries)
 DB_LOCKED_RETRY_SECONDS = 3.0    # short wait between attempts
 ABORT_DB_LOCKED = "database_locked"
 
-# CRYPTO-COVERAGE-REPAIR-001 B1/B3 — measured blocker: `_assemble_pass` used to
+# CRYPTO-COVERAGE-REPAIR-001 B1/B3 — measured blocker (MEDIUM: session-only
+# evidence from an ad-hoc, non-committed benchmark script — see "evidentiary
+# status" in docs/milestones/CRYPTO-COVERAGE-REPAIR-001.md's Write-lock
+# defect section before citing exact figures): `_assemble_pass` used to
 # be one write transaction for the whole pass (36.9s measured at production
 # density, blocking a competing writer 97% of a 30s busy_timeout). Bounding
 # each committed transaction to a small, fixed batch of tokens keeps the write
@@ -184,6 +207,24 @@ RECONCILE_BATCH_SIZE = 25
 # NEW-H2 note on RECONCILE_BATCH_SIZE above. At the shipped default that is
 # >=67% of the 30s SQLite busy_timeout, not a small fraction of it.
 RECONCILE_MAX_DURATION_SECONDS = 20.0
+# NEW-H1 fix (third re-review, SQLite/concurrency). Per-batch commit hold
+# duration alone is not what starves a competing writer — SQLite's sleeping
+# busy handler loses the lock race against ~80 back-to-back short write
+# transactions almost as easily as against one long one, because each of
+# this pass's re-acquisitions is another chance for the handler to lose.
+# Measured fix (session-only benchmark evidence, see the milestone doc's
+# evidentiary-status note): inserting a short sleep AFTER each batch commits
+# (tried BEFORE the commit first — that made competitor waits WORSE, a
+# harness-ordering mistake, not a design choice) gives a genuinely idle
+# window for a waiting competitor to actually win the lock race, at the cost
+# of fewer tokens processed per pass (recoverable by raising the deadline or
+# lowering the cadence — the reconciler is the interruptible party here, the
+# watcher is not). Measured, 4 reps: competitor max wait 7.49-12.68s ->
+# 0.156-0.870s; competitor writes 15-19 -> 102-119; write-lock duty cycle
+# 0.83-0.87 -> 0.35-0.57. A 10-40x reduction in worst-case competing-writer
+# wait for ~3 lines. Applied only in chunked mode, only after a REAL commit
+# (never after a dry-run "commit", which never happens).
+RECONCILE_POST_BATCH_YIELD_SECONDS = 0.05
 # Overlap guard: a coordination-only flock file, one per chain, living next to
 # the sqlite file itself (or the system temp dir for non-sqlite/in-memory
 # configurations). Never touches the database's own locking; kernel-released
@@ -210,9 +251,17 @@ def _ratio(numerator: float | None, denominator: float | None) -> float | None:
 def _resolve_lock_dir(settings: Settings | None) -> Path:
     """Host-local directory to anchor the reconciliation overlap lock (B4).
     Prefers the directory the sqlite file itself lives in — co-located,
-    host-scoped, and stable across process restarts. Falls back to the system
-    temp dir for non-sqlite backends and the in-memory `sqlite://` tests use
-    (no file to co-locate with)."""
+    host-scoped, and stable across process restarts. Falls back to a
+    user-private subdirectory of the system temp dir for non-sqlite backends
+    and the in-memory `sqlite://` tests use (no file to co-locate with).
+
+    NEW-L3 fix: the fallback used to be the bare system temp dir, which on a
+    shared host (AGENTS.md's documented topology) is world-writable —
+    `O_NOFOLLOW` blocks a symlink attack but not another local user simply
+    pre-creating the lock FILE itself and holding an flock on it, which would
+    make this process see permanent `skipped_overlap` for no legitimate
+    reason. A per-uid, owner-only (0o700) subdirectory keeps the lock file
+    out of the shared, world-writable namespace."""
     s = settings or get_settings()
     try:
         url = make_url(s.database_url)
@@ -220,7 +269,22 @@ def _resolve_lock_dir(settings: Settings | None) -> Path:
             return Path(url.database).resolve().parent
     except Exception:  # pragma: no cover - defensive (malformed URL, etc.)
         pass
-    return Path(tempfile.gettempdir())
+    private_dir = Path(tempfile.gettempdir()) / f"probability-arena-crypto-tape-{os.getuid()}"
+    try:
+        private_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(private_dir, 0o700)
+    except OSError:  # pragma: no cover - defensive
+        return Path(tempfile.gettempdir())
+    return private_dir
+
+
+class LockUnavailableError(Exception):
+    """CRYPTO-COVERAGE-REPAIR-001 MEDIUM fix: raised by
+    `_reconcile_overlap_lock` when the lock FILE itself cannot be opened
+    (missing/unwritable lock directory, permission error, etc.) — distinct
+    from `yield False` (another pass legitimately holds the lock). Callers
+    must turn this into a typed `lock_unavailable` refused status, never let
+    it surface as an uncaught traceback."""
 
 
 @contextmanager
@@ -235,13 +299,22 @@ def _reconcile_overlap_lock(lock_dir: Path, chain: str):
     releases an flock automatically when the holding process dies, so a
     crashed pass can never leave a stale lock behind (no TOCTOU PID file, no
     unbounded wait). Yields True when acquired, False when another pass
-    already holds it. Mirrors `app.services.backup._backup_lock`."""
+    already holds it. Mirrors `app.services.backup._backup_lock`.
+
+    Raises `LockUnavailableError` (not OSError directly) if the lock FILE
+    itself cannot be opened — an unwritable/missing DB directory previously
+    produced an uncaught traceback here instead of a typed status."""
     try:
         lock_dir.mkdir(parents=True, exist_ok=True)
     except OSError:  # pragma: no cover - defensive
         pass
     lock_path = lock_dir / RECONCILE_LOCK_FILENAME.format(chain=chain)
-    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    try:
+        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    except OSError as exc:
+        raise LockUnavailableError(
+            f"cannot open overlap lock file {lock_path}: {exc}"
+        ) from exc
     try:
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -335,6 +408,7 @@ class CryptoLifecycleTapeRecorder:
     def _universe(
         self, session: Session, limit: int, cutoff: datetime,
         *, oldest_first: bool = False, exclude_final: bool = False,
+        max_first_seen_at: datetime | None = None,
     ) -> list[CryptoToken]:
         """Tokens in the window. `oldest_first` inverts the ordering for
         CRYPTO-COVERAGE-REPAIR-001: newest-first truncation drops exactly the
@@ -357,7 +431,19 @@ class CryptoLifecycleTapeRecorder:
         token in the window on every pass (see
         test_manual_path_still_appends_lifecycle_rows_unchanged); only the
         scheduled reconciler, whose whole point is state-driven selection,
-        opts in."""
+        opts in.
+
+        `max_first_seen_at` (CRYPTO-COVERAGE-REPAIR-001 HIGH-1) — when set,
+        drops tokens born AFTER this timestamp from the selection entirely.
+        Paired with `SHORTEST_HORIZON_CLOSING_EDGE_MINUTES` this excludes
+        tokens too young to have ANY horizon due yet: `compute_survival` only
+        sets `final=True` at the 24h+tolerance edge, so under
+        `exclude_final=True` alone every token younger than that stays
+        selectable and — because the youngest births vastly outnumber a
+        20s-deadline pass's throughput — becomes the STRUCTURAL steady state,
+        re-selected on every pass forever with nothing to learn. None keeps
+        the existing behaviour (manual/CLI path); only the scheduled
+        reconciler opts in."""
         order = (
             (CryptoToken.first_seen_at.asc(), CryptoToken.id.asc())
             if oldest_first
@@ -367,10 +453,15 @@ class CryptoLifecycleTapeRecorder:
             CryptoToken.chain == self.config.chain,
             CryptoToken.first_seen_at >= cutoff,
         )
+        if max_first_seen_at is not None:
+            stmt = stmt.where(CryptoToken.first_seen_at <= max_first_seen_at)
         if exclude_final:
             stmt = stmt.outerjoin(
                 CryptoTokenSurvivalOutcome,
-                CryptoTokenSurvivalOutcome.token_address == CryptoToken.token_address,
+                and_(
+                    CryptoTokenSurvivalOutcome.token_address == CryptoToken.token_address,
+                    CryptoTokenSurvivalOutcome.chain == CryptoToken.chain,
+                ),
             ).where(
                 or_(
                     CryptoTokenSurvivalOutcome.id.is_(None),
@@ -403,7 +494,10 @@ class CryptoLifecycleTapeRecorder:
             select(CryptoToken)
             .outerjoin(
                 CryptoTokenSurvivalOutcome,
-                CryptoTokenSurvivalOutcome.token_address == CryptoToken.token_address,
+                and_(
+                    CryptoTokenSurvivalOutcome.token_address == CryptoToken.token_address,
+                    CryptoTokenSurvivalOutcome.chain == CryptoToken.chain,
+                ),
             )
             .where(
                 CryptoToken.chain == self.config.chain,
@@ -427,7 +521,10 @@ class CryptoLifecycleTapeRecorder:
             .select_from(CryptoToken)
             .outerjoin(
                 CryptoTokenSurvivalOutcome,
-                CryptoTokenSurvivalOutcome.token_address == CryptoToken.token_address,
+                and_(
+                    CryptoTokenSurvivalOutcome.token_address == CryptoToken.token_address,
+                    CryptoTokenSurvivalOutcome.chain == CryptoToken.chain,
+                ),
             )
             .where(
                 CryptoToken.chain == self.config.chain,
@@ -441,6 +538,7 @@ class CryptoLifecycleTapeRecorder:
 
     def universe_size(
         self, session: Session, cutoff: datetime, *, exclude_final: bool = False,
+        max_first_seen_at: datetime | None = None,
     ) -> int:
         """How many tokens the window actually holds, independent of any limit.
         Without this a truncated pass is indistinguishable from a complete one,
@@ -450,7 +548,8 @@ class CryptoLifecycleTapeRecorder:
         `_universe`/`run_once` — otherwise a fully-reconciled (all-final)
         window counts as "work remains" against a selection query that has
         already correctly excluded that work, and every subsequent pass
-        reports a false `truncated`."""
+        reports a false `truncated`. `max_first_seen_at` must likewise mirror
+        `_universe`'s age exclusion (HIGH-1), for the same reason."""
         count_col = (
             func.count(func.distinct(CryptoToken.id))
             if exclude_final else func.count()
@@ -459,10 +558,15 @@ class CryptoLifecycleTapeRecorder:
             CryptoToken.chain == self.config.chain,
             CryptoToken.first_seen_at >= cutoff,
         )
+        if max_first_seen_at is not None:
+            stmt = stmt.where(CryptoToken.first_seen_at <= max_first_seen_at)
         if exclude_final:
             stmt = stmt.outerjoin(
                 CryptoTokenSurvivalOutcome,
-                CryptoTokenSurvivalOutcome.token_address == CryptoToken.token_address,
+                and_(
+                    CryptoTokenSurvivalOutcome.token_address == CryptoToken.token_address,
+                    CryptoTokenSurvivalOutcome.chain == CryptoToken.chain,
+                ),
             ).where(
                 or_(
                     CryptoTokenSurvivalOutcome.id.is_(None),
@@ -911,6 +1015,7 @@ class CryptoLifecycleTapeRecorder:
         oldest_first: bool = False,
         include_backlog: bool = False,
         exclude_final: bool = False,
+        min_age_minutes: float | None = None,
         run_config_extra: dict | None = None,
         skip_redundant_when_final: bool = False,
         batch_size: int | None = None,
@@ -956,17 +1061,35 @@ class CryptoLifecycleTapeRecorder:
           re-selecting the identical head. False keeps the manual path's
           historical "reprocess everything in the window, every pass"
           behaviour; only `run_scheduled_reconciliation` opts in.
+        * `min_age_minutes` (HIGH-1) — drop tokens younger than this from the
+          in-window selection entirely. `exclude_final` alone is not enough:
+          `compute_survival` only marks a token `final` at the 24h+tolerance
+          edge, so every token younger than that (the whole recent tail) stays
+          selectable forever and — since fresh births vastly outnumber a
+          bounded pass's throughput — becomes the structural steady state.
+          None keeps the manual path unchanged; only
+          `run_scheduled_reconciliation` opts in, with
+          `SHORTEST_HORIZON_CLOSING_EDGE_MINUTES` (no horizon can be due
+          before that age, so there is nothing yet to reconcile).
         """
         started = _now()
         limit = limit if limit is not None else self.config.default_limit
         hours = hours if hours is not None else self.config.default_window_hours
         cutoff = started - timedelta(hours=hours)
+        max_first_seen_at = (
+            started - timedelta(minutes=min_age_minutes)
+            if min_age_minutes is not None else None
+        )
         tokens = self._universe(
             session, limit, cutoff, oldest_first=oldest_first,
-            exclude_final=exclude_final,
+            exclude_final=exclude_final, max_first_seen_at=max_first_seen_at,
         )
-        total = self.universe_size(session, cutoff, exclude_final=exclude_final)
+        total = self.universe_size(
+            session, cutoff, exclude_final=exclude_final,
+            max_first_seen_at=max_first_seen_at,
+        )
         backlog_total = 0
+        backlog_selected = 0
         if include_backlog:
             # State-driven top-up: still-open outcomes that have aged out of the
             # window. Without this a missed pass loses a cohort permanently.
@@ -978,7 +1101,23 @@ class CryptoLifecycleTapeRecorder:
                     t for t in self.unreconciled_backlog(session, cutoff, limit=room)
                     if t.token_address not in seen
                 ]
-                tokens = tokens + extra
+                backlog_selected = len(extra)
+                # NEW-H1 fix: backlog tokens are the OLDEST evidence, closest
+                # to `crypto_retention_days` pruning (see `unreconciled_backlog`
+                # above) — that is the whole reason they exist as a top-up.
+                # Appending them AFTER the in-window head meant a
+                # deadline-stopped, chunked pass (the scheduled path always
+                # is one) processed batches in list order and could NEVER
+                # reach them: the in-window head alone (~615 non-final
+                # tokens at steady state) already exceeds one pass's
+                # throughput, so the backlog queued behind it forever — a
+                # one-way trapdoor where aged-out tokens accumulate and their
+                # ticks get pruned before a pass ever revisits them.
+                # Processing backlog FIRST guarantees forward progress on the
+                # evidence that is actually expiring, at the cost of the
+                # in-window head (which is not yet at risk of pruning and
+                # will still be picked up, oldest-first, by a future pass).
+                tokens = extra + tokens
         config = {"limit": limit, "hours": hours, "chain": self.config.chain}
         config.update(run_config_extra or {})
         summary = self._assemble_pass(
@@ -998,6 +1137,24 @@ class CryptoLifecycleTapeRecorder:
         summary["backlog_size"] = backlog_total
         summary["work_available"] = total + backlog_total
         tokens_accounted = summary.get("tokens_processed", len(tokens))
+        # NEW-H1: how much of the SELECTED backlog top-up (`backlog_selected`,
+        # placed first — see above) this pass actually reached, so the
+        # trapdoor is observable in the journal instead of silent (universe/
+        # backlog/truncated/omitted alone stayed constant across passes while
+        # it was live).
+        summary["backlog_processed"] = min(backlog_selected, tokens_accounted)
+        # MEDIUM fix (third re-review, M5): `truncated` and `tokens_omitted`
+        # answer two DIFFERENT questions and can legitimately disagree —
+        # `truncated` is SELECTION-limit-specific (did the query itself cap
+        # us below available work?), while `tokens_omitted` counts unreached
+        # work regardless of WHY (a `skipped_overlap`/`skipped_contention`
+        # pass reaches `tokens_accounted=0` — nothing was read or written —
+        # so `tokens_omitted` can be large while `truncated` stays False
+        # because the SELECTION itself was never capped). Read `truncated`
+        # as "raise --limit", and `tokens_omitted` as "how much reconcilable
+        # work exists right now, regardless of cause" — a caller that wants
+        # "why is work not getting done" should look at `status`/
+        # `stop_reason` first, not infer it from these two counts alone.
         summary["truncated"] = (total + backlog_total) > len(tokens)
         summary["tokens_omitted"] = max(0, (total + backlog_total) - tokens_accounted)
         summary.pop("_births", None)  # internal accounting, not part of the contract
@@ -1162,10 +1319,26 @@ class CryptoLifecycleTapeRecorder:
         handling (mark the run row, re-raise) applies unchanged. A bounded
         for-loop over a small, explicit `max_attempts`, never an unbounded
         loop — this module is audited for autonomy vocabulary (see
-        test_no_timer_or_daemon_vocabulary_in_session_code)."""
+        test_no_timer_or_daemon_vocabulary_in_session_code).
+
+        NEW-B1 fix: `prepare()` itself can hit the real DB lock, not just
+        `session.commit()`. After a rollback the ORM object(s) `prepare()`
+        mutates are EXPIRED, so a later ATTRIBUTE READ inside `prepare()`
+        (not just a write) lazy-loads from the DB — and because `prepare()`
+        typically stages OTHER dirty attribute writes first, SQLAlchemy's
+        autoflush fires before that lazy-load SELECT, emitting a real UPDATE
+        that can itself hit the lock. Before this fix `prepare()` was called
+        OUTSIDE the `try`, so that OperationalError propagated straight past
+        this ladder — measured: a real second-process lock holder raised
+        past this function with batches already durably committed, leaving
+        the run row orphaned at status='running' and the typed-result
+        contract broken on exactly the failure path this ladder exists for.
+        `prepare()` must be INSIDE the try so a lock hit during PREPARE gets
+        exactly the same retry/rollback treatment as a lock hit during
+        commit."""
         for attempt in range(1, max(1, max_attempts) + 1):
-            prepare()
             try:
+                prepare()
                 session.commit()
                 return True, attempt
             except OperationalError as exc:
@@ -1301,7 +1474,14 @@ class CryptoLifecycleTapeRecorder:
                     outcome.last_run_id = run.id
                     outcome.computed_at = started
                     outcomes += 1
-            elif dry_run:
+            elif dry_run and not already_final:
+                # NEW-M3 fix: mirror the non-dry-run "skip if already final,
+                # nothing to update" rule. Without `and not already_final` a
+                # dry-run probe overstated `outcomes_updated` for every
+                # already-final token it merely re-examined (harmless on the
+                # scheduled path only because exclude_final already removes
+                # those tokens from selection; a manual dry-run without
+                # exclude_final would overcount).
                 outcomes += 1
 
             if len(new_examples) < 5:
@@ -1553,6 +1733,11 @@ class CryptoLifecycleTapeRecorder:
                             )
                             if not dry_run:
                                 session.commit()
+                                # NEW-H1 fix: yield the write lock briefly
+                                # AFTER a real commit so a waiting competing
+                                # writer gets a genuine chance to win the
+                                # race — see RECONCILE_POST_BATCH_YIELD_SECONDS.
+                                sleeper(RECONCILE_POST_BATCH_YIELD_SECONDS)
                             break
                         except OperationalError as exc:
                             session.rollback()
@@ -1594,7 +1779,17 @@ class CryptoLifecycleTapeRecorder:
                     examples.extend(result["examples"][: 5 - len(examples)])
                 births_seen.extend(result["births_seen"])
                 tokens_processed += len(chunk)
-                batches_committed += 1
+                # NEW-M2 fix: `batches_committed` must count actual commits,
+                # not loop iterations. In chunked mode a dry run NEVER calls
+                # `session.commit()` (guarded by `if not dry_run` above), so
+                # counting the iteration itself overstated committed batches
+                # for a dry-run probe (observed: dry_run status=dry_run
+                # batches_committed=3 while a real after_commit listener saw
+                # 0 commits). Legacy (unbatched) mode still commits once at
+                # the very end in the real-run branch below, so incrementing
+                # here for a non-dry-run pass reflects real, imminent work.
+                if not dry_run:
+                    batches_committed += 1
 
             summary = {
                 "status": STATUS_DRY_RUN if dry_run else STATUS_OK,
@@ -1660,35 +1855,65 @@ class CryptoLifecycleTapeRecorder:
             finished = _now()
 
             if chunked:
+                # NEW-B1 fix (third review): `run.config` used to be read
+                # INSIDE `_prepare_finalize`, below. After any prior
+                # commit/rollback in this pass, `run` is EXPIRED
+                # (SQLAlchemy's default `expire_on_commit=True`, plus every
+                # rollback expires too) — so once `_prepare_finalize` had
+                # already staged OTHER dirty `run.*` attribute writes above
+                # this read, the read of the expired `run.config` attribute
+                # lazy-loads, autoflush fires on the now-dirty session, and
+                # that autoflush's UPDATE could itself hit a real lock —
+                # raising OperationalError from INSIDE `prepare()`, which
+                # (before the companion fix moving `prepare()` inside
+                # `_commit_with_retry`'s try) escaped the retry ladder
+                # entirely. Snapshotting the config value ONCE here, before
+                # any retry attempt (and before any dirty writes on `run`
+                # this closure stages), removes the lazy-load hazard at the
+                # source; `session.no_autoflush` below is defense in depth,
+                # not a substitute for this snapshot.
+                existing_config = dict(run.config or {})
+
                 def _prepare_finalize() -> None:
-                    run.status = summary["status"]
-                    run.finished_at = finished
-                    run.duration_ms = max(
-                        0, int((finished - started).total_seconds() * 1000)
-                    )
-                    run.tokens_considered = tokens_processed
-                    run.birth_events_created = new_births
-                    run.snapshots_created = snapshots
-                    run.actor_observations_created = actors
-                    run.outcomes_updated = outcomes
-                    run.provider_coverage = coverage_summary
-                    # NEW-H1 fix: B2's skip-when-final path makes
-                    # `snapshots_created`/`actor_observations_created` mean
-                    # different things depending on whether this run skipped
-                    # redundant writes for already-final tokens — without
-                    # recording that classification on the run row itself,
-                    # a later reader of the DB (e.g. build_tape_report) has
-                    # no way to tell "all tokens got a fresh snapshot" apart
-                    # from "only non-final tokens did".
-                    run.config = {
-                        **(run.config or {}),
-                        "write_classification": {
-                            "skip_redundant_when_final": skip_redundant_when_final,
-                            "snapshots_skipped_redundant": snapshots_skipped,
-                            "actor_observations_skipped_redundant": actors_skipped,
-                        },
-                    }
-                    session.add(run)
+                    with session.no_autoflush:
+                        run.status = summary["status"]
+                        run.finished_at = finished
+                        run.duration_ms = max(
+                            0, int((finished - started).total_seconds() * 1000)
+                        )
+                        run.tokens_considered = tokens_processed
+                        run.birth_events_created = new_births
+                        run.snapshots_created = snapshots
+                        run.actor_observations_created = actors
+                        run.outcomes_updated = outcomes
+                        run.provider_coverage = coverage_summary
+                        # NEW-H1 fix: B2's skip-when-final path makes
+                        # `snapshots_created`/`actor_observations_created`
+                        # mean different things depending on whether this run
+                        # skipped redundant writes for already-final tokens —
+                        # without recording that classification on the run
+                        # row itself, a later reader of the DB (e.g.
+                        # build_tape_report) has no way to tell "all tokens
+                        # got a fresh snapshot" apart from "only non-final
+                        # tokens did".
+                        run.config = {
+                            **existing_config,
+                            "write_classification": {
+                                "skip_redundant_when_final": skip_redundant_when_final,
+                                "snapshots_skipped_redundant": snapshots_skipped,
+                                "actor_observations_skipped_redundant": actors_skipped,
+                            },
+                            # MEDIUM fix: lock_retry_events/batches_committed
+                            # were only ever printed by the CLI, so
+                            # contention history died with journal rotation
+                            # on a host with documented lock contention.
+                            # Persisted here so it survives.
+                            "write_coordination": {
+                                "lock_retry_events": lock_retry_events,
+                                "batches_committed": batches_committed,
+                            },
+                        }
+                        session.add(run)
 
                 ok, attempts = self._commit_with_retry(
                     session, _prepare_finalize, max_lock_attempts,
@@ -2102,11 +2327,20 @@ def run_scheduled_reconciliation(
       from persisted rows, updating the outcome row in place. The pass is
       MOSTLY, not fully, row-idempotent: `_assemble_pass` APPENDS one
       lifecycle snapshot and one actor observation per token considered on
-      every pass UNLESS the token's outcome is already final, in which case
-      this path (only this path — B2) skips both as redundant (the window is
-      closed; nothing new can be learned). Neither table is covered by
-      `retention.py`. Budget roughly `2 x (tokens_considered -
-      already_final_tokens)` permanently retained rows per pass.
+      every pass. `skip_redundant_when_final` (B2) exists to skip that append
+      once a token's outcome is already final, but on THIS path it is
+      structurally INERT: this call always pairs it with `exclude_final=True`
+      (below), which already drops every already-final token from the
+      selected set at the query level — `final_by_birth_id` is therefore
+      all-False for every token this pass ever considers, so the
+      already-final branch can never trigger and
+      `snapshots_skipped_redundant`/`actor_observations_skipped_redundant`
+      stay 0 on every scheduled pass (see
+      test_scheduled_pass_is_row_idempotent_once_final and
+      test_scheduled_path_skip_redundant_structurally_inert). Neither table
+      is covered by `retention.py`. Budget `2 x tokens_processed` permanently
+      retained rows per pass (not reduced by any already-final skip on this
+      path).
     * Restart-safe (B3/B6): `run_once` commits in bounded batches
       (`crypto_tape_reconciler_batch_size`, default `RECONCILE_BATCH_SIZE`)
       instead of one transaction for the whole pass, and stops at an internal
@@ -2120,7 +2354,23 @@ def run_scheduled_reconciliation(
       pass, so a second concurrent instance (another scheduled tick, a manual
       tape session, a stray CLI run) never races this one on the same window;
       it gets `status="skipped_overlap"` instead of the IntegrityError this
-      milestone measured.
+      milestone measured. NEW-H3 CORRECTION (third re-review): this flock
+      does NOT, by itself, close the race against the exact-cycle anchor
+      feed (`record_discovery_run`) — that caller deliberately opts OUT of
+      the overlap lock (`use_overlap_lock=False`, a single bounded
+      transaction over a validated ≤40-token set that must never be skipped
+      by a held lock). What actually keeps the two callers' token sets
+      disjoint is the HIGH-1 age exclusion: `record_discovery_run` only ever
+      consolidates tokens at age ~0 (first persisted by the originating
+      discovery run, by construction), and this function excludes any token
+      younger than `SHORTEST_HORIZON_CLOSING_EDGE_MINUTES` from selection —
+      so under normal operation the sets never overlap. That is a strong
+      mitigation, not a proof for every possible clock/timing edge, so an
+      `IntegrityError` (the exact failure a live race produces — a raw
+      unique-constraint violation, NOT an `OperationalError`, so the
+      DB-locked retry ladder does not apply to it) is still caught below and
+      turned into a typed, non-zero-exit `status="concurrent_write_conflict"`
+      result rather than an uncaught traceback that would kill the unit.
     * Contention-safe (B5): reuses the same DB_LOCKED_* bounded retry ladder
       `run_tape_session` already uses, per batch commit. Exhausting it before
       even the run row can be created yields `status="skipped_contention"`
@@ -2211,6 +2461,13 @@ def run_scheduled_reconciliation(
             # its next invocation, and the wall-clock budget is never spent
             # re-walking tokens with nothing left to learn.
             exclude_final=True,
+            # HIGH-1 fix: tokens younger than the shortest horizon's own
+            # closing edge have NO horizon due yet (compute_survival can only
+            # set `final` at the 24h edge, so exclude_final alone leaves the
+            # whole recent tail selectable forever). Excluding them bounds
+            # selection to genuinely reconcilable tokens and removes the
+            # age-0 overlap with the exact-cycle anchor feed entirely.
+            min_age_minutes=SHORTEST_HORIZON_CLOSING_EDGE_MINUTES,
             run_config_extra={
                 "mode": "scheduled_reconciliation",
                 "forced": bool(force),
@@ -2236,6 +2493,26 @@ def run_scheduled_reconciliation(
             pass
         if _is_db_locked(exc):
             return _refused("db_locked", "database is locked; pass abandoned")
+        if isinstance(exc, LockUnavailableError):
+            # MEDIUM fix: an unwritable/missing lock directory previously
+            # produced an uncaught traceback here; report a typed refused
+            # status instead (the CLI turns this into a non-zero exit, same
+            # as db_locked/skipped_overlap/skipped_contention).
+            return _refused(STATUS_LOCK_UNAVAILABLE, str(exc))
+        if isinstance(exc, IntegrityError):
+            # NEW-H3 fix: the exact-cycle anchor feed (`record_discovery_run`)
+            # deliberately opts out of the overlap lock, so a residual race
+            # (if the HIGH-1 age-disjointness mitigation is ever defeated by
+            # a clock/timing edge) surfaces as a real IntegrityError, not an
+            # OperationalError — the DB-locked retry ladder never applies to
+            # it. This used to propagate uncaught and kill the systemd unit;
+            # now it is a typed, non-zero-exit refused status.
+            return _refused(
+                STATUS_CONCURRENT_WRITE_CONFLICT,
+                f"unique-constraint conflict during reconciliation, most "
+                f"likely a race with a concurrent tape writer outside the "
+                f"overlap lock (e.g. the exact-cycle anchor feed): {exc}",
+            )
         raise
 
     # `run_once` may already have returned a terminal, non-"ok" status
@@ -2450,9 +2727,12 @@ async def run_tape_session(
             }
 
     # rows written before an abort, computed from the successful captures
-    # (independent of the DB summary, so it survives a poisoned session)
+    # (independent of the DB summary, so it survives a poisoned session).
+    # NEW-L1 fix: a `skipped_overlap` capture writes NOTHING (the pass never
+    # got past the flock) — it must not count "1" for a run row that was
+    # never created; only real (non-skipped-overlap) captures wrote a run row.
     rows_written_before_abort = sum(
-        1  # the run row itself
+        (1 if c.get("status") != STATUS_SKIPPED_OVERLAP else 0)  # the run row
         + c.get("birth_events_created", 0)
         + c.get("snapshots_created", 0)
         + c.get("actor_observations_created", 0)
