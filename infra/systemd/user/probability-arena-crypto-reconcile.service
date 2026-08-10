@@ -19,19 +19,26 @@ WorkingDirectory=%h/projects/probability-arena
 EnvironmentFile=%h/projects/probability-arena/.env
 ExecStart=%h/projects/probability-arena/.venv/bin/python -m app.cli crypto-tape-reconcile
 NoNewPrivileges=true
-# The pass holds a SQLite write transaction while it runs, on a host with a
+# The pass commits in bounded batches (each individual write-lock hold is a
+# small fraction of a second, not the whole pass — see crypto_tape.py's
+# RECONCILE_BATCH_SIZE comment), but this is a SQLite writer on a host with a
 # 5-minute MarketOps timer, a continuously-writing watcher, and a documented
-# lock-contention history. Yield CPU and IO so reconciliation never wins a
-# scheduling contest against the live lanes.
+# lock-contention history, and a competing writer's worst-case WAIT still
+# tracks this pass's WALL TIME, not the per-batch hold (measured: SQLite's
+# busy handler loses the lock race against ~80 back-to-back short write
+# transactions almost as easily as against one long one — see NEW-H2 in
+# crypto_tape.py and app/config.py). Yield CPU and IO so reconciliation never
+# wins a scheduling contest against the live lanes.
 Nice=10
 CPUWeight=20
 IOWeight=20
-# NOT a licence to run long. The scheduled pass commits in bounded batches
-# (default 25 tokens) and stops at an internal wall-clock deadline (default
-# 20s), so its wall clock is no longer the same thing as its write-lock-hold
-# clock — the lock is only held per-batch, for a small fraction of a second at
-# a time. This value is still kept tight as a hard outer bound on the whole
-# unit invocation, independent of the per-pass deadline.
+# NOT a licence to run long. The scheduled pass stops at an internal
+# wall-clock deadline (default 20s = crypto_tape_reconciler_max_duration_seconds)
+# plus at most one in-flight batch; that combined figure — NOT the per-batch
+# write-lock hold — is the honest bound on how long a competing writer can be
+# blocked, and at the shipped default it is >=67% of the 30s busy_timeout.
+# This TimeoutStartSec value is a separate, tighter, hard outer bound on the
+# whole unit invocation.
 TimeoutStartSec=10min
 
 [Install]

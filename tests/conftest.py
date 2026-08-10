@@ -20,6 +20,29 @@ def _isolate_sqlite_telemetry(tmp_path, monkeypatch):
     _telemetry_sink._sink = None
 
 
+@pytest.fixture(autouse=True)
+def _isolate_crypto_tape_overlap_lock(tmp_path, monkeypatch):
+    """CRYPTO-COVERAGE-REPAIR-001 NEW-M4: `_resolve_lock_dir` derives the
+    reconciliation overlap flock's directory from `settings.database_url`.
+    On any host where `.env` sets a real sqlite DATABASE_URL (production,
+    EVO, some CI configurations), a Settings object built without an
+    explicit `database_url` override — which is how every crypto-tape test's
+    `_settings()`-style helper builds one — inherits that real path. Without
+    this, running the suite there would take the SAME
+    `.crypto-tape-reconcile-{chain}.lock` file the production
+    `probability-arena-crypto-reconcile.timer` uses: the real timer could get
+    `skipped_overlap`-failed by the test suite, and the suite could be
+    blocked by the real timer for its duration. Force every crypto-tape
+    overlap lock any test takes into a per-test tmp_path, unconditionally —
+    tests that pass their own explicit `lock_dir` (via `CryptoTapeConfig`)
+    are unaffected, since `_resolve_lock_dir` is only reached when no
+    explicit `lock_dir` was given."""
+    import app.services.crypto_tape as tape_mod
+
+    lock_dir = tmp_path / "crypto-tape-overlap-lock"
+    monkeypatch.setattr(tape_mod, "_resolve_lock_dir", lambda settings=None: lock_dir)
+
+
 @pytest.fixture
 def sample_kalshi_market() -> dict:
     """Raw market object shaped like GET /trade-api/v2/markets output."""

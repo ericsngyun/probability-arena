@@ -183,6 +183,36 @@ class TestSession:
         assert fake.calls == 2                     # loop stopped
         assert len(sleeper.calls) == 1             # only the sleep before capture 2
 
+    async def test_transient_overlap_skips_the_capture_not_the_session(self, session):
+        """NEW-H3 fix (third review). `run_once`'s overlap flock now defaults
+        ON, so a scheduled reconciliation pass — fires up to 4x/day — can
+        transiently hold the per-chain lock during exactly one capture of a
+        bounded manual session. That must not kill the whole session: the
+        overlap capture is skipped and the session continues to completion."""
+        fake = FakeRecorder(results=[
+            {"status": "skipped_overlap", "tokens_considered": 0,
+             "external_calls": 0, "survival_label_mix": {}, "tape_run_id": None},
+            {"status": "ok", "tokens_considered": 5, "external_calls": 0,
+             "survival_label_mix": {}, "tape_run_id": 1},
+            {"status": "ok", "tokens_considered": 5, "external_calls": 0,
+             "survival_label_mix": {}, "tape_run_id": 2},
+        ])
+        sleeper = FakeSleeper()
+        r = await run_tape_session(
+            session, recorder=fake, duration_hours=1, interval_min=20,
+            sleeper=sleeper,
+        )
+        assert r["status"] == "ok"
+        assert r["aborted"] is False
+        assert r["abort_reason"] is None
+        assert fake.calls == 3                       # every planned capture ran
+        assert r["captures_run"] == 3
+        assert r["capture_statuses"] == ["skipped_overlap", "ok", "ok"]
+        assert r["overlap_skipped_captures"] == 1
+        # the session still slept between EVERY capture, including around
+        # the skipped one — it did not fast-forward or hang
+        assert len(sleeper.calls) == 2
+
     async def test_abort_on_marketops_degradation(self, session):
         session.add(MarketOpsRun(status="error"))
         session.flush()

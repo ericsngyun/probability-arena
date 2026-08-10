@@ -1344,3 +1344,69 @@ def test_cli_run_once_under_a_held_overlap_lock_does_not_exit_0(
     out = capsys.readouterr().out
     assert "status=skipped_overlap" in out
     assert "error:" in out
+
+
+# --- third review LOW-3: zero committed batches must not be "partial" -------
+
+def test_zero_batches_committed_is_skipped_contention_not_partial(
+    session, monkeypatch,
+):
+    """LOW-3. If the very FIRST token batch exhausts its own commit retry
+    ladder before anything is written, the pass must not report
+    `status="partial"` with a message claiming "already-committed batches
+    are durable" — describing zero batches. `batches_committed == 0` is
+    functionally the same "nothing was written this pass" shape as the
+    run-row-creation contention failure (which already reports
+    `skipped_contention`); label it the same way."""
+    for i in range(6):
+        _mint(session, f"tok-lowe3-{i}", born_hours_ago=30, liquidity=10_000.0)
+
+    real_commit = type(session).commit
+    calls = {"n": 0}
+
+    def flaky_commit(self):
+        calls["n"] += 1
+        # call 1 = run-row creation (real); calls 2-3 = batch 1's 2-attempt
+        # retry ladder, both locked; call 4+ = finalize, real (isolates this
+        # test to the batch-1-never-committed case, not a finalize failure).
+        if calls["n"] in (2, 3):
+            raise OperationalError("INSERT ...", {}, Exception("database is locked"))
+        return real_commit(self)
+
+    monkeypatch.setattr(type(session), "commit", flaky_commit)
+    rec = CryptoLifecycleTapeRecorder()
+    r = rec.run_once(
+        session, limit=100, hours=48, batch_size=2,
+        max_lock_attempts=2, lock_retry_seconds=0.0,
+        sleeper=lambda seconds: None,
+    )
+    assert r["status"] == "skipped_contention"
+    assert r["batches_committed"] == 0
+    assert "nothing was reconciled" in r["error"]
+    assert "already-committed batches are durable" not in r["error"]
+
+
+# --- third review NEW-M4: the overlap lock must not touch the real DB dir ---
+
+def test_overlap_lock_dir_is_isolated_from_a_real_sqlite_database_url(tmp_path):
+    """NEW-M4 regression pin. `_resolve_lock_dir` derives the overlap lock's
+    directory from `settings.database_url`. On a host where `.env` sets a
+    real sqlite path (production, EVO, some CI configurations), a Settings
+    object this file's `_settings()` helper builds — which never overrides
+    `database_url` — would otherwise resolve the lock to that REAL data
+    directory: running this suite there would take the SAME
+    `.crypto-tape-reconcile-{chain}.lock` file the production timer uses.
+    `tests/conftest.py::_isolate_crypto_tape_overlap_lock` (autouse) must
+    force it into an isolated tmp_path instead; this proves that isolation
+    is actually ACTIVE during test collection, not just present in
+    conftest.py's source and silently not wired up."""
+    from app.services.crypto_tape import _resolve_lock_dir
+
+    # shaped exactly like a real deployed .env would set it (relative sqlite
+    # path under the repo's data/ directory) — the case NEW-M4 measured.
+    fake_prod_settings = Settings(
+        database_url="sqlite:///./data/probability_arena.db"
+    )
+    resolved = _resolve_lock_dir(fake_prod_settings)
+    assert resolved == tmp_path / "crypto-tape-overlap-lock"
+    assert "data" not in resolved.parts

@@ -147,16 +147,34 @@ unscheduled.
   path commits in bounded batches (`crypto_tape_reconciler_batch_size`,
   default 25 tokens) instead of one transaction for the whole pass, and stops
   at an internal wall-clock deadline
-  (`crypto_tape_reconciler_max_duration_seconds`, default 20s). A 25-token
-  batch's own write phase measured well under one second at production
-  density in the profiling session that set this default; the scheduled
-  path's end-to-end wall-clock time on EVO-X2, with this batching in place,
-  has **not yet been measured** — measure it before relying on the 20s
-  deadline being generous. (Earlier, pre-fix figure for reference only, NOT
-  current behaviour: one single-transaction dry run measured 105.2s for 819
-  tokens on EVO-X2 — that shape is what this fix replaced.) It runs
-  `Nice=10 IOWeight=20` and aborts when the latest MarketOps run errored.
-  Exit code is non-zero on a refused, truncated, partial, locked, or
+  (`crypto_tape_reconciler_max_duration_seconds`, default 20s).
+  **Two different metrics, do not conflate them (third review, NEW-H2):**
+  - The per-commit **write-lock hold** genuinely collapsed: measured
+    8.5-40.8s max hold in the legacy single-transaction shape down to
+    0.16-1.73s at 2000 tokens with batching.
+  - A competing writer's **worst-case wait does NOT track that hold** — it
+    tracks the reconciler's **pass wall time**. Measured wall-clock
+    competitor blocking was comparable between legacy and batched (6.79s vs
+    6.75s, 8.10s vs 8.18s in two reps), and in a third rep the BATCHED run
+    blocked the competitor LONGER than the legacy comparison (13.68s vs
+    9.88s). All of that wait was in `BEGIN IMMEDIATE`, never in `COMMIT`:
+    ~80 back-to-back short write transactions give SQLite's sleeping busy
+    handler ~80 chances to lose the lock race — classic writer starvation,
+    not a hold-duration problem. (Control: a read-only `dry_run` of 9.12s
+    produced a max competitor wait of only 0.076s, ruling out the read span
+    as the cause.)
+  - The honest bound on a competing writer's exposure is therefore
+    `crypto_tape_reconciler_max_duration_seconds` (20s) **plus one batch**,
+    i.e. **>=67% of the 30s `sqlite_busy_timeout_ms`** — not the sub-second
+    per-batch hold, and not a small percentage of the busy timeout. The
+    scheduled path's actual end-to-end wall-clock time on EVO-X2 has **not
+    yet been re-measured** since this fix — do that before relying on the
+    20s deadline being generous in practice. (Earlier, pre-fix figure for
+    reference only, NOT current behaviour: one single-transaction dry run
+    measured 105.2s for 819 tokens on EVO-X2 — that shape is what this fix
+    replaced.)
+  It runs `Nice=10 IOWeight=20` and aborts when the latest MarketOps run
+  errored. Exit code is non-zero on a refused, truncated, partial, locked, or
   overlap-skipped pass — a green unit that reconciled nothing is exactly the
   failure this milestone removes.
 - Result statuses to watch for in the journal, beyond plain `ok`/`disabled`:

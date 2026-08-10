@@ -383,12 +383,25 @@ class Settings(BaseSettings):
     # CRYPTO-COVERAGE-REPAIR-001 B3/B6 — write-coordination hardening. The
     # measured blocker: one commit for the whole pass held SQLite's write
     # lock for 36.9s at production density, blocking a competing writer 97%
-    # of a 30s busy_timeout. Bounded batches keep each commit's lock hold to
-    # a small fraction of a second; the internal deadline keeps one pass from
-    # running indefinitely (the remainder simply becomes next-pass backlog,
-    # never lost — see `unreconciled_backlog`). Both default to the values
-    # `app.services.crypto_tape` measured; change only with a fresh
-    # benchmark.
+    # of a 30s busy_timeout. Bounded batches keep each individual commit's
+    # lock hold to a small fraction of a second — that part is real and
+    # measured (8.5-40.8s max hold -> 0.16-1.73s at 2000 tokens).
+    #
+    # RESTATED after a third review (NEW-H2): that per-commit hold reduction
+    # does NOT mean a competing writer's worst-case wait drops proportionally.
+    # SQLite's busy handler loses the lock race against ~80 back-to-back short
+    # write transactions almost as easily as against one long one — measured
+    # wall-clock competitor blocking was comparable between the legacy and
+    # batched shapes (6.79s vs 6.75s and 8.10s vs 8.18s in two reps; in a
+    # third, the BATCHED run blocked the competitor for LONGER: 13.68s vs
+    # 9.88s). The honest bound on a competing writer's exposure is
+    # `crypto_tape_reconciler_max_duration_seconds` (below) plus one batch,
+    # not the per-commit hold — at the shipped default that is >=67% of a
+    # 30s busy_timeout, not a small fraction of it. The internal deadline
+    # keeps one pass from running indefinitely (the remainder simply becomes
+    # next-pass backlog, never lost — see `unreconciled_backlog`). Both
+    # default to the values `app.services.crypto_tape` measured; change only
+    # with a fresh benchmark.
     crypto_tape_reconciler_batch_size: int = 25
     crypto_tape_reconciler_max_duration_seconds: float = 20.0
 

@@ -153,12 +153,36 @@ ABORT_DB_LOCKED = "database_locked"
 # CRYPTO-COVERAGE-REPAIR-001 debugging session): at ~51 ticks/28 discovery
 # events/23 risk assessments/2 pairs per token, a 25-token batch's write phase
 # measured well under one second.
+#
+# THIRD REVIEW (NEW-H2), restating what this batching does and does not
+# bound, against a pinned measurement at 35dec32 vs. the batched version at
+# 2000 tokens: batching genuinely collapses the max SINGLE WRITE-LOCK HOLD
+# (8.5-40.8s -> 0.16-1.73s) — that improvement is real and unchanged by this
+# note. But a competing writer's worst-case WAIT tracks the reconciler's PASS
+# WALL TIME, not the batch hold: measured 6.79s vs 6.75s wall for legacy vs.
+# batched, 8.10s vs 8.18s wall in a second rep, and in a THIRD rep the
+# batched run blocked the competitor LONGER than the legacy comparison
+# (13.68s vs 9.88s). All of the wait was in BEGIN IMMEDIATE, never in COMMIT.
+# Mechanism: ~80 back-to-back short write transactions give SQLite's
+# sleeping busy handler ~80 chances to lose the race for the lock against a
+# reconciler that keeps re-acquiring it — classic writer starvation, not a
+# hold-duration problem. (Control: a read-only dry_run of 9.12s produced a
+# max competitor wait of 0.076s, ruling out the read span as the cause.) The
+# honest bound on a competing writer's exposure is therefore
+# RECONCILE_MAX_DURATION_SECONDS (below) plus one batch — NOT the per-batch
+# hold duration, and NOT the "~3%" figure that per-batch hold alone would
+# suggest.
 RECONCILE_BATCH_SIZE = 25
 # Internal wall-clock deadline for one `run_once` call. None = unbounded
 # (existing manual-path behaviour, unchanged). The scheduled path sets this so
 # one pass can never run indefinitely; remaining tokens simply stay backlog
 # for the next scheduled pass (oldest-first + state-driven selection already
 # guarantee they are not starved — see `unreconciled_backlog`).
+#
+# This value (plus one batch's worth of wall time past it) is the honest
+# bound on a competing writer's worst-case wait against this pass — see the
+# NEW-H2 note on RECONCILE_BATCH_SIZE above. At the shipped default that is
+# >=67% of the 30s SQLite busy_timeout, not a small fraction of it.
 RECONCILE_MAX_DURATION_SECONDS = 20.0
 # Overlap guard: a coordination-only flock file, one per chain, living next to
 # the sqlite file itself (or the system temp dir for non-sqlite/in-memory
@@ -1608,6 +1632,19 @@ class CryptoLifecycleTapeRecorder:
                         "writes) and nothing beyond the examined tokens was "
                         "measured"
                     )
+                elif stop_reason == "contention" and batches_committed == 0:
+                    # LOW-3 fix: the first token batch itself exhausted the
+                    # retry ladder before committing anything. "partial" with
+                    # "already-committed batches are durable" would describe
+                    # zero batches — a lie. This is the same "nothing was
+                    # written this pass" shape as the run-row-creation
+                    # contention failure above; label it the same way.
+                    summary["status"] = STATUS_SKIPPED_CONTENTION
+                    summary["error"] = (
+                        "database is locked; the first token batch exhausted "
+                        f"{max_lock_attempts} commit attempts before anything "
+                        "was written — nothing was reconciled this pass"
+                    )
                 else:
                     summary["status"] = STATUS_PARTIAL
                     summary["error"] = (
@@ -1666,13 +1703,26 @@ class CryptoLifecycleTapeRecorder:
                     # itself already succeeded (or partially succeeded);
                     # losing the summary row is not the same failure as
                     # losing data.
-                    summary["status"] = STATUS_PARTIAL
+                    #
+                    # LOW-3: if zero batches actually committed (e.g. the
+                    # very first batch already exhausted its own retry ladder
+                    # and set skipped_contention above), the finalize failure
+                    # must NOT overwrite that with "partial" — "partial"
+                    # implies some batches are durable, which would be false
+                    # here on top of false.
+                    summary["status"] = (
+                        STATUS_PARTIAL if batches_committed > 0
+                        else STATUS_SKIPPED_CONTENTION
+                    )
                     summary["stop_reason"] = summary["stop_reason"] or "contention"
                     summary["tape_run_id"] = run.id
                     finalize_error = (
                         "reconciliation batches committed, but the run row's "
                         "own finalize commit could not acquire the lock; the "
                         "run row stays status=running"
+                    ) if batches_committed > 0 else (
+                        "the run row's own finalize commit could not acquire "
+                        "the lock either; the run row stays status=running"
                     )
                     # Append, don't replace: a deadline/contention stop
                     # earlier in the pass already set an "N batches / X of Y
@@ -2259,10 +2309,15 @@ async def run_tape_session(
 ) -> dict:
     """Bounded manual tape session: a fixed, hard-capped number of derived
     run_once passes with a sleep between, then exit. Aborts on abnormal pass
-    status or a detectable MarketOps error. Lock-safe: a capture that hits a
-    locked DB is rolled back and retried up to `max_lock_attempts`; a
-    persistent lock aborts cleanly (reason=database_locked) with the session
-    already rolled back. Measurement only — never advice."""
+    status or a detectable MarketOps error — EXCEPT a transient overlap
+    (`status="skipped_overlap"`, the scheduled reconciler holding the
+    per-chain lock for this one capture), which is expected routine
+    contention between two legitimate passes: that capture is skipped and
+    the session continues (see `overlap_skipped_captures` in the result).
+    Lock-safe: a capture that hits a locked DB is rolled back and retried up
+    to `max_lock_attempts`; a persistent lock aborts cleanly
+    (reason=database_locked) with the session already rolled back.
+    Measurement only — never advice."""
     import asyncio
 
     sleeper = sleeper or asyncio.sleep
@@ -2292,6 +2347,7 @@ async def run_tape_session(
             "captures_planned": captures_planned,
             "captures_run": 1,
             "capture_statuses": [probe["status"]],
+            "overlap_skipped_captures": 0,
             "planned_schedule_min": planned_schedule_min,
             "rows_written_before_abort": 0,
             "probe": {
@@ -2309,6 +2365,7 @@ async def run_tape_session(
     run_ids: list[int] = []
     abort_reason = None
     failed_capture_index: int | None = None
+    overlap_skipped_captures = 0
     for i in range(captures_planned):
         # --- one capture with bounded, lock-safe retry -------------------------
         result = None
@@ -2346,6 +2403,22 @@ async def run_tape_session(
         captures.append(result)
         if result.get("tape_run_id"):
             run_ids.append(result["tape_run_id"])
+        if result["status"] == STATUS_SKIPPED_OVERLAP:
+            # NEW-H3 fix: `run_once`'s overlap flock now defaults ON, so a
+            # scheduled reconciliation pass (fires up to 4x/day) can
+            # transiently hold the lock during exactly one capture window of
+            # a bounded manual session. That is expected, routine contention
+            # between two legitimate passes — not a reason to kill an entire
+            # 6h/36h session. Skip THIS capture and continue; every other
+            # non-ok status still aborts the session below, unchanged.
+            overlap_skipped_captures += 1
+            logger.warning(
+                "crypto tape session: capture %d skipped (overlap lock held "
+                "by another reconciliation pass); continuing", i + 1,
+            )
+            if i < captures_planned - 1:
+                await sleeper(interval_min * 60)
+            continue
         if result["status"] != STATUS_OK:
             failed_capture_index = i
             abort_reason = f"capture {i + 1} status={result['status']}"
@@ -2399,6 +2472,7 @@ async def run_tape_session(
         "captures_planned": captures_planned,
         "captures_run": len(captures),
         "capture_statuses": [c["status"] for c in captures],
+        "overlap_skipped_captures": overlap_skipped_captures,
         "planned_schedule_min": planned_schedule_min,
         "provider_gap_trend": trend,
         "rows_written_before_abort": rows_written_before_abort,

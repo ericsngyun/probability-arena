@@ -28,10 +28,12 @@ RandomizedDelaySec=300
 # recovers anything older), whereas a catch-up firing lands in the boot storm
 # alongside marketops OnBootSec=2min, meme-news 3min and tick-aggregation 5min,
 # with the watcher already writing. The pass now holds its write lock only
-# per-batch (a small fraction of a second at a time, not the whole pass), but
-# landing an extra SQLite writer — of any hold shape — in that boot-storm
-# window is still worth avoiding, which is the point of deferring a missed
-# pass to the next scheduled tick instead of catching up immediately.
+# per-batch (a small fraction of a second at a time, not the whole pass) —
+# but a competing writer's worst-case WAIT still tracks this pass's WALL TIME
+# (up to ~20s plus one batch, measured; see NEW-H2 in crypto_tape.py), not
+# that per-batch hold, so landing this writer in the boot-storm window is
+# still worth avoiding — which is the point of deferring a missed pass to the
+# next scheduled tick instead of catching up immediately.
 Persistent=false
 Unit=probability-arena-crypto-reconcile.service
 

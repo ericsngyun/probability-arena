@@ -291,3 +291,92 @@ at 2.88 GB near its 3.07 GB gate**. WAL-HEALTH-001 follows immediately once the 
 confirms the rate. None of this is implemented now; all of it waits until after the
 2026-07-23 candidate-readiness checkpoint, because every writer analyzed here is the
 frozen active runtime.
+
+## Addendum (2026-08) — CRYPTO-COVERAGE-REPAIR-001 registers a new writer
+
+The audit above is pinned at `2e2b86f`/EVO `3f742c9` and is intentionally left
+unchanged above this line. CRYPTO-COVERAGE-REPAIR-001 (branch
+`worktree/crypto-coverage-repair`, **not merged, not deployed**) both adds a
+new scheduled writer this doc's registry must know about and changes the
+commit shape of the existing manual `crypto-tape` row (line 60/125/154
+above), which otherwise still describes the pre-fix shape.
+
+**New writer: `probability-arena-crypto-reconcile.timer`.**
+
+| Writer | Entry | Sched | Session | Tables written | Commit shape | Network in open txn? | Retry class |
+|---|---|---|---|---|---|---|---|
+| **crypto-tape reconciler** `run_scheduled_reconciliation`→`run_once` (`crypto_tape.py`) | `crypto-tape-reconcile` | timer 4×/day (03/09/15/21:20 UTC, `RandomizedDelaySec=300`) | owns | lifecycle tape (birth/outcome upsert) | **per-batch** (default 25 tokens/commit) + one finalize commit — **not** the single terminal commit the pre-fix `crypto-tape` row above describes | **no** — DB-only (`external_calls=0`) | `BOUNDED_RETRY_SAFE` PER BATCH (below) |
+
+**Commit-shape reclassification.** The pre-fix `crypto-tape` row (line 60/125
+above) belongs in this doc's "one terminal commit over a long loop" group
+(alongside `crypto_scout`/horizon observe). The scheduled reconciler path
+now belongs in the **"commits inside loops"** group instead (alongside
+outcomes/calibration/retention/tick-aggregation) — each batch commit is
+small and bounded. The **manual** `crypto-tape-run-once`/`crypto-tape-session`
+path (no `batch_size`) is UNCHANGED: still one terminal commit, still in the
+"one terminal commit over a long loop" group. Both shapes now coexist behind
+the same `run_once` entry point, gated by whether the caller opts into
+`batch_size`/`max_duration_seconds`.
+
+**Retry class, more precisely than "BOUNDED_RETRY_SAFE" alone conveys.** The
+scheduled path's retry ladder applies **per batch commit**, re-staging via
+`_process_batch` being re-invoked on retry (not a bare `session.commit()`
+retry) — this is the closest sibling to tick-aggregation's `apply_fn`
+re-invoke pattern in the Retry-and-lock-policy table above, not to the
+pre-fix crypto-tape row's "retries whole `run_once`" shape. Exhausting the
+ladder on the very first batch (nothing committed yet) yields
+`status="skipped_contention"`; exhausting it after some batches already
+committed yields `status="partial"`/`stop_reason="contention"` (both
+distinct from a plain "ok").
+
+**New guard mechanism this doc has no column for: an advisory kernel flock.**
+Neither the Writer inventory nor the Retry-and-lock-policy table above has a
+column for a coordination lock that is NOT SQLite's own busy-timeout/journal
+locking. The scheduled reconciler (and, by default, the manual path too) now
+takes a non-blocking, per-chain `flock` (`.crypto-tape-reconcile-{chain}.lock`,
+co-located with the sqlite file) around the whole pass before touching the
+database at all — orthogonal to, and layered ON TOP OF, everything this
+doc's Retry-and-lock-policy table describes. It exists to prevent a DIFFERENT
+failure this audit did not need to consider for the pre-fix single-caller
+shape: two `crypto-tape` passes (now that one runs on a timer AND one runs
+manually) racing the pre-transaction `existing_births` read against each
+other and corrupting neither pass's writes but discarding one entirely via
+`IntegrityError`. A held lock is reported as `status="skipped_overlap"`, not
+retried, not a `database is locked` error — it never reaches SQLite's own
+locking at all.
+
+**Contention class, stated honestly (do not reuse the write-lock-hold
+figures below as a safety bound).** Chunking genuinely collapses the
+reconciler's max SINGLE write-lock HOLD: **8.5-40.8s -> 0.16-1.73s at 2000
+tokens**, measured. It does **NOT** proportionally reduce a competing
+writer's worst-case WAIT, which tracks the reconciler's PASS WALL TIME
+instead: measured wall-clock competitor blocking was comparable between the
+legacy and batched shapes (6.79s vs 6.75s, 8.10s vs 8.18s across two reps),
+and in a third rep the BATCHED run blocked the competitor LONGER than the
+legacy comparison (13.68s vs 9.88s). All of that wait sat in `BEGIN
+IMMEDIATE`, never in `COMMIT`. Mechanism: ~80 back-to-back short write
+transactions give SQLite's sleeping busy handler ~80 chances to lose the
+lock race against this pass — measured against a competing writer retrying
+at a 20ms cadence — classic writer starvation, not a hold-duration problem; this is the same class of contention this doc's
+Executive verdict already names for `crypto_scout` (line 22-32 above),
+arrived at by a different mechanism (many short holds vs. one long one). The
+honest bound on a competing writer's exposure to the scheduled reconciler is
+`crypto_tape_reconciler_max_duration_seconds` (20s) **plus one batch — i.e.
+>=67% of the 30s busy-timeout**, not a small fraction of it as the
+per-commit hold figure alone would suggest.
+
+**Failure-mode 15 (line 217 above) is explicitly NOT closed by this
+milestone**, despite adding a two-connection shared-file busy-timeout
+integration test (`test_two_connection_file_backed_busy_timeout_and_retry_ladder`
+in `tests/test_crypto_coverage_repair_001.py`). That test's holder thread
+takes `RESERVED` on the shared file BEFORE the reconciliation pass starts, so
+the pass's very first write (the run-row creation commit) exhausts its own
+retry ladder and returns immediately — instrumented and confirmed:
+`_process_batch` call count is **0** in that test, so `batch_size=5` is
+inert and the per-batch retry ladder this milestone added is never actually
+exercised by it. The test also uses `connect_args={"timeout": 0.2}` rather
+than the app's real `sqlite_busy_timeout_ms=30000`, so it is not even
+timing-representative of the production busy-timeout. A test that reaches
+the batch retry ladder (holder acquires the lock mid-pass, after at least one
+batch has already committed) and uses the app's real busy-timeout is still
+missing — failure-mode 15 stays open.
