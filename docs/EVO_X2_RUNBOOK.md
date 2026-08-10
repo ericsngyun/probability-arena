@@ -116,30 +116,73 @@ manual passes only: `crypto-scan-once --limit 25` → `crypto-report` →
 Read-only DEX Screener GETs; no wallets/swaps/execution exist anywhere.
 
 **CRYPTO-COVERAGE-REPAIR-001 — the deliberate rollout step this doc anticipated.**
-There is now exactly one crypto timer:
-`probability-arena-crypto-reconcile.timer` (03/09/15/21:20 UTC), running
-`crypto-tape-reconcile`. It is **provider-free** — zero external calls, zero
-provider budget — and exists because survival horizons never matured: production
-MarketOps only runs the exact-cycle anchor feed, which by construction sees each
-token once at age ~0 when no horizon is due, while the windowed reconciler that
-would revisit matured tokens was CLI-only and unscheduled.
+This milestone ships a crypto timer unit
+(`infra/systemd/user/probability-arena-crypto-reconcile.{service,timer}`,
+03/09/15/21:20 UTC, running `crypto-tape-reconcile`) on branch
+`worktree/crypto-coverage-repair`. **As of this writing that branch is not
+merged to `main` and NOTHING is installed on EVO-X2** — there is still zero
+crypto timers running in production. The steps below are what an operator
+must do, in order, to change that; do not read this section as describing
+current host state. It is **provider-free** — zero external calls, zero
+provider budget — and exists because survival horizons never matured:
+production MarketOps only runs the exact-cycle anchor feed, which by
+construction sees each token once at age ~0 when no horizon is due, while the
+windowed reconciler that would revisit matured tokens was CLI-only and
+unscheduled.
 
+- Prerequisite: the branch must be reviewed, merged to `main`, and deployed
+  (`git pull` + restart the app per the normal deploy step) before any of the
+  following applies on EVO-X2.
 - Gate: `ENABLE_CRYPTO_TAPE_RECONCILER` (default **false**). While false the
   command reconciles nothing, applies no migration, and writes nothing.
 - The unit deliberately does **not** run Alembic; deploy migrations through the
   normal runbook step, never through this timer.
-- Install: `cp infra/systemd/user/probability-arena-crypto-reconcile.{service,timer}
+- Install (only after the branch is merged and deployed):
+  `cp infra/systemd/user/probability-arena-crypto-reconcile.{service,timer}
   ~/.config/systemd/user/ && systemctl --user daemon-reload && systemctl --user
   enable --now probability-arena-crypto-reconcile.timer`
 - Verify dark: `journalctl --user -u probability-arena-crypto-reconcile.service
   -n 20 --no-pager` should show `status=disabled  external_calls=0  no-op`.
-- It is a **SQLite writer**: one write transaction for the whole pass (~105s for
-  819 tokens measured on EVO-X2, dry). It runs `Nice=10 IOWeight=20` and aborts
-  when the latest MarketOps run errored. Exit code is non-zero on a refused,
-  truncated, or locked pass — a green unit that reconciled nothing is exactly
-  the failure this milestone removes.
-- Watch `status=truncated` in the journal: it means the window plus backlog
-  exceeded `CRYPTO_TAPE_RECONCILER_LIMIT` and work was dropped. Raise the limit.
+- It is a **SQLite writer**, but not a single long transaction: the scheduled
+  path commits in bounded batches (`crypto_tape_reconciler_batch_size`,
+  default 25 tokens) instead of one transaction for the whole pass, and stops
+  at an internal wall-clock deadline
+  (`crypto_tape_reconciler_max_duration_seconds`, default 20s). A 25-token
+  batch's own write phase measured well under one second at production
+  density in the profiling session that set this default; the scheduled
+  path's end-to-end wall-clock time on EVO-X2, with this batching in place,
+  has **not yet been measured** — measure it before relying on the 20s
+  deadline being generous. (Earlier, pre-fix figure for reference only, NOT
+  current behaviour: one single-transaction dry run measured 105.2s for 819
+  tokens on EVO-X2 — that shape is what this fix replaced.) It runs
+  `Nice=10 IOWeight=20` and aborts when the latest MarketOps run errored.
+  Exit code is non-zero on a refused, truncated, partial, locked, or
+  overlap-skipped pass — a green unit that reconciled nothing is exactly the
+  failure this milestone removes.
+- Result statuses to watch for in the journal, beyond plain `ok`/`disabled`:
+  - `truncated` — the window plus backlog exceeded `CRYPTO_TAPE_RECONCILER_LIMIT`
+    and work was dropped; raise the limit.
+  - `partial` (with `stop_reason=deadline` or `stop_reason=contention`) — the
+    pass stopped early; already-committed batches are durable and nothing is
+    duplicated, but the run row's own status is not "clean ok". Repeated
+    `stop_reason=deadline` on every run means the deadline is too tight for
+    the actual per-pass work; repeated `stop_reason=contention` means another
+    writer is holding the DB lock past the retry budget.
+  - `skipped_overlap` — another reconciliation pass (a second scheduled tick,
+    a manual `crypto-tape-session`, or a stray manual `crypto-tape-run-once`)
+    already held the per-chain overlap lock; this pass read and wrote
+    nothing. The lock is a coordination-only flock file, one per chain, at
+    `.crypto-tape-reconcile-{chain}.lock` next to the SQLite database file
+    (or the system temp dir for a non-SQLite `DATABASE_URL`). It is
+    kernel-released automatically when the holding process exits or crashes
+    — there is no PID file and no manual "clear the lock" step; if this
+    status repeats across every scheduled tick, look for a manual pass left
+    running in a stray tmux session (`crypto-tape-session`), not a stuck
+    lock file.
+  - `skipped_contention` — the very first write of the pass (the run row)
+    never acquired the DB lock even after the bounded retry ladder; nothing
+    was written. Distinct from `partial`/`stop_reason=contention`, which
+    means some batches DID get through before contention stopped it.
 - Row cost: each pass appends ~2 rows per token considered (a lifecycle snapshot
   and an actor observation). Neither table is pruned by `retention.py`. Budget
   roughly 2 MB/day at the shipped defaults and revisit retention before raising

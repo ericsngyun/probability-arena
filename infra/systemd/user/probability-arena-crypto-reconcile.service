@@ -26,9 +26,12 @@ NoNewPrivileges=true
 Nice=10
 CPUWeight=20
 IOWeight=20
-# NOT a licence to run long. Because the pass currently commits once at the end,
-# its wall clock IS its write-lock-hold clock, so this value is the maximum time
-# the watcher and MarketOps could be locked out. Kept tight for that reason.
+# NOT a licence to run long. The scheduled pass commits in bounded batches
+# (default 25 tokens) and stops at an internal wall-clock deadline (default
+# 20s), so its wall clock is no longer the same thing as its write-lock-hold
+# clock — the lock is only held per-batch, for a small fraction of a second at
+# a time. This value is still kept tight as a hard outer bound on the whole
+# unit invocation, independent of the per-pass deadline.
 TimeoutStartSec=10min
 
 [Install]

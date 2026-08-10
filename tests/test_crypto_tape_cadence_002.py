@@ -248,17 +248,35 @@ class TestRunOnceErrorPath:
     ):
         """A genuinely unexpected DB error (not lock contention) must keep the
         OLD behaviour: mark the run row 'error' and re-raise the original
-        exception, never mask it as a typed skip."""
+        exception, never mask it as a typed skip.
+
+        Only the FIRST commit (the pass's own, real work) must fail — the
+        error-row commit in the `except` handler must be allowed to succeed,
+        or this test can never actually observe the "mark the run row
+        'error'" behaviour it names (a monkeypatch that throws on every
+        commit makes the error-row commit fail too, so `runs == []` would be
+        true unconditionally and the assertion below would never exercise the
+        real path — this regression was caught by CRYPTO-COVERAGE-REPAIR-001
+        review)."""
         seed_full_token(session, first_seen=NOW - timedelta(hours=2))
         boom = OperationalError("INSERT ...", {}, Exception("disk I/O error"))
-        monkeypatch.setattr(
-            type(session), "commit", lambda self: (_ for _ in ()).throw(boom),
-        )
+        real_commit = type(session).commit
+        calls = {"n": 0}
+
+        def flaky_commit(self):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise boom
+            return real_commit(self)
+
+        monkeypatch.setattr(type(session), "commit", flaky_commit)
         with pytest.raises(OperationalError):
             recorder().run_once(session)
         session.rollback()
         runs = session.execute(select(CryptoTokenLifecycleRun)).scalars().all()
-        assert runs == [] or runs[-1].status == "error"
+        assert len(runs) == 1
+        assert runs[-1].status == "error"
+        assert runs[-1].error_type == "OperationalError"
 
 
 # --- defensive summary -------------------------------------------------------------

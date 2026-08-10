@@ -22,6 +22,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import create_engine
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from app.db import Base
@@ -571,10 +572,19 @@ def test_scheduled_pass_is_row_idempotent_once_final(session):
     """CRYPTO-COVERAGE-REPAIR-001 B2 write classification: once a token's
     survival outcome is final, its window is closed and a lifecycle snapshot /
     actor observation appended on a LATER scheduled pass teaches nothing new
-    (REDUNDANT/HISTORICAL_ARTIFACT). The scheduled reconciliation path skips
-    both; labels still converge and the outcome row itself stays singular.
-    This deliberately supersedes the milestone's prior pinned "rows always
-    accumulate" behaviour for the SCHEDULED path only."""
+    (REDUNDANT/HISTORICAL_ARTIFACT); labels still converge and the outcome
+    row itself stays singular. This deliberately supersedes the milestone's
+    prior pinned "rows always accumulate" behaviour for the SCHEDULED path
+    only.
+
+    B2 follow-up fix (state-driven selection): the scheduled path now
+    excludes already-final tokens from selection ENTIRELY (see
+    `_universe(..., exclude_final=True)`), rather than selecting them and
+    then skipping their write. That is strictly better — it also stops a
+    deadline-stopped pass from wasting its wall-clock budget re-walking
+    tokens with nothing left to learn — so the second pass here reports
+    `tokens_considered=0` / nothing "skipped" (there was nothing left to
+    select), not `snapshots_skipped_redundant=1`."""
     from app.models import (
         CryptoTokenActorObservation,
         CryptoTokenLifecycleSnapshot,
@@ -598,8 +608,9 @@ def test_scheduled_pass_is_row_idempotent_once_final(session):
 
     assert _outcome(session, "tok-rows").survived_24h == label1  # labels converge
     assert snaps2 == snaps1 and actors2 == actors1  # no redundant rows appended
-    assert r2["snapshots_skipped_redundant"] == 1
-    assert r2["actor_observations_skipped_redundant"] == 1
+    assert r2["tokens_considered"] == 0  # already-final token is not re-selected
+    assert r2["snapshots_skipped_redundant"] == 0
+    assert r2["actor_observations_skipped_redundant"] == 0
     assert session.query(CryptoTokenSurvivalOutcome).count() == 1
 
 
@@ -953,3 +964,383 @@ def test_result_reports_lock_retry_events_and_batches_committed_fields(session):
     assert r["status"] == "ok"
     assert r["lock_retry_events"] == 0
     assert r["batches_committed"] == 1
+
+
+# --- second review: B1 exact-cycle path must ignore the overlap lock --------
+
+def test_record_discovery_run_ignores_a_held_overlap_lock(session, tmp_path):
+    """B1 fix. `record_discovery_run` (the exact-cycle anchor feed — the only
+    tape path production actually runs, every cycle) must NOT be skipped by
+    another pass's overlap flock. Before the fix, `_assemble_pass`'s
+    `use_overlap_lock` default (True) meant a held lock made this return
+    `status="ok"` with birth_events_created=0, and the caller derived
+    `anchors_existing=len(tokens) - 0` — i.e. a FABRICATED "all anchors
+    already existed" count, when in fact nothing was read or written. The
+    anchor feed is exact-cycle: a skipped cycle is never retried, so this
+    would silently zero out real anchor-feed cycles at dark install, with the
+    flag off, whenever a ~105s manual pass happened to overlap the 5-minute
+    MarketOps cadence."""
+    from app.models import CryptoWatcherRun
+    from app.services.crypto_tape import _reconcile_overlap_lock
+
+    now = datetime.now(timezone.utc)
+    run = CryptoWatcherRun(started_at=now - timedelta(minutes=1), finished_at=now)
+    session.add(run)
+    session.flush()
+    born = now - timedelta(seconds=30)
+    session.add(CryptoToken(
+        chain=CHAIN, token_address="tok-b1-overlap", symbol="B1",
+        first_seen_at=born, last_seen_at=born,
+    ))
+    session.add(CryptoPriceTick(
+        chain=CHAIN, token_address="tok-b1-overlap", pair_address="pair-b1",
+        observed_at=born, price_usd=1.0, liquidity_usd=10_000.0,
+        volume_24h_usd=5_000.0,
+    ))
+    session.flush()
+
+    rec = CryptoLifecycleTapeRecorder(CryptoTapeConfig(chain=CHAIN, lock_dir=tmp_path))
+    with _reconcile_overlap_lock(tmp_path, CHAIN) as acquired:
+        assert acquired is True  # the test itself holds the lock now
+        r = rec.record_discovery_run(session, run.id, ["tok-b1-overlap"])
+        # must NOT be status="ok" with a fabricated anchors_existing count
+        assert r["status"] == "ok"
+        assert r["anchors_created"] == 1
+        assert r["anchors_existing"] == 0
+        assert r["complete_anchors"] + r["incomplete_anchors"] == 1
+
+
+def test_record_discovery_run_never_fabricates_anchors_from_a_degraded_pass(session):
+    """B1 defensive fix: if `_assemble_pass` ever returns a non-normal
+    (not ok/dry_run) summary for the exact-cycle path, `record_discovery_run`
+    must report a distinct non-ok status rather than deriving
+    anchors_created/anchors_existing from that summary's (zeroed) counters."""
+    from unittest.mock import patch
+
+    from app.models import CryptoWatcherRun
+
+    now = datetime.now(timezone.utc)
+    run = CryptoWatcherRun(started_at=now - timedelta(minutes=1), finished_at=now)
+    session.add(run)
+    session.flush()
+    born = now - timedelta(seconds=30)
+    session.add(CryptoToken(
+        chain=CHAIN, token_address="tok-b1-degraded", symbol="B1D",
+        first_seen_at=born, last_seen_at=born,
+    ))
+    session.flush()
+
+    rec = CryptoLifecycleTapeRecorder()
+    degraded_summary = {
+        "status": "skipped_overlap",
+        "birth_events_created": 0,
+        "tokens_considered": 0,
+        "snapshots_created": 0,
+        "outcomes_updated": 0,
+        "error": "synthetic: another pass holds the lock",
+        "_births": [],
+    }
+    with patch.object(rec, "_assemble_pass", return_value=degraded_summary):
+        r = rec.record_discovery_run(session, run.id, ["tok-b1-degraded"])
+    assert r["status"] not in ("ok", "dry_run")
+    assert r["anchors_created"] == 0
+    assert r["anchors_existing"] == 0  # NOT len(tokens) - 0 == 1 (fabricated)
+    assert "skipped_overlap" in r["error"]
+
+
+# --- second review: NEW-B2 state-driven selection ---------------------------
+
+def test_deadline_stopped_scheduled_passes_advance_not_restart(session):
+    """NEW-B2(a) fix. A deadline-stopped, oldest-first scheduled pass must
+    select a DIFFERENT head on its NEXT invocation, not re-select the
+    identical set forever. Before the fix, `_universe`'s oldest-first query
+    had no outcome-state predicate, so a deadline-stopped pass re-selected
+    the same oldest tokens on every subsequent call — reproduced upstream as
+    "30 matured tokens, 6 consecutive passes, each processed the same 5; 25
+    of 30 never reconciled". This asserts count(CryptoTokenSurvivalOutcome)
+    strictly increases across repeated deadline-stopped passes until every
+    token is covered."""
+    n = 12
+    batch = 2
+    # WITHIN the window and past the 24h*(1+HORIZON_TOLERANCE)=36h closing
+    # edge — this exercises `_universe`'s oldest-first, in-window selection,
+    # not the (already state-driven) `unreconciled_backlog` top-up, which
+    # would mask a broken `_universe` since it independently excludes final
+    # tokens regardless of the `exclude_final` flag threaded to `_universe`.
+    # A window of 100h clears the required closing-edge-plus-cadence floor
+    # (~42h) while keeping every token in the primary window query, not the
+    # backlog.
+    window_hours = 100
+    for i in range(n):
+        born = _mint(
+            session, f"tok-advance-{i:02d}", born_hours_ago=40 + i,
+            liquidity=10_000.0,
+        )
+        _tick_at(
+            session, f"tok-advance-{i:02d}", born + timedelta(hours=24),
+            liquidity=9_000.0,
+        )
+
+    settings = _settings(
+        crypto_tape_reconciler_limit=1000,
+        crypto_tape_reconciler_window_hours=window_hours,
+    )
+    counts = [session.query(CryptoTokenSurvivalOutcome).count()]
+    for i in range(n // batch):
+        r = run_scheduled_reconciliation(
+            session, settings=settings, batch_size=batch, max_duration_seconds=0.0,
+        )
+        # every pass except the very last (which exactly exhausts the
+        # remaining backlog in one batch) is stopped early by the deadline
+        if i < n // batch - 1:
+            assert r["status"] == "partial"
+            assert r["stop_reason"] == "deadline"
+        counts.append(session.query(CryptoTokenSurvivalOutcome).count())
+
+    assert counts == sorted(counts)  # never regresses
+    assert len(set(counts)) == len(counts)  # STRICTLY increasing every pass
+    assert counts[-1] == n  # every token eventually covered, none starved
+    for i in range(n):
+        assert _outcome(session, f"tok-advance-{i:02d}").final is True
+
+
+def test_backlog_recovers_a_token_that_was_never_reconciled_at_all(session):
+    """NEW-B2(b) fix. `unreconciled_backlog`/`backlog_size` must be OUTER
+    joins against CryptoTokenSurvivalOutcome. A token no pass has EVER
+    reached has NO outcome row at all; an INNER join makes such a token
+    invisible to both the moment it ages out of the window — permanently, by
+    construction — which silently caps how much of a pre-existing backlog
+    can ever be recovered. This mints a token with no outcome row, entirely
+    outside the window, and proves the scheduled pass still finds and
+    reconciles it via backlog."""
+    born = _mint(session, "tok-never-touched", born_hours_ago=200, liquidity=10_000.0)
+    _tick_at(session, "tok-never-touched", born + timedelta(hours=24), liquidity=9_000.0)
+    assert _outcome(session, "tok-never-touched") is None  # never selected by any pass
+
+    r = run_scheduled_reconciliation(
+        session, settings=_settings(crypto_tape_reconciler_window_hours=48)
+    )
+    assert r["backlog_size"] >= 1
+    o = _outcome(session, "tok-never-touched")
+    assert o is not None and o.survived_24h is True
+
+
+# --- second review: NEW-B3 the commit itself must be pinned, not inferred ---
+
+def test_batched_pass_real_commit_count_via_after_commit_listener(session):
+    """NEW-B3 fix. `batches_committed` is incremented from chunk iteration,
+    not from an actual `session.commit()` call — replacing the real
+    `session.commit()` in the batch loop with `pass` left every prior test in
+    this file green, including the `batches_committed == 3` assertion, which
+    can never detect a missing commit because it counts LOOP ITERATIONS, not
+    commits. A SQLAlchemy `after_commit` event listener is the only way to
+    observe a REAL commit. Expected real commits for 23 tokens / batch_size
+    10: 1 (run-row creation) + 3 (batches) + 1 (finalize) = 5."""
+    from sqlalchemy import event
+
+    for i in range(23):
+        _mint(session, f"tok-realcommit-{i}", born_hours_ago=30, liquidity=10_000.0)
+    commits: list[int] = []
+
+    @event.listens_for(session, "after_commit")
+    def _count(sess):
+        commits.append(1)
+
+    try:
+        r = run_scheduled_reconciliation(
+            session, settings=_settings(crypto_tape_reconciler_limit=1000),
+            batch_size=10,
+        )
+    finally:
+        event.remove(session, "after_commit", _count)
+
+    assert r["status"] == "ok"
+    assert r["batches_committed"] == 3  # ceil(23 / 10)
+    assert len(commits) == 5  # run row + 3 batches + finalize — REAL commits
+
+
+def test_deadline_stopped_batch_commits_are_durable_across_a_fresh_session(tmp_path):
+    """NEW-B3 durability fix. A batch that has "committed" must actually be
+    durable on disk, not merely flushed into the current ORM session's
+    identity map. This uses a real file-backed SQLite DB: one worker session
+    runs a deadline-stopped batched pass, is explicitly rolled back (proving
+    nothing UNCOMMITTED survives), and then a completely FRESH
+    session/connection reads the committed rows back — the only way to prove
+    they were truly committed to disk, not just held in session-local state
+    (e.g. a `flush()`-only bug, or a connection/pool quirk that makes a
+    single-process check misleadingly pass).
+
+    Note on scope: this test's `max_duration_seconds=0.0` stop happens after
+    exactly one batch, and the pass's own finalize commit (which commits
+    unconditionally, success or "partial") follows immediately after — so
+    this test alone cannot distinguish "the per-batch commit is real" from
+    "only the trailing finalize commit is real" (a finalize commit flushes
+    ALL still-pending work in one shot, masking a missing per-batch commit).
+    That specific mutation — replacing the per-batch `session.commit()` with
+    `pass` — is what
+    `test_batched_pass_real_commit_count_via_after_commit_listener` pins,
+    via real commit-event counting, which IS sensitive to exactly that."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    db_path = tmp_path / "durability.db"
+    engine = create_engine(f"sqlite:///{db_path}")
+    Base.metadata.create_all(engine)
+    Factory = sessionmaker(bind=engine)
+
+    seed_session = Factory()
+    for i in range(9):
+        _mint(seed_session, f"tok-durable-{i}", born_hours_ago=30, liquidity=10_000.0)
+    seed_session.commit()
+    seed_session.close()
+
+    worker_session = Factory()
+    rec = CryptoLifecycleTapeRecorder(CryptoTapeConfig(chain=CHAIN, lock_dir=tmp_path))
+    r = rec.run_once(
+        worker_session, limit=100, hours=48, batch_size=3,
+        max_duration_seconds=0.0,  # already past due before batch 2
+    )
+    assert r["status"] == "partial"
+    assert r["stop_reason"] == "deadline"
+    processed = r["tokens_processed"]
+    assert 0 < processed < 9
+    worker_session.rollback()  # discard anything NOT actually committed
+    worker_session.close()
+
+    fresh_session = Factory()
+    try:
+        persisted = fresh_session.query(CryptoTokenSurvivalOutcome).count()
+        assert persisted == processed  # the committed batch survived, durably
+    finally:
+        fresh_session.close()
+    engine.dispose()
+
+
+# --- second review: cheap fix #2 — finalize-failure must append, not replace -
+
+def test_finalize_failure_appends_to_an_existing_stop_reason_error(session, monkeypatch):
+    """Cheap fix #2. `_prepare_finalize` failing to acquire the lock after a
+    deadline stop must APPEND its own message to the existing "N batches / X
+    of Y tokens" data-shortfall error, not silently overwrite (and thereby
+    discard) it — they are two different, both real pieces of information."""
+    for i in range(6):
+        _mint(session, f"tok-finalize-{i}", born_hours_ago=30, liquidity=10_000.0)
+
+    real_commit = type(session).commit
+    calls = {"n": 0}
+
+    def flaky_commit(self):
+        calls["n"] += 1
+        # let every batch commit succeed, then fail every finalize attempt
+        if calls["n"] <= 2:
+            return real_commit(self)
+        raise OperationalError("UPDATE ...", {}, Exception("database is locked"))
+
+    monkeypatch.setattr(type(session), "commit", flaky_commit)
+    rec = CryptoLifecycleTapeRecorder()
+    r = rec.run_once(
+        session, limit=100, hours=48, batch_size=2, max_duration_seconds=0.0,
+        max_lock_attempts=2, lock_retry_seconds=0.0,
+        sleeper=lambda seconds: None,
+    )
+    assert r["status"] == "partial"
+    assert "batch(es)" in r["error"]  # the original data-shortfall message
+    assert "finalize commit could not acquire the lock" in r["error"]  # appended
+
+
+# --- original review H1: a truncated dry run must not look complete ---------
+
+def test_dry_run_stopped_by_the_deadline_reports_dry_run_partial_not_dry_run(session):
+    """H1 fix. A dry-run probe truncated by the internal wall-clock deadline
+    must not report plain `status="dry_run"` — that is indistinguishable from
+    a COMPLETE probe to every caller, including the CLI exit code, which is
+    exactly the failure the original review reproduced: `status=dry_run
+    tokens_considered=5 universe_size=20 omitted=15 stop_reason=deadline` ->
+    CLI exit 0."""
+    for i in range(9):
+        _mint(session, f"tok-dry-deadline-{i}", born_hours_ago=30, liquidity=10_000.0)
+    rec = CryptoLifecycleTapeRecorder()
+    r = rec.run_once(
+        session, limit=100, hours=48, dry_run=True, batch_size=3,
+        max_duration_seconds=0.0,  # already past due before batch 2
+    )
+    assert r["status"] == "dry_run_partial"
+    assert r["stop_reason"] == "deadline"
+    assert 0 < r["tokens_processed"] < 9
+    assert "dry-run probe stopped early" in r["error"]
+    # dry-run never writes, regardless of status
+    assert session.query(CryptoTokenSurvivalOutcome).count() == 0
+
+
+def test_cli_dry_run_stopped_by_the_deadline_does_not_exit_0(session, monkeypatch):
+    """H1 fix, CLI-level. `crypto-tape-reconcile --dry-run` truncated by the
+    deadline must exit non-zero, not 0 — a caller relying on the exit code
+    (the exact instrument used for pre-activation validation) must never see
+    a truncated dry run report success."""
+    import app.services.crypto_tape as tape_mod
+    from app import cli
+
+    for i in range(9):
+        _mint(session, f"tok-cli-dry-deadline-{i}", born_hours_ago=30, liquidity=10_000.0)
+
+    real = tape_mod.run_scheduled_reconciliation
+
+    def wrapped(sess, *a, **kw):
+        kw.setdefault("batch_size", 3)
+        kw.setdefault("max_duration_seconds", 0.0)
+        return real(sess, *a, **kw)
+
+    monkeypatch.setattr(tape_mod, "run_scheduled_reconciliation", wrapped)
+    n = await_or_call(
+        cli.crypto_tape_reconcile(dry_run=True, force=True, session=session)
+    )
+    assert n == -1
+
+
+def await_or_call(coro):
+    """Small helper so this module's synchronous-looking test bodies can
+    drive the one async CLI call they need without every test in the file
+    needing pytest-asyncio's implicit-async collection quirks."""
+    import asyncio
+
+    return asyncio.get_event_loop_policy().new_event_loop().run_until_complete(coro)
+
+
+# --- second review cheap fix #1: crypto-tape-run-once terminal-status exit --
+
+def test_cli_run_once_under_a_held_overlap_lock_does_not_exit_0(
+    session, tmp_path, monkeypatch, capsys,
+):
+    """Cheap fix #1. `crypto-tape-run-once` (the plain, non exact-cycle CLI
+    path) mapped every terminal status to `tokens_considered`, so
+    `status=skipped_overlap` (tokens_considered=0) exited 0 — indistinguishable
+    from "nothing was in the window". It must exit non-zero and print the
+    `error` field, matching the sibling `crypto-tape-reconcile` command,
+    which already got this right."""
+    from app import cli
+    from app.services.crypto_tape import (
+        CryptoLifecycleTapeRecorder,
+        CryptoTapeConfig,
+        _reconcile_overlap_lock,
+    )
+
+    _mint(session, "tok-cli-overlap", born_hours_ago=30, liquidity=10_000.0)
+
+    # crypto_tape_run_once constructs a default-config recorder; patch the
+    # class the CLI module resolves at call time so it uses THIS test's
+    # lock_dir (matching the flock this test itself holds below).
+    def _locked_recorder(*_a, **_kw):
+        return CryptoLifecycleTapeRecorder(CryptoTapeConfig(chain=CHAIN, lock_dir=tmp_path))
+
+    import app.services.crypto_tape as tape_mod
+
+    monkeypatch.setattr(tape_mod, "CryptoLifecycleTapeRecorder", _locked_recorder)
+
+    with _reconcile_overlap_lock(tmp_path, CHAIN) as acquired:
+        assert acquired is True
+        n = await_or_call(cli.crypto_tape_run_once(session=session))
+
+    assert n == -1
+    out = capsys.readouterr().out
+    assert "status=skipped_overlap" in out
+    assert "error:" in out

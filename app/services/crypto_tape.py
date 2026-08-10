@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
@@ -120,6 +120,12 @@ STATUS_SKIPPED_OVERLAP = "skipped_overlap"        # another pass already holds
 STATUS_SKIPPED_CONTENTION = "skipped_contention"  # the very first write of the
     # pass (the run row) never got a lock even after the full retry ladder;
     # nothing was written.
+STATUS_DRY_RUN_PARTIAL = "dry_run_partial"        # a dry-run probe that was
+    # ITSELF stopped early (deadline or exhausted lock retries) before it
+    # could examine the whole selected set. Nothing is ever written by a dry
+    # run, so this is distinct from STATUS_PARTIAL (which implies some
+    # batches committed); it exists so a truncated probe never reports plain
+    # "dry_run", which looks indistinguishable from a complete one.
 
 BONDING_LAUNCHPAD = "launchpad_curve"
 BONDING_AMM = "amm_pool"
@@ -304,7 +310,7 @@ class CryptoLifecycleTapeRecorder:
 
     def _universe(
         self, session: Session, limit: int, cutoff: datetime,
-        *, oldest_first: bool = False,
+        *, oldest_first: bool = False, exclude_final: bool = False,
     ) -> list[CryptoToken]:
         """Tokens in the window. `oldest_first` inverts the ordering for
         CRYPTO-COVERAGE-REPAIR-001: newest-first truncation drops exactly the
@@ -313,77 +319,133 @@ class CryptoLifecycleTapeRecorder:
         horizon at all. Oldest-first truncation drops the unmatured tail
         instead, which the next pass picks up anyway because those tokens are
         still inside the window. Default preserves the existing manual-path
-        behaviour; only the scheduled reconciler opts in."""
+        behaviour; only the scheduled reconciler opts in.
+
+        `exclude_final` (CRYPTO-COVERAGE-REPAIR-001 B2 fix) — when True,
+        tokens whose survival outcome is already `final` are dropped from
+        this query entirely. Without this, a deadline-stopped pass over an
+        oldest-first ordering RE-SELECTS THE IDENTICAL HEAD on every
+        subsequent pass (nothing about `first_seen_at` changes when a token
+        is reconciled), so a deadline stop never makes forward progress and
+        the pass also wastes its wall-clock budget re-walking tokens that
+        are already final and have nothing left to learn. Left OFF by
+        default: the manual/CLI path intentionally keeps reprocessing every
+        token in the window on every pass (see
+        test_manual_path_still_appends_lifecycle_rows_unchanged); only the
+        scheduled reconciler, whose whole point is state-driven selection,
+        opts in."""
         order = (
             (CryptoToken.first_seen_at.asc(), CryptoToken.id.asc())
             if oldest_first
             else (CryptoToken.first_seen_at.desc(), CryptoToken.id.desc())
         )
-        return list(session.execute(
-            select(CryptoToken)
-            .where(
-                CryptoToken.chain == self.config.chain,
-                CryptoToken.first_seen_at >= cutoff,
-            )
-            .order_by(*order)
-            .limit(limit)
-        ).scalars().all())
+        stmt = select(CryptoToken).where(
+            CryptoToken.chain == self.config.chain,
+            CryptoToken.first_seen_at >= cutoff,
+        )
+        if exclude_final:
+            stmt = stmt.outerjoin(
+                CryptoTokenSurvivalOutcome,
+                CryptoTokenSurvivalOutcome.token_address == CryptoToken.token_address,
+            ).where(
+                or_(
+                    CryptoTokenSurvivalOutcome.id.is_(None),
+                    CryptoTokenSurvivalOutcome.final.is_(False),
+                )
+            ).distinct()
+        stmt = stmt.order_by(*order).limit(limit)
+        return list(session.execute(stmt).scalars().all())
 
     def unreconciled_backlog(
         self, session: Session, cutoff: datetime, *, limit: int
     ) -> list[CryptoToken]:
-        """Tokens OLDER than the window whose outcome is still not final.
+        """Tokens OLDER than the window whose outcome is still not final —
+        including tokens that were NEVER reconciled at all (no outcome row
+        yet). An INNER join here is a silent data-loss bug: a token that no
+        pass has ever reached has no outcome row, so once it ages out of the
+        window an INNER join makes it invisible to both this query and
+        `backlog_size` forever, permanently capping how much pre-existing
+        backlog can ever be recovered. The OUTER join fixes that.
 
         Window-driven selection alone is lossy: the window carries only
         `window_hours - closing_edge` of slack (12h at the shipped defaults),
         so two missed passes — host down, lock contention, a flag toggle —
         push a cohort out of the window permanently, and the same gap means the
         pre-existing backlog is never reconciled at first enablement. Selection
-        must therefore be driven by STATE (is this outcome still open?) and not
-        only by recency. Oldest-first, because that evidence is closest to
-        being pruned."""
+        must therefore be driven by STATE (is this outcome still open, or
+        nonexistent?) and not only by recency. Oldest-first, because that
+        evidence is closest to being pruned."""
         return list(session.execute(
             select(CryptoToken)
-            .join(
+            .outerjoin(
                 CryptoTokenSurvivalOutcome,
                 CryptoTokenSurvivalOutcome.token_address == CryptoToken.token_address,
             )
             .where(
                 CryptoToken.chain == self.config.chain,
                 CryptoToken.first_seen_at < cutoff,
-                CryptoTokenSurvivalOutcome.final.is_(False),
+                or_(
+                    CryptoTokenSurvivalOutcome.id.is_(None),
+                    CryptoTokenSurvivalOutcome.final.is_(False),
+                ),
             )
             .order_by(CryptoToken.first_seen_at.asc(), CryptoToken.id.asc())
+            .distinct()
             .limit(limit)
         ).scalars().all())
 
     def backlog_size(self, session: Session, cutoff: datetime) -> int:
-        """How many still-open outcomes sit outside the window. Reported so a
-        shortfall is visible rather than inferred."""
+        """How many still-open (or never-reconciled) outcomes sit outside the
+        window. Reported so a shortfall is visible rather than inferred. See
+        `unreconciled_backlog` for why this must be an OUTER join."""
         return int(session.execute(
-            select(func.count())
+            select(func.count(func.distinct(CryptoToken.id)))
             .select_from(CryptoToken)
-            .join(
+            .outerjoin(
                 CryptoTokenSurvivalOutcome,
                 CryptoTokenSurvivalOutcome.token_address == CryptoToken.token_address,
             )
             .where(
                 CryptoToken.chain == self.config.chain,
                 CryptoToken.first_seen_at < cutoff,
-                CryptoTokenSurvivalOutcome.final.is_(False),
+                or_(
+                    CryptoTokenSurvivalOutcome.id.is_(None),
+                    CryptoTokenSurvivalOutcome.final.is_(False),
+                ),
             )
         ).scalar() or 0)
 
-    def universe_size(self, session: Session, cutoff: datetime) -> int:
+    def universe_size(
+        self, session: Session, cutoff: datetime, *, exclude_final: bool = False,
+    ) -> int:
         """How many tokens the window actually holds, independent of any limit.
         Without this a truncated pass is indistinguishable from a complete one,
-        which is the silent-under-reconciliation class this milestone removes."""
-        return int(session.execute(
-            select(func.count()).select_from(CryptoToken).where(
-                CryptoToken.chain == self.config.chain,
-                CryptoToken.first_seen_at >= cutoff,
+        which is the silent-under-reconciliation class this milestone removes.
+
+        `exclude_final` MUST mirror whatever value the caller passes to
+        `_universe`/`run_once` — otherwise a fully-reconciled (all-final)
+        window counts as "work remains" against a selection query that has
+        already correctly excluded that work, and every subsequent pass
+        reports a false `truncated`."""
+        count_col = (
+            func.count(func.distinct(CryptoToken.id))
+            if exclude_final else func.count()
+        )
+        stmt = select(count_col).select_from(CryptoToken).where(
+            CryptoToken.chain == self.config.chain,
+            CryptoToken.first_seen_at >= cutoff,
+        )
+        if exclude_final:
+            stmt = stmt.outerjoin(
+                CryptoTokenSurvivalOutcome,
+                CryptoTokenSurvivalOutcome.token_address == CryptoToken.token_address,
+            ).where(
+                or_(
+                    CryptoTokenSurvivalOutcome.id.is_(None),
+                    CryptoTokenSurvivalOutcome.final.is_(False),
+                )
             )
-        ).scalar() or 0)
+        return int(session.execute(stmt).scalar() or 0)
 
     def _load_sources(self, session: Session, token: CryptoToken, now: datetime) -> TokenSources:
         address = token.token_address
@@ -824,6 +886,7 @@ class CryptoLifecycleTapeRecorder:
         *,
         oldest_first: bool = False,
         include_backlog: bool = False,
+        exclude_final: bool = False,
         run_config_extra: dict | None = None,
         skip_redundant_when_final: bool = False,
         batch_size: int | None = None,
@@ -863,13 +926,22 @@ class CryptoLifecycleTapeRecorder:
           can never mutate the same window concurrently. Disabled only by
           tests exercising `_assemble_pass` directly under a lock they hold
           themselves.
+        * `exclude_final` (B2 fix) — drop already-final tokens from the
+          in-window selection entirely, so a deadline-stopped, oldest-first
+          pass makes forward progress on its NEXT invocation instead of
+          re-selecting the identical head. False keeps the manual path's
+          historical "reprocess everything in the window, every pass"
+          behaviour; only `run_scheduled_reconciliation` opts in.
         """
         started = _now()
         limit = limit if limit is not None else self.config.default_limit
         hours = hours if hours is not None else self.config.default_window_hours
         cutoff = started - timedelta(hours=hours)
-        tokens = self._universe(session, limit, cutoff, oldest_first=oldest_first)
-        total = self.universe_size(session, cutoff)
+        tokens = self._universe(
+            session, limit, cutoff, oldest_first=oldest_first,
+            exclude_final=exclude_final,
+        )
+        total = self.universe_size(session, cutoff, exclude_final=exclude_final)
         backlog_total = 0
         if include_backlog:
             # State-driven top-up: still-open outcomes that have aged out of the
@@ -1001,7 +1073,32 @@ class CryptoLifecycleTapeRecorder:
                 "source_crypto_run_id": crypto_run_id,
                 "chain": self.config.chain,
             },
+            # CRYPTO-COVERAGE-REPAIR-001 B1 fix: this is a single bounded
+            # transaction over a validated <=MAX_ANCHOR_FEED_TOKENS_PER_CYCLE
+            # token set that `_assemble_pass` never chunks/retries for this
+            # caller (batch_size stays None => legacy single-commit mode), so
+            # it does not need — and must not take — the B4 overlap flock.
+            # The anchor feed is EXACT-CYCLE: a skipped cycle is never
+            # retried, so silently deferring to another lock holder here
+            # would zero out an anchor-feed cycle for good.
+            use_overlap_lock=False,
         )
+        # Defensive: `_assemble_pass` can still, in principle, return a
+        # non-normal summary (e.g. if a future change adds a path that skips
+        # or truncates work here). A skipped/degraded summary must never be
+        # allowed to serialize as "ok, all anchors already existed" — that is
+        # exactly the fabricated-anchors-existing failure this fix removes.
+        pass_status = summary.get("status")
+        if pass_status not in (STATUS_OK, STATUS_DRY_RUN):
+            return _result(
+                "degraded",
+                error=(
+                    f"underlying reconciliation pass returned "
+                    f"status={pass_status!r} instead of ok/dry_run; refusing "
+                    "to report anchor counts derived from that result "
+                    f"(pass error: {summary.get('error')})"
+                ),
+            )
         births = summary.pop("_births", [])
         complete = incomplete = 0
         for birth in births:
@@ -1497,18 +1594,31 @@ class CryptoLifecycleTapeRecorder:
                 "lock_retry_events": lock_retry_events,
                 "_births": births_seen,
             }
+            if stop_reason is not None:
+                if dry_run:
+                    # H1 fix: a dry-run probe truncated by the deadline (or
+                    # exhausted lock retries) must never report plain
+                    # "dry_run" — that is indistinguishable from a complete
+                    # probe to every caller, including the CLI exit code.
+                    summary["status"] = STATUS_DRY_RUN_PARTIAL
+                    summary["error"] = (
+                        f"dry-run probe stopped early (stop_reason={stop_reason}) "
+                        f"after examining {tokens_processed} of {len(tokens)} "
+                        "selected tokens; nothing was written (dry-run never "
+                        "writes) and nothing beyond the examined tokens was "
+                        "measured"
+                    )
+                else:
+                    summary["status"] = STATUS_PARTIAL
+                    summary["error"] = (
+                        f"pass stopped early (stop_reason={stop_reason}) after "
+                        f"{batches_committed} batch(es) / {tokens_processed} of "
+                        f"{len(tokens)} selected tokens; already-committed "
+                        "batches are durable — nothing is duplicated or lost — "
+                        "the remaining tokens stay eligible for a future pass"
+                    )
             if dry_run:
                 return summary
-            if stop_reason is not None:
-                summary["status"] = STATUS_PARTIAL
-                summary["error"] = (
-                    f"pass stopped early (stop_reason={stop_reason}) after "
-                    f"{batches_committed} batch(es) / {tokens_processed} of "
-                    f"{len(tokens)} selected tokens; already-committed "
-                    "batches are durable — nothing is duplicated or lost — "
-                    "and the remaining tokens are picked up by the next pass "
-                    "via oldest-first + state-driven backlog selection"
-                )
 
             finished = _now()
 
@@ -1525,6 +1635,22 @@ class CryptoLifecycleTapeRecorder:
                     run.actor_observations_created = actors
                     run.outcomes_updated = outcomes
                     run.provider_coverage = coverage_summary
+                    # NEW-H1 fix: B2's skip-when-final path makes
+                    # `snapshots_created`/`actor_observations_created` mean
+                    # different things depending on whether this run skipped
+                    # redundant writes for already-final tokens — without
+                    # recording that classification on the run row itself,
+                    # a later reader of the DB (e.g. build_tape_report) has
+                    # no way to tell "all tokens got a fresh snapshot" apart
+                    # from "only non-final tokens did".
+                    run.config = {
+                        **(run.config or {}),
+                        "write_classification": {
+                            "skip_redundant_when_final": skip_redundant_when_final,
+                            "snapshots_skipped_redundant": snapshots_skipped,
+                            "actor_observations_skipped_redundant": actors_skipped,
+                        },
+                    }
                     session.add(run)
 
                 ok, attempts = self._commit_with_retry(
@@ -1543,10 +1669,19 @@ class CryptoLifecycleTapeRecorder:
                     summary["status"] = STATUS_PARTIAL
                     summary["stop_reason"] = summary["stop_reason"] or "contention"
                     summary["tape_run_id"] = run.id
-                    summary["error"] = (
+                    finalize_error = (
                         "reconciliation batches committed, but the run row's "
                         "own finalize commit could not acquire the lock; the "
                         "run row stays status=running"
+                    )
+                    # Append, don't replace: a deadline/contention stop
+                    # earlier in the pass already set an "N batches / X of Y
+                    # tokens" data-shortfall message, and that is different,
+                    # equally real information from the finalize-commit
+                    # failure — losing either one is a loss of signal.
+                    summary["error"] = (
+                        f"{summary['error']}; additionally, {finalize_error}"
+                        if summary.get("error") else finalize_error
                     )
                     return summary
             else:
@@ -1563,6 +1698,14 @@ class CryptoLifecycleTapeRecorder:
                 run.actor_observations_created = actors
                 run.outcomes_updated = outcomes
                 run.provider_coverage = coverage_summary
+                run.config = {
+                    **(run.config or {}),
+                    "write_classification": {
+                        "skip_redundant_when_final": skip_redundant_when_final,
+                        "snapshots_skipped_redundant": snapshots_skipped,
+                        "actor_observations_skipped_redundant": actors_skipped,
+                    },
+                }
                 session.commit()
             summary["tape_run_id"] = run.id
             return summary
@@ -1667,17 +1810,52 @@ def build_tape_report(session: Session, hours: int = 24, top: int = 5) -> dict:
         for a in concentrated[:top]
     ]
 
+    # NEW-H1 fix: CRYPTO-COVERAGE-REPAIR-001's B2 skip-when-final option makes
+    # `len(snaps)`/distinct-snapshot-addresses an unreliable measure of how
+    # many tokens a pass actually considered — a run using skip mode appends
+    # NO snapshot/actor row for a token whose outcome was already final, which
+    # visibly (and misleadingly) shrinks/reshapes coverage_mix/risk_mix/
+    # tokens_observed for the SAME underlying tokens versus a non-skip run.
+    # `run.tokens_considered` is recorded independently of whether a snapshot
+    # was written, so it is the honest count. Skip totals and which runs used
+    # skip mode are surfaced explicitly so a reader is never left guessing
+    # whether "N snapshots" means "every considered token" or "only the
+    # non-final ones".
+    skip_mode_runs = sum(
+        1 for r in runs
+        if (r.config or {}).get("write_classification", {}).get(
+            "skip_redundant_when_final"
+        )
+    )
+    snapshots_skipped_redundant = sum(
+        (r.config or {}).get("write_classification", {}).get(
+            "snapshots_skipped_redundant", 0
+        ) or 0
+        for r in runs
+    )
+    actor_observations_skipped_redundant = sum(
+        (r.config or {}).get("write_classification", {}).get(
+            "actor_observations_skipped_redundant", 0
+        ) or 0
+        for r in runs
+    )
+
     return {
         "note": TAPE_NOTE,
         "window_hours": hours,
         "generated_at": now.isoformat(),
         "tape_runs": len(runs),
-        "tokens_observed": len({s.token_address for s in snaps}),
+        "tokens_observed": sum(r.tokens_considered for r in runs),
         "birth_events_in_window": len(births),
         "snapshots_recorded": len(snaps),
         "actor_observations_recorded": len(actor_rows),
         "outcomes_computed": len(outcomes),
         "outcomes_final": sum(1 for o in outcomes if o.final),
+        "write_classification": {
+            "skip_redundant_when_final_runs": skip_mode_runs,
+            "snapshots_skipped_redundant": snapshots_skipped_redundant,
+            "actor_observations_skipped_redundant": actor_observations_skipped_redundant,
+        },
         "provider_coverage_mix": dict(
             sorted(coverage_mix.items(), key=lambda kv: -kv[1])
         ),
@@ -1978,6 +2156,11 @@ def run_scheduled_reconciliation(
             session, limit=cap, hours=hours, dry_run=dry_run,
             oldest_first=True,
             include_backlog=True,
+            # B2 fix: state-driven selection — already-final tokens are
+            # dropped from the query so a deadline-stopped pass advances on
+            # its next invocation, and the wall-clock budget is never spent
+            # re-walking tokens with nothing left to learn.
+            exclude_final=True,
             run_config_extra={
                 "mode": "scheduled_reconciliation",
                 "forced": bool(force),
@@ -2012,6 +2195,7 @@ def run_scheduled_reconciliation(
     # class this milestone exists to remove.
     terminal_statuses = {
         STATUS_SKIPPED_OVERLAP, STATUS_SKIPPED_CONTENTION, STATUS_PARTIAL,
+        STATUS_DRY_RUN_PARTIAL,
     }
     pass_status = summary.get("status")
     resolved_status = (
@@ -2044,7 +2228,10 @@ def run_scheduled_reconciliation(
             f"--limit (or crypto_tape_reconciler_limit) to cover the window."
         )
         logger.warning("crypto reconciliation truncated: %s", summary["error"])
-    if resolved_status in (STATUS_SKIPPED_OVERLAP, STATUS_SKIPPED_CONTENTION, STATUS_PARTIAL):
+    if resolved_status in (
+        STATUS_SKIPPED_OVERLAP, STATUS_SKIPPED_CONTENTION, STATUS_PARTIAL,
+        STATUS_DRY_RUN_PARTIAL,
+    ):
         logger.warning(
             "crypto reconciliation %s: %s", resolved_status, summary.get("error")
         )

@@ -1,8 +1,8 @@
 # CRYPTO-COVERAGE-REPAIR-001 — survival-horizon coverage repair
 
-Status: **Stage 1 implemented and DEPLOYED DARK (default OFF). NOT ACTIVATED — blocked on a measured write-lock defect. Stage 2 designed, not implemented.**
+Status: **Stage 1 implemented on this branch. NOT MERGED, NOT DEPLOYED anywhere (dark or otherwise) — `worktree/crypto-coverage-repair` has not landed on `main` and nothing is installed on EVO-X2. The write-lock defect that previously blocked activation (below) is now fixed on this branch; activation is still gated on the review/merge/deploy sequence, not on that defect. Stage 2 designed, not implemented.**
 Branch: `worktree/crypto-coverage-repair`
-Measured against EVO-X2 production DB on 2026-08-10.
+Measured against EVO-X2 production DB on 2026-08-10 (the original finding, below); the write-lock fix itself has only been measured in the test suite (in-memory/file-backed SQLite), not yet on EVO-X2 — see "BLOCKING activation" below.
 
 ## The finding
 
@@ -127,24 +127,74 @@ selection that loses a cohort permanently after two missed passes and never
 reconciles the existing backlog; and two tests that could not fail for the
 reason they existed.
 
-**BLOCKING activation, NOT fixed.** The pass is a single write transaction:
-`_assemble_pass` flushes the run row before the token loop and commits once at
-the end. Measured at production density (1,000 tokens): **36.9s pass, competing
-writer blocked 35.79s — 97% of it — exceeding the 30s busy timeout.** This is
+**Write-lock defect — FIXED on this branch (not yet re-measured on EVO-X2).**
+The pass used to be a single write transaction: `_assemble_pass` flushed the
+run row before the token loop and committed once at the end. Measured at
+production density (1,000 tokens) BEFORE the fix: **36.9s pass, competing
+writer blocked 35.79s — 97% of it — exceeding the 30s busy timeout.** This was
 the same single-commit shape OPS-012 hit and OPS-013 retired in favour of
-per-sub-window commits. Also unfixed: a concurrent manual CLI run races the
-pre-transaction `existing_births` read and dies with an `IntegrityError` after
-~45s of contention, discarding the whole pass; and there is no bounded
-lock-retry ladder (the wrapper rolls back and returns `db_locked`, but does not
-retry the way every other tape caller does).
+per-sub-window commits.
 
-**Required before the flag is flipped:** chunked commits holding under ~2s, an
-overlap guard or in-transaction birth upsert, the retry ladder, an internal
-deadline, skipping snapshot/actor writes for already-final outcomes, and adding
-the five tape tables to `retention.py`. Row growth is measured at **1.048 MiB
-per pass ≈ 4.19 MiB/day ≈ 1.5 GiB/year** on a DB already past its 3072 MB gate.
-A two-connection file-backed lock test — which the repo's own SQLite topology
-audit already asked for — must exist before enabling.
+The scheduled reconciliation path (`run_scheduled_reconciliation` →
+`run_once(..., batch_size=..., max_duration_seconds=...)`) now:
+
+- commits in bounded batches (`crypto_tape_reconciler_batch_size`, default
+  `RECONCILE_BATCH_SIZE=25` tokens) instead of one transaction for the whole
+  pass — each batch's own write phase is a small fraction of a second, not
+  the whole pass duration (25-token batch write phase measured well under one
+  second at production density in the B1 profiling session; the scheduled
+  path's END-TO-END wall time on EVO-X2 has not yet been re-measured after
+  this fix — do that before flipping the flag);
+- stops at an internal wall-clock deadline
+  (`crypto_tape_reconciler_max_duration_seconds`, default
+  `RECONCILE_MAX_DURATION_SECONDS=20.0`) and reports `status="partial"` with
+  `stop_reason="deadline"` rather than claiming `ok`; already-committed
+  batches are durable, nothing is duplicated;
+- selects state-driven, not just recency-driven: already-`final` tokens are
+  excluded from the in-window query (`exclude_final=True`), so a
+  deadline-stopped pass advances to a DIFFERENT set of tokens on its next
+  invocation instead of re-selecting the identical oldest head forever; the
+  aged-out backlog query is now an OUTER join, so a token that was NEVER
+  reconciled (no outcome row at all) is still recoverable once it ages out of
+  the window, not silently dropped;
+- takes a non-blocking, per-chain overlap flock
+  (`.crypto-tape-reconcile-{chain}.lock`, co-located with the SQLite file, or
+  the system temp dir for non-SQLite backends) around the whole pass, so a
+  second concurrent instance — another scheduled tick, a manual tape
+  session, a stray CLI run — is refused loudly (`status="skipped_overlap"`)
+  instead of racing the pre-transaction `existing_births` read and dying with
+  an `IntegrityError`;
+- reuses the bounded lock-retry ladder every other tape caller already uses
+  (`max_lock_attempts`/`lock_retry_seconds`), applied per batch commit;
+  exhausting it on the very first write yields `status="skipped_contention"`,
+  exhausting it after some batches already committed yields
+  `status="partial"`/`stop_reason="contention"`.
+
+The **manual/CLI path** (`run_once` with its historical defaults — no
+`batch_size`, no `max_duration_seconds`) is functionally unchanged for
+persistence (still one commit for the whole pass, still no deadline), but it
+now DOES take the overlap flock by default (`use_overlap_lock=True`) and
+issues one extra `final_by_birth_id` SELECT per pass. That is a deliberate,
+deployed behaviour change, not "unchanged byte-for-byte" as an earlier commit
+message on this branch claimed — the flock exists specifically so a manual
+pass can never race the scheduled reconciler (or another manual pass) on the
+same window, which is the entire point of the B4 overlap guard; the cost is
+one extra read-only SELECT and a non-blocking flock syscall, negligible next
+to the manual path's own multi-second write phase. The one caller that
+deliberately opts OUT of the flock is `record_discovery_run` (the exact-cycle
+anchor feed) — it is a single bounded transaction over a validated ≤40-token
+set that runs every MarketOps cycle, so being skipped by a held lock would
+zero out an anchor-feed cycle for good, which the exact-cycle design cannot
+tolerate.
+
+**Required before the flag is flipped:** re-measure the scheduled path's
+actual wall-clock and write-lock-hold behaviour on EVO-X2 (the 20s deadline
+default has not been validated against a real end-to-end pass duration on
+production density since the batching change), add the five tape tables to
+`retention.py`, and re-run the two-connection file-backed lock test on the
+real deploy target. Row growth is measured at **1.048 MiB per pass ≈ 4.19
+MiB/day ≈ 1.5 GiB/year** on a DB already past its 3072 MB gate — unchanged by
+this fix (it changes write-lock hold duration, not row volume).
 
 ## Stage 2 — sparse 6h/24h re-ticks (designed, NOT implemented)
 
@@ -181,14 +231,23 @@ written by reconciliation — asserted by test.
 
 ## Tests
 
-`tests/test_crypto_coverage_repair_001.py` — 25 tests: the default-OFF gate and
-its no-op guarantee, the window guard, per-horizon maturation for all four
-horizons, recency-starvation resistance, idempotency (in-place update, no
-duplicate outcome row), restart convergence, dry-run inertness, provider-freeness
-(fails on any HTTP client construction), no-cohort/no-tick-write, NULL preserved
-for absent evidence, no substitution of a tick just outside tolerance, and a
-regression pin proving `record_discovery_run` **cannot** mature a horizon — so
-the scheduled pass is never removed as "redundant with the anchor feed".
+`tests/test_crypto_coverage_repair_001.py` — 60 tests (grew from an initial 25
+across three review rounds): the default-OFF gate and its no-op guarantee, the
+window guard, per-horizon maturation for all four horizons, recency-starvation
+resistance, idempotency (in-place update, no duplicate outcome row), restart
+convergence, dry-run inertness, provider-freeness (fails on any HTTP client
+construction), no-cohort/no-tick-write, NULL preserved for absent evidence, no
+substitution of a tick just outside tolerance, and a regression pin proving
+`record_discovery_run` **cannot** mature a horizon — so the scheduled pass is
+never removed as "redundant with the anchor feed". The write-lock-fix review
+round added: bounded per-batch commits proven via a real SQLAlchemy
+`after_commit` listener (not just loop-iteration counting), the overlap flock
+(including that `record_discovery_run` must ignore it and that a degraded
+underlying pass must never report fabricated anchor counts), state-driven
+selection making forward progress under repeated deadline stops, the backlog
+OUTER-join fix for never-reconciled tokens, a deadline-truncated dry run
+reporting a distinct non-ok status and non-zero CLI exit code, and file-backed
+two-connection durability/contention tests.
 
 ## Activation order
 

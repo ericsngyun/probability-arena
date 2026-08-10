@@ -2827,6 +2827,8 @@ async def crypto_tape_run_once(
         )
         print("crypto lifecycle tape — research infrastructure only, never advice")
         print(f"status={r['status']}  external_calls={r['external_calls']}")
+        if r.get("error"):
+            print(f"error: {r['error']}")
         print(
             f"window={r['window_hours']}h  tokens_considered={r['tokens_considered']}  "
             f"birth_events={r['birth_events_created']}  "
@@ -2851,6 +2853,12 @@ async def crypto_tape_run_once(
             )
         if r.get("tape_run_id"):
             print(f"tape_run_id={r['tape_run_id']}")
+        # A terminal non-normal status (overlap/contention-skipped, or a
+        # deadline/contention-stopped partial or dry-run-partial pass) means
+        # eligible work was NOT reconciled/measured — it must not exit 0 just
+        # because `tokens_considered` happens to be >= 0.
+        if r["status"] not in ("ok", "dry_run"):
+            return -1
         return r["tokens_considered"]
     finally:
         if owns_session:
@@ -2921,10 +2929,11 @@ async def crypto_tape_reconcile(
                 "survival labels (true counts): "
                 + ", ".join(f"{k}={v}" for k, v in r["survival_label_mix"].items())
             )
-        # truncated (selection-limit cap) and partial (deadline/contention
-        # stopped the pass early) both mean "eligible work remains
-        # unreconciled" — neither may exit 0.
-        if r["status"] in ("truncated", "partial"):
+        # truncated (selection-limit cap), partial (deadline/contention
+        # stopped the pass early), and dry_run_partial (the same stop
+        # mid-PROBE) all mean "eligible work remains unmeasured/unreconciled"
+        # — none may exit 0.
+        if r["status"] in ("truncated", "partial", "dry_run_partial"):
             print(f"WARNING: {r['error']}")
             return -1
         return r["tokens_considered"]
