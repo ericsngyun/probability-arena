@@ -555,27 +555,35 @@ class TestWholeObjectFidelityProperty:
 
 
 # =====================================================================
-# 5. THE LIVE-REFERENCE MUTATION DEFECT (reproduced, not fixed).
-#    submit() queues the caller's live dict; the writer encodes it LATER,
-#    on its own thread. An ordinary producer that mutates the dict after
-#    submit() returns changes what gets archived -- with NO hostile class
-#    and, in the common case, NO error at all.
+# 5. THE LIVE-REFERENCE MUTATION DEFECT -- FIXED (A4, KALSHI-ARCHIVE-CORE-
+#    REMEDIATION-002). submit() used to queue the caller's live dict, and
+#    the writer encoded it LATER, on its own thread; an ordinary producer
+#    that mutated the dict after submit() returned changed what got
+#    archived -- with NO hostile class and, in the common case, NO error at
+#    all. `_admit` now validates, encodes ONCE, and reconstructs a FRESH
+#    object graph from the accepted bytes (`parse_canonical`) before ever
+#    queuing it -- the writer only ever sees that reconstruction, never the
+#    caller's own object, so a later mutation of the caller's object cannot
+#    reach the archive at all.
 # =====================================================================
 
 class TestLiveReferenceMutationDefect:
-    def test_ordinary_mutation_after_submit_silently_corrupts_the_archive(
-            self, tmp_path):
+    def test_mutation_after_submit_does_not_reach_the_archive(self, tmp_path):
         """payload = {"depth": [{"price": "0.51"}]}; submit(); then mutate
-        payload in place; then close(). close_status is "clean" and the
-        archived bytes do NOT represent the state submit() accepted."""
+        payload in place; then close(). The archive must contain the
+        PRE-MUTATION accepted state -- close_status is "clean" and the
+        archived bytes represent exactly what submit() accepted, not
+        whatever the caller's object says by the time the writer thread
+        gets to it."""
         _init_archive(tmp_path)
         w = sg.SegmentWriter(tmp_path, environment="demo",
                              segment_id="seg-live-mutation",
                              partition_identity="date=2026-08-08/hour=12",
                              subscription_metadata={})
         # Widen the window between admission and the writer thread actually
-        # encoding the record, so the race is deterministic in a test
-        # rather than a timing coincidence.
+        # encoding the record, so a REMAINING race would be deterministic in
+        # a test rather than a timing coincidence -- this must stay harmless
+        # now that admission itself decouples from the caller's object.
         w.pre_write_hook = lambda writer: time.sleep(0.2)
 
         payload = {"depth": [{"price": "0.51"}]}
@@ -588,22 +596,21 @@ class TestLiveReferenceMutationDefect:
 
         records = sg.read_segment_records(w.events_path)
         archived_price = records[0]["raw_event"]["depth"][0]["price"]
-        assert archived_price != accepted_snapshot["depth"][0]["price"], (
-            "expected the KNOWN defect: archived value should differ from "
-            "what submit() accepted")
-        assert archived_price == "0.99"
-        # And the segment verifies VALID regardless -- the mutation is
-        # invisible to every downstream check, because the writer only ever
-        # saw the post-mutation state.
+        assert archived_price == accepted_snapshot["depth"][0]["price"] == "0.51", (
+            "the archive must hold the PRE-mutation state submit() accepted, "
+            "not whatever the caller's live object says later")
         segv = sg.verify_segment(w.dir, environment="demo")
         assert segv.valid, segv.reasons
 
-    def test_mutation_introducing_a_refused_type_destroys_the_whole_segment(
-            self, tmp_path):
-        """The more violent variant: the post-submit mutation introduces a
-        float. The writer thread's canonical_bytes() call fails,
-        failed_after_accept becomes nonzero, and close() refuses to publish
-        -- destroying every OTHER record in the segment along with it."""
+    def test_mutation_introducing_a_refused_type_is_harmless(self, tmp_path):
+        """The more violent variant used to destroy the whole segment: a
+        post-submit mutation introduced a float, the writer thread's
+        `canonical_bytes()` call raised on ITS re-encode of the caller's
+        live object, `failed_after_accept` went nonzero, and close() refused
+        to publish -- destroying every OTHER record along with it. There is
+        no second encode of the caller's object any more, so the mutation
+        (of an object the writer never looks at again) is simply invisible:
+        close() must succeed exactly as if the mutation never happened."""
         _init_archive(tmp_path)
         w = sg.SegmentWriter(tmp_path, environment="demo",
                              segment_id="seg-live-mutation-float",
@@ -612,9 +619,13 @@ class TestLiveReferenceMutationDefect:
         w.pre_write_hook = lambda writer: time.sleep(0.2)
         payload = {"depth": [{"price": "0.51"}]}
         assert w.submit(_fields(0, payload)) is None
-        payload["depth"][0]["price"] = 0.52     # float -- not caught at admission
-        with pytest.raises(sg.SegmentError, match="not written"):
-            w.close()
+        payload["depth"][0]["price"] = 0.52     # float -- irrelevant post-admission
+        manifest = w.close()
+        assert manifest["close_status"] == "clean"
+        assert manifest["record_count"] == 1
+        records = sg.read_segment_records(w.events_path)
+        assert records[0]["raw_event"]["depth"][0]["price"] == "0.51"
+        assert sg.verify_segment(w.dir, environment="demo").valid
 
 
 # =====================================================================
@@ -684,24 +695,28 @@ class TestAssertFixpointGap:
         assert sg.non_canonical_reason(d) is None
         cn.assert_fixpoint(d)   # raises CanonicalError today -- that's the gap
 
-    def test_the_duplicate_key_collapse_destroys_the_whole_segment_at_close(
+    def test_the_duplicate_key_collapse_no_longer_destroys_the_segment(
             self, tmp_path):
-        """Not xfail: pins the ACTUAL consequence through the real writer,
-        which turns out to be worse than silent data loss on one record.
+        """FIXED as a structural side effect of A4 (KALSHI-ARCHIVE-CORE-
+        REMEDIATION-002), not by anything in this file's own scope.
 
-        admission ADMITS the colliding-key payload (proven above); the
-        writer thread writes a line whose record_digest was computed over
-        the IN-MEMORY record (raw_event still has two distinct dict keys,
-        so its JSON text carries a duplicate "a" key and hashes one way).
-        When close() reads that line back to reconcile
-        (`read_segment_records` -> `parse_canonical` -> `json.loads`), the
-        duplicate JSON key collapses to ONE key (last-wins) -- the record
-        parsed back is no longer byte-identical to what was digested, its
-        recomputed self-digest disagrees with the stored one, and
-        `verify_chain` reports the record as failing its own digest.
-        `close()` then refuses to publish -- destroying every OTHER record
-        in the segment along with this one, over a value admission should
-        never have accepted in the first place."""
+        The consequence this test used to pin: admission ADMITS the
+        colliding-key payload (proven above); the writer thread used to write
+        a line whose record_digest was computed over the ORIGINAL, IN-MEMORY
+        record (raw_event still carrying two distinct dict keys, so its JSON
+        text held a duplicate "a" key and hashed one way). When close() read
+        that line back to reconcile, the duplicate JSON key collapsed to ONE
+        key (last-wins) and the recomputed self-digest disagreed with the
+        stored one -- destroying every OTHER record in the segment along with
+        it.
+
+        A4 made `_admit` reconstruct the accepted value from its OWN
+        canonical bytes (`parse_canonical(canonical_bytes(value))`) before
+        ever queuing it, so the writer thread now encodes the ALREADY-
+        COLLAPSED value -- the exact same collapse close() will see when it
+        re-parses the line to reconcile. There is no longer a second,
+        different representation for the two ends to disagree about.
+        """
         _init_archive(tmp_path)
         w = sg.SegmentWriter(tmp_path, environment="demo",
                              segment_id="seg-colliding-key",
@@ -711,11 +726,13 @@ class TestAssertFixpointGap:
         assert w.submit(_fields(0, good_payload)) is None   # a perfectly good record
         colliding_payload = {_CollidingKey("a"): "first", _CollidingKey("a"): "second"}
         assert w.submit(_fields(1, colliding_payload)) is None   # ADMITTED (the gap)
-        with pytest.raises(sg.SegmentError, match="fails its own digest"):
-            w.close()
-        # The good record at ordinal 0 is destroyed too -- close() never
-        # published a manifest, so nothing about this segment is evidence.
-        assert not w.manifest_path.exists()
+        manifest = w.close()
+        assert manifest["close_status"] == "clean"
+        assert manifest["record_count"] == 2
+        records = sg.read_segment_records(w.events_path)
+        # last-wins, collapsed at ADMISSION time, consistently on both ends.
+        assert records[1]["raw_event"] == {"a": "second"}
+        assert sg.verify_segment(w.dir, environment="demo").valid
 
 
 # =====================================================================

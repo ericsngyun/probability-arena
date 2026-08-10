@@ -2,9 +2,17 @@
 
 None of this is production code, none of it is imported by `app/`, and it
 does not reuse `SegmentWriter.submit()`'s control flow — it is a small,
-independent implementation of the same admission/disposition contract
-(`WriterAccounting`, reused as-is because it is a plain dataclass with no
-behaviour worth re-deriving).
+independent implementation of ONE alternative, ALSO-valid accounting
+contract: an independently mutated `accepted` counter, made safe by a
+retry-until-committed critical section instead of by (production's actual
+A6 design, see `segment.py`) deriving `accepted` from `written` +
+`failed_after_accept` + `pending` so there is no independent counter left to
+desynchronise. `ShimAccounting` below is deliberately its OWN small
+dataclass — production's `WriterAccounting.accepted` is a read-only derived
+property now, precisely because an independently-settable `accepted` is the
+shape that let window (b) exist in the first place — so this file keeps
+demonstrating that OTHER shape's own correct and broken variants without
+entangling the two designs.
 
 Required deliverable (c) of the harness spec: prove the fault-injection
 methodology discriminates correct accounting from broken accounting, and
@@ -27,8 +35,53 @@ from __future__ import annotations
 import collections
 import queue
 import threading
+from dataclasses import dataclass, field
 
-from app.realtime.segment import RejectReason, WriterAccounting
+from app.realtime.segment import RejectReason
+
+
+@dataclass
+class ShimAccounting:
+    """The OLD (pre-A6) `WriterAccounting` shape: `accepted` is an
+    independently mutated field, not derived. Used only by this file, to
+    demonstrate the retry-until-committed alternative to production's actual
+    fix — see the module docstring."""
+
+    attempted: int = 0
+    rejected_before_accept: int = 0
+    accepted: int = 0
+    written: int = 0
+    failed_after_accept: int = 0
+    pending: int = 0
+    rejections: dict = field(default_factory=dict)
+
+    def reject_before_accept(self, reason: RejectReason) -> None:
+        self.rejections[reason.value] = self.rejections.get(reason.value, 0) + 1
+        self.rejected_before_accept += 1
+
+    def admission_holds(self) -> bool:
+        return self.attempted == self.rejected_before_accept + self.accepted
+
+    def disposition_holds(self) -> bool:
+        return self.accepted == (self.written + self.failed_after_accept
+                                 + self.pending)
+
+    def reconciles(self) -> bool:
+        return self.admission_holds() and self.disposition_holds()
+
+    def clean(self) -> bool:
+        return (self.reconciles() and self.pending == 0
+                and self.failed_after_accept == 0)
+
+    def to_dict(self) -> dict:
+        return {"attempted": self.attempted,
+                "rejected_before_accept": self.rejected_before_accept,
+                "accepted": self.accepted, "written": self.written,
+                "failed_after_accept": self.failed_after_accept,
+                "pending": self.pending, "rejections": dict(self.rejections),
+                "admission_holds": self.admission_holds(),
+                "disposition_holds": self.disposition_holds(),
+                "clean": self.clean()}
 
 
 class _BaseSubmitter:
@@ -37,7 +90,7 @@ class _BaseSubmitter:
     writer thread's disposition is checked in `segment.py`."""
 
     def __init__(self, maxsize: int = 10_000):
-        self.accounting = WriterAccounting()
+        self.accounting = ShimAccounting()
         self._queue: queue.Queue = queue.Queue(maxsize=maxsize)
         self._lock = threading.Lock()
 
@@ -113,6 +166,7 @@ class GoodSubmitter(_BaseSubmitter):
                     # ONE compound statement: the counter and the flag that
                     # says "this is now terminal" move together, or neither
                     # moves. There is no source line between them.
+                    # FAULT-WINDOW: good-window-a-analog
                     setattr(self.accounting, counter_name,
                             getattr(self.accounting, counter_name) + 1)
                     stage_ref[0] = stage_value
@@ -133,6 +187,7 @@ class GoodSubmitter(_BaseSubmitter):
         while True:
             try:
                 with self._lock:
+                    # FAULT-WINDOW: good-window-d-analog
                     self.accounting.reject_before_accept(
                         RejectReason.SERIALIZATION_FAILURE)
                     stage_ref[0] = stage_value
@@ -169,6 +224,7 @@ class GoodSubmitter(_BaseSubmitter):
                     # historical record (see the A3 report) as evidence the
                     # harness actually discriminates rather than rubber-
                     # stamping whatever it's pointed at.
+                    # FAULT-WINDOW: good-window-b-analog
                     (self._raw.append(item),
                      self.accounting.__setattr__(
                          "accepted", self.accounting.accepted + 1),
@@ -204,6 +260,7 @@ class BadWindowA(_BaseSubmitter):
     def submit(self, item):
         with self._lock:
             self.accounting.attempted += 1
+        # FAULT-WINDOW: bad_a
         # <-- an async exception landing HERE is not covered by anything.
         try:
             self._queue.put_nowait(item)
@@ -228,6 +285,7 @@ class BadWindowB(_BaseSubmitter):
             self.accounting.attempted += 1
         try:
             self._queue.put_nowait(item)
+            # FAULT-WINDOW: bad_b
             # <-- fault lands here: queued, but not yet booked accepted.
             with self._lock:
                 self.accounting.accepted += 1
@@ -251,6 +309,7 @@ class BadWindowC(_BaseSubmitter):
             self._queue.put_nowait(item)
             with self._lock:
                 self.accounting.accepted += 1
+            # FAULT-WINDOW: bad_c
             # <-- fault lands here, AFTER accepted is already committed.
             self._note_depth()
             return None
@@ -279,6 +338,7 @@ class BadWindowD(_BaseSubmitter):
                 self.accounting.accepted += 1
             return None
         except BaseException:
+            # FAULT-WINDOW: bad_d
             # <-- a SECOND fault landing anywhere in this block is fatal:
             # nothing retries, so an interrupted booking is a lost booking.
             with self._lock:

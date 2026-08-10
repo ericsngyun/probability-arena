@@ -296,12 +296,13 @@ class RejectReason(str, Enum):
     NOT_CANONICAL = "not_canonical"
 
 
-def non_canonical_reason(value, _path: str = "") -> str | None:
-    """Why this value cannot become evidence, or None.
+def canonicalize_or_reason(value, _path: str = ""):
+    """Validate AND encode, exactly once. `(canonical_bytes, None)` on
+    success, `(None, reason)` on refusal.
 
-    THE INVARIANT: `non_canonical_reason(x) is None` implies
-    `canonical_bytes(x)` succeeds. It holds by CONSTRUCTION now, because this
-    asks the encoder instead of re-deriving its preconditions.
+    THE INVARIANT: a `None` reason implies the returned bytes are the exact
+    bytes `canonical_bytes(x)` would have produced. It holds by CONSTRUCTION,
+    because this calls the encoder rather than re-deriving its preconditions.
 
     Five consecutive review rounds found a hole here and every one was the same
     mistake — a hand-maintained mirror of `canonical.py`'s rules that had
@@ -316,6 +317,14 @@ def non_canonical_reason(value, _path: str = "") -> str | None:
     diagnostic path (`raw_event.depth[0].price`). The encoder is then run for
     real, and if the two disagree the ENCODER wins — which is the direction
     every one of those five bugs went.
+
+    A4: `_admit` used to call `non_canonical_reason` (which computed and
+    discarded these exact bytes) and then have the WRITER THREAD re-encode
+    the producer's live object LATER, on its own thread — a live reference
+    the producer could mutate in between, and a second encode of a value that
+    had already been validated once. Returning the bytes here means the gate
+    and the commit are the SAME encode: whatever passed admission is exactly
+    what gets queued (see `_admit`'s `parse_canonical(payload_bytes)`).
     """
     try:
         # The WALK is inside the guard too. It was outside, so an exception from
@@ -328,16 +337,27 @@ def non_canonical_reason(value, _path: str = "") -> str | None:
         # not.
         structural = _structural_reason(value, _path)
         if structural is not None:
-            return structural
-        canonical_bytes(value)
+            return None, structural
+        payload = canonical_bytes(value)
     except CanonicalError as exc:
-        return f"{_path or 'value'} is not canonically representable: {exc}"
+        return None, f"{_path or 'value'} is not canonically representable: {exc}"
     except Exception as exc:              # noqa: BLE001 - a refusal, not a crash
         # A hostile `tzinfo` whose `utcoffset()` raises used to make THIS
         # function raise rather than return a reason.
-        return (f"{_path or 'value'} could not be canonically encoded "
-                f"({type(exc).__name__}: {exc})")
-    return None
+        return None, (f"{_path or 'value'} could not be canonically encoded "
+                      f"({type(exc).__name__}: {exc})")
+    return payload, None
+
+
+def non_canonical_reason(value, _path: str = "") -> str | None:
+    """Why this value cannot become evidence, or None.
+
+    Thin wrapper over `canonicalize_or_reason` for callers (and tests) that
+    only want the refusal reason, not the bytes. `_admit` calls
+    `canonicalize_or_reason` directly so it never encodes twice.
+    """
+    _, reason = canonicalize_or_reason(value, _path)
+    return reason
 
 
 def _structural_reason(value, _path: str = "", _depth: int = 0) -> str | None:
@@ -763,15 +783,46 @@ class WriterAccounting:
     from the queue at close and cross-checked against the identity, so a drift
     between what the writer believes and what is actually undrained is a
     detected failure rather than an invisible one.
+
+    A6: `accepted` is DERIVED, not an independently incremented field. It used
+    to be `self.accounting.accepted += 1`, mutated by `_admit` on the producer
+    thread AFTER `queue.put_nowait()` had already, durably, committed the
+    event to the queue — a real source-line gap an asynchronous exception
+    (SIGINT, `PyThreadState_SetAsyncExc`) could land inside, leaving the event
+    genuinely queued (and later genuinely WRITTEN) while `accepted` stayed one
+    short forever. `disposition_holds()` then failed at close() — not because
+    any evidence was wrong, but because a DIAGNOSTIC counter missed an
+    increment — and `close()` treated that as grounds to invalidate every
+    other record in the segment along with it.
+
+    Defining `accepted := written + failed_after_accept + pending` removes the
+    independent counter (and the gap after it) entirely: an event's admission
+    outcome is measured from where it actually ended up — the queue, the
+    written stream, or the failure count — never tracked separately from that
+    and hoped to stay in step. `disposition_holds()` is therefore true by
+    construction; the identity it used to prove is now a tautology, which is
+    exactly the point (see `close()`'s comment on `admission_holds()`).
     """
 
     attempted: int = 0
     rejected_before_accept: int = 0
-    accepted: int = 0                 # only AFTER the event is in the queue
     written: int = 0
     failed_after_accept: int = 0      # accepted, then the writer could not write it
     pending: int = 0                  # accepted, never drained. 0 at a clean close
     rejections: dict = field(default_factory=dict)
+
+    # Not a durability field: a live, read-only hook into the writer's queue
+    # depth, so `accepted` reflects events sitting in the queue BEFORE close()
+    # ever measures `pending` (which is only populated by `_measure_pending`
+    # at close). Reading a queue's size mutates nothing and is safe to call
+    # from any thread at any time, so it cannot itself become a source of
+    # torn state the way an independently incremented counter was.
+    live_queue_depth: object = field(default=None, repr=False, compare=False)
+
+    @property
+    def accepted(self) -> int:
+        live = self.live_queue_depth() if self.live_queue_depth is not None else 0
+        return self.written + self.failed_after_accept + self.pending + live
 
     def reject_before_accept(self, reason: RejectReason) -> None:
         self.rejections[reason.value] = self.rejections.get(reason.value, 0) + 1
@@ -782,19 +833,44 @@ class WriterAccounting:
         self.failed_after_accept += 1
 
     def admission_holds(self) -> bool:
+        """`attempted == rejected_before_accept + accepted` — a DIAGNOSTIC
+        identity. It can still be violated by a producer-side asynchronous
+        exception (see the async accounting harness's four windows), because
+        `attempted` and `rejected_before_accept` are both mutated on the
+        producer thread and no pure-Python critical section can be made
+        immune to an interrupt at every possible instruction boundary. What
+        changed is that this identity no longer gates `clean()` or `close()`:
+        it cannot, because it can never diverge from what is actually
+        durable (see `accepted`'s docstring) — only from how well `submit()`
+        counted its OWN attempts.
+        """
         return self.attempted == self.rejected_before_accept + self.accepted
 
     def disposition_holds(self) -> bool:
-        return self.accepted == (self.written + self.failed_after_accept
-                                 + self.pending)
+        """Always true. `accepted` IS `written + failed_after_accept +
+        pending` (+ whatever is live in the queue right now, while OPEN — see
+        `live_queue_depth`) — there is no independently mutated counter left
+        for this to compare against, so the comparison this method used to
+        perform is now a tautology BY DEFINITION, not an observation that can
+        pass or fail. Kept as a method, not deleted, so existing callers stay
+        source-compatible."""
+        return True
 
     def reconciles(self) -> bool:
         return self.admission_holds() and self.disposition_holds()
 
     def clean(self) -> bool:
-        """The only state in which a segment may be published as clean evidence."""
-        return (self.reconciles() and self.pending == 0
-                and self.failed_after_accept == 0)
+        """The only state in which a segment may be published as clean
+        evidence — gated on the DURABLE/DISPOSITION side only.
+
+        `admission_holds()` is deliberately NOT part of this. It is a
+        diagnostic identity about how many `submit()` attempts were counted,
+        not about what is durable. A SIGINT may abort a caller and even cost
+        `submit()`'s own bookkeeping an increment, but it must never be able
+        to turn thousands of already-written, already-verified records into
+        an unpublishable segment — that is the defect this replaces.
+        """
+        return self.pending == 0 and self.failed_after_accept == 0
 
     def to_dict(self) -> dict:
         return {"attempted": self.attempted,
@@ -896,6 +972,9 @@ class SegmentWriter:
         self.closed_at: str | None = None
 
         self._queue: queue.Queue = queue.Queue(maxsize=queue_maxsize)
+        # See `WriterAccounting.live_queue_depth`'s docstring: a read-only
+        # hook, not a counter another thread mutates.
+        self.accounting.live_queue_depth = self._queue.qsize
         self._enqueue_timeout = enqueue_timeout_s
         self._flush_every = flush_every
         self._lock = threading.Lock()
@@ -925,6 +1004,10 @@ class SegmentWriter:
         self._sealed = False
         self.queue_high_water = 0
         self.last_rejection_detail: str | None = None
+        # A6 diagnostic: set at close() if `WriterAccounting.admission_holds()`
+        # is false. Never gates publication — see `_close_stages`.
+        self.admission_drift = False
+        self.admission_drift_detail: dict | None = None
         # Injection seams. Production leaves both None; tests use them to slow
         # the writer or fail a specific durability stage without weakening the
         # real fsync path.
@@ -1062,6 +1145,21 @@ class SegmentWriter:
 
         Returns `None` on acceptance or a typed reason on rejection. There is
         no path that drops an event without returning a reason.
+
+        A6: `attempted` and `rejected_before_accept`, both mutated here on the
+        PRODUCER thread, are DIAGNOSTIC counters — how many calls were made
+        and how many were explicitly refused. Neither can be made immune to an
+        asynchronous exception landing between two Python statements (the
+        four windows the async accounting harness reproduces: after
+        `attempted` moves but before `_inflight` does; inside this method's
+        own exception handler while it books a rejection; and their
+        variants) — no pure-Python critical section can promise that. What
+        makes that acceptable is `accepted` (see `WriterAccounting`): it is
+        DERIVED from `written`/`failed_after_accept`/`pending`, never from a
+        counter this method increments, so nothing this method's own
+        bookkeeping misses can ever touch the durable/queued state `close()`
+        actually gates on. A missed increment here is a diagnostic gap, not
+        data loss, and `close()` no longer treats the two as the same thing.
         """
         # ENTER the admission protocol. `attempted` and `_inflight` move
         # together under one lock, and `_inflight` is not released until this
@@ -1087,24 +1185,45 @@ class SegmentWriter:
                 return RejectReason.SHUTDOWN_IN_PROGRESS
             with self._lock:
                 self.accounting.attempted += 1
+            # FAULT-WINDOW: window-a — a fault landing on the NEXT line, after
+            # `attempted` is durably counted but before `_inflight` is, is
+            # outside the `try` below entirely and escapes straight to the
+            # caller. `attempted` is now one ahead of what `rejected_before_
+            # accept`/`accepted` will ever show for this call. Diagnostic-only
+            # (see this method's docstring): nothing was queued, nothing was
+            # written, there is no durable evidence to lose.
             self._inflight += 1
         try:
+            # FAULT-WINDOW: safe-before-admit — a fault landing on the NEXT
+            # line is fully covered by this `try`: `attempted` has moved, and
+            # the `except` below books a matching `rejected_before_accept`
+            # for it in the SAME call. A true negative — admission_holds()
+            # must stay true.
             return self._admit(envelope_fields)
         except BaseException:
             # THE IDENTITY IS ENFORCED HERE, not inside the gate. Six rounds
             # were spent hardening `non_canonical_reason` so it could never
             # raise, and each round found another way in — a hostile dunder, a
             # naive datetime, a mapping key, and finally a real SIGINT, which no
-            # amount of `except Exception` can catch. `attempted` had already
-            # been incremented, so every escape violated
-            # `attempted == rejected_before_accept + accepted` and cost the
-            # whole segment while verify_archive reported VALID with empty
-            # reasons. Booking a terminal state on the exceptional exit makes
-            # the identity hold by construction, and demotes any future gate
-            # defect from data loss to a diagnostic-quality problem.
+            # amount of `except Exception` can catch. Booking a terminal state
+            # on the exceptional exit keeps the DIAGNOSTIC identity as close to
+            # true as a single Python statement can, and demotes any future
+            # gate defect from data loss to a diagnostic-quality problem.
             with self._lock:
+                # FAULT-WINDOW: window-d — a SECOND fault landing on the NEXT
+                # line, while this handler is still booking the FIRST fault's
+                # rejection, loses that booking too: `attempted` moved for the
+                # original call, and now neither `rejected_before_accept` nor
+                # `accepted` will ever reflect it. Still diagnostic-only: the
+                # original call never reached the queue (that gate is gone by
+                # the time `_admit` raises, or the payload was refused before
+                # ever being queued), so nothing durable is unaccounted for.
                 self.accounting.reject_before_accept(
                     RejectReason.SERIALIZATION_FAILURE)
+                # FAULT-WINDOW: already-terminal — a fault landing HERE, after
+                # the line above completed, is the true-negative twin of
+                # window (d): the booking already happened, there is nothing
+                # left for a second fault to interrupt.
             raise
         finally:
             with self._admission:
@@ -1122,22 +1241,48 @@ class SegmentWriter:
             return self._reject(RejectReason.SEGMENT_INVALID)
         if self.state is not SegmentState.OPEN:
             return self._reject(RejectReason.SEGMENT_NOT_OPEN)
-        # Canonical admissibility is decided BEFORE acceptance. A value the
-        # writer cannot serialise used to be discovered after the producer had
-        # been told the event was recorded, and the only outcomes left were a
-        # silent drop or destroying the whole hour. The contract is now uniform
+        # Canonical admissibility is decided BEFORE acceptance, and decided
+        # ONCE: `canonicalize_or_reason` computes `canonical_bytes` and this
+        # keeps it, rather than discarding it and having the writer thread
+        # encode the producer's live object again later. A value the writer
+        # cannot serialise used to be discovered after the producer had been
+        # told the event was recorded, and the only outcomes left were a
+        # silent drop or destroying the whole hour. The contract is uniform
         # with `canonical.py`: a float is refused, and it is refused here.
-        bad = non_canonical_reason(envelope_fields)
+        payload_bytes, bad = canonicalize_or_reason(envelope_fields)
         if bad is not None:
             self.last_rejection_detail = bad
             return self._reject(RejectReason.NOT_CANONICAL)
+        # A4: IMMUTABLE SUBMISSION. `parse_canonical` reconstructs a FRESH
+        # object graph from the accepted bytes — new dicts, new lists, new
+        # strings — sharing NO reference with the caller's `envelope_fields`.
+        # This is what gets queued and, later, what the writer thread encodes
+        # on its own thread. A producer that mutates its own `envelope_fields`
+        # after `submit()` returns cannot reach the accepted evidence: the
+        # exact bytes accepted are the exact bytes that will be committed,
+        # subject only to the writer's deterministic archive framing
+        # (`build_record` wrapping this value with `receive_ordinal` and
+        # `previous_record_digest`, assigned in write order).
+        accepted_fields = parse_canonical(payload_bytes)
         try:
-            self._queue.put_nowait(envelope_fields)
+            # FAULT-WINDOW: safe-before-enqueue — a fault landing on the NEXT
+            # line, before `put_nowait` ever runs, means nothing was queued;
+            # `submit()`'s handler books the matching rejection. A true
+            # negative — admission_holds() must stay true.
+            self._queue.put_nowait(accepted_fields)
         except queue.Full:
             pass
         else:
-            with self._lock:
-                self.accounting.accepted += 1
+            # FAULT-WINDOW: window-b — a fault landing on the NEXT line, after
+            # the item is durably in the queue (and so WILL be written), used
+            # to land between a successful `put_nowait` and a SEPARATE
+            # `accepted += 1`, making `written` exceed `accepted` once the
+            # item drained. There is no such statement here any more:
+            # `accepted` is derived from `written`/`failed_after_accept`/
+            # `pending` (see `WriterAccounting`), so there is nothing left
+            # for this window to desynchronise — a fault here can only cost
+            # `_note_depth`'s high-water bookkeeping and this call's own
+            # diagnostic booking, never the item itself.
             self._note_depth()
             return None
         # Queue full: wait OUTSIDE the admission gate, so N producers do not
@@ -1146,18 +1291,26 @@ class SegmentWriter:
         # could even declare CLOSING). `_inflight` still covers this wait, so
         # close() cannot seal while it is outstanding.
         try:
-            self._queue.put(envelope_fields, timeout=self._enqueue_timeout)
+            self._queue.put(accepted_fields, timeout=self._enqueue_timeout)
         except queue.Full:
             return self._reject(RejectReason.ENQUEUE_TIMEOUT)
-        with self._lock:
-            self.accounting.accepted += 1
         self._note_depth()
         return None
 
     def _note_depth(self) -> None:
         with self._lock:
+            # FAULT-WINDOW: window-c (note-depth-l1) — the event is already
+            # durably queued by the time any statement in this method runs.
+            # A fault landing at any of the three points marked in this
+            # method used to reach `_admit`'s caller and get double-booked
+            # `rejected_before_accept` even though `accepted` (the OLD,
+            # independently-tracked field) had already been incremented.
+            # `queue_high_water` is diagnostic bookkeeping only; losing an
+            # update to it costs nothing durable.
             depth = self._queue.qsize()
+            # FAULT-WINDOW: window-c (note-depth-l2)
             if depth > self.queue_high_water:
+                # FAULT-WINDOW: window-c (note-depth-l3)
                 self.queue_high_water = depth
 
     @property
@@ -1355,14 +1508,12 @@ class SegmentWriter:
             self.state = SegmentState.INVALID
             raise SegmentError(f"writer failed: {self._writer_error!r} "
                                f"{self.accounting.to_dict()}")
-        if not snapshot.reconciles():
-            self.state = SegmentState.INVALID
-            raise SegmentError(
-                "refusing to publish a segment whose accounting does not "
-                f"reconcile: {snapshot.to_dict()}")
-        # `clean` is the ONLY state in which this may be published as evidence.
-        # An accepted-but-unwritten event is a loss the producer was told did
-        # not happen, and it must never appear behind close_status "clean".
+        # `clean` is the ONLY state in which this may be published as evidence,
+        # and it is gated on the DURABLE side of the identity only —
+        # `pending == 0 and failed_after_accept == 0` — never on
+        # `admission_holds()`. An accepted-but-unwritten event is a loss the
+        # producer was told did not happen, and it must never appear behind
+        # close_status "clean": that check stays fatal.
         if not snapshot.clean():
             self.state = SegmentState.INVALID
             raise SegmentError(
@@ -1370,6 +1521,23 @@ class SegmentWriter:
                 f"not written and {snapshot.pending} were never drained; "
                 "refusing to publish this segment as a clean close: "
                 f"{snapshot.to_dict()}")
+        # A6 CORE PRINCIPLE: the durable/queued event state is authoritative;
+        # a DIAGNOSTIC counter must never be able to make already-durable
+        # evidence disappear. `admission_holds()` can still be false — a real
+        # asynchronous exception can land between two Python statements in
+        # `submit()`'s own bookkeeping (see the four windows the async
+        # accounting harness reproduces) — but nothing that can happen there
+        # can touch `written`, `failed_after_accept` or `pending`, because
+        # `accepted` is DERIVED from them rather than tracked by a fourth,
+        # independently-mutated counter (see `WriterAccounting`). A drift here
+        # means `submit()` under-counted its OWN attempts or rejections; it
+        # never means an event was fabricated, lost, or double-counted in the
+        # evidence itself. It is recorded, not silently dropped, and it does
+        # NOT block publication — the exact defect this replaces destroyed
+        # thousands of good records over a diagnostic-quality gap.
+        self.admission_drift = not snapshot.admission_holds()
+        if self.admission_drift:
+            self.admission_drift_detail = snapshot.to_dict()
 
         # Event-file durability first. Each stage is separately injectable so a
         # failure can be attributed to the exact stage rather than collapsed

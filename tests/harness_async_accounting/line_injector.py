@@ -21,6 +21,8 @@ observes call frames belonging to whatever module the caller points it at.
 
 from __future__ import annotations
 
+import inspect
+import re
 import sys
 import threading
 from dataclasses import dataclass, field
@@ -55,6 +57,54 @@ def target(filename: str, funcname: str, lineno: int, hit_index: int = 1,
           label: str = "") -> InjectionPoint:
     return InjectionPoint(filename=filename, funcname=funcname, lineno=lineno,
                           hit_index=hit_index, label=label)
+
+
+_MARKER_PREFIX = "FAULT-WINDOW:"
+
+
+def find_marker_line(func, marker: str) -> int:
+    """Locate the executable statement immediately following a
+    `# FAULT-WINDOW: <marker>` comment inside `func`'s source.
+
+    A SOURCE SCAN, not a hand-maintained line number. The previous remediation
+    shifted `segment.py` by +50 lines and broke 9 of these tests, each fixed
+    by mechanically re-pointing a literal integer that had no connection to
+    what it was supposed to mean. A marker comment lives next to the
+    statement it targets and moves WITH it under any amount of code motion
+    elsewhere in the file — re-deriving the line number here means a future
+    refactor cannot silently point an injector at the wrong statement while
+    the test still passes for the wrong reason.
+
+    The marker's comment may span multiple lines (a long explanation is
+    exactly what this codebase's commenting style favours); every line from
+    the marker to the first non-blank, non-comment line is skipped, and that
+    first executable line is the injection target.
+    """
+    src_lines, first_lineno = inspect.getsourcelines(func)
+    marker_re = re.compile(rf"#\s*{re.escape(_MARKER_PREFIX)}\s*"
+                           rf"{re.escape(marker)}(?!\S)")
+    for i, line in enumerate(src_lines):
+        if marker_re.search(line):
+            for j in range(i + 1, len(src_lines)):
+                stripped = src_lines[j].strip()
+                if stripped and not stripped.startswith("#"):
+                    return first_lineno + j
+            raise ValueError(
+                f"marker {marker!r} in {func!r} has no executable statement "
+                "after it")
+    raise ValueError(f"marker {marker!r} not found in {func!r}'s source")
+
+
+def target_marker(filename: str, func, marker: str, hit_index: int = 1,
+                  label: str = "") -> InjectionPoint:
+    """`target()`, but the line number is RE-DERIVED from a source marker
+    (see `find_marker_line`) rather than hard-coded. `func` is the actual
+    callable (e.g. `sg.SegmentWriter.submit`) so this is exact even if
+    `segment.py` grows or shrinks lines anywhere else in the file."""
+    lineno = find_marker_line(func, marker)
+    return InjectionPoint(filename=filename, funcname=func.__name__,
+                          lineno=lineno, hit_index=hit_index,
+                          label=label or marker)
 
 
 class ChainInjector:
