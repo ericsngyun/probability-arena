@@ -368,6 +368,16 @@ class TestCredentialAndCapability:
         read-scoped market-data requests, and the amendment is only meaningful
         if the surface it opened stays one file wide. A second module quietly
         growing a `sign` call is precisely the drift this catches.
+
+        The check targets a signing/key-loading *operation* -- an attribute
+        access like `key.sign(...)`/`key.private_bytes(...)`, an imported
+        name, or a bare identifier actually invoked as a call -- not any
+        local variable that happens to share a banned spelling. A plain
+        Name node in Store/Load context (e.g. `sign, digits, exponent =
+        value.as_tuple()`) is exactly that kind of unrelated identifier and
+        must not trip this guard; matching on Attribute/ImportFrom/call-target
+        is what keeps it precise without weakening the module boundary it
+        enforces.
         """
         import ast as _ast
 
@@ -376,16 +386,22 @@ class TestCredentialAndCapability:
                 continue
             tree = _ast.parse(path.read_text())
             names = set()
+            call_targets = set()
             for node in _ast.walk(tree):
                 if isinstance(node, _ast.ImportFrom):
                     names |= {a.name for a in node.names}
-                elif isinstance(node, (_ast.Name, )):
-                    names.add(node.id)
                 elif isinstance(node, _ast.Attribute):
                     names.add(node.attr)
+                elif isinstance(node, _ast.Call):
+                    func = node.func
+                    if isinstance(func, _ast.Name):
+                        call_targets.add(func.id)
+                    elif isinstance(func, _ast.Attribute):
+                        call_targets.add(func.attr)
+            surface = names | call_targets
             for banned in ("load_pem_private_key", "load_der_private_key",
                            "private_bytes", "sign"):
-                assert banned not in names, f"{path}: {banned}"
+                assert banned not in surface, f"{path}: {banned}"
 
     def test_signing_string_is_canonical_and_key_free(self):
         assert kx.canonical_signing_string(

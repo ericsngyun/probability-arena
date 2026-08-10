@@ -12,8 +12,10 @@ So there is no automatic path. Nothing in `EventArchive`, collector startup,
 canonical replay, `verify_archive` or the commit path reaches this module —
 asserted by a test, not by convention. An operator runs it deliberately:
 
-    kalshi-realtime-archive-migrate-legacy --source <dir> --dest <root> --dry-run
-    kalshi-realtime-archive-migrate-legacy --source <dir> --dest <root> --confirm
+    python -m app.cli archive-migrate-legacy --source <dir> --dest <root> \
+        --environment <env> --archive-identity <id> --dry-run
+    python -m app.cli archive-migrate-legacy --source <dir> --dest <root> \
+        --environment <env> --archive-identity <id> --confirm
 
 What it does, and what it refuses to pretend:
 

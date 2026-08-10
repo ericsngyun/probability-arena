@@ -177,6 +177,56 @@ class RecordSchemaError(SegmentError):
     """A record that cannot be trusted to mean what it says."""
 
 
+class OrphanedCommittedSegmentError(SegmentError):
+    """The segment's manifest is durable evidence that NO generation record
+    -- durably on disk, right now -- commits.
+
+    This is the genuinely ambiguous case `verify_archive` reports as
+    `ORPHANED_COMMITTED_SEGMENT`: a crash between the manifest publish and
+    the head commit, or a graft. Resolving it requires an explicit operator
+    decision (adopt into history or discard the evidence); nothing here may
+    infer which one is correct.
+    """
+
+
+class StaleHeadAfterCommitError(SegmentError):
+    """The archive head update failed, but the durable state proves the
+    segment IS already committed: a generation record naming this exact
+    segment exists on disk. Only the current-head POINTER did not advance.
+
+    This is STALE_HEAD, not an orphan, and it is automatically,
+    deterministically recoverable by `recover_current_head` -- no operator
+    decision is needed, only the (idempotent) recovery operation.
+    """
+
+
+def _durable_generation_commits(root, environment: str, segment_id: str) -> bool:
+    """Whether a head generation record ALREADY DURABLE ON DISK commits this
+    exact segment id, checked directly against the filesystem rather than
+    inferred from which exception `commit_segment` raised.
+
+    This is what makes the ORPHANED_COMMITTED_SEGMENT label in `close()`
+    correct: `commit_segment` writes the generation record and only THEN
+    advances the current-head pointer, as two separate durable steps. A
+    failure in the second step leaves the first one intact -- a STALE_HEAD,
+    automatically recoverable by `recover_current_head` -- not an orphan.
+    Labelling every `BaseException` from `commit_segment` as an orphan
+    conflated the two and sent an operator to the fictional `archive-adopt`
+    for a state the existing recovery already resolves.
+    """
+    try:
+        for generation in present_generations(root, environment):
+            record = read_generation(root, environment, generation)
+            if record.get("committed_segment_id") == segment_id:
+                return True
+    except Exception:
+        # Cannot prove the segment is committed -- fail closed to the
+        # ambiguous (adopt/discard) label rather than claiming an automatic
+        # recoverability the filesystem did not actually demonstrate.
+        return False
+    return False
+
+
 def _fsync_directory(directory: Path) -> None:
     fd = os.open(directory, os.O_RDONLY | os.O_CLOEXEC)
     try:
@@ -1600,12 +1650,38 @@ class SegmentWriter:
                 self._release_lock()
                 raise
             except BaseException as exc:
-                # The segment IS committed; the history is not. That is an
-                # ORPHANED_COMMITTED_SEGMENT, which verify_archive reports
-                # explicitly rather than absorbing.
+                # Not every failure here is the same durable state. The
+                # generation record and the current-head pointer are two
+                # separate durable writes inside `commit_segment` -- the
+                # record first, the pointer second -- so a failure can land
+                # in either window, and only ONE of them is genuinely an
+                # orphan. Ask the filesystem which state actually happened
+                # instead of assuming the second (rarer, worse) one every
+                # time.
                 self.state = SegmentState.INVALID
                 self._release_lock()
-                raise SegmentError(
+                if _durable_generation_commits(self.root, self.environment,
+                                               manifest["segment_id"]):
+                    # The generation record durably names this segment; only
+                    # the current-head pointer failed to advance. This is
+                    # STALE_HEAD, and `recover_current_head` -- the
+                    # `archive-recover-head` operator command -- finishes the
+                    # transition deterministically. No adopt/discard decision
+                    # applies here; there is nothing ambiguous to decide.
+                    raise StaleHeadAfterCommitError(
+                        f"segment {manifest['segment_id']!r} is already "
+                        "committed by a durable generation record; only the "
+                        "archive head pointer failed to advance at stage "
+                        f"{self.failed_stage!r} ({exc!r}). Run "
+                        "recover_current_head (the 'archive-recover-head' "
+                        "operator command) to finish this transition -- do "
+                        "not adopt or discard this segment.") from exc
+                # No generation record commits this segment yet: the manifest
+                # is committed evidence the history does not mention at all.
+                # That is the genuinely ambiguous ORPHANED_COMMITTED_SEGMENT
+                # case `verify_archive` reports, and it requires an explicit
+                # operator decision.
+                raise OrphanedCommittedSegmentError(
                     f"archive head update failed after segment commit at stage "
                     f"{self.failed_stage!r} (ORPHANED_COMMITTED_SEGMENT): "
                     f"{exc!r}") from exc
@@ -1917,6 +1993,8 @@ from app.realtime.archive_head import (             # noqa: E402
     head_state,
     heads_dir,
     initialize_archive,
+    present_generations,
+    read_generation,
     load_authoritative_head,
     present_generations,
     read_current_head,
@@ -2588,8 +2666,14 @@ def _verify_archive_inner(root, *, environment: str, expected_archive_id,
             f"ORPHANED_COMMITTED_SEGMENT: {orphaned} are committed evidence on "
             "disk that the archive head does not mention — either a crash "
             "between the manifest publish and the head commit, or a graft. "
-            "Resolve each explicitly with the archive-adopt or archive-discard "
-            "operation; neither is adopted automatically.")
+            "This is decided per segment, never automatically: commit it into "
+            "history explicitly with the 'archive-adopt' operator command "
+            "(bounded to exactly this state -- it refuses any segment "
+            "verify_archive does not itself report here), or, if it is a "
+            "graft rather than a crash residue, remove it from disk with "
+            "direct, reviewed operator access. There is no 'archive-discard' "
+            "command -- deleting evidence is deliberately not a scripted, "
+            "one-line operation.")
 
     if not missing and record.get("archive_segments_digest") != fold and expected:
         reasons.append(

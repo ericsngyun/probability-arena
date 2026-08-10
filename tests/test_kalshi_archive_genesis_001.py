@@ -276,6 +276,43 @@ class TestCrashRecovery:
         # Never silently adopted, and never silently discarded.
         assert ah.load_authoritative_head(tmp_path, ENV).generation == 1
 
+    def test_orphan_label_is_precise_about_which_durable_write_failed(
+            self, tmp_path):
+        """KALSHI-ARCHIVE-CORE-REMEDIATION-002 A7.1: `commit_segment` makes
+        TWO separate durable writes -- the generation record, then the
+        current-head pointer -- and a `BaseException` from the second write
+        happens AFTER the first one already durably committed the segment.
+        That is STALE_HEAD, recoverable in place by `recover_current_head`,
+        not the genuinely ambiguous ORPHANED_COMMITTED_SEGMENT case (case A,
+        above) where NO generation record commits the segment at all.
+        Labelling both the same way sent an operator to a decision (adopt or
+        discard) that this state does not need, and pointed at the fictional
+        `archive-adopt`/`archive-discard` commands for a state the existing
+        `archive-recover-head` operation already resolves deterministically.
+        """
+        init(tmp_path)
+        build(tmp_path, ["A"])
+        w = sg.SegmentWriter(
+            tmp_path, environment=ENV, segment_id="kalshi.seg-B",
+            partition_identity="venue=kalshi/date=2026-08-08/hour=B",
+            subscription_metadata={"venue": "kalshi"})
+        w.submit(fields(1))
+        # Fails AFTER the generation record (head_generation_publish, case A's
+        # hook) already succeeded -- only the pointer's publish is hit.
+        w.durability_hooks["current_head_publish"] = lambda: (
+            _ for _ in ()).throw(OSError("crash"))
+        with pytest.raises(sg.StaleHeadAfterCommitError,
+                           match="recover_current_head"):
+            w.close()
+        # The generation record IS durable: this is exactly STALE_HEAD.
+        out = verdict(tmp_path)
+        assert out["head_state"] == "STALE_HEAD", out
+        assert "kalshi.seg-B" not in out.get("orphaned_committed_segments", [])
+        # And it is automatically recoverable, no adopt/discard decision.
+        rec = ah.recover_current_head(tmp_path, ENV)
+        assert rec["generation"] == 2
+        assert verdict(tmp_path)["verdict"] == "VALID"
+
     def test_case_B_generation_committed_pointer_behind(self, tmp_path):
         init(tmp_path)
         build(tmp_path, ["A", "B"])
