@@ -22,7 +22,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
@@ -471,6 +471,102 @@ def test_truncation_is_loud_and_drops_the_unmatured_tail(session):
     # and the matured tokens are the ones that survived the cap
     matured = [_outcome(session, f"tok-matured-{i}") for i in range(5)]
     assert all(o is not None and o.survived_24h is True for o in matured)
+
+
+def test_truncated_status_is_persisted_on_the_durable_run_row(session):
+    """MEDIUM fix (fourth re-review). `run_once`'s own finalize commits the
+    run row's status BEFORE `run_scheduled_reconciliation` (the caller) has
+    the universe/backlog/limit context needed to relabel a fully-completed
+    pass as "truncated" — so, pre-fix, that relabelling only ever happened
+    in the in-memory return value; the durable row a reader gets from
+    `build_tape_report` stayed status="ok" forever, misreporting a pass that
+    dropped 45/55 tokens as healthy. This asserts the DB row agrees with the
+    returned status."""
+    from app.models import CryptoTokenLifecycleRun
+
+    for i in range(5):
+        born = _mint(session, f"tok-durtrunc-{i}", born_hours_ago=40, liquidity=10_000.0)
+        _tick_at(session, f"tok-durtrunc-{i}", born + timedelta(hours=24), liquidity=9_000.0)
+    for i in range(50):
+        _mint(session, f"tok-durtruncfresh-{i}", born_hours_ago=1)
+
+    r = run_scheduled_reconciliation(session, settings=_settings(), limit=10)
+    assert r["status"] == "truncated"
+    assert r["tape_run_id"] is not None
+
+    row = session.get(CryptoTokenLifecycleRun, r["tape_run_id"])
+    assert row is not None
+    assert row.status == "truncated", (
+        "the durable run row must agree with the returned status — a "
+        "reader of build_tape_report (which reads this table, not the "
+        "return value) must not see a healthy 'ok' for a pass that "
+        "silently dropped work"
+    )
+
+
+def test_backlog_expiring_status_fires_when_frontier_crosses_retention_threshold(
+    session,
+):
+    """NEW-HIGH-2 regression pin (second re-review, convergence lens). The
+    routine `partial`/`truncated` statuses fire on every pass at production
+    density and carry no signal about whether the frontier is actually at
+    risk of being pruned — this is the separable, rare, actionable status.
+    `crypto_retention_days=2` puts the frontier threshold at
+    `2*24 - 6 = 42h`; a backlog token aged 50h crosses it."""
+    born = _mint(session, "tok-frontier-old", born_hours_ago=50, liquidity=10_000.0)
+    session.add(CryptoTokenSurvivalOutcome(
+        birth_event_id=1, chain=CHAIN, token_address="tok-frontier-old", final=False,
+    ))
+    session.flush()
+
+    r = run_scheduled_reconciliation(
+        session, settings=_settings(crypto_retention_days=2),
+    )
+    assert r["status"] == "backlog_expiring"
+    assert r["oldest_unreconciled_age_hours"] is not None
+    assert r["oldest_unreconciled_age_hours"] >= 42.0
+    assert "frontier" in r["error"].lower()
+
+    # a healthy frontier (nothing old enough) must NOT trigger it
+    session.query(CryptoTokenSurvivalOutcome).delete()
+    session.query(CryptoTokenBirthEvent).delete()
+    session.query(CryptoToken).delete()
+    session.flush()
+    _mint(session, "tok-frontier-fresh", born_hours_ago=1)
+    r2 = run_scheduled_reconciliation(
+        session, settings=_settings(crypto_retention_days=2),
+    )
+    assert r2["status"] != "backlog_expiring"
+
+
+def test_deadline_stop_and_selection_truncation_error_texts_both_survive(session):
+    """NEW-HIGH-1(b)/(c) regression pin (second re-review, convergence
+    lens). At production density EVERY pass is both selection-truncated AND
+    deadline-stopped. `summary["error"] = summary.get("error") or (...)`
+    meant the deadline-stop text (set first, inside `_assemble_pass_locked`)
+    always won and the truncation text — the ONLY message naming
+    universe_size/backlog_size/tokens_omitted, i.e. the frozen backlog — was
+    silently discarded, and the log line at the same site (labelled "crypto
+    reconciliation truncated:") inherited that same incomplete text. This
+    binds both conditions in one pass and asserts BOTH fragments are present
+    in the single returned error string."""
+    for i in range(5):
+        born = _mint(session, f"tok-bothmsg-{i}", born_hours_ago=40, liquidity=10_000.0)
+        _tick_at(session, f"tok-bothmsg-{i}", born + timedelta(hours=24), liquidity=9_000.0)
+    for i in range(50):
+        _mint(session, f"tok-bothmsgfresh-{i}", born_hours_ago=1)
+
+    r = run_scheduled_reconciliation(
+        session, settings=_settings(), limit=10, batch_size=2,
+        max_duration_seconds=0.0,  # binding deadline: stop after batch 1
+    )
+    assert r["status"] == "partial"  # deadline stop wins the STATUS
+    assert r["truncated"] is True
+    # both messages must survive in the one error string
+    assert "stop_reason=deadline" in r["error"]
+    assert "universe_size" not in r["error"]  # sanity: not a key dump
+    assert "aged-out unreconciled" in r["error"]
+    assert "backlog_processed=" in r["error"]
 
 
 def test_untruncated_pass_reports_the_full_universe(session):
@@ -1012,6 +1108,95 @@ def test_real_lock_hit_during_finalize_is_caught_not_raised(tmp_path):
         assert r["tokens_processed"] >= 3
 
 
+def test_real_read_blocking_lock_after_batch_commit_yields_honest_partial(tmp_path):
+    """BLOCKING-3 regression pin (fourth re-review, SQLite/concurrency).
+
+    The existing `test_real_lock_hit_during_finalize_is_caught_not_raised`
+    pin above uses a real second connection holding `BEGIN IMMEDIATE`. That
+    is a real lock — but SQLite's IMMEDIATE lock only blocks other WRITERS;
+    a same-process/other-connection SELECT (a lazy-load on an expired ORM
+    attribute, exactly the BLOCKING-1/BLOCKING-2 defect shape) is still
+    perfectly readable under IMMEDIATE. That is exactly why a lazy-load
+    escape on `run.config` / `run.id` survived five review rounds: the only
+    "real lock" regression test in the suite could never observe it. This
+    test closes that gap with `BEGIN EXCLUSIVE`, which DOES block readers
+    too, acquired only AFTER at least one full token batch has already
+    committed durably (via a real `after_commit` listener, not a timer).
+
+    Expected (fixed) behaviour: `run_once` returns a typed `status=partial`
+    result whose `tokens_considered` matches the durable row count exactly
+    — no uncaught exception, no phantom `tokens_considered=0` while rows
+    were actually written (the reviewer's measured defeat of the prior fix).
+
+    Proof this test actually exercises the fix: reverting either BLOCKING-1
+    (`existing_config = dict(run_config or {})`) or BLOCKING-2 (the `run_id`
+    local capture) back to a `run.config` / `run.id` read makes this test
+    fail — verified by hand during this fix (see the fix commit message)."""
+    import sqlite3
+
+    from sqlalchemy import create_engine, event
+    from sqlalchemy.orm import sessionmaker
+
+    db_path = tmp_path / "real_exclusive_lock_after_batch.db"
+    engine = create_engine(f"sqlite:///{db_path}", connect_args={"timeout": 0.2})
+    Base.metadata.create_all(engine)
+    Factory = sessionmaker(bind=engine)
+    seed_session = Factory()
+    for i in range(10):
+        _mint(seed_session, f"tok-exlock-{i}", born_hours_ago=30, liquidity=10_000.0)
+    seed_session.commit()
+    seed_session.close()
+
+    worker_session = Factory()
+    rec = CryptoLifecycleTapeRecorder(
+        CryptoTapeConfig(chain=CHAIN, lock_dir=tmp_path)
+    )
+    holder: dict = {"conn": None}
+    commits_seen = {"n": 0}
+
+    @event.listens_for(worker_session, "after_commit")
+    def _acquire_exclusive_lock_after_first_batch(sess):
+        # commit #1 = the run-row creation, commit #2 = the FIRST token
+        # batch. Acquire the READ-BLOCKING external lock right after that,
+        # so at least one batch's rows are durable in the DB file before the
+        # rest of the pass has to fight a real, read-blocking holder.
+        commits_seen["n"] += 1
+        if commits_seen["n"] == 2 and holder["conn"] is None:
+            c = sqlite3.connect(str(db_path), timeout=0.2)
+            c.execute("BEGIN EXCLUSIVE")
+            holder["conn"] = c
+
+    try:
+        r = rec.run_once(
+            worker_session, limit=10, hours=48,
+            batch_size=3, max_lock_attempts=3, lock_retry_seconds=0.05,
+            sleeper=lambda seconds: None,
+        )
+    finally:
+        event.remove(worker_session, "after_commit", _acquire_exclusive_lock_after_first_batch)
+        if holder["conn"] is not None:
+            holder["conn"].rollback()
+            holder["conn"].close()
+        worker_session.close()
+        engine.dispose()
+
+    assert r["status"] == "partial", r
+    # The durable ground truth: count birth events actually committed, via a
+    # brand-new connection/session so nothing here can be fooled by ORM
+    # session-level caching.
+    check_session = Factory()
+    try:
+        durable_births = check_session.execute(
+            select(CryptoTokenBirthEvent).where(
+                CryptoTokenBirthEvent.token_address.like("tok-exlock-%")
+            )
+        ).scalars().all()
+    finally:
+        check_session.close()
+    assert r["tokens_considered"] == len(durable_births) > 0
+    assert r["batches_committed"] >= 1
+
+
 # --- B6 internal deadline ------------------------------------------------------
 
 def test_deadline_stops_the_pass_between_batches_not_mid_batch(session):
@@ -1189,6 +1374,60 @@ def test_record_discovery_run_never_fabricates_anchors_from_a_degraded_pass(sess
     assert "skipped_overlap" in r["error"]
 
 
+def test_record_discovery_run_reports_concurrent_write_conflict_not_a_traceback(
+    session, monkeypatch,
+):
+    """HIGH fix (fourth re-review). `record_discovery_run` deliberately
+    opts OUT of the B4 overlap lock, so a residual race against another
+    concurrent tape writer can surface as a real IntegrityError. Before this
+    fix, ONLY `run_scheduled_reconciliation` mapped that to a typed
+    `concurrent_write_conflict` result (see
+    test_integrity_error_reports_concurrent_write_conflict_not_a_traceback
+    above) — `record_discovery_run` had no such mapping, so the exact same
+    IntegrityError propagated straight out of this method, uncaught. The
+    CLI's exact-run path (app/cli.py:2795) calls this method directly with
+    no surrounding try/except, so that really would have been an unhandled
+    traceback, not a typed non-zero-exit result."""
+    from sqlalchemy.exc import IntegrityError
+
+    from app.models import CryptoWatcherRun
+
+    now = datetime.now(timezone.utc)
+    run = CryptoWatcherRun(started_at=now - timedelta(minutes=1), finished_at=now)
+    session.add(run)
+    session.flush()
+    born = now - timedelta(seconds=30)
+    session.add(CryptoToken(
+        chain=CHAIN, token_address="tok-anchorrace", symbol="ANR",
+        first_seen_at=born, last_seen_at=born,
+    ))
+    session.commit()  # durable, so the racing rollback below can't undo it
+
+    real_commit = type(session).commit
+
+    def racing_commit(self):
+        raise IntegrityError(
+            "INSERT INTO crypto_token_birth_events ...", {},
+            Exception(
+                "UNIQUE constraint failed: crypto_token_birth_events.chain, "
+                "crypto_token_birth_events.token_address"
+            ),
+        )
+
+    monkeypatch.setattr(type(session), "commit", racing_commit)
+
+    rec = CryptoLifecycleTapeRecorder()
+    r = rec.record_discovery_run(session, run.id, ["tok-anchorrace"])
+    assert r["status"] == "concurrent_write_conflict"
+    assert r["error"]
+    assert "unique-constraint" in r["error"].lower() or "UNIQUE" in r["error"]
+
+    # session must be usable afterwards (proves rollback happened)
+    monkeypatch.setattr(type(session), "commit", real_commit)
+    r2 = rec.record_discovery_run(session, run.id, ["tok-anchorrace"])
+    assert r2["status"] == "ok"
+
+
 # --- second review: NEW-B2 state-driven selection ---------------------------
 
 def test_deadline_stopped_scheduled_passes_advance_not_restart(session):
@@ -1325,8 +1564,15 @@ def test_backlog_makes_forward_progress_under_a_binding_deadline(session):
         )
         assert r["status"] in ("ok", "partial")
         counts.append(backlog_final_count())
-        # observable even without inspecting the DB directly (journal-visible)
-        assert r["backlog_processed"] >= 0
+        # NEW-LOW-1 fix (second re-review): `>= 0` is `min()` of two
+        # non-negative ints and CANNOT FAIL for any implementation,
+        # including one that hardcodes 0 — it made no assertion at all
+        # despite its own comment claiming to make the trapdoor
+        # "journal-visible". Every pass here stops after exactly one batch
+        # (`max_duration_seconds=0.0`) and — per the "in-window untouched"
+        # assertion below — every token in that batch is a backlog token,
+        # so `backlog_processed` must equal `batch` exactly, every pass.
+        assert r["backlog_processed"] == batch
 
     assert counts == sorted(counts)  # never regresses
     assert len(set(counts)) == len(counts)  # STRICTLY increasing every pass
@@ -1339,6 +1585,54 @@ def test_backlog_makes_forward_progress_under_a_binding_deadline(session):
     assert all(
         _outcome(session, f"tok-h1-inwindow-{i:02d}") is None
         for i in range(in_window_n)
+    )
+
+
+def test_three_way_intersection_binding_limit_and_backlog_and_in_window_head(
+    session,
+):
+    """NEW-BLOCKING-1 regression pin (second re-review, convergence lens).
+    The backlog-FIRST ordering fix (test_backlog_makes_forward_progress_
+    under_a_binding_deadline above) is necessary but not sufficient: it only
+    helps once backlog tokens are actually IN the selected list. Before the
+    budget-reservation fix, `_universe` was called with the FULL `limit`
+    BEFORE any backlog budget existed, so whenever in-window eligible alone
+    reached `limit`, `room` was computed as 0 and `unreconciled_backlog` was
+    NEVER QUERIED — the ordering fix cannot help a list that never contains
+    any backlog tokens to begin with. This constructs exactly that
+    intersection — a BINDING limit (60) with a non-empty in-window head (60
+    eligible, meeting or exceeding the limit on its own) AND a non-empty
+    aged-out backlog (40) AND a binding deadline — and asserts
+    `backlog_processed > 0`. This FAILS on 0fe2f14 (backlog_processed == 0,
+    because `room == 0`)."""
+    batch = 5
+    backlog_n = 40
+    in_window_n = 60
+
+    for i in range(backlog_n):
+        born = _mint(
+            session, f"tok-3way-backlog-{i:02d}", born_hours_ago=60 + i,
+            liquidity=10_000.0,
+        )
+        _tick_at(
+            session, f"tok-3way-backlog-{i:02d}", born + timedelta(hours=24),
+            liquidity=9_000.0,
+        )
+    for i in range(in_window_n):
+        _mint(session, f"tok-3way-inwindow-{i:02d}", born_hours_ago=30)
+
+    settings = _settings(crypto_tape_reconciler_limit=1000)
+    r = run_scheduled_reconciliation(
+        session, settings=settings, limit=60, batch_size=batch,
+        max_duration_seconds=0.0,  # binding deadline: stop after batch 1
+    )
+    assert r["status"] in ("ok", "partial")
+    assert r["backlog_size"] == backlog_n
+    assert r["backlog_processed"] > 0, (
+        "the aged-out backlog must receive SOME budget even when the "
+        "in-window head alone meets/exceeds the selection limit — "
+        "backlog_processed == 0 here means unreconciled_backlog was never "
+        "even queried (room == 0), the exact trapdoor this fix removes"
     )
 
 

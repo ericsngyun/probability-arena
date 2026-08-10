@@ -378,5 +378,14 @@ exercised by it. The test also uses `connect_args={"timeout": 0.2}` rather
 than the app's real `sqlite_busy_timeout_ms=30000`, so it is not even
 timing-representative of the production busy-timeout. A test that reaches
 the batch retry ladder (holder acquires the lock mid-pass, after at least one
-batch has already committed) and uses the app's real busy-timeout is still
-missing — failure-mode 15 stays open.
+batch has already committed) now exists — LOW fix, fourth re-review:
+`test_real_lock_hit_during_finalize_is_caught_not_raised` and
+`test_real_read_blocking_lock_after_batch_commit_yields_honest_partial`
+(both in `tests/test_crypto_coverage_repair_001.py`) acquire a real second
+connection's lock (`BEGIN IMMEDIATE` and `BEGIN EXCLUSIVE` respectively)
+only AFTER a real `after_commit`-listener-verified first batch commit. What
+is STILL missing is a version of that same shape using the app's real
+`sqlite_busy_timeout_ms=30000` instead of the tests' deliberately short
+`connect_args={"timeout": 0.2}` (needed to keep the suite fast) — so the
+30s-scale timing this doc's own bound above depends on is still unverified
+end-to-end. Failure-mode 15 stays open on that narrower basis only.

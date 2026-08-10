@@ -2920,9 +2920,28 @@ async def crypto_tape_reconcile(
                 f"(flag {r['flag']} is off)"
             )
             return 0
-        if r["status"] in ("invalid_window", "invalid_limit", "marketops_degraded",
-                           "db_locked", "skipped_overlap", "skipped_contention",
-                           "lock_unavailable", "concurrent_write_conflict"):
+        # LOW fix (fourth re-review): ALLOW-list, not a deny-list, mirroring
+        # crypto_lifecycle_tape's own :2869. A deny-list silently exits 0 for
+        # any FUTURE status nobody remembered to add here — and the
+        # fall-through print block below reads `r['window_hours']` /
+        # `r['selection_limit']` / etc., which a `_refused()`-shaped result
+        # (this branch's own early-return shape) does not have, so a status
+        # that should have hit this branch but was missing from the deny
+        # list would both misreport success AND crash on the next print
+        # with a KeyError. Every status reaching the print block below MUST
+        # carry the full success/partial shape (`window_hours`,
+        # `selection_limit`, `tokens_considered`, ...) — only "ok",
+        # "dry_run", "truncated", "partial", "dry_run_partial", and
+        # "backlog_expiring" do (the non-"ok"/"dry_run" ones are also
+        # allowed through here because they still carry that shape; their
+        # own non-zero exit is handled separately below, after the print).
+        # NEW-HIGH-2 fix (second re-review): "backlog_expiring" added — it
+        # is set on the normal (non-`_refused()`) summary shape by
+        # `run_scheduled_reconciliation`, same as truncated/partial.
+        if r["status"] not in (
+            "ok", "dry_run", "truncated", "partial", "dry_run_partial",
+            "backlog_expiring",
+        ):
             # Non-zero: a unit that reconciles nothing must never look healthy.
             print(f"status={r['status']}  external_calls=0  error={r['error']}")
             return -1
@@ -2942,6 +2961,18 @@ async def crypto_tape_reconcile(
             f"omitted={r.get('tokens_omitted')}  "
             f"stop_reason={r.get('stop_reason')}"
         )
+        # NEW-HIGH-2 fix (second re-review, convergence lens): the FRONTIER
+        # — the age of the oldest still-open/never-reconciled token — is the
+        # metric that actually distinguishes a healthy pass from partial
+        # starvation (NEW-BLOCKING-2): every other observable above can look
+        # identical in both cases while this number silently marches toward
+        # crypto_retention_days. Print it unconditionally so an operator
+        # never has to inspect the run row's JSON `config` blob to see it.
+        print(
+            f"oldest_unreconciled_age_hours={r.get('oldest_unreconciled_age_hours')}  "
+            f"oldest_unreconciled_first_seen_at="
+            f"{r.get('oldest_unreconciled_first_seen_at')}"
+        )
         print(
             f"batches_committed={r.get('batches_committed')}  "
             f"lock_retry_events={r.get('lock_retry_events')}  "
@@ -2960,11 +2991,12 @@ async def crypto_tape_reconcile(
                 "survival labels (true counts): "
                 + ", ".join(f"{k}={v}" for k, v in r["survival_label_mix"].items())
             )
-        # truncated (selection-limit cap), partial (deadline/contention
-        # stopped the pass early), and dry_run_partial (the same stop
-        # mid-PROBE) all mean "eligible work remains unmeasured/unreconciled"
-        # — none may exit 0.
-        if r["status"] in ("truncated", "partial", "dry_run_partial"):
+        # LOW fix: ALLOW-list here too — only "ok"/"dry_run" are genuinely
+        # healthy-complete. Everything else reaching this point (truncated /
+        # partial / dry_run_partial today, plus whatever a future status
+        # adds) means "eligible work remains unmeasured/unreconciled" and
+        # must not exit 0.
+        if r["status"] not in ("ok", "dry_run"):
             print(f"WARNING: {r['error']}")
             return -1
         return r["tokens_considered"]

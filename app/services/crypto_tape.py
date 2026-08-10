@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
@@ -146,6 +146,16 @@ STATUS_CONCURRENT_WRITE_CONFLICT = "concurrent_write_conflict"  # NEW-H3 fix:
     # age-exclusion mitigation is ever defeated by a clock/timing edge.
     # Caught and reported as a typed, non-zero-exit status instead of an
     # uncaught traceback that would kill the systemd unit.
+STATUS_BACKLOG_EXPIRING = "backlog_expiring"  # NEW-HIGH-2 fix (second
+    # re-review, convergence lens): the FRONTIER (oldest still-open/
+    # never-reconciled token's age) has crossed
+    # `crypto_retention_days*24 - RECONCILE_CADENCE_HOURS` — i.e. the
+    # OLDEST unreconciled evidence is at risk of being pruned before the
+    # NEXT scheduled pass can reach it. Deliberately distinct from the
+    # routine `partial`/`truncated` that fires on every healthy pass at
+    # production density (see the module note by
+    # `RECONCILE_CADENCE_HOURS` below on why an always-on alarm carries no
+    # information) — this status exists to be the rare, actionable one.
 
 BONDING_LAUNCHPAD = "launchpad_curve"
 BONDING_AMM = "amm_pool"
@@ -207,6 +217,25 @@ RECONCILE_BATCH_SIZE = 25
 # NEW-H2 note on RECONCILE_BATCH_SIZE above. At the shipped default that is
 # >=67% of the 30s SQLite busy_timeout, not a small fraction of it.
 RECONCILE_MAX_DURATION_SECONDS = 20.0
+# NEW-HIGH-2 fix (second re-review, convergence lens): `STATUS_BACKLOG_
+# EXPIRING`'s threshold (see `run_scheduled_reconciliation`) is computed
+# against the systemd timer's OWN cadence — reuses the pre-existing
+# `RECONCILER_CADENCE_HOURS` (module top, used by the window-validation
+# check above) rather than introducing a second, possibly-drifting cadence
+# constant.
+#
+# Why `STATUS_BACKLOG_EXPIRING` exists as a SEPARATE status from
+# `partial`/`truncated` at all: at production density EVERY pass exits
+# non-zero via those two (app/cli.py's `crypto_tape_reconcile` returns -1 for
+# both), so a oneshot unit driven by this reconciler sits permanently
+# "failed" in `systemctl --user list-units`. An alarm that is always on
+# carries no information — it is the SAME alarm in a healthy run and in a
+# run silently losing 28% of its labels to pruning (the NEW-BLOCKING-2
+# shape). `backlog_expiring` is reserved for the case that is actually rare
+# and actually actionable: the frontier is close enough to
+# `crypto_retention_days` that evidence will be pruned before the NEXT
+# scheduled pass, regardless of whether THIS pass's own truncated/partial
+# shortfall is otherwise routine.
 # NEW-H1 fix (third re-review, SQLite/concurrency). Per-batch commit hold
 # duration alone is not what starves a competing writer — SQLite's sleeping
 # busy handler loses the lock race against ~80 back-to-back short write
@@ -535,6 +564,41 @@ class CryptoLifecycleTapeRecorder:
                 ),
             )
         ).scalar() or 0)
+
+    def oldest_unreconciled_first_seen_at(
+        self, session: Session, cutoff: datetime
+    ) -> datetime | None:
+        """NEW-HIGH-2 fix (second re-review, convergence lens): the
+        FRONTIER — the age of the single oldest still-open (or
+        never-reconciled) token — is the metric that actually distinguishes
+        a healthy pass from NEW-BLOCKING-2's partial starvation. Every
+        pre-existing observable (`backlog_size` draining, a confident
+        nonzero `backlog_processed`, `outcomes_updated`) can look identical
+        in both cases while this number silently marches toward
+        `crypto_retention_days * 24` in the starvation case. Same
+        OUTER-join predicate as `backlog_size` (see its docstring for why an
+        INNER join is a silent data-loss bug), just `MIN(first_seen_at)`
+        instead of `COUNT`. `None` when there is nothing unreconciled at
+        all."""
+        return session.execute(
+            select(func.min(CryptoToken.first_seen_at))
+            .select_from(CryptoToken)
+            .outerjoin(
+                CryptoTokenSurvivalOutcome,
+                and_(
+                    CryptoTokenSurvivalOutcome.token_address == CryptoToken.token_address,
+                    CryptoTokenSurvivalOutcome.chain == CryptoToken.chain,
+                ),
+            )
+            .where(
+                CryptoToken.chain == self.config.chain,
+                CryptoToken.first_seen_at < cutoff,
+                or_(
+                    CryptoTokenSurvivalOutcome.id.is_(None),
+                    CryptoTokenSurvivalOutcome.final.is_(False),
+                ),
+            )
+        ).scalar()
 
     def universe_size(
         self, session: Session, cutoff: datetime, *, exclude_final: bool = False,
@@ -1080,20 +1144,51 @@ class CryptoLifecycleTapeRecorder:
             started - timedelta(minutes=min_age_minutes)
             if min_age_minutes is not None else None
         )
+        # NEW-BLOCKING-1 fix (second re-review, convergence lens): the
+        # trapdoor has a SECOND DOOR beyond backlog-FIRST ordering. Before
+        # this fix, `_universe` below was called with the FULL `limit`
+        # BEFORE any backlog budget existed — `room = max(0, limit -
+        # len(tokens))` was computed only AFTER that call, so whenever
+        # in-window eligible tokens alone reached (or exceeded) `limit`,
+        # `room` was 0 and `unreconciled_backlog` was NEVER QUERIED, on
+        # this and every future pass, because fresh births refill the
+        # in-window head forever. Reproduced at `--limit 500`: 24 passes,
+        # `backlog_processed=0` every pass, backlog frozen, frontier aged
+        # 168h -> 312h. The ordering fix alone (backlog placed FIRST in the
+        # selected list, see below) only helps once backlog tokens are
+        # actually IN that list — it does nothing if `room` was 0 to begin
+        # with. Reserve a backlog budget of `min(backlog_size, limit // 2)`
+        # BEFORE calling `_universe`, so the in-window query itself is
+        # capped below `limit` and always leaves room. Verified by the
+        # reviewer: with this reserve, `--limit 500` and `--limit 850` both
+        # reproduce the default run's convergence exactly
+        # (`backlog_processed=175` every pass, frontier 157.8h -> 59.8h).
+        backlog_total = 0
+        reserved_backlog_budget = 0
+        if include_backlog:
+            backlog_total = self.backlog_size(session, cutoff)
+            reserved_backlog_budget = min(backlog_total, limit // 2)
+        in_window_limit = max(0, limit - reserved_backlog_budget)
         tokens = self._universe(
-            session, limit, cutoff, oldest_first=oldest_first,
+            session, in_window_limit, cutoff, oldest_first=oldest_first,
             exclude_final=exclude_final, max_first_seen_at=max_first_seen_at,
         )
         total = self.universe_size(
             session, cutoff, exclude_final=exclude_final,
             max_first_seen_at=max_first_seen_at,
         )
-        backlog_total = 0
         backlog_selected = 0
+        extra: list = []
         if include_backlog:
             # State-driven top-up: still-open outcomes that have aged out of the
             # window. Without this a missed pass loses a cohort permanently.
-            backlog_total = self.backlog_size(session, cutoff)
+            # `room` is now guaranteed >= `reserved_backlog_budget` (the
+            # in-window query above was capped at `in_window_limit = limit -
+            # reserved_backlog_budget`, so it can consume at most that many
+            # slots) — and can be even larger if the in-window head came back
+            # short of its own budget, so a genuinely quiet in-window period
+            # still lets backlog use the full remaining limit, exactly as
+            # before this fix.
             room = max(0, limit - len(tokens))
             if room:
                 seen = {t.token_address for t in tokens}
@@ -1118,8 +1213,40 @@ class CryptoLifecycleTapeRecorder:
                 # in-window head (which is not yet at risk of pruning and
                 # will still be picked up, oldest-first, by a future pass).
                 tokens = extra + tokens
+        # NEW-HIGH-2 fix (second re-review, convergence lens): tell
+        # `_assemble_pass` which selected tokens are backlog, so it can
+        # ground `backlog_processed` in outcome rows ACTUALLY WRITTEN
+        # rather than in a prefix-length calc over two selection counts —
+        # see the rationale on `_process_batch`'s local of the same name.
+        backlog_addresses = (
+            frozenset(t.token_address for t in extra) if include_backlog else None
+        )
+        # NEW-HIGH-2 fix: the FRONTIER metric — see
+        # `oldest_unreconciled_first_seen_at`'s docstring. Computed here
+        # (not persisted-only inside `_assemble_pass`) so it lands in
+        # `config` below and is therefore carried into `run.config` by the
+        # existing BLOCKING-1-fixed finalize path, without a second DB
+        # round trip inside the write-lock-sensitive part of the pass.
+        oldest_unreconciled_first_seen_at = None
+        oldest_unreconciled_age_hours = None
+        if include_backlog:
+            oldest_unreconciled_first_seen_at = self.oldest_unreconciled_first_seen_at(
+                session, cutoff
+            )
+            if oldest_unreconciled_first_seen_at is not None:
+                oldest_unreconciled_age_hours = (
+                    started - _aware(oldest_unreconciled_first_seen_at)
+                ).total_seconds() / 3600.0
         config = {"limit": limit, "hours": hours, "chain": self.config.chain}
         config.update(run_config_extra or {})
+        if include_backlog:
+            config["frontier"] = {
+                "oldest_unreconciled_first_seen_at": (
+                    oldest_unreconciled_first_seen_at.isoformat()
+                    if oldest_unreconciled_first_seen_at is not None else None
+                ),
+                "oldest_unreconciled_age_hours": oldest_unreconciled_age_hours,
+            }
         summary = self._assemble_pass(
             session, tokens, started=started, dry_run=dry_run,
             window_hours=hours,
@@ -1131,18 +1258,30 @@ class CryptoLifecycleTapeRecorder:
             lock_retry_seconds=lock_retry_seconds,
             use_overlap_lock=use_overlap_lock,
             sleeper=sleeper,
+            backlog_token_addresses=backlog_addresses,
         )
         # A cap that silently drops work reads as "complete" to every caller.
         summary["universe_size"] = total
         summary["backlog_size"] = backlog_total
         summary["work_available"] = total + backlog_total
+        summary["oldest_unreconciled_first_seen_at"] = oldest_unreconciled_first_seen_at
+        summary["oldest_unreconciled_age_hours"] = oldest_unreconciled_age_hours
         tokens_accounted = summary.get("tokens_processed", len(tokens))
-        # NEW-H1: how much of the SELECTED backlog top-up (`backlog_selected`,
-        # placed first — see above) this pass actually reached, so the
-        # trapdoor is observable in the journal instead of silent (universe/
-        # backlog/truncated/omitted alone stayed constant across passes while
-        # it was live).
-        summary["backlog_processed"] = min(backlog_selected, tokens_accounted)
+        # NEW-HIGH-2 fix: `backlog_processed` used to be
+        # `min(backlog_selected, tokens_accounted)` — a prefix-length calc
+        # over two SELECTION counts, not grounded in any outcome actually
+        # written. It caught NEW-BLOCKING-1 (reads 0 when room==0) but
+        # CANNOT catch NEW-BLOCKING-2's partial starvation (`room > 0` but
+        # `room < per-pass throughput`), which reads a confident, nonzero
+        # value here every pass while the frontier actually retreats —
+        # `compute_survival` finalizes tokens on AGE ALONE once ticks are
+        # pruned, which is not the same as this pass having done real work
+        # on them. Use the grounded, per-batch-committed count from
+        # `_assemble_pass` instead: how many backlog tokens' survival
+        # outcome rows this pass actually wrote.
+        summary["backlog_processed"] = summary.get(
+            "backlog_outcomes_written", min(backlog_selected, tokens_accounted)
+        )
         # MEDIUM fix (third re-review, M5): `truncated` and `tokens_omitted`
         # answer two DIFFERENT questions and can legitimately disagree —
         # `truncated` is SELECTION-limit-specific (did the query itself cap
@@ -1246,24 +1385,56 @@ class CryptoLifecycleTapeRecorder:
                 )
             tokens.append(token)
 
-        summary = self._assemble_pass(
-            session, tokens, started=started, dry_run=dry_run,
-            window_hours=None,
-            run_config={
-                "mode": "exact_cycle",
-                "source_crypto_run_id": crypto_run_id,
-                "chain": self.config.chain,
-            },
-            # CRYPTO-COVERAGE-REPAIR-001 B1 fix: this is a single bounded
-            # transaction over a validated <=MAX_ANCHOR_FEED_TOKENS_PER_CYCLE
-            # token set that `_assemble_pass` never chunks/retries for this
-            # caller (batch_size stays None => legacy single-commit mode), so
-            # it does not need — and must not take — the B4 overlap flock.
-            # The anchor feed is EXACT-CYCLE: a skipped cycle is never
-            # retried, so silently deferring to another lock holder here
-            # would zero out an anchor-feed cycle for good.
-            use_overlap_lock=False,
-        )
+        try:
+            summary = self._assemble_pass(
+                session, tokens, started=started, dry_run=dry_run,
+                window_hours=None,
+                run_config={
+                    "mode": "exact_cycle",
+                    "source_crypto_run_id": crypto_run_id,
+                    "chain": self.config.chain,
+                },
+                # CRYPTO-COVERAGE-REPAIR-001 B1 fix: this is a single bounded
+                # transaction over a validated <=MAX_ANCHOR_FEED_TOKENS_PER_CYCLE
+                # token set that `_assemble_pass` never chunks/retries for this
+                # caller (batch_size stays None => legacy single-commit mode), so
+                # it does not need — and must not take — the B4 overlap flock.
+                # The anchor feed is EXACT-CYCLE: a skipped cycle is never
+                # retried, so silently deferring to another lock holder here
+                # would zero out an anchor-feed cycle for good.
+                use_overlap_lock=False,
+            )
+        except IntegrityError as exc:
+            # HIGH fix (fourth re-review): this method opts OUT of the
+            # overlap lock (see above), so a residual race against another
+            # concurrent tape writer surfaces here as a real IntegrityError
+            # — the exact same failure class `run_scheduled_reconciliation`
+            # already maps to `concurrent_write_conflict` at :2542. Before
+            # this fix, `record_discovery_run` had NO such mapping: the CLI
+            # calls it directly (app/cli.py:2795) with no surrounding
+            # try/except, so this would propagate uncaught all the way to
+            # an unhandled traceback. The marketops anchor-feed hook
+            # (app/services/marketops.py:1128) separately catches
+            # `Exception` around its OWN call and isolates it as
+            # `anchor_feed.status="error"` — that isolation is real, but it
+            # only covers the anchor-feed hook's caller, not this method's
+            # contract, and it discards the specific, actionable
+            # "concurrent_write_conflict" classification in favour of a
+            # generic error string. Mapping it here fixes BOTH callers at
+            # the source and keeps the same typed vocabulary as the
+            # reconciler.
+            try:
+                session.rollback()
+            except Exception:  # pragma: no cover - defensive
+                pass
+            return _result(
+                STATUS_CONCURRENT_WRITE_CONFLICT,
+                error=(
+                    f"unique-constraint conflict during anchor-feed "
+                    f"reconciliation, most likely a race with a concurrent "
+                    f"tape writer: {exc}"
+                ),
+            )
         # Defensive: `_assemble_pass` can still, in principle, return a
         # non-normal summary (e.g. if a future change adds a path that skips
         # or truncates work here). A skipped/degraded summary must never be
@@ -1362,6 +1533,7 @@ class CryptoLifecycleTapeRecorder:
         existing_births_snapshot: dict,
         final_by_birth_id: dict,
         skip_redundant_when_final: bool,
+        backlog_token_addresses: frozenset[str] | None = None,
     ) -> dict:
         """Process one bounded chunk of tokens: reads (`_load_sources`),
         object construction, and the `session.add()`/`flush()` calls this
@@ -1386,6 +1558,22 @@ class CryptoLifecycleTapeRecorder:
         """
         new_births = snapshots = actors = outcomes = 0
         snapshots_skipped = actors_skipped = 0
+        # NEW-HIGH-2 fix (second re-review, convergence lens):
+        # `backlog_processed` used to be `min(backlog_selected,
+        # tokens_accounted)` — a prefix-length calc over two SELECTION
+        # counts, grounded in nothing that was actually WRITTEN. It caught
+        # NEW-BLOCKING-1 (reads 0 when room==0) but structurally CANNOT
+        # catch NEW-BLOCKING-2's partial starvation, where `room > 0` but
+        # `room < per-pass throughput`: that shape reads a confident,
+        # nonzero `backlog_processed` (bounded by the prefix-count
+        # arithmetic) every pass while the frontier actually retreats,
+        # because outcome rows finalize on AGE ALONE once ticks are pruned
+        # — not because real work was reaching that specific token. Ground
+        # this in reality: count backlog tokens whose survival OUTCOME ROW
+        # was actually written (upserted, not skipped-because-already-
+        # final) in THIS chunk.
+        backlog_outcomes_written = 0
+        backlog_token_addresses = backlog_token_addresses or frozenset()
         coverage_delta = {
             "tokens_with_ticks": 0,
             "tokens_with_risk": 0,
@@ -1474,6 +1662,8 @@ class CryptoLifecycleTapeRecorder:
                     outcome.last_run_id = run.id
                     outcome.computed_at = started
                     outcomes += 1
+                    if token.token_address in backlog_token_addresses:
+                        backlog_outcomes_written += 1
             elif dry_run and not already_final:
                 # NEW-M3 fix: mirror the non-dry-run "skip if already final,
                 # nothing to update" rule. Without `and not already_final` a
@@ -1483,6 +1673,8 @@ class CryptoLifecycleTapeRecorder:
                 # those tokens from selection; a manual dry-run without
                 # exclude_final would overcount).
                 outcomes += 1
+                if token.token_address in backlog_token_addresses:
+                    backlog_outcomes_written += 1
 
             if len(new_examples) < 5:
                 new_examples.append({
@@ -1504,6 +1696,7 @@ class CryptoLifecycleTapeRecorder:
             "actors_skipped": actors_skipped, "coverage_delta": coverage_delta,
             "survival_delta": survival_delta, "examples": new_examples,
             "births_seen": births_seen, "existing_births": existing_births,
+            "backlog_outcomes_written": backlog_outcomes_written,
         }
 
     def _assemble_pass(
@@ -1522,6 +1715,7 @@ class CryptoLifecycleTapeRecorder:
         lock_retry_seconds: float = DB_LOCKED_RETRY_SECONDS,
         use_overlap_lock: bool = True,
         sleeper=time.sleep,
+        backlog_token_addresses: frozenset[str] | None = None,
     ) -> dict:
         """B4 overlap guard entry point. A non-blocking, per-chain flock (see
         `_reconcile_overlap_lock`) wraps the ENTIRE pass — from the
@@ -1539,6 +1733,7 @@ class CryptoLifecycleTapeRecorder:
                 batch_size=batch_size, max_duration_seconds=max_duration_seconds,
                 max_lock_attempts=max_lock_attempts,
                 lock_retry_seconds=lock_retry_seconds, sleeper=sleeper,
+                backlog_token_addresses=backlog_token_addresses,
             )
         lock_dir = self.config.lock_dir or _resolve_lock_dir(None)
         with _reconcile_overlap_lock(lock_dir, self.config.chain) as acquired:
@@ -1560,6 +1755,7 @@ class CryptoLifecycleTapeRecorder:
                     "examples": [], "batches_committed": 0,
                     "batch_size": batch_size, "stop_reason": "overlap",
                     "lock_retry_events": 0,
+                    "backlog_outcomes_written": 0,
                     "error": (
                         f"another crypto-tape reconciliation pass already "
                         f"holds the {self.config.chain} overlap lock at "
@@ -1575,6 +1771,7 @@ class CryptoLifecycleTapeRecorder:
                 batch_size=batch_size, max_duration_seconds=max_duration_seconds,
                 max_lock_attempts=max_lock_attempts,
                 lock_retry_seconds=lock_retry_seconds, sleeper=sleeper,
+                backlog_token_addresses=backlog_token_addresses,
             )
 
     def _assemble_pass_locked(
@@ -1592,6 +1789,7 @@ class CryptoLifecycleTapeRecorder:
         max_lock_attempts: int,
         lock_retry_seconds: float,
         sleeper=time.sleep,
+        backlog_token_addresses: frozenset[str] | None = None,
     ) -> dict:
         """The actual assembly work, run with the overlap lock already held
         (or dry-run, which needs none).
@@ -1660,9 +1858,24 @@ class CryptoLifecycleTapeRecorder:
         lock_retry_events = 0
         batches_committed = 0
         tokens_processed = 0
+        # NEW-HIGH-2 fix: grounded, per-batch backlog outcome-write count
+        # (see `_process_batch`'s own comment) — accumulated across every
+        # chunk actually committed in this pass.
+        backlog_outcomes_written_total = 0
         stop_reason: str | None = None
 
         run: CryptoTokenLifecycleRun | None = None
+        # BLOCKING-2 fix: `run.id` is an immutable PK once assigned, but
+        # reading it as a SQLAlchemy-instance attribute is not — every
+        # commit/rollback later in this pass EXPIRES `run`, and reading an
+        # expired attribute under a real second-connection lock is a live,
+        # uncaught `SELECT ... WHERE id = ?` that can raise OperationalError
+        # outside any retry ladder (the same escape class as BLOCKING-1, on
+        # the PK column instead of `config`). Capture it once into this
+        # plain int local, the moment it first exists in each mode below,
+        # and use the local everywhere later in this method instead of
+        # `run.id`.
+        run_id: int | None = None
         if not dry_run:
             run = CryptoTokenLifecycleRun(
                 status="running", started_at=started, window_hours=hours,
@@ -1677,6 +1890,9 @@ class CryptoLifecycleTapeRecorder:
                     lock_retry_seconds, sleeper,
                 )
                 lock_retry_events += max(0, attempts - 1)
+                # Capture the PK right after the run-row creation commit —
+                # see the module-level comment on `run_id` above.
+                run_id = run.id if ok else None
                 if not ok:
                     return {
                         "status": STATUS_SKIPPED_CONTENTION,
@@ -1696,6 +1912,7 @@ class CryptoLifecycleTapeRecorder:
                         "examples": [], "batches_committed": 0,
                         "batch_size": batch_size, "stop_reason": "contention",
                         "lock_retry_events": lock_retry_events,
+                        "backlog_outcomes_written": 0,
                         "error": (
                             f"database is locked; exhausted {max_lock_attempts} "
                             "attempts before the run row could even be created "
@@ -1708,6 +1925,11 @@ class CryptoLifecycleTapeRecorder:
                 # retry) — identical to the pre-milestone `_assemble_pass`.
                 session.add(run)
                 session.flush()
+                # `flush()` (unlike `commit()`) does not expire attributes,
+                # so `run.id` is safe to read here — capture it into the
+                # same `run_id` local used by the chunked branch so both
+                # modes feed the same later `run_id` reads.
+                run_id = run.id
 
         effective_batch = batch_size or max(len(tokens), 1)
         chunks = [
@@ -1730,6 +1952,7 @@ class CryptoLifecycleTapeRecorder:
                                 existing_births_snapshot=existing_births,
                                 final_by_birth_id=final_by_birth_id,
                                 skip_redundant_when_final=skip_redundant_when_final,
+                                backlog_token_addresses=backlog_token_addresses,
                             )
                             if not dry_run:
                                 session.commit()
@@ -1762,6 +1985,7 @@ class CryptoLifecycleTapeRecorder:
                         existing_births_snapshot=existing_births,
                         final_by_birth_id=final_by_birth_id,
                         skip_redundant_when_final=skip_redundant_when_final,
+                        backlog_token_addresses=backlog_token_addresses,
                     )
 
                 existing_births.update(result["existing_births"])
@@ -1771,6 +1995,9 @@ class CryptoLifecycleTapeRecorder:
                 outcomes += result["outcomes"]
                 snapshots_skipped += result["snapshots_skipped"]
                 actors_skipped += result["actors_skipped"]
+                backlog_outcomes_written_total += result.get(
+                    "backlog_outcomes_written", 0
+                )
                 for key, delta in result["coverage_delta"].items():
                     coverage_summary[key] += delta
                 for label, delta in result["survival_delta"].items():
@@ -1811,6 +2038,7 @@ class CryptoLifecycleTapeRecorder:
                 "batch_size": batch_size,
                 "stop_reason": stop_reason,
                 "lock_retry_events": lock_retry_events,
+                "backlog_outcomes_written": backlog_outcomes_written_total,
                 "_births": births_seen,
             }
             if stop_reason is not None:
@@ -1842,12 +2070,33 @@ class CryptoLifecycleTapeRecorder:
                     )
                 else:
                     summary["status"] = STATUS_PARTIAL
+                    # NEW-HIGH-1(a) fix (second re-review, convergence
+                    # lens): this method has no visibility into the
+                    # caller's backlog-budget allocation (`run_once`/
+                    # `run_scheduled_reconciliation` sit a layer above it),
+                    # so it previously overclaimed "the remaining tokens
+                    # stay eligible for a future pass" unconditionally —
+                    # measured FALSE under the budget-starvation shape this
+                    # milestone's second re-review found (NEW-BLOCKING-1/2):
+                    # a token can remain technically re-selectable by the
+                    # query on every future pass while never actually
+                    # RECEIVING budget, which is a durable-in-practice
+                    # exclusion, not eligibility. Only claim what this layer
+                    # actually knows: the committed batches are real and
+                    # durable, and unreached tokens are neither lost nor
+                    # duplicated by THIS pass. Whether they get budget on
+                    # the NEXT pass is the caller's concern (see
+                    # `backlog_processed` / the frontier fields on the
+                    # scheduled-reconciliation result).
                     summary["error"] = (
                         f"pass stopped early (stop_reason={stop_reason}) after "
                         f"{batches_committed} batch(es) / {tokens_processed} of "
                         f"{len(tokens)} selected tokens; already-committed "
-                        "batches are durable — nothing is duplicated or lost — "
-                        "the remaining tokens stay eligible for a future pass"
+                        "batches are durable — nothing is duplicated or lost "
+                        "by this pass; whether the remaining tokens actually "
+                        "receive budget on a future pass depends on the "
+                        "caller's selection/backlog policy, not on anything "
+                        "this pass guarantees"
                     )
             if dry_run:
                 return summary
@@ -1855,24 +2104,37 @@ class CryptoLifecycleTapeRecorder:
             finished = _now()
 
             if chunked:
-                # NEW-B1 fix (third review): `run.config` used to be read
-                # INSIDE `_prepare_finalize`, below. After any prior
-                # commit/rollback in this pass, `run` is EXPIRED
-                # (SQLAlchemy's default `expire_on_commit=True`, plus every
-                # rollback expires too) — so once `_prepare_finalize` had
-                # already staged OTHER dirty `run.*` attribute writes above
-                # this read, the read of the expired `run.config` attribute
-                # lazy-loads, autoflush fires on the now-dirty session, and
-                # that autoflush's UPDATE could itself hit a real lock —
-                # raising OperationalError from INSIDE `prepare()`, which
-                # (before the companion fix moving `prepare()` inside
-                # `_commit_with_retry`'s try) escaped the retry ladder
-                # entirely. Snapshotting the config value ONCE here, before
-                # any retry attempt (and before any dirty writes on `run`
-                # this closure stages), removes the lazy-load hazard at the
-                # source; `session.no_autoflush` below is defense in depth,
-                # not a substitute for this snapshot.
-                existing_config = dict(run.config or {})
+                # NEW-B1 fix (third review, corrected per BLOCKING-1 from a
+                # fourth review): `run.config` used to be read INSIDE
+                # `_prepare_finalize`, below. After any prior commit/rollback
+                # in this pass, `run` is EXPIRED (SQLAlchemy's default
+                # `expire_on_commit=True`, plus every rollback expires too) —
+                # so once `_prepare_finalize` had already staged OTHER dirty
+                # `run.*` attribute writes above this read, the read of the
+                # expired `run.config` attribute lazy-loads, autoflush fires
+                # on the now-dirty session, and that autoflush's UPDATE could
+                # itself hit a real lock — raising OperationalError from
+                # INSIDE `prepare()`, which (before the companion fix moving
+                # `prepare()` inside `_commit_with_retry`'s try) escaped the
+                # retry ladder entirely.
+                #
+                # The original companion fix moved the read here, still as
+                # `run.config`, which merely relocated the same expired-
+                # instance access to a point that is ALSO reachable after a
+                # rollback (this line runs after the batch loop, which can
+                # have rolled back `session` on a caught OperationalError at
+                # :1743) — a real second-connection lock at that moment still
+                # produces a live `SELECT ... WHERE id = ?` that can itself
+                # raise, uncaught, outside any retry ladder. The run row's
+                # config was never actually mutated by anything above this
+                # point in this pass, so `run.config` is guaranteed to equal
+                # the exact dict this method was called with at :1669
+                # (`config=run_config`) — read that caller-supplied local
+                # directly instead. Zero DB access, byte-identical value, and
+                # it is `dict`-copied here (not just referenced) so later
+                # mutation of `run_config` by any other caller can never leak
+                # into this pass's snapshot.
+                existing_config = dict(run_config or {})
 
                 def _prepare_finalize() -> None:
                     with session.no_autoflush:
@@ -1940,7 +2202,10 @@ class CryptoLifecycleTapeRecorder:
                         else STATUS_SKIPPED_CONTENTION
                     )
                     summary["stop_reason"] = summary["stop_reason"] or "contention"
-                    summary["tape_run_id"] = run.id
+                    # BLOCKING-2 fix: use the captured local, not `run.id` —
+                    # `_commit_with_retry` just rolled back internally on
+                    # this failure path, so `run` is expired here.
+                    summary["tape_run_id"] = run_id
                     finalize_error = (
                         "reconciliation batches committed, but the run row's "
                         "own finalize commit could not acquire the lock; the "
@@ -1982,7 +2247,12 @@ class CryptoLifecycleTapeRecorder:
                     },
                 }
                 session.commit()
-            summary["tape_run_id"] = run.id
+            # BLOCKING-2 fix: use the captured local, not `run.id` — both
+            # the chunked-success path (finalize just committed) and the
+            # legacy path (`session.commit()` immediately above) expire
+            # `run`, so a real second-connection lock at this exact line
+            # would otherwise be a live, uncaught PK SELECT.
+            summary["tape_run_id"] = run_id
             return summary
         except Exception as exc:
             if dry_run:
@@ -2548,11 +2818,71 @@ def run_scheduled_reconciliation(
         # "truncated", which is specifically the SELECTION-limit case.
         if resolved_status not in terminal_statuses:
             summary["status"] = "truncated"
-        summary["error"] = summary.get("error") or (
+            # MEDIUM fix (fourth re-review): `run_once`'s own finalize step
+            # (crypto_tape.py, `_prepare_finalize`/legacy commit) already
+            # persisted the run row with whatever status IT computed —
+            # which, for a pass that completed fully with no deadline/
+            # contention stop, is "ok". The "truncated" relabelling above
+            # happens entirely out here, in the caller, using information
+            # (`universe_size`/`backlog_size`/`cap`) `run_once` never had.
+            # Before this fix that relabelling was IN-MEMORY ONLY: the
+            # durable row stayed status="ok" forever, so `build_tape_report`
+            # (which reads that table, not this return value) told a
+            # reader a pass that dropped a real fraction of its work was
+            # healthy. Best-effort, bounded, retried UPDATE of just the one
+            # column on just that one row — never raises: losing this
+            # correction is a real but strictly smaller loss than losing
+            # the reconciliation work itself, so it must never crash the
+            # caller or overwrite `summary["status"]` back to something the
+            # caller didn't ask for.
+            tape_run_id = summary.get("tape_run_id")
+            if tape_run_id is not None:
+                for attempt in range(1, DB_LOCKED_MAX_ATTEMPTS + 1):
+                    try:
+                        session.execute(
+                            update(CryptoTokenLifecycleRun)
+                            .where(CryptoTokenLifecycleRun.id == tape_run_id)
+                            .values(status="truncated")
+                        )
+                        session.commit()
+                        break
+                    except OperationalError as exc:
+                        session.rollback()
+                        if _is_db_locked(exc) and attempt < DB_LOCKED_MAX_ATTEMPTS:
+                            time.sleep(DB_LOCKED_RETRY_SECONDS)
+                            continue
+                        logger.warning(
+                            "crypto reconciliation: could not persist the "
+                            "truncated relabel onto run row %s (%s); the "
+                            "returned status is still correctly "
+                            "'truncated', only the durable row's status "
+                            "column stays stale", tape_run_id, exc,
+                        )
+                        break
+        # NEW-HIGH-1(b)/(c) fix (second re-review, convergence lens):
+        # `summary.get("error") or (...)` meant that whenever a pass was
+        # BOTH deadline/contention-stopped AND selection-limit-truncated —
+        # measured to be EVERY pass at production density — the
+        # deadline/contention text (set inside `_assemble_pass_locked`, and
+        # already present in `summary["error"]` by this point) always won,
+        # and the truncation text below — the ONLY message naming
+        # `universe_size`/`backlog_size`/`tokens_omitted`, i.e. the frozen
+        # backlog and how much of it went unworked — was silently thrown
+        # away. It never even reached the log line just below, which
+        # therefore mentioned neither the frozen backlog nor
+        # `backlog_processed`. APPEND instead of `or`, so both pieces of
+        # real, distinct information survive together.
+        truncation_note = (
             f"window holds {summary['universe_size']} tokens plus "
             f"{summary['backlog_size']} aged-out unreconciled, but the limit is "
-            f"{cap}; {summary['tokens_omitted']} were not reconciled. Raise "
+            f"{cap}; {summary['tokens_omitted']} were not reconciled "
+            f"(backlog_processed={summary.get('backlog_processed')}). Raise "
             f"--limit (or crypto_tape_reconciler_limit) to cover the window."
+        )
+        existing_error = summary.get("error")
+        summary["error"] = (
+            f"{existing_error}; additionally, {truncation_note}"
+            if existing_error else truncation_note
         )
         logger.warning("crypto reconciliation truncated: %s", summary["error"])
     if resolved_status in (
@@ -2562,6 +2892,38 @@ def run_scheduled_reconciliation(
         logger.warning(
             "crypto reconciliation %s: %s", resolved_status, summary.get("error")
         )
+    # NEW-HIGH-2 fix (second re-review, convergence lens): the routine
+    # `partial`/`truncated` statuses fire on EVERY pass at production
+    # density (see `RECONCILE_CADENCE_HOURS`'s note above) and carry no
+    # signal on their own about whether the frontier is actually at risk.
+    # `backlog_expiring` is the separable, rare, actionable status: the
+    # oldest still-open/never-reconciled token's age has crossed
+    # `crypto_retention_days*24 - RECONCILER_CADENCE_HOURS` — i.e. it will
+    # be pruned before the NEXT scheduled pass can reach it, regardless of
+    # whether THIS pass's own truncated/partial shortfall is otherwise
+    # ordinary. Deliberately does not override the hard-refused statuses
+    # (those already returned above, before this point is ever reached).
+    frontier_hours = summary.get("oldest_unreconciled_age_hours")
+    if frontier_hours is not None:
+        retention_days = int(getattr(s, "crypto_retention_days", 7))
+        frontier_threshold_hours = (
+            retention_days * 24 - RECONCILER_CADENCE_HOURS
+        )
+        if frontier_hours >= frontier_threshold_hours:
+            summary["status"] = STATUS_BACKLOG_EXPIRING
+            summary["frontier_threshold_hours"] = frontier_threshold_hours
+            frontier_note = (
+                f"the oldest unreconciled token is {frontier_hours:.1f}h old, "
+                f">= the {frontier_threshold_hours:.1f}h frontier threshold "
+                f"(crypto_retention_days={retention_days}d minus one "
+                f"{RECONCILER_CADENCE_HOURS}h cadence interval); it may be "
+                "pruned before the next scheduled pass reaches it"
+            )
+            summary["error"] = (
+                f"{summary['error']}; additionally, {frontier_note}"
+                if summary.get("error") else frontier_note
+            )
+            logger.warning("crypto reconciliation backlog_expiring: %s", frontier_note)
     return summary
 
 

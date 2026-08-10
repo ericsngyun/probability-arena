@@ -4,6 +4,20 @@ import pytest
 
 from app.schemas import MarketData
 
+# LOW fix (fourth re-review, CRYPTO-COVERAGE-REPAIR-001): the
+# `_isolate_crypto_tape_overlap_lock` fixture below patches
+# `_resolve_lock_dir` at SESSION scope, but that patch only takes effect
+# once pytest sets the fixture up — it does NOT protect any module-level /
+# import-time code. If a future test module calls `CryptoTapeConfig.
+# from_settings()` (or anything else that reaches `_resolve_lock_dir`) at
+# IMPORT time (e.g. as a module-level constant or a `@pytest.fixture`
+# default-arg evaluated at collection), it will resolve against the real,
+# unpatched settings before this fixture ever runs — producing a real path
+# under whatever DATABASE_URL `.env` points at (measured: resolves to
+# `<fakeprod>/data`) instead of the test-isolated tmp dir. Nothing in the
+# suite does this today (verified: no module does DB/tape work at import
+# time), but do not add any.
+
 
 @pytest.fixture(autouse=True)
 def _isolate_sqlite_telemetry(tmp_path, monkeypatch):

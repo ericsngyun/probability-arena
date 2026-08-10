@@ -127,6 +127,14 @@ enough to complete in one pass (HIGH-2): e.g.
 --max-duration-seconds 600`. Without raising the deadline the backfill pass
 will itself stop at `status=partial`/`stop_reason=deadline` and need several
 repeated invocations instead of the one wider pass this section describes.
+**Correction (second re-review, convergence lens):** `--limit 3000` against
+this section's own 2,836-token universe leaves only `room=164` for the
+ENTIRE historical backlog — with the NEW-BLOCKING-1 fix's `min(backlog_size,
+limit // 2)` reservation this is somewhat better than pre-fix (some backlog
+budget is now guaranteed rather than zero), but 164 is still far short of a
+multi-thousand-token historical backlog. The `--limit` in this example
+should be `--limit` >= (in-window eligible) + (the full backlog you intend
+to recover in this one wide pass), not just the in-window universe size.
 
 ## Review outcome — three reviews, all REQUEST CHANGES
 
@@ -372,9 +380,25 @@ flock alone never closed this race — what actually keeps the two callers'
 token sets disjoint is the HIGH-1 age exclusion (the anchor feed only
 touches age-0 tokens; the scheduled reconciler now excludes them). A real
 `IntegrityError` from a residual race is NOT an `OperationalError`, so the
-DB-locked retry ladder never applied to it — it used to propagate uncaught
-and kill the systemd unit; it is now a typed, non-zero-exit
-`status="concurrent_write_conflict"` result. The overclaiming docstring is
+DB-locked retry ladder never applied to it. **Correction (fourth
+re-review):** the mapping to a typed `status="concurrent_write_conflict"`
+result originally existed ONLY in `run_scheduled_reconciliation`
+(crypto_tape.py:2542) — `record_discovery_run` itself had no such mapping,
+so a residual race there raised an uncaught `IntegrityError` straight out
+of the method. The CLI's exact-run path (`app/cli.py:2795`) calls
+`record_discovery_run` directly with no surrounding try/except, so that
+path really did propagate the exception uncaught (a real, non-hypothetical
+gap, not corrected by anything else on this branch until now). The
+anchor-feed *hook* in `app/services/marketops.py` (:1128,
+`except Exception: # never fail the cycle`) was already, and remains,
+unchanged by this milestone — it isolates ANY exception from its call site
+as `anchor_feed.status="error"`, so an uncaught `IntegrityError` there was
+never going to "kill the systemd unit"; that specific claim was false for
+the anchor-feed hook and is removed. The fix now adds the same
+`IntegrityError` -> `concurrent_write_conflict` mapping directly inside
+`record_discovery_run`, so both callers (the CLI's direct call and the
+anchor-feed hook's call) get the same typed, non-zero-exit result instead
+of a generic caught-and-stringified error. The overclaiming docstring is
 corrected in `crypto_tape.py`.
 
 **MEDIUM, fixed:**

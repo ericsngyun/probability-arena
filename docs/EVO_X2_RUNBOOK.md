@@ -229,7 +229,10 @@ unscheduled.
 - Row cost: each pass appends ~2 rows per token considered (a lifecycle snapshot
   and an actor observation) — `skip_redundant_when_final` does NOT reduce this
   on the scheduled path (it is structurally inert there; see the milestone doc's
-  HIGH-3 note). Neither table is pruned by `retention.py`. `tokens_considered`
+  "MEDIUM, fixed" note on `skip_redundant_when_final` — LOW fix, fourth
+  re-review: this used to cite "HIGH-3", which is the unrelated
+  `record_discovery_run`/IntegrityError item). Neither table is pruned by
+  `retention.py`. `tokens_considered`
   per pass is bounded by `crypto_tape_reconciler_max_duration_seconds`
   (deadline-capped, not just selection-capped), and the milestone's earlier
   "1.048 MiB per pass ≈ 4.19 MiB/day" figure predates both that deadline and
