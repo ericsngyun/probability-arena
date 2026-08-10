@@ -1200,6 +1200,91 @@ def summarize_tape_session(session: Session, run_ids: list[int]) -> dict:
     }
 
 
+def run_scheduled_reconciliation(
+    session: Session,
+    recorder: CryptoLifecycleTapeRecorder | None = None,
+    *,
+    settings=None,
+    dry_run: bool = False,
+    force: bool = False,
+    window_hours: int | None = None,
+    limit: int | None = None,
+) -> dict:
+    """CRYPTO-COVERAGE-REPAIR-001 — one bounded, provider-free reconciliation
+    pass over already-persisted tokens whose survival horizons have matured.
+
+    Why this exists: `record_discovery_run` (the only tape path production
+    actually runs) validates that every token was FIRST PERSISTED by the
+    originating discovery run, so it sees each token exactly once, at age ~0,
+    when no horizon is due. `run_once` — the windowed reconciler that would
+    revisit matured tokens — is CLI-only and nothing schedules it. The result
+    is that survival horizons never mature at all, and the ticks needed to
+    mature them are pruned after `crypto_retention_days`.
+
+    This is a THIN GOVERNED WRAPPER over the existing, already-proven
+    `run_once`; it deliberately does not reimplement reconciliation. It adds
+    only: a default-OFF gate, explicit bounds, and a structured disabled/ok
+    result so a scheduled unit is a clean no-op when the flag is off.
+
+    Guarantees: zero external calls (no provider, no discovery scan, no second
+    universe fetch), zero provider-budget impact, no cohort, no arming, no
+    observation unit, and no trade-execution capability of any kind (see
+    docs/SAFETY_BOUNDARIES.md). Idempotent — recomputes deterministic labels from
+    persisted rows, so repeated or restarted passes converge to the same
+    values. Restart-safe — a killed pass persists nothing beyond the bounded
+    transaction `run_once` already uses. Measurement only, never advice."""
+    s = settings if settings is not None else get_settings()
+    started = _now()
+    enabled = bool(getattr(s, "enable_crypto_tape_reconciler", False))
+    if not (enabled or force or dry_run):
+        return {
+            "status": "disabled",
+            "note": TAPE_NOTE,
+            "mode": "scheduled_reconciliation",
+            "external_calls": 0,
+            "tokens_considered": 0,
+            "outcomes_updated": 0,
+            "flag": "enable_crypto_tape_reconciler",
+            "duration_ms": 0,
+        }
+
+    hours = window_hours if window_hours is not None else int(
+        getattr(s, "crypto_tape_reconciler_window_hours", 48)
+    )
+    cap = limit if limit is not None else int(
+        getattr(s, "crypto_tape_reconciler_limit", 1000)
+    )
+    # The window must outlast the longest horizon's closing edge, or a 24h
+    # outcome can be pruned out of the selection set before it ever matures.
+    closing_edge_hours = int(max(m for _, m in HORIZONS) * (1 + HORIZON_TOLERANCE) / 60)
+    if hours < closing_edge_hours:
+        return {
+            "status": "invalid_window",
+            "note": TAPE_NOTE,
+            "mode": "scheduled_reconciliation",
+            "external_calls": 0,
+            "tokens_considered": 0,
+            "outcomes_updated": 0,
+            "error": (
+                f"window {hours}h is shorter than the longest horizon closing "
+                f"edge {closing_edge_hours}h; matured outcomes would be missed"
+            ),
+            "duration_ms": max(0, int((_now() - started).total_seconds() * 1000)),
+        }
+
+    rec = recorder or CryptoLifecycleTapeRecorder()
+    summary = rec.run_once(session, limit=cap, hours=hours, dry_run=dry_run)
+    summary.update({
+        "status": "dry_run" if dry_run else "ok",
+        "mode": "scheduled_reconciliation",
+        "external_calls": 0,
+        "window_hours": hours,
+        "selection_limit": cap,
+        "duration_ms": max(0, int((_now() - started).total_seconds() * 1000)),
+    })
+    return summary
+
+
 async def run_tape_session(
     session: Session,
     recorder: CryptoLifecycleTapeRecorder | None = None,

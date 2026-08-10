@@ -2857,6 +2857,59 @@ async def crypto_tape_run_once(
             session.close()
 
 
+async def crypto_tape_reconcile(
+    dry_run: bool = False, force: bool = False, hours: int | None = None,
+    limit: int | None = None, session=None,
+) -> int:
+    """CRYPTO-COVERAGE-REPAIR-001 scheduled provider-free reconciliation: one
+    bounded pass that revisits already-persisted tokens whose survival horizons
+    have matured, so 6h/24h outcomes can populate from evidence we ALREADY
+    hold. Gated by enable_crypto_tape_reconciler (default OFF = clean no-op).
+    Zero external calls, no discovery scan, no cohort, no arming, no execution
+    semantics. Idempotent and restart-safe. Returns tokens considered."""
+    from app.services.crypto_tape import run_scheduled_reconciliation
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        r = run_scheduled_reconciliation(
+            session, dry_run=dry_run, force=force, window_hours=hours, limit=limit
+        )
+        print("crypto tape reconciliation — research infrastructure only, never advice")
+        if r["status"] == "disabled":
+            print(
+                "status=disabled  external_calls=0  no-op "
+                f"(flag {r['flag']} is off)"
+            )
+            return 0
+        if r["status"] == "invalid_window":
+            print(f"status=invalid_window  external_calls=0  error={r['error']}")
+            return 0
+        print(
+            f"status={r['status']}  external_calls={r['external_calls']}  "
+            f"window={r['window_hours']}h  limit={r['selection_limit']}  "
+            f"duration_ms={r['duration_ms']}"
+        )
+        print(
+            f"tokens_considered={r['tokens_considered']}  "
+            f"outcomes_updated={r.get('outcomes_updated')}  "
+            f"snapshots={r.get('snapshots_created')}"
+        )
+        if r.get("survival_label_mix"):
+            print(
+                "survival labels (true counts): "
+                + ", ".join(f"{k}={v}" for k, v in r["survival_label_mix"].items())
+            )
+        return r["tokens_considered"]
+    finally:
+        if owns_session:
+            session.close()
+
+
 async def crypto_tape_session(
     duration_hours: int = 6, interval_min: int = 30, limit: int | None = None,
     dry_run: bool = False, session=None,
@@ -7586,6 +7639,22 @@ def build_parser() -> argparse.ArgumentParser:
         "--confirm", action="store_true",
         help="exact-run mode only: actually persist (absent = preview only)",
     )
+    tape_reconcile_parser = subparsers.add_parser(
+        "crypto-tape-reconcile",
+        help="CRYPTO-COVERAGE-REPAIR-001: one bounded provider-free "
+             "reconciliation pass over tokens whose horizons have matured "
+             "(default OFF via enable_crypto_tape_reconciler; never advice)",
+    )
+    tape_reconcile_parser.add_argument("--hours", type=int, default=None)
+    tape_reconcile_parser.add_argument("--limit", type=int, default=None)
+    tape_reconcile_parser.add_argument(
+        "--dry-run", action="store_true", help="compute and report; persist nothing"
+    )
+    tape_reconcile_parser.add_argument(
+        "--force", action="store_true",
+        help="run a single pass even when the scheduling flag is off "
+             "(manual operator use; does not enable the timer)",
+    )
     tape_report_parser = subparsers.add_parser(
         "crypto-tape-report",
         help="Lifecycle tape report: coverage, survival labels, actor patterns "
@@ -8374,6 +8443,14 @@ def main(argv: list[str] | None = None) -> int:
                 limit=args.limit, hours=args.hours, dry_run=args.dry_run,
                 source_crypto_run_id=args.source_crypto_run_id,
                 confirm=args.confirm,
+            )
+        )
+        return 0 if n >= 0 else 1
+    if args.command == "crypto-tape-reconcile":
+        n = asyncio.run(
+            crypto_tape_reconcile(
+                dry_run=args.dry_run, force=args.force,
+                hours=args.hours, limit=args.limit,
             )
         )
         return 0 if n >= 0 else 1

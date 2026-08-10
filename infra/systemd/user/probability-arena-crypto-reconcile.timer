@@ -1,0 +1,30 @@
+# Probability Arena — CRYPTO-COVERAGE-REPAIR-001 provider-free reconciliation
+# timer (USER unit). NOT auto-installed. Install:
+#   cp infra/systemd/user/probability-arena-crypto-reconcile.{service,timer} \
+#      ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now probability-arena-crypto-reconcile.timer
+# Inspect:
+#   systemctl --user list-timers | grep crypto-reconcile
+#   journalctl --user -u probability-arena-crypto-reconcile.service -n 50 --no-pager
+#
+# Cadence rationale: survival horizons close at 24h * (1 + HORIZON_TOLERANCE)
+# = 36h after birth, and the ticks that mature them are pruned after
+# crypto_retention_days (7d). Every 6h means any maturing horizon is
+# reconciled within at most 6h of its window closing, with ~5 days of slack
+# before the evidence is pruned — four passes a day, no provider calls, and
+# far less frequent than the 5-minute MarketOps cycle it must not crowd.
+# The pass is a clean no-op while enable_crypto_tape_reconciler is off, so the
+# timer is safe to install dark and enable later.
+
+[Unit]
+Description=Run Probability Arena crypto survival reconciliation every 6 hours
+
+[Timer]
+OnCalendar=*-*-* 03,09,15,21:20:00
+RandomizedDelaySec=300
+Persistent=true
+Unit=probability-arena-crypto-reconcile.service
+
+[Install]
+WantedBy=timers.target

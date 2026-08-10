@@ -1,0 +1,23 @@
+# Probability Arena — CRYPTO-COVERAGE-REPAIR-001 provider-free reconciliation.
+# Revisits already-persisted tokens whose survival horizons have matured so
+# 6h/24h outcomes can populate from evidence already on disk. Reads and writes
+# ONLY our own lifecycle/outcome rows. Zero external calls, zero provider
+# budget, no discovery scan, no cohort, no arming, no wallets, no keys, no
+# swaps, no signing, no orders, no execution of any kind.
+# A complete no-op while enable_crypto_tape_reconciler is off.
+# NOT auto-installed. See the .timer file for install commands.
+
+[Unit]
+Description=Probability Arena crypto survival reconciliation (provider-free)
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/projects/probability-arena
+EnvironmentFile=%h/projects/probability-arena/.env
+ExecStart=%h/projects/probability-arena/.venv/bin/python -m app.cli crypto-tape-reconcile
+NoNewPrivileges=true
+TimeoutStartSec=30min
+
+[Install]
+WantedBy=default.target

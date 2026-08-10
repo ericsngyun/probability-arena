@@ -351,6 +351,25 @@ class Settings(BaseSettings):
     crypto_risk_provider: str = "mock"
     crypto_retention_days: int = 7  # crypto_price_ticks + crypto_watcher_runs only
 
+    # CRYPTO-COVERAGE-REPAIR-001 — scheduled provider-free reconciliation.
+    # DEFAULT OFF. The windowed lifecycle reconciler (CryptoLifecycleTapeRecorder
+    # .run_once) already exists and is already proven, but nothing schedules it:
+    # production MarketOps only runs the EXACT-CYCLE anchor feed, which by
+    # construction processes each token once, at birth, when no horizon is yet
+    # due. Consequence: survival horizons never mature, and the evidence needed
+    # to mature them is deleted after crypto_retention_days. This flag gates a
+    # bounded periodic pass that revisits already-persisted tokens whose
+    # horizons have since matured. Zero external calls, zero provider budget,
+    # no discovery scan, no cohort, no arming, no execution semantics of any
+    # kind. Off = a complete no-op.
+    enable_crypto_tape_reconciler: bool = False
+    # Steady-state window. Must exceed the longest horizon's closing edge
+    # (24h * (1 + HORIZON_TOLERANCE) = 36h) so every maturing horizon is seen
+    # at least once before it is final; kept well under crypto_retention_days
+    # so bounded DB work, not evidence expiry, is the binding constraint.
+    crypto_tape_reconciler_window_hours: int = 48
+    crypto_tape_reconciler_limit: int = 1000
+
     # Crypto risk engine (CRYPTO-002) — read-only risk INTELLIGENCE only.
     # A risk score flags danger for avoidance/review; it is never a trade
     # recommendation, and no execution capability exists anywhere. Provider
