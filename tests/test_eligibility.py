@@ -137,7 +137,13 @@ class TestThresholdOverrides:
     def test_thresholds_can_be_overridden_directly(self):
         strict = EligibilityThresholds(min_liquidity=1_000_000)
         lax = EligibilityThresholds(min_liquidity=0)
-        market = make_market(liquidity=500)
+        # close_time must be anchored to this module's frozen NOW. The shared
+        # make_market fixture defaults it to the REAL clock (conftest.py:73),
+        # so with a frozen `now=NOW` the computed expiration_days drifts upward
+        # every real day and eventually crosses max_days_to_expiration (45.0),
+        # making this assertion fail for a reason it does not test. Fifth
+        # instance of the test-clock-dependency pattern in this repo.
+        market = make_market(liquidity=500, close_time=days_out(7))
         assert not assess_market(market, strict, now=NOW).is_eligible
         assert assess_market(market, lax, now=NOW).is_eligible
 
