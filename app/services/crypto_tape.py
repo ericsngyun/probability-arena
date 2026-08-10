@@ -157,6 +157,18 @@ STATUS_BACKLOG_EXPIRING = "backlog_expiring"  # NEW-HIGH-2 fix (second
     # `RECONCILE_CADENCE_HOURS` below on why an always-on alarm carries no
     # information) — this status exists to be the rare, actionable one.
 
+STATUS_UNSAFE_HOST_COST = "unsafe_host_cost"  # B3 terminal status: the
+    # adaptive per-token cost estimate is so high, relative to
+    # `time_budget_seconds` (the B1 SLO), that even a SINGLE-TOKEN
+    # transaction is predicted to violate the write-time budget. This is
+    # NOT "truncated" or "partial" — those imply a healthy pass simply ran
+    # out of selection room or wall-clock time; this means the host is
+    # currently too slow (or the seed/measured cost estimate too
+    # conservative) for this SLO at ANY batch size, and continuing would
+    # mean guessing rather than measuring. Batches already committed
+    # earlier in the same pass, if any, remain durable — only forward
+    # progress stops.
+
 BONDING_LAUNCHPAD = "launchpad_curve"
 BONDING_AMM = "amm_pool"
 
@@ -232,6 +244,37 @@ ABORT_DB_LOCKED = "database_locked"
 # hold stays comfortably under the busy_timeout" — never "trust this
 # default on an unmeasured host".
 RECONCILE_BATCH_SIZE = 5
+
+# CRYPTO-COVERAGE-REPAIR-001 B1 — the write-time SLO. THE CORE PROBLEM this
+# constant (and B3 below) exists to fix: `RECONCILE_BATCH_SIZE` above is a
+# fixed TOKEN COUNT, and the measured relation on a slower host is
+#     write-lock hold ~= tokens_in_batch x per-token write cost   (R ~ 1.0)
+# A count is not a safety invariant by itself, because per-token cost is
+# HOST-SPEED dependent (measured >60x slower on one EVO-class host than the
+# dev Mac this repo is usually edited on — see RECONCILE_BATCH_SIZE's own
+# history above: the same batch_size=25 was safe on one host and exceeded
+# the 30s busy_timeout on the other).
+#
+# This constant is the operational TARGET for how long ANY ONE reconciler
+# transaction may hold the SQLite write lock, chosen — not measured — with
+# deliberately large margin below `busy_timeout=30s`, because:
+#   * the always-on watcher and the 5-minute MarketOps timer can each want
+#     the write lock at any moment, independent of the reconciler's own
+#     schedule;
+#   * the daily backup (SQLITE-BACKUP-COORDINATION-001) needs its own
+#     window;
+#   * host load and filesystem variability are exactly what made the fixed
+#     batch_size=25 -> 5 stopgap necessary in the first place, and neither
+#     is something this repo can measure without EVO access.
+# 2.0s is under 7% of the 30s busy_timeout — comfortably small enough that a
+# reconciler transaction is very unlikely to be the reason ANY other writer
+# sees "database is locked", while still large enough that a correctly
+# calibrated per-token cost estimate can batch more than one token per
+# transaction on a healthy host. This is a POLICY choice (how much of the
+# shared write-lock budget the reconciler may spend at once), not a host
+# measurement — unlike `initial_per_token_cost_seconds` (B3 below), which
+# MUST come from a real measurement and deliberately has no default.
+RECONCILE_WRITE_TIME_SLO_SECONDS = 2.0
 # Internal wall-clock deadline for one `run_once` call. None = unbounded
 # (existing manual-path behaviour, unchanged). The scheduled path sets this so
 # one pass can never run indefinitely; remaining tokens simply stay backlog
@@ -296,6 +339,103 @@ RECONCILE_POST_BATCH_YIELD_SECONDS = 0.05
 # configurations). Never touches the database's own locking; kernel-released
 # if the process dies, so a crash can never leave a stale lock.
 RECONCILE_LOCK_FILENAME = ".crypto-tape-reconcile-{chain}.lock"
+
+
+class AdaptiveBatchCostEstimate:
+    """CRYPTO-COVERAGE-REPAIR-001 B3 — conservative (bias-HIGH) EWMA estimate
+    of write-phase wall-clock cost per token, in seconds. This REPLACES the
+    count-based invariant `RECONCILE_BATCH_SIZE` used to be: a fixed token
+    count can never be a safety invariant on its own, because the write-lock
+    hold it produces is `tokens_in_batch x per-token cost`, and per-token
+    cost is host-speed dependent (measured >60x slower on one EVO-class host
+    than the dev Mac this repo is usually edited on).
+
+    Never trust a single observation. The estimate starts from an explicit,
+    caller-supplied seed (`initial_per_token_cost_seconds` on the call
+    site — an UNCALIBRATED placeholder until a real measurement exists on
+    the target host; there is deliberately no built-in default, because
+    guessing this number is exactly the failure this class exists to
+    remove), then updates via EWMA after every committed batch's ACTUAL
+    measured wall time. The raw EWMA is inflated by `bias_multiplier`
+    before it is ever used to size the next batch, so a run of
+    favourable/quiet batches can never creep the estimate down to
+    something a single slow batch would then blow through. Deliberately
+    asymmetric: the conservative estimate shrinks immediately when a batch
+    comes in slower (the raw EWMA is bias-high and any slow sample pulls it
+    up hard with `alpha`), and grows back only slowly (`alpha`-weighted
+    average of a run of fast samples), and even then only within
+    `bias_multiplier` of the true recent average.
+    """
+
+    def __init__(
+        self,
+        initial_per_token_cost_seconds: float,
+        *,
+        alpha: float = 0.3,
+        bias_multiplier: float = 1.5,
+    ):
+        if initial_per_token_cost_seconds is None or initial_per_token_cost_seconds <= 0:
+            raise ValueError(
+                "initial_per_token_cost_seconds must be a positive, "
+                "explicitly-measured value (UNCALIBRATED placeholders must "
+                "be named as such by the caller, never invented here) — "
+                f"got {initial_per_token_cost_seconds!r}"
+            )
+        if not (0.0 < alpha <= 1.0):
+            raise ValueError(f"alpha must be in (0, 1], got {alpha!r}")
+        if bias_multiplier < 1.0:
+            raise ValueError(
+                f"bias_multiplier must be >= 1.0 (never bias LOW), got {bias_multiplier!r}"
+            )
+        self._raw_ewma = float(initial_per_token_cost_seconds)
+        self.alpha = alpha
+        self.bias_multiplier = bias_multiplier
+        self.observations = 0
+
+    @property
+    def conservative_estimate_seconds(self) -> float:
+        """The number batch sizing must use — always >= the raw EWMA."""
+        return self._raw_ewma * self.bias_multiplier
+
+    def observe(self, batch_duration_seconds: float, token_count: int) -> None:
+        """Update the raw EWMA from one committed batch's ACTUAL measured
+        wall time. `token_count` must be the real number of tokens written
+        in that batch (0 is a no-op — a zero-token 'batch' teaches nothing
+        about per-token cost and would divide by zero)."""
+        if token_count <= 0:
+            return
+        sample = max(0.0, batch_duration_seconds) / token_count
+        self._raw_ewma = self.alpha * sample + (1 - self.alpha) * self._raw_ewma
+        self.observations += 1
+
+
+def next_adaptive_batch_size(
+    time_budget_seconds: float,
+    cost_estimate: AdaptiveBatchCostEstimate,
+    *,
+    max_batch_size: int | None = None,
+) -> int:
+    """B3's batch-sizing DECISION, kept as a pure, independently testable
+    function. Primary contract: DO NOT START another token/write group when
+    the PREDICTED transaction duration would violate `time_budget_seconds`.
+
+    Returns 0 when even a single-token transaction would violate the budget
+    at the current conservative estimate — the caller MUST treat that as a
+    terminal `STATUS_UNSAFE_HOST_COST` condition, never silently proceed
+    with a batch smaller than 1.
+
+    `max_batch_size`, if given, is a SEPARATE sanity ceiling (B11): it can
+    only make the result SMALLER. It never overrides or relaxes the time
+    budget — the time budget always dominates."""
+    if time_budget_seconds <= 0:
+        return 0
+    conservative = cost_estimate.conservative_estimate_seconds
+    if conservative <= 0 or conservative > time_budget_seconds:
+        return 0
+    size = max(1, int(time_budget_seconds // conservative))
+    if max_batch_size is not None:
+        size = min(size, max_batch_size)
+    return max(0, size)
 
 
 def _now() -> datetime:
@@ -1125,6 +1265,8 @@ class CryptoLifecycleTapeRecorder:
         lock_retry_seconds: float = DB_LOCKED_RETRY_SECONDS,
         use_overlap_lock: bool = True,
         sleeper=time.sleep,
+        time_budget_seconds: float | None = None,
+        initial_per_token_cost_seconds: float | None = None,
     ) -> dict:
         """One bounded reconciliation pass.
 
@@ -1172,6 +1314,22 @@ class CryptoLifecycleTapeRecorder:
           `run_scheduled_reconciliation` opts in, with
           `SHORTEST_HORIZON_CLOSING_EDGE_MINUTES` (no horizon can be due
           before that age, so there is nothing yet to reconcile).
+        * `initial_per_token_cost_seconds` (B3) — supplying this ACTIVATES
+          adaptive time-budgeted batching: `batch_size` (if also given)
+          becomes only a MAXIMUM sanity ceiling (B11), and the actual next
+          batch size is derived every commit from
+          `time_budget_seconds / conservative_per_token_cost_estimate`
+          (see `AdaptiveBatchCostEstimate`/`next_adaptive_batch_size`).
+          `None` (the default) keeps the pre-existing fixed-`batch_size`
+          behaviour byte-for-byte unchanged — this value is deliberately an
+          UNCALIBRATED placeholder until a real per-token cost is measured
+          on the target host; nothing in this module invents a default for
+          it, and passing it in is the caller's explicit statement "I have
+          measured this".
+        * `time_budget_seconds` (B1) — the write-time SLO adaptive batching
+          sizes against; only consulted when `initial_per_token_cost_seconds`
+          is set. Defaults to `RECONCILE_WRITE_TIME_SLO_SECONDS` when
+          adaptive mode is active and this is left `None`.
         """
         started = _now()
         limit = limit if limit is not None else self.config.default_limit
@@ -1296,6 +1454,8 @@ class CryptoLifecycleTapeRecorder:
             use_overlap_lock=use_overlap_lock,
             sleeper=sleeper,
             backlog_token_addresses=backlog_addresses,
+            time_budget_seconds=time_budget_seconds,
+            initial_per_token_cost_seconds=initial_per_token_cost_seconds,
         )
         # A cap that silently drops work reads as "complete" to every caller.
         summary["universe_size"] = total
@@ -1753,6 +1913,8 @@ class CryptoLifecycleTapeRecorder:
         use_overlap_lock: bool = True,
         sleeper=time.sleep,
         backlog_token_addresses: frozenset[str] | None = None,
+        time_budget_seconds: float | None = None,
+        initial_per_token_cost_seconds: float | None = None,
     ) -> dict:
         """B4 overlap guard entry point. A non-blocking, per-chain flock (see
         `_reconcile_overlap_lock`) wraps the ENTIRE pass — from the
@@ -1771,6 +1933,8 @@ class CryptoLifecycleTapeRecorder:
                 max_lock_attempts=max_lock_attempts,
                 lock_retry_seconds=lock_retry_seconds, sleeper=sleeper,
                 backlog_token_addresses=backlog_token_addresses,
+                time_budget_seconds=time_budget_seconds,
+                initial_per_token_cost_seconds=initial_per_token_cost_seconds,
             )
         lock_dir = self.config.lock_dir or _resolve_lock_dir(None)
         with _reconcile_overlap_lock(lock_dir, self.config.chain) as acquired:
@@ -1810,6 +1974,8 @@ class CryptoLifecycleTapeRecorder:
                 max_lock_attempts=max_lock_attempts,
                 lock_retry_seconds=lock_retry_seconds, sleeper=sleeper,
                 backlog_token_addresses=backlog_token_addresses,
+                time_budget_seconds=time_budget_seconds,
+                initial_per_token_cost_seconds=initial_per_token_cost_seconds,
             )
 
     def _assemble_pass_locked(
@@ -1828,6 +1994,8 @@ class CryptoLifecycleTapeRecorder:
         lock_retry_seconds: float,
         sleeper=time.sleep,
         backlog_token_addresses: frozenset[str] | None = None,
+        time_budget_seconds: float | None = None,
+        initial_per_token_cost_seconds: float | None = None,
     ) -> dict:
         """The actual assembly work, run with the overlap lock already held
         (or dry-run, which needs none).
@@ -1850,9 +2018,41 @@ class CryptoLifecycleTapeRecorder:
           transaction, each token batch commits (with retry) on its own, and
           the run row is finalized in a last short retried transaction. B6's
           wall-clock deadline only applies in this mode, between batches,
-          never mid-batch."""
+          never mid-batch.
+        * `initial_per_token_cost_seconds` given (B3 ADAPTIVE mode, opt-in) —
+          implies chunked mode regardless of `batch_size`, and `batch_size`
+          (if also given) becomes ONLY a sanity MAXIMUM (B11) — the actual
+          next batch size is derived every commit from
+          `time_budget_seconds / conservative_per_token_cost_estimate`
+          (see `AdaptiveBatchCostEstimate`). If the estimate ever predicts
+          that even a single-token transaction would violate the budget,
+          the pass stops with `status=STATUS_UNSAFE_HOST_COST` rather than
+          guess a smaller-than-1 batch. This is the mechanism THE CORE
+          PROBLEM (a fixed token count is not a safety invariant) requires;
+          it is inert unless a caller explicitly supplies a measured cost."""
         hours = window_hours
-        chunked = batch_size is not None
+        adaptive = initial_per_token_cost_seconds is not None
+        if adaptive and initial_per_token_cost_seconds <= 0:
+            raise ValueError(
+                "initial_per_token_cost_seconds must be > 0 — refusing to "
+                "activate adaptive batching with a non-positive UNCALIBRATED "
+                f"value ({initial_per_token_cost_seconds!r})"
+            )
+        effective_time_budget_seconds = (
+            time_budget_seconds
+            if time_budget_seconds is not None
+            else RECONCILE_WRITE_TIME_SLO_SECONDS
+        ) if adaptive else None
+        if adaptive and effective_time_budget_seconds <= 0:
+            raise ValueError(
+                "time_budget_seconds must be > 0, got "
+                f"{effective_time_budget_seconds!r}"
+            )
+        cost_estimate = (
+            AdaptiveBatchCostEstimate(initial_per_token_cost_seconds)
+            if adaptive else None
+        )
+        chunked = batch_size is not None or adaptive
         deadline = (
             started + timedelta(seconds=max_duration_seconds)
             if (chunked and max_duration_seconds is not None) else None
@@ -1991,12 +2191,41 @@ class CryptoLifecycleTapeRecorder:
                 run_id = run.id
 
         effective_batch = batch_size or max(len(tokens), 1)
-        chunks = [
-            tokens[i:i + effective_batch] for i in range(0, len(tokens), effective_batch)
-        ] if tokens else []
+
+        def _iter_chunks():
+            """B3 — the SELECTION of what goes in each batch is decided lazily,
+            one batch at a time, so an adaptive pass can react to what the
+            PREVIOUS batch's real commit actually cost. Non-adaptive
+            (fixed-`batch_size`/legacy) mode keeps its pre-existing, eagerly
+            equivalent fixed-size slicing — yielding lazily changes nothing
+            observable there. Yields `("chunk", list_of_tokens)` or
+            `("unsafe", None)` — the latter means even a single-token
+            transaction is predicted to violate the write-time budget at the
+            current conservative cost estimate; the caller must stop, not
+            proceed with a smaller-than-1 batch."""
+            if not tokens:
+                return
+            if not adaptive:
+                for i in range(0, len(tokens), effective_batch):
+                    yield "chunk", tokens[i:i + effective_batch]
+                return
+            remaining = list(tokens)
+            while remaining:
+                size = next_adaptive_batch_size(
+                    effective_time_budget_seconds, cost_estimate,
+                    max_batch_size=batch_size,
+                )
+                if size < 1:
+                    yield "unsafe", None
+                    return
+                yield "chunk", remaining[:size]
+                remaining = remaining[size:]
 
         try:
-            for chunk in chunks:
+            for kind, chunk in _iter_chunks():
+                if kind == "unsafe":
+                    stop_reason = "unsafe_host_cost"
+                    break
                 if chunked and deadline is not None and _now() >= deadline and tokens_processed > 0:
                     stop_reason = "deadline"
                     break
@@ -2021,7 +2250,18 @@ class CryptoLifecycleTapeRecorder:
                             )
                             if not dry_run:
                                 session.commit()
-                                blocked_seconds += time.perf_counter() - _attempt_t0
+                                _attempt_duration = time.perf_counter() - _attempt_t0
+                                blocked_seconds += _attempt_duration
+                                # B3: feed the ACTUAL measured commit wall time
+                                # back into the conservative cost estimate
+                                # before sizing the NEXT batch (the generator
+                                # above reads `cost_estimate` again on its
+                                # next iteration). Only successful commits
+                                # teach real per-token cost; a retried/failed
+                                # attempt's wait time is contention, not
+                                # per-token write cost.
+                                if adaptive:
+                                    cost_estimate.observe(_attempt_duration, len(chunk))
                                 # NEW-H1 fix: yield the write lock briefly
                                 # AFTER a real commit so a waiting competing
                                 # writer gets a genuine chance to win the
@@ -2110,7 +2350,34 @@ class CryptoLifecycleTapeRecorder:
                 "_births": births_seen,
             }
             if stop_reason is not None:
-                if dry_run:
+                if stop_reason == "unsafe_host_cost":
+                    # B3 — the adaptive cost estimate predicts even a
+                    # single-token transaction would violate the write-time
+                    # SLO. Distinct from every other stop reason: those mean
+                    # "ran out of selection room/wall-clock budget/lock
+                    # attempts"; this means "the host is currently too slow
+                    # for this budget at ANY batch size" and must not be
+                    # silently reported as a routine partial/dry-run-partial.
+                    # Batches committed earlier in THIS pass, if any, remain
+                    # durable — only forward progress stopped.
+                    summary["status"] = STATUS_UNSAFE_HOST_COST
+                    summary["error"] = (
+                        "adaptive batching refused to start another batch: "
+                        f"the conservative per-token cost estimate "
+                        f"({cost_estimate.conservative_estimate_seconds:.4f}s) "
+                        f"exceeds the write-time budget "
+                        f"({effective_time_budget_seconds:.4f}s) — even a "
+                        "single-token transaction is predicted to violate "
+                        f"it. {batches_committed} batch(es) / "
+                        f"{tokens_processed} of {len(tokens)} selected "
+                        "tokens were processed before this pass stopped; "
+                        "already-committed batches are durable. This "
+                        "requires either a real re-measurement of "
+                        "per-token cost on this host or a larger "
+                        "time_budget_seconds — never a smaller batch size, "
+                        "which this mechanism already tried."
+                    )
+                elif dry_run:
                     # H1 fix: a dry-run probe truncated by the deadline (or
                     # exhausted lock retries) must never report plain
                     # "dry_run" — that is indistinguishable from a complete
@@ -2688,6 +2955,8 @@ def run_scheduled_reconciliation(
     batch_size: int | None = None,
     max_duration_seconds: float | None = None,
     sleeper=time.sleep,
+    time_budget_seconds: float | None = None,
+    initial_per_token_cost_seconds: float | None = None,
 ) -> dict:
     """CRYPTO-COVERAGE-REPAIR-001 — one bounded, provider-free reconciliation
     pass over already-persisted tokens whose survival horizons have matured.
@@ -2881,6 +3150,35 @@ def run_scheduled_reconciliation(
             "invalid_max_duration_seconds",
             f"max_duration_seconds {deadline_seconds} must be >= 0",
         )
+    # CRYPTO-COVERAGE-REPAIR-001 B1/B3/B11 — the adaptive time-budgeted
+    # batching knobs. Both default to `None` (mechanism OFF, `batch` above
+    # keeps governing byte-for-byte as before) because
+    # `initial_per_token_cost_seconds` is an UNCALIBRATED value with
+    # deliberately no built-in fallback (see the Settings field docstring) —
+    # only an explicit, positive value (caller kwarg or
+    # `crypto_tape_reconciler_initial_per_token_cost_seconds`) activates it.
+    # Once active, `batch` (validated above) becomes ONLY a sanity MAXIMUM
+    # (B11) — the write-time budget always dominates batch sizing.
+    resolved_initial_cost = (
+        initial_per_token_cost_seconds if initial_per_token_cost_seconds is not None
+        else getattr(s, "crypto_tape_reconciler_initial_per_token_cost_seconds", None)
+    )
+    resolved_time_budget = (
+        time_budget_seconds if time_budget_seconds is not None
+        else getattr(s, "crypto_tape_reconciler_time_budget_seconds", None)
+    )
+    if resolved_initial_cost is not None and resolved_initial_cost <= 0:
+        return _refused(
+            "invalid_initial_per_token_cost_seconds",
+            f"initial_per_token_cost_seconds {resolved_initial_cost} must be "
+            "> 0 — refusing to activate adaptive batching with a "
+            "non-positive UNCALIBRATED value",
+        )
+    if resolved_time_budget is not None and resolved_time_budget <= 0:
+        return _refused(
+            "invalid_time_budget_seconds",
+            f"time_budget_seconds {resolved_time_budget} must be > 0",
+        )
     try:
         summary = rec.run_once(
             session, limit=cap, hours=hours, dry_run=dry_run,
@@ -2912,6 +3210,10 @@ def run_scheduled_reconciliation(
             # B6: internal wall-clock deadline; the rest becomes backlog.
             max_duration_seconds=deadline_seconds,
             sleeper=sleeper,
+            # B1/B3: inert unless resolved_initial_cost is an explicit,
+            # positive, measured value — see the resolution block above.
+            time_budget_seconds=resolved_time_budget,
+            initial_per_token_cost_seconds=resolved_initial_cost,
         )
     except Exception as exc:
         # A poisoned transaction must not leak into the caller's session, and a
@@ -2972,7 +3274,7 @@ def run_scheduled_reconciliation(
     # class this milestone exists to remove.
     terminal_statuses = {
         STATUS_SKIPPED_OVERLAP, STATUS_SKIPPED_CONTENTION, STATUS_PARTIAL,
-        STATUS_DRY_RUN_PARTIAL,
+        STATUS_DRY_RUN_PARTIAL, STATUS_UNSAFE_HOST_COST,
     }
     pass_status = summary.get("status")
     resolved_status = (

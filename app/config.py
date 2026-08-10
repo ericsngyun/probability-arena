@@ -430,6 +430,23 @@ class Settings(BaseSettings):
     crypto_tape_reconciler_batch_size: int = 5
     crypto_tape_reconciler_max_duration_seconds: float = 20.0
 
+    # CRYPTO-COVERAGE-REPAIR-001 B1/B3 — the structural replacement for the
+    # count-based `crypto_tape_reconciler_batch_size` invariant above. See
+    # `RECONCILE_WRITE_TIME_SLO_SECONDS`/`AdaptiveBatchCostEstimate` in
+    # app/services/crypto_tape.py for the full mechanism. Both default to
+    # `None` (adaptive batching OFF, `crypto_tape_reconciler_batch_size`
+    # keeps governing byte-for-byte as before) because
+    # `crypto_tape_reconciler_initial_per_token_cost_seconds` is an
+    # UNCALIBRATED value that only means something once someone has actually
+    # measured a real batch's write-phase wall time on the TARGET host (EVO
+    # was unreachable — expired Tailscale auth — for the whole pass that
+    # built this mechanism, so no such measurement exists yet). Setting only
+    # `_time_budget_seconds` without `_initial_per_token_cost_seconds` does
+    # NOT activate adaptive mode — the per-token cost is the one input this
+    # repo refuses to guess.
+    crypto_tape_reconciler_time_budget_seconds: float | None = None
+    crypto_tape_reconciler_initial_per_token_cost_seconds: float | None = None
+
     # Crypto risk engine (CRYPTO-002) — read-only risk INTELLIGENCE only.
     # A risk score flags danger for avoidance/review; it is never a trade
     # recommendation, and no execution capability exists anywhere. Provider

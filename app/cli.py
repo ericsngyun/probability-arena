@@ -70,6 +70,19 @@ def _non_negative_float_arg(raw: str) -> float:
     return value
 
 
+# CRYPTO-COVERAGE-REPAIR-001 B1/B3/B11: the adaptive time-budgeted batching
+# knobs (`--time-budget-seconds`/`--initial-per-token-cost-seconds`) are
+# strictly positive by definition — unlike `--max-duration-seconds`, 0.0 has
+# no legitimate meaning for either (a zero write-time budget or a zero
+# per-token cost estimate is nonsensical, not an intentional "already past
+# due" sentinel). Fail at argparse time, same as `_positive_int_arg`.
+def _positive_float_arg(raw: str) -> float:
+    value = float(raw)
+    if value <= 0:
+        raise argparse.ArgumentTypeError(f"must be > 0, got {value}")
+    return value
+
+
 async def scan(
     limit: int | None = None,
     adapter: KalshiRestAdapter | None = None,
@@ -2899,7 +2912,10 @@ async def crypto_tape_run_once(
 async def crypto_tape_reconcile(
     dry_run: bool = False, force: bool = False, hours: int | None = None,
     limit: int | None = None, batch_size: int | None = None,
-    max_duration_seconds: float | None = None, session=None,
+    max_duration_seconds: float | None = None,
+    time_budget_seconds: float | None = None,
+    initial_per_token_cost_seconds: float | None = None,
+    session=None,
 ) -> int:
     """CRYPTO-COVERAGE-REPAIR-001 scheduled provider-free reconciliation: one
     bounded pass that revisits already-persisted tokens whose survival horizons
@@ -2931,6 +2947,16 @@ async def crypto_tape_reconcile(
             extra_kwargs["batch_size"] = batch_size
         if max_duration_seconds is not None:
             extra_kwargs["max_duration_seconds"] = max_duration_seconds
+        # CRYPTO-COVERAGE-REPAIR-001 B1/B3/B11: same "only forward when the
+        # caller actually set it" pattern as batch_size/max_duration_seconds
+        # above. `initial_per_token_cost_seconds` is an UNCALIBRATED value —
+        # this CLI flag exists only so a real, measured value can activate
+        # adaptive batching later; there is no repo-side default to fall
+        # back to.
+        if time_budget_seconds is not None:
+            extra_kwargs["time_budget_seconds"] = time_budget_seconds
+        if initial_per_token_cost_seconds is not None:
+            extra_kwargs["initial_per_token_cost_seconds"] = initial_per_token_cost_seconds
         r = run_scheduled_reconciliation(
             session, dry_run=dry_run, force=force, window_hours=hours, limit=limit,
             **extra_kwargs,
@@ -2962,7 +2988,7 @@ async def crypto_tape_reconcile(
         # `run_scheduled_reconciliation`, same as truncated/partial.
         if r["status"] not in (
             "ok", "dry_run", "truncated", "partial", "dry_run_partial",
-            "backlog_expiring",
+            "backlog_expiring", "unsafe_host_cost",
         ):
             # Non-zero: a unit that reconciles nothing must never look healthy.
             print(f"status={r['status']}  external_calls=0  error={r['error']}")
@@ -7795,6 +7821,27 @@ def build_parser() -> argparse.ArgumentParser:
              "report dry_run_partial. Must be >= 0 (0.0 intentionally means "
              "'already past due' — stop after exactly one batch).",
     )
+    tape_reconcile_parser.add_argument(
+        "--time-budget-seconds", type=_positive_float_arg, default=None,
+        help="CRYPTO-COVERAGE-REPAIR-001 B1/B3: the write-time SLO adaptive "
+             "batching sizes each transaction against. Only takes effect "
+             "together with --initial-per-token-cost-seconds (adaptive "
+             "batching is otherwise off); defaults to "
+             "RECONCILE_WRITE_TIME_SLO_SECONDS when adaptive mode is active "
+             "and this flag is omitted. Must be > 0.",
+    )
+    tape_reconcile_parser.add_argument(
+        "--initial-per-token-cost-seconds", type=_positive_float_arg, default=None,
+        help="CRYPTO-COVERAGE-REPAIR-001 B1/B3: an explicit, MEASURED "
+             "per-token write-phase wall-clock cost (seconds) on THIS host. "
+             "Supplying this ACTIVATES adaptive time-budgeted batching, "
+             "which replaces --batch-size as the safety invariant "
+             "(--batch-size then becomes only a sanity maximum). There is "
+             "deliberately no default — this value is UNCALIBRATED until an "
+             "operator has actually measured a real batch's write-phase "
+             "wall time on the target host (see crypto_tape.py's "
+             "AdaptiveBatchCostEstimate); never guess it. Must be > 0.",
+    )
     tape_report_parser = subparsers.add_parser(
         "crypto-tape-report",
         help="Lifecycle tape report: coverage, survival labels, actor patterns "
@@ -8593,6 +8640,8 @@ def main(argv: list[str] | None = None) -> int:
                 hours=args.hours, limit=args.limit,
                 batch_size=args.batch_size,
                 max_duration_seconds=args.max_duration_seconds,
+                time_budget_seconds=args.time_budget_seconds,
+                initial_per_token_cost_seconds=args.initial_per_token_cost_seconds,
             )
         )
         return 0 if n >= 0 else 1
