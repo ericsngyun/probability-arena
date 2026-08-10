@@ -1,6 +1,6 @@
 # CRYPTO-COVERAGE-REPAIR-001 — survival-horizon coverage repair
 
-Status: **Stage 1 implemented, dark (default OFF). Stage 2 designed, not implemented.**
+Status: **Stage 1 implemented and DEPLOYED DARK (default OFF). NOT ACTIVATED — blocked on a measured write-lock defect. Stage 2 designed, not implemented.**
 Branch: `worktree/crypto-coverage-repair`
 Measured against EVO-X2 production DB on 2026-08-10.
 
@@ -99,8 +99,52 @@ window alone. At a 168h backfill window: 2,836 tokens, `survived_24h=48`.
 
 Steady state at 48h covers all future maturation. Recovering the *existing*
 denominator needs one wider pass, because 49 of the 56 recoverable 24h births
-are already outside 48h. That is a single governed `--force --hours 168` run,
-not a scheduled historical backlog.
+are already outside 48h.
+
+**Corrected after review.** The originally documented command
+(`--force --hours 168`, no `--limit`) was wrong: it inherits `limit=2000`
+against a 2,836-token universe, and under the original newest-first ordering it
+would have selected the *least* matured tokens and silently missed most of the
+24h births the backfill exists to recover — while printing `status=ok`. The
+pass now selects oldest-first, tops up from a state-driven backlog of still-open
+outcomes, and refuses to report `ok` when it truncates. The backfill must still
+name an explicit `--limit` covering the whole universe.
+
+## Review outcome — three reviews, all REQUEST CHANGES
+
+Nothing here was self-assessed. What the reviews found and what changed:
+
+**Fixed in this milestone.** Silent limit truncation (the recency starvation
+named as root cause #2 was NOT fixed by the first commit — a review proved 0 of
+5 matured tokens reconciled at a binding cap, with `status=ok` and no truncation
+field anywhere); `run_migrations()` running before the gate, so a dark timer
+would have applied Alembic unattended every 6h outside the deploy runbook;
+`--limit -1` reaching SQLite as *unlimited*; `invalid_window` exiting 0, so a
+misconfigured unit would look green forever while reconciling nothing; a window
+guard that ignored the scheduling interval; no MarketOps-degraded abort; no
+gate-bypass marker or `mode`/`forced` stamp in the audit trail; window-driven
+selection that loses a cohort permanently after two missed passes and never
+reconciles the existing backlog; and two tests that could not fail for the
+reason they existed.
+
+**BLOCKING activation, NOT fixed.** The pass is a single write transaction:
+`_assemble_pass` flushes the run row before the token loop and commits once at
+the end. Measured at production density (1,000 tokens): **36.9s pass, competing
+writer blocked 35.79s — 97% of it — exceeding the 30s busy timeout.** This is
+the same single-commit shape OPS-012 hit and OPS-013 retired in favour of
+per-sub-window commits. Also unfixed: a concurrent manual CLI run races the
+pre-transaction `existing_births` read and dies with an `IntegrityError` after
+~45s of contention, discarding the whole pass; and there is no bounded
+lock-retry ladder (the wrapper rolls back and returns `db_locked`, but does not
+retry the way every other tape caller does).
+
+**Required before the flag is flipped:** chunked commits holding under ~2s, an
+overlap guard or in-transaction birth upsert, the retry ladder, an internal
+deadline, skipping snapshot/actor writes for already-final outcomes, and adding
+the five tape tables to `retention.py`. Row growth is measured at **1.048 MiB
+per pass ≈ 4.19 MiB/day ≈ 1.5 GiB/year** on a DB already past its 3072 MB gate.
+A two-connection file-backed lock test — which the repo's own SQLite topology
+audit already asked for — must exist before enabling.
 
 ## Stage 2 — sparse 6h/24h re-ticks (designed, NOT implemented)
 

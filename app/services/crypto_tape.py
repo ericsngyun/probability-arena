@@ -89,6 +89,11 @@ HORIZONS: tuple[tuple[str, int], ...] = (
 )
 # an observation counts for a horizon if within +/- this fraction of it
 HORIZON_TOLERANCE = 0.5
+# CRYPTO-COVERAGE-REPAIR-001: the scheduled reconciler's interval, kept here
+# rather than only in the systemd unit so the window guard can require that the
+# window outlasts the closing edge PLUS one interval. If the unit's OnCalendar
+# changes, change this with it.
+RECONCILER_CADENCE_HOURS = 6
 # liquidity below this fraction of the initial value => not survived / removed
 SURVIVAL_LIQUIDITY_FRACTION = 0.3
 # 24h volume below this at >=6h after birth => dead_volume
@@ -191,16 +196,88 @@ class CryptoLifecycleTapeRecorder:
 
     # --- source loading (read-only) ------------------------------------------
 
-    def _universe(self, session: Session, limit: int, cutoff: datetime) -> list[CryptoToken]:
+    def _universe(
+        self, session: Session, limit: int, cutoff: datetime,
+        *, oldest_first: bool = False,
+    ) -> list[CryptoToken]:
+        """Tokens in the window. `oldest_first` inverts the ordering for
+        CRYPTO-COVERAGE-REPAIR-001: newest-first truncation drops exactly the
+        MATURED tokens (the ones whose horizons have closed and whose evidence
+        is about to be pruned), while the newest tokens it keeps have no due
+        horizon at all. Oldest-first truncation drops the unmatured tail
+        instead, which the next pass picks up anyway because those tokens are
+        still inside the window. Default preserves the existing manual-path
+        behaviour; only the scheduled reconciler opts in."""
+        order = (
+            (CryptoToken.first_seen_at.asc(), CryptoToken.id.asc())
+            if oldest_first
+            else (CryptoToken.first_seen_at.desc(), CryptoToken.id.desc())
+        )
         return list(session.execute(
             select(CryptoToken)
             .where(
                 CryptoToken.chain == self.config.chain,
                 CryptoToken.first_seen_at >= cutoff,
             )
-            .order_by(CryptoToken.first_seen_at.desc(), CryptoToken.id.desc())
+            .order_by(*order)
             .limit(limit)
         ).scalars().all())
+
+    def unreconciled_backlog(
+        self, session: Session, cutoff: datetime, *, limit: int
+    ) -> list[CryptoToken]:
+        """Tokens OLDER than the window whose outcome is still not final.
+
+        Window-driven selection alone is lossy: the window carries only
+        `window_hours - closing_edge` of slack (12h at the shipped defaults),
+        so two missed passes — host down, lock contention, a flag toggle —
+        push a cohort out of the window permanently, and the same gap means the
+        pre-existing backlog is never reconciled at first enablement. Selection
+        must therefore be driven by STATE (is this outcome still open?) and not
+        only by recency. Oldest-first, because that evidence is closest to
+        being pruned."""
+        return list(session.execute(
+            select(CryptoToken)
+            .join(
+                CryptoTokenSurvivalOutcome,
+                CryptoTokenSurvivalOutcome.token_address == CryptoToken.token_address,
+            )
+            .where(
+                CryptoToken.chain == self.config.chain,
+                CryptoToken.first_seen_at < cutoff,
+                CryptoTokenSurvivalOutcome.final.is_(False),
+            )
+            .order_by(CryptoToken.first_seen_at.asc(), CryptoToken.id.asc())
+            .limit(limit)
+        ).scalars().all())
+
+    def backlog_size(self, session: Session, cutoff: datetime) -> int:
+        """How many still-open outcomes sit outside the window. Reported so a
+        shortfall is visible rather than inferred."""
+        return int(session.execute(
+            select(func.count())
+            .select_from(CryptoToken)
+            .join(
+                CryptoTokenSurvivalOutcome,
+                CryptoTokenSurvivalOutcome.token_address == CryptoToken.token_address,
+            )
+            .where(
+                CryptoToken.chain == self.config.chain,
+                CryptoToken.first_seen_at < cutoff,
+                CryptoTokenSurvivalOutcome.final.is_(False),
+            )
+        ).scalar() or 0)
+
+    def universe_size(self, session: Session, cutoff: datetime) -> int:
+        """How many tokens the window actually holds, independent of any limit.
+        Without this a truncated pass is indistinguishable from a complete one,
+        which is the silent-under-reconciliation class this milestone removes."""
+        return int(session.execute(
+            select(func.count()).select_from(CryptoToken).where(
+                CryptoToken.chain == self.config.chain,
+                CryptoToken.first_seen_at >= cutoff,
+            )
+        ).scalar() or 0)
 
     def _load_sources(self, session: Session, token: CryptoToken, now: datetime) -> TokenSources:
         address = token.token_address
@@ -638,17 +715,43 @@ class CryptoLifecycleTapeRecorder:
         limit: int | None = None,
         hours: int | None = None,
         dry_run: bool = False,
+        *,
+        oldest_first: bool = False,
+        include_backlog: bool = False,
+        run_config_extra: dict | None = None,
     ) -> dict:
         started = _now()
         limit = limit if limit is not None else self.config.default_limit
         hours = hours if hours is not None else self.config.default_window_hours
         cutoff = started - timedelta(hours=hours)
-        tokens = self._universe(session, limit, cutoff)
+        tokens = self._universe(session, limit, cutoff, oldest_first=oldest_first)
+        total = self.universe_size(session, cutoff)
+        backlog_total = 0
+        if include_backlog:
+            # State-driven top-up: still-open outcomes that have aged out of the
+            # window. Without this a missed pass loses a cohort permanently.
+            backlog_total = self.backlog_size(session, cutoff)
+            room = max(0, limit - len(tokens))
+            if room:
+                seen = {t.token_address for t in tokens}
+                extra = [
+                    t for t in self.unreconciled_backlog(session, cutoff, limit=room)
+                    if t.token_address not in seen
+                ]
+                tokens = tokens + extra
+        config = {"limit": limit, "hours": hours, "chain": self.config.chain}
+        config.update(run_config_extra or {})
         summary = self._assemble_pass(
             session, tokens, started=started, dry_run=dry_run,
             window_hours=hours,
-            run_config={"limit": limit, "hours": hours, "chain": self.config.chain},
+            run_config=config,
         )
+        # A cap that silently drops work reads as "complete" to every caller.
+        summary["universe_size"] = total
+        summary["backlog_size"] = backlog_total
+        summary["work_available"] = total + backlog_total
+        summary["truncated"] = (total + backlog_total) > len(tokens)
+        summary["tokens_omitted"] = max(0, (total + backlog_total) - len(tokens))
         summary.pop("_births", None)  # internal accounting, not part of the contract
         return summary
 
@@ -1228,14 +1331,29 @@ def run_scheduled_reconciliation(
 
     Guarantees: zero external calls (no provider, no discovery scan, no second
     universe fetch), zero provider-budget impact, no cohort, no arming, no
-    observation unit, and no trade-execution capability of any kind (see
-    docs/SAFETY_BOUNDARIES.md). Idempotent — recomputes deterministic labels from
-    persisted rows, so repeated or restarted passes converge to the same
-    values. Restart-safe — a killed pass persists nothing beyond the bounded
-    transaction `run_once` already uses. Measurement only, never advice."""
+    observation unit, and no trade-execution capability of any kind. The
+    canonical boundary vocabulary for this lane is TAPE_NOTE, which is carried
+    in the `note` field of EVERY result this function returns, including the
+    disabled and refused ones — see docs/SAFETY_BOUNDARIES.md.
+
+    Honest limits, stated because overclaiming here has bitten this repo before:
+
+    * Labels are idempotent — reconciliation recomputes deterministic labels
+      from persisted rows, updating the outcome row in place. The pass is NOT
+      row-idempotent: `_assemble_pass` APPENDS one lifecycle snapshot and one
+      actor observation per token considered, on every pass, and neither table
+      is covered by `retention.py`. Budget roughly
+      `2 x tokens_considered` permanently retained rows per pass.
+    * Restart-safe in the sense that a killed pass persists nothing beyond the
+      bounded transaction `run_once` already uses.
+    * The gate is honest about being bypassed: `force` and `dry_run` both run a
+      pass while the flag is off, and the result says which.
+
+    Measurement only, never advice."""
     s = settings if settings is not None else get_settings()
     started = _now()
     enabled = bool(getattr(s, "enable_crypto_tape_reconciler", False))
+    bypass = "force" if force else ("dry_run" if dry_run else None)
     if not (enabled or force or dry_run):
         return {
             "status": "disabled",
@@ -1245,6 +1363,7 @@ def run_scheduled_reconciliation(
             "tokens_considered": 0,
             "outcomes_updated": 0,
             "flag": "enable_crypto_tape_reconciler",
+            "gate_bypassed": None,
             "duration_ms": 0,
         }
 
@@ -1252,37 +1371,97 @@ def run_scheduled_reconciliation(
         getattr(s, "crypto_tape_reconciler_window_hours", 48)
     )
     cap = limit if limit is not None else int(
-        getattr(s, "crypto_tape_reconciler_limit", 1000)
+        getattr(s, "crypto_tape_reconciler_limit", 2000)
     )
-    # The window must outlast the longest horizon's closing edge, or a 24h
-    # outcome can be pruned out of the selection set before it ever matures.
-    closing_edge_hours = int(max(m for _, m in HORIZONS) * (1 + HORIZON_TOLERANCE) / 60)
-    if hours < closing_edge_hours:
+
+    def _refused(status: str, error: str) -> dict:
         return {
-            "status": "invalid_window",
+            "status": status,
             "note": TAPE_NOTE,
             "mode": "scheduled_reconciliation",
             "external_calls": 0,
             "tokens_considered": 0,
             "outcomes_updated": 0,
-            "error": (
-                f"window {hours}h is shorter than the longest horizon closing "
-                f"edge {closing_edge_hours}h; matured outcomes would be missed"
-            ),
+            "gate_bypassed": bypass,
+            "error": error,
             "duration_ms": max(0, int((_now() - started).total_seconds() * 1000)),
         }
 
+    if cap < 1:
+        # SQLite treats LIMIT -1 as "no limit", so an unvalidated cap is an
+        # unbounded pass wearing a bound's clothing.
+        return _refused("invalid_limit", f"limit {cap} must be >= 1")
+
+    # The window must outlast the longest horizon's closing edge PLUS one
+    # scheduling interval, or a token can mature and fall out of the window
+    # between two passes without ever being reconciled.
+    closing_edge_hours = int(max(m for _, m in HORIZONS) * (1 + HORIZON_TOLERANCE) / 60)
+    required_hours = closing_edge_hours + RECONCILER_CADENCE_HOURS
+    if hours < required_hours:
+        return _refused(
+            "invalid_window",
+            f"window {hours}h is shorter than the longest horizon closing edge "
+            f"{closing_edge_hours}h plus one {RECONCILER_CADENCE_HOURS}h "
+            f"scheduling interval; matured outcomes would be missed",
+        )
+
+    if not dry_run and _reconciliation_should_abort(session):
+        return _refused(
+            "marketops_degraded",
+            "latest MarketOps run errored; not adding write pressure",
+        )
+
     rec = recorder or CryptoLifecycleTapeRecorder()
-    summary = rec.run_once(session, limit=cap, hours=hours, dry_run=dry_run)
+    try:
+        summary = rec.run_once(
+            session, limit=cap, hours=hours, dry_run=dry_run,
+            oldest_first=True,
+            include_backlog=True,
+            run_config_extra={
+                "mode": "scheduled_reconciliation",
+                "forced": bool(force),
+            },
+        )
+    except Exception as exc:
+        # A poisoned transaction must not leak into the caller's session, and a
+        # locked database is an expected operational condition on this host,
+        # not a crash — the manual path already treats it that way.
+        try:
+            session.rollback()
+        except Exception:  # pragma: no cover - defensive
+            pass
+        if _is_db_locked(exc):
+            return _refused("db_locked", "database is locked; pass abandoned")
+        raise
+
     summary.update({
         "status": "dry_run" if dry_run else "ok",
         "mode": "scheduled_reconciliation",
         "external_calls": 0,
         "window_hours": hours,
         "selection_limit": cap,
+        "gate_bypassed": bypass,
         "duration_ms": max(0, int((_now() - started).total_seconds() * 1000)),
     })
+    if summary.get("truncated"):
+        # Loud, not silent: this is the exact failure this milestone exists to
+        # remove, so it must be visible in the result AND in the log.
+        summary["status"] = "truncated"
+        summary["error"] = (
+            f"window holds {summary['universe_size']} tokens plus "
+            f"{summary['backlog_size']} aged-out unreconciled, but the limit is "
+            f"{cap}; {summary['tokens_omitted']} were not reconciled. Raise "
+            f"--limit (or crypto_tape_reconciler_limit) to cover the window."
+        )
+        logger.warning("crypto reconciliation truncated: %s", summary["error"])
     return summary
+
+
+def _reconciliation_should_abort(session: Session) -> bool:
+    """Do not add write pressure while MarketOps is already unhealthy. Mirrors
+    the manual session path's abort, which the scheduled path previously
+    lacked — the scheduled path must not be less careful than the manual one."""
+    return _marketops_degraded(session)
 
 
 async def run_tape_session(

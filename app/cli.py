@@ -2871,9 +2871,12 @@ async def crypto_tape_reconcile(
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        # Deliberately NO run_migrations() here. A dark, default-OFF timer must
+        # not apply Alembic to whatever DATABASE_URL points at, unattended,
+        # every few hours and outside the deploy runbook. Same precedent as the
+        # read-only report commands in this file.
+        from app.db import get_sessionmaker
 
-        run_migrations()
         session = get_sessionmaker()()
     try:
         r = run_scheduled_reconciliation(
@@ -2886,24 +2889,36 @@ async def crypto_tape_reconcile(
                 f"(flag {r['flag']} is off)"
             )
             return 0
-        if r["status"] == "invalid_window":
-            print(f"status=invalid_window  external_calls=0  error={r['error']}")
-            return 0
+        if r["status"] in ("invalid_window", "invalid_limit", "marketops_degraded",
+                           "db_locked"):
+            # Non-zero: a unit that reconciles nothing must never look healthy.
+            print(f"status={r['status']}  external_calls=0  error={r['error']}")
+            return -1
         print(
             f"status={r['status']}  external_calls={r['external_calls']}  "
             f"window={r['window_hours']}h  limit={r['selection_limit']}  "
+            f"gate_bypassed={r.get('gate_bypassed')}  "
             f"duration_ms={r['duration_ms']}"
         )
         print(
             f"tokens_considered={r['tokens_considered']}  "
+            f"universe_size={r.get('universe_size')}  "
+            f"truncated={r.get('truncated')}  "
+            f"omitted={r.get('tokens_omitted')}"
+        )
+        print(
             f"outcomes_updated={r.get('outcomes_updated')}  "
-            f"snapshots={r.get('snapshots_created')}"
+            f"snapshots={r.get('snapshots_created')}  "
+            f"actor_observations={r.get('actor_observations_created')}"
         )
         if r.get("survival_label_mix"):
             print(
                 "survival labels (true counts): "
                 + ", ".join(f"{k}={v}" for k, v in r["survival_label_mix"].items())
             )
+        if r["status"] == "truncated":
+            print(f"WARNING: {r['error']}")
+            return -1
         return r["tokens_considered"]
     finally:
         if owns_session:

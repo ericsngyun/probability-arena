@@ -109,12 +109,41 @@ circuit breaker). To re-tune, edit the `SOLANA_TRACKER_*` budget keys in `.env`.
 Cost note is accounting/ops metadata only — no EV/trade/sizing/orders/wallets/
 signing/swaps/execution.
 
-Crypto Arena (CRYPTO-001) has **no service/timer** — validate with manual passes only:
-`crypto-scan-once --limit 25` → `crypto-report` → `crypto-signals-recent`. The
-migration (`0014`) applies on the first command. `ENABLE_CRYPTO_SCOUT` stays
-false (it only reserves future loop/timer use); a crypto timer would be its own
-deliberate rollout step in a later milestone. Read-only DEX Screener GETs; no
-wallets/swaps/execution exist anywhere.
+Crypto Arena (CRYPTO-001) discovery has **no service/timer** — validate with
+manual passes only: `crypto-scan-once --limit 25` → `crypto-report` →
+`crypto-signals-recent`. The migration (`0014`) applies on the first command.
+`ENABLE_CRYPTO_SCOUT` stays false (it only reserves future loop/timer use).
+Read-only DEX Screener GETs; no wallets/swaps/execution exist anywhere.
+
+**CRYPTO-COVERAGE-REPAIR-001 — the deliberate rollout step this doc anticipated.**
+There is now exactly one crypto timer:
+`probability-arena-crypto-reconcile.timer` (03/09/15/21:20 UTC), running
+`crypto-tape-reconcile`. It is **provider-free** — zero external calls, zero
+provider budget — and exists because survival horizons never matured: production
+MarketOps only runs the exact-cycle anchor feed, which by construction sees each
+token once at age ~0 when no horizon is due, while the windowed reconciler that
+would revisit matured tokens was CLI-only and unscheduled.
+
+- Gate: `ENABLE_CRYPTO_TAPE_RECONCILER` (default **false**). While false the
+  command reconciles nothing, applies no migration, and writes nothing.
+- The unit deliberately does **not** run Alembic; deploy migrations through the
+  normal runbook step, never through this timer.
+- Install: `cp infra/systemd/user/probability-arena-crypto-reconcile.{service,timer}
+  ~/.config/systemd/user/ && systemctl --user daemon-reload && systemctl --user
+  enable --now probability-arena-crypto-reconcile.timer`
+- Verify dark: `journalctl --user -u probability-arena-crypto-reconcile.service
+  -n 20 --no-pager` should show `status=disabled  external_calls=0  no-op`.
+- It is a **SQLite writer**: one write transaction for the whole pass (~105s for
+  819 tokens measured on EVO-X2, dry). It runs `Nice=10 IOWeight=20` and aborts
+  when the latest MarketOps run errored. Exit code is non-zero on a refused,
+  truncated, or locked pass — a green unit that reconciled nothing is exactly
+  the failure this milestone removes.
+- Watch `status=truncated` in the journal: it means the window plus backlog
+  exceeded `CRYPTO_TAPE_RECONCILER_LIMIT` and work was dropped. Raise the limit.
+- Row cost: each pass appends ~2 rows per token considered (a lifecycle snapshot
+  and an actor observation). Neither table is pruned by `retention.py`. Budget
+  roughly 2 MB/day at the shipped defaults and revisit retention before raising
+  the cadence.
 
 **Provider gate (CRYPTO-DISCOVERY-PROVIDER-GATE-001).** `crypto-scan-once` and
 `crypto-risk-assess` are now **fail-closed**: a bare command prints a zero-call

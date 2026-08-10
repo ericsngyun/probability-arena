@@ -268,8 +268,23 @@ class TestSafety:
     def test_no_timer_or_daemon_vocabulary_in_session_code(self):
         # the session helper must stay a bounded one-invocation tool
         src = (REPO / "app" / "services" / "crypto_tape.py").read_text()
-        for term in ("systemd", "while True", "daemonize"):
+        # Autonomy vocabulary stays banned module-wide: nothing in this module
+        # may loop forever or daemonize, scheduled or not.
+        for term in ("while True", "daemonize"):
             assert term not in src
+        # "systemd" was also banned module-wide until CRYPTO-COVERAGE-REPAIR-001,
+        # which deliberately introduces the first crypto timer (a provider-free
+        # reconciler; see docs/milestones/CRYPTO-COVERAGE-REPAIR-001.md and the
+        # runbook entry). The guarantee this test actually protects is that the
+        # SESSION helper remains a bounded, manually-invoked tool, so assert
+        # that directly instead of grepping the whole file.
+        import inspect
+
+        from app.services.crypto_tape import run_tape_session
+
+        session_src = inspect.getsource(run_tape_session)
+        for term in ("systemd", "while True", "daemonize"):
+            assert term not in session_src
 
     async def test_no_network_even_with_broken_httpx(self, session, monkeypatch):
         import httpx

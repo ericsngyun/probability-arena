@@ -166,6 +166,7 @@ KEY_FEATURE_FLAGS = (
     "enable_marketops_autopilot",
     "marketops_include_candidate_readiness",
     "marketops_include_crypto_tape_anchor_feed",
+    "enable_crypto_tape_reconciler",
     "marketops_include_backup_freshness_alert",
     "marketops_include_edge_precheck",
     "enable_edge_precheck",

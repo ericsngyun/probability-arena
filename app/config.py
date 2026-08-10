@@ -361,14 +361,25 @@ class Settings(BaseSettings):
     # bounded periodic pass that revisits already-persisted tokens whose
     # horizons have since matured. Zero external calls, zero provider budget,
     # no discovery scan, no cohort, no arming, no execution semantics of any
-    # kind. Off = a complete no-op.
+    # kind. Off = the CLI performs no reconciliation, no migration and no
+    # write; it still opens the database to construct a session, so it is a
+    # no-op in effect but not literally a process that never touches the file.
+    # NOTE the pass is label-idempotent but NOT row-idempotent: each pass
+    # appends ~2 rows per token considered (a lifecycle snapshot and an actor
+    # observation), and neither table is pruned by retention.py.
     enable_crypto_tape_reconciler: bool = False
     # Steady-state window. Must exceed the longest horizon's closing edge
-    # (24h * (1 + HORIZON_TOLERANCE) = 36h) so every maturing horizon is seen
-    # at least once before it is final; kept well under crypto_retention_days
-    # so bounded DB work, not evidence expiry, is the binding constraint.
+    # (24h * (1 + HORIZON_TOLERANCE) = 36h) PLUS one scheduling interval, or a
+    # token can mature and leave the window between two passes; the guard in
+    # run_scheduled_reconciliation enforces this and refuses otherwise. Kept
+    # well under crypto_retention_days so bounded DB work, not evidence expiry,
+    # is the binding constraint.
     crypto_tape_reconciler_window_hours: int = 48
-    crypto_tape_reconciler_limit: int = 1000
+    # Must cover the whole window, or the pass truncates. Truncation is
+    # reported loudly (status=truncated, non-zero exit) rather than silently,
+    # and selection is oldest-first so any truncation drops the UNMATURED tail
+    # rather than the matured tokens the pass exists to reconcile.
+    crypto_tape_reconciler_limit: int = 2000
 
     # Crypto risk engine (CRYPTO-002) — read-only risk INTELLIGENCE only.
     # A risk score flags danger for avoidance/review; it is never a trade

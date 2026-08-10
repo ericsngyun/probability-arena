@@ -23,7 +23,13 @@ Description=Run Probability Arena crypto survival reconciliation every 6 hours
 [Timer]
 OnCalendar=*-*-* 03,09,15,21:20:00
 RandomizedDelaySec=300
-Persistent=true
+# Persistent=false deliberately: a missed pass is harmless (the window carries
+# 12h of slack past the 36h closing edge, and state-driven backlog selection
+# recovers anything older), whereas a catch-up firing lands in the boot storm
+# alongside marketops OnBootSec=2min, meme-news 3min and tick-aggregation 5min,
+# with the watcher already writing. A 37s write-lock hold in that window is the
+# worst possible landing.
+Persistent=false
 Unit=probability-arena-crypto-reconcile.service
 
 [Install]

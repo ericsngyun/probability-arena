@@ -25,6 +25,7 @@ Rollout discipline: one flag at a time, per `docs/EVO_X2_RUNBOOK.md`.
 | `ENABLE_WATCHER_RETENTION` | false | Watcher loop prunes at most once/day (never per-iteration) |
 | `ENABLE_PIPELINE_RETENTION` | false | Appends a `retention` stage to baseline runs |
 | `ENABLE_CRYPTO_SCOUT` | false | Reserved for crypto loop/timer use (none exists in CRYPTO-001); manual `crypto-scan-once` is always allowed |
+| `ENABLE_CRYPTO_TAPE_RECONCILER` | false | CRYPTO-COVERAGE-REPAIR-001: gates the scheduled provider-free survival reconciler (6h timer). Zero external calls, no provider budget. Off = no reconciliation, no migration, no write |
 | `ENABLE_CRYPTO_RISK_PROVIDER` | false | Token risk assessments + risk signals (holder_risk/rug_risk/suspicious_supply_control); provider `CRYPTO_RISK_PROVIDER=mock` is the only CRYPTO-001 implementation |
 | `ENABLE_HELIUS` | false | **Reserved only** — no Helius adapter exists in CRYPTO-001 |
 | `ENABLE_MARKETOPS_AUTOPILOT` | false | The `marketops-loop` / timer only; `marketops-run-once` is always allowed manually. Read-only coordination — cannot trade, paper trade, calculate EV, or move money |

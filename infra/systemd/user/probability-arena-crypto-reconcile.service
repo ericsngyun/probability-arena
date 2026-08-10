@@ -4,12 +4,14 @@
 # ONLY our own lifecycle/outcome rows. Zero external calls, zero provider
 # budget, no discovery scan, no cohort, no arming, no wallets, no keys, no
 # swaps, no signing, no orders, no execution of any kind.
-# A complete no-op while enable_crypto_tape_reconciler is off.
+# A complete no-op while ENABLE_CRYPTO_TAPE_RECONCILER is false (set in .env).
 # NOT auto-installed. See the .timer file for install commands.
 
 [Unit]
+# Deliberately no After=network-online.target: this unit makes zero external
+# calls, and declaring a network dependency would invite a future reader to
+# believe otherwise.
 Description=Probability Arena crypto survival reconciliation (provider-free)
-After=network-online.target
 
 [Service]
 Type=oneshot
@@ -17,7 +19,17 @@ WorkingDirectory=%h/projects/probability-arena
 EnvironmentFile=%h/projects/probability-arena/.env
 ExecStart=%h/projects/probability-arena/.venv/bin/python -m app.cli crypto-tape-reconcile
 NoNewPrivileges=true
-TimeoutStartSec=30min
+# The pass holds a SQLite write transaction while it runs, on a host with a
+# 5-minute MarketOps timer, a continuously-writing watcher, and a documented
+# lock-contention history. Yield CPU and IO so reconciliation never wins a
+# scheduling contest against the live lanes.
+Nice=10
+CPUWeight=20
+IOWeight=20
+# NOT a licence to run long. Because the pass currently commits once at the end,
+# its wall clock IS its write-lock-hold clock, so this value is the maximum time
+# the watcher and MarketOps could be locked out. Kept tight for that reason.
+TimeoutStartSec=10min
 
 [Install]
 WantedBy=default.target

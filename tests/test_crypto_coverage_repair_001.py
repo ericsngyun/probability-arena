@@ -191,6 +191,12 @@ def test_limit_smaller_than_the_universe_reports_what_it_dropped(session):
     r = run_scheduled_reconciliation(session, settings=_settings(), limit=3)
     assert r["tokens_considered"] == 3
     assert r["selection_limit"] == 3
+    # the docstring's actual claim: the pass must NAME what it dropped. Before
+    # remediation the result dict had no such field and this test passed anyway.
+    assert r["universe_size"] == 10
+    assert r["tokens_omitted"] == 7
+    assert r["truncated"] is True
+    assert r["status"] == "truncated"
 
 
 # --- observation coverage vs reconciliation coverage ------------------------
@@ -263,7 +269,10 @@ def test_missing_initial_liquidity_is_insufficient_evidence(session):
 
     run_scheduled_reconciliation(session, settings=_settings())
     o = _outcome(session, "tok-noliq")
-    assert o is None or o.survived_24h is None
+    # not `o is None or ...`: that disjunct passes when the token was never
+    # selected, which would prove nothing about evidence sufficiency.
+    assert o is not None, "token must be selected for this test to mean anything"
+    assert o.survived_24h is None
 
 
 def test_immature_horizon_stays_null(session):
@@ -424,3 +433,230 @@ def test_every_horizon_matures_when_its_evidence_exists(session, label, minutes)
     o = _outcome(session, addr)
     assert o is not None
     assert getattr(o, f"survived_{label}") is True
+
+
+# --- review remediation: silent truncation, gate honesty, bounds ------------
+
+def test_truncation_is_loud_and_drops_the_unmatured_tail(session):
+    """The load-bearing regression. Newest-first truncation drops exactly the
+    MATURED tokens — the ones whose horizons have closed and whose evidence is
+    about to be pruned — while keeping fresh tokens that have no due horizon at
+    all. A review proved 0/5 matured tokens reconciled with status=ok and no
+    truncation signal anywhere in the result."""
+    for i in range(5):
+        born = _mint(session, f"tok-matured-{i}", born_hours_ago=40, liquidity=10_000.0)
+        _tick_at(session, f"tok-matured-{i}", born + timedelta(hours=24), liquidity=9_000.0)
+    for i in range(50):
+        _mint(session, f"tok-fresh-{i}", born_hours_ago=0.1)
+
+    r = run_scheduled_reconciliation(session, settings=_settings(), limit=10)
+
+    assert r["status"] == "truncated", "a capped pass must not report plain ok"
+    assert r["universe_size"] == 55
+    assert r["tokens_omitted"] == 45
+    assert "not reconciled" in r["error"]
+    # and the matured tokens are the ones that survived the cap
+    matured = [_outcome(session, f"tok-matured-{i}") for i in range(5)]
+    assert all(o is not None and o.survived_24h is True for o in matured)
+
+
+def test_untruncated_pass_reports_the_full_universe(session):
+    _mint(session, "tok-full", born_hours_ago=40)
+    r = run_scheduled_reconciliation(session, settings=_settings())
+    assert r["truncated"] is False
+    assert r["tokens_omitted"] == 0
+    assert r["universe_size"] == r["tokens_considered"] == 1
+
+
+def test_negative_limit_is_refused_not_treated_as_unbounded(session):
+    """SQLite reads LIMIT -1 as 'no limit', so an unvalidated cap is an
+    unbounded pass wearing a bound's clothing."""
+    for i in range(5):
+        _mint(session, f"tok-neg-{i}", born_hours_ago=40)
+    r = run_scheduled_reconciliation(session, settings=_settings(), limit=-1)
+    assert r["status"] == "invalid_limit"
+    assert r["tokens_considered"] == 0
+    assert _outcome(session, "tok-neg-0") is None
+
+
+def test_window_guard_accounts_for_the_scheduling_interval(session):
+    """36h clears the closing edge but not the edge plus one 6h interval: a
+    token born 37h ago matures and leaves the window between two passes."""
+    from app.services.crypto_tape import RECONCILER_CADENCE_HOURS
+
+    r = run_scheduled_reconciliation(
+        session, settings=_settings(crypto_tape_reconciler_window_hours=36)
+    )
+    assert r["status"] == "invalid_window"
+    assert str(RECONCILER_CADENCE_HOURS) in r["error"]
+
+
+def test_default_window_clears_edge_plus_cadence():
+    from app.services.crypto_tape import RECONCILER_CADENCE_HOURS
+
+    s = Settings()
+    edge = max(m for _, m in HORIZONS) * (1 + HORIZON_TOLERANCE) / 60
+    assert s.crypto_tape_reconciler_window_hours >= edge + RECONCILER_CADENCE_HOURS
+
+
+def test_gate_bypass_is_recorded_in_the_result(session):
+    _mint(session, "tok-bypass", born_hours_ago=40)
+    off = _settings(enable_crypto_tape_reconciler=False)
+
+    assert run_scheduled_reconciliation(session, settings=off, force=True)[
+        "gate_bypassed"] == "force"
+    assert run_scheduled_reconciliation(session, settings=off, dry_run=True)[
+        "gate_bypassed"] == "dry_run"
+    assert run_scheduled_reconciliation(session, settings=_settings())[
+        "gate_bypassed"] is None
+
+
+def test_forced_pass_is_auditable_in_the_persisted_run_config(session):
+    """A gate-bypassing pass must be distinguishable from a scheduled one in
+    the audit trail, or the gate is unenforceable after the fact."""
+    from app.models import CryptoTokenLifecycleRun
+
+    _mint(session, "tok-audit", born_hours_ago=40)
+    run_scheduled_reconciliation(
+        session, settings=_settings(enable_crypto_tape_reconciler=False), force=True
+    )
+    run = session.query(CryptoTokenLifecycleRun).order_by(
+        CryptoTokenLifecycleRun.id.desc()
+    ).first()
+    cfg = run.config or {}
+    assert cfg.get("mode") == "scheduled_reconciliation"
+    assert cfg.get("forced") is True
+
+
+def test_pass_aborts_when_marketops_is_degraded(session):
+    """Do not add write pressure while the primary lane is already failing.
+    The manual session path already does this; the scheduled path must not be
+    less careful than the manual one it wraps."""
+    from app.models import MarketOpsRun
+
+    session.add(MarketOpsRun(status="error"))
+    session.flush()
+    _mint(session, "tok-degraded", born_hours_ago=40)
+
+    r = run_scheduled_reconciliation(session, settings=_settings())
+    assert r["status"] == "marketops_degraded"
+    assert _outcome(session, "tok-degraded") is None
+
+
+def test_makes_no_network_call_at_the_socket_layer(session, monkeypatch):
+    """Stronger than patching httpx: this catches requests, urllib, aiohttp, a
+    cached client, or a module-level singleton, because every one of them must
+    eventually reach a socket."""
+    import socket
+
+    def _boom(*a, **k):  # pragma: no cover - only runs on regression
+        raise AssertionError("reconciliation attempted a network connection")
+
+    monkeypatch.setattr(socket.socket, "connect", _boom, raising=False)
+    monkeypatch.setattr(socket, "create_connection", _boom, raising=False)
+    monkeypatch.setattr(socket, "getaddrinfo", _boom, raising=False)
+
+    born = _mint(session, "tok-socket", born_hours_ago=40, liquidity=10_000.0)
+    _tick_at(session, "tok-socket", born + timedelta(hours=24), liquidity=9_000.0)
+
+    r = run_scheduled_reconciliation(session, settings=_settings())
+    assert r["status"] == "ok"
+    assert r["external_calls"] == 0
+    assert _outcome(session, "tok-socket").survived_24h is True
+
+
+def test_pass_is_label_idempotent_but_appends_lifecycle_rows(session):
+    """Pin the honest limit rather than the comfortable claim: labels converge,
+    but each pass appends a snapshot and an actor observation per token, and
+    neither table is pruned by retention.py. If this ever becomes truly
+    row-idempotent, this test should be updated deliberately, not silently."""
+    from app.models import (
+        CryptoTokenActorObservation,
+        CryptoTokenLifecycleSnapshot,
+    )
+
+    born = _mint(session, "tok-rows", born_hours_ago=40, liquidity=10_000.0)
+    _tick_at(session, "tok-rows", born + timedelta(hours=24), liquidity=9_000.0)
+    s = _settings()
+
+    run_scheduled_reconciliation(session, settings=s)
+    snaps1 = session.query(CryptoTokenLifecycleSnapshot).count()
+    actors1 = session.query(CryptoTokenActorObservation).count()
+    label1 = _outcome(session, "tok-rows").survived_24h
+
+    run_scheduled_reconciliation(session, settings=s)
+    snaps2 = session.query(CryptoTokenLifecycleSnapshot).count()
+    actors2 = session.query(CryptoTokenActorObservation).count()
+
+    assert _outcome(session, "tok-rows").survived_24h == label1  # labels converge
+    assert snaps2 == snaps1 * 2 and actors2 == actors1 * 2  # rows accumulate
+    assert session.query(CryptoTokenSurvivalOutcome).count() == 1
+
+
+def test_manual_path_selection_order_is_unchanged(session):
+    """The oldest-first ordering is opt-in for the scheduled reconciler only;
+    the existing manual path must keep its newest-first behaviour."""
+    for i, age in enumerate((50, 40, 30, 20, 10)):
+        _mint(session, f"tok-order-{i}", born_hours_ago=age)
+
+    rec = CryptoLifecycleTapeRecorder()
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=200)
+    newest = rec._universe(session, 2, cutoff)
+    oldest = rec._universe(session, 2, cutoff, oldest_first=True)
+
+    assert [t.token_address for t in newest] == ["tok-order-4", "tok-order-3"]
+    assert [t.token_address for t in oldest] == ["tok-order-0", "tok-order-1"]
+
+
+# --- state-driven selection: missed passes and the existing backlog ---------
+
+def test_matured_token_aged_out_of_the_window_is_still_reconciled(session):
+    """Window-driven selection alone carries only (window - closing_edge) of
+    slack — 12h at the shipped defaults. Two missed passes would push a cohort
+    out of the window permanently, and the pre-existing backlog would never be
+    reconciled at first enablement. Selection must be driven by outcome STATE,
+    not only by recency."""
+    born = _mint(session, "tok-aged", born_hours_ago=60, liquidity=10_000.0)
+    _tick_at(session, "tok-aged", born + timedelta(hours=24), liquidity=9_000.0)
+    # give it an open (non-final) outcome row, as a real aged token would have
+    session.add(CryptoTokenSurvivalOutcome(
+        birth_event_id=1, chain=CHAIN, token_address="tok-aged", final=False,
+    ))
+    session.flush()
+
+    r = run_scheduled_reconciliation(session, settings=_settings())
+    assert r["backlog_size"] >= 1
+    assert r["tokens_considered"] >= 1
+    o = _outcome(session, "tok-aged")
+    assert o is not None and o.survived_24h is True
+
+
+def test_backlog_is_reported_even_when_it_cannot_all_be_worked(session):
+    """A shortfall must be visible, not inferred from a silent 'ok'."""
+    for i in range(6):
+        born = _mint(session, f"tok-bk-{i}", born_hours_ago=60 + i, liquidity=10_000.0)
+        _tick_at(session, f"tok-bk-{i}", born + timedelta(hours=24), liquidity=9_000.0)
+        session.add(CryptoTokenSurvivalOutcome(
+            birth_event_id=100 + i, chain=CHAIN,
+            token_address=f"tok-bk-{i}", final=False,
+        ))
+    session.flush()
+
+    r = run_scheduled_reconciliation(session, settings=_settings(), limit=2)
+    assert r["backlog_size"] == 6
+    assert r["work_available"] == 6
+    assert r["status"] == "truncated"
+    assert r["tokens_omitted"] == 4
+
+
+def test_final_outcomes_are_not_re_selected_as_backlog(session):
+    """Settled work must not be redone every six hours forever."""
+    born = _mint(session, "tok-final", born_hours_ago=60, liquidity=10_000.0)
+    _tick_at(session, "tok-final", born + timedelta(hours=24), liquidity=9_000.0)
+    session.add(CryptoTokenSurvivalOutcome(
+        birth_event_id=900, chain=CHAIN, token_address="tok-final", final=True,
+    ))
+    session.flush()
+
+    r = run_scheduled_reconciliation(session, settings=_settings())
+    assert r["backlog_size"] == 0
