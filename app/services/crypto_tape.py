@@ -21,11 +21,18 @@ persists nothing; a real run persists ONLY lifecycle tape rows — never
 signals, never MarketOps state.
 """
 
+import fcntl
 import logging
+import os
+import tempfile
+import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from sqlalchemy import func, select
+from sqlalchemy.engine import make_url
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
@@ -103,9 +110,55 @@ LAUNCHPAD_DEXES = frozenset({"pumpfun", "moonshot", "launchlab"})
 
 STATUS_OK = "ok"
 STATUS_DRY_RUN = "dry_run"
+# CRYPTO-COVERAGE-REPAIR-001 write-coordination hardening — statuses a caller
+# must treat as "not fully done", distinct from ok/dry_run:
+STATUS_PARTIAL = "partial"                       # stopped early (deadline or
+    # exhausted lock retries) but committed whatever batches it finished;
+    # restart-safe, the next pass continues via oldest-first + backlog.
+STATUS_SKIPPED_OVERLAP = "skipped_overlap"        # another pass already holds
+    # the per-chain overlap lock; nothing was read or written this call.
+STATUS_SKIPPED_CONTENTION = "skipped_contention"  # the very first write of the
+    # pass (the run row) never got a lock even after the full retry ladder;
+    # nothing was written.
 
 BONDING_LAUNCHPAD = "launchpad_curve"
 BONDING_AMM = "amm_pool"
+
+# CRYPTO-TAPE-CADENCE-002: SQLite write-lock resilience. On a shared host the
+# baseline/watcher/MarketOps writers can hold the write lock past the DB busy
+# timeout, so a capture's run-row INSERT raises "database is locked". A bounded
+# app-level retry (mirrors the OPS-013 tick-aggregation idiom) recovers from
+# transient contention; a persistent lock aborts loudly and CLEANLY (session
+# rolled back first) so the summary path never hits PendingRollbackError.
+# Defined here (not just near run_tape_session, its original home) because
+# CRYPTO-COVERAGE-REPAIR-001's per-batch commit retry in `_assemble_pass` and
+# `run_once` need it as a default argument value, which is evaluated at
+# `def` time and must already exist.
+DB_LOCKED_MAX_ATTEMPTS = 3       # total tries per capture (1 + 2 retries)
+DB_LOCKED_RETRY_SECONDS = 3.0    # short wait between attempts
+ABORT_DB_LOCKED = "database_locked"
+
+# CRYPTO-COVERAGE-REPAIR-001 B1/B3 — measured blocker: `_assemble_pass` used to
+# be one write transaction for the whole pass (36.9s measured at production
+# density, blocking a competing writer 97% of a 30s busy_timeout). Bounding
+# each committed transaction to a small, fixed batch of tokens keeps the write
+# lock held for a small fraction of a second at a time instead of for the
+# whole pass. 25 is the shipped default from the B1 profile (see the
+# CRYPTO-COVERAGE-REPAIR-001 debugging session): at ~51 ticks/28 discovery
+# events/23 risk assessments/2 pairs per token, a 25-token batch's write phase
+# measured well under one second.
+RECONCILE_BATCH_SIZE = 25
+# Internal wall-clock deadline for one `run_once` call. None = unbounded
+# (existing manual-path behaviour, unchanged). The scheduled path sets this so
+# one pass can never run indefinitely; remaining tokens simply stay backlog
+# for the next scheduled pass (oldest-first + state-driven selection already
+# guarantee they are not starved — see `unreconciled_backlog`).
+RECONCILE_MAX_DURATION_SECONDS = 20.0
+# Overlap guard: a coordination-only flock file, one per chain, living next to
+# the sqlite file itself (or the system temp dir for non-sqlite/in-memory
+# configurations). Never touches the database's own locking; kernel-released
+# if the process dies, so a crash can never leave a stale lock.
+RECONCILE_LOCK_FILENAME = ".crypto-tape-reconcile-{chain}.lock"
 
 
 def _now() -> datetime:
@@ -124,16 +177,69 @@ def _ratio(numerator: float | None, denominator: float | None) -> float | None:
     return round(numerator / denominator, 4)
 
 
+def _resolve_lock_dir(settings: Settings | None) -> Path:
+    """Host-local directory to anchor the reconciliation overlap lock (B4).
+    Prefers the directory the sqlite file itself lives in — co-located,
+    host-scoped, and stable across process restarts. Falls back to the system
+    temp dir for non-sqlite backends and the in-memory `sqlite://` tests use
+    (no file to co-locate with)."""
+    s = settings or get_settings()
+    try:
+        url = make_url(s.database_url)
+        if url.get_backend_name() == "sqlite" and url.database:
+            return Path(url.database).resolve().parent
+    except Exception:  # pragma: no cover - defensive (malformed URL, etc.)
+        pass
+    return Path(tempfile.gettempdir())
+
+
+@contextmanager
+def _reconcile_overlap_lock(lock_dir: Path, chain: str):
+    """Bounded, non-blocking, kernel-held (flock) overlap guard (B4) so the
+    scheduled reconciler, a manual tape session, and a second concurrent
+    instance can never mutate the same chain's reconciliation window at once.
+
+    A coordination-only file — this never touches the database's own locking,
+    and it is orthogonal to SQLite's busy_timeout/retry ladder (B5), which
+    guards against unrelated writers (MarketOps, the watcher, ...). The kernel
+    releases an flock automatically when the holding process dies, so a
+    crashed pass can never leave a stale lock behind (no TOCTOU PID file, no
+    unbounded wait). Yields True when acquired, False when another pass
+    already holds it. Mirrors `app.services.backup._backup_lock`."""
+    try:
+        lock_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:  # pragma: no cover - defensive
+        pass
+    lock_path = lock_dir / RECONCILE_LOCK_FILENAME.format(chain=chain)
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except OSError:  # pragma: no cover - defensive
+                pass
+    finally:
+        os.close(fd)
+
+
 @dataclass
 class CryptoTapeConfig:
     chain: str = "solana"
     default_limit: int = 25
     default_window_hours: int = 48
+    lock_dir: Path | None = None  # resolved lazily from settings if None
 
     @classmethod
     def from_settings(cls, settings: Settings | None = None) -> "CryptoTapeConfig":
         s = settings or get_settings()
-        return cls(chain=s.crypto_chain)
+        return cls(chain=s.crypto_chain, lock_dir=_resolve_lock_dir(s))
 
 
 @dataclass
@@ -719,7 +825,45 @@ class CryptoLifecycleTapeRecorder:
         oldest_first: bool = False,
         include_backlog: bool = False,
         run_config_extra: dict | None = None,
+        skip_redundant_when_final: bool = False,
+        batch_size: int | None = None,
+        max_duration_seconds: float | None = None,
+        max_lock_attempts: int = DB_LOCKED_MAX_ATTEMPTS,
+        lock_retry_seconds: float = DB_LOCKED_RETRY_SECONDS,
+        use_overlap_lock: bool = True,
+        sleeper=time.sleep,
     ) -> dict:
+        """One bounded reconciliation pass.
+
+        CRYPTO-COVERAGE-REPAIR-001 write-coordination parameters (all default
+        to the pre-existing manual-path behaviour so nothing changes unless a
+        caller opts in — `run_scheduled_reconciliation` is the only caller
+        that does):
+
+        * `skip_redundant_when_final` (B2) — once a token's outcome is
+          already final, its window is closed and re-appending a lifecycle
+          snapshot/actor-observation row teaches nothing new; skip them.
+        * `batch_size` (B3) — commit in bounded batches of this many tokens
+          instead of one commit for the whole pass, so the write lock is held
+          for a small fraction of a second at a time. None keeps the old
+          single-commit behaviour (needed by dry-run and by tests asserting
+          nothing is ever partially persisted).
+        * `max_duration_seconds` (B6) — internal wall-clock deadline; the pass
+          stops after whichever batch is in flight when the deadline is
+          crossed and reports `stop_reason="deadline"`. None = unbounded.
+        * `max_lock_attempts` / `lock_retry_seconds` (B5) — reuses the same
+          DB_LOCKED_* retry ladder `run_tape_session` already uses, applied
+          per batch commit. Exhausting it on the very first write yields
+          `status="skipped_contention"`; exhausting it after some batches
+          already committed yields `status="partial"`,
+          `stop_reason="contention"` — the batches that already committed are
+          real, durable work, not corruption.
+        * `use_overlap_lock` (B4) — a non-blocking, per-chain flock guard so
+          two reconciliation passes (scheduled, manual, or a second instance)
+          can never mutate the same window concurrently. Disabled only by
+          tests exercising `_assemble_pass` directly under a lock they hold
+          themselves.
+        """
         started = _now()
         limit = limit if limit is not None else self.config.default_limit
         hours = hours if hours is not None else self.config.default_window_hours
@@ -745,13 +889,21 @@ class CryptoLifecycleTapeRecorder:
             session, tokens, started=started, dry_run=dry_run,
             window_hours=hours,
             run_config=config,
+            skip_redundant_when_final=skip_redundant_when_final,
+            batch_size=batch_size,
+            max_duration_seconds=max_duration_seconds,
+            max_lock_attempts=max_lock_attempts,
+            lock_retry_seconds=lock_retry_seconds,
+            use_overlap_lock=use_overlap_lock,
+            sleeper=sleeper,
         )
         # A cap that silently drops work reads as "complete" to every caller.
         summary["universe_size"] = total
         summary["backlog_size"] = backlog_total
         summary["work_available"] = total + backlog_total
+        tokens_accounted = summary.get("tokens_processed", len(tokens))
         summary["truncated"] = (total + backlog_total) > len(tokens)
-        summary["tokens_omitted"] = max(0, (total + backlog_total) - len(tokens))
+        summary["tokens_omitted"] = max(0, (total + backlog_total) - tokens_accounted)
         summary.pop("_births", None)  # internal accounting, not part of the contract
         return summary
 
@@ -872,79 +1024,122 @@ class CryptoLifecycleTapeRecorder:
             outcomes_updated=summary["outcomes_updated"],
         )
 
-    def _assemble_pass(
+    def _commit_with_retry(
+        self, session: Session, prepare, max_attempts: int, retry_seconds: float,
+        sleeper=time.sleep,
+    ) -> tuple[bool, int]:
+        """CRYPTO-COVERAGE-REPAIR-001 B5 — bounded retry ladder for one commit,
+        reusing the DB_LOCKED_* constants `run_tape_session` already uses.
+        `prepare()` is called before every attempt (including the first) and
+        must (re)stage this attempt's writes via `session.add(...)` /
+        attribute assignment — required because a rolled-back SQLAlchemy
+        session EXPIRES already-persistent objects, silently discarding any
+        staged-but-uncommitted attribute change, so simply retrying
+        `session.commit()` after a rollback would commit stale/empty state.
+        Returns (committed, attempts_used); never raises for a lock error —
+        a non-lock error still propagates so the caller's normal error
+        handling (mark the run row, re-raise) applies unchanged. A bounded
+        for-loop over a small, explicit `max_attempts`, never an unbounded
+        loop — this module is audited for autonomy vocabulary (see
+        test_no_timer_or_daemon_vocabulary_in_session_code)."""
+        for attempt in range(1, max(1, max_attempts) + 1):
+            prepare()
+            try:
+                session.commit()
+                return True, attempt
+            except OperationalError as exc:
+                session.rollback()
+                if _is_db_locked(exc) and attempt < max_attempts:
+                    sleeper(retry_seconds)
+                    continue
+                if _is_db_locked(exc):
+                    return False, attempt
+                raise
+        return False, max(1, max_attempts)  # pragma: no cover - defensive
+
+    def _process_batch(
         self,
         session: Session,
-        tokens: list,
+        chunk: list,
         *,
+        run: "CryptoTokenLifecycleRun | None",
         started: datetime,
         dry_run: bool,
-        window_hours: int | None,
-        run_config: dict,
+        existing_births_snapshot: dict,
+        final_by_birth_id: dict,
+        skip_redundant_when_final: bool,
     ) -> dict:
-        hours = window_hours
-        existing_births = {
-            b.token_address: b
-            for b in session.execute(
-                select(CryptoTokenBirthEvent).where(
-                    CryptoTokenBirthEvent.chain == self.config.chain,
-                    CryptoTokenBirthEvent.token_address.in_(
-                        [t.token_address for t in tokens]
-                    ),
-                )
-            ).scalars().all()
-        } if tokens else {}
+        """Process one bounded chunk of tokens: reads (`_load_sources`),
+        object construction, and the `session.add()`/`flush()` calls this
+        chunk needs. Does NOT commit — the caller commits (with retry) once
+        per chunk. Deliberately pure with respect to the CALLER's running
+        totals: everything this chunk did is returned as a delta, not
+        mutated in place, so a rolled-back retry can call this again from
+        scratch with zero double-counting.
 
-        new_births = 0
-        snapshots = 0
-        actors = 0
-        outcomes = 0
-        coverage_summary = {
+        CRYPTO-COVERAGE-REPAIR-001 B2 write classification applied here:
+          * birth event   — REQUIRED_FOR_OUTCOME (the anchor everything else
+            hangs off); always written when new.
+          * survival outcome — REQUIRED_FOR_OUTCOME; always upserted, but a
+            row whose `final` is already True is never rewritten (pre-existing
+            behaviour, unchanged).
+          * lifecycle snapshot / actor observation — REQUIRED_FOR_AUDIT the
+            FIRST time a token is seen, DERIVED/HISTORICAL_ARTIFACT on every
+            later pass once the outcome is final (the window is closed; nothing
+            new can be learned). `skip_redundant_when_final` skips exactly
+            that redundant case; the manual path never sets it, so its
+            row-append behaviour is byte-for-byte unchanged.
+        """
+        new_births = snapshots = actors = outcomes = 0
+        snapshots_skipped = actors_skipped = 0
+        coverage_delta = {
             "tokens_with_ticks": 0,
             "tokens_with_risk": 0,
             "tokens_with_provider_backed_risk": 0,
             "tokens_with_attention": 0,
             "tokens_without_any_source": 0,
         }
-        survival_mix: dict[str, int] = {}
-        examples: list[dict] = []
+        survival_delta: dict[str, int] = {}
+        new_examples: list[dict] = []
         births_seen: list[CryptoTokenBirthEvent] = []
+        existing_births = dict(existing_births_snapshot)  # chunk-local copy
 
-        run: CryptoTokenLifecycleRun | None = None
-        if not dry_run:
-            run = CryptoTokenLifecycleRun(
-                status="running", started_at=started, window_hours=hours,
-                config=run_config,
-                created_at=started,
+        for token in chunk:
+            sources = self._load_sources(session, token, started)
+            if sources.ticks:
+                coverage_delta["tokens_with_ticks"] += 1
+            if sources.assessments:
+                coverage_delta["tokens_with_risk"] += 1
+                if any(a.provider_names for a in sources.assessments):
+                    coverage_delta["tokens_with_provider_backed_risk"] += 1
+            if sources.attention is not None:
+                coverage_delta["tokens_with_attention"] += 1
+            if not (sources.ticks or sources.assessments or sources.attention):
+                coverage_delta["tokens_without_any_source"] += 1
+
+            birth = existing_births.get(token.token_address)
+            is_new_birth = birth is None
+            if birth is None:
+                birth = self.build_birth_event(sources, started)
+                new_births += 1
+                if not dry_run:
+                    birth.run_id = run.id
+                    session.add(birth)
+                    session.flush()
+                    existing_births[token.token_address] = birth
+            births_seen.append(birth)
+
+            already_final = (
+                not is_new_birth and birth.id is not None
+                and final_by_birth_id.get(birth.id, False)
             )
-            session.add(run)
-            session.flush()
+            skip_snapshot_actor = skip_redundant_when_final and already_final
 
-        try:
-            for token in tokens:
-                sources = self._load_sources(session, token, started)
-                if sources.ticks:
-                    coverage_summary["tokens_with_ticks"] += 1
-                if sources.assessments:
-                    coverage_summary["tokens_with_risk"] += 1
-                    if any(a.provider_names for a in sources.assessments):
-                        coverage_summary["tokens_with_provider_backed_risk"] += 1
-                if sources.attention is not None:
-                    coverage_summary["tokens_with_attention"] += 1
-                if not (sources.ticks or sources.assessments or sources.attention):
-                    coverage_summary["tokens_without_any_source"] += 1
-
-                birth = existing_births.get(token.token_address)
-                if birth is None:
-                    birth = self.build_birth_event(sources, started)
-                    new_births += 1
-                    if not dry_run:
-                        birth.run_id = run.id
-                        session.add(birth)
-                        session.flush()
-                        existing_births[token.token_address] = birth
-                births_seen.append(birth)
-
+            snapshot = None
+            if skip_snapshot_actor:
+                snapshots_skipped += 1
+                actors_skipped += 1
+            else:
                 snapshot = self.build_snapshot(
                     sources, birth if birth.id is not None else None, started
                 )
@@ -959,76 +1154,416 @@ class CryptoLifecycleTapeRecorder:
                     session.add(snapshot)
                     session.add(actor)
 
-                survival = self.compute_survival(birth, sources, started)
-                for label, value in survival["labels"].items():
-                    if value is True:
-                        survival_mix[label] = survival_mix.get(label, 0) + 1
-                if not dry_run and birth.id is not None:
-                    outcome = session.execute(
-                        select(CryptoTokenSurvivalOutcome).where(
-                            CryptoTokenSurvivalOutcome.birth_event_id == birth.id
-                        )
-                    ).scalar_one_or_none()
-                    if outcome is None:
-                        outcome = CryptoTokenSurvivalOutcome(
-                            birth_event_id=birth.id,
-                            chain=self.config.chain,
-                            token_address=token.token_address,
-                            created_at=started,
-                        )
-                        session.add(outcome)
-                    if not outcome.final:
-                        for label, value in survival["labels"].items():
-                            setattr(outcome, label, value)
-                        outcome.details = survival["details"]
-                        outcome.final = survival["final"]
-                        outcome.last_run_id = run.id
-                        outcome.computed_at = started
-                        outcomes += 1
-                elif dry_run:
+            survival = self.compute_survival(birth, sources, started)
+            for label, value in survival["labels"].items():
+                if value is True:
+                    survival_delta[label] = survival_delta.get(label, 0) + 1
+            if not dry_run and birth.id is not None:
+                outcome = session.execute(
+                    select(CryptoTokenSurvivalOutcome).where(
+                        CryptoTokenSurvivalOutcome.birth_event_id == birth.id
+                    )
+                ).scalar_one_or_none()
+                if outcome is None:
+                    outcome = CryptoTokenSurvivalOutcome(
+                        birth_event_id=birth.id,
+                        chain=self.config.chain,
+                        token_address=token.token_address,
+                        created_at=started,
+                    )
+                    session.add(outcome)
+                if not outcome.final:
+                    for label, value in survival["labels"].items():
+                        setattr(outcome, label, value)
+                    outcome.details = survival["details"]
+                    outcome.final = survival["final"]
+                    outcome.last_run_id = run.id
+                    outcome.computed_at = started
                     outcomes += 1
+            elif dry_run:
+                outcomes += 1
 
+            if len(new_examples) < 5:
+                new_examples.append({
+                    "token": token.token_address[:16],
+                    "symbol": token.symbol,
+                    "launch_source": birth.launch_source,
+                    "risk_level": snapshot.risk_level if snapshot is not None else None,
+                    "top10_holder_pct": (
+                        snapshot.top10_holder_pct if snapshot is not None else None
+                    ),
+                    "labels": {
+                        k: v for k, v in survival["labels"].items() if v is not None
+                    },
+                })
+
+        return {
+            "new_births": new_births, "snapshots": snapshots, "actors": actors,
+            "outcomes": outcomes, "snapshots_skipped": snapshots_skipped,
+            "actors_skipped": actors_skipped, "coverage_delta": coverage_delta,
+            "survival_delta": survival_delta, "examples": new_examples,
+            "births_seen": births_seen, "existing_births": existing_births,
+        }
+
+    def _assemble_pass(
+        self,
+        session: Session,
+        tokens: list,
+        *,
+        started: datetime,
+        dry_run: bool,
+        window_hours: int | None,
+        run_config: dict,
+        skip_redundant_when_final: bool = False,
+        batch_size: int | None = None,
+        max_duration_seconds: float | None = None,
+        max_lock_attempts: int = DB_LOCKED_MAX_ATTEMPTS,
+        lock_retry_seconds: float = DB_LOCKED_RETRY_SECONDS,
+        use_overlap_lock: bool = True,
+        sleeper=time.sleep,
+    ) -> dict:
+        """B4 overlap guard entry point. A non-blocking, per-chain flock (see
+        `_reconcile_overlap_lock`) wraps the ENTIRE pass — from the
+        `existing_births` read through the last commit — because the
+        measured race this milestone found was exactly a concurrent pass's
+        pre-transaction `existing_births` read colliding with another pass's
+        insert, producing an IntegrityError that discarded the whole pass.
+        Dry-run never mutates anything, so it never takes the lock (two
+        concurrent dry probes are harmless)."""
+        if dry_run or not use_overlap_lock:
+            return self._assemble_pass_locked(
+                session, tokens, started=started, dry_run=dry_run,
+                window_hours=window_hours, run_config=run_config,
+                skip_redundant_when_final=skip_redundant_when_final,
+                batch_size=batch_size, max_duration_seconds=max_duration_seconds,
+                max_lock_attempts=max_lock_attempts,
+                lock_retry_seconds=lock_retry_seconds, sleeper=sleeper,
+            )
+        lock_dir = self.config.lock_dir or _resolve_lock_dir(None)
+        with _reconcile_overlap_lock(lock_dir, self.config.chain) as acquired:
+            if not acquired:
+                return {
+                    "status": STATUS_SKIPPED_OVERLAP,
+                    "note": TAPE_NOTE,
+                    "external_calls": 0,
+                    "window_hours": window_hours,
+                    "tokens_considered": 0,
+                    "tokens_processed": 0,
+                    "birth_events_created": 0,
+                    "snapshots_created": 0,
+                    "actor_observations_created": 0,
+                    "outcomes_updated": 0,
+                    "snapshots_skipped_redundant": 0,
+                    "actor_observations_skipped_redundant": 0,
+                    "provider_coverage": {}, "survival_label_mix": {},
+                    "examples": [], "batches_committed": 0,
+                    "batch_size": batch_size, "stop_reason": "overlap",
+                    "lock_retry_events": 0,
+                    "error": (
+                        f"another crypto-tape reconciliation pass already "
+                        f"holds the {self.config.chain} overlap lock at "
+                        f"{lock_dir / RECONCILE_LOCK_FILENAME.format(chain=self.config.chain)}; "
+                        "nothing was read or written"
+                    ),
+                    "_births": [],
+                }
+            return self._assemble_pass_locked(
+                session, tokens, started=started, dry_run=dry_run,
+                window_hours=window_hours, run_config=run_config,
+                skip_redundant_when_final=skip_redundant_when_final,
+                batch_size=batch_size, max_duration_seconds=max_duration_seconds,
+                max_lock_attempts=max_lock_attempts,
+                lock_retry_seconds=lock_retry_seconds, sleeper=sleeper,
+            )
+
+    def _assemble_pass_locked(
+        self,
+        session: Session,
+        tokens: list,
+        *,
+        started: datetime,
+        dry_run: bool,
+        window_hours: int | None,
+        run_config: dict,
+        skip_redundant_when_final: bool,
+        batch_size: int | None,
+        max_duration_seconds: float | None,
+        max_lock_attempts: int,
+        lock_retry_seconds: float,
+        sleeper=time.sleep,
+    ) -> dict:
+        """The actual assembly work, run with the overlap lock already held
+        (or dry-run, which needs none).
+
+        `batch_size` is the fork point between two modes, and this is
+        deliberate — every existing caller before CRYPTO-COVERAGE-REPAIR-001
+        leaves it `None` and must see byte-identical behaviour:
+
+        * `batch_size is None` (LEGACY, unchanged) — one flush for the run
+          row, one pass over all tokens, one commit at the end, no retry
+          ladder around any of it. This is exactly the pre-milestone
+          `_assemble_pass` body, including "any exception (lock or not)
+          raises straight through, caught only by the outer error-row
+          handler" — `record_discovery_run`'s "one bounded transaction"
+          guarantee (pinned by
+          test_crypto_anchor_feed_measurement_001::test_one_bounded_
+          transaction) depends on this.
+        * `batch_size` given (B3, opt-in — only `run_scheduled_reconciliation`
+          sets it) — the run row is created in its own short retried
+          transaction, each token batch commits (with retry) on its own, and
+          the run row is finalized in a last short retried transaction. B6's
+          wall-clock deadline only applies in this mode, between batches,
+          never mid-batch."""
+        hours = window_hours
+        chunked = batch_size is not None
+        deadline = (
+            started + timedelta(seconds=max_duration_seconds)
+            if (chunked and max_duration_seconds is not None) else None
+        )
+
+        # --- read phase: no write transaction is open for any of this -------
+        existing_births = {
+            b.token_address: b
+            for b in session.execute(
+                select(CryptoTokenBirthEvent).where(
+                    CryptoTokenBirthEvent.chain == self.config.chain,
+                    CryptoTokenBirthEvent.token_address.in_(
+                        [t.token_address for t in tokens]
+                    ),
+                )
+            ).scalars().all()
+        } if tokens else {}
+        existing_birth_ids = [b.id for b in existing_births.values() if b.id is not None]
+        final_by_birth_id: dict[int, bool] = {
+            row[0]: bool(row[1])
+            for row in session.execute(
+                select(
+                    CryptoTokenSurvivalOutcome.birth_event_id,
+                    CryptoTokenSurvivalOutcome.final,
+                ).where(CryptoTokenSurvivalOutcome.birth_event_id.in_(existing_birth_ids))
+            )
+        } if existing_birth_ids else {}
+
+        new_births = snapshots = actors = outcomes = 0
+        snapshots_skipped = actors_skipped = 0
+        coverage_summary = {
+            "tokens_with_ticks": 0,
+            "tokens_with_risk": 0,
+            "tokens_with_provider_backed_risk": 0,
+            "tokens_with_attention": 0,
+            "tokens_without_any_source": 0,
+        }
+        survival_mix: dict[str, int] = {}
+        examples: list[dict] = []
+        births_seen: list[CryptoTokenBirthEvent] = []
+        lock_retry_events = 0
+        batches_committed = 0
+        tokens_processed = 0
+        stop_reason: str | None = None
+
+        run: CryptoTokenLifecycleRun | None = None
+        if not dry_run:
+            run = CryptoTokenLifecycleRun(
+                status="running", started_at=started, window_hours=hours,
+                config=run_config, created_at=started,
+            )
+            if chunked:
+                def _prepare_run_creation() -> None:
+                    session.add(run)
+
+                ok, attempts = self._commit_with_retry(
+                    session, _prepare_run_creation, max_lock_attempts,
+                    lock_retry_seconds, sleeper,
+                )
+                lock_retry_events += max(0, attempts - 1)
+                if not ok:
+                    return {
+                        "status": STATUS_SKIPPED_CONTENTION,
+                        "note": TAPE_NOTE,
+                        "external_calls": 0,
+                        "window_hours": hours,
+                        "tokens_considered": 0,
+                        "tokens_processed": 0,
+                        "birth_events_created": 0,
+                        "snapshots_created": 0,
+                        "actor_observations_created": 0,
+                        "outcomes_updated": 0,
+                        "snapshots_skipped_redundant": 0,
+                        "actor_observations_skipped_redundant": 0,
+                        "provider_coverage": coverage_summary,
+                        "survival_label_mix": {},
+                        "examples": [], "batches_committed": 0,
+                        "batch_size": batch_size, "stop_reason": "contention",
+                        "lock_retry_events": lock_retry_events,
+                        "error": (
+                            f"database is locked; exhausted {max_lock_attempts} "
+                            "attempts before the run row could even be created "
+                            "— nothing was written"
+                        ),
+                        "_births": [],
+                    }
+            else:
+                # LEGACY single-transaction mode: flush only (no commit, no
+                # retry) — identical to the pre-milestone `_assemble_pass`.
+                session.add(run)
+                session.flush()
+
+        effective_batch = batch_size or max(len(tokens), 1)
+        chunks = [
+            tokens[i:i + effective_batch] for i in range(0, len(tokens), effective_batch)
+        ] if tokens else []
+
+        try:
+            for chunk in chunks:
+                if chunked and deadline is not None and _now() >= deadline and tokens_processed > 0:
+                    stop_reason = "deadline"
+                    break
+
+                if chunked:
+                    result = None
+                    for attempt in range(1, max_lock_attempts + 1):
+                        try:
+                            result = self._process_batch(
+                                session, chunk, run=run, started=started,
+                                dry_run=dry_run,
+                                existing_births_snapshot=existing_births,
+                                final_by_birth_id=final_by_birth_id,
+                                skip_redundant_when_final=skip_redundant_when_final,
+                            )
+                            if not dry_run:
+                                session.commit()
+                            break
+                        except OperationalError as exc:
+                            session.rollback()
+                            result = None
+                            if _is_db_locked(exc):
+                                lock_retry_events += 1
+                                if attempt < max_lock_attempts:
+                                    sleeper(lock_retry_seconds)
+                                    continue
+                                break  # exhausted — handled below as contention
+                            raise  # a real DB error, not lock contention
+
+                    if result is None:
+                        stop_reason = "contention"
+                        break
+                else:
+                    # LEGACY: no retry, no intermediate commit — any exception
+                    # (lock or not) propagates straight to the outer handler,
+                    # exactly like the pre-milestone single-transaction pass.
+                    result = self._process_batch(
+                        session, chunk, run=run, started=started, dry_run=dry_run,
+                        existing_births_snapshot=existing_births,
+                        final_by_birth_id=final_by_birth_id,
+                        skip_redundant_when_final=skip_redundant_when_final,
+                    )
+
+                existing_births.update(result["existing_births"])
+                new_births += result["new_births"]
+                snapshots += result["snapshots"]
+                actors += result["actors"]
+                outcomes += result["outcomes"]
+                snapshots_skipped += result["snapshots_skipped"]
+                actors_skipped += result["actors_skipped"]
+                for key, delta in result["coverage_delta"].items():
+                    coverage_summary[key] += delta
+                for label, delta in result["survival_delta"].items():
+                    survival_mix[label] = survival_mix.get(label, 0) + delta
                 if len(examples) < 5:
-                    examples.append({
-                        "token": token.token_address[:16],
-                        "symbol": token.symbol,
-                        "launch_source": birth.launch_source,
-                        "risk_level": snapshot.risk_level,
-                        "top10_holder_pct": snapshot.top10_holder_pct,
-                        "labels": {
-                            k: v for k, v in survival["labels"].items() if v is not None
-                        },
-                    })
+                    examples.extend(result["examples"][: 5 - len(examples)])
+                births_seen.extend(result["births_seen"])
+                tokens_processed += len(chunk)
+                batches_committed += 1
 
             summary = {
                 "status": STATUS_DRY_RUN if dry_run else STATUS_OK,
                 "note": TAPE_NOTE,
                 "external_calls": 0,
                 "window_hours": hours,
-                "tokens_considered": len(tokens),
+                "tokens_considered": tokens_processed,
+                "tokens_processed": tokens_processed,
                 "birth_events_created": new_births,
                 "snapshots_created": snapshots,
                 "actor_observations_created": actors,
                 "outcomes_updated": outcomes,
+                "snapshots_skipped_redundant": snapshots_skipped,
+                "actor_observations_skipped_redundant": actors_skipped,
                 "provider_coverage": coverage_summary,
                 "survival_label_mix": dict(sorted(survival_mix.items())),
                 "examples": examples,
+                "batches_committed": batches_committed,
+                "batch_size": batch_size,
+                "stop_reason": stop_reason,
+                "lock_retry_events": lock_retry_events,
                 "_births": births_seen,
             }
             if dry_run:
                 return summary
+            if stop_reason is not None:
+                summary["status"] = STATUS_PARTIAL
+                summary["error"] = (
+                    f"pass stopped early (stop_reason={stop_reason}) after "
+                    f"{batches_committed} batch(es) / {tokens_processed} of "
+                    f"{len(tokens)} selected tokens; already-committed "
+                    "batches are durable — nothing is duplicated or lost — "
+                    "and the remaining tokens are picked up by the next pass "
+                    "via oldest-first + state-driven backlog selection"
+                )
 
             finished = _now()
-            run.status = STATUS_OK
-            run.finished_at = finished
-            run.duration_ms = max(0, int((finished - started).total_seconds() * 1000))
-            run.tokens_considered = len(tokens)
-            run.birth_events_created = new_births
-            run.snapshots_created = snapshots
-            run.actor_observations_created = actors
-            run.outcomes_updated = outcomes
-            run.provider_coverage = coverage_summary
-            session.commit()
+
+            if chunked:
+                def _prepare_finalize() -> None:
+                    run.status = summary["status"]
+                    run.finished_at = finished
+                    run.duration_ms = max(
+                        0, int((finished - started).total_seconds() * 1000)
+                    )
+                    run.tokens_considered = tokens_processed
+                    run.birth_events_created = new_births
+                    run.snapshots_created = snapshots
+                    run.actor_observations_created = actors
+                    run.outcomes_updated = outcomes
+                    run.provider_coverage = coverage_summary
+                    session.add(run)
+
+                ok, attempts = self._commit_with_retry(
+                    session, _prepare_finalize, max_lock_attempts,
+                    lock_retry_seconds, sleeper,
+                )
+                lock_retry_events += max(0, attempts - 1)
+                summary["lock_retry_events"] = lock_retry_events
+                if not ok:
+                    # The token batches already committed are real, durable,
+                    # correct work — only the run row's own bookkeeping commit
+                    # lost the lock race. Never raise: the reconciliation
+                    # itself already succeeded (or partially succeeded);
+                    # losing the summary row is not the same failure as
+                    # losing data.
+                    summary["status"] = STATUS_PARTIAL
+                    summary["stop_reason"] = summary["stop_reason"] or "contention"
+                    summary["tape_run_id"] = run.id
+                    summary["error"] = (
+                        "reconciliation batches committed, but the run row's "
+                        "own finalize commit could not acquire the lock; the "
+                        "run row stays status=running"
+                    )
+                    return summary
+            else:
+                # LEGACY single-transaction mode: one commit, no retry —
+                # identical to the pre-milestone `_assemble_pass`.
+                run.status = summary["status"]
+                run.finished_at = finished
+                run.duration_ms = max(
+                    0, int((finished - started).total_seconds() * 1000)
+                )
+                run.tokens_considered = tokens_processed
+                run.birth_events_created = new_births
+                run.snapshots_created = snapshots
+                run.actor_observations_created = actors
+                run.outcomes_updated = outcomes
+                run.provider_coverage = coverage_summary
+                session.commit()
             summary["tape_run_id"] = run.id
             return summary
         except Exception as exc:
@@ -1181,15 +1716,9 @@ SESSION_OK = "ok"
 SESSION_DRY_RUN = "dry_run"
 SESSION_ABORTED = "aborted"
 
-# CRYPTO-TAPE-CADENCE-002: SQLite write-lock resilience. On a shared host the
-# baseline/watcher/MarketOps writers can hold the write lock past the DB busy
-# timeout, so a capture's run-row INSERT raises "database is locked". A bounded
-# app-level retry (mirrors the OPS-013 tick-aggregation idiom) recovers from
-# transient contention; a persistent lock aborts loudly and CLEANLY (session
-# rolled back first) so the summary path never hits PendingRollbackError.
-DB_LOCKED_MAX_ATTEMPTS = 3       # total tries per capture (1 + 2 retries)
-DB_LOCKED_RETRY_SECONDS = 3.0    # short wait between attempts
-ABORT_DB_LOCKED = "database_locked"
+# DB_LOCKED_MAX_ATTEMPTS / DB_LOCKED_RETRY_SECONDS / ABORT_DB_LOCKED now live
+# near the top of this module (CRYPTO-COVERAGE-REPAIR-001) so `run_once` and
+# `_assemble_pass` can use them as default argument values too.
 
 SESSION_NOTE = (
     "Bounded manual tape session: repeated derived lifecycle passes so the "
@@ -1312,6 +1841,9 @@ def run_scheduled_reconciliation(
     force: bool = False,
     window_hours: int | None = None,
     limit: int | None = None,
+    batch_size: int | None = None,
+    max_duration_seconds: float | None = None,
+    sleeper=time.sleep,
 ) -> dict:
     """CRYPTO-COVERAGE-REPAIR-001 — one bounded, provider-free reconciliation
     pass over already-persisted tokens whose survival horizons have matured.
@@ -1339,13 +1871,33 @@ def run_scheduled_reconciliation(
     Honest limits, stated because overclaiming here has bitten this repo before:
 
     * Labels are idempotent — reconciliation recomputes deterministic labels
-      from persisted rows, updating the outcome row in place. The pass is NOT
-      row-idempotent: `_assemble_pass` APPENDS one lifecycle snapshot and one
-      actor observation per token considered, on every pass, and neither table
-      is covered by `retention.py`. Budget roughly
-      `2 x tokens_considered` permanently retained rows per pass.
-    * Restart-safe in the sense that a killed pass persists nothing beyond the
-      bounded transaction `run_once` already uses.
+      from persisted rows, updating the outcome row in place. The pass is
+      MOSTLY, not fully, row-idempotent: `_assemble_pass` APPENDS one
+      lifecycle snapshot and one actor observation per token considered on
+      every pass UNLESS the token's outcome is already final, in which case
+      this path (only this path — B2) skips both as redundant (the window is
+      closed; nothing new can be learned). Neither table is covered by
+      `retention.py`. Budget roughly `2 x (tokens_considered -
+      already_final_tokens)` permanently retained rows per pass.
+    * Restart-safe (B3/B6): `run_once` commits in bounded batches
+      (`crypto_tape_reconciler_batch_size`, default `RECONCILE_BATCH_SIZE`)
+      instead of one transaction for the whole pass, and stops at an internal
+      wall-clock deadline (`crypto_tape_reconciler_max_duration_seconds`,
+      default `RECONCILE_MAX_DURATION_SECONDS`). A crash or a hit deadline
+      after batch N leaves batches 1..N durably committed and nothing
+      duplicated; the next pass continues via oldest-first + state-driven
+      backlog selection. `status="partial"` (with `stop_reason`) reports this
+      explicitly rather than claiming `status="ok"`.
+    * Overlap-safe (B4): a non-blocking, per-chain flock guards the whole
+      pass, so a second concurrent instance (another scheduled tick, a manual
+      tape session, a stray CLI run) never races this one on the same window;
+      it gets `status="skipped_overlap"` instead of the IntegrityError this
+      milestone measured.
+    * Contention-safe (B5): reuses the same DB_LOCKED_* bounded retry ladder
+      `run_tape_session` already uses, per batch commit. Exhausting it before
+      even the run row can be created yields `status="skipped_contention"`
+      (nothing written); exhausting it after some batches already committed
+      yields `status="partial"`, `stop_reason="contention"`.
     * The gate is honest about being bypassed: `force` and `dry_run` both run a
       pass while the flag is off, and the result says which.
 
@@ -1411,7 +1963,16 @@ def run_scheduled_reconciliation(
             "latest MarketOps run errored; not adding write pressure",
         )
 
-    rec = recorder or CryptoLifecycleTapeRecorder()
+    rec = recorder or CryptoLifecycleTapeRecorder(CryptoTapeConfig.from_settings(s))
+    batch = batch_size if batch_size is not None else int(
+        getattr(s, "crypto_tape_reconciler_batch_size", RECONCILE_BATCH_SIZE)
+    )
+    deadline_seconds = max_duration_seconds if max_duration_seconds is not None else float(
+        getattr(
+            s, "crypto_tape_reconciler_max_duration_seconds",
+            RECONCILE_MAX_DURATION_SECONDS,
+        )
+    )
     try:
         summary = rec.run_once(
             session, limit=cap, hours=hours, dry_run=dry_run,
@@ -1421,6 +1982,16 @@ def run_scheduled_reconciliation(
                 "mode": "scheduled_reconciliation",
                 "forced": bool(force),
             },
+            # B2: once a token's outcome is final, this path (only this path)
+            # skips the now-redundant snapshot/actor rows. The manual path
+            # (run_tape_session/CLI) never sets this, so its behaviour is
+            # unchanged.
+            skip_redundant_when_final=True,
+            # B3: bounded commits instead of one transaction for the pass.
+            batch_size=batch,
+            # B6: internal wall-clock deadline; the rest becomes backlog.
+            max_duration_seconds=deadline_seconds,
+            sleeper=sleeper,
         )
     except Exception as exc:
         # A poisoned transaction must not leak into the caller's session, and a
@@ -1434,26 +2005,49 @@ def run_scheduled_reconciliation(
             return _refused("db_locked", "database is locked; pass abandoned")
         raise
 
+    # `run_once` may already have returned a terminal, non-"ok" status
+    # (skipped_overlap / skipped_contention / partial — B3/B4/B5/B6). Those
+    # must NOT be silently overwritten with "ok"/"dry_run"; that is exactly
+    # the "a unit that reconciles nothing must never look healthy" failure
+    # class this milestone exists to remove.
+    terminal_statuses = {
+        STATUS_SKIPPED_OVERLAP, STATUS_SKIPPED_CONTENTION, STATUS_PARTIAL,
+    }
+    pass_status = summary.get("status")
+    resolved_status = (
+        pass_status if pass_status in terminal_statuses
+        else ("dry_run" if dry_run else "ok")
+    )
     summary.update({
-        "status": "dry_run" if dry_run else "ok",
+        "status": resolved_status,
         "mode": "scheduled_reconciliation",
         "external_calls": 0,
         "window_hours": hours,
         "selection_limit": cap,
+        "batch_size": batch,
+        "max_duration_seconds": deadline_seconds,
         "gate_bypassed": bypass,
         "duration_ms": max(0, int((_now() - started).total_seconds() * 1000)),
     })
     if summary.get("truncated"):
         # Loud, not silent: this is the exact failure this milestone exists to
-        # remove, so it must be visible in the result AND in the log.
-        summary["status"] = "truncated"
-        summary["error"] = (
+        # remove, so it must be visible in the result AND in the log. A
+        # deadline/contention stop (status already partial/skipped_*) is
+        # reported through `stop_reason`/`error` instead of being relabelled
+        # "truncated", which is specifically the SELECTION-limit case.
+        if resolved_status not in terminal_statuses:
+            summary["status"] = "truncated"
+        summary["error"] = summary.get("error") or (
             f"window holds {summary['universe_size']} tokens plus "
             f"{summary['backlog_size']} aged-out unreconciled, but the limit is "
             f"{cap}; {summary['tokens_omitted']} were not reconciled. Raise "
             f"--limit (or crypto_tape_reconciler_limit) to cover the window."
         )
         logger.warning("crypto reconciliation truncated: %s", summary["error"])
+    if resolved_status in (STATUS_SKIPPED_OVERLAP, STATUS_SKIPPED_CONTENTION, STATUS_PARTIAL):
+        logger.warning(
+            "crypto reconciliation %s: %s", resolved_status, summary.get("error")
+        )
     return summary
 
 

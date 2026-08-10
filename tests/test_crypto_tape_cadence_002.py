@@ -197,20 +197,68 @@ class TestAbortAfterSuccess:
 
 
 class TestRunOnceErrorPath:
-    def test_error_recording_commit_failure_does_not_mask_original(
+    def test_persistent_lock_before_any_write_is_skipped_contention_not_a_crash(
         self, session, monkeypatch
     ):
+        """CRYPTO-COVERAGE-REPAIR-001 B3/B5: opting into batched commits
+        (`batch_size=...`, what `run_scheduled_reconciliation` always does)
+        also opts into the bounded retry ladder. A persistent lock is an
+        expected operational condition (the SAME class `run_tape_session`
+        already treats as a clean, typed abort, not a crash), so it must
+        never raise into the caller — `_commit_with_retry` exhausts the
+        ladder and returns a typed `status="skipped_contention"` result
+        instead. The legacy (`batch_size=None`) manual path keeps the OLD
+        raise-on-lock contract unchanged — see the next test."""
         seed_full_token(session, first_seen=NOW - timedelta(hours=2))
-        # force the final commit AND the error-record commit to lock
+        # force every commit (including the run-row creation) to lock
         monkeypatch.setattr(
             type(session), "commit",
             lambda self: (_ for _ in ()).throw(locked_error()),
         )
-        with pytest.raises(OperationalError):   # the ORIGINAL lock, not a mask
-            recorder().run_once(session)
+        fast_sleeper = lambda seconds: None  # noqa: E731 - no real delay in tests
+        r = recorder().run_once(session, batch_size=5, sleeper=fast_sleeper)
+        assert r["status"] == "skipped_contention"
+        assert r["stop_reason"] == "contention"
+        assert r["tokens_considered"] == 0
+        assert "database is locked" in r["error"]
         # session is not left poisoned: a rollback + query works
         session.rollback()
         assert session.execute(select(CryptoTokenLifecycleRun)).scalars().all() == []
+
+    def test_legacy_single_transaction_mode_still_raises_on_persistent_lock(
+        self, session, monkeypatch
+    ):
+        """The pre-milestone contract (`batch_size=None`, every existing
+        caller) is unchanged: a persistent lock during the single bounded
+        transaction still raises straight through, exactly as before this
+        milestone — `run_tape_session` is the thing that turns this into a
+        typed abort, not `run_once` itself."""
+        seed_full_token(session, first_seen=NOW - timedelta(hours=2))
+        monkeypatch.setattr(
+            type(session), "commit",
+            lambda self: (_ for _ in ()).throw(locked_error()),
+        )
+        with pytest.raises(OperationalError):
+            recorder().run_once(session)
+        session.rollback()
+        assert session.execute(select(CryptoTokenLifecycleRun)).scalars().all() == []
+
+    def test_non_lock_commit_error_still_marks_the_run_row_and_raises(
+        self, session, monkeypatch
+    ):
+        """A genuinely unexpected DB error (not lock contention) must keep the
+        OLD behaviour: mark the run row 'error' and re-raise the original
+        exception, never mask it as a typed skip."""
+        seed_full_token(session, first_seen=NOW - timedelta(hours=2))
+        boom = OperationalError("INSERT ...", {}, Exception("disk I/O error"))
+        monkeypatch.setattr(
+            type(session), "commit", lambda self: (_ for _ in ()).throw(boom),
+        )
+        with pytest.raises(OperationalError):
+            recorder().run_once(session)
+        session.rollback()
+        runs = session.execute(select(CryptoTokenLifecycleRun)).scalars().all()
+        assert runs == [] or runs[-1].status == "error"
 
 
 # --- defensive summary -------------------------------------------------------------

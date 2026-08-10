@@ -30,6 +30,7 @@ from app.config import Settings
 from app.models import (
     CryptoPriceTick,
     CryptoToken,
+    CryptoTokenBirthEvent,
     CryptoTokenSurvivalOutcome,
 )
 from app.services.crypto_tape import (
@@ -37,6 +38,7 @@ from app.services.crypto_tape import (
     HORIZONS,
     SURVIVAL_LIQUIDITY_FRACTION,
     CryptoLifecycleTapeRecorder,
+    CryptoTapeConfig,
     run_scheduled_reconciliation,
 )
 
@@ -565,11 +567,14 @@ def test_makes_no_network_call_at_the_socket_layer(session, monkeypatch):
     assert _outcome(session, "tok-socket").survived_24h is True
 
 
-def test_pass_is_label_idempotent_but_appends_lifecycle_rows(session):
-    """Pin the honest limit rather than the comfortable claim: labels converge,
-    but each pass appends a snapshot and an actor observation per token, and
-    neither table is pruned by retention.py. If this ever becomes truly
-    row-idempotent, this test should be updated deliberately, not silently."""
+def test_scheduled_pass_is_row_idempotent_once_final(session):
+    """CRYPTO-COVERAGE-REPAIR-001 B2 write classification: once a token's
+    survival outcome is final, its window is closed and a lifecycle snapshot /
+    actor observation appended on a LATER scheduled pass teaches nothing new
+    (REDUNDANT/HISTORICAL_ARTIFACT). The scheduled reconciliation path skips
+    both; labels still converge and the outcome row itself stays singular.
+    This deliberately supersedes the milestone's prior pinned "rows always
+    accumulate" behaviour for the SCHEDULED path only."""
     from app.models import (
         CryptoTokenActorObservation,
         CryptoTokenLifecycleSnapshot,
@@ -579,17 +584,50 @@ def test_pass_is_label_idempotent_but_appends_lifecycle_rows(session):
     _tick_at(session, "tok-rows", born + timedelta(hours=24), liquidity=9_000.0)
     s = _settings()
 
-    run_scheduled_reconciliation(session, settings=s)
+    r1 = run_scheduled_reconciliation(session, settings=s)
+    assert r1["status"] == "ok"
     snaps1 = session.query(CryptoTokenLifecycleSnapshot).count()
     actors1 = session.query(CryptoTokenActorObservation).count()
     label1 = _outcome(session, "tok-rows").survived_24h
+    assert _outcome(session, "tok-rows").final is True
 
-    run_scheduled_reconciliation(session, settings=s)
+    r2 = run_scheduled_reconciliation(session, settings=s)
+    assert r2["status"] == "ok"
     snaps2 = session.query(CryptoTokenLifecycleSnapshot).count()
     actors2 = session.query(CryptoTokenActorObservation).count()
 
     assert _outcome(session, "tok-rows").survived_24h == label1  # labels converge
-    assert snaps2 == snaps1 * 2 and actors2 == actors1 * 2  # rows accumulate
+    assert snaps2 == snaps1 and actors2 == actors1  # no redundant rows appended
+    assert r2["snapshots_skipped_redundant"] == 1
+    assert r2["actor_observations_skipped_redundant"] == 1
+    assert session.query(CryptoTokenSurvivalOutcome).count() == 1
+
+
+def test_manual_path_still_appends_lifecycle_rows_unchanged(session):
+    """The manual/CLI path (`run_once` with its historical defaults) is
+    explicitly OUT of scope for the B2 redundant-write skip — it must keep
+    appending a snapshot and an actor observation per token on every pass,
+    exactly as before this milestone."""
+    from app.models import (
+        CryptoTokenActorObservation,
+        CryptoTokenLifecycleSnapshot,
+    )
+    from app.services.crypto_tape import CryptoLifecycleTapeRecorder
+
+    born = _mint(session, "tok-manual-rows", born_hours_ago=40, liquidity=10_000.0)
+    _tick_at(session, "tok-manual-rows", born + timedelta(hours=24), liquidity=9_000.0)
+    rec = CryptoLifecycleTapeRecorder()
+
+    rec.run_once(session, limit=10, hours=48)
+    snaps1 = session.query(CryptoTokenLifecycleSnapshot).count()
+    actors1 = session.query(CryptoTokenActorObservation).count()
+    assert _outcome(session, "tok-manual-rows").final is True
+
+    rec.run_once(session, limit=10, hours=48)
+    snaps2 = session.query(CryptoTokenLifecycleSnapshot).count()
+    actors2 = session.query(CryptoTokenActorObservation).count()
+
+    assert snaps2 == snaps1 * 2 and actors2 == actors1 * 2  # unchanged: rows accumulate
     assert session.query(CryptoTokenSurvivalOutcome).count() == 1
 
 
@@ -660,3 +698,258 @@ def test_final_outcomes_are_not_re_selected_as_backlog(session):
 
     r = run_scheduled_reconciliation(session, settings=_settings())
     assert r["backlog_size"] == 0
+
+
+# --- B3 chunked commits -------------------------------------------------------
+
+def test_scheduled_pass_commits_in_bounded_batches(session):
+    """Default `crypto_tape_reconciler_batch_size` bounds each committed
+    transaction to a small number of tokens instead of one commit for the
+    whole pass."""
+    for i in range(23):
+        _mint(session, f"tok-batch-{i}", born_hours_ago=30, liquidity=10_000.0)
+
+    r = run_scheduled_reconciliation(
+        session, settings=_settings(crypto_tape_reconciler_limit=1000),
+        batch_size=10,
+    )
+    assert r["status"] == "ok"
+    assert r["batch_size"] == 10
+    assert r["batches_committed"] == 3  # ceil(23 / 10)
+    assert r["tokens_processed"] == 23
+
+
+def test_manual_path_defaults_to_one_commit_for_the_whole_pass(session):
+    """`run_once`'s historical default (`batch_size=None`) must stay a single
+    committed transaction — this is the exact shape
+    `test_one_bounded_transaction` (CRYPTO-HORIZON-ANCHOR-FEED-MEASUREMENT-001)
+    pins for the anchor feed, which shares this code path."""
+    from sqlalchemy import event
+
+    for i in range(12):
+        _mint(session, f"tok-legacy-{i}", born_hours_ago=30, liquidity=10_000.0)
+    rec = CryptoLifecycleTapeRecorder()
+    commits = []
+
+    @event.listens_for(session, "after_commit")
+    def _count(sess):
+        commits.append(1)
+
+    try:
+        r = rec.run_once(session, limit=100, hours=48)
+    finally:
+        event.remove(session, "after_commit", _count)
+    assert r["status"] == "ok"
+    assert len(commits) == 1
+
+
+# --- B4 overlap guard ---------------------------------------------------------
+
+def test_overlap_lock_skips_a_concurrent_pass(session, tmp_path):
+    """B4 — a non-blocking, per-chain flock: a second concurrent pass over
+    the SAME chain must be skipped loudly (`status=skipped_overlap`), never
+    race the first pass's pre-transaction reads."""
+    from app.services.crypto_tape import (
+        RECONCILE_LOCK_FILENAME,
+        _reconcile_overlap_lock,
+    )
+
+    _mint(session, "tok-overlap", born_hours_ago=30, liquidity=10_000.0)
+    lock_path = tmp_path / RECONCILE_LOCK_FILENAME.format(chain=CHAIN)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with _reconcile_overlap_lock(tmp_path, CHAIN) as acquired:
+        assert acquired is True  # the test itself holds the lock now
+        rec = CryptoLifecycleTapeRecorder(
+            CryptoTapeConfig(chain=CHAIN, lock_dir=tmp_path)
+        )
+        r = rec.run_once(session, limit=10, hours=48)
+        assert r["status"] == "skipped_overlap"
+        assert r["stop_reason"] == "overlap"
+        assert r["tokens_considered"] == 0
+        assert "overlap lock" in r["error"]
+    # released — a normal pass now succeeds
+    rec2 = CryptoLifecycleTapeRecorder(CryptoTapeConfig(chain=CHAIN, lock_dir=tmp_path))
+    r2 = rec2.run_once(session, limit=10, hours=48)
+    assert r2["status"] == "ok"
+
+
+def test_overlap_lock_is_released_after_a_normal_pass(session, tmp_path):
+    """The lock must not leak: two SEQUENTIAL passes both succeed."""
+    _mint(session, "tok-seq", born_hours_ago=30, liquidity=10_000.0)
+    rec = CryptoLifecycleTapeRecorder(CryptoTapeConfig(chain=CHAIN, lock_dir=tmp_path))
+    r1 = rec.run_once(session, limit=10, hours=48)
+    r2 = rec.run_once(session, limit=10, hours=48)
+    assert r1["status"] == "ok"
+    assert r2["status"] == "ok"
+
+
+def test_dry_run_never_takes_the_overlap_lock(session, tmp_path):
+    """Two concurrent dry probes are harmless (nothing is mutated), so
+    dry-run must never contend for the lock at all."""
+    from app.services.crypto_tape import _reconcile_overlap_lock
+
+    _mint(session, "tok-dry-overlap", born_hours_ago=30, liquidity=10_000.0)
+    with _reconcile_overlap_lock(tmp_path, CHAIN) as acquired:
+        assert acquired is True
+        rec = CryptoLifecycleTapeRecorder(
+            CryptoTapeConfig(chain=CHAIN, lock_dir=tmp_path)
+        )
+        r = rec.run_once(session, limit=10, hours=48, dry_run=True)
+        assert r["status"] == "dry_run"  # not skipped_overlap
+
+
+def test_two_connection_file_backed_busy_timeout_and_retry_ladder(tmp_path):
+    """docs/SQLITE_WRITER_TOPOLOGY_2026_07.md failure-mode 15: tests using
+    in-memory `sqlite://` cannot exercise real busy_timeout/lock contention.
+    This is the two-connection, shared-FILE test that closes that gap: a
+    real second SQLite connection holds a write transaction open on the same
+    file, and `run_once` (opted into batching, so the retry ladder applies)
+    must observe genuine lock contention, exhaust its bounded retries, and
+    return a typed result — never hang, never raise, never corrupt state."""
+    import sqlite3
+
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    db_path = tmp_path / "two_connection.db"
+    engine = create_engine(
+        f"sqlite:///{db_path}", connect_args={"timeout": 0.2},
+    )
+    Base.metadata.create_all(engine)
+    Factory = sessionmaker(bind=engine)
+    seed_session = Factory()
+    _mint(seed_session, "tok-two-conn", born_hours_ago=30, liquidity=10_000.0)
+    seed_session.commit()
+    seed_session.close()
+
+    # a second, INDEPENDENT real connection holds RESERVED and never commits
+    holder = sqlite3.connect(str(db_path), timeout=0.2)
+    holder.execute("BEGIN IMMEDIATE")
+    holder.execute("UPDATE crypto_tokens SET last_seen_at = last_seen_at")
+
+    try:
+        worker_session = Factory()
+        rec = CryptoLifecycleTapeRecorder(
+            CryptoTapeConfig(chain=CHAIN, lock_dir=tmp_path)
+        )
+        r = rec.run_once(
+            worker_session, limit=10, hours=48,
+            batch_size=5,               # opt into the retry ladder
+            max_lock_attempts=3, lock_retry_seconds=0.05,
+            sleeper=lambda seconds: None,  # no real delay in tests
+        )
+        worker_session.close()
+    finally:
+        holder.rollback()
+        holder.close()
+
+    assert r["status"] == "skipped_contention"
+    assert r["stop_reason"] == "contention"
+    assert "database is locked" in r["error"]
+
+    # the holder released; a normal pass now succeeds and sees the token
+    verify_session = Factory()
+    rec2 = CryptoLifecycleTapeRecorder(
+        CryptoTapeConfig(chain=CHAIN, lock_dir=tmp_path)
+    )
+    r2 = rec2.run_once(verify_session, limit=10, hours=48, batch_size=5)
+    assert r2["status"] == "ok"
+    assert r2["tokens_considered"] == 1
+    verify_session.close()
+    engine.dispose()
+
+
+# --- B6 internal deadline ------------------------------------------------------
+
+def test_deadline_stops_the_pass_between_batches_not_mid_batch(session):
+    """A wall-clock deadline that has already passed before the SECOND batch
+    starts must stop the pass there — durable partial progress, not a hang,
+    not a half-committed batch."""
+    for i in range(15):
+        _mint(session, f"tok-deadline-{i}", born_hours_ago=30, liquidity=10_000.0)
+    rec = CryptoLifecycleTapeRecorder()
+    r = rec.run_once(
+        session, limit=100, hours=48, batch_size=5,
+        max_duration_seconds=0.0,  # already "past due" before batch 2
+    )
+    assert r["status"] == "partial"
+    assert r["stop_reason"] == "deadline"
+    assert 0 < r["tokens_processed"] < 15
+    assert r["tokens_processed"] % 5 == 0  # stopped on a batch boundary
+
+
+def test_scheduled_reconciliation_reports_partial_status_not_ok(session):
+    """B7 — a unit that stops early must never look healthy. `status=ok`
+    while eligible rows remain unreconciled is exactly the failure class this
+    milestone exists to remove."""
+    for i in range(15):
+        _mint(session, f"tok-partial-{i}", born_hours_ago=30, liquidity=10_000.0)
+    r = run_scheduled_reconciliation(
+        session, settings=_settings(crypto_tape_reconciler_limit=1000),
+        batch_size=5, max_duration_seconds=0.0,
+    )
+    assert r["status"] == "partial"
+    assert r["stop_reason"] == "deadline"
+    assert r["error"]
+
+
+# --- B3/B5 restart safety and idempotence under batching ----------------------
+
+def test_restart_after_a_partial_batch_stop_is_idempotent(session):
+    """A pass stopped mid-way by a deadline commits real, durable batches; a
+    SECOND pass over the same window must not duplicate a birth event and
+    (with B2's skip-when-final opted in, as the scheduled path always does)
+    must not duplicate a snapshot/actor for a token that already finalized."""
+    from app.models import (
+        CryptoTokenActorObservation,
+        CryptoTokenLifecycleSnapshot,
+    )
+
+    # born_hours_ago > 36h (the 24h horizon's closing edge) so every token's
+    # outcome finalizes the FIRST time either pass touches it.
+    for i in range(12):
+        born = _mint(session, f"tok-restart-{i}", born_hours_ago=40, liquidity=10_000.0)
+        _tick_at(session, f"tok-restart-{i}", born + timedelta(hours=24), liquidity=9_000.0)
+
+    rec = CryptoLifecycleTapeRecorder()
+    r1 = rec.run_once(
+        session, limit=100, hours=48, batch_size=4, max_duration_seconds=0.0,
+        oldest_first=True, skip_redundant_when_final=True,
+    )
+    assert r1["status"] == "partial"
+    processed_after_1 = r1["tokens_processed"]
+    assert 0 < processed_after_1 < 12
+    births_after_1 = session.query(CryptoTokenBirthEvent).count()
+    snaps_after_1 = session.query(CryptoTokenLifecycleSnapshot).count()
+    assert births_after_1 == processed_after_1
+    assert snaps_after_1 == processed_after_1
+
+    r2 = rec.run_once(
+        session, limit=100, hours=48, batch_size=4, oldest_first=True,
+        skip_redundant_when_final=True,
+    )
+    assert r2["status"] == "ok"
+    births_after_2 = session.query(CryptoTokenBirthEvent).count()
+    snaps_after_2 = session.query(CryptoTokenLifecycleSnapshot).count()
+    actors_after_2 = session.query(CryptoTokenActorObservation).count()
+    # every token now has exactly one birth (no duplicates) and every token
+    # got exactly one snapshot/actor, from whichever single pass first saw it
+    assert births_after_2 == 12
+    assert snaps_after_2 == 12
+    assert actors_after_2 == 12
+    for i in range(12):
+        assert _outcome(session, f"tok-restart-{i}").survived_24h is True
+
+
+# --- B9 benchmark harness sanity: result-shape checks --------------------------
+
+def test_result_reports_lock_retry_events_and_batches_committed_fields(session):
+    """B5/B9 telemetry surface: every pass reports lock_retry_events and
+    batches_committed so a caller can distinguish a clean run from a
+    contended one without re-deriving it from logs."""
+    _mint(session, "tok-telemetry", born_hours_ago=30, liquidity=10_000.0)
+    r = run_scheduled_reconciliation(session, settings=_settings(), batch_size=5)
+    assert r["status"] == "ok"
+    assert r["lock_retry_events"] == 0
+    assert r["batches_committed"] == 1

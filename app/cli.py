@@ -2890,13 +2890,14 @@ async def crypto_tape_reconcile(
             )
             return 0
         if r["status"] in ("invalid_window", "invalid_limit", "marketops_degraded",
-                           "db_locked"):
+                           "db_locked", "skipped_overlap", "skipped_contention"):
             # Non-zero: a unit that reconciles nothing must never look healthy.
             print(f"status={r['status']}  external_calls=0  error={r['error']}")
             return -1
         print(
             f"status={r['status']}  external_calls={r['external_calls']}  "
             f"window={r['window_hours']}h  limit={r['selection_limit']}  "
+            f"batch_size={r.get('batch_size')}  "
             f"gate_bypassed={r.get('gate_bypassed')}  "
             f"duration_ms={r['duration_ms']}"
         )
@@ -2904,19 +2905,26 @@ async def crypto_tape_reconcile(
             f"tokens_considered={r['tokens_considered']}  "
             f"universe_size={r.get('universe_size')}  "
             f"truncated={r.get('truncated')}  "
-            f"omitted={r.get('tokens_omitted')}"
+            f"omitted={r.get('tokens_omitted')}  "
+            f"stop_reason={r.get('stop_reason')}"
         )
         print(
             f"outcomes_updated={r.get('outcomes_updated')}  "
             f"snapshots={r.get('snapshots_created')}  "
-            f"actor_observations={r.get('actor_observations_created')}"
+            f"actor_observations={r.get('actor_observations_created')}  "
+            f"snapshots_skipped_redundant={r.get('snapshots_skipped_redundant')}  "
+            f"actor_observations_skipped_redundant="
+            f"{r.get('actor_observations_skipped_redundant')}"
         )
         if r.get("survival_label_mix"):
             print(
                 "survival labels (true counts): "
                 + ", ".join(f"{k}={v}" for k, v in r["survival_label_mix"].items())
             )
-        if r["status"] == "truncated":
+        # truncated (selection-limit cap) and partial (deadline/contention
+        # stopped the pass early) both mean "eligible work remains
+        # unreconciled" — neither may exit 0.
+        if r["status"] in ("truncated", "partial"):
             print(f"WARNING: {r['error']}")
             return -1
         return r["tokens_considered"]

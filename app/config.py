@@ -380,6 +380,17 @@ class Settings(BaseSettings):
     # and selection is oldest-first so any truncation drops the UNMATURED tail
     # rather than the matured tokens the pass exists to reconcile.
     crypto_tape_reconciler_limit: int = 2000
+    # CRYPTO-COVERAGE-REPAIR-001 B3/B6 — write-coordination hardening. The
+    # measured blocker: one commit for the whole pass held SQLite's write
+    # lock for 36.9s at production density, blocking a competing writer 97%
+    # of a 30s busy_timeout. Bounded batches keep each commit's lock hold to
+    # a small fraction of a second; the internal deadline keeps one pass from
+    # running indefinitely (the remainder simply becomes next-pass backlog,
+    # never lost — see `unreconciled_backlog`). Both default to the values
+    # `app.services.crypto_tape` measured; change only with a fresh
+    # benchmark.
+    crypto_tape_reconciler_batch_size: int = 25
+    crypto_tape_reconciler_max_duration_seconds: float = 20.0
 
     # Crypto risk engine (CRYPTO-002) — read-only risk INTELLIGENCE only.
     # A risk score flags danger for avoidance/review; it is never a trade
