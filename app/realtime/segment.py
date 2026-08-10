@@ -187,6 +187,7 @@ def assert_contained(root: Path, target: Path) -> Path:
 
 
 def containment_reason(root, target) -> str | None:
+    """Total by contract — see the OSError arm below."""
     """`assert_contained` as a verification reason rather than an exception.
 
     The verify side had NO containment check at all. `assert_contained` existed
@@ -202,6 +203,14 @@ def containment_reason(root, target) -> str | None:
         assert_contained(root, target)
     except SegmentError as exc:
         return str(exc)
+    except OSError as exc:
+        # `assert_contained` stats the target (see the eager `target.exists()`
+        # in its candidate tuple), so it raises EACCES for exactly the reason
+        # the caller's guard was meant to stop. Three consecutive rounds moved
+        # that guard one call closer to the raise without asking which call
+        # actually raises; making THIS function total closes the class instead
+        # of the instance.
+        return f"{Path(target).name} could not be examined: {exc}"
     return None
 
 
@@ -250,6 +259,9 @@ _DERIVE_ROOT = object()
 _MAX_DECIMAL_EXPONENT = 4096
 _MAX_DECIMAL_DIGITS = 512
 _MAX_INT_BITS = 8192
+# Sibling bound to the Decimal/int limits. Nothing the venue can send is
+# legitimately this wide, and an unbounded walk is a liveness defect.
+_MAX_SEQUENCE_ELEMENTS = 1_000_000
 
 
 class SegmentState(str, Enum):
@@ -417,11 +429,18 @@ def _structural_reason(value, _path: str = "") -> str | None:
         return None
     if isinstance(value, (list, tuple)) or (
             isinstance(value, Sequence) and not isinstance(value, (str, bytes))):
-        # Mirror `_encode`'s Sequence branch. Refusing `range`/`deque`/custom
-        # Sequences here made the walk STRICTER than the encoder — "the encoder
-        # wins" has to hold in both directions or the fast path is a second,
-        # disagreeing implementation again.
+        # Mirror `_encode`'s Sequence branch — but BOUNDED. Mirroring it
+        # faithfully moved unbounded iteration into the pre-acceptance path:
+        # `range(10**9)`, or any registered Sequence whose `__getitem__` never
+        # raises, walked forever inside `_inflight`, so close() timed out, the
+        # writer kept its lock, 200 accepted-and-written records were lost, and
+        # verify_archive reported VALID with empty reasons. An admission gate
+        # that can fail to return is not total, which is the property the whole
+        # design rests on.
         for i, v in enumerate(value):
+            if i >= _MAX_SEQUENCE_ELEMENTS:
+                return (f"{_path or 'value'} has more than "
+                        f"{_MAX_SEQUENCE_ELEMENTS} elements")
             found = _structural_reason(v, f"{_path}[{i}]")
             if found is not None:
                 return found
@@ -1021,6 +1040,22 @@ class SegmentWriter:
             self._inflight += 1
         try:
             return self._admit(envelope_fields)
+        except BaseException:
+            # THE IDENTITY IS ENFORCED HERE, not inside the gate. Six rounds
+            # were spent hardening `non_canonical_reason` so it could never
+            # raise, and each round found another way in — a hostile dunder, a
+            # naive datetime, a mapping key, and finally a real SIGINT, which no
+            # amount of `except Exception` can catch. `attempted` had already
+            # been incremented, so every escape violated
+            # `attempted == rejected_before_accept + accepted` and cost the
+            # whole segment while verify_archive reported VALID with empty
+            # reasons. Booking a terminal state on the exceptional exit makes
+            # the identity hold by construction, and demotes any future gate
+            # defect from data loss to a diagnostic-quality problem.
+            with self._lock:
+                self.accounting.reject_before_accept(
+                    RejectReason.SERIALIZATION_FAILURE)
+            raise
         finally:
             with self._admission:
                 self._inflight -= 1
@@ -1738,13 +1773,23 @@ def _presence(path) -> tuple:
     `Path.exists()` propagates EACCES; `os.path.lexists` swallows it and answers
     False, which is a different lie. Both were wrong in this file.
     """
+    import stat as _stat
     try:
-        os.lstat(path)
-        return True, None
+        st = os.lstat(path)
     except FileNotFoundError:
         return False, None
     except OSError as exc:
         return None, f"{Path(path).name} could not be examined: {exc}"
+    if not (_stat.S_ISREG(st.st_mode) or _stat.S_ISDIR(st.st_mode)
+            or _stat.S_ISLNK(st.st_mode)):
+        # A FIFO, socket or device node at an evidence path answered "present"
+        # to `lstat` and then blocked the reader FOREVER — no verdict, no
+        # timeout, a monitor that never returns. A hang is strictly worse than
+        # the traceback this helper was written to remove. `present_generations`
+        # already had the right pattern (`child.is_file()`); nothing else did.
+        return None, (f"{Path(path).name} is not a regular file "
+                      f"(mode {_stat.S_IFMT(st.st_mode):#o})")
+    return True, None
 
 
 def verify_segment(directory, *, environment: str, allow_open: bool = False,
@@ -1910,8 +1955,11 @@ def verify_segment(directory, *, environment: str, allow_open: bool = False,
     # opened_at / closed_at: bracket the actual record times. Operational
     # fields, so the constraint is an envelope, not equality — the writer opens
     # before the first record arrives and closes after the last.
+    # Decoded records are attacker-controllable bytes on disk; a gzip of
+    # `null` or `[1,2]` made this raise AttributeError. "Total" is a stronger
+    # claim than "handles EACCES", and only the latter had been tested.
     times = [r.get("received_at_utc") for r in records
-             if isinstance(r.get("received_at_utc"), str)]
+             if isinstance(r, Mapping) and isinstance(r.get("received_at_utc"), str)]
     opened, closed = manifest.get("opened_at"), manifest.get("closed_at")
     if isinstance(opened, str) and isinstance(closed, str):
         if opened > closed:
@@ -1937,7 +1985,11 @@ def verify_segment(directory, *, environment: str, allow_open: bool = False,
         reasons.append(f"close_status {manifest.get('close_status')!r} is not "
                        "a recognised value")
     # subscription_metadata.venue must agree with the segment id's venue prefix.
-    meta_venue = (manifest.get("subscription_metadata") or {}).get("venue")
+    meta = manifest.get("subscription_metadata")
+    if meta is not None and not isinstance(meta, Mapping):
+        reasons.append("subscription_metadata is not an object")
+        meta = None
+    meta_venue = (meta or {}).get("venue")
     seg_venue = (manifest.get("segment_id") or "").split(".", 1)[0]
     if meta_venue is not None and seg_venue and meta_venue != seg_venue:
         reasons.append(
@@ -1984,7 +2036,8 @@ _VERDICT_KEYS = (
     "generations_present", "segments", "closed_segments", "open_segments",
     "uncommitted_segments", "abandoned_segments", "invalid_segments",
     "orphaned_committed_segments", "records_expected", "records_read",
-    "segment_verdicts", "reasons", "warnings", "verdict",
+    "segment_verdicts", "reasons", "warnings", "missing_committed_segments",
+    "verdict",
 )
 
 
@@ -1999,7 +2052,13 @@ def _abandoned_residue(env_dir: Path) -> list:
         try:
             if not d.is_dir() or d.is_symlink():
                 continue
-            files = sorted(d.glob(f"{EVENTS_FILENAME}.abandoned.*"))
+            # `Path.glob` swallows PermissionError from `os.scandir`, so a
+            # mode-0 directory returned an empty list with no error and 7,000
+            # bytes of real residue vanished under a VALID verdict. The per-file
+            # guard was right; the ENUMERATION guard never fired.
+            files = sorted(
+                Path(e.path) for e in os.scandir(d)
+                if e.name.startswith(f"{EVENTS_FILENAME}.abandoned."))
         except OSError as exc:
             errors.append(f"{d.name}: {exc!r}")
             continue
@@ -2035,7 +2094,8 @@ def _empty_verdict(environment: str, **over) -> dict:
            "abandoned_segments": [], "invalid_segments": 0,
            "orphaned_committed_segments": [], "records_expected": 0,
            "records_read": 0, "segment_verdicts": [], "reasons": [],
-           "warnings": [], "verdict": "INVALID"}
+           "warnings": [], "missing_committed_segments": [],
+           "verdict": "INVALID"}
     out.update(over)
     return out
 
@@ -2073,15 +2133,24 @@ def verify_archive(root, *, environment: str, expected_archive_id: str | None = 
         # Carry what the head DOES state, so a partial-visibility failure never
         # reports "records_expected: 0" — that asserts "nothing was lost" by
         # omission, which is the class this milestone exists to remove.
-        expected_records = 0
+        # A RECORD count, summed over the generation chain. The first attempt
+        # put `segment_count` here — a 12-segment / 6000-record archive reported
+        # `records_expected: 12`, which the facade then turned into a shortfall
+        # of 12. `0` read as "unknown"; `12` reads as a small, real, nearly
+        # satisfied expectation. That is a worse lie, on a path no test in the
+        # module ever executed.
+        expected_records = None
         try:
             rec = head_state(root, environment,
                              expected_archive_id=expected_archive_id)
             if rec.get("state") == "CURRENT":
-                expected_records = rec["head"].generation_record.get(
-                    "segment_count") or 0
+                total = 0
+                for gen in range(1, rec["head"].generation_record["generation"] + 1):
+                    total += read_generation(
+                        root, environment, gen).get("committed_record_count") or 0
+                expected_records = total
         except Exception:                     # noqa: BLE001 - best effort only
-            pass
+            expected_records = None
         return _empty_verdict(
             environment, head_state="VERIFICATION_FAILED",
             records_expected=expected_records,
@@ -2213,13 +2282,14 @@ def _verify_archive_inner(root, *, environment: str, expected_archive_id,
         if previous is not None and previous.get("head_digest") != record["head_digest"]:
             reasons.append("the walked chain does not end at the current head")
 
-    results, previous_commitment = [], None
+    results, previous_commitment, missing_committed = [], None, []
     fold = digest_hex({"archive_id": archive_id, "environment": environment,
                        "purpose": "archive-segments-fold"})
     for index, entry in enumerate(expected):
         seg_id = entry["segment_id"]
         directory = discovered.pop(seg_id, None)
         if directory is None:
+            missing_committed.append(seg_id)
             reasons.append(
                 f"segment {seg_id!r} is committed in the head at position "
                 f"{index} but is MISSING from the archive")
@@ -2266,8 +2336,25 @@ def _verify_archive_inner(root, *, environment: str, expected_archive_id,
     # graft. Genuinely ambiguous, so it stays fatal and is never adopted
     # silently. A segment WITHOUT one is not evidence at all: it cannot hide a
     # deletion (the head states what must exist) and it cannot be grafted in.
-    orphaned = sorted(s for s, d in discovered.items()
-                      if _presence(d / MANIFEST_FILENAME)[0])
+    orphaned, unexaminable = [], []
+    for seg, d in sorted(discovered.items()):
+        present, why = _presence(d / MANIFEST_FILENAME)
+        if why is not None:
+            # `_presence` answers (None, why); `None` is falsy, so taking only
+            # [0] silently reclassified an unexaminable manifest from ORPHANED
+            # (fatal, "never adopted silently") to uncommitted (non-gating). A
+            # grafted committed segment plus one chmod turned INVALID into VALID
+            # with zero reasons — a fail-open introduced by the helper written
+            # to prevent exactly this.
+            unexaminable.append(f"{seg}: {why}")
+        elif present:
+            orphaned.append(seg)
+    if unexaminable:
+        reasons.append(
+            "UNEXAMINABLE_SEGMENT: the manifest presence of "
+            f"{[u.split(':')[0] for u in unexaminable]} could not be "
+            f"determined ({unexaminable[:3]}); an evidence directory the "
+            "verifier cannot examine is never certified as absent")
     uncommitted = sorted(s for s in discovered if s not in orphaned)
     if orphaned:
         reasons.append(
@@ -2321,6 +2408,7 @@ def _verify_archive_inner(root, *, environment: str, expected_archive_id,
         warnings=warnings,
         invalid_segments=len(invalid),
         orphaned_committed_segments=orphaned,
+        missing_committed_segments=missing_committed,
         records_expected=sum(e["record_count"] or 0 for e in expected),
         records_read=sum(r.records_read for r in results),
         segment_verdicts=[r.to_dict() for r in results],

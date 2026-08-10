@@ -1201,3 +1201,192 @@ class TestResidueAccounting:
         assert report["intact"] is True
         rec = ah.load_authoritative_head(tmp_path, ENV).generation_record
         assert store.verify(expected_head=(rec["generation"], "0" * 64))["intact"] is False
+
+
+class TestFilesystemShapeMatrix:
+    """A MATRIX, not hand-picked cases.
+
+    Three consecutive rounds fixed whichever call the last probe happened to
+    hit, and each round's tests instantiated exactly the shapes the new guard
+    handled. Reviewer 3's diagnosis: enumerate the shapes, not the call sites.
+    """
+
+    SHAPES = ["mode0_file", "mode0_dir", "fifo", "dir_in_place_of_file",
+              "dangling_symlink", "symlink_to_unreadable", "symlink_loop",
+              "enotdir"]
+
+    def _plant(self, seg, shape, tmp_path):
+        target = seg / sg.EVENTS_FILENAME
+        if shape == "mode0_file":
+            os.chmod(target, 0o000); return target
+        if shape == "mode0_dir":
+            os.chmod(seg, 0o000); return seg
+        if shape == "fifo":
+            target.unlink(); os.mkfifo(target); return target
+        if shape == "dir_in_place_of_file":
+            target.unlink(); target.mkdir(); return target
+        if shape == "dangling_symlink":
+            target.unlink(); target.symlink_to(tmp_path / "nope"); return target
+        if shape == "symlink_to_unreadable":
+            victim = tmp_path / "victim"; victim.write_bytes(b"x")
+            os.chmod(victim, 0o000)
+            target.unlink(); target.symlink_to(victim); return victim
+        if shape == "symlink_loop":
+            target.unlink(); target.symlink_to(target); return target
+        if shape == "enotdir":
+            target.unlink(); target.write_bytes(b"x")
+            return seg / sg.EVENTS_FILENAME / "child"
+        raise AssertionError(shape)
+
+    @pytest.mark.parametrize("shape", SHAPES)
+    def test_verify_segment_returns_a_bounded_verdict(self, tmp_path, shape):
+        init(tmp_path)
+        build(tmp_path, ["A"], per=2)
+        seg = seg_dir(tmp_path, "A")
+        planted = self._plant(seg, shape, tmp_path)
+        try:
+            start = time.monotonic()
+            v = sg.verify_segment(seg, environment=ENV, root=tmp_path)
+            assert time.monotonic() - start < 5, "verification did not terminate"
+            assert not v.valid and v.reasons
+            out = sg.verify_archive(tmp_path, environment=ENV)
+            assert out["verdict"] == "INVALID"
+        finally:
+            for p in (planted, seg):
+                try:
+                    os.chmod(p, 0o755)
+                except OSError:
+                    pass
+
+    def test_a_non_regular_file_never_blocks_a_reader(self, tmp_path):
+        """A FIFO answered `lstat` as present and then blocked forever — no
+        verdict, no timeout, a monitor that never returns. Strictly worse than
+        the traceback the guard was written to remove."""
+        init(tmp_path)
+        build(tmp_path, ["A"], per=2)
+        target = seg_dir(tmp_path, "A") / sg.EVENTS_FILENAME
+        target.unlink()
+        os.mkfifo(target)
+        start = time.monotonic()
+        v = sg.verify_segment(seg_dir(tmp_path, "A"), environment=ENV, root=tmp_path)
+        assert time.monotonic() - start < 5
+        assert any("not a regular file" in r for r in v.reasons), v.reasons
+
+
+class TestAdmissionTerminates:
+    """Mirroring an UNBOUNDED encoder into the pre-acceptance path lost 200
+    accepted-and-written records from one submitted value, while
+    verify_archive reported VALID with empty reasons."""
+
+    def test_an_endless_sequence_is_refused_not_walked(self):
+        from collections.abc import Sequence as _Seq
+
+        class Endless(_Seq):
+            def __len__(self): return 10 ** 9
+            def __getitem__(self, i): return 1
+
+        for value in (range(10 ** 9), Endless(), {"a": range(10 ** 9)}):
+            start = time.monotonic()
+            reason = sg.non_canonical_reason(value)
+            assert time.monotonic() - start < 10, "admission did not terminate"
+            assert reason is not None, f"{value!r} was admitted"
+
+
+class TestAccountingSurvivesTheGate:
+    """The identity is enforced in `submit()`, not inside the gate.
+
+    Six rounds hardened `non_canonical_reason` so it could never raise, and each
+    round found another way in — ending with a real SIGINT, which no
+    `except Exception` catches.
+    """
+
+    @pytest.mark.parametrize("exc", [KeyboardInterrupt, SystemExit, RuntimeError])
+    def test_any_escape_from_admission_keeps_the_identity(self, tmp_path, exc):
+        init(tmp_path)
+        w = sg.SegmentWriter(tmp_path, environment=ENV, segment_id=f"seg-{exc.__name__}",
+                             partition_identity="p", commit_to_head=False)
+        for i in range(5):
+            assert w.submit(fields(i)) is None
+
+        class Hostile(dict):
+            def items(self):
+                raise exc("from the gate")
+
+        try:
+            w.submit({**fields(9), "raw_event": Hostile(a=1)})
+        except BaseException:
+            pass
+        acc = w.accounting
+        assert acc.attempted == acc.rejected_before_accept + acc.accepted, acc.to_dict()
+        manifest = w.close()
+        assert manifest["record_count"] == 5
+        assert acc.clean(), acc.to_dict()
+
+
+class TestVerdictHonesty:
+    def test_records_expected_is_a_record_count_on_every_path(self, tmp_path):
+        """`segment_count` was written into a record-count field: a 12-segment /
+        6000-record archive reported 12, which the facade turned into a
+        shortfall of 12. `0` read as unknown; `12` reads as nearly satisfied."""
+        init(tmp_path)
+        build(tmp_path, ["A", "B", "C"], per=25)
+        healthy = verdict(tmp_path)
+        assert healthy["records_expected"] == 75
+        victim = tmp_path / "victim"
+        victim.write_bytes(b"x")
+        os.chmod(victim, 0o000)
+        target = seg_dir(tmp_path, "B") / sg.MANIFEST_FILENAME
+        target.unlink()
+        target.symlink_to(victim)
+        try:
+            out = verdict(tmp_path)
+            assert out["verdict"] == "INVALID"
+            assert out["records_expected"] in (None, 75), out["records_expected"]
+            assert out["records_expected"] != 3
+        finally:
+            os.chmod(victim, 0o755)
+
+    def test_an_unexaminable_manifest_cannot_downgrade_an_orphan(self, tmp_path):
+        """`_presence(...)[0]` discarded the reason, so `(None, why)` read as
+        absent and a grafted committed segment became benign `uncommitted` —
+        VALID with zero reasons, from one chmod."""
+        init(tmp_path)
+        build(tmp_path, ["A"], per=2)
+        other = tmp_path / "other"
+        init(other)
+        build(other, ["Z"], per=2)
+        graft = tmp_path / f"env={ENV}" / "segment=kalshi.seg-Z"
+        shutil.copytree(other / f"env={ENV}" / "segment=kalshi.seg-Z", graft)
+        assert verdict(tmp_path)["verdict"] == "INVALID"
+        os.chmod(graft, 0o000)
+        try:
+            out = verdict(tmp_path)
+            assert out["verdict"] == "INVALID", "an unexaminable graft was certified"
+            assert any("UNEXAMINABLE_SEGMENT" in r for r in out["reasons"]), out["reasons"]
+        finally:
+            os.chmod(graft, 0o755)
+
+    def test_missing_committed_segments_comes_from_the_report(self, tmp_path):
+        """It read stale instance state, so `[]` meant "no read method has been
+        called", and a healthy archive could name a phantom."""
+        init(tmp_path)
+        build(tmp_path, ["A", "B"], per=2)
+        shutil.rmtree(seg_dir(tmp_path, "B"))
+        out = verdict(tmp_path)
+        assert out["missing_committed_segments"] == ["kalshi.seg-B"]
+        store = ar.EventArchive(tmp_path, environment=ENV, venue="kalshi")
+        assert store.verify()["missing_committed_segments"] == ["kalshi.seg-B"]
+
+    def test_malformed_content_returns_a_verdict(self, tmp_path):
+        """A gzip of `null` or `[1,2]`, or a non-dict subscription_metadata,
+        raised AttributeError. "Total" is stronger than "handles EACCES"."""
+        import gzip as gz
+        init(tmp_path)
+        seg = tmp_path / f"env={ENV}" / "segment=seg-malformed"
+        seg.mkdir(parents=True)
+        with gz.open(seg / sg.EVENTS_FILENAME, "wb") as fh:
+            fh.write(b"null\n[1,2]\n")
+        (seg / sg.MANIFEST_FILENAME).write_bytes(
+            cn.canonical_bytes({"subscription_metadata": "a-string"}))
+        v = sg.verify_segment(seg, environment=ENV, root=tmp_path)
+        assert not v.valid and v.reasons

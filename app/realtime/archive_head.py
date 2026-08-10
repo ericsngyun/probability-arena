@@ -43,8 +43,9 @@ generation record that was already durably created.
 
 ## Threat model, stated exactly
 
-Corrected for the third time, because this section has overclaimed in every
-previous revision and a reviewer has caught it every time. What follows is what
+Corrected repeatedly — a reviewer has caught this section overclaiming in every
+previous revision, and the last correction missed deletion entirely while the
+file itself went untouched for a whole round. What follows is what
 the code demonstrably does, not what the design aspires to.
 
 **Pinned without any external input.** A history that is SHORTER than it claims.
@@ -61,8 +62,12 @@ attacker forges a genesis as easily as reading one.
 **Pinned only with the external anchor `expected_head=(generation, digest)`.**
 The committed ORDER and the committed SET of segments. An attacker who rewrites
 every generation record and the pointer — leaving the genesis and every manifest
-byte-identical, and needing to forge nothing — can reorder committed history, or
-substitute and insert segments while preserving the generation count. This is
+byte-identical, and needing to forge nothing — can DELETE a segment (re-minting
+a consistent, genuinely shorter chain), reorder committed history, or substitute
+and insert segments while preserving the generation count. Deletion belongs in
+this list: "a history SHORTER than it claims" above means one whose ARTIFACTS
+DISAGREE about its length, which a full re-mint repairs. The milestone's origin
+attack — twelve records became eight — is this case. This is
 NOT covered by "an attacker who rewrites the root of trust", which earlier
 revisions of this comment claimed as the only residual. It is a full-chain
 re-mint, and it is defeated only by an anchor held outside this root. Because
@@ -70,7 +75,9 @@ generations chain, pinning one generation pins every generation before it.
 
 `minimum_generation` pins a COUNTER and nothing else. It stops shrinkage; it does
 not stop reordering, substitution or insertion, all of which can grow past it.
-Prefer `expected_head`.
+Carry BOTH — they are complementary, not ordered — and **re-anchor at the
+current head every cycle**: an anchor pins generations 0..anchor_gen and says
+nothing about anything committed after it.
 
 **Not pinned at all.** `archive_identity`, `created_at`/`updated_at` and
 `canonical_schema_version` in every artifact, and `environment` in the pointer:

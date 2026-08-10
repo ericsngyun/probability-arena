@@ -599,8 +599,15 @@ class EventArchive:
             "uncommitted_segments": report.get("uncommitted_segments", []),
             "orphaned_committed_segments": report.get(
                 "orphaned_committed_segments", []),
-            "missing_committed_segments": getattr(
-                self, "missing_committed_segments", []),
+            # From the REPORT. Reading `self` meant `[]` denoted "nobody
+            # called a read method yet", not "nothing is missing" — the field
+            # added against loss-by-omission asserting exactly that, and
+            # reporting a phantom on a healthy archive after a prior read.
+            "missing_committed_segments": report.get(
+                "missing_committed_segments", []),
+            "records_expected": report.get("records_expected"),
+            "archive_id": report.get("archive_id"),
+            "generations_present": report.get("generations_present", []),
         }
 
 
