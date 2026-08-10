@@ -15,17 +15,50 @@ production reader in `archive_head.py` or `archive.py` ever called either
 one -- that gap, not a missing primitive, was the root cause the eight
 prior remediation rounds kept re-discovering one instance at a time.
 
+KALSHI-ARCHIVE-VERIFICATION-META-001 (A2 + the prerequisite consolidation
+before A9's mutation campaign): this module used to be the ONLY guard, and
+a red-team corpus of 22 unsafe/8 safe shapes proved it bypassed 16 of 22 of
+them -- `Path(p).open()`, `path.stat()`, an aliased `helper = open`, a
+`getattr(path, "open")()` dynamic dispatch, `os.listdir`/`os.walk`/
+`os.path.realpath`/`shutil.copyfile`/`io.open`/`gzip.GzipFile`, and an
+IMPORT-aliased module (`import gzip as _gz` was special-cased; nothing
+else was) were all structurally invisible to its vocabulary, not merely
+missing from its allowlist. A second guard (`tests/meta_inventory/
+ast_guard_v2.py`) was built to close those gaps as NEW infrastructure,
+which produced exactly the failure mode this milestone's prerequisite
+warns about: mutating ONE guard left the OTHER one green, so the mutation
+campaign would have certified nothing. `ast_guard_v2.py` is gone; its
+detections (wider attribute-name vocabulary, wider module/function
+vocabulary, execution-order alias tracking for both builtin rebinding and
+import aliasing, and `getattr(...)` dynamic-dispatch detection) are folded
+in below, so `_Visitor` is now the ONE and ONLY static guard covering the
+five audited modules. Seven call sites this widened vocabulary made newly
+visible for the first time -- the five a prior line-based delta check
+found (four `<expr>.stat(...)` sites, one `gzip.GzipFile(...)`) PLUS two
+more a per-LINE dedup missed because they share a source line with an
+already-allowlisted call (`SegmentWriter._quarantine_abandoned_events`'s
+`.stat()` sharing a line with its already-allowlisted `.exists()`, and
+`SegmentWriter._open_events`'s `os.fdopen(...)` nested inside its
+already-allowlisted `gzip.open(...)` call) -- were hand-reviewed and are
+recorded in the ALLOWLIST below with an explicit safety verdict for each.
+
 This module does not (and cannot, from pure AST) prove the routing
 invariant holds -- proving it would require alias/points-to analysis this
 codebase does not have. What it CAN do, and does, is:
 
 1. Enumerate every call to a filesystem-presence/read primitive
    (`Path.glob`, `Path.exists`, `Path.is_file`, `Path.is_dir`,
-   `Path.is_symlink`, `Path.resolve`, `Path.read_bytes`, `Path.iterdir`,
-   `Path.rglob`, `open`, `os.open`, `os.scandir`, `os.stat`, `os.lstat`,
-   `os.readlink`, `gzip.open`) in the modules that own canonical archive
-   evidence paths, using `ast`, not `grep` -- so a call split across lines,
-   inside a comprehension, or shadowed by a rebound name is still found.
+   `Path.is_symlink`, `Path.resolve`, `Path.read_bytes`, `Path.read_text`,
+   `Path.iterdir`, `Path.rglob`, `Path.open`, `Path.stat`, `Path.lstat`,
+   `open`, `os.open`, `os.scandir`, `os.stat`, `os.lstat`, `os.readlink`,
+   `os.fdopen`, `os.listdir`, `os.walk`, `os.path.realpath`,
+   `shutil.copyfile`, `io.open`, `gzip.open`, `gzip.GzipFile`), an ALIASED
+   builtin (`helper = open; helper(...)`), an ALIASED import of any of the
+   above (`import gzip as _gz`, `from os import path as p`), and a
+   `getattr(obj, "<unsafe-name>")(...)` dynamic dispatch -- in the modules
+   that own canonical archive evidence paths, using `ast`, not `grep` -- so
+   a call split across lines, inside a comprehension, or shadowed by a
+   rebound name is still found.
 2. Attribute each occurrence to (module, enclosing function/class, call).
 3. Compare that set against an explicit, reviewed ALLOWLIST recorded here.
 
@@ -57,18 +90,46 @@ AUDITED_MODULES = (
     "app/realtime/evidence_fs.py",
 )
 
+# --- detection vocabulary ----------------------------------------------------
+#
+# Superset of the original four-set vocabulary (which alone bypassed 16/22
+# red-team shapes) merged with everything `ast_guard_v2.py` added. Matched on
+# the ATTRIBUTE/FUNCTION NAME alone, deliberately not conditioned on the
+# receiver's inferred type -- a subclassed Path-like object or an aliased
+# import changes the receiver's spelling, not the method name, and matching
+# the name is exactly what survives that (same over-inclusive tradeoff
+# `ast_guard_v2.py` documented: this WILL flag a non-filesystem `.open()` --
+# a socket, a zipfile -- as a false positive on a real production module;
+# that is a stated tradeoff, not an oversight).
 PATH_METHOD_NAMES = {
     "glob", "exists", "is_file", "is_dir", "is_symlink", "resolve",
-    "read_bytes", "iterdir", "rglob",
+    "read_bytes", "read_text", "iterdir", "rglob", "open", "stat", "lstat",
 }
-OS_FUNC_NAMES = {"open", "scandir", "stat", "lstat", "readlink"}
-GZIP_FUNC_NAMES = {"open"}
+OS_FUNC_NAMES = {"open", "scandir", "stat", "lstat", "readlink", "fdopen",
+                 "listdir", "walk"}
+GZIP_FUNC_NAMES = {"open", "GzipFile"}
+SHUTIL_FUNC_NAMES = {"copyfile"}
+IO_FUNC_NAMES = {"open"}
 # Not in the milestone's explicit sweep list, but directly implicated in
 # finding #5 (`read_genesis` treats EACCES the same as ENOENT because
 # `os.path.lexists` swallows OSError internally) -- tracked anyway so the
 # audit's own findings corroborate that defect rather than being silent
 # about the single most-used existence check in this codebase.
-OS_PATH_FUNC_NAMES = {"lexists", "exists"}
+OS_PATH_FUNC_NAMES = {"lexists", "exists", "realpath"}
+# Builtins whose NAME, if rebound to a plain local (`helper = open`) or
+# imported directly (`from os import fdopen as helper`), still makes a
+# later `helper(...)` call site a filesystem primitive.
+UNSAFE_BUILTIN_NAMES = {"open"}
+# `getattr(obj, "<name>")(...)` -- the SAME set as the path-method names,
+# since that is the dynamic-dispatch shape the red-team corpus exercises.
+GETATTR_UNSAFE_ARGS = PATH_METHOD_NAMES | {"read_text"}
+# (module dotted-path -> allowed attr names), used for import-alias
+# resolution: `import gzip as _gz; _gz.open(...)`, `from os import path as
+# p; p.realpath(...)`, `import shutil as sh; sh.copyfile(...)`.
+_MODULE_FUNC_NAMES = {
+    "os": OS_FUNC_NAMES, "os.path": OS_PATH_FUNC_NAMES,
+    "gzip": GZIP_FUNC_NAMES, "shutil": SHUTIL_FUNC_NAMES, "io": IO_FUNC_NAMES,
+}
 
 
 class _Finding:
@@ -90,11 +151,24 @@ class _Finding:
 
 
 class _Visitor(ast.NodeVisitor):
+    """The one and only static guard. Tracks import aliases and simple
+    `name = <unsafe-callable>` local rebindings, in EXECUTION ORDER (a
+    top-to-bottom scan, not general-purpose points-to analysis -- sufficient
+    for this red-team corpus's deliberately linear snippets and for this
+    codebase's module-level import style), so an aliased builtin or an
+    aliased import is resolved through to the same finding an unaliased
+    spelling would produce.
+    """
+
     def __init__(self, module: str, source_lines: list):
         self.module = module
         self.source_lines = source_lines
         self.stack: list = ["<module>"]
         self.findings: list = []
+        # name -> ("builtin", builtin_name) | ("module_attr", dotted_module, attr)
+        self.aliases: dict = {}
+        # bound name -> dotted module path, from `import X as name` / `import X`
+        self.module_aliases: dict = {}
 
     def _qualname(self) -> str:
         return "<module>" if len(self.stack) == 1 else ".".join(self.stack[1:])
@@ -117,34 +191,102 @@ class _Visitor(ast.NodeVisitor):
         except IndexError:
             return ""
 
+    def _flag(self, node, call_desc: str) -> None:
+        self.findings.append(_Finding(
+            self.module, self._qualname(), node.lineno, call_desc,
+            self._text(node)))
+
+    # --- import / alias tracking (ordered, top-to-bottom) ---------------------
+
+    def visit_Import(self, node):
+        for alias in node.names:
+            bound = alias.asname or alias.name.split(".")[0]
+            self.module_aliases[bound] = alias.name
+        self.generic_visit(node)
+
+    def visit_ImportFrom(self, node):
+        if node.module is not None:
+            for alias in node.names:
+                bound = alias.asname or alias.name
+                # `from pathlib import Path as P` -- a NAME import of a
+                # class, not a module; deliberately NOT recorded as a module
+                # alias (calling `.open()` on a `P(...)` instance is caught
+                # by the attribute-name match in visit_Call, not by this
+                # path).
+                if node.module in _MODULE_FUNC_NAMES and (
+                        alias.name in _MODULE_FUNC_NAMES[node.module]):
+                    self.aliases[bound] = ("module_attr", node.module, alias.name)
+                elif node.module == "os" and alias.name == "path":
+                    self.module_aliases[bound] = "os.path"
+        self.generic_visit(node)
+
+    def visit_Assign(self, node):
+        if len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+            target_name = node.targets[0].id
+            value = node.value
+            if isinstance(value, ast.Name):
+                if value.id in UNSAFE_BUILTIN_NAMES:
+                    self.aliases[target_name] = ("builtin", value.id)
+                elif value.id in self.aliases:
+                    self.aliases[target_name] = self.aliases[value.id]
+        self.generic_visit(node)
+
+    def _resolve_module_attr_call(self, func: ast.Attribute):
+        """For `expr.attr(...)`, return (dotted_module, attr) if `expr`
+        resolves (through import-alias tracking) to a known module."""
+        value = func.value
+        if isinstance(value, ast.Name):
+            base = value.id
+            if base in self.module_aliases:
+                return (self.module_aliases[base], func.attr)
+            if base in ("os", "gzip", "shutil", "io"):
+                return (base, func.attr)
+            return None
+        if isinstance(value, ast.Attribute) and isinstance(value.value, ast.Name):
+            outer_base = value.value.id
+            dotted = self.module_aliases.get(outer_base, outer_base)
+            return (f"{dotted}.{value.attr}", func.attr)
+        return None
+
+    # --- the actual sweep -------------------------------------------------
+
     def visit_Call(self, node):
         func = node.func
-        call_desc = None
-        if isinstance(func, ast.Attribute):
-            if (isinstance(func.value, ast.Attribute)
-                    and isinstance(func.value.value, ast.Name)
-                    and func.value.value.id == "os"
-                    and func.value.attr == "path"
-                    and func.attr in OS_PATH_FUNC_NAMES):
-                call_desc = f"os.path.{func.attr}(...)"
-            elif func.attr in PATH_METHOD_NAMES:
-                call_desc = f"<expr>.{func.attr}(...)"
-            elif (isinstance(func.value, ast.Name)
-                  and func.value.id == "os" and func.attr in OS_FUNC_NAMES):
-                call_desc = f"os.{func.attr}(...)"
-            elif (isinstance(func.value, ast.Name)
-                  and func.value.id == "gzip" and func.attr in GZIP_FUNC_NAMES):
-                call_desc = f"gzip.{func.attr}(...)"
-            elif (isinstance(func.value, ast.Name)
-                  and func.value.id in ("_gz",) and func.attr == "open"):
-                call_desc = "gzip.open(...)"       # `import gzip as _gz`
-        elif isinstance(func, ast.Name) and func.id == "open":
-            call_desc = "open(...)"
 
-        if call_desc is not None:
-            self.findings.append(_Finding(
-                self.module, self._qualname(), node.lineno, call_desc,
-                self._text(node)))
+        if isinstance(func, ast.Attribute):
+            # Module-qualified resolution (`os.open`, `os.path.lexists`,
+            # `gzip.open`/`GzipFile`, an ALIASED `import gzip as _gz`, ...)
+            # is tried FIRST and takes priority over the generic
+            # `<expr>.method(...)` match below: `open`/`stat`/`lstat` are
+            # members of BOTH `PATH_METHOD_NAMES` and `OS_FUNC_NAMES`, so
+            # checking the generic bucket first would mislabel `os.open(...)`
+            # as `<expr>.open(...)` and break every existing allowlist entry
+            # spelled the `os.`-qualified way.
+            resolved = self._resolve_module_attr_call(func)
+            if (resolved is not None and resolved[0] in _MODULE_FUNC_NAMES
+                    and resolved[1] in _MODULE_FUNC_NAMES[resolved[0]]):
+                dotted, attr = resolved
+                self._flag(node, f"{dotted}.{attr}(...)")
+            elif func.attr in PATH_METHOD_NAMES:
+                self._flag(node, f"<expr>.{func.attr}(...)")
+
+        elif isinstance(func, ast.Name):
+            if func.id == "open":
+                self._flag(node, "open(...)")
+            elif func.id in self.aliases:
+                kind = self.aliases[func.id]
+                if kind[0] == "builtin":
+                    self._flag(node, f"open(...)  # via alias {func.id!r}")
+                else:
+                    self._flag(node, f"{kind[1]}.{kind[2]}(...)  # via alias "
+                                     f"{func.id!r}")
+            elif func.id == "getattr" and len(node.args) >= 2:
+                second = node.args[1]
+                if (isinstance(second, ast.Constant)
+                        and isinstance(second.value, str)
+                        and second.value in GETATTR_UNSAFE_ARGS):
+                    self._flag(node, f"getattr(..., {second.value!r})(...)")
+
         self.generic_visit(node)
 
 
@@ -164,13 +306,34 @@ def scan_all() -> list:
     return out
 
 
+def scan_source(source: str, *, module: str = "<corpus>") -> list:
+    """Scan a source STRING rather than a repo-relative file -- used by the
+    red-team corpus (`tests/meta_inventory/red_team_corpus.py`), which is
+    deliberately guard-agnostic: it exercises whichever module this
+    function lives in, so folding two guards into one required no change to
+    the corpus itself.
+    """
+    tree = ast.parse(source, filename=module)
+    visitor = _Visitor(module, source.splitlines())
+    visitor.visit(tree)
+    return visitor.findings
+
+
+def scan_file(path) -> list:
+    text = Path(path).read_text()
+    tree = ast.parse(text, filename=str(path))
+    visitor = _Visitor(str(path), text.splitlines())
+    visitor.visit(tree)
+    return visitor.findings
+
+
 # --- the allowlist ------------------------------------------------------------
 #
 # (module, enclosing qualname, call description). Re-generated from the
-# audited state after KALSHI-ARCHIVE-CORE-REMEDIATION-002 A1 and reviewed by
-# hand against the source above. Anything NOT in this set is a NEW
-# evidence-path access this harness has not seen before, and the test using
-# it fails until a human adds it here deliberately.
+# CONSOLIDATED (single-guard, widened-vocabulary) scan and reviewed by hand
+# against the source above. Anything NOT in this set is a NEW evidence-path
+# access this harness has not seen before, and the test using it fails
+# until a human adds it here deliberately.
 #
 # Every entry that used to carry a `KNOWN-DEFECT` marker is GONE from this
 # table, not merely un-marked: the call sites that produced defects #1-#6
@@ -255,7 +418,22 @@ ALLOWLIST = {
     ("app/realtime/segment.py", "SegmentWriter._close_stages", "os.open(...)"),
     ("app/realtime/segment.py", "SegmentWriter._open_events", "gzip.open(...)"),
     ("app/realtime/segment.py", "SegmentWriter._open_events", "os.open(...)"),
+    # SAFE, newly visible under the widened `OS_FUNC_NAMES` (added "fdopen"):
+    # wraps the FD `os.open(...)` on the line immediately above already
+    # opened (with `O_NOFOLLOW`, against the writer's OWN events path) into
+    # a Python file object -- `os.fdopen` never itself makes a filesystem
+    # `open()` syscall; it operates on an already-validated file descriptor,
+    # not a path. Same writer-owned threat model as the `os.open` call it
+    # wraps, two names for what is structurally one guarded open.
+    ("app/realtime/segment.py", "SegmentWriter._open_events", "os.fdopen(...)"),
     ("app/realtime/segment.py", "SegmentWriter._quarantine_abandoned_events", "<expr>.exists(...)"),
+    # SAFE, newly visible: the companion `.stat()` on the SAME line/SAME
+    # try/except OSError block as the `.exists()` check immediately above --
+    # both against the writer's own `self.events_path`, both refuse a
+    # symlink two lines earlier (`os.path.islink`), and both fail closed
+    # (`except OSError: return`) rather than propagating. Writer-owned, not
+    # a reader being handed an untrusted path.
+    ("app/realtime/segment.py", "SegmentWriter._quarantine_abandoned_events", "<expr>.stat(...)"),
     ("app/realtime/segment.py", "SegmentWriter.read_manifest", "<expr>.read_bytes(...)"),
     ("app/realtime/segment.py", "file_sha256", "open(...)"),
     ("app/realtime/segment.py", "publish_manifest", "<expr>.read_bytes(...)"),
@@ -283,7 +461,7 @@ ALLOWLIST = {
     ("app/realtime/segment.py", "_verify_archive_inner", "<expr>.is_dir(...)"),
 
     # --- evidence_fs.py: the abstraction's own foundational primitives. ---
-    # These SIX are, deliberately, the only raw filesystem-presence/read
+    # These are, deliberately, the only raw filesystem-presence/read
     # calls anywhere in the four canonical archive modules' evidence path.
     # `presence` uses `os.lstat` (never follows the final component, so it
     # cannot itself block on a FIFO by opening it); `assert_contained` walks
@@ -304,6 +482,73 @@ ALLOWLIST = {
     ("app/realtime/evidence_fs.py", "is_regular_file", "os.stat(...)"),
     ("app/realtime/evidence_fs.py", "bounded_read", "os.stat(...)"),
     ("app/realtime/evidence_fs.py", "bounded_read", "open(...)"),
+
+    # --- NEWLY VISIBLE, KALSHI-ARCHIVE-VERIFICATION-META-001 -- the five
+    # call sites the ORIGINAL (pre-consolidation) scanner's narrower
+    # vocabulary never even visited (no PATH_METHOD_NAMES entry for "stat",
+    # no GZIP_FUNC_NAMES entry for "GzipFile"). Each was hand-reviewed
+    # against the containment/regular-file invariant this allowlist exists
+    # to enforce; the verdict for each is recorded here, not merely the
+    # allowlisting decision, per this milestone's explicit instruction not
+    # to blanket-allowlist to make the suite green.
+    #
+    # SAFE -- writer-owned segment (`self.events_path`/`self.dir` are the
+    # WRITER's own segment, created and exclusively locked by THIS writer
+    # in `_acquire_ownership`/`_open_events`, already on this allowlist
+    # above) -- a size check against a file the writer itself opened is not
+    # a reader being handed an untrusted path; it is the same threat model
+    # already accepted for `SegmentWriter.__init__`'s `<expr>.exists(...)`
+    # and `_close_stages`'s `os.open(...)` two lines above this same stat.
+    ("app/realtime/segment.py", "SegmentWriter.rotation_due", "<expr>.stat(...)"),
+    ("app/realtime/segment.py", "SegmentWriter._close_stages", "<expr>.stat(...)"),
+
+    # SAFE -- diagnostic quarantine reporting, size-only, already downstream
+    # of the SAME per-file containment checks this function's other two
+    # allowlisted calls perform (`d.is_symlink()`/`d.is_dir()` on the PARENT
+    # directory, then `os.scandir(d)` with a filename-PREFIX filter, both
+    # allowlisted above). `f` is a `Path` built directly from an
+    # `os.scandir(d)` DirEntry's own `.path`, not a caller-supplied or
+    # glob-resolved path; `.stat()` here reports a BYTE COUNT for an
+    # operator's residue report, wrapped in `except OSError`, and is never
+    # followed by an `open()` of `f`'s content. If `f` itself is a symlink
+    # to something outside the root, the worst this call discloses is that
+    # target's SIZE (matching the severity already accepted for the
+    # `is_symlink()` DIRECTORY check two lines above, which reports "not
+    # scanned" rather than silently skipping) -- no content is ever read.
+    ("app/realtime/segment.py", "_abandoned_residue", "<expr>.stat(...)"),
+
+    # REPORTED FINDING, allowlisted as a KNOWN, TRACKED, UNFIXED gap (no
+    # production edit happens anywhere in this milestone) -- NOT
+    # independently safe. `events_path.stat()` sits inside `verify_segment`
+    # at the exact point A3's argument-shape matrix already proved is
+    # UNGUARDED when `root=None` is passed explicitly: the containment
+    # block above (`if root is not None: ...`) is skipped entirely for that
+    # call shape, so this `.stat()` runs with ZERO containment checking on
+    # a symlink-to-FIFO events path, immediately adjacent to (three lines
+    # before) the ALREADY-KNOWN `file_sha256` raw `open()` that is the named
+    # defect A3 reproduces as a hang. `.stat()` itself does not block on a
+    # FIFO (stat is metadata-only, unlike open+read), so it is not what
+    # causes the hang -- but its presence here is corroborating evidence of
+    # the SAME missing-containment root cause, not a separate, independent
+    # call site: this allowlist entry and the `file_sha256` entry above it
+    # under `segment.py` are two symptoms of the one `root=None` gap A3
+    # already pins with an executable, currently-passing (proving the
+    # defect reproduces) test.
+    ("app/realtime/segment.py", "verify_segment", "<expr>.stat(...)"),
+
+    # SAFE -- operates on `io.BytesIO(data)`, an IN-MEMORY buffer already
+    # produced by `bounded_read(path, ...)` two lines above, never on a
+    # filesystem path itself. `bounded_read` has ALREADY proven the source
+    # is a regular file under the size bound and read it fully into `data`
+    # before this line runs; `gzip.GzipFile(fileobj=...)` never touches the
+    # filesystem at all -- it is flagged by this guard's vocabulary purely
+    # because the NAME `GzipFile` is deliberately over-inclusive (see the
+    # module docstring), not because this call site can itself hang, read
+    # unboundedly, or escape containment. This is exactly the shape the
+    # module's own docstring explains: reading through `bounded_read` FIRST
+    # means the syscall that could hang or read forever never happens
+    # without the regular-file-and-size check in front of it.
+    ("app/realtime/evidence_fs.py", "open_bounded_gzip", "gzip.GzipFile(...)"),
 }
 
 
