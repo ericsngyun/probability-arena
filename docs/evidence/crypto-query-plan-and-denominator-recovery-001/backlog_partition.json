@@ -1,0 +1,202 @@
+{
+  "db": "/mnt/data/cqp-bench/part.db",
+  "measured_at": "2026-08-11T07:00:52.351705+00:00",
+  "retention_days": 7,
+  "window_hours": 48,
+  "closing_edge_minutes": 2160.0,
+  "b4_arrivals": {
+    "windows": {
+      "24h": {
+        "tokens": 520,
+        "per_day": 520.0
+      },
+      "3d": {
+        "tokens": 1363,
+        "per_day": 454.3
+      },
+      "7d": {
+        "tokens": 2945,
+        "per_day": 420.7
+      },
+      "14d": {
+        "tokens": 5545,
+        "per_day": 396.1
+      },
+      "30d": {
+        "tokens": 10231,
+        "per_day": 341.0
+      }
+    },
+    "per_utc_day": {
+      "complete_days": 37,
+      "first_day": "2026-07-04",
+      "last_day": "2026-08-11",
+      "min": 181,
+      "p50": 324,
+      "p90": 409,
+      "p95": 418,
+      "max": 529,
+      "mean": 333.8
+    },
+    "last_14_complete_days": [
+      {
+        "day": "2026-07-28",
+        "tokens": 366
+      },
+      {
+        "day": "2026-07-29",
+        "tokens": 397
+      },
+      {
+        "day": "2026-07-30",
+        "tokens": 388
+      },
+      {
+        "day": "2026-07-31",
+        "tokens": 380
+      },
+      {
+        "day": "2026-08-01",
+        "tokens": 321
+      },
+      {
+        "day": "2026-08-02",
+        "tokens": 309
+      },
+      {
+        "day": "2026-08-03",
+        "tokens": 418
+      },
+      {
+        "day": "2026-08-04",
+        "tokens": 425
+      },
+      {
+        "day": "2026-08-05",
+        "tokens": 386
+      },
+      {
+        "day": "2026-08-06",
+        "tokens": 383
+      },
+      {
+        "day": "2026-08-07",
+        "tokens": 392
+      },
+      {
+        "day": "2026-08-08",
+        "tokens": 416
+      },
+      {
+        "day": "2026-08-09",
+        "tokens": 391
+      },
+      {
+        "day": "2026-08-10",
+        "tokens": 529
+      }
+    ],
+    "note": "The rate is non-stationary \u2014 it rises as the window shortens. A stationary p95 over the whole history therefore UNDERSTATES the current regime; the recent-14-day p95 is reported alongside it.",
+    "recent_14d": {
+      "p50": 388,
+      "p95": 425,
+      "max": 529,
+      "mean": 392.9
+    }
+  },
+  "b5_backlog": {
+    "totals": {
+      "tokens_total": 12863,
+      "outcomes_total": 7436,
+      "outcomes_final": 2,
+      "birth_events": 7436
+    },
+    "backlog_size": 11918,
+    "anchored": 11918,
+    "classes": {
+      "RETENTION_LOST": 9306,
+      "RECOVERABLE_NOW": 47,
+      "PARTIALLY_RECOVERABLE": 789,
+      "MISSING_REQUIRED_INITIAL_STATE": 1581,
+      "NOT_YET_DUE": 0,
+      "NO_EVIDENCE_IN_ANY_HORIZON": 195
+    },
+    "class_share": {
+      "RETENTION_LOST": 78.08,
+      "RECOVERABLE_NOW": 0.39,
+      "PARTIALLY_RECOVERABLE": 6.62,
+      "MISSING_REQUIRED_INITIAL_STATE": 13.27,
+      "NOT_YET_DUE": 0.0,
+      "NO_EVIDENCE_IN_ANY_HORIZON": 1.64
+    },
+    "sum_check": 11918,
+    "cheap_identification": {
+      "RETENTION_LOST": "pure timestamp range on crypto_tokens.first_seen_at: anchor < now - (7d + 2160.0min). No source load, no join \u2014 one indexable predicate, and it is MONOTONE (a token never leaves this class), so it can be written off once and excluded from selection forever.",
+      "NOT_YET_DUE": "first_seen_at > now - closing_edge; already implemented as `max_first_seen_at`/`min_age_minutes` on _universe.",
+      "MISSING_REQUIRED_INITIAL_STATE": "crypto_token_birth_events.initial_liquidity_usd IS NULL (or no birth row and no first-evidence timestamp) \u2014 one indexed lookup on the birth table, no tick scan. Also monotone in practice: the initial state is a property of a moment that has already passed.",
+      "RECOVERABLE_NOW / PARTIALLY_RECOVERABLE / NO_EVIDENCE_IN_ANY_HORIZON": "these three CANNOT be told apart without touching crypto_price_ticks, but the tick probe is a single EXISTS query on ix_crypto_price_ticks_token_address (~0.01 ms post-ANALYZE, ~13 ms pre-ANALYZE) \u2014 cheap only once the query plan is fixed."
+    },
+    "horizon_hit_counts": {
+      "15m": 1023,
+      "1h": 1139,
+      "6h": 245,
+      "24h": 72
+    },
+    "backlog_tokens_with_any_tick": 2255,
+    "oldest_backlog_first_seen_at": "2026-07-04 01:36:16.276833"
+  },
+  "b7_retention": {
+    "page_size": 4096,
+    "page_count": 1110992,
+    "freelist_pages": 419080,
+    "freelist_bytes": 1716551680,
+    "freelist_share": 0.3772,
+    "crypto_price_ticks_rows": 143107,
+    "crypto_price_ticks_bytes": 38813696,
+    "bytes_per_tick_row": 271.2,
+    "tick_rows_per_complete_day": 19375.8,
+    "tick_span": [
+      "2026-08-04",
+      "2026-08-11"
+    ],
+    "windows": {
+      "7d": {
+        "recovery_deadline_age_days": 8.5,
+        "extra_days_vs_current": 0,
+        "incremental_tick_rows": 0,
+        "incremental_bytes": 0,
+        "incremental_mib": 0.0,
+        "absorbed_by_existing_freelist": true,
+        "counterfactual_backlog_inside_window": 2612
+      },
+      "10d": {
+        "recovery_deadline_age_days": 11.5,
+        "extra_days_vs_current": 3,
+        "incremental_tick_rows": 58128,
+        "incremental_bytes": 15765428,
+        "incremental_mib": 15.0,
+        "absorbed_by_existing_freelist": true,
+        "counterfactual_backlog_inside_window": 3613
+      },
+      "14d": {
+        "recovery_deadline_age_days": 15.5,
+        "extra_days_vs_current": 7,
+        "incremental_tick_rows": 135631,
+        "incremental_bytes": 36785999,
+        "incremental_mib": 35.1,
+        "absorbed_by_existing_freelist": true,
+        "counterfactual_backlog_inside_window": 5176
+      },
+      "21d": {
+        "recovery_deadline_age_days": 22.5,
+        "extra_days_vs_current": 14,
+        "incremental_tick_rows": 271262,
+        "incremental_bytes": 73571998,
+        "incremental_mib": 70.2,
+        "absorbed_by_existing_freelist": true,
+        "counterfactual_backlog_inside_window": 7404
+      }
+    },
+    "note": "Retention is NOT retroactive: rows already pruned cannot be recovered by lengthening the window, so the counterfactual column is a ceiling on what a LONGER WINDOW WOULD HAVE SAVED, never a forecast of what extending it now recovers. And because SQLite DELETE never shrinks the file, incremental rows are absorbed by the existing freelist until they exceed it \u2014 so a longer window is close to free in disk terms while the freelist holds, and shortening it frees no disk at all."
+  }
+}

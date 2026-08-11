@@ -1,0 +1,125 @@
+{
+  "mode": "adversarial",
+  "analyzed": true,
+  "trials": [
+    {
+      "trial": 1,
+      "analyze_seconds": 20.259,
+      "pass": {
+        "status": "pass_failed",
+        "error": "OperationalError: (sqlite3.OperationalError) database is locked\n[SQL: SELECT count(distinct(crypto_tokens.id)) AS count_1 \nFROM crypto_tokens LEFT OUTER JOIN crypto_token_survival_outcomes ON crypto_token_survival_outcomes.token_address = crypto_tokens.token_address AND crypto_token_survival_outcomes.chain = crypto_tokens.chain \nWHERE crypto_tokens.chain = ? AND crypto_tokens.first_seen_at < ? AND",
+        "tokens_processed": null,
+        "batches_committed": null,
+        "pass_wall_s": null,
+        "hold_n": 0,
+        "hold_p50": null,
+        "hold_p95": null,
+        "hold_max": null,
+        "hold_sum": null
+      },
+      "competitor": {
+        "mode": "adversarial",
+        "attempts": 7339,
+        "successful_writes": 7339,
+        "lock_failures": 0,
+        "retries": 0,
+        "wall_s": 63.6496743792668,
+        "wait_p50": 4.420056939125061e-06,
+        "wait_p95": 1.1849217116832733e-05,
+        "wait_max": 9.3875452876091e-05,
+        "wait_n": 7339,
+        "txn_total_p95": 0.013000025413930416,
+        "txn_total_max": 1.4301911303773522
+      }
+    },
+    {
+      "trial": 2,
+      "analyze_seconds": 9.847,
+      "pass": {
+        "status": "pass_failed",
+        "error": "OperationalError: (sqlite3.OperationalError) database is locked\n[SQL: SELECT count(distinct(crypto_tokens.id)) AS count_1 \nFROM crypto_tokens LEFT OUTER JOIN crypto_token_survival_outcomes ON crypto_token_survival_outcomes.token_address = crypto_tokens.token_address AND crypto_token_survival_outcomes.chain = crypto_tokens.chain \nWHERE crypto_tokens.chain = ? AND crypto_tokens.first_seen_at < ? AND",
+        "tokens_processed": null,
+        "batches_committed": null,
+        "pass_wall_s": null,
+        "hold_n": 0,
+        "hold_p50": null,
+        "hold_p95": null,
+        "hold_max": null,
+        "hold_sum": null
+      },
+      "competitor": {
+        "mode": "adversarial",
+        "attempts": 3792,
+        "successful_writes": 3792,
+        "lock_failures": 0,
+        "retries": 0,
+        "wall_s": 31.026423156261444,
+        "wait_p50": 4.7283247113227844e-06,
+        "wait_p95": 1.2369826436042786e-05,
+        "wait_max": 0.00010206643491983414,
+        "wait_n": 3792,
+        "txn_total_p95": 0.012011558748781681,
+        "txn_total_max": 0.5154169267043471
+      }
+    },
+    {
+      "trial": 3,
+      "analyze_seconds": 21.525,
+      "pass": {
+        "status": "pass_failed",
+        "error": "OperationalError: (sqlite3.OperationalError) database is locked\n[SQL: SELECT min(crypto_tokens.first_seen_at) AS min_1 \nFROM crypto_tokens LEFT OUTER JOIN crypto_token_survival_outcomes ON crypto_token_survival_outcomes.token_address = crypto_tokens.token_address AND crypto_token_survival_outcomes.chain = crypto_tokens.chain \nWHERE crypto_tokens.chain = ? AND crypto_tokens.first_seen_at < ? AND (c",
+        "tokens_processed": null,
+        "batches_committed": null,
+        "pass_wall_s": null,
+        "hold_n": 0,
+        "hold_p50": null,
+        "hold_p95": null,
+        "hold_max": null,
+        "hold_sum": null
+      },
+      "competitor": {
+        "mode": "adversarial",
+        "attempts": 14443,
+        "successful_writes": 14443,
+        "lock_failures": 0,
+        "retries": 0,
+        "wall_s": 121.56925271358341,
+        "wait_p50": 4.319474101066589e-06,
+        "wait_p95": 1.2250617146492004e-05,
+        "wait_max": 0.0004548029974102974,
+        "wait_n": 14443,
+        "txn_total_p95": 0.012077641673386097,
+        "txn_total_max": 1.4259627079591155
+      }
+    }
+  ],
+  "aggregate": {
+    "tokens_processed": [
+      null,
+      null,
+      null
+    ],
+    "pass_wall_s": [
+      null,
+      null,
+      null
+    ],
+    "hold_p95": [
+      null,
+      null,
+      null
+    ],
+    "hold_max": [
+      null,
+      null,
+      null
+    ],
+    "competitor_wait_p95_range": [
+      1.1849217116832733e-05,
+      1.2369826436042786e-05
+    ],
+    "competitor_wait_max": 0.0004548029974102974,
+    "lock_failures_total": 0,
+    "retries_total": 0
+  }
+}

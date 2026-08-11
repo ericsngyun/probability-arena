@@ -1,0 +1,2583 @@
+{
+  "label": "b2_before_warm",
+  "db": "/mnt/data/cqp-bench/b2.db",
+  "db_bytes": 4550623232,
+  "analyzed": false,
+  "analyze_seconds": null,
+  "sqlite_version": "3.45.1",
+  "sample_tokens": 40,
+  "reps": 2,
+  "note": "probe_wall_s is the authoritative latency. Per-statement wall times come from SQLAlchemy cursor hooks, which close when cursor.execute() returns \u2014 for a query that needs a sorter or an aggregate that is the whole cost, but for a streaming query part of the cost lands in fetch and is therefore UNDER-reported at the statement level. Compare probes by probe_wall_s; use the statement rows for the plan, not for a cost total.",
+  "sqlite_stat1_rows": 0,
+  "sqlite_stat1": [],
+  "probes": {
+    "marketops.active_run": {
+      "group": "hot",
+      "probe_wall_s": {
+        "reps": 2,
+        "p50": 0.02254,
+        "min": 0.00594,
+        "max": 0.03914
+      },
+      "statements": [
+        {
+          "sql": "SELECT marketops_runs.id, marketops_runs.status, marketops_runs.started_at, marketops_runs.finished_at, marketops_runs.duration_ms, marketops_runs.config, marketops_runs.summary, marketops_runs.signals_seen, marketops_runs.signals_promoted, marketops_runs.signals_processed, marketops_runs.crypto_tokens_seen, marketops_runs.crypto_signals_created, marketops_runs.outcomes_synced, marketops_runs.fore",
+          "n": 1,
+          "wall_s": 0.005705,
+          "p50_ms": 5.7049,
+          "p95_ms": 5.7049,
+          "max_ms": 5.7049,
+          "plan": [
+            "SCAN marketops_runs"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        }
+      ]
+    },
+    "marketops.eligible_signals": {
+      "group": "hot",
+      "probe_wall_s": {
+        "reps": 2,
+        "p50": 0.030497,
+        "min": 0.028467,
+        "max": 0.032528
+      },
+      "statements": [
+        {
+          "sql": "SELECT opportunity_signals.id, opportunity_signals.market_ticker, opportunity_signals.signal_type, opportunity_signals.signal_status, opportunity_signals.observed_at, opportunity_signals.old_midpoint, opportunity_signals.new_midpoint, opportunity_signals.price_change, opportunity_signals.spread, opportunity_signals.liquidity_proxy, opportunity_signals.latest_forecast_id, opportunity_signals.latest",
+          "n": 1,
+          "wall_s": 0.027922,
+          "p50_ms": 27.9216,
+          "p95_ms": 27.9216,
+          "max_ms": 27.9216,
+          "plan": [
+            "SEARCH opportunity_signals USING INDEX ix_opportunity_signals_signal_status (signal_status=?)"
+          ],
+          "index": "ix_opportunity_signals_signal_status",
+          "full_scan": false,
+          "temp_btree": false
+        }
+      ]
+    },
+    "marketops.recently_refreshed_tickers": {
+      "group": "hot",
+      "probe_wall_s": {
+        "reps": 2,
+        "p50": 0.010277,
+        "min": 0.009004,
+        "max": 0.01155
+      },
+      "statements": [
+        {
+          "sql": "SELECT opportunity_signals.market_ticker FROM opportunity_signals WHERE opportunity_signals.signal_status = ? AND opportunity_signals.processed_at IS NOT NULL AND opportunity_signals.processed_at >= ?",
+          "n": 1,
+          "wall_s": 0.008763,
+          "p50_ms": 8.7627,
+          "p95_ms": 8.7627,
+          "max_ms": 8.7627,
+          "plan": [
+            "SEARCH opportunity_signals USING INDEX ix_opportunity_signals_signal_status (signal_status=?)"
+          ],
+          "index": "ix_opportunity_signals_signal_status",
+          "full_scan": false,
+          "temp_btree": false
+        }
+      ]
+    },
+    "marketops.tickers_awaiting_processing": {
+      "group": "hot",
+      "probe_wall_s": {
+        "reps": 2,
+        "p50": 0.001196,
+        "min": 0.000324,
+        "max": 0.002068
+      },
+      "statements": [
+        {
+          "sql": "SELECT opportunity_signals.market_ticker FROM opportunity_signals WHERE opportunity_signals.signal_status = ?",
+          "n": 1,
+          "wall_s": 1.3e-05,
+          "p50_ms": 0.0134,
+          "p95_ms": 0.0134,
+          "max_ms": 0.0134,
+          "plan": [
+            "SEARCH opportunity_signals USING INDEX ix_opportunity_signals_signal_status (signal_status=?)"
+          ],
+          "index": "ix_opportunity_signals_signal_status",
+          "full_scan": false,
+          "temp_btree": false
+        }
+      ]
+    },
+    "marketops.select_signals_for_promotion": {
+      "group": "hot",
+      "probe_wall_s": {
+        "reps": 2,
+        "p50": 0.033961,
+        "min": 0.033048,
+        "max": 0.034874
+      },
+      "statements": [
+        {
+          "sql": "SELECT opportunity_signals.id, opportunity_signals.market_ticker, opportunity_signals.signal_type, opportunity_signals.signal_status, opportunity_signals.observed_at, opportunity_signals.old_midpoint, opportunity_signals.new_midpoint, opportunity_signals.price_change, opportunity_signals.spread, opportunity_signals.liquidity_proxy, opportunity_signals.latest_forecast_id, opportunity_signals.latest",
+          "n": 1,
+          "wall_s": 0.023325,
+          "p50_ms": 23.3255,
+          "p95_ms": 23.3255,
+          "max_ms": 23.3255,
+          "plan": [
+            "SEARCH opportunity_signals USING INDEX ix_opportunity_signals_signal_status (signal_status=?)"
+          ],
+          "index": "ix_opportunity_signals_signal_status",
+          "full_scan": false,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT opportunity_signals.market_ticker FROM opportunity_signals WHERE opportunity_signals.signal_status = ? AND opportunity_signals.processed_at IS NOT NULL AND opportunity_signals.processed_at >= ?",
+          "n": 1,
+          "wall_s": 0.008855,
+          "p50_ms": 8.8551,
+          "p95_ms": 8.8551,
+          "max_ms": 8.8551,
+          "plan": [
+            "SEARCH opportunity_signals USING INDEX ix_opportunity_signals_signal_status (signal_status=?)"
+          ],
+          "index": "ix_opportunity_signals_signal_status",
+          "full_scan": false,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT opportunity_signals.market_ticker FROM opportunity_signals WHERE opportunity_signals.signal_status = ?",
+          "n": 1,
+          "wall_s": 1.3e-05,
+          "p50_ms": 0.0135,
+          "p95_ms": 0.0135,
+          "max_ms": 0.0135,
+          "plan": [
+            "SEARCH opportunity_signals USING INDEX ix_opportunity_signals_signal_status (signal_status=?)"
+          ],
+          "index": "ix_opportunity_signals_signal_status",
+          "full_scan": false,
+          "temp_btree": false
+        }
+      ]
+    },
+    "marketops.db_growth_report": {
+      "group": "hot",
+      "probe_wall_s": {
+        "reps": 2,
+        "p50": 2.110103,
+        "min": 1.133004,
+        "max": 3.087202
+      },
+      "statements": [
+        {
+          "sql": "SELECT count(*) AS count_1 FROM market_price_ticks WHERE market_price_ticks.created_at >= ? AND market_price_ticks.created_at < ?",
+          "n": 3,
+          "wall_s": 0.141267,
+          "p50_ms": 48.0039,
+          "p95_ms": 49.9639,
+          "max_ms": 49.9639,
+          "plan": [
+            "SCAN market_price_ticks"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT min(market_price_ticks.created_at) AS min_1, max(market_price_ticks.created_at) AS max_1 FROM market_price_ticks",
+          "n": 1,
+          "wall_s": 0.042214,
+          "p50_ms": 42.2143,
+          "p95_ms": 42.2143,
+          "max_ms": 42.2143,
+          "plan": [
+            "SCAN market_price_ticks"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM market_price_ticks WHERE market_price_ticks.created_at < ?",
+          "n": 1,
+          "wall_s": 0.039724,
+          "p50_ms": 39.7244,
+          "p95_ms": 39.7244,
+          "max_ms": 39.7244,
+          "plan": [
+            "SCAN market_price_ticks"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM market_price_ticks WHERE market_price_ticks.created_at >= ?",
+          "n": 1,
+          "wall_s": 0.035045,
+          "p50_ms": 35.0447,
+          "p95_ms": 35.0447,
+          "max_ms": 35.0447,
+          "plan": [
+            "SCAN market_price_ticks"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM market_price_tick_buckets",
+          "n": 2,
+          "wall_s": 0.022289,
+          "p50_ms": 10.8776,
+          "p95_ms": 11.4116,
+          "max_ms": 11.4116,
+          "plan": [
+            "SCAN market_price_tick_buckets USING COVERING INDEX ix_tick_bucket_start"
+          ],
+          "index": "ix_tick_bucket_start",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT market_price_ticks.market_ticker, count(*) AS count_1 FROM market_price_ticks GROUP BY market_price_ticks.market_ticker ORDER BY count(*) DESC LIMIT ? OFFSET ?",
+          "n": 1,
+          "wall_s": 0.01702,
+          "p50_ms": 17.0199,
+          "p95_ms": 17.0199,
+          "max_ms": 17.0199,
+          "plan": [
+            "SCAN market_price_ticks USING COVERING INDEX ix_market_price_ticks_ticker_observed",
+            "USE TEMP B-TREE FOR ORDER BY"
+          ],
+          "index": "ix_market_price_ticks_ticker_observed",
+          "full_scan": true,
+          "temp_btree": true
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM market_price_ticks",
+          "n": 2,
+          "wall_s": 0.014177,
+          "p50_ms": 6.7471,
+          "p95_ms": 7.4296,
+          "max_ms": 7.4296,
+          "plan": [
+            "SCAN market_price_ticks USING COVERING INDEX ix_market_price_ticks_ticker_observed"
+          ],
+          "index": "ix_market_price_ticks_ticker_observed",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM crypto_price_ticks WHERE crypto_price_ticks.created_at >= ?",
+          "n": 1,
+          "wall_s": 0.013303,
+          "p50_ms": 13.3026,
+          "p95_ms": 13.3026,
+          "max_ms": 13.3026,
+          "plan": [
+            "SCAN crypto_price_ticks"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM meme_attention_snapshots WHERE meme_attention_snapshots.created_at >= ?",
+          "n": 1,
+          "wall_s": 0.011302,
+          "p50_ms": 11.302,
+          "p95_ms": 11.302,
+          "max_ms": 11.302,
+          "plan": [
+            "SCAN meme_attention_snapshots"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM marketops_runs",
+          "n": 1,
+          "wall_s": 0.006318,
+          "p50_ms": 6.3178,
+          "p95_ms": 6.3178,
+          "max_ms": 6.3178,
+          "plan": [
+            "SCAN marketops_runs"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM edge_precheck_snapshots WHERE edge_precheck_snapshots.created_at >= ?",
+          "n": 2,
+          "wall_s": 0.00442,
+          "p50_ms": 1.8445,
+          "p95_ms": 2.5755,
+          "max_ms": 2.5755,
+          "plan": [
+            "SCAN edge_precheck_snapshots"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM crypto_token_risk_assessments",
+          "n": 2,
+          "wall_s": 0.002541,
+          "p50_ms": 1.2403,
+          "p95_ms": 1.3007,
+          "max_ms": 1.3007,
+          "plan": [
+            "SCAN crypto_token_risk_assessments USING COVERING INDEX ix_crypto_token_risk_assessments_chain"
+          ],
+          "index": "ix_crypto_token_risk_assessments_chain",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM crypto_token_discovery_events",
+          "n": 1,
+          "wall_s": 0.001597,
+          "p50_ms": 1.5967,
+          "p95_ms": 1.5967,
+          "max_ms": 1.5967,
+          "plan": [
+            "SCAN crypto_token_discovery_events USING COVERING INDEX ix_crypto_token_discovery_events_chain"
+          ],
+          "index": "ix_crypto_token_discovery_events_chain",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM crypto_price_ticks",
+          "n": 2,
+          "wall_s": 0.000965,
+          "p50_ms": 0.4293,
+          "p95_ms": 0.5354,
+          "max_ms": 0.5354,
+          "plan": [
+            "SCAN crypto_price_ticks USING COVERING INDEX ix_crypto_price_ticks_chain"
+          ],
+          "index": "ix_crypto_price_ticks_chain",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM watcher_runs",
+          "n": 1,
+          "wall_s": 0.000963,
+          "p50_ms": 0.9628,
+          "p95_ms": 0.9628,
+          "max_ms": 0.9628,
+          "plan": [
+            "SCAN watcher_runs"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM meme_catalyst_events",
+          "n": 2,
+          "wall_s": 0.000732,
+          "p50_ms": 0.3537,
+          "p95_ms": 0.3787,
+          "max_ms": 0.3787,
+          "plan": [
+            "SCAN meme_catalyst_events USING COVERING INDEX ix_meme_catalyst_run_id"
+          ],
+          "index": "ix_meme_catalyst_run_id",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM market_eligibility_assessments",
+          "n": 1,
+          "wall_s": 0.000539,
+          "p50_ms": 0.5392,
+          "p95_ms": 0.5392,
+          "max_ms": 0.5392,
+          "plan": [
+            "SCAN market_eligibility_assessments USING COVERING INDEX ix_market_eligibility_assessments_scanner_run_id"
+          ],
+          "index": "ix_market_eligibility_assessments_scanner_run_id",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM market_snapshots",
+          "n": 1,
+          "wall_s": 0.000526,
+          "p50_ms": 0.526,
+          "p95_ms": 0.526,
+          "max_ms": 0.526,
+          "plan": [
+            "SCAN market_snapshots USING COVERING INDEX ix_market_snapshots_scanner_run_id"
+          ],
+          "index": "ix_market_snapshots_scanner_run_id",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM markets",
+          "n": 1,
+          "wall_s": 0.000487,
+          "p50_ms": 0.4869,
+          "p95_ms": 0.4869,
+          "max_ms": 0.4869,
+          "plan": [
+            "SCAN markets USING COVERING INDEX ix_markets_status"
+          ],
+          "index": "ix_markets_status",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM meme_attention_snapshots",
+          "n": 2,
+          "wall_s": 0.000319,
+          "p50_ms": 0.1585,
+          "p95_ms": 0.161,
+          "max_ms": 0.161,
+          "plan": [
+            "SCAN meme_attention_snapshots USING COVERING INDEX ix_meme_attention_run_id"
+          ],
+          "index": "ix_meme_attention_run_id",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM crypto_opportunity_signals",
+          "n": 1,
+          "wall_s": 0.000295,
+          "p50_ms": 0.2952,
+          "p95_ms": 0.2952,
+          "max_ms": 0.2952,
+          "plan": [
+            "SCAN crypto_opportunity_signals USING COVERING INDEX ix_crypto_opportunity_signals_signal_status"
+          ],
+          "index": "ix_crypto_opportunity_signals_signal_status",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM crypto_token_lifecycle_runs",
+          "n": 1,
+          "wall_s": 0.000282,
+          "p50_ms": 0.2816,
+          "p95_ms": 0.2816,
+          "max_ms": 0.2816,
+          "plan": [
+            "SCAN crypto_token_lifecycle_runs"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM market_outcomes",
+          "n": 1,
+          "wall_s": 0.000188,
+          "p50_ms": 0.1883,
+          "p95_ms": 0.1883,
+          "max_ms": 0.1883,
+          "plan": [
+            "SCAN market_outcomes USING COVERING INDEX ix_market_outcomes_market_ticker"
+          ],
+          "index": "ix_market_outcomes_market_ticker",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM opportunity_signals",
+          "n": 1,
+          "wall_s": 0.000166,
+          "p50_ms": 0.1665,
+          "p95_ms": 0.1665,
+          "max_ms": 0.1665,
+          "plan": [
+            "SCAN opportunity_signals USING COVERING INDEX ix_opportunity_signals_signal_status"
+          ],
+          "index": "ix_opportunity_signals_signal_status",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT name, SUM(pgsize) FROM dbstat GROUP BY name",
+          "n": 1,
+          "wall_s": 0.00012,
+          "p50_ms": 0.1196,
+          "p95_ms": 0.1196,
+          "max_ms": 0.1196,
+          "plan": [
+            "SCAN dbstat VIRTUAL TABLE INDEX 8:"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM crypto_pairs",
+          "n": 1,
+          "wall_s": 0.000115,
+          "p50_ms": 0.1149,
+          "p95_ms": 0.1149,
+          "max_ms": 0.1149,
+          "plan": [
+            "SCAN crypto_pairs USING COVERING INDEX ix_crypto_pairs_chain"
+          ],
+          "index": "ix_crypto_pairs_chain",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM edge_precheck_snapshots",
+          "n": 2,
+          "wall_s": 7e-05,
+          "p50_ms": 0.0339,
+          "p95_ms": 0.0363,
+          "max_ms": 0.0363,
+          "plan": [
+            "SCAN edge_precheck_snapshots USING COVERING INDEX ix_edge_precheck_snapshots_forecast_id"
+          ],
+          "index": "ix_edge_precheck_snapshots_forecast_id",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM forecast_scores",
+          "n": 1,
+          "wall_s": 5.9e-05,
+          "p50_ms": 0.0587,
+          "p95_ms": 0.0587,
+          "max_ms": 0.0587,
+          "plan": [
+            "SCAN forecast_scores USING COVERING INDEX ix_forecast_scores_forecast_id"
+          ],
+          "index": "ix_forecast_scores_forecast_id",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM crypto_tokens",
+          "n": 1,
+          "wall_s": 5.4e-05,
+          "p50_ms": 0.0536,
+          "p95_ms": 0.0536,
+          "max_ms": 0.0536,
+          "plan": [
+            "SCAN crypto_tokens USING COVERING INDEX ix_crypto_tokens_chain"
+          ],
+          "index": "ix_crypto_tokens_chain",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM meme_scout_runs",
+          "n": 1,
+          "wall_s": 4.9e-05,
+          "p50_ms": 0.0493,
+          "p95_ms": 0.0493,
+          "max_ms": 0.0493,
+          "plan": [
+            "SCAN meme_scout_runs"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT market_price_ticks.market_ticker, count(*) AS count_1 FROM market_price_ticks GROUP BY market_price_ticks.market_ticker",
+          "n": 1,
+          "wall_s": 4.9e-05,
+          "p50_ms": 0.0489,
+          "p95_ms": 0.0489,
+          "max_ms": 0.0489,
+          "plan": [
+            "SCAN market_price_ticks USING COVERING INDEX ix_market_price_ticks_ticker_observed"
+          ],
+          "index": "ix_market_price_ticks_ticker_observed",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM crypto_watcher_runs",
+          "n": 1,
+          "wall_s": 4.9e-05,
+          "p50_ms": 0.0488,
+          "p95_ms": 0.0488,
+          "max_ms": 0.0488,
+          "plan": [
+            "SCAN crypto_watcher_runs"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM cross_venue_market_candidates",
+          "n": 1,
+          "wall_s": 4.3e-05,
+          "p50_ms": 0.0426,
+          "p95_ms": 0.0426,
+          "max_ms": 0.0426,
+          "plan": [
+            "SCAN cross_venue_market_candidates USING COVERING INDEX ix_cross_venue_cand_run_id"
+          ],
+          "index": "ix_cross_venue_cand_run_id",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM market_research_packets",
+          "n": 1,
+          "wall_s": 4.1e-05,
+          "p50_ms": 0.0405,
+          "p95_ms": 0.0405,
+          "max_ms": 0.0405,
+          "plan": [
+            "SCAN market_research_packets USING COVERING INDEX ix_market_research_packets_scanner_run_id"
+          ],
+          "index": "ix_market_research_packets_scanner_run_id",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM market_forecasts",
+          "n": 1,
+          "wall_s": 4e-05,
+          "p50_ms": 0.0396,
+          "p95_ms": 0.0396,
+          "max_ms": 0.0396,
+          "plan": [
+            "SCAN market_forecasts USING COVERING INDEX ix_market_forecasts_scanner_run_id"
+          ],
+          "index": "ix_market_forecasts_scanner_run_id",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM market_detail_enrichments",
+          "n": 1,
+          "wall_s": 3.8e-05,
+          "p50_ms": 0.0384,
+          "p95_ms": 0.0384,
+          "max_ms": 0.0384,
+          "plan": [
+            "SCAN market_detail_enrichments USING COVERING INDEX ix_market_detail_enrichments_scanner_run_id"
+          ],
+          "index": "ix_market_detail_enrichments_scanner_run_id",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM market_resolution_assessments",
+          "n": 1,
+          "wall_s": 3.5e-05,
+          "p50_ms": 0.0346,
+          "p95_ms": 0.0346,
+          "max_ms": 0.0346,
+          "plan": [
+            "SCAN market_resolution_assessments USING COVERING INDEX ix_market_resolution_assessments_scanner_run_id"
+          ],
+          "index": "ix_market_resolution_assessments_scanner_run_id",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM marketops_alerts",
+          "n": 1,
+          "wall_s": 3.2e-05,
+          "p50_ms": 0.0324,
+          "p95_ms": 0.0324,
+          "max_ms": 0.0324,
+          "plan": [
+            "SCAN marketops_alerts USING COVERING INDEX ix_marketops_alerts_status"
+          ],
+          "index": "ix_marketops_alerts_status",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM crypto_token_actor_observations",
+          "n": 1,
+          "wall_s": 3e-05,
+          "p50_ms": 0.0301,
+          "p95_ms": 0.0301,
+          "max_ms": 0.0301,
+          "plan": [
+            "SCAN crypto_token_actor_observations USING COVERING INDEX ix_crypto_token_actor_observations_birth_event_id"
+          ],
+          "index": "ix_crypto_token_actor_observations_birth_event_id",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM crypto_token_lifecycle_snapshots",
+          "n": 1,
+          "wall_s": 2.8e-05,
+          "p50_ms": 0.0282,
+          "p95_ms": 0.0282,
+          "max_ms": 0.0282,
+          "plan": [
+            "SCAN crypto_token_lifecycle_snapshots USING COVERING INDEX ix_crypto_token_lifecycle_snapshots_run_id"
+          ],
+          "index": "ix_crypto_token_lifecycle_snapshots_run_id",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM crypto_token_birth_events",
+          "n": 1,
+          "wall_s": 2.6e-05,
+          "p50_ms": 0.0264,
+          "p95_ms": 0.0264,
+          "max_ms": 0.0264,
+          "plan": [
+            "SCAN crypto_token_birth_events USING COVERING INDEX ix_crypto_token_birth_events_run_id"
+          ],
+          "index": "ix_crypto_token_birth_events_run_id",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM crypto_token_survival_outcomes",
+          "n": 1,
+          "wall_s": 2.5e-05,
+          "p50_ms": 0.0255,
+          "p95_ms": 0.0255,
+          "max_ms": 0.0255,
+          "plan": [
+            "SCAN crypto_token_survival_outcomes USING COVERING INDEX ix_crypto_token_survival_outcomes_birth_event_id"
+          ],
+          "index": "ix_crypto_token_survival_outcomes_birth_event_id",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM tick_aggregation_runs",
+          "n": 1,
+          "wall_s": 2.4e-05,
+          "p50_ms": 0.0245,
+          "p95_ms": 0.0245,
+          "max_ms": 0.0245,
+          "plan": [
+            "SCAN tick_aggregation_runs"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM tennis_tape_links",
+          "n": 1,
+          "wall_s": 1.3e-05,
+          "p50_ms": 0.0129,
+          "p95_ms": 0.0129,
+          "max_ms": 0.0129,
+          "plan": [
+            "SCAN tennis_tape_links USING COVERING INDEX ix_tennis_tape_links_tape_run_id"
+          ],
+          "index": "ix_tennis_tape_links_tape_run_id",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM tennis_tape_market_snapshots",
+          "n": 1,
+          "wall_s": 1.1e-05,
+          "p50_ms": 0.0106,
+          "p95_ms": 0.0106,
+          "max_ms": 0.0106,
+          "plan": [
+            "SCAN tennis_tape_market_snapshots USING COVERING INDEX ix_tennis_tape_market_snapshots_tape_run_id"
+          ],
+          "index": "ix_tennis_tape_market_snapshots_tape_run_id",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM scanner_runs",
+          "n": 1,
+          "wall_s": 1e-05,
+          "p50_ms": 0.0105,
+          "p95_ms": 0.0105,
+          "max_ms": 0.0105,
+          "plan": [
+            "SCAN scanner_runs"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM pipeline_runs",
+          "n": 1,
+          "wall_s": 1e-05,
+          "p50_ms": 0.01,
+          "p95_ms": 0.01,
+          "max_ms": 0.01,
+          "plan": [
+            "SCAN pipeline_runs USING COVERING INDEX ix_pipeline_runs_status"
+          ],
+          "index": "ix_pipeline_runs_status",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM cross_venue_observation_runs",
+          "n": 1,
+          "wall_s": 1e-05,
+          "p50_ms": 0.0098,
+          "p95_ms": 0.0098,
+          "max_ms": 0.0098,
+          "plan": [
+            "SCAN cross_venue_observation_runs"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM pipeline_stage_runs",
+          "n": 1,
+          "wall_s": 1e-05,
+          "p50_ms": 0.0098,
+          "p95_ms": 0.0098,
+          "max_ms": 0.0098,
+          "plan": [
+            "SCAN pipeline_stage_runs USING COVERING INDEX ix_pipeline_stage_runs_pipeline_run_id"
+          ],
+          "index": "ix_pipeline_stage_runs_pipeline_run_id",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM tennis_tape_score_snapshots",
+          "n": 1,
+          "wall_s": 9e-06,
+          "p50_ms": 0.0085,
+          "p95_ms": 0.0085,
+          "max_ms": 0.0085,
+          "plan": [
+            "SCAN tennis_tape_score_snapshots USING COVERING INDEX ix_tennis_tape_score_snapshots_tape_run_id"
+          ],
+          "index": "ix_tennis_tape_score_snapshots_tape_run_id",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM frontier_eval_runs",
+          "n": 1,
+          "wall_s": 8e-06,
+          "p50_ms": 0.008,
+          "p95_ms": 0.008,
+          "max_ms": 0.008,
+          "plan": [
+            "SCAN frontier_eval_runs"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM crypto_horizon_cohort_members",
+          "n": 1,
+          "wall_s": 7e-06,
+          "p50_ms": 0.0073,
+          "p95_ms": 0.0073,
+          "max_ms": 0.0073,
+          "plan": [
+            "SCAN crypto_horizon_cohort_members USING COVERING INDEX ix_crypto_horizon_cohort_members_cohort_id"
+          ],
+          "index": "ix_crypto_horizon_cohort_members_cohort_id",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM crypto_horizon_cohorts",
+          "n": 1,
+          "wall_s": 7e-06,
+          "p50_ms": 0.0072,
+          "p95_ms": 0.0072,
+          "max_ms": 0.0072,
+          "plan": [
+            "SCAN crypto_horizon_cohorts USING COVERING INDEX ix_crypto_horizon_cohorts_chain"
+          ],
+          "index": "ix_crypto_horizon_cohorts_chain",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM domain_market_inventory_snapshots",
+          "n": 1,
+          "wall_s": 7e-06,
+          "p50_ms": 0.007,
+          "p95_ms": 0.007,
+          "max_ms": 0.007,
+          "plan": [
+            "SCAN domain_market_inventory_snapshots USING COVERING INDEX ix_domain_inv_run_id"
+          ],
+          "index": "ix_domain_inv_run_id",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM orderbook_snapshots",
+          "n": 1,
+          "wall_s": 7e-06,
+          "p50_ms": 0.0066,
+          "p95_ms": 0.0066,
+          "max_ms": 0.0066,
+          "plan": [
+            "SCAN orderbook_snapshots USING COVERING INDEX ix_orderbook_snapshots_market_id"
+          ],
+          "index": "ix_orderbook_snapshots_market_id",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM crypto_horizon_observations",
+          "n": 1,
+          "wall_s": 6e-06,
+          "p50_ms": 0.0065,
+          "p95_ms": 0.0065,
+          "max_ms": 0.0065,
+          "plan": [
+            "SCAN crypto_horizon_observations USING COVERING INDEX ix_crypto_horizon_observations_cohort_id"
+          ],
+          "index": "ix_crypto_horizon_observations_cohort_id",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM polymarket_domain_inventory_snapshots",
+          "n": 1,
+          "wall_s": 6e-06,
+          "p50_ms": 0.0063,
+          "p95_ms": 0.0063,
+          "max_ms": 0.0063,
+          "plan": [
+            "SCAN polymarket_domain_inventory_snapshots USING COVERING INDEX ix_polymarket_domain_inv_run_id"
+          ],
+          "index": "ix_polymarket_domain_inv_run_id",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM polymarket_markets",
+          "n": 1,
+          "wall_s": 6e-06,
+          "p50_ms": 0.0062,
+          "p95_ms": 0.0062,
+          "max_ms": 0.0062,
+          "plan": [
+            "SCAN polymarket_markets USING COVERING INDEX ix_polymarket_markets_run_id"
+          ],
+          "index": "ix_polymarket_markets_run_id",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM polymarket_scout_runs",
+          "n": 1,
+          "wall_s": 6e-06,
+          "p50_ms": 0.0059,
+          "p95_ms": 0.0059,
+          "max_ms": 0.0059,
+          "plan": [
+            "SCAN polymarket_scout_runs"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM polymarket_orderbook_snapshots",
+          "n": 1,
+          "wall_s": 6e-06,
+          "p50_ms": 0.0057,
+          "p95_ms": 0.0057,
+          "max_ms": 0.0057,
+          "plan": [
+            "SCAN polymarket_orderbook_snapshots USING COVERING INDEX ix_polymarket_book_run_id"
+          ],
+          "index": "ix_polymarket_book_run_id",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM tennis_tape_runs",
+          "n": 1,
+          "wall_s": 6e-06,
+          "p50_ms": 0.0056,
+          "p95_ms": 0.0056,
+          "max_ms": 0.0056,
+          "plan": [
+            "SCAN tennis_tape_runs"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM domain_scout_runs",
+          "n": 1,
+          "wall_s": 5e-06,
+          "p50_ms": 0.0055,
+          "p95_ms": 0.0055,
+          "max_ms": 0.0055,
+          "plan": [
+            "SCAN domain_scout_runs"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        }
+      ]
+    },
+    "watcher.universe_tickers": {
+      "group": "hot",
+      "probe_wall_s": {
+        "reps": 2,
+        "p50": 0.006293,
+        "min": 0.003487,
+        "max": 0.009099
+      },
+      "statements": [
+        {
+          "sql": "SELECT markets.ticker, markets.close_time, markets.expiration_time FROM markets JOIN market_snapshots ON market_snapshots.market_id = markets.id WHERE market_snapshots.scanner_run_id = ? AND market_snapshots.yes_bid IS NOT NULL AND market_snapshots.yes_ask IS NOT NULL AND (markets.ticker LIKE ? OR markets.ticker LIKE ? OR markets.ticker LIKE ? OR markets.ticker LIKE ? OR markets.ticker LIKE ?) ORD",
+          "n": 1,
+          "wall_s": 0.000324,
+          "p50_ms": 0.3241,
+          "p95_ms": 0.3241,
+          "max_ms": 0.3241,
+          "plan": [
+            "SEARCH market_snapshots USING INDEX ix_market_snapshots_scanner_run_id (scanner_run_id=?)",
+            "SEARCH markets USING INTEGER PRIMARY KEY (rowid=?)",
+            "USE TEMP B-TREE FOR ORDER BY"
+          ],
+          "index": "ix_market_snapshots_scanner_run_id",
+          "full_scan": false,
+          "temp_btree": true
+        },
+        {
+          "sql": "SELECT markets.ticker FROM markets JOIN market_snapshots ON market_snapshots.market_id = markets.id WHERE market_snapshots.scanner_run_id = ? AND market_snapshots.score > ? ORDER BY market_snapshots.score DESC LIMIT ? OFFSET ?",
+          "n": 1,
+          "wall_s": 0.000161,
+          "p50_ms": 0.1607,
+          "p95_ms": 0.1607,
+          "max_ms": 0.1607,
+          "plan": [
+            "SEARCH market_snapshots USING INDEX ix_market_snapshots_scanner_run_id (scanner_run_id=?)",
+            "SEARCH markets USING INTEGER PRIMARY KEY (rowid=?)",
+            "USE TEMP B-TREE FOR ORDER BY"
+          ],
+          "index": "ix_market_snapshots_scanner_run_id",
+          "full_scan": false,
+          "temp_btree": true
+        },
+        {
+          "sql": "SELECT scanner_runs.id, scanner_runs.started_at, scanner_runs.finished_at, scanner_runs.duration_ms, scanner_runs.status, scanner_runs.source, scanner_runs.markets_fetched, scanner_runs.markets_ranked, scanner_runs.error_type, scanner_runs.error_message FROM scanner_runs WHERE scanner_runs.status = ? ORDER BY scanner_runs.id DESC",
+          "n": 1,
+          "wall_s": 2e-05,
+          "p50_ms": 0.0204,
+          "p95_ms": 0.0204,
+          "max_ms": 0.0204,
+          "plan": [
+            "SCAN scanner_runs"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        }
+      ]
+    },
+    "watcher.latest_tick_for_x50": {
+      "group": "hot",
+      "probe_wall_s": {
+        "reps": 2,
+        "p50": 0.00915,
+        "min": 0.008648,
+        "max": 0.009652
+      },
+      "statements": [
+        {
+          "sql": "SELECT market_price_ticks.id, market_price_ticks.market_ticker, market_price_ticks.observed_at, market_price_ticks.yes_bid, market_price_ticks.yes_ask, market_price_ticks.midpoint, market_price_ticks.spread, market_price_ticks.volume_24h, market_price_ticks.liquidity_proxy, market_price_ticks.raw_payload, market_price_ticks.created_at FROM market_price_ticks WHERE market_price_ticks.market_ticker ",
+          "n": 50,
+          "wall_s": 0.000328,
+          "p50_ms": 0.0058,
+          "p95_ms": 0.0102,
+          "max_ms": 0.0116,
+          "plan": [
+            "SEARCH market_price_ticks USING INDEX ix_market_price_ticks_ticker_observed (market_ticker=?)"
+          ],
+          "index": "ix_market_price_ticks_ticker_observed",
+          "full_scan": false,
+          "temp_btree": false
+        }
+      ]
+    },
+    "watcher.last_signal_at_x50": {
+      "group": "hot",
+      "probe_wall_s": {
+        "reps": 2,
+        "p50": 0.004264,
+        "min": 0.004055,
+        "max": 0.004473
+      },
+      "statements": [
+        {
+          "sql": "SELECT opportunity_signals.created_at FROM opportunity_signals WHERE opportunity_signals.market_ticker = ? AND opportunity_signals.signal_type = ? ORDER BY opportunity_signals.created_at DESC, opportunity_signals.id DESC",
+          "n": 50,
+          "wall_s": 0.000273,
+          "p50_ms": 0.0053,
+          "p95_ms": 0.0064,
+          "max_ms": 0.0082,
+          "plan": [
+            "SEARCH opportunity_signals USING INDEX ix_opportunity_signals_market_ticker (market_ticker=?)",
+            "USE TEMP B-TREE FOR ORDER BY"
+          ],
+          "index": "ix_opportunity_signals_market_ticker",
+          "full_scan": false,
+          "temp_btree": true
+        }
+      ]
+    },
+    "crypto_scout.upsert_token_probe_x50": {
+      "group": "hot",
+      "probe_wall_s": {
+        "reps": 2,
+        "p50": 0.003301,
+        "min": 0.003054,
+        "max": 0.003549
+      },
+      "statements": [
+        {
+          "sql": "SELECT crypto_tokens.id, crypto_tokens.chain, crypto_tokens.token_address, crypto_tokens.symbol, crypto_tokens.name, crypto_tokens.decimals, crypto_tokens.metadata, crypto_tokens.first_seen_at, crypto_tokens.last_seen_at, crypto_tokens.created_at FROM crypto_tokens WHERE crypto_tokens.chain = ? AND crypto_tokens.token_address = ?",
+          "n": 40,
+          "wall_s": 0.00024,
+          "p50_ms": 0.0058,
+          "p95_ms": 0.0062,
+          "max_ms": 0.0119,
+          "plan": [
+            "SEARCH crypto_tokens USING INDEX ix_crypto_tokens_chain_address (chain=? AND token_address=?)"
+          ],
+          "index": "ix_crypto_tokens_chain_address",
+          "full_scan": false,
+          "temp_btree": false
+        }
+      ]
+    },
+    "crypto_scout.latest_tick_for_pair_x50": {
+      "group": "hot",
+      "probe_wall_s": {
+        "reps": 2,
+        "p50": 0.006038,
+        "min": 0.004278,
+        "max": 0.007799
+      },
+      "statements": [
+        {
+          "sql": "SELECT crypto_price_ticks.id, crypto_price_ticks.chain, crypto_price_ticks.token_address, crypto_price_ticks.pair_address, crypto_price_ticks.observed_at, crypto_price_ticks.price_usd, crypto_price_ticks.liquidity_usd, crypto_price_ticks.volume_5m_usd, crypto_price_ticks.volume_1h_usd, crypto_price_ticks.volume_24h_usd, crypto_price_ticks.price_change_5m, crypto_price_ticks.price_change_1h, crypto",
+          "n": 50,
+          "wall_s": 0.000301,
+          "p50_ms": 0.0058,
+          "p95_ms": 0.0068,
+          "max_ms": 0.0079,
+          "plan": [
+            "SEARCH crypto_price_ticks USING INDEX ix_crypto_price_ticks_pair_observed (pair_address=?)"
+          ],
+          "index": "ix_crypto_price_ticks_pair_observed",
+          "full_scan": false,
+          "temp_btree": false
+        }
+      ]
+    },
+    "crypto_scout.last_signal_at_x50": {
+      "group": "hot",
+      "probe_wall_s": {
+        "reps": 2,
+        "p50": 0.602246,
+        "min": 0.574155,
+        "max": 0.630337
+      },
+      "statements": [
+        {
+          "sql": "SELECT crypto_opportunity_signals.created_at FROM crypto_opportunity_signals WHERE crypto_opportunity_signals.chain = ? AND crypto_opportunity_signals.token_address = ? AND crypto_opportunity_signals.signal_type = ? ORDER BY crypto_opportunity_signals.created_at DESC, crypto_opportunity_signals.id DESC",
+          "n": 40,
+          "wall_s": 0.615587,
+          "p50_ms": 15.4515,
+          "p95_ms": 15.732,
+          "max_ms": 16.387,
+          "plan": [
+            "SEARCH crypto_opportunity_signals USING INDEX ix_crypto_opportunity_signals_chain (chain=?)",
+            "USE TEMP B-TREE FOR ORDER BY"
+          ],
+          "index": "ix_crypto_opportunity_signals_chain",
+          "full_scan": false,
+          "temp_btree": true
+        }
+      ]
+    },
+    "crypto_scout.report_build": {
+      "group": "hot",
+      "probe_wall_s": {
+        "reps": 2,
+        "p50": 0.099479,
+        "min": 0.097769,
+        "max": 0.101188
+      },
+      "statements": [
+        {
+          "sql": "SELECT crypto_token_risk_assessments.risk_level, count(*) AS count_1 FROM crypto_token_risk_assessments GROUP BY crypto_token_risk_assessments.risk_level",
+          "n": 1,
+          "wall_s": 0.069282,
+          "p50_ms": 69.2823,
+          "p95_ms": 69.2823,
+          "max_ms": 69.2823,
+          "plan": [
+            "SCAN crypto_token_risk_assessments",
+            "USE TEMP B-TREE FOR GROUP BY"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": true
+        },
+        {
+          "sql": "SELECT crypto_tokens.id, crypto_tokens.chain, crypto_tokens.token_address, crypto_tokens.symbol, crypto_tokens.name, crypto_tokens.decimals, crypto_tokens.metadata, crypto_tokens.first_seen_at, crypto_tokens.last_seen_at, crypto_tokens.created_at FROM crypto_tokens ORDER BY crypto_tokens.last_seen_at DESC, crypto_tokens.id DESC LIMIT ? OFFSET ?",
+          "n": 1,
+          "wall_s": 0.002419,
+          "p50_ms": 2.4193,
+          "p95_ms": 2.4193,
+          "max_ms": 2.4193,
+          "plan": [
+            "SCAN crypto_tokens",
+            "USE TEMP B-TREE FOR ORDER BY"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": true
+        },
+        {
+          "sql": "SELECT crypto_opportunity_signals.signal_status, count(*) AS count_1 FROM crypto_opportunity_signals GROUP BY crypto_opportunity_signals.signal_status",
+          "n": 1,
+          "wall_s": 0.002403,
+          "p50_ms": 2.4027,
+          "p95_ms": 2.4027,
+          "max_ms": 2.4027,
+          "plan": [
+            "SCAN crypto_opportunity_signals USING COVERING INDEX ix_crypto_opportunity_signals_signal_status"
+          ],
+          "index": "ix_crypto_opportunity_signals_signal_status",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM crypto_token_discovery_events",
+          "n": 1,
+          "wall_s": 0.001984,
+          "p50_ms": 1.9843,
+          "p95_ms": 1.9843,
+          "max_ms": 1.9843,
+          "plan": [
+            "SCAN crypto_token_discovery_events USING COVERING INDEX ix_crypto_token_discovery_events_chain"
+          ],
+          "index": "ix_crypto_token_discovery_events_chain",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM crypto_token_risk_assessments",
+          "n": 1,
+          "wall_s": 0.001491,
+          "p50_ms": 1.4912,
+          "p95_ms": 1.4912,
+          "max_ms": 1.4912,
+          "plan": [
+            "SCAN crypto_token_risk_assessments USING COVERING INDEX ix_crypto_token_risk_assessments_chain"
+          ],
+          "index": "ix_crypto_token_risk_assessments_chain",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM crypto_price_ticks",
+          "n": 1,
+          "wall_s": 0.000674,
+          "p50_ms": 0.6735,
+          "p95_ms": 0.6735,
+          "max_ms": 0.6735,
+          "plan": [
+            "SCAN crypto_price_ticks USING COVERING INDEX ix_crypto_price_ticks_chain"
+          ],
+          "index": "ix_crypto_price_ticks_chain",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM crypto_pairs",
+          "n": 1,
+          "wall_s": 0.000142,
+          "p50_ms": 0.1416,
+          "p95_ms": 0.1416,
+          "max_ms": 0.1416,
+          "plan": [
+            "SCAN crypto_pairs USING COVERING INDEX ix_crypto_pairs_chain"
+          ],
+          "index": "ix_crypto_pairs_chain",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT crypto_opportunity_signals.signal_type, count(*) AS count_1 FROM crypto_opportunity_signals GROUP BY crypto_opportunity_signals.signal_type",
+          "n": 1,
+          "wall_s": 0.000137,
+          "p50_ms": 0.1365,
+          "p95_ms": 0.1365,
+          "max_ms": 0.1365,
+          "plan": [
+            "SCAN crypto_opportunity_signals USING COVERING INDEX ix_crypto_opportunity_signals_signal_type"
+          ],
+          "index": "ix_crypto_opportunity_signals_signal_type",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM crypto_tokens",
+          "n": 1,
+          "wall_s": 8.3e-05,
+          "p50_ms": 0.0826,
+          "p95_ms": 0.0826,
+          "max_ms": 0.0826,
+          "plan": [
+            "SCAN crypto_tokens USING COVERING INDEX ix_crypto_tokens_chain"
+          ],
+          "index": "ix_crypto_tokens_chain",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT crypto_opportunity_signals.id, crypto_opportunity_signals.chain, crypto_opportunity_signals.token_address, crypto_opportunity_signals.pair_address, crypto_opportunity_signals.signal_type, crypto_opportunity_signals.signal_status, crypto_opportunity_signals.observed_at, crypto_opportunity_signals.reason, crypto_opportunity_signals.evidence, crypto_opportunity_signals.raw_payload, crypto_oppo",
+          "n": 1,
+          "wall_s": 4e-05,
+          "p50_ms": 0.0395,
+          "p95_ms": 0.0395,
+          "max_ms": 0.0395,
+          "plan": [
+            "SCAN crypto_opportunity_signals"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT crypto_watcher_runs.id, crypto_watcher_runs.status, crypto_watcher_runs.started_at, crypto_watcher_runs.finished_at, crypto_watcher_runs.duration_ms, crypto_watcher_runs.tokens_checked, crypto_watcher_runs.pairs_checked, crypto_watcher_runs.ticks_recorded, crypto_watcher_runs.signals_created, crypto_watcher_runs.error_type, crypto_watcher_runs.error_message, crypto_watcher_runs.created_at F",
+          "n": 1,
+          "wall_s": 2e-05,
+          "p50_ms": 0.0196,
+          "p95_ms": 0.0196,
+          "max_ms": 0.0196,
+          "plan": [
+            "SCAN crypto_watcher_runs"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        }
+      ]
+    },
+    "meme_scout.risk_overlay_x20": {
+      "group": "hot",
+      "probe_wall_s": {
+        "reps": 2,
+        "p50": 0.005279,
+        "min": 0.003708,
+        "max": 0.006851
+      },
+      "statements": [
+        {
+          "sql": "SELECT crypto_token_risk_assessments.id, crypto_token_risk_assessments.chain, crypto_token_risk_assessments.token_address, crypto_token_risk_assessments.provider, crypto_token_risk_assessments.risk_score, crypto_token_risk_assessments.risk_level, crypto_token_risk_assessments.flags, crypto_token_risk_assessments.raw_payload, crypto_token_risk_assessments.liquidity_risk_score, crypto_token_risk_ass",
+          "n": 20,
+          "wall_s": 0.000164,
+          "p50_ms": 0.008,
+          "p95_ms": 0.0095,
+          "max_ms": 0.0122,
+          "plan": [
+            "SEARCH crypto_token_risk_assessments USING INDEX ix_crypto_token_risk_assessments_token_address (token_address=?)"
+          ],
+          "index": "ix_crypto_token_risk_assessments_token_address",
+          "full_scan": false,
+          "temp_btree": false
+        }
+      ]
+    },
+    "tick_agg.aggregate_dry_run_12h": {
+      "group": "hot",
+      "probe_wall_s": {
+        "reps": 2,
+        "p50": 4.932963,
+        "min": 4.799675,
+        "max": 5.066251
+      },
+      "statements": [
+        {
+          "sql": "SELECT market_price_ticks.id, market_price_ticks.market_ticker, market_price_ticks.observed_at, market_price_ticks.yes_bid, market_price_ticks.yes_ask, market_price_ticks.midpoint, market_price_ticks.spread, market_price_ticks.volume_24h, market_price_ticks.liquidity_proxy, market_price_ticks.raw_payload, market_price_ticks.created_at FROM market_price_ticks WHERE market_price_ticks.observed_at >=",
+          "n": 13,
+          "wall_s": 0.501904,
+          "p50_ms": 38.8815,
+          "p95_ms": 39.7175,
+          "max_ms": 39.8509,
+          "plan": [
+            "SCAN market_price_ticks",
+            "USE TEMP B-TREE FOR ORDER BY"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": true
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM market_price_ticks WHERE market_price_ticks.observed_at >= ? AND market_price_ticks.observed_at < ?",
+          "n": 13,
+          "wall_s": 0.304359,
+          "p50_ms": 23.6466,
+          "p95_ms": 24.2798,
+          "max_ms": 24.3326,
+          "plan": [
+            "SCAN market_price_ticks USING COVERING INDEX ix_market_price_ticks_ticker_observed"
+          ],
+          "index": "ix_market_price_ticks_ticker_observed",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT market_price_tick_buckets.id, market_price_tick_buckets.market_ticker, market_price_tick_buckets.domain, market_price_tick_buckets.bucket_start, market_price_tick_buckets.bucket_seconds, market_price_tick_buckets.open_mid, market_price_tick_buckets.high_mid, market_price_tick_buckets.low_mid, market_price_tick_buckets.close_mid, market_price_tick_buckets.open_bid, market_price_tick_buckets.",
+          "n": 21548,
+          "wall_s": 0.173137,
+          "p50_ms": 0.0076,
+          "p95_ms": 0.01,
+          "max_ms": 0.1199,
+          "plan": [
+            "SEARCH market_price_tick_buckets USING INDEX sqlite_autoindex_market_price_tick_buckets_1 (market_ticker=? AND bucket_start=? AND bucket_seconds=?)"
+          ],
+          "index": "sqlite_autoindex_market_price_tick_buckets_1",
+          "full_scan": false,
+          "temp_btree": false
+        }
+      ]
+    },
+    "tick_agg.report_build": {
+      "group": "hot",
+      "probe_wall_s": {
+        "reps": 2,
+        "p50": 4.151554,
+        "min": 3.989164,
+        "max": 4.313945
+      },
+      "statements": [
+        {
+          "sql": "SELECT market_price_tick_buckets.bucket_seconds, count(*) AS count_1 FROM market_price_tick_buckets GROUP BY market_price_tick_buckets.bucket_seconds",
+          "n": 1,
+          "wall_s": 0.179884,
+          "p50_ms": 179.8839,
+          "p95_ms": 179.8839,
+          "max_ms": 179.8839,
+          "plan": [
+            "SCAN market_price_tick_buckets USING COVERING INDEX sqlite_autoindex_market_price_tick_buckets_1",
+            "USE TEMP B-TREE FOR GROUP BY"
+          ],
+          "index": "sqlite_autoindex_market_price_tick_buckets_1",
+          "full_scan": true,
+          "temp_btree": true
+        },
+        {
+          "sql": "SELECT sum(market_price_tick_buckets.tick_count) AS sum_1 FROM market_price_tick_buckets",
+          "n": 1,
+          "wall_s": 0.104296,
+          "p50_ms": 104.2959,
+          "p95_ms": 104.2959,
+          "max_ms": 104.2959,
+          "plan": [
+            "SCAN market_price_tick_buckets"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT min(market_price_tick_buckets.bucket_start) AS min_1, max(market_price_tick_buckets.bucket_start) AS max_1 FROM market_price_tick_buckets",
+          "n": 1,
+          "wall_s": 0.059364,
+          "p50_ms": 59.3643,
+          "p95_ms": 59.3643,
+          "max_ms": 59.3643,
+          "plan": [
+            "SCAN market_price_tick_buckets USING COVERING INDEX ix_tick_bucket_start"
+          ],
+          "index": "ix_tick_bucket_start",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT min(market_price_ticks.observed_at) AS min_1, max(market_price_ticks.observed_at) AS max_1 FROM market_price_ticks",
+          "n": 1,
+          "wall_s": 0.023169,
+          "p50_ms": 23.1692,
+          "p95_ms": 23.1692,
+          "max_ms": 23.1692,
+          "plan": [
+            "SCAN market_price_ticks USING COVERING INDEX ix_market_price_ticks_ticker_observed"
+          ],
+          "index": "ix_market_price_ticks_ticker_observed",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM market_price_tick_buckets",
+          "n": 1,
+          "wall_s": 0.012836,
+          "p50_ms": 12.8362,
+          "p95_ms": 12.8362,
+          "max_ms": 12.8362,
+          "plan": [
+            "SCAN market_price_tick_buckets USING COVERING INDEX ix_tick_bucket_start"
+          ],
+          "index": "ix_tick_bucket_start",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM market_price_ticks",
+          "n": 1,
+          "wall_s": 0.007339,
+          "p50_ms": 7.3394,
+          "p95_ms": 7.3394,
+          "max_ms": 7.3394,
+          "plan": [
+            "SCAN market_price_ticks USING COVERING INDEX ix_market_price_ticks_ticker_observed"
+          ],
+          "index": "ix_market_price_ticks_ticker_observed",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT market_price_tick_buckets.domain, count(*) AS count_1 FROM market_price_tick_buckets GROUP BY market_price_tick_buckets.domain",
+          "n": 1,
+          "wall_s": 0.00028,
+          "p50_ms": 0.2804,
+          "p95_ms": 0.2804,
+          "max_ms": 0.2804,
+          "plan": [
+            "SCAN market_price_tick_buckets USING COVERING INDEX ix_market_price_tick_buckets_domain"
+          ],
+          "index": "ix_market_price_tick_buckets_domain",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT market_price_tick_buckets.bucket_start FROM market_price_tick_buckets WHERE market_price_tick_buckets.bucket_start >= ?",
+          "n": 2,
+          "wall_s": 0.000165,
+          "p50_ms": 0.0789,
+          "p95_ms": 0.0862,
+          "max_ms": 0.0862,
+          "plan": [
+            "SEARCH market_price_tick_buckets USING COVERING INDEX ix_tick_bucket_start (bucket_start>?)"
+          ],
+          "index": "ix_tick_bucket_start",
+          "full_scan": false,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT tick_aggregation_runs.id, tick_aggregation_runs.status, tick_aggregation_runs.scheduled, tick_aggregation_runs.started_at, tick_aggregation_runs.finished_at, tick_aggregation_runs.duration_ms, tick_aggregation_runs.window_hours, tick_aggregation_runs.subwindow_hours, tick_aggregation_runs.bucket_seconds, tick_aggregation_runs.rows_read, tick_aggregation_runs.buckets_written, tick_aggregatio",
+          "n": 1,
+          "wall_s": 8.4e-05,
+          "p50_ms": 0.0837,
+          "p95_ms": 0.0837,
+          "max_ms": 0.0837,
+          "plan": [
+            "SCAN tick_aggregation_runs"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT market_price_ticks.observed_at FROM market_price_ticks WHERE market_price_ticks.observed_at >= ?",
+          "n": 2,
+          "wall_s": 8.4e-05,
+          "p50_ms": 0.0143,
+          "p95_ms": 0.0693,
+          "max_ms": 0.0693,
+          "plan": [
+            "SCAN market_price_ticks USING COVERING INDEX ix_market_price_ticks_ticker_observed"
+          ],
+          "index": "ix_market_price_ticks_ticker_observed",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT tick_aggregation_runs.failed_windows FROM tick_aggregation_runs WHERE tick_aggregation_runs.scheduled IS 1 AND tick_aggregation_runs.status = ?",
+          "n": 1,
+          "wall_s": 1.6e-05,
+          "p50_ms": 0.016,
+          "p95_ms": 0.016,
+          "max_ms": 0.016,
+          "plan": [
+            "SCAN tick_aggregation_runs"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        }
+      ]
+    },
+    "outcome.select_sync_candidates": {
+      "group": "hot",
+      "probe_wall_s": {
+        "reps": 2,
+        "p50": 0.169168,
+        "min": 0.15008,
+        "max": 0.188256
+      },
+      "statements": [
+        {
+          "sql": "SELECT markets.ticker FROM markets ORDER BY markets.last_seen_at DESC, markets.id DESC LIMIT ? OFFSET ?",
+          "n": 1,
+          "wall_s": 0.065868,
+          "p50_ms": 65.8685,
+          "p95_ms": 65.8685,
+          "max_ms": 65.8685,
+          "plan": [
+            "SCAN markets",
+            "USE TEMP B-TREE FOR ORDER BY"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": true
+        },
+        {
+          "sql": "SELECT markets.ticker, markets.close_time FROM markets WHERE markets.ticker IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,",
+          "n": 1,
+          "wall_s": 0.002355,
+          "p50_ms": 2.3549,
+          "p95_ms": 2.3549,
+          "max_ms": 2.3549,
+          "plan": [
+            "SEARCH markets USING INDEX ix_markets_ticker (ticker=?)"
+          ],
+          "index": "ix_markets_ticker",
+          "full_scan": false,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT max(marketops_runs.id) AS max_1 FROM marketops_runs",
+          "n": 1,
+          "wall_s": 2.4e-05,
+          "p50_ms": 0.024,
+          "p95_ms": 0.024,
+          "max_ms": 0.024,
+          "plan": [
+            "SEARCH marketops_runs"
+          ],
+          "index": null,
+          "full_scan": false,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT DISTINCT market_forecasts.market_ticker FROM market_forecasts",
+          "n": 1,
+          "wall_s": 1.8e-05,
+          "p50_ms": 0.0181,
+          "p95_ms": 0.0181,
+          "max_ms": 0.0181,
+          "plan": [
+            "SCAN market_forecasts USING COVERING INDEX ix_market_forecasts_market_ticker"
+          ],
+          "index": "ix_market_forecasts_market_ticker",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT market_outcomes.market_ticker, market_outcomes.outcome_status, market_outcomes.winning_side FROM market_outcomes",
+          "n": 1,
+          "wall_s": 1.8e-05,
+          "p50_ms": 0.0179,
+          "p95_ms": 0.0179,
+          "max_ms": 0.0179,
+          "plan": [
+            "SCAN market_outcomes"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        }
+      ]
+    },
+    "calibration.select_scoring_candidates": {
+      "group": "hot",
+      "probe_wall_s": {
+        "reps": 2,
+        "p50": 0.758849,
+        "min": 0.722374,
+        "max": 0.795324
+      },
+      "statements": [
+        {
+          "sql": "SELECT forecast_scores.id, forecast_scores.forecast_id, forecast_scores.outcome_id, forecast_scores.brier_score, forecast_scores.score_status FROM forecast_scores WHERE forecast_scores.id IN (SELECT max(forecast_scores.id) AS max_1 FROM forecast_scores GROUP BY forecast_scores.forecast_id)",
+          "n": 1,
+          "wall_s": 0.003073,
+          "p50_ms": 3.0731,
+          "p95_ms": 3.0731,
+          "max_ms": 3.0731,
+          "plan": [
+            "SEARCH forecast_scores USING INTEGER PRIMARY KEY (rowid=?)",
+            "LIST SUBQUERY 1",
+            "SCAN forecast_scores USING COVERING INDEX ix_forecast_scores_forecast_id"
+          ],
+          "index": "ix_forecast_scores_forecast_id",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT market_outcomes.id, market_outcomes.market_ticker, market_outcomes.outcome_status, market_outcomes.resolved_probability, market_outcomes.winning_side, market_outcomes.settlement_price, market_outcomes.close_time, market_outcomes.settled_time, market_outcomes.source, market_outcomes.raw_payload, market_outcomes.created_at FROM market_outcomes WHERE market_outcomes.market_ticker IN (?, ?, ?, ",
+          "n": 1,
+          "wall_s": 0.002427,
+          "p50_ms": 2.4271,
+          "p95_ms": 2.4271,
+          "max_ms": 2.4271,
+          "plan": [
+            "SEARCH market_outcomes USING INDEX ix_market_outcomes_market_ticker (market_ticker=?)"
+          ],
+          "index": "ix_market_outcomes_market_ticker",
+          "full_scan": false,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT market_forecasts.id, market_forecasts.market_ticker, market_forecasts.research_packet_id, market_forecasts.forecaster_name, market_forecasts.forecaster_version, market_forecasts.estimated_probability, market_forecasts.evidence_depth, market_forecasts.forecast_risk, market_forecasts.calibration_tags FROM market_forecasts ORDER BY market_forecasts.id",
+          "n": 1,
+          "wall_s": 7e-05,
+          "p50_ms": 0.0698,
+          "p95_ms": 0.0698,
+          "max_ms": 0.0698,
+          "plan": [
+            "SCAN market_forecasts"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        }
+      ]
+    },
+    "calibration.summary": {
+      "group": "hot",
+      "probe_wall_s": {
+        "reps": 2,
+        "p50": 0.323978,
+        "min": 0.282566,
+        "max": 0.365391
+      },
+      "statements": [
+        {
+          "sql": "SELECT forecast_scores.id, forecast_scores.forecast_id, forecast_scores.market_ticker, forecast_scores.outcome_id, forecast_scores.brier_score, forecast_scores.log_loss, forecast_scores.absolute_error, forecast_scores.was_resolved, forecast_scores.score_status, forecast_scores.score_notes, forecast_scores.score_tags, forecast_scores.created_at FROM forecast_scores WHERE forecast_scores.id IN (SELE",
+          "n": 1,
+          "wall_s": 0.002973,
+          "p50_ms": 2.9731,
+          "p95_ms": 2.9731,
+          "max_ms": 2.9731,
+          "plan": [
+            "SEARCH forecast_scores USING INTEGER PRIMARY KEY (rowid=?)",
+            "LIST SUBQUERY 1",
+            "SCAN forecast_scores USING COVERING INDEX ix_forecast_scores_forecast_id"
+          ],
+          "index": "ix_forecast_scores_forecast_id",
+          "full_scan": true,
+          "temp_btree": false
+        }
+      ]
+    },
+    "champion_challenger.compare": {
+      "group": "hot",
+      "probe_wall_s": {
+        "reps": 2,
+        "p50": 1.799937,
+        "min": 1.629958,
+        "max": 1.969916
+      },
+      "statements": [
+        {
+          "sql": "SELECT forecast_scores.id, forecast_scores.forecast_id, forecast_scores.market_ticker, forecast_scores.outcome_id, forecast_scores.brier_score, forecast_scores.log_loss, forecast_scores.absolute_error, forecast_scores.was_resolved, forecast_scores.score_status, forecast_scores.score_notes, forecast_scores.score_tags, forecast_scores.created_at, market_forecasts.id AS id_1, market_forecasts.market_",
+          "n": 1,
+          "wall_s": 0.002985,
+          "p50_ms": 2.9852,
+          "p95_ms": 2.9852,
+          "max_ms": 2.9852,
+          "plan": [
+            "SEARCH forecast_scores USING INTEGER PRIMARY KEY (rowid=?)",
+            "LIST SUBQUERY 1",
+            "SCAN forecast_scores USING COVERING INDEX ix_forecast_scores_forecast_id",
+            "SEARCH market_forecasts USING INTEGER PRIMARY KEY (rowid=?)"
+          ],
+          "index": "ix_forecast_scores_forecast_id",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT opportunity_signals.refreshed_forecast_id, opportunity_signals.signal_type FROM opportunity_signals WHERE opportunity_signals.refreshed_forecast_id IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?",
+          "n": 1,
+          "wall_s": 0.00231,
+          "p50_ms": 2.3096,
+          "p95_ms": 2.3096,
+          "max_ms": 2.3096,
+          "plan": [
+            "SCAN opportunity_signals"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        }
+      ]
+    },
+    "outcome_coverage.build_report": {
+      "group": "hot",
+      "probe_wall_s": {
+        "reps": 2,
+        "p50": 2.516639,
+        "min": 2.44896,
+        "max": 2.584317
+      },
+      "statements": [
+        {
+          "sql": "SELECT markets.ticker FROM markets ORDER BY markets.last_seen_at DESC, markets.id DESC",
+          "n": 1,
+          "wall_s": 0.030489,
+          "p50_ms": 30.4895,
+          "p95_ms": 30.4895,
+          "max_ms": 30.4895,
+          "plan": [
+            "SCAN markets",
+            "USE TEMP B-TREE FOR ORDER BY"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": true
+        },
+        {
+          "sql": "SELECT markets.id, markets.ticker, markets.event_ticker, markets.title, markets.category, markets.status, markets.close_time, markets.expiration_time, markets.rules_primary, markets.first_seen_at, markets.last_seen_at FROM markets WHERE markets.ticker IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ",
+          "n": 1,
+          "wall_s": 0.002696,
+          "p50_ms": 2.6957,
+          "p95_ms": 2.6957,
+          "max_ms": 2.6957,
+          "plan": [
+            "SEARCH markets USING INDEX ix_markets_ticker (ticker=?)"
+          ],
+          "index": "ix_markets_ticker",
+          "full_scan": false,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT market_outcomes.id, market_outcomes.market_ticker, market_outcomes.outcome_status, market_outcomes.resolved_probability, market_outcomes.winning_side, market_outcomes.settlement_price, market_outcomes.close_time, market_outcomes.settled_time, market_outcomes.source, market_outcomes.raw_payload, market_outcomes.created_at FROM market_outcomes WHERE market_outcomes.market_ticker IN (?, ?, ?, ",
+          "n": 1,
+          "wall_s": 0.002388,
+          "p50_ms": 2.3883,
+          "p95_ms": 2.3883,
+          "max_ms": 2.3883,
+          "plan": [
+            "SEARCH market_outcomes USING INDEX ix_market_outcomes_market_ticker (market_ticker=?)"
+          ],
+          "index": "ix_market_outcomes_market_ticker",
+          "full_scan": false,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT market_research_packets.id, market_research_packets.domain FROM market_research_packets WHERE market_research_packets.id IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?",
+          "n": 1,
+          "wall_s": 0.00176,
+          "p50_ms": 1.7597,
+          "p95_ms": 1.7597,
+          "max_ms": 1.7597,
+          "plan": [
+            "SEARCH market_research_packets USING INTEGER PRIMARY KEY (rowid=?)"
+          ],
+          "index": null,
+          "full_scan": false,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT forecast_scores.id, forecast_scores.forecast_id, forecast_scores.market_ticker, forecast_scores.outcome_id, forecast_scores.brier_score, forecast_scores.log_loss, forecast_scores.absolute_error, forecast_scores.was_resolved, forecast_scores.score_status, forecast_scores.score_notes, forecast_scores.score_tags, forecast_scores.created_at FROM forecast_scores WHERE forecast_scores.forecast_id",
+          "n": 1,
+          "wall_s": 0.001432,
+          "p50_ms": 1.4321,
+          "p95_ms": 1.4321,
+          "max_ms": 1.4321,
+          "plan": [
+            "SCAN forecast_scores"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM market_outcomes WHERE market_outcomes.market_ticker IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ",
+          "n": 1,
+          "wall_s": 0.001113,
+          "p50_ms": 1.1127,
+          "p95_ms": 1.1127,
+          "max_ms": 1.1127,
+          "plan": [
+            "SEARCH market_outcomes USING INDEX ix_market_outcomes_market_ticker (market_ticker=?)"
+          ],
+          "index": "ix_market_outcomes_market_ticker",
+          "full_scan": false,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT DISTINCT market_forecasts.market_ticker FROM market_forecasts ORDER BY market_forecasts.market_ticker",
+          "n": 2,
+          "wall_s": 9.5e-05,
+          "p50_ms": 0.0222,
+          "p95_ms": 0.0726,
+          "max_ms": 0.0726,
+          "plan": [
+            "SCAN market_forecasts USING COVERING INDEX ix_market_forecasts_market_ticker"
+          ],
+          "index": "ix_market_forecasts_market_ticker",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT market_forecasts.id, market_forecasts.market_ticker, market_forecasts.scanner_run_id, market_forecasts.research_packet_id, market_forecasts.resolution_assessment_id, market_forecasts.forecaster_name, market_forecasts.forecaster_version, market_forecasts.model_name, market_forecasts.prompt_version, market_forecasts.estimated_probability, market_forecasts.confidence, market_forecasts.evidence",
+          "n": 1,
+          "wall_s": 3.6e-05,
+          "p50_ms": 0.0361,
+          "p95_ms": 0.0361,
+          "max_ms": 0.0361,
+          "plan": [
+            "SCAN market_forecasts"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        }
+      ]
+    },
+    "retention.prune_report": {
+      "group": "hot",
+      "probe_wall_s": {
+        "reps": 2,
+        "p50": 0.455099,
+        "min": 0.45034,
+        "max": 0.459858
+      },
+      "statements": [
+        {
+          "sql": "SELECT min(market_price_tick_buckets.created_at) AS min_1, max(market_price_tick_buckets.created_at) AS max_1 FROM market_price_tick_buckets",
+          "n": 1,
+          "wall_s": 0.173054,
+          "p50_ms": 173.0541,
+          "p95_ms": 173.0541,
+          "max_ms": 173.0541,
+          "plan": [
+            "SCAN market_price_tick_buckets"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM market_price_tick_buckets WHERE market_price_tick_buckets.created_at < ?",
+          "n": 1,
+          "wall_s": 0.124413,
+          "p50_ms": 124.4131,
+          "p95_ms": 124.4131,
+          "max_ms": 124.4131,
+          "plan": [
+            "SCAN market_price_tick_buckets"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT min(market_price_ticks.created_at) AS min_1, max(market_price_ticks.created_at) AS max_1 FROM market_price_ticks",
+          "n": 1,
+          "wall_s": 0.038519,
+          "p50_ms": 38.5194,
+          "p95_ms": 38.5194,
+          "max_ms": 38.5194,
+          "plan": [
+            "SCAN market_price_ticks"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM market_price_ticks WHERE market_price_ticks.created_at < ?",
+          "n": 1,
+          "wall_s": 0.03748,
+          "p50_ms": 37.4796,
+          "p95_ms": 37.4796,
+          "max_ms": 37.4796,
+          "plan": [
+            "SCAN market_price_ticks"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM crypto_price_ticks WHERE crypto_price_ticks.created_at < ?",
+          "n": 1,
+          "wall_s": 0.013322,
+          "p50_ms": 13.3222,
+          "p95_ms": 13.3222,
+          "max_ms": 13.3222,
+          "plan": [
+            "SCAN crypto_price_ticks"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT min(crypto_price_ticks.created_at) AS min_1, max(crypto_price_ticks.created_at) AS max_1 FROM crypto_price_ticks",
+          "n": 1,
+          "wall_s": 0.01307,
+          "p50_ms": 13.0695,
+          "p95_ms": 13.0695,
+          "max_ms": 13.0695,
+          "plan": [
+            "SCAN crypto_price_ticks"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM meme_catalyst_events WHERE meme_catalyst_events.created_at < ?",
+          "n": 1,
+          "wall_s": 0.012108,
+          "p50_ms": 12.1085,
+          "p95_ms": 12.1085,
+          "max_ms": 12.1085,
+          "plan": [
+            "SCAN meme_catalyst_events"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM market_price_tick_buckets",
+          "n": 1,
+          "wall_s": 0.011193,
+          "p50_ms": 11.1926,
+          "p95_ms": 11.1926,
+          "max_ms": 11.1926,
+          "plan": [
+            "SCAN market_price_tick_buckets USING COVERING INDEX ix_tick_bucket_start"
+          ],
+          "index": "ix_tick_bucket_start",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM meme_attention_snapshots WHERE meme_attention_snapshots.created_at < ?",
+          "n": 1,
+          "wall_s": 0.011192,
+          "p50_ms": 11.1924,
+          "p95_ms": 11.1924,
+          "max_ms": 11.1924,
+          "plan": [
+            "SCAN meme_attention_snapshots"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM market_price_ticks",
+          "n": 1,
+          "wall_s": 0.007584,
+          "p50_ms": 7.5844,
+          "p95_ms": 7.5844,
+          "max_ms": 7.5844,
+          "plan": [
+            "SCAN market_price_ticks USING COVERING INDEX ix_market_price_ticks_ticker_observed"
+          ],
+          "index": "ix_market_price_ticks_ticker_observed",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM watcher_runs WHERE watcher_runs.created_at < ?",
+          "n": 1,
+          "wall_s": 0.002173,
+          "p50_ms": 2.1727,
+          "p95_ms": 2.1727,
+          "max_ms": 2.1727,
+          "plan": [
+            "SCAN watcher_runs"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM watcher_runs",
+          "n": 1,
+          "wall_s": 0.001038,
+          "p50_ms": 1.0381,
+          "p95_ms": 1.0381,
+          "max_ms": 1.0381,
+          "plan": [
+            "SCAN watcher_runs"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM crypto_price_ticks",
+          "n": 1,
+          "wall_s": 0.000468,
+          "p50_ms": 0.4682,
+          "p95_ms": 0.4682,
+          "max_ms": 0.4682,
+          "plan": [
+            "SCAN crypto_price_ticks USING COVERING INDEX ix_crypto_price_ticks_chain"
+          ],
+          "index": "ix_crypto_price_ticks_chain",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM meme_catalyst_events",
+          "n": 1,
+          "wall_s": 0.00039,
+          "p50_ms": 0.39,
+          "p95_ms": 0.39,
+          "max_ms": 0.39,
+          "plan": [
+            "SCAN meme_catalyst_events USING COVERING INDEX ix_meme_catalyst_run_id"
+          ],
+          "index": "ix_meme_catalyst_run_id",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM opportunity_signals",
+          "n": 1,
+          "wall_s": 0.000188,
+          "p50_ms": 0.1884,
+          "p95_ms": 0.1884,
+          "max_ms": 0.1884,
+          "plan": [
+            "SCAN opportunity_signals USING COVERING INDEX ix_opportunity_signals_signal_status"
+          ],
+          "index": "ix_opportunity_signals_signal_status",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM meme_attention_snapshots",
+          "n": 1,
+          "wall_s": 0.000158,
+          "p50_ms": 0.1584,
+          "p95_ms": 0.1584,
+          "max_ms": 0.1584,
+          "plan": [
+            "SCAN meme_attention_snapshots USING COVERING INDEX ix_meme_attention_run_id"
+          ],
+          "index": "ix_meme_attention_run_id",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM meme_scout_runs WHERE meme_scout_runs.created_at < ? AND meme_scout_runs.status != ?",
+          "n": 1,
+          "wall_s": 9e-05,
+          "p50_ms": 0.0903,
+          "p95_ms": 0.0903,
+          "max_ms": 0.0903,
+          "plan": [
+            "SCAN meme_scout_runs"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM crypto_watcher_runs WHERE crypto_watcher_runs.created_at < ? AND crypto_watcher_runs.status != ?",
+          "n": 1,
+          "wall_s": 8.2e-05,
+          "p50_ms": 0.0821,
+          "p95_ms": 0.0821,
+          "max_ms": 0.0821,
+          "plan": [
+            "SCAN crypto_watcher_runs"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM meme_scout_runs",
+          "n": 1,
+          "wall_s": 5.3e-05,
+          "p50_ms": 0.053,
+          "p95_ms": 0.053,
+          "max_ms": 0.053,
+          "plan": [
+            "SCAN meme_scout_runs"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM pipeline_runs WHERE pipeline_runs.created_at < ? AND pipeline_runs.status != ?",
+          "n": 1,
+          "wall_s": 5e-05,
+          "p50_ms": 0.0504,
+          "p95_ms": 0.0504,
+          "max_ms": 0.0504,
+          "plan": [
+            "SCAN pipeline_runs"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM crypto_watcher_runs",
+          "n": 1,
+          "wall_s": 4.8e-05,
+          "p50_ms": 0.0484,
+          "p95_ms": 0.0484,
+          "max_ms": 0.0484,
+          "plan": [
+            "SCAN crypto_watcher_runs"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM tick_aggregation_runs WHERE tick_aggregation_runs.created_at < ? AND tick_aggregation_runs.status != ?",
+          "n": 1,
+          "wall_s": 4.5e-05,
+          "p50_ms": 0.0453,
+          "p95_ms": 0.0453,
+          "max_ms": 0.0453,
+          "plan": [
+            "SCAN tick_aggregation_runs"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM tick_aggregation_runs",
+          "n": 1,
+          "wall_s": 3e-05,
+          "p50_ms": 0.0298,
+          "p95_ms": 0.0298,
+          "max_ms": 0.0298,
+          "plan": [
+            "SCAN tick_aggregation_runs"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM pipeline_runs",
+          "n": 1,
+          "wall_s": 1e-05,
+          "p50_ms": 0.01,
+          "p95_ms": 0.01,
+          "max_ms": 0.01,
+          "plan": [
+            "SCAN pipeline_runs USING COVERING INDEX ix_pipeline_runs_status"
+          ],
+          "index": "ix_pipeline_runs_status",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM polymarket_markets",
+          "n": 1,
+          "wall_s": 9e-06,
+          "p50_ms": 0.0089,
+          "p95_ms": 0.0089,
+          "max_ms": 0.0089,
+          "plan": [
+            "SCAN polymarket_markets USING COVERING INDEX ix_polymarket_markets_run_id"
+          ],
+          "index": "ix_polymarket_markets_run_id",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM polymarket_markets WHERE polymarket_markets.created_at < ?",
+          "n": 1,
+          "wall_s": 8e-06,
+          "p50_ms": 0.0085,
+          "p95_ms": 0.0085,
+          "max_ms": 0.0085,
+          "plan": [
+            "SCAN polymarket_markets"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM polymarket_orderbook_snapshots",
+          "n": 1,
+          "wall_s": 8e-06,
+          "p50_ms": 0.0075,
+          "p95_ms": 0.0075,
+          "max_ms": 0.0075,
+          "plan": [
+            "SCAN polymarket_orderbook_snapshots USING COVERING INDEX ix_polymarket_book_run_id"
+          ],
+          "index": "ix_polymarket_book_run_id",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM polymarket_orderbook_snapshots WHERE polymarket_orderbook_snapshots.created_at < ?",
+          "n": 1,
+          "wall_s": 7e-06,
+          "p50_ms": 0.0075,
+          "p95_ms": 0.0075,
+          "max_ms": 0.0075,
+          "plan": [
+            "SCAN polymarket_orderbook_snapshots"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM polymarket_scout_runs",
+          "n": 1,
+          "wall_s": 7e-06,
+          "p50_ms": 0.0072,
+          "p95_ms": 0.0072,
+          "max_ms": 0.0072,
+          "plan": [
+            "SCAN polymarket_scout_runs"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM polymarket_scout_runs WHERE polymarket_scout_runs.created_at < ? AND polymarket_scout_runs.status != ?",
+          "n": 1,
+          "wall_s": 7e-06,
+          "p50_ms": 0.0072,
+          "p95_ms": 0.0072,
+          "max_ms": 0.0072,
+          "plan": [
+            "SCAN polymarket_scout_runs"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        }
+      ]
+    },
+    "pipeline.top_candidates": {
+      "group": "hot",
+      "probe_wall_s": {
+        "reps": 2,
+        "p50": 0.005681,
+        "min": 0.003479,
+        "max": 0.007884
+      },
+      "statements": [
+        {
+          "sql": "SELECT market_snapshots.id, market_snapshots.market_id, market_snapshots.scanner_run_id, market_snapshots.captured_at, market_snapshots.yes_bid, market_snapshots.yes_ask, market_snapshots.no_bid, market_snapshots.no_ask, market_snapshots.last_price, market_snapshots.volume, market_snapshots.volume_24h, market_snapshots.open_interest, market_snapshots.liquidity, market_snapshots.score, market_snaps",
+          "n": 1,
+          "wall_s": 0.000373,
+          "p50_ms": 0.3729,
+          "p95_ms": 0.3729,
+          "max_ms": 0.3729,
+          "plan": [
+            "SEARCH market_snapshots USING INDEX ix_market_snapshots_scanner_run_id (scanner_run_id=?)",
+            "SEARCH markets USING INTEGER PRIMARY KEY (rowid=?)",
+            "USE TEMP B-TREE FOR ORDER BY"
+          ],
+          "index": "ix_market_snapshots_scanner_run_id",
+          "full_scan": false,
+          "temp_btree": true
+        },
+        {
+          "sql": "SELECT scanner_runs.id, scanner_runs.started_at, scanner_runs.finished_at, scanner_runs.duration_ms, scanner_runs.status, scanner_runs.source, scanner_runs.markets_fetched, scanner_runs.markets_ranked, scanner_runs.error_type, scanner_runs.error_message FROM scanner_runs WHERE scanner_runs.status = ? ORDER BY scanner_runs.id DESC",
+          "n": 1,
+          "wall_s": 1.6e-05,
+          "p50_ms": 0.0161,
+          "p95_ms": 0.0161,
+          "max_ms": 0.0161,
+          "plan": [
+            "SCAN scanner_runs"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        }
+      ]
+    },
+    "signal_workflow.build_report": {
+      "group": "hot",
+      "probe_wall_s": {
+        "reps": 2,
+        "p50": 1.032633,
+        "min": 1.010832,
+        "max": 1.054435
+      },
+      "statements": [
+        {
+          "sql": "SELECT opportunity_signals.id, opportunity_signals.market_ticker, opportunity_signals.signal_type, opportunity_signals.signal_status, opportunity_signals.observed_at, opportunity_signals.old_midpoint, opportunity_signals.new_midpoint, opportunity_signals.price_change, opportunity_signals.spread, opportunity_signals.liquidity_proxy, opportunity_signals.latest_forecast_id, opportunity_signals.latest",
+          "n": 1,
+          "wall_s": 0.034896,
+          "p50_ms": 34.8956,
+          "p95_ms": 34.8956,
+          "max_ms": 34.8956,
+          "plan": [
+            "SEARCH opportunity_signals USING INDEX ix_opportunity_signals_signal_status (signal_status=?)",
+            "SEARCH market_forecasts USING INTEGER PRIMARY KEY (rowid=?)",
+            "USE TEMP B-TREE FOR ORDER BY"
+          ],
+          "index": "ix_opportunity_signals_signal_status",
+          "full_scan": false,
+          "temp_btree": true
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM opportunity_signals WHERE opportunity_signals.processing_error_type IS NOT NULL",
+          "n": 1,
+          "wall_s": 0.030903,
+          "p50_ms": 30.9031,
+          "p95_ms": 30.9031,
+          "max_ms": 30.9031,
+          "plan": [
+            "SCAN opportunity_signals"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT market_forecasts.forecaster_name, count(*) AS count_1 FROM market_forecasts GROUP BY market_forecasts.forecaster_name",
+          "n": 1,
+          "wall_s": 0.010244,
+          "p50_ms": 10.2444,
+          "p95_ms": 10.2444,
+          "max_ms": 10.2444,
+          "plan": [
+            "SCAN market_forecasts",
+            "USE TEMP B-TREE FOR GROUP BY"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": true
+        },
+        {
+          "sql": "SELECT opportunity_signals.signal_status, count(*) AS count_1 FROM opportunity_signals GROUP BY opportunity_signals.signal_status",
+          "n": 1,
+          "wall_s": 0.000454,
+          "p50_ms": 0.4543,
+          "p95_ms": 0.4543,
+          "max_ms": 0.4543,
+          "plan": [
+            "SCAN opportunity_signals USING COVERING INDEX ix_opportunity_signals_signal_status"
+          ],
+          "index": "ix_opportunity_signals_signal_status",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM opportunity_signals WHERE opportunity_signals.signal_status = ? AND opportunity_signals.processing_error_type IS NULL",
+          "n": 1,
+          "wall_s": 0.000221,
+          "p50_ms": 0.2213,
+          "p95_ms": 0.2213,
+          "max_ms": 0.2213,
+          "plan": [
+            "SEARCH opportunity_signals USING INDEX ix_opportunity_signals_signal_status (signal_status=?)"
+          ],
+          "index": "ix_opportunity_signals_signal_status",
+          "full_scan": false,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT opportunity_signals.signal_type, count(*) AS count_1 FROM opportunity_signals GROUP BY opportunity_signals.signal_type",
+          "n": 1,
+          "wall_s": 6.6e-05,
+          "p50_ms": 0.0657,
+          "p95_ms": 0.0657,
+          "max_ms": 0.0657,
+          "plan": [
+            "SCAN opportunity_signals USING COVERING INDEX ix_opportunity_signals_signal_type"
+          ],
+          "index": "ix_opportunity_signals_signal_type",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT market_research_packets.id, market_research_packets.market_ticker, market_research_packets.scanner_run_id, market_research_packets.enrichment_id, market_research_packets.resolution_assessment_id, market_research_packets.collector_name, market_research_packets.collector_version, market_research_packets.domain, market_research_packets.source_queries, market_research_packets.sources, market_re",
+          "n": 1,
+          "wall_s": 3.4e-05,
+          "p50_ms": 0.0339,
+          "p95_ms": 0.0339,
+          "max_ms": 0.0339,
+          "plan": [
+            "SCAN market_research_packets"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        }
+      ]
+    },
+    "signal_workflow.promote_top_selection": {
+      "group": "hot",
+      "probe_wall_s": {
+        "reps": 2,
+        "p50": 1.266038,
+        "min": 1.254172,
+        "max": 1.277905
+      },
+      "statements": [
+        {
+          "sql": "SELECT opportunity_signals.id, opportunity_signals.market_ticker, opportunity_signals.signal_type, opportunity_signals.signal_status, opportunity_signals.observed_at, opportunity_signals.old_midpoint, opportunity_signals.new_midpoint, opportunity_signals.price_change, opportunity_signals.spread, opportunity_signals.liquidity_proxy, opportunity_signals.latest_forecast_id, opportunity_signals.latest",
+          "n": 1,
+          "wall_s": 8.6e-05,
+          "p50_ms": 0.0861,
+          "p95_ms": 0.0861,
+          "max_ms": 0.0861,
+          "plan": [
+            "SEARCH opportunity_signals USING INDEX ix_opportunity_signals_signal_status (signal_status=?)"
+          ],
+          "index": "ix_opportunity_signals_signal_status",
+          "full_scan": false,
+          "temp_btree": false
+        }
+      ]
+    }
+  }
+}

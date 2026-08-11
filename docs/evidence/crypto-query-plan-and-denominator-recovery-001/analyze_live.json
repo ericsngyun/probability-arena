@@ -1,0 +1,765 @@
+{
+  "action": "ANALYZE",
+  "db": "/home/miko_node_001/projects/probability-arena/data/probability_arena.db",
+  "started_at": "2026-08-11T07:04:43.950430+00:00",
+  "dry_run": false,
+  "preflight": {
+    "checks": {
+      "db_exists": {
+        "ok": true,
+        "detail": "/home/miko_node_001/projects/probability-arena/data/probability_arena.db"
+      },
+      "confirm_path_matches": {
+        "ok": true,
+        "detail": "'/home/miko_node_001/projects/probability-arena/data/probability_arena.db' vs /home/miko_node_001/projects/probability-arena/data/probability_arena.db"
+      },
+      "confirm_phrase": {
+        "ok": true,
+        "detail": "exact phrase required"
+      },
+      "backup_fresh": {
+        "ok": true,
+        "detail": {
+          "newest": "backup-20260811T013803Z.db.gz",
+          "age_hours": 5.44,
+          "limit_hours": 36.0
+        }
+      },
+      "quick_check_ok": {
+        "ok": true,
+        "detail": "ok"
+      },
+      "alembic_matches": {
+        "ok": true,
+        "detail": {
+          "found": "0027",
+          "expected": "0027"
+        }
+      }
+    },
+    "passed": true
+  },
+  "before": {
+    "file_bytes": 4550623232,
+    "page_size": 4096,
+    "page_count": 1110992,
+    "freelist_count": 418831,
+    "journal_mode": "delete",
+    "busy_timeout_of_this_readonly_connection": 5000,
+    "user_version": 0,
+    "freelist_share": 0.377,
+    "sqlite_stat_tables": [],
+    "sqlite_stat1_rows": 0,
+    "alembic_version": "0027",
+    "lock_telemetry": {
+      "file": "/home/miko_node_001/probability-arena-telemetry/sqlite-writes.jsonl",
+      "exists": true,
+      "events": 6806,
+      "lock_events": 8,
+      "malformed_lines": 0,
+      "last_event_at": "2026-08-11T07:04:03.831479Z",
+      "last_lock_event": {
+        "started_at": "2026-08-08T14:35:11.265899Z",
+        "operation_name": "commit_unit",
+        "writer_name": "tick_aggregation",
+        "lock_wait_ms": 32054,
+        "retry_count": 1,
+        "outcome": "retried_success"
+      }
+    }
+  },
+  "analyze_seconds": 0.4597,
+  "after": {
+    "file_bytes": 4550623232,
+    "page_size": 4096,
+    "page_count": 1110992,
+    "freelist_count": 418827,
+    "journal_mode": "delete",
+    "busy_timeout_of_this_readonly_connection": 5000,
+    "user_version": 0,
+    "freelist_share": 0.377,
+    "sqlite_stat_tables": [
+      "sqlite_stat1"
+    ],
+    "sqlite_stat1_rows": 130,
+    "alembic_version": "0027",
+    "lock_telemetry": {
+      "file": "/home/miko_node_001/probability-arena-telemetry/sqlite-writes.jsonl",
+      "exists": true,
+      "events": 6806,
+      "lock_events": 8,
+      "malformed_lines": 0,
+      "last_event_at": "2026-08-11T07:04:03.831479Z",
+      "last_lock_event": {
+        "started_at": "2026-08-08T14:35:11.265899Z",
+        "operation_name": "commit_unit",
+        "writer_name": "tick_aggregation",
+        "lock_wait_ms": 32054,
+        "retry_count": 1,
+        "outcome": "retried_success"
+      }
+    }
+  },
+  "integrity_check": "ok",
+  "sqlite_stat1": [
+    {
+      "tbl": "alembic_version",
+      "idx": "sqlite_autoindex_alembic_version_1",
+      "stat": "1 1"
+    },
+    {
+      "tbl": "cross_venue_market_candidates",
+      "idx": "ix_cross_venue_cand_domain",
+      "stat": "926 463"
+    },
+    {
+      "tbl": "cross_venue_market_candidates",
+      "idx": "ix_cross_venue_cand_kalshi",
+      "stat": "926 9"
+    },
+    {
+      "tbl": "cross_venue_market_candidates",
+      "idx": "ix_cross_venue_cand_label",
+      "stat": "926 186"
+    },
+    {
+      "tbl": "cross_venue_market_candidates",
+      "idx": "ix_cross_venue_cand_polymarket",
+      "stat": "926 3"
+    },
+    {
+      "tbl": "cross_venue_market_candidates",
+      "idx": "ix_cross_venue_cand_run_id",
+      "stat": "926 186"
+    },
+    {
+      "tbl": "cross_venue_market_candidates",
+      "idx": "ix_cross_venue_run_label",
+      "stat": "926 186 47"
+    },
+    {
+      "tbl": "cross_venue_observation_runs",
+      "idx": null,
+      "stat": "6"
+    },
+    {
+      "tbl": "crypto_horizon_cohort_members",
+      "idx": "ix_crypto_horizon_cohort_members_chain",
+      "stat": "21 21"
+    },
+    {
+      "tbl": "crypto_horizon_cohort_members",
+      "idx": "ix_crypto_horizon_cohort_members_cohort_id",
+      "stat": "21 3"
+    },
+    {
+      "tbl": "crypto_horizon_cohort_members",
+      "idx": "ix_crypto_horizon_cohort_members_token_address",
+      "stat": "21 1"
+    },
+    {
+      "tbl": "crypto_horizon_cohort_members",
+      "idx": "ix_horizon_member_cohort_token",
+      "stat": "21 3 1"
+    },
+    {
+      "tbl": "crypto_horizon_cohorts",
+      "idx": "ix_crypto_horizon_cohorts_chain",
+      "stat": "7 7"
+    },
+    {
+      "tbl": "crypto_horizon_observations",
+      "idx": "ix_crypto_horizon_observations_chain",
+      "stat": "43 43"
+    },
+    {
+      "tbl": "crypto_horizon_observations",
+      "idx": "ix_crypto_horizon_observations_cohort_id",
+      "stat": "43 8"
+    },
+    {
+      "tbl": "crypto_horizon_observations",
+      "idx": "ix_crypto_horizon_observations_horizon",
+      "stat": "43 11"
+    },
+    {
+      "tbl": "crypto_horizon_observations",
+      "idx": "ix_crypto_horizon_observations_member_id",
+      "stat": "43 3"
+    },
+    {
+      "tbl": "crypto_horizon_observations",
+      "idx": "ix_crypto_horizon_observations_status",
+      "stat": "43 22"
+    },
+    {
+      "tbl": "crypto_horizon_observations",
+      "idx": "ix_crypto_horizon_observations_token_address",
+      "stat": "43 3"
+    },
+    {
+      "tbl": "crypto_horizon_observations",
+      "idx": "ix_horizon_obs_cohort_token_horizon",
+      "stat": "43 8 3 1"
+    },
+    {
+      "tbl": "crypto_opportunity_signals",
+      "idx": "ix_crypto_opportunity_signals_chain",
+      "stat": "90480 90480"
+    },
+    {
+      "tbl": "crypto_opportunity_signals",
+      "idx": "ix_crypto_opportunity_signals_signal_status",
+      "stat": "90480 90480"
+    },
+    {
+      "tbl": "crypto_opportunity_signals",
+      "idx": "ix_crypto_opportunity_signals_signal_type",
+      "stat": "90480 10054"
+    },
+    {
+      "tbl": "crypto_opportunity_signals",
+      "idx": "ix_crypto_opportunity_signals_token_address",
+      "stat": "90480 7"
+    },
+    {
+      "tbl": "crypto_pairs",
+      "idx": "ix_crypto_pairs_base_token_address",
+      "stat": "26771 3"
+    },
+    {
+      "tbl": "crypto_pairs",
+      "idx": "ix_crypto_pairs_chain",
+      "stat": "26771 26771"
+    },
+    {
+      "tbl": "crypto_pairs",
+      "idx": "ix_crypto_pairs_chain_address",
+      "stat": "26771 26771 1"
+    },
+    {
+      "tbl": "crypto_pairs",
+      "idx": "ix_crypto_pairs_pair_address",
+      "stat": "26771 1"
+    },
+    {
+      "tbl": "crypto_price_ticks",
+      "idx": "ix_crypto_price_ticks_chain",
+      "stat": "143107 143107"
+    },
+    {
+      "tbl": "crypto_price_ticks",
+      "idx": "ix_crypto_price_ticks_pair_address",
+      "stat": "143107 24"
+    },
+    {
+      "tbl": "crypto_price_ticks",
+      "idx": "ix_crypto_price_ticks_pair_observed",
+      "stat": "143107 24 1"
+    },
+    {
+      "tbl": "crypto_price_ticks",
+      "idx": "ix_crypto_price_ticks_token_address",
+      "stat": "143107 44"
+    },
+    {
+      "tbl": "crypto_token_actor_observations",
+      "idx": "ix_crypto_token_actor_observations_birth_event_id",
+      "stat": "8490 2"
+    },
+    {
+      "tbl": "crypto_token_actor_observations",
+      "idx": "ix_crypto_token_actor_observations_chain",
+      "stat": "8490 8490"
+    },
+    {
+      "tbl": "crypto_token_actor_observations",
+      "idx": "ix_crypto_token_actor_observations_run_id",
+      "stat": "8490 3"
+    },
+    {
+      "tbl": "crypto_token_actor_observations",
+      "idx": "ix_crypto_token_actor_observations_token_address",
+      "stat": "8490 2"
+    },
+    {
+      "tbl": "crypto_token_birth_events",
+      "idx": "ix_crypto_birth_chain_token",
+      "stat": "7436 7436 1"
+    },
+    {
+      "tbl": "crypto_token_birth_events",
+      "idx": "ix_crypto_token_birth_events_chain",
+      "stat": "7436 7436"
+    },
+    {
+      "tbl": "crypto_token_birth_events",
+      "idx": "ix_crypto_token_birth_events_first_evidence_at",
+      "stat": "7436 2"
+    },
+    {
+      "tbl": "crypto_token_birth_events",
+      "idx": "ix_crypto_token_birth_events_run_id",
+      "stat": "7436 3"
+    },
+    {
+      "tbl": "crypto_token_birth_events",
+      "idx": "ix_crypto_token_birth_events_token_address",
+      "stat": "7436 1"
+    },
+    {
+      "tbl": "crypto_token_discovery_events",
+      "idx": "ix_crypto_token_discovery_events_chain",
+      "stat": "397221 397221"
+    },
+    {
+      "tbl": "crypto_token_discovery_events",
+      "idx": "ix_crypto_token_discovery_events_event_type",
+      "stat": "397221 132407"
+    },
+    {
+      "tbl": "crypto_token_discovery_events",
+      "idx": "ix_crypto_token_discovery_events_token_address",
+      "stat": "397221 31"
+    },
+    {
+      "tbl": "crypto_token_lifecycle_runs",
+      "idx": null,
+      "stat": "3474"
+    },
+    {
+      "tbl": "crypto_token_lifecycle_snapshots",
+      "idx": "ix_crypto_lifecycle_snap_token_observed",
+      "stat": "8490 2 1"
+    },
+    {
+      "tbl": "crypto_token_lifecycle_snapshots",
+      "idx": "ix_crypto_token_lifecycle_snapshots_birth_event_id",
+      "stat": "8490 2"
+    },
+    {
+      "tbl": "crypto_token_lifecycle_snapshots",
+      "idx": "ix_crypto_token_lifecycle_snapshots_chain",
+      "stat": "8490 8490"
+    },
+    {
+      "tbl": "crypto_token_lifecycle_snapshots",
+      "idx": "ix_crypto_token_lifecycle_snapshots_run_id",
+      "stat": "8490 3"
+    },
+    {
+      "tbl": "crypto_token_lifecycle_snapshots",
+      "idx": "ix_crypto_token_lifecycle_snapshots_token_address",
+      "stat": "8490 2"
+    },
+    {
+      "tbl": "crypto_token_risk_assessments",
+      "idx": "ix_crypto_token_risk_assessments_chain",
+      "stat": "311685 311685"
+    },
+    {
+      "tbl": "crypto_token_risk_assessments",
+      "idx": "ix_crypto_token_risk_assessments_token_address",
+      "stat": "311685 25"
+    },
+    {
+      "tbl": "crypto_token_survival_outcomes",
+      "idx": "ix_crypto_token_survival_outcomes_birth_event_id",
+      "stat": "7436 1"
+    },
+    {
+      "tbl": "crypto_token_survival_outcomes",
+      "idx": "ix_crypto_token_survival_outcomes_chain",
+      "stat": "7436 7436"
+    },
+    {
+      "tbl": "crypto_token_survival_outcomes",
+      "idx": "ix_crypto_token_survival_outcomes_final",
+      "stat": "7436 3718"
+    },
+    {
+      "tbl": "crypto_token_survival_outcomes",
+      "idx": "ix_crypto_token_survival_outcomes_token_address",
+      "stat": "7436 1"
+    },
+    {
+      "tbl": "crypto_tokens",
+      "idx": "ix_crypto_tokens_chain",
+      "stat": "12863 12863"
+    },
+    {
+      "tbl": "crypto_tokens",
+      "idx": "ix_crypto_tokens_chain_address",
+      "stat": "12863 12863 1"
+    },
+    {
+      "tbl": "crypto_tokens",
+      "idx": "ix_crypto_tokens_token_address",
+      "stat": "12863 1"
+    },
+    {
+      "tbl": "crypto_watcher_runs",
+      "idx": null,
+      "stat": "1756"
+    },
+    {
+      "tbl": "domain_market_inventory_snapshots",
+      "idx": "ix_domain_inv_domain",
+      "stat": "24 3"
+    },
+    {
+      "tbl": "domain_market_inventory_snapshots",
+      "idx": "ix_domain_inv_run_id",
+      "stat": "24 8"
+    },
+    {
+      "tbl": "domain_market_inventory_snapshots",
+      "idx": "ix_domain_inv_series",
+      "stat": "24 3"
+    },
+    {
+      "tbl": "domain_scout_runs",
+      "idx": null,
+      "stat": "3"
+    },
+    {
+      "tbl": "edge_precheck_snapshots",
+      "idx": "ix_edge_precheck_snapshots_forecast_id",
+      "stat": "10422 1"
+    },
+    {
+      "tbl": "edge_precheck_snapshots",
+      "idx": "ix_edge_precheck_snapshots_forecaster_name",
+      "stat": "10422 3474"
+    },
+    {
+      "tbl": "edge_precheck_snapshots",
+      "idx": "ix_edge_precheck_snapshots_market_ticker",
+      "stat": "10422 2"
+    },
+    {
+      "tbl": "edge_precheck_snapshots",
+      "idx": "ix_edge_precheck_snapshots_status",
+      "stat": "10422 1043"
+    },
+    {
+      "tbl": "forecast_scores",
+      "idx": "ix_forecast_scores_forecast_id",
+      "stat": "20926 2"
+    },
+    {
+      "tbl": "forecast_scores",
+      "idx": "ix_forecast_scores_market_ticker",
+      "stat": "20926 4"
+    },
+    {
+      "tbl": "forecast_scores",
+      "idx": "ix_forecast_scores_score_status",
+      "stat": "20926 6976"
+    },
+    {
+      "tbl": "frontier_eval_runs",
+      "idx": null,
+      "stat": "4"
+    },
+    {
+      "tbl": "market_detail_enrichments",
+      "idx": "ix_market_detail_enrichments_market_ticker",
+      "stat": "15349 3"
+    },
+    {
+      "tbl": "market_detail_enrichments",
+      "idx": "ix_market_detail_enrichments_scanner_run_id",
+      "stat": "15349 67"
+    },
+    {
+      "tbl": "market_eligibility_assessments",
+      "idx": "ix_market_eligibility_assessments_market_ticker",
+      "stat": "188898 2"
+    },
+    {
+      "tbl": "market_eligibility_assessments",
+      "idx": "ix_market_eligibility_assessments_scanner_run_id",
+      "stat": "188898 808"
+    },
+    {
+      "tbl": "market_forecasts",
+      "idx": "ix_market_forecasts_market_ticker",
+      "stat": "15408 3"
+    },
+    {
+      "tbl": "market_forecasts",
+      "idx": "ix_market_forecasts_scanner_run_id",
+      "stat": "15408 67"
+    },
+    {
+      "tbl": "market_outcomes",
+      "idx": "ix_market_outcomes_market_ticker",
+      "stat": "17760 1"
+    },
+    {
+      "tbl": "market_price_tick_buckets",
+      "idx": "ix_market_price_tick_buckets_domain",
+      "stat": "1443328 360832"
+    },
+    {
+      "tbl": "market_price_tick_buckets",
+      "idx": "ix_market_price_tick_buckets_market_ticker",
+      "stat": "1443328 185"
+    },
+    {
+      "tbl": "market_price_tick_buckets",
+      "idx": "ix_tick_bucket_start",
+      "stat": "1443328 142"
+    },
+    {
+      "tbl": "market_price_tick_buckets",
+      "idx": "sqlite_autoindex_market_price_tick_buckets_1",
+      "stat": "1443328 185 1 1"
+    },
+    {
+      "tbl": "market_price_ticks",
+      "idx": "ix_market_price_ticks_market_ticker",
+      "stat": "476850 719"
+    },
+    {
+      "tbl": "market_price_ticks",
+      "idx": "ix_market_price_ticks_ticker_observed",
+      "stat": "476850 719 1"
+    },
+    {
+      "tbl": "market_research_packets",
+      "idx": "ix_market_research_packets_domain",
+      "stat": "15407 3082"
+    },
+    {
+      "tbl": "market_research_packets",
+      "idx": "ix_market_research_packets_market_ticker",
+      "stat": "15407 3"
+    },
+    {
+      "tbl": "market_research_packets",
+      "idx": "ix_market_research_packets_scanner_run_id",
+      "stat": "15407 67"
+    },
+    {
+      "tbl": "market_resolution_assessments",
+      "idx": "ix_market_resolution_assessments_market_ticker",
+      "stat": "15407 3"
+    },
+    {
+      "tbl": "market_resolution_assessments",
+      "idx": "ix_market_resolution_assessments_scanner_run_id",
+      "stat": "15407 67"
+    },
+    {
+      "tbl": "market_snapshots",
+      "idx": "ix_market_snapshots_market_captured",
+      "stat": "188898 2 1"
+    },
+    {
+      "tbl": "market_snapshots",
+      "idx": "ix_market_snapshots_market_id",
+      "stat": "188898 2"
+    },
+    {
+      "tbl": "market_snapshots",
+      "idx": "ix_market_snapshots_scanner_run_id",
+      "stat": "188898 808"
+    },
+    {
+      "tbl": "marketops_alerts",
+      "idx": "ix_marketops_alerts_alert_type",
+      "stat": "6848 979"
+    },
+    {
+      "tbl": "marketops_alerts",
+      "idx": "ix_marketops_alerts_status",
+      "stat": "6848 3424"
+    },
+    {
+      "tbl": "marketops_runs",
+      "idx": null,
+      "stat": "9236"
+    },
+    {
+      "tbl": "markets",
+      "idx": "ix_markets_event_ticker",
+      "stat": "121888 8"
+    },
+    {
+      "tbl": "markets",
+      "idx": "ix_markets_status",
+      "stat": "121888 60944"
+    },
+    {
+      "tbl": "markets",
+      "idx": "ix_markets_ticker",
+      "stat": "121888 1"
+    },
+    {
+      "tbl": "meme_attention_snapshots",
+      "idx": "ix_meme_attention_chain",
+      "stat": "56419 56419"
+    },
+    {
+      "tbl": "meme_attention_snapshots",
+      "idx": "ix_meme_attention_run_id",
+      "stat": "56419 30"
+    },
+    {
+      "tbl": "meme_attention_snapshots",
+      "idx": "ix_meme_attention_token",
+      "stat": "56419 10"
+    },
+    {
+      "tbl": "meme_attention_snapshots",
+      "idx": "ix_meme_attention_token_observed",
+      "stat": "56419 10 1"
+    },
+    {
+      "tbl": "meme_catalyst_events",
+      "idx": "ix_meme_catalyst_run_id",
+      "stat": "131042 70"
+    },
+    {
+      "tbl": "meme_catalyst_events",
+      "idx": "ix_meme_catalyst_source",
+      "stat": "131042 131042"
+    },
+    {
+      "tbl": "meme_catalyst_events",
+      "idx": "ix_meme_catalyst_subject_ref",
+      "stat": "131042 23"
+    },
+    {
+      "tbl": "meme_catalyst_events",
+      "idx": "ix_meme_catalyst_subject_type",
+      "stat": "131042 131042"
+    },
+    {
+      "tbl": "meme_catalyst_events",
+      "idx": "ix_meme_catalyst_type",
+      "stat": "131042 32761"
+    },
+    {
+      "tbl": "meme_scout_runs",
+      "idx": null,
+      "stat": "1882"
+    },
+    {
+      "tbl": "opportunity_signals",
+      "idx": "ix_opportunity_signals_market_ticker",
+      "stat": "41854 7"
+    },
+    {
+      "tbl": "opportunity_signals",
+      "idx": "ix_opportunity_signals_signal_status",
+      "stat": "41854 13952"
+    },
+    {
+      "tbl": "opportunity_signals",
+      "idx": "ix_opportunity_signals_signal_type",
+      "stat": "41854 8371"
+    },
+    {
+      "tbl": "pipeline_runs",
+      "idx": "ix_pipeline_runs_run_type",
+      "stat": "251 251"
+    },
+    {
+      "tbl": "pipeline_runs",
+      "idx": "ix_pipeline_runs_status",
+      "stat": "251 84"
+    },
+    {
+      "tbl": "pipeline_stage_runs",
+      "idx": "ix_pipeline_stage_runs_pipeline_run_id",
+      "stat": "2008 8"
+    },
+    {
+      "tbl": "polymarket_domain_inventory_snapshots",
+      "idx": "ix_polymarket_domain_inv_domain",
+      "stat": "52 1"
+    },
+    {
+      "tbl": "polymarket_domain_inventory_snapshots",
+      "idx": "ix_polymarket_domain_inv_run_id",
+      "stat": "52 26"
+    },
+    {
+      "tbl": "scanner_runs",
+      "idx": null,
+      "stat": "238"
+    },
+    {
+      "tbl": "tennis_tape_links",
+      "idx": "ix_tennis_tape_links_link_label",
+      "stat": "2870 718"
+    },
+    {
+      "tbl": "tennis_tape_links",
+      "idx": "ix_tennis_tape_links_market_ticker",
+      "stat": "2870 18"
+    },
+    {
+      "tbl": "tennis_tape_links",
+      "idx": "ix_tennis_tape_links_tape_run_id",
+      "stat": "2870 96"
+    },
+    {
+      "tbl": "tennis_tape_market_snapshots",
+      "idx": "ix_tennis_tape_market_snapshots_market_ticker",
+      "stat": "2870 18"
+    },
+    {
+      "tbl": "tennis_tape_market_snapshots",
+      "idx": "ix_tennis_tape_market_snapshots_observed_at",
+      "stat": "2870 96"
+    },
+    {
+      "tbl": "tennis_tape_market_snapshots",
+      "idx": "ix_tennis_tape_market_snapshots_tape_run_id",
+      "stat": "2870 96"
+    },
+    {
+      "tbl": "tennis_tape_runs",
+      "idx": null,
+      "stat": "30"
+    },
+    {
+      "tbl": "tennis_tape_score_snapshots",
+      "idx": "ix_tennis_tape_score_snapshots_observed_at",
+      "stat": "1219 41"
+    },
+    {
+      "tbl": "tennis_tape_score_snapshots",
+      "idx": "ix_tennis_tape_score_snapshots_provider_event_id",
+      "stat": "1219 19"
+    },
+    {
+      "tbl": "tennis_tape_score_snapshots",
+      "idx": "ix_tennis_tape_score_snapshots_tape_run_id",
+      "stat": "1219 41"
+    },
+    {
+      "tbl": "tick_aggregation_runs",
+      "idx": null,
+      "stat": "710"
+    },
+    {
+      "tbl": "watcher_runs",
+      "idx": null,
+      "stat": "41556"
+    }
+  ],
+  "delta": {
+    "file_bytes": 0,
+    "page_count": 0,
+    "freelist_count": -4,
+    "sqlite_stat1_rows": 130,
+    "lock_events": 0
+  },
+  "finished_at": "2026-08-11T07:04:51.156672+00:00",
+  "result": "EXECUTED"
+}

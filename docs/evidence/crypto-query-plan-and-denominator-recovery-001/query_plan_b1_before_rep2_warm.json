@@ -1,0 +1,244 @@
+{
+  "label": "b1_before_rep2_warm",
+  "db": "/mnt/data/cqp-bench/b1.db",
+  "db_bytes": 4550623232,
+  "analyzed": false,
+  "analyze_seconds": null,
+  "sqlite_version": "3.45.1",
+  "sample_tokens": 40,
+  "reps": 3,
+  "sqlite_stat1_rows": 0,
+  "sqlite_stat1": [],
+  "probes": {
+    "recon.load_sources": {
+      "group": "recon",
+      "probe_wall_s": {
+        "reps": 3,
+        "p50": 5.344967,
+        "min": 5.244066,
+        "max": 5.351147
+      },
+      "statements": [
+        {
+          "sql": "SELECT crypto_token_discovery_events.id, crypto_token_discovery_events.chain, crypto_token_discovery_events.token_address, crypto_token_discovery_events.pair_address, crypto_token_discovery_events.source, crypto_token_discovery_events.event_type, crypto_token_discovery_events.observed_at, crypto_token_discovery_events.raw_payload, crypto_token_discovery_events.created_at FROM crypto_token_discover",
+          "n": 40,
+          "wall_s": 2.734156,
+          "p50_ms": 68.2987,
+          "p95_ms": 70.2872,
+          "max_ms": 70.8919,
+          "plan": [
+            "SEARCH crypto_token_discovery_events USING INDEX ix_crypto_token_discovery_events_chain (chain=?)",
+            "USE TEMP B-TREE FOR ORDER BY"
+          ],
+          "index": "ix_crypto_token_discovery_events_chain",
+          "full_scan": false,
+          "temp_btree": true
+        },
+        {
+          "sql": "SELECT crypto_token_risk_assessments.id, crypto_token_risk_assessments.chain, crypto_token_risk_assessments.token_address, crypto_token_risk_assessments.provider, crypto_token_risk_assessments.risk_score, crypto_token_risk_assessments.risk_level, crypto_token_risk_assessments.flags, crypto_token_risk_assessments.raw_payload, crypto_token_risk_assessments.liquidity_risk_score, crypto_token_risk_ass",
+          "n": 40,
+          "wall_s": 1.743514,
+          "p50_ms": 43.5027,
+          "p95_ms": 45.1918,
+          "max_ms": 45.4875,
+          "plan": [
+            "SEARCH crypto_token_risk_assessments USING INDEX ix_crypto_token_risk_assessments_chain (chain=?)",
+            "USE TEMP B-TREE FOR ORDER BY"
+          ],
+          "index": "ix_crypto_token_risk_assessments_chain",
+          "full_scan": false,
+          "temp_btree": true
+        },
+        {
+          "sql": "SELECT crypto_price_ticks.id, crypto_price_ticks.chain, crypto_price_ticks.token_address, crypto_price_ticks.pair_address, crypto_price_ticks.observed_at, crypto_price_ticks.price_usd, crypto_price_ticks.liquidity_usd, crypto_price_ticks.volume_5m_usd, crypto_price_ticks.volume_1h_usd, crypto_price_ticks.volume_24h_usd, crypto_price_ticks.price_change_5m, crypto_price_ticks.price_change_1h, crypto",
+          "n": 40,
+          "wall_s": 0.545619,
+          "p50_ms": 13.6494,
+          "p95_ms": 14.1985,
+          "max_ms": 14.4606,
+          "plan": [
+            "SEARCH crypto_price_ticks USING INDEX ix_crypto_price_ticks_chain (chain=?)",
+            "USE TEMP B-TREE FOR ORDER BY"
+          ],
+          "index": "ix_crypto_price_ticks_chain",
+          "full_scan": false,
+          "temp_btree": true
+        },
+        {
+          "sql": "SELECT meme_attention_snapshots.id, meme_attention_snapshots.run_id, meme_attention_snapshots.chain, meme_attention_snapshots.token_address, meme_attention_snapshots.pair_address, meme_attention_snapshots.symbol, meme_attention_snapshots.name, meme_attention_snapshots.first_seen_at, meme_attention_snapshots.token_age_seconds, meme_attention_snapshots.price_usd, meme_attention_snapshots.liquidity_u",
+          "n": 40,
+          "wall_s": 0.000782,
+          "p50_ms": 0.0179,
+          "p95_ms": 0.0225,
+          "max_ms": 0.059,
+          "plan": [
+            "SEARCH meme_attention_snapshots USING INDEX ix_meme_attention_token (token_address=?)"
+          ],
+          "index": "ix_meme_attention_token",
+          "full_scan": false,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT crypto_pairs.id, crypto_pairs.chain, crypto_pairs.pair_address, crypto_pairs.base_token_address, crypto_pairs.quote_token_address, crypto_pairs.dex_id, crypto_pairs.url, crypto_pairs.pair_created_at, crypto_pairs.metadata, crypto_pairs.first_seen_at, crypto_pairs.last_seen_at, crypto_pairs.created_at FROM crypto_pairs WHERE crypto_pairs.chain = ? AND crypto_pairs.base_token_address = ? ORDE",
+          "n": 40,
+          "wall_s": 0.000725,
+          "p50_ms": 0.0177,
+          "p95_ms": 0.0251,
+          "max_ms": 0.0253,
+          "plan": [
+            "SEARCH crypto_pairs USING INDEX ix_crypto_pairs_chain (chain=?)"
+          ],
+          "index": "ix_crypto_pairs_chain",
+          "full_scan": false,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM meme_catalyst_events WHERE meme_catalyst_events.subject_ref = ? AND meme_catalyst_events.observed_at >= ?",
+          "n": 40,
+          "wall_s": 0.000475,
+          "p50_ms": 0.0114,
+          "p95_ms": 0.0147,
+          "max_ms": 0.0178,
+          "plan": [
+            "SEARCH meme_catalyst_events USING INDEX ix_meme_catalyst_subject_ref (subject_ref=?)"
+          ],
+          "index": "ix_meme_catalyst_subject_ref",
+          "full_scan": false,
+          "temp_btree": false
+        }
+      ]
+    },
+    "recon.universe": {
+      "group": "recon",
+      "probe_wall_s": {
+        "reps": 3,
+        "p50": 0.007803,
+        "min": 0.007376,
+        "max": 0.009951
+      },
+      "statements": [
+        {
+          "sql": "SELECT DISTINCT crypto_tokens.id, crypto_tokens.chain, crypto_tokens.token_address, crypto_tokens.symbol, crypto_tokens.name, crypto_tokens.decimals, crypto_tokens.metadata, crypto_tokens.first_seen_at, crypto_tokens.last_seen_at, crypto_tokens.created_at FROM crypto_tokens LEFT OUTER JOIN crypto_token_survival_outcomes ON crypto_token_survival_outcomes.token_address = crypto_tokens.token_address ",
+          "n": 1,
+          "wall_s": 0.002866,
+          "p50_ms": 2.8659,
+          "p95_ms": 2.8659,
+          "max_ms": 2.8659,
+          "plan": [
+            "SEARCH crypto_tokens USING INDEX ix_crypto_tokens_chain (chain=?)",
+            "SEARCH crypto_token_survival_outcomes USING INDEX ix_crypto_token_survival_outcomes_token_address (token_address=?) LEFT-JOIN",
+            "USE TEMP B-TREE FOR ORDER BY"
+          ],
+          "index": "ix_crypto_tokens_chain",
+          "full_scan": false,
+          "temp_btree": true
+        }
+      ]
+    },
+    "recon.universe_size": {
+      "group": "recon",
+      "probe_wall_s": {
+        "reps": 3,
+        "p50": 0.002176,
+        "min": 0.00208,
+        "max": 0.002986
+      },
+      "statements": [
+        {
+          "sql": "SELECT count(distinct(crypto_tokens.id)) AS count_1 FROM crypto_tokens LEFT OUTER JOIN crypto_token_survival_outcomes ON crypto_token_survival_outcomes.token_address = crypto_tokens.token_address AND crypto_token_survival_outcomes.chain = crypto_tokens.chain WHERE crypto_tokens.chain = ? AND crypto_tokens.first_seen_at >= ? AND crypto_tokens.first_seen_at <= ? AND (crypto_token_survival_outcomes.i",
+          "n": 1,
+          "wall_s": 0.001784,
+          "p50_ms": 1.784,
+          "p95_ms": 1.784,
+          "max_ms": 1.784,
+          "plan": [
+            "SEARCH crypto_tokens USING INDEX ix_crypto_tokens_chain (chain=?)",
+            "SEARCH crypto_token_survival_outcomes USING INDEX ix_crypto_token_survival_outcomes_token_address (token_address=?) LEFT-JOIN"
+          ],
+          "index": "ix_crypto_tokens_chain",
+          "full_scan": false,
+          "temp_btree": false
+        }
+      ]
+    },
+    "recon.unreconciled_backlog": {
+      "group": "recon",
+      "probe_wall_s": {
+        "reps": 3,
+        "p50": 0.020992,
+        "min": 0.020652,
+        "max": 0.022087
+      },
+      "statements": [
+        {
+          "sql": "SELECT DISTINCT crypto_tokens.id, crypto_tokens.chain, crypto_tokens.token_address, crypto_tokens.symbol, crypto_tokens.name, crypto_tokens.decimals, crypto_tokens.metadata, crypto_tokens.first_seen_at, crypto_tokens.last_seen_at, crypto_tokens.created_at FROM crypto_tokens LEFT OUTER JOIN crypto_token_survival_outcomes ON crypto_token_survival_outcomes.token_address = crypto_tokens.token_address ",
+          "n": 1,
+          "wall_s": 0.011214,
+          "p50_ms": 11.214,
+          "p95_ms": 11.214,
+          "max_ms": 11.214,
+          "plan": [
+            "SEARCH crypto_tokens USING INDEX ix_crypto_tokens_chain (chain=?)",
+            "SEARCH crypto_token_survival_outcomes USING INDEX ix_crypto_token_survival_outcomes_token_address (token_address=?) LEFT-JOIN",
+            "USE TEMP B-TREE FOR ORDER BY"
+          ],
+          "index": "ix_crypto_tokens_chain",
+          "full_scan": false,
+          "temp_btree": true
+        }
+      ]
+    },
+    "recon.backlog_size": {
+      "group": "recon",
+      "probe_wall_s": {
+        "reps": 3,
+        "p50": 0.005824,
+        "min": 0.005653,
+        "max": 0.006406
+      },
+      "statements": [
+        {
+          "sql": "SELECT count(distinct(crypto_tokens.id)) AS count_1 FROM crypto_tokens LEFT OUTER JOIN crypto_token_survival_outcomes ON crypto_token_survival_outcomes.token_address = crypto_tokens.token_address AND crypto_token_survival_outcomes.chain = crypto_tokens.chain WHERE crypto_tokens.chain = ? AND crypto_tokens.first_seen_at < ? AND (crypto_token_survival_outcomes.id IS NULL OR crypto_token_survival_out",
+          "n": 1,
+          "wall_s": 0.005349,
+          "p50_ms": 5.3489,
+          "p95_ms": 5.3489,
+          "max_ms": 5.3489,
+          "plan": [
+            "SEARCH crypto_tokens USING INDEX ix_crypto_tokens_chain (chain=?)",
+            "SEARCH crypto_token_survival_outcomes USING INDEX ix_crypto_token_survival_outcomes_token_address (token_address=?) LEFT-JOIN"
+          ],
+          "index": "ix_crypto_tokens_chain",
+          "full_scan": false,
+          "temp_btree": false
+        }
+      ]
+    },
+    "recon.oldest_unreconciled": {
+      "group": "recon",
+      "probe_wall_s": {
+        "reps": 3,
+        "p50": 0.005692,
+        "min": 0.005613,
+        "max": 0.006194
+      },
+      "statements": [
+        {
+          "sql": "SELECT min(crypto_tokens.first_seen_at) AS min_1 FROM crypto_tokens LEFT OUTER JOIN crypto_token_survival_outcomes ON crypto_token_survival_outcomes.token_address = crypto_tokens.token_address AND crypto_token_survival_outcomes.chain = crypto_tokens.chain WHERE crypto_tokens.chain = ? AND crypto_tokens.first_seen_at < ? AND (crypto_token_survival_outcomes.id IS NULL OR crypto_token_survival_outcom",
+          "n": 1,
+          "wall_s": 0.005339,
+          "p50_ms": 5.3387,
+          "p95_ms": 5.3387,
+          "max_ms": 5.3387,
+          "plan": [
+            "SEARCH crypto_tokens USING INDEX ix_crypto_tokens_chain (chain=?)",
+            "SEARCH crypto_token_survival_outcomes USING INDEX ix_crypto_token_survival_outcomes_token_address (token_address=?) LEFT-JOIN"
+          ],
+          "index": "ix_crypto_tokens_chain",
+          "full_scan": false,
+          "temp_btree": false
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,193 @@
+{
+  "mode": "probe",
+  "analyzed": false,
+  "trials": [
+    {
+      "trial": 1,
+      "analyze_seconds": null,
+      "pass": {
+        "status": "partial",
+        "tokens_processed": 135,
+        "batches_committed": 27,
+        "blocked_ms": 18929,
+        "pass_wall_s": 20.459,
+        "hold_n": 29,
+        "hold_p50": 0.5500542484223843,
+        "hold_p95": 0.5789845436811447,
+        "hold_max": 0.6423976896330714,
+        "hold_sum": 15.048359651118517
+      },
+      "competitor": {
+        "mode": "probe",
+        "attempts": 17,
+        "successful_writes": 17,
+        "lock_failures": 0,
+        "retries": 0,
+        "wall_s": 21.826159795746207,
+        "wait_p50": 0.12880730256438255,
+        "wait_p95": 0.528990869410336,
+        "wait_max": 0.5291947172954679,
+        "wait_n": 17,
+        "txn_total_p95": 0.5356090050190687,
+        "txn_total_max": 0.5967065580189228
+      }
+    },
+    {
+      "trial": 2,
+      "analyze_seconds": null,
+      "pass": {
+        "status": "partial",
+        "tokens_processed": 125,
+        "batches_committed": 25,
+        "blocked_ms": 18986,
+        "pass_wall_s": 20.418,
+        "hold_n": 27,
+        "hold_p50": 0.5737986313179135,
+        "hold_p95": 0.70679628290236,
+        "hold_max": 0.8460299912840128,
+        "hold_sum": 14.865263462997973
+      },
+      "competitor": {
+        "mode": "probe",
+        "attempts": 17,
+        "successful_writes": 17,
+        "lock_failures": 0,
+        "retries": 0,
+        "wall_s": 21.489513343200088,
+        "wait_p50": 0.10355539713054895,
+        "wait_p95": 0.5290783327072859,
+        "wait_max": 0.5298191560432315,
+        "wait_n": 17,
+        "txn_total_p95": 0.5473407479003072,
+        "txn_total_max": 0.6498521100729704
+      }
+    },
+    {
+      "trial": 3,
+      "analyze_seconds": null,
+      "pass": {
+        "status": "partial",
+        "tokens_processed": 120,
+        "batches_committed": 24,
+        "blocked_ms": 18700,
+        "pass_wall_s": 20.034,
+        "hold_n": 26,
+        "hold_p50": 0.5632689166814089,
+        "hold_p95": 0.6575317597016692,
+        "hold_max": 2.0249520763754845,
+        "hold_sum": 15.13759306166321
+      },
+      "competitor": {
+        "mode": "probe",
+        "attempts": 18,
+        "successful_writes": 18,
+        "lock_failures": 0,
+        "retries": 0,
+        "wall_s": 21.835174065083265,
+        "wait_p50": 0.05389755964279175,
+        "wait_p95": 0.32912967819720507,
+        "wait_max": 1.5296963565051556,
+        "wait_n": 18,
+        "txn_total_p95": 0.3380662053823471,
+        "txn_total_max": 1.5377352833747864
+      }
+    },
+    {
+      "trial": 4,
+      "analyze_seconds": null,
+      "pass": {
+        "status": "partial",
+        "tokens_processed": 125,
+        "batches_committed": 25,
+        "blocked_ms": 18762,
+        "pass_wall_s": 20.156,
+        "hold_n": 27,
+        "hold_p50": 0.5775569537654519,
+        "hold_p95": 0.638190777041018,
+        "hold_max": 0.6602281779050827,
+        "hold_sum": 14.736461348831654
+      },
+      "competitor": {
+        "mode": "probe",
+        "attempts": 17,
+        "successful_writes": 17,
+        "lock_failures": 0,
+        "retries": 0,
+        "wall_s": 21.888184187933803,
+        "wait_p50": 0.17865408211946487,
+        "wait_p95": 0.5327428746968508,
+        "wait_max": 0.5330564435571432,
+        "wait_n": 17,
+        "txn_total_p95": 0.5520333889871836,
+        "txn_total_max": 0.6176774119958282
+      }
+    },
+    {
+      "trial": 5,
+      "analyze_seconds": null,
+      "pass": {
+        "status": "partial",
+        "tokens_processed": 125,
+        "batches_committed": 25,
+        "blocked_ms": 18948,
+        "pass_wall_s": 20.337,
+        "hold_n": 27,
+        "hold_p50": 0.5707185519859195,
+        "hold_p95": 0.6847406150773168,
+        "hold_max": 0.7100055227056146,
+        "hold_sum": 14.960961936041713
+      },
+      "competitor": {
+        "mode": "probe",
+        "attempts": 16,
+        "successful_writes": 16,
+        "lock_failures": 0,
+        "retries": 0,
+        "wall_s": 22.22160615772009,
+        "wait_p50": 0.32888949662446976,
+        "wait_p95": 0.6292186286300421,
+        "wait_max": 0.6293239863589406,
+        "wait_n": 16,
+        "txn_total_p95": 0.6919937208294868,
+        "txn_total_max": 0.6961704129353166
+      }
+    }
+  ],
+  "aggregate": {
+    "tokens_processed": [
+      135,
+      125,
+      120,
+      125,
+      125
+    ],
+    "pass_wall_s": [
+      20.459,
+      20.418,
+      20.034,
+      20.156,
+      20.337
+    ],
+    "hold_p95": [
+      0.5789845436811447,
+      0.70679628290236,
+      0.6575317597016692,
+      0.638190777041018,
+      0.6847406150773168
+    ],
+    "hold_max": [
+      0.6423976896330714,
+      0.8460299912840128,
+      2.0249520763754845,
+      0.6602281779050827,
+      0.7100055227056146
+    ],
+    "competitor_wait_p95_range": [
+      0.32912967819720507,
+      0.6292186286300421
+    ],
+    "competitor_wait_max": 1.5296963565051556,
+    "lock_failures_total": 0,
+    "retries_total": 0
+  }
+}

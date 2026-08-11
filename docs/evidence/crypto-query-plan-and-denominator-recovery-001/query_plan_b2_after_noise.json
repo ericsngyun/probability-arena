@@ -1,0 +1,1827 @@
+{
+  "label": "b2_after_noise",
+  "db": "/mnt/data/cqp-bench/b2.db",
+  "db_bytes": 4550623232,
+  "analyzed": false,
+  "analyze_seconds": null,
+  "sqlite_version": "3.45.1",
+  "sample_tokens": 40,
+  "reps": 7,
+  "note": "probe_wall_s is the authoritative latency. Per-statement wall times come from SQLAlchemy cursor hooks, which close when cursor.execute() returns \u2014 for a query that needs a sorter or an aggregate that is the whole cost, but for a streaming query part of the cost lands in fetch and is therefore UNDER-reported at the statement level. Compare probes by probe_wall_s; use the statement rows for the plan, not for a cost total.",
+  "sqlite_stat1_rows": 130,
+  "sqlite_stat1": [
+    {
+      "tbl": "alembic_version",
+      "idx": "sqlite_autoindex_alembic_version_1",
+      "stat": "1 1"
+    },
+    {
+      "tbl": "cross_venue_market_candidates",
+      "idx": "ix_cross_venue_cand_domain",
+      "stat": "926 463"
+    },
+    {
+      "tbl": "cross_venue_market_candidates",
+      "idx": "ix_cross_venue_cand_kalshi",
+      "stat": "926 9"
+    },
+    {
+      "tbl": "cross_venue_market_candidates",
+      "idx": "ix_cross_venue_cand_label",
+      "stat": "926 186"
+    },
+    {
+      "tbl": "cross_venue_market_candidates",
+      "idx": "ix_cross_venue_cand_polymarket",
+      "stat": "926 3"
+    },
+    {
+      "tbl": "cross_venue_market_candidates",
+      "idx": "ix_cross_venue_cand_run_id",
+      "stat": "926 186"
+    },
+    {
+      "tbl": "cross_venue_market_candidates",
+      "idx": "ix_cross_venue_run_label",
+      "stat": "926 186 47"
+    },
+    {
+      "tbl": "cross_venue_observation_runs",
+      "idx": null,
+      "stat": "6"
+    },
+    {
+      "tbl": "crypto_horizon_cohort_members",
+      "idx": "ix_crypto_horizon_cohort_members_chain",
+      "stat": "21 21"
+    },
+    {
+      "tbl": "crypto_horizon_cohort_members",
+      "idx": "ix_crypto_horizon_cohort_members_cohort_id",
+      "stat": "21 3"
+    },
+    {
+      "tbl": "crypto_horizon_cohort_members",
+      "idx": "ix_crypto_horizon_cohort_members_token_address",
+      "stat": "21 1"
+    },
+    {
+      "tbl": "crypto_horizon_cohort_members",
+      "idx": "ix_horizon_member_cohort_token",
+      "stat": "21 3 1"
+    },
+    {
+      "tbl": "crypto_horizon_cohorts",
+      "idx": "ix_crypto_horizon_cohorts_chain",
+      "stat": "7 7"
+    },
+    {
+      "tbl": "crypto_horizon_observations",
+      "idx": "ix_crypto_horizon_observations_chain",
+      "stat": "43 43"
+    },
+    {
+      "tbl": "crypto_horizon_observations",
+      "idx": "ix_crypto_horizon_observations_cohort_id",
+      "stat": "43 8"
+    },
+    {
+      "tbl": "crypto_horizon_observations",
+      "idx": "ix_crypto_horizon_observations_horizon",
+      "stat": "43 11"
+    },
+    {
+      "tbl": "crypto_horizon_observations",
+      "idx": "ix_crypto_horizon_observations_member_id",
+      "stat": "43 3"
+    },
+    {
+      "tbl": "crypto_horizon_observations",
+      "idx": "ix_crypto_horizon_observations_status",
+      "stat": "43 22"
+    },
+    {
+      "tbl": "crypto_horizon_observations",
+      "idx": "ix_crypto_horizon_observations_token_address",
+      "stat": "43 3"
+    },
+    {
+      "tbl": "crypto_horizon_observations",
+      "idx": "ix_horizon_obs_cohort_token_horizon",
+      "stat": "43 8 3 1"
+    },
+    {
+      "tbl": "crypto_opportunity_signals",
+      "idx": "ix_crypto_opportunity_signals_chain",
+      "stat": "90356 90356"
+    },
+    {
+      "tbl": "crypto_opportunity_signals",
+      "idx": "ix_crypto_opportunity_signals_signal_status",
+      "stat": "90356 90356"
+    },
+    {
+      "tbl": "crypto_opportunity_signals",
+      "idx": "ix_crypto_opportunity_signals_signal_type",
+      "stat": "90356 10040"
+    },
+    {
+      "tbl": "crypto_opportunity_signals",
+      "idx": "ix_crypto_opportunity_signals_token_address",
+      "stat": "90356 7"
+    },
+    {
+      "tbl": "crypto_pairs",
+      "idx": "ix_crypto_pairs_base_token_address",
+      "stat": "26736 3"
+    },
+    {
+      "tbl": "crypto_pairs",
+      "idx": "ix_crypto_pairs_chain",
+      "stat": "26736 26736"
+    },
+    {
+      "tbl": "crypto_pairs",
+      "idx": "ix_crypto_pairs_chain_address",
+      "stat": "26736 26736 1"
+    },
+    {
+      "tbl": "crypto_pairs",
+      "idx": "ix_crypto_pairs_pair_address",
+      "stat": "26736 1"
+    },
+    {
+      "tbl": "crypto_price_ticks",
+      "idx": "ix_crypto_price_ticks_chain",
+      "stat": "142253 142253"
+    },
+    {
+      "tbl": "crypto_price_ticks",
+      "idx": "ix_crypto_price_ticks_pair_address",
+      "stat": "142253 24"
+    },
+    {
+      "tbl": "crypto_price_ticks",
+      "idx": "ix_crypto_price_ticks_pair_observed",
+      "stat": "142253 24 1"
+    },
+    {
+      "tbl": "crypto_price_ticks",
+      "idx": "ix_crypto_price_ticks_token_address",
+      "stat": "142253 44"
+    },
+    {
+      "tbl": "crypto_token_actor_observations",
+      "idx": "ix_crypto_token_actor_observations_birth_event_id",
+      "stat": "8474 2"
+    },
+    {
+      "tbl": "crypto_token_actor_observations",
+      "idx": "ix_crypto_token_actor_observations_chain",
+      "stat": "8474 8474"
+    },
+    {
+      "tbl": "crypto_token_actor_observations",
+      "idx": "ix_crypto_token_actor_observations_run_id",
+      "stat": "8474 3"
+    },
+    {
+      "tbl": "crypto_token_actor_observations",
+      "idx": "ix_crypto_token_actor_observations_token_address",
+      "stat": "8474 2"
+    },
+    {
+      "tbl": "crypto_token_birth_events",
+      "idx": "ix_crypto_birth_chain_token",
+      "stat": "7420 7420 1"
+    },
+    {
+      "tbl": "crypto_token_birth_events",
+      "idx": "ix_crypto_token_birth_events_chain",
+      "stat": "7420 7420"
+    },
+    {
+      "tbl": "crypto_token_birth_events",
+      "idx": "ix_crypto_token_birth_events_first_evidence_at",
+      "stat": "7420 2"
+    },
+    {
+      "tbl": "crypto_token_birth_events",
+      "idx": "ix_crypto_token_birth_events_run_id",
+      "stat": "7420 3"
+    },
+    {
+      "tbl": "crypto_token_birth_events",
+      "idx": "ix_crypto_token_birth_events_token_address",
+      "stat": "7420 1"
+    },
+    {
+      "tbl": "crypto_token_discovery_events",
+      "idx": "ix_crypto_token_discovery_events_chain",
+      "stat": "396669 396669"
+    },
+    {
+      "tbl": "crypto_token_discovery_events",
+      "idx": "ix_crypto_token_discovery_events_event_type",
+      "stat": "396669 132223"
+    },
+    {
+      "tbl": "crypto_token_discovery_events",
+      "idx": "ix_crypto_token_discovery_events_token_address",
+      "stat": "396669 31"
+    },
+    {
+      "tbl": "crypto_token_lifecycle_runs",
+      "idx": null,
+      "stat": "3467"
+    },
+    {
+      "tbl": "crypto_token_lifecycle_snapshots",
+      "idx": "ix_crypto_lifecycle_snap_token_observed",
+      "stat": "8474 2 1"
+    },
+    {
+      "tbl": "crypto_token_lifecycle_snapshots",
+      "idx": "ix_crypto_token_lifecycle_snapshots_birth_event_id",
+      "stat": "8474 2"
+    },
+    {
+      "tbl": "crypto_token_lifecycle_snapshots",
+      "idx": "ix_crypto_token_lifecycle_snapshots_chain",
+      "stat": "8474 8474"
+    },
+    {
+      "tbl": "crypto_token_lifecycle_snapshots",
+      "idx": "ix_crypto_token_lifecycle_snapshots_run_id",
+      "stat": "8474 3"
+    },
+    {
+      "tbl": "crypto_token_lifecycle_snapshots",
+      "idx": "ix_crypto_token_lifecycle_snapshots_token_address",
+      "stat": "8474 2"
+    },
+    {
+      "tbl": "crypto_token_risk_assessments",
+      "idx": "ix_crypto_token_risk_assessments_chain",
+      "stat": "311214 311214"
+    },
+    {
+      "tbl": "crypto_token_risk_assessments",
+      "idx": "ix_crypto_token_risk_assessments_token_address",
+      "stat": "311214 25"
+    },
+    {
+      "tbl": "crypto_token_survival_outcomes",
+      "idx": "ix_crypto_token_survival_outcomes_birth_event_id",
+      "stat": "7420 1"
+    },
+    {
+      "tbl": "crypto_token_survival_outcomes",
+      "idx": "ix_crypto_token_survival_outcomes_chain",
+      "stat": "7420 7420"
+    },
+    {
+      "tbl": "crypto_token_survival_outcomes",
+      "idx": "ix_crypto_token_survival_outcomes_final",
+      "stat": "7420 3710"
+    },
+    {
+      "tbl": "crypto_token_survival_outcomes",
+      "idx": "ix_crypto_token_survival_outcomes_token_address",
+      "stat": "7420 1"
+    },
+    {
+      "tbl": "crypto_tokens",
+      "idx": "ix_crypto_tokens_chain",
+      "stat": "12847 12847"
+    },
+    {
+      "tbl": "crypto_tokens",
+      "idx": "ix_crypto_tokens_chain_address",
+      "stat": "12847 12847 1"
+    },
+    {
+      "tbl": "crypto_tokens",
+      "idx": "ix_crypto_tokens_token_address",
+      "stat": "12847 1"
+    },
+    {
+      "tbl": "crypto_watcher_runs",
+      "idx": null,
+      "stat": "1746"
+    },
+    {
+      "tbl": "domain_market_inventory_snapshots",
+      "idx": "ix_domain_inv_domain",
+      "stat": "24 3"
+    },
+    {
+      "tbl": "domain_market_inventory_snapshots",
+      "idx": "ix_domain_inv_run_id",
+      "stat": "24 8"
+    },
+    {
+      "tbl": "domain_market_inventory_snapshots",
+      "idx": "ix_domain_inv_series",
+      "stat": "24 3"
+    },
+    {
+      "tbl": "domain_scout_runs",
+      "idx": null,
+      "stat": "3"
+    },
+    {
+      "tbl": "edge_precheck_snapshots",
+      "idx": "ix_edge_precheck_snapshots_forecast_id",
+      "stat": "10422 1"
+    },
+    {
+      "tbl": "edge_precheck_snapshots",
+      "idx": "ix_edge_precheck_snapshots_forecaster_name",
+      "stat": "10422 3474"
+    },
+    {
+      "tbl": "edge_precheck_snapshots",
+      "idx": "ix_edge_precheck_snapshots_market_ticker",
+      "stat": "10422 2"
+    },
+    {
+      "tbl": "edge_precheck_snapshots",
+      "idx": "ix_edge_precheck_snapshots_status",
+      "stat": "10422 1043"
+    },
+    {
+      "tbl": "forecast_scores",
+      "idx": "ix_forecast_scores_forecast_id",
+      "stat": "20926 2"
+    },
+    {
+      "tbl": "forecast_scores",
+      "idx": "ix_forecast_scores_market_ticker",
+      "stat": "20926 4"
+    },
+    {
+      "tbl": "forecast_scores",
+      "idx": "ix_forecast_scores_score_status",
+      "stat": "20926 6976"
+    },
+    {
+      "tbl": "frontier_eval_runs",
+      "idx": null,
+      "stat": "4"
+    },
+    {
+      "tbl": "market_detail_enrichments",
+      "idx": "ix_market_detail_enrichments_market_ticker",
+      "stat": "15349 3"
+    },
+    {
+      "tbl": "market_detail_enrichments",
+      "idx": "ix_market_detail_enrichments_scanner_run_id",
+      "stat": "15349 67"
+    },
+    {
+      "tbl": "market_eligibility_assessments",
+      "idx": "ix_market_eligibility_assessments_market_ticker",
+      "stat": "188898 2"
+    },
+    {
+      "tbl": "market_eligibility_assessments",
+      "idx": "ix_market_eligibility_assessments_scanner_run_id",
+      "stat": "188898 808"
+    },
+    {
+      "tbl": "market_forecasts",
+      "idx": "ix_market_forecasts_market_ticker",
+      "stat": "15408 3"
+    },
+    {
+      "tbl": "market_forecasts",
+      "idx": "ix_market_forecasts_scanner_run_id",
+      "stat": "15408 67"
+    },
+    {
+      "tbl": "market_outcomes",
+      "idx": "ix_market_outcomes_market_ticker",
+      "stat": "17720 1"
+    },
+    {
+      "tbl": "market_price_tick_buckets",
+      "idx": "ix_market_price_tick_buckets_domain",
+      "stat": "1439728 359932"
+    },
+    {
+      "tbl": "market_price_tick_buckets",
+      "idx": "ix_market_price_tick_buckets_market_ticker",
+      "stat": "1439728 185"
+    },
+    {
+      "tbl": "market_price_tick_buckets",
+      "idx": "ix_tick_bucket_start",
+      "stat": "1439728 142"
+    },
+    {
+      "tbl": "market_price_tick_buckets",
+      "idx": "sqlite_autoindex_market_price_tick_buckets_1",
+      "stat": "1439728 185 1 1"
+    },
+    {
+      "tbl": "market_price_ticks",
+      "idx": "ix_market_price_ticks_market_ticker",
+      "stat": "466950 704"
+    },
+    {
+      "tbl": "market_price_ticks",
+      "idx": "ix_market_price_ticks_ticker_observed",
+      "stat": "466950 704 1"
+    },
+    {
+      "tbl": "market_research_packets",
+      "idx": "ix_market_research_packets_domain",
+      "stat": "15407 3082"
+    },
+    {
+      "tbl": "market_research_packets",
+      "idx": "ix_market_research_packets_market_ticker",
+      "stat": "15407 3"
+    },
+    {
+      "tbl": "market_research_packets",
+      "idx": "ix_market_research_packets_scanner_run_id",
+      "stat": "15407 67"
+    },
+    {
+      "tbl": "market_resolution_assessments",
+      "idx": "ix_market_resolution_assessments_market_ticker",
+      "stat": "15407 3"
+    },
+    {
+      "tbl": "market_resolution_assessments",
+      "idx": "ix_market_resolution_assessments_scanner_run_id",
+      "stat": "15407 67"
+    },
+    {
+      "tbl": "market_snapshots",
+      "idx": "ix_market_snapshots_market_captured",
+      "stat": "188898 2 1"
+    },
+    {
+      "tbl": "market_snapshots",
+      "idx": "ix_market_snapshots_market_id",
+      "stat": "188898 2"
+    },
+    {
+      "tbl": "market_snapshots",
+      "idx": "ix_market_snapshots_scanner_run_id",
+      "stat": "188898 808"
+    },
+    {
+      "tbl": "marketops_alerts",
+      "idx": "ix_marketops_alerts_alert_type",
+      "stat": "6848 979"
+    },
+    {
+      "tbl": "marketops_alerts",
+      "idx": "ix_marketops_alerts_status",
+      "stat": "6848 3424"
+    },
+    {
+      "tbl": "marketops_runs",
+      "idx": null,
+      "stat": "9225"
+    },
+    {
+      "tbl": "markets",
+      "idx": "ix_markets_event_ticker",
+      "stat": "121888 8"
+    },
+    {
+      "tbl": "markets",
+      "idx": "ix_markets_status",
+      "stat": "121888 60944"
+    },
+    {
+      "tbl": "markets",
+      "idx": "ix_markets_ticker",
+      "stat": "121888 1"
+    },
+    {
+      "tbl": "meme_attention_snapshots",
+      "idx": "ix_meme_attention_chain",
+      "stat": "56209 56209"
+    },
+    {
+      "tbl": "meme_attention_snapshots",
+      "idx": "ix_meme_attention_run_id",
+      "stat": "56209 30"
+    },
+    {
+      "tbl": "meme_attention_snapshots",
+      "idx": "ix_meme_attention_token",
+      "stat": "56209 10"
+    },
+    {
+      "tbl": "meme_attention_snapshots",
+      "idx": "ix_meme_attention_token_observed",
+      "stat": "56209 10 1"
+    },
+    {
+      "tbl": "meme_catalyst_events",
+      "idx": "ix_meme_catalyst_run_id",
+      "stat": "130585 70"
+    },
+    {
+      "tbl": "meme_catalyst_events",
+      "idx": "ix_meme_catalyst_source",
+      "stat": "130585 130585"
+    },
+    {
+      "tbl": "meme_catalyst_events",
+      "idx": "ix_meme_catalyst_subject_ref",
+      "stat": "130585 23"
+    },
+    {
+      "tbl": "meme_catalyst_events",
+      "idx": "ix_meme_catalyst_subject_type",
+      "stat": "130585 130585"
+    },
+    {
+      "tbl": "meme_catalyst_events",
+      "idx": "ix_meme_catalyst_type",
+      "stat": "130585 32647"
+    },
+    {
+      "tbl": "meme_scout_runs",
+      "idx": null,
+      "stat": "1875"
+    },
+    {
+      "tbl": "opportunity_signals",
+      "idx": "ix_opportunity_signals_market_ticker",
+      "stat": "41854 7"
+    },
+    {
+      "tbl": "opportunity_signals",
+      "idx": "ix_opportunity_signals_signal_status",
+      "stat": "41854 13952"
+    },
+    {
+      "tbl": "opportunity_signals",
+      "idx": "ix_opportunity_signals_signal_type",
+      "stat": "41854 8371"
+    },
+    {
+      "tbl": "pipeline_runs",
+      "idx": "ix_pipeline_runs_run_type",
+      "stat": "251 251"
+    },
+    {
+      "tbl": "pipeline_runs",
+      "idx": "ix_pipeline_runs_status",
+      "stat": "251 84"
+    },
+    {
+      "tbl": "pipeline_stage_runs",
+      "idx": "ix_pipeline_stage_runs_pipeline_run_id",
+      "stat": "2008 8"
+    },
+    {
+      "tbl": "polymarket_domain_inventory_snapshots",
+      "idx": "ix_polymarket_domain_inv_domain",
+      "stat": "52 1"
+    },
+    {
+      "tbl": "polymarket_domain_inventory_snapshots",
+      "idx": "ix_polymarket_domain_inv_run_id",
+      "stat": "52 26"
+    },
+    {
+      "tbl": "scanner_runs",
+      "idx": null,
+      "stat": "238"
+    },
+    {
+      "tbl": "tennis_tape_links",
+      "idx": "ix_tennis_tape_links_link_label",
+      "stat": "2870 718"
+    },
+    {
+      "tbl": "tennis_tape_links",
+      "idx": "ix_tennis_tape_links_market_ticker",
+      "stat": "2870 18"
+    },
+    {
+      "tbl": "tennis_tape_links",
+      "idx": "ix_tennis_tape_links_tape_run_id",
+      "stat": "2870 96"
+    },
+    {
+      "tbl": "tennis_tape_market_snapshots",
+      "idx": "ix_tennis_tape_market_snapshots_market_ticker",
+      "stat": "2870 18"
+    },
+    {
+      "tbl": "tennis_tape_market_snapshots",
+      "idx": "ix_tennis_tape_market_snapshots_observed_at",
+      "stat": "2870 96"
+    },
+    {
+      "tbl": "tennis_tape_market_snapshots",
+      "idx": "ix_tennis_tape_market_snapshots_tape_run_id",
+      "stat": "2870 96"
+    },
+    {
+      "tbl": "tennis_tape_runs",
+      "idx": null,
+      "stat": "30"
+    },
+    {
+      "tbl": "tennis_tape_score_snapshots",
+      "idx": "ix_tennis_tape_score_snapshots_observed_at",
+      "stat": "1219 41"
+    },
+    {
+      "tbl": "tennis_tape_score_snapshots",
+      "idx": "ix_tennis_tape_score_snapshots_provider_event_id",
+      "stat": "1219 19"
+    },
+    {
+      "tbl": "tennis_tape_score_snapshots",
+      "idx": "ix_tennis_tape_score_snapshots_tape_run_id",
+      "stat": "1219 41"
+    },
+    {
+      "tbl": "tick_aggregation_runs",
+      "idx": null,
+      "stat": "708"
+    },
+    {
+      "tbl": "watcher_runs",
+      "idx": null,
+      "stat": "41490"
+    }
+  ],
+  "probes": {
+    "marketops.db_growth_report": {
+      "group": "hot",
+      "probe_wall_s": {
+        "reps": 7,
+        "p50": 1.134867,
+        "min": 1.121041,
+        "max": 1.296543,
+        "all": [
+          1.296543,
+          1.133211,
+          1.138328,
+          1.137813,
+          1.134867,
+          1.131449,
+          1.121041
+        ]
+      },
+      "statements": [
+        {
+          "sql": "SELECT count(*) AS count_1 FROM market_price_ticks WHERE market_price_ticks.created_at >= ? AND market_price_ticks.created_at < ?",
+          "n": 3,
+          "wall_s": 0.128738,
+          "p50_ms": 43.1002,
+          "p95_ms": 43.9089,
+          "max_ms": 43.9089,
+          "plan": [
+            "SCAN market_price_ticks"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT min(market_price_ticks.created_at) AS min_1, max(market_price_ticks.created_at) AS max_1 FROM market_price_ticks",
+          "n": 1,
+          "wall_s": 0.038925,
+          "p50_ms": 38.9253,
+          "p95_ms": 38.9253,
+          "max_ms": 38.9253,
+          "plan": [
+            "SCAN market_price_ticks"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM market_price_ticks WHERE market_price_ticks.created_at >= ?",
+          "n": 1,
+          "wall_s": 0.034874,
+          "p50_ms": 34.8739,
+          "p95_ms": 34.8739,
+          "max_ms": 34.8739,
+          "plan": [
+            "SCAN market_price_ticks"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM market_price_ticks WHERE market_price_ticks.created_at < ?",
+          "n": 1,
+          "wall_s": 0.034682,
+          "p50_ms": 34.6816,
+          "p95_ms": 34.6816,
+          "max_ms": 34.6816,
+          "plan": [
+            "SCAN market_price_ticks"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM market_price_tick_buckets",
+          "n": 2,
+          "wall_s": 0.022577,
+          "p50_ms": 11.1278,
+          "p95_ms": 11.4493,
+          "max_ms": 11.4493,
+          "plan": [
+            "SCAN market_price_tick_buckets USING COVERING INDEX ix_tick_bucket_start"
+          ],
+          "index": "ix_tick_bucket_start",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT market_price_ticks.market_ticker, count(*) AS count_1 FROM market_price_ticks GROUP BY market_price_ticks.market_ticker ORDER BY count(*) DESC LIMIT ? OFFSET ?",
+          "n": 1,
+          "wall_s": 0.015984,
+          "p50_ms": 15.9835,
+          "p95_ms": 15.9835,
+          "max_ms": 15.9835,
+          "plan": [
+            "SCAN market_price_ticks USING COVERING INDEX ix_market_price_ticks_ticker_observed",
+            "USE TEMP B-TREE FOR ORDER BY"
+          ],
+          "index": "ix_market_price_ticks_ticker_observed",
+          "full_scan": true,
+          "temp_btree": true
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM market_price_ticks",
+          "n": 2,
+          "wall_s": 0.013788,
+          "p50_ms": 6.3711,
+          "p95_ms": 7.417,
+          "max_ms": 7.417,
+          "plan": [
+            "SCAN market_price_ticks USING COVERING INDEX ix_market_price_ticks_ticker_observed"
+          ],
+          "index": "ix_market_price_ticks_ticker_observed",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM crypto_price_ticks WHERE crypto_price_ticks.created_at >= ?",
+          "n": 1,
+          "wall_s": 0.01339,
+          "p50_ms": 13.3903,
+          "p95_ms": 13.3903,
+          "max_ms": 13.3903,
+          "plan": [
+            "SCAN crypto_price_ticks"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM meme_attention_snapshots WHERE meme_attention_snapshots.created_at >= ?",
+          "n": 1,
+          "wall_s": 0.01116,
+          "p50_ms": 11.1596,
+          "p95_ms": 11.1596,
+          "max_ms": 11.1596,
+          "plan": [
+            "SCAN meme_attention_snapshots"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM marketops_runs",
+          "n": 1,
+          "wall_s": 0.006699,
+          "p50_ms": 6.6992,
+          "p95_ms": 6.6992,
+          "max_ms": 6.6992,
+          "plan": [
+            "SCAN marketops_runs"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM edge_precheck_snapshots WHERE edge_precheck_snapshots.created_at >= ?",
+          "n": 2,
+          "wall_s": 0.004339,
+          "p50_ms": 1.887,
+          "p95_ms": 2.4517,
+          "max_ms": 2.4517,
+          "plan": [
+            "SCAN edge_precheck_snapshots"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM crypto_token_risk_assessments",
+          "n": 2,
+          "wall_s": 0.002528,
+          "p50_ms": 1.2561,
+          "p95_ms": 1.2722,
+          "max_ms": 1.2722,
+          "plan": [
+            "SCAN crypto_token_risk_assessments USING COVERING INDEX ix_crypto_token_risk_assessments_chain"
+          ],
+          "index": "ix_crypto_token_risk_assessments_chain",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM crypto_token_discovery_events",
+          "n": 1,
+          "wall_s": 0.001639,
+          "p50_ms": 1.6386,
+          "p95_ms": 1.6386,
+          "max_ms": 1.6386,
+          "plan": [
+            "SCAN crypto_token_discovery_events USING COVERING INDEX ix_crypto_token_discovery_events_chain"
+          ],
+          "index": "ix_crypto_token_discovery_events_chain",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM watcher_runs",
+          "n": 1,
+          "wall_s": 0.001002,
+          "p50_ms": 1.0016,
+          "p95_ms": 1.0016,
+          "max_ms": 1.0016,
+          "plan": [
+            "SCAN watcher_runs"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM crypto_price_ticks",
+          "n": 2,
+          "wall_s": 0.000978,
+          "p50_ms": 0.4214,
+          "p95_ms": 0.5568,
+          "max_ms": 0.5568,
+          "plan": [
+            "SCAN crypto_price_ticks USING COVERING INDEX ix_crypto_price_ticks_chain"
+          ],
+          "index": "ix_crypto_price_ticks_chain",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM meme_catalyst_events",
+          "n": 2,
+          "wall_s": 0.000722,
+          "p50_ms": 0.3575,
+          "p95_ms": 0.3641,
+          "max_ms": 0.3641,
+          "plan": [
+            "SCAN meme_catalyst_events USING COVERING INDEX ix_meme_catalyst_run_id"
+          ],
+          "index": "ix_meme_catalyst_run_id",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM market_snapshots",
+          "n": 1,
+          "wall_s": 0.000564,
+          "p50_ms": 0.5642,
+          "p95_ms": 0.5642,
+          "max_ms": 0.5642,
+          "plan": [
+            "SCAN market_snapshots USING COVERING INDEX ix_market_snapshots_scanner_run_id"
+          ],
+          "index": "ix_market_snapshots_scanner_run_id",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM market_eligibility_assessments",
+          "n": 1,
+          "wall_s": 0.000558,
+          "p50_ms": 0.5585,
+          "p95_ms": 0.5585,
+          "max_ms": 0.5585,
+          "plan": [
+            "SCAN market_eligibility_assessments USING COVERING INDEX ix_market_eligibility_assessments_scanner_run_id"
+          ],
+          "index": "ix_market_eligibility_assessments_scanner_run_id",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM markets",
+          "n": 1,
+          "wall_s": 0.000498,
+          "p50_ms": 0.4977,
+          "p95_ms": 0.4977,
+          "max_ms": 0.4977,
+          "plan": [
+            "SCAN markets USING COVERING INDEX ix_markets_status"
+          ],
+          "index": "ix_markets_status",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM meme_attention_snapshots",
+          "n": 2,
+          "wall_s": 0.000336,
+          "p50_ms": 0.1636,
+          "p95_ms": 0.1722,
+          "max_ms": 0.1722,
+          "plan": [
+            "SCAN meme_attention_snapshots USING COVERING INDEX ix_meme_attention_run_id"
+          ],
+          "index": "ix_meme_attention_run_id",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM crypto_opportunity_signals",
+          "n": 1,
+          "wall_s": 0.000305,
+          "p50_ms": 0.3053,
+          "p95_ms": 0.3053,
+          "max_ms": 0.3053,
+          "plan": [
+            "SCAN crypto_opportunity_signals USING COVERING INDEX ix_crypto_opportunity_signals_signal_status"
+          ],
+          "index": "ix_crypto_opportunity_signals_signal_status",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM crypto_token_lifecycle_runs",
+          "n": 1,
+          "wall_s": 0.000286,
+          "p50_ms": 0.2857,
+          "p95_ms": 0.2857,
+          "max_ms": 0.2857,
+          "plan": [
+            "SCAN crypto_token_lifecycle_runs"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM market_outcomes",
+          "n": 1,
+          "wall_s": 0.000192,
+          "p50_ms": 0.1922,
+          "p95_ms": 0.1922,
+          "max_ms": 0.1922,
+          "plan": [
+            "SCAN market_outcomes USING COVERING INDEX ix_market_outcomes_market_ticker"
+          ],
+          "index": "ix_market_outcomes_market_ticker",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM opportunity_signals",
+          "n": 1,
+          "wall_s": 0.000175,
+          "p50_ms": 0.1747,
+          "p95_ms": 0.1747,
+          "max_ms": 0.1747,
+          "plan": [
+            "SCAN opportunity_signals USING COVERING INDEX ix_opportunity_signals_signal_status"
+          ],
+          "index": "ix_opportunity_signals_signal_status",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT name, SUM(pgsize) FROM dbstat GROUP BY name",
+          "n": 1,
+          "wall_s": 0.00017,
+          "p50_ms": 0.1696,
+          "p95_ms": 0.1696,
+          "max_ms": 0.1696,
+          "plan": [
+            "SCAN dbstat VIRTUAL TABLE INDEX 8:"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM crypto_pairs",
+          "n": 1,
+          "wall_s": 0.000111,
+          "p50_ms": 0.1111,
+          "p95_ms": 0.1111,
+          "max_ms": 0.1111,
+          "plan": [
+            "SCAN crypto_pairs USING COVERING INDEX ix_crypto_pairs_chain"
+          ],
+          "index": "ix_crypto_pairs_chain",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM edge_precheck_snapshots",
+          "n": 2,
+          "wall_s": 6.8e-05,
+          "p50_ms": 0.0324,
+          "p95_ms": 0.0359,
+          "max_ms": 0.0359,
+          "plan": [
+            "SCAN edge_precheck_snapshots USING COVERING INDEX ix_edge_precheck_snapshots_forecast_id"
+          ],
+          "index": "ix_edge_precheck_snapshots_forecast_id",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM crypto_tokens",
+          "n": 1,
+          "wall_s": 5.5e-05,
+          "p50_ms": 0.055,
+          "p95_ms": 0.055,
+          "max_ms": 0.055,
+          "plan": [
+            "SCAN crypto_tokens USING COVERING INDEX ix_crypto_tokens_chain"
+          ],
+          "index": "ix_crypto_tokens_chain",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM forecast_scores",
+          "n": 1,
+          "wall_s": 5.5e-05,
+          "p50_ms": 0.055,
+          "p95_ms": 0.055,
+          "max_ms": 0.055,
+          "plan": [
+            "SCAN forecast_scores USING COVERING INDEX ix_forecast_scores_forecast_id"
+          ],
+          "index": "ix_forecast_scores_forecast_id",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM meme_scout_runs",
+          "n": 1,
+          "wall_s": 5.3e-05,
+          "p50_ms": 0.0528,
+          "p95_ms": 0.0528,
+          "max_ms": 0.0528,
+          "plan": [
+            "SCAN meme_scout_runs"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM crypto_watcher_runs",
+          "n": 1,
+          "wall_s": 5e-05,
+          "p50_ms": 0.0495,
+          "p95_ms": 0.0495,
+          "max_ms": 0.0495,
+          "plan": [
+            "SCAN crypto_watcher_runs"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM market_research_packets",
+          "n": 1,
+          "wall_s": 4.8e-05,
+          "p50_ms": 0.0483,
+          "p95_ms": 0.0483,
+          "max_ms": 0.0483,
+          "plan": [
+            "SCAN market_research_packets USING COVERING INDEX ix_market_research_packets_scanner_run_id"
+          ],
+          "index": "ix_market_research_packets_scanner_run_id",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM cross_venue_market_candidates",
+          "n": 1,
+          "wall_s": 4.1e-05,
+          "p50_ms": 0.0411,
+          "p95_ms": 0.0411,
+          "max_ms": 0.0411,
+          "plan": [
+            "SCAN cross_venue_market_candidates USING COVERING INDEX ix_cross_venue_cand_run_id"
+          ],
+          "index": "ix_cross_venue_cand_run_id",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM market_forecasts",
+          "n": 1,
+          "wall_s": 3.9e-05,
+          "p50_ms": 0.0393,
+          "p95_ms": 0.0393,
+          "max_ms": 0.0393,
+          "plan": [
+            "SCAN market_forecasts USING COVERING INDEX ix_market_forecasts_scanner_run_id"
+          ],
+          "index": "ix_market_forecasts_scanner_run_id",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM market_detail_enrichments",
+          "n": 1,
+          "wall_s": 3.9e-05,
+          "p50_ms": 0.0392,
+          "p95_ms": 0.0392,
+          "max_ms": 0.0392,
+          "plan": [
+            "SCAN market_detail_enrichments USING COVERING INDEX ix_market_detail_enrichments_scanner_run_id"
+          ],
+          "index": "ix_market_detail_enrichments_scanner_run_id",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM market_resolution_assessments",
+          "n": 1,
+          "wall_s": 3.7e-05,
+          "p50_ms": 0.0369,
+          "p95_ms": 0.0369,
+          "max_ms": 0.0369,
+          "plan": [
+            "SCAN market_resolution_assessments USING COVERING INDEX ix_market_resolution_assessments_scanner_run_id"
+          ],
+          "index": "ix_market_resolution_assessments_scanner_run_id",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM marketops_alerts",
+          "n": 1,
+          "wall_s": 3.5e-05,
+          "p50_ms": 0.0353,
+          "p95_ms": 0.0353,
+          "max_ms": 0.0353,
+          "plan": [
+            "SCAN marketops_alerts USING COVERING INDEX ix_marketops_alerts_status"
+          ],
+          "index": "ix_marketops_alerts_status",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM crypto_token_actor_observations",
+          "n": 1,
+          "wall_s": 3.1e-05,
+          "p50_ms": 0.0311,
+          "p95_ms": 0.0311,
+          "max_ms": 0.0311,
+          "plan": [
+            "SCAN crypto_token_actor_observations USING COVERING INDEX ix_crypto_token_actor_observations_birth_event_id"
+          ],
+          "index": "ix_crypto_token_actor_observations_birth_event_id",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM crypto_token_lifecycle_snapshots",
+          "n": 1,
+          "wall_s": 2.8e-05,
+          "p50_ms": 0.0281,
+          "p95_ms": 0.0281,
+          "max_ms": 0.0281,
+          "plan": [
+            "SCAN crypto_token_lifecycle_snapshots USING COVERING INDEX ix_crypto_token_lifecycle_snapshots_run_id"
+          ],
+          "index": "ix_crypto_token_lifecycle_snapshots_run_id",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM tick_aggregation_runs",
+          "n": 1,
+          "wall_s": 2.8e-05,
+          "p50_ms": 0.0277,
+          "p95_ms": 0.0277,
+          "max_ms": 0.0277,
+          "plan": [
+            "SCAN tick_aggregation_runs"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM crypto_token_survival_outcomes",
+          "n": 1,
+          "wall_s": 2.6e-05,
+          "p50_ms": 0.0264,
+          "p95_ms": 0.0264,
+          "max_ms": 0.0264,
+          "plan": [
+            "SCAN crypto_token_survival_outcomes USING COVERING INDEX ix_crypto_token_survival_outcomes_birth_event_id"
+          ],
+          "index": "ix_crypto_token_survival_outcomes_birth_event_id",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM crypto_token_birth_events",
+          "n": 1,
+          "wall_s": 2.6e-05,
+          "p50_ms": 0.0261,
+          "p95_ms": 0.0261,
+          "max_ms": 0.0261,
+          "plan": [
+            "SCAN crypto_token_birth_events USING COVERING INDEX ix_crypto_token_birth_events_run_id"
+          ],
+          "index": "ix_crypto_token_birth_events_run_id",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT market_price_ticks.market_ticker, count(*) AS count_1 FROM market_price_ticks GROUP BY market_price_ticks.market_ticker",
+          "n": 1,
+          "wall_s": 2.3e-05,
+          "p50_ms": 0.0232,
+          "p95_ms": 0.0232,
+          "max_ms": 0.0232,
+          "plan": [
+            "SCAN market_price_ticks USING COVERING INDEX ix_market_price_ticks_ticker_observed"
+          ],
+          "index": "ix_market_price_ticks_ticker_observed",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM tennis_tape_links",
+          "n": 1,
+          "wall_s": 1.4e-05,
+          "p50_ms": 0.0135,
+          "p95_ms": 0.0135,
+          "max_ms": 0.0135,
+          "plan": [
+            "SCAN tennis_tape_links USING COVERING INDEX ix_tennis_tape_links_tape_run_id"
+          ],
+          "index": "ix_tennis_tape_links_tape_run_id",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM scanner_runs",
+          "n": 1,
+          "wall_s": 1.1e-05,
+          "p50_ms": 0.0113,
+          "p95_ms": 0.0113,
+          "max_ms": 0.0113,
+          "plan": [
+            "SCAN scanner_runs"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM tennis_tape_market_snapshots",
+          "n": 1,
+          "wall_s": 1.1e-05,
+          "p50_ms": 0.0108,
+          "p95_ms": 0.0108,
+          "max_ms": 0.0108,
+          "plan": [
+            "SCAN tennis_tape_market_snapshots USING COVERING INDEX ix_tennis_tape_market_snapshots_tape_run_id"
+          ],
+          "index": "ix_tennis_tape_market_snapshots_tape_run_id",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM pipeline_stage_runs",
+          "n": 1,
+          "wall_s": 1e-05,
+          "p50_ms": 0.01,
+          "p95_ms": 0.01,
+          "max_ms": 0.01,
+          "plan": [
+            "SCAN pipeline_stage_runs USING COVERING INDEX ix_pipeline_stage_runs_pipeline_run_id"
+          ],
+          "index": "ix_pipeline_stage_runs_pipeline_run_id",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM polymarket_domain_inventory_snapshots",
+          "n": 1,
+          "wall_s": 9e-06,
+          "p50_ms": 0.0091,
+          "p95_ms": 0.0091,
+          "max_ms": 0.0091,
+          "plan": [
+            "SCAN polymarket_domain_inventory_snapshots USING COVERING INDEX ix_polymarket_domain_inv_run_id"
+          ],
+          "index": "ix_polymarket_domain_inv_run_id",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM tennis_tape_score_snapshots",
+          "n": 1,
+          "wall_s": 8e-06,
+          "p50_ms": 0.0084,
+          "p95_ms": 0.0084,
+          "max_ms": 0.0084,
+          "plan": [
+            "SCAN tennis_tape_score_snapshots USING COVERING INDEX ix_tennis_tape_score_snapshots_tape_run_id"
+          ],
+          "index": "ix_tennis_tape_score_snapshots_tape_run_id",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM frontier_eval_runs",
+          "n": 1,
+          "wall_s": 8e-06,
+          "p50_ms": 0.0081,
+          "p95_ms": 0.0081,
+          "max_ms": 0.0081,
+          "plan": [
+            "SCAN frontier_eval_runs"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM cross_venue_observation_runs",
+          "n": 1,
+          "wall_s": 8e-06,
+          "p50_ms": 0.008,
+          "p95_ms": 0.008,
+          "max_ms": 0.008,
+          "plan": [
+            "SCAN cross_venue_observation_runs"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM pipeline_runs",
+          "n": 1,
+          "wall_s": 7e-06,
+          "p50_ms": 0.0075,
+          "p95_ms": 0.0075,
+          "max_ms": 0.0075,
+          "plan": [
+            "SCAN pipeline_runs USING COVERING INDEX ix_pipeline_runs_status"
+          ],
+          "index": "ix_pipeline_runs_status",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM polymarket_orderbook_snapshots",
+          "n": 1,
+          "wall_s": 7e-06,
+          "p50_ms": 0.0075,
+          "p95_ms": 0.0075,
+          "max_ms": 0.0075,
+          "plan": [
+            "SCAN polymarket_orderbook_snapshots USING COVERING INDEX ix_polymarket_book_run_id"
+          ],
+          "index": "ix_polymarket_book_run_id",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM crypto_horizon_cohorts",
+          "n": 1,
+          "wall_s": 7e-06,
+          "p50_ms": 0.0072,
+          "p95_ms": 0.0072,
+          "max_ms": 0.0072,
+          "plan": [
+            "SCAN crypto_horizon_cohorts USING COVERING INDEX ix_crypto_horizon_cohorts_chain"
+          ],
+          "index": "ix_crypto_horizon_cohorts_chain",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM crypto_horizon_cohort_members",
+          "n": 1,
+          "wall_s": 7e-06,
+          "p50_ms": 0.0069,
+          "p95_ms": 0.0069,
+          "max_ms": 0.0069,
+          "plan": [
+            "SCAN crypto_horizon_cohort_members USING COVERING INDEX ix_crypto_horizon_cohort_members_cohort_id"
+          ],
+          "index": "ix_crypto_horizon_cohort_members_cohort_id",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM crypto_horizon_observations",
+          "n": 1,
+          "wall_s": 7e-06,
+          "p50_ms": 0.0069,
+          "p95_ms": 0.0069,
+          "max_ms": 0.0069,
+          "plan": [
+            "SCAN crypto_horizon_observations USING COVERING INDEX ix_crypto_horizon_observations_cohort_id"
+          ],
+          "index": "ix_crypto_horizon_observations_cohort_id",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM domain_market_inventory_snapshots",
+          "n": 1,
+          "wall_s": 6e-06,
+          "p50_ms": 0.0065,
+          "p95_ms": 0.0065,
+          "max_ms": 0.0065,
+          "plan": [
+            "SCAN domain_market_inventory_snapshots USING COVERING INDEX ix_domain_inv_run_id"
+          ],
+          "index": "ix_domain_inv_run_id",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM orderbook_snapshots",
+          "n": 1,
+          "wall_s": 6e-06,
+          "p50_ms": 0.0059,
+          "p95_ms": 0.0059,
+          "max_ms": 0.0059,
+          "plan": [
+            "SCAN orderbook_snapshots USING COVERING INDEX ix_orderbook_snapshots_market_id"
+          ],
+          "index": "ix_orderbook_snapshots_market_id",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM polymarket_markets",
+          "n": 1,
+          "wall_s": 6e-06,
+          "p50_ms": 0.0058,
+          "p95_ms": 0.0058,
+          "max_ms": 0.0058,
+          "plan": [
+            "SCAN polymarket_markets USING COVERING INDEX ix_polymarket_markets_run_id"
+          ],
+          "index": "ix_polymarket_markets_run_id",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM domain_scout_runs",
+          "n": 1,
+          "wall_s": 6e-06,
+          "p50_ms": 0.0057,
+          "p95_ms": 0.0057,
+          "max_ms": 0.0057,
+          "plan": [
+            "SCAN domain_scout_runs"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM tennis_tape_runs",
+          "n": 1,
+          "wall_s": 6e-06,
+          "p50_ms": 0.0056,
+          "p95_ms": 0.0056,
+          "max_ms": 0.0056,
+          "plan": [
+            "SCAN tennis_tape_runs"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM polymarket_scout_runs",
+          "n": 1,
+          "wall_s": 6e-06,
+          "p50_ms": 0.0055,
+          "p95_ms": 0.0055,
+          "max_ms": 0.0055,
+          "plan": [
+            "SCAN polymarket_scout_runs"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        }
+      ]
+    },
+    "calibration.select_scoring_candidates": {
+      "group": "hot",
+      "probe_wall_s": {
+        "reps": 7,
+        "p50": 0.685617,
+        "min": 0.644804,
+        "max": 0.771321,
+        "all": [
+          0.644804,
+          0.677029,
+          0.734876,
+          0.675483,
+          0.771321,
+          0.685617,
+          0.687675
+        ]
+      },
+      "statements": [
+        {
+          "sql": "SELECT forecast_scores.id, forecast_scores.forecast_id, forecast_scores.outcome_id, forecast_scores.brier_score, forecast_scores.score_status FROM forecast_scores WHERE forecast_scores.id IN (SELECT max(forecast_scores.id) AS max_1 FROM forecast_scores GROUP BY forecast_scores.forecast_id)",
+          "n": 1,
+          "wall_s": 0.002957,
+          "p50_ms": 2.9572,
+          "p95_ms": 2.9572,
+          "max_ms": 2.9572,
+          "plan": [
+            "SEARCH forecast_scores USING INTEGER PRIMARY KEY (rowid=?)",
+            "LIST SUBQUERY 1",
+            "SCAN forecast_scores USING COVERING INDEX ix_forecast_scores_forecast_id"
+          ],
+          "index": "ix_forecast_scores_forecast_id",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT market_outcomes.id, market_outcomes.market_ticker, market_outcomes.outcome_status, market_outcomes.resolved_probability, market_outcomes.winning_side, market_outcomes.settlement_price, market_outcomes.close_time, market_outcomes.settled_time, market_outcomes.source, market_outcomes.raw_payload, market_outcomes.created_at FROM market_outcomes WHERE market_outcomes.market_ticker IN (?, ?, ?, ",
+          "n": 1,
+          "wall_s": 0.002422,
+          "p50_ms": 2.422,
+          "p95_ms": 2.422,
+          "max_ms": 2.422,
+          "plan": [
+            "SCAN market_outcomes"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT market_forecasts.id, market_forecasts.market_ticker, market_forecasts.research_packet_id, market_forecasts.forecaster_name, market_forecasts.forecaster_version, market_forecasts.estimated_probability, market_forecasts.evidence_depth, market_forecasts.forecast_risk, market_forecasts.calibration_tags FROM market_forecasts ORDER BY market_forecasts.id",
+          "n": 1,
+          "wall_s": 7e-05,
+          "p50_ms": 0.0704,
+          "p95_ms": 0.0704,
+          "max_ms": 0.0704,
+          "plan": [
+            "SCAN market_forecasts"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        }
+      ]
+    },
+    "calibration.summary": {
+      "group": "hot",
+      "probe_wall_s": {
+        "reps": 7,
+        "p50": 0.331421,
+        "min": 0.323757,
+        "max": 0.348422,
+        "all": [
+          0.336051,
+          0.348422,
+          0.323777,
+          0.331421,
+          0.323757,
+          0.325712,
+          0.335658
+        ]
+      },
+      "statements": [
+        {
+          "sql": "SELECT forecast_scores.id, forecast_scores.forecast_id, forecast_scores.market_ticker, forecast_scores.outcome_id, forecast_scores.brier_score, forecast_scores.log_loss, forecast_scores.absolute_error, forecast_scores.was_resolved, forecast_scores.score_status, forecast_scores.score_notes, forecast_scores.score_tags, forecast_scores.created_at FROM forecast_scores WHERE forecast_scores.id IN (SELE",
+          "n": 1,
+          "wall_s": 0.002964,
+          "p50_ms": 2.9639,
+          "p95_ms": 2.9639,
+          "max_ms": 2.9639,
+          "plan": [
+            "SEARCH forecast_scores USING INTEGER PRIMARY KEY (rowid=?)",
+            "LIST SUBQUERY 1",
+            "SCAN forecast_scores USING COVERING INDEX ix_forecast_scores_forecast_id"
+          ],
+          "index": "ix_forecast_scores_forecast_id",
+          "full_scan": true,
+          "temp_btree": false
+        }
+      ]
+    },
+    "champion_challenger.compare": {
+      "group": "hot",
+      "probe_wall_s": {
+        "reps": 7,
+        "p50": 1.733535,
+        "min": 1.540852,
+        "max": 1.910664,
+        "all": [
+          1.833369,
+          1.540852,
+          1.707521,
+          1.910664,
+          1.700975,
+          1.733535,
+          1.83264
+        ]
+      },
+      "statements": [
+        {
+          "sql": "SELECT forecast_scores.id, forecast_scores.forecast_id, forecast_scores.market_ticker, forecast_scores.outcome_id, forecast_scores.brier_score, forecast_scores.log_loss, forecast_scores.absolute_error, forecast_scores.was_resolved, forecast_scores.score_status, forecast_scores.score_notes, forecast_scores.score_tags, forecast_scores.created_at, market_forecasts.id AS id_1, market_forecasts.market_",
+          "n": 1,
+          "wall_s": 0.002981,
+          "p50_ms": 2.9813,
+          "p95_ms": 2.9813,
+          "max_ms": 2.9813,
+          "plan": [
+            "SEARCH forecast_scores USING INTEGER PRIMARY KEY (rowid=?)",
+            "LIST SUBQUERY 1",
+            "SCAN forecast_scores USING COVERING INDEX ix_forecast_scores_forecast_id",
+            "SEARCH market_forecasts USING INTEGER PRIMARY KEY (rowid=?)"
+          ],
+          "index": "ix_forecast_scores_forecast_id",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT opportunity_signals.refreshed_forecast_id, opportunity_signals.signal_type FROM opportunity_signals WHERE opportunity_signals.refreshed_forecast_id IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?",
+          "n": 1,
+          "wall_s": 0.002454,
+          "p50_ms": 2.4538,
+          "p95_ms": 2.4538,
+          "max_ms": 2.4538,
+          "plan": [
+            "SCAN opportunity_signals"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        }
+      ]
+    },
+    "signal_workflow.build_report": {
+      "group": "hot",
+      "probe_wall_s": {
+        "reps": 7,
+        "p50": 0.983504,
+        "min": 0.933156,
+        "max": 1.105415,
+        "all": [
+          0.983504,
+          1.056917,
+          0.947776,
+          1.029552,
+          0.933156,
+          1.105415,
+          0.945313
+        ]
+      },
+      "statements": [
+        {
+          "sql": "SELECT opportunity_signals.id, opportunity_signals.market_ticker, opportunity_signals.signal_type, opportunity_signals.signal_status, opportunity_signals.observed_at, opportunity_signals.old_midpoint, opportunity_signals.new_midpoint, opportunity_signals.price_change, opportunity_signals.spread, opportunity_signals.liquidity_proxy, opportunity_signals.latest_forecast_id, opportunity_signals.latest",
+          "n": 1,
+          "wall_s": 0.032395,
+          "p50_ms": 32.3952,
+          "p95_ms": 32.3952,
+          "max_ms": 32.3952,
+          "plan": [
+            "SEARCH opportunity_signals USING INDEX ix_opportunity_signals_signal_status (signal_status=?)",
+            "SEARCH market_forecasts USING INTEGER PRIMARY KEY (rowid=?)",
+            "USE TEMP B-TREE FOR ORDER BY"
+          ],
+          "index": "ix_opportunity_signals_signal_status",
+          "full_scan": false,
+          "temp_btree": true
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM opportunity_signals WHERE opportunity_signals.processing_error_type IS NOT NULL",
+          "n": 1,
+          "wall_s": 0.030212,
+          "p50_ms": 30.2124,
+          "p95_ms": 30.2124,
+          "max_ms": 30.2124,
+          "plan": [
+            "SCAN opportunity_signals"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT market_forecasts.forecaster_name, count(*) AS count_1 FROM market_forecasts GROUP BY market_forecasts.forecaster_name",
+          "n": 1,
+          "wall_s": 0.010445,
+          "p50_ms": 10.4449,
+          "p95_ms": 10.4449,
+          "max_ms": 10.4449,
+          "plan": [
+            "SCAN market_forecasts",
+            "USE TEMP B-TREE FOR GROUP BY"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": true
+        },
+        {
+          "sql": "SELECT opportunity_signals.signal_status, count(*) AS count_1 FROM opportunity_signals GROUP BY opportunity_signals.signal_status",
+          "n": 1,
+          "wall_s": 0.000401,
+          "p50_ms": 0.4014,
+          "p95_ms": 0.4014,
+          "max_ms": 0.4014,
+          "plan": [
+            "SCAN opportunity_signals USING COVERING INDEX ix_opportunity_signals_signal_status"
+          ],
+          "index": "ix_opportunity_signals_signal_status",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM opportunity_signals WHERE opportunity_signals.signal_status = ? AND opportunity_signals.processing_error_type IS NULL",
+          "n": 1,
+          "wall_s": 0.000209,
+          "p50_ms": 0.2092,
+          "p95_ms": 0.2092,
+          "max_ms": 0.2092,
+          "plan": [
+            "SEARCH opportunity_signals USING INDEX ix_opportunity_signals_signal_status (signal_status=?)"
+          ],
+          "index": "ix_opportunity_signals_signal_status",
+          "full_scan": false,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT opportunity_signals.signal_type, count(*) AS count_1 FROM opportunity_signals GROUP BY opportunity_signals.signal_type",
+          "n": 1,
+          "wall_s": 6.6e-05,
+          "p50_ms": 0.0664,
+          "p95_ms": 0.0664,
+          "max_ms": 0.0664,
+          "plan": [
+            "SCAN opportunity_signals USING COVERING INDEX ix_opportunity_signals_signal_type"
+          ],
+          "index": "ix_opportunity_signals_signal_type",
+          "full_scan": true,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT market_research_packets.id, market_research_packets.market_ticker, market_research_packets.scanner_run_id, market_research_packets.enrichment_id, market_research_packets.resolution_assessment_id, market_research_packets.collector_name, market_research_packets.collector_version, market_research_packets.domain, market_research_packets.source_queries, market_research_packets.sources, market_re",
+          "n": 1,
+          "wall_s": 2.2e-05,
+          "p50_ms": 0.0222,
+          "p95_ms": 0.0222,
+          "max_ms": 0.0222,
+          "plan": [
+            "SCAN market_research_packets"
+          ],
+          "index": null,
+          "full_scan": true,
+          "temp_btree": false
+        }
+      ]
+    }
+  }
+}

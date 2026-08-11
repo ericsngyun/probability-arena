@@ -1,0 +1,895 @@
+{
+  "label": "b1_after",
+  "db": "/mnt/data/cqp-bench/b1.db",
+  "db_bytes": 4550623232,
+  "analyzed": true,
+  "analyze_seconds": 0.5456588920205832,
+  "sqlite_version": "3.45.1",
+  "sample_tokens": 40,
+  "reps": 3,
+  "sqlite_stat1_rows": 130,
+  "sqlite_stat1": [
+    {
+      "tbl": "alembic_version",
+      "idx": "sqlite_autoindex_alembic_version_1",
+      "stat": "1 1"
+    },
+    {
+      "tbl": "cross_venue_market_candidates",
+      "idx": "ix_cross_venue_cand_domain",
+      "stat": "926 463"
+    },
+    {
+      "tbl": "cross_venue_market_candidates",
+      "idx": "ix_cross_venue_cand_kalshi",
+      "stat": "926 9"
+    },
+    {
+      "tbl": "cross_venue_market_candidates",
+      "idx": "ix_cross_venue_cand_label",
+      "stat": "926 186"
+    },
+    {
+      "tbl": "cross_venue_market_candidates",
+      "idx": "ix_cross_venue_cand_polymarket",
+      "stat": "926 3"
+    },
+    {
+      "tbl": "cross_venue_market_candidates",
+      "idx": "ix_cross_venue_cand_run_id",
+      "stat": "926 186"
+    },
+    {
+      "tbl": "cross_venue_market_candidates",
+      "idx": "ix_cross_venue_run_label",
+      "stat": "926 186 47"
+    },
+    {
+      "tbl": "cross_venue_observation_runs",
+      "idx": null,
+      "stat": "6"
+    },
+    {
+      "tbl": "crypto_horizon_cohort_members",
+      "idx": "ix_crypto_horizon_cohort_members_chain",
+      "stat": "21 21"
+    },
+    {
+      "tbl": "crypto_horizon_cohort_members",
+      "idx": "ix_crypto_horizon_cohort_members_cohort_id",
+      "stat": "21 3"
+    },
+    {
+      "tbl": "crypto_horizon_cohort_members",
+      "idx": "ix_crypto_horizon_cohort_members_token_address",
+      "stat": "21 1"
+    },
+    {
+      "tbl": "crypto_horizon_cohort_members",
+      "idx": "ix_horizon_member_cohort_token",
+      "stat": "21 3 1"
+    },
+    {
+      "tbl": "crypto_horizon_cohorts",
+      "idx": "ix_crypto_horizon_cohorts_chain",
+      "stat": "7 7"
+    },
+    {
+      "tbl": "crypto_horizon_observations",
+      "idx": "ix_crypto_horizon_observations_chain",
+      "stat": "43 43"
+    },
+    {
+      "tbl": "crypto_horizon_observations",
+      "idx": "ix_crypto_horizon_observations_cohort_id",
+      "stat": "43 8"
+    },
+    {
+      "tbl": "crypto_horizon_observations",
+      "idx": "ix_crypto_horizon_observations_horizon",
+      "stat": "43 11"
+    },
+    {
+      "tbl": "crypto_horizon_observations",
+      "idx": "ix_crypto_horizon_observations_member_id",
+      "stat": "43 3"
+    },
+    {
+      "tbl": "crypto_horizon_observations",
+      "idx": "ix_crypto_horizon_observations_status",
+      "stat": "43 22"
+    },
+    {
+      "tbl": "crypto_horizon_observations",
+      "idx": "ix_crypto_horizon_observations_token_address",
+      "stat": "43 3"
+    },
+    {
+      "tbl": "crypto_horizon_observations",
+      "idx": "ix_horizon_obs_cohort_token_horizon",
+      "stat": "43 8 3 1"
+    },
+    {
+      "tbl": "crypto_opportunity_signals",
+      "idx": "ix_crypto_opportunity_signals_chain",
+      "stat": "90356 90356"
+    },
+    {
+      "tbl": "crypto_opportunity_signals",
+      "idx": "ix_crypto_opportunity_signals_signal_status",
+      "stat": "90356 90356"
+    },
+    {
+      "tbl": "crypto_opportunity_signals",
+      "idx": "ix_crypto_opportunity_signals_signal_type",
+      "stat": "90356 10040"
+    },
+    {
+      "tbl": "crypto_opportunity_signals",
+      "idx": "ix_crypto_opportunity_signals_token_address",
+      "stat": "90356 7"
+    },
+    {
+      "tbl": "crypto_pairs",
+      "idx": "ix_crypto_pairs_base_token_address",
+      "stat": "26736 3"
+    },
+    {
+      "tbl": "crypto_pairs",
+      "idx": "ix_crypto_pairs_chain",
+      "stat": "26736 26736"
+    },
+    {
+      "tbl": "crypto_pairs",
+      "idx": "ix_crypto_pairs_chain_address",
+      "stat": "26736 26736 1"
+    },
+    {
+      "tbl": "crypto_pairs",
+      "idx": "ix_crypto_pairs_pair_address",
+      "stat": "26736 1"
+    },
+    {
+      "tbl": "crypto_price_ticks",
+      "idx": "ix_crypto_price_ticks_chain",
+      "stat": "142253 142253"
+    },
+    {
+      "tbl": "crypto_price_ticks",
+      "idx": "ix_crypto_price_ticks_pair_address",
+      "stat": "142253 24"
+    },
+    {
+      "tbl": "crypto_price_ticks",
+      "idx": "ix_crypto_price_ticks_pair_observed",
+      "stat": "142253 24 1"
+    },
+    {
+      "tbl": "crypto_price_ticks",
+      "idx": "ix_crypto_price_ticks_token_address",
+      "stat": "142253 44"
+    },
+    {
+      "tbl": "crypto_token_actor_observations",
+      "idx": "ix_crypto_token_actor_observations_birth_event_id",
+      "stat": "8474 2"
+    },
+    {
+      "tbl": "crypto_token_actor_observations",
+      "idx": "ix_crypto_token_actor_observations_chain",
+      "stat": "8474 8474"
+    },
+    {
+      "tbl": "crypto_token_actor_observations",
+      "idx": "ix_crypto_token_actor_observations_run_id",
+      "stat": "8474 3"
+    },
+    {
+      "tbl": "crypto_token_actor_observations",
+      "idx": "ix_crypto_token_actor_observations_token_address",
+      "stat": "8474 2"
+    },
+    {
+      "tbl": "crypto_token_birth_events",
+      "idx": "ix_crypto_birth_chain_token",
+      "stat": "7420 7420 1"
+    },
+    {
+      "tbl": "crypto_token_birth_events",
+      "idx": "ix_crypto_token_birth_events_chain",
+      "stat": "7420 7420"
+    },
+    {
+      "tbl": "crypto_token_birth_events",
+      "idx": "ix_crypto_token_birth_events_first_evidence_at",
+      "stat": "7420 2"
+    },
+    {
+      "tbl": "crypto_token_birth_events",
+      "idx": "ix_crypto_token_birth_events_run_id",
+      "stat": "7420 3"
+    },
+    {
+      "tbl": "crypto_token_birth_events",
+      "idx": "ix_crypto_token_birth_events_token_address",
+      "stat": "7420 1"
+    },
+    {
+      "tbl": "crypto_token_discovery_events",
+      "idx": "ix_crypto_token_discovery_events_chain",
+      "stat": "396669 396669"
+    },
+    {
+      "tbl": "crypto_token_discovery_events",
+      "idx": "ix_crypto_token_discovery_events_event_type",
+      "stat": "396669 132223"
+    },
+    {
+      "tbl": "crypto_token_discovery_events",
+      "idx": "ix_crypto_token_discovery_events_token_address",
+      "stat": "396669 31"
+    },
+    {
+      "tbl": "crypto_token_lifecycle_runs",
+      "idx": null,
+      "stat": "3467"
+    },
+    {
+      "tbl": "crypto_token_lifecycle_snapshots",
+      "idx": "ix_crypto_lifecycle_snap_token_observed",
+      "stat": "8474 2 1"
+    },
+    {
+      "tbl": "crypto_token_lifecycle_snapshots",
+      "idx": "ix_crypto_token_lifecycle_snapshots_birth_event_id",
+      "stat": "8474 2"
+    },
+    {
+      "tbl": "crypto_token_lifecycle_snapshots",
+      "idx": "ix_crypto_token_lifecycle_snapshots_chain",
+      "stat": "8474 8474"
+    },
+    {
+      "tbl": "crypto_token_lifecycle_snapshots",
+      "idx": "ix_crypto_token_lifecycle_snapshots_run_id",
+      "stat": "8474 3"
+    },
+    {
+      "tbl": "crypto_token_lifecycle_snapshots",
+      "idx": "ix_crypto_token_lifecycle_snapshots_token_address",
+      "stat": "8474 2"
+    },
+    {
+      "tbl": "crypto_token_risk_assessments",
+      "idx": "ix_crypto_token_risk_assessments_chain",
+      "stat": "311214 311214"
+    },
+    {
+      "tbl": "crypto_token_risk_assessments",
+      "idx": "ix_crypto_token_risk_assessments_token_address",
+      "stat": "311214 25"
+    },
+    {
+      "tbl": "crypto_token_survival_outcomes",
+      "idx": "ix_crypto_token_survival_outcomes_birth_event_id",
+      "stat": "7420 1"
+    },
+    {
+      "tbl": "crypto_token_survival_outcomes",
+      "idx": "ix_crypto_token_survival_outcomes_chain",
+      "stat": "7420 7420"
+    },
+    {
+      "tbl": "crypto_token_survival_outcomes",
+      "idx": "ix_crypto_token_survival_outcomes_final",
+      "stat": "7420 3710"
+    },
+    {
+      "tbl": "crypto_token_survival_outcomes",
+      "idx": "ix_crypto_token_survival_outcomes_token_address",
+      "stat": "7420 1"
+    },
+    {
+      "tbl": "crypto_tokens",
+      "idx": "ix_crypto_tokens_chain",
+      "stat": "12847 12847"
+    },
+    {
+      "tbl": "crypto_tokens",
+      "idx": "ix_crypto_tokens_chain_address",
+      "stat": "12847 12847 1"
+    },
+    {
+      "tbl": "crypto_tokens",
+      "idx": "ix_crypto_tokens_token_address",
+      "stat": "12847 1"
+    },
+    {
+      "tbl": "crypto_watcher_runs",
+      "idx": null,
+      "stat": "1746"
+    },
+    {
+      "tbl": "domain_market_inventory_snapshots",
+      "idx": "ix_domain_inv_domain",
+      "stat": "24 3"
+    },
+    {
+      "tbl": "domain_market_inventory_snapshots",
+      "idx": "ix_domain_inv_run_id",
+      "stat": "24 8"
+    },
+    {
+      "tbl": "domain_market_inventory_snapshots",
+      "idx": "ix_domain_inv_series",
+      "stat": "24 3"
+    },
+    {
+      "tbl": "domain_scout_runs",
+      "idx": null,
+      "stat": "3"
+    },
+    {
+      "tbl": "edge_precheck_snapshots",
+      "idx": "ix_edge_precheck_snapshots_forecast_id",
+      "stat": "10422 1"
+    },
+    {
+      "tbl": "edge_precheck_snapshots",
+      "idx": "ix_edge_precheck_snapshots_forecaster_name",
+      "stat": "10422 3474"
+    },
+    {
+      "tbl": "edge_precheck_snapshots",
+      "idx": "ix_edge_precheck_snapshots_market_ticker",
+      "stat": "10422 2"
+    },
+    {
+      "tbl": "edge_precheck_snapshots",
+      "idx": "ix_edge_precheck_snapshots_status",
+      "stat": "10422 1043"
+    },
+    {
+      "tbl": "forecast_scores",
+      "idx": "ix_forecast_scores_forecast_id",
+      "stat": "20926 2"
+    },
+    {
+      "tbl": "forecast_scores",
+      "idx": "ix_forecast_scores_market_ticker",
+      "stat": "20926 4"
+    },
+    {
+      "tbl": "forecast_scores",
+      "idx": "ix_forecast_scores_score_status",
+      "stat": "20926 6976"
+    },
+    {
+      "tbl": "frontier_eval_runs",
+      "idx": null,
+      "stat": "4"
+    },
+    {
+      "tbl": "market_detail_enrichments",
+      "idx": "ix_market_detail_enrichments_market_ticker",
+      "stat": "15349 3"
+    },
+    {
+      "tbl": "market_detail_enrichments",
+      "idx": "ix_market_detail_enrichments_scanner_run_id",
+      "stat": "15349 67"
+    },
+    {
+      "tbl": "market_eligibility_assessments",
+      "idx": "ix_market_eligibility_assessments_market_ticker",
+      "stat": "188898 2"
+    },
+    {
+      "tbl": "market_eligibility_assessments",
+      "idx": "ix_market_eligibility_assessments_scanner_run_id",
+      "stat": "188898 808"
+    },
+    {
+      "tbl": "market_forecasts",
+      "idx": "ix_market_forecasts_market_ticker",
+      "stat": "15408 3"
+    },
+    {
+      "tbl": "market_forecasts",
+      "idx": "ix_market_forecasts_scanner_run_id",
+      "stat": "15408 67"
+    },
+    {
+      "tbl": "market_outcomes",
+      "idx": "ix_market_outcomes_market_ticker",
+      "stat": "17720 1"
+    },
+    {
+      "tbl": "market_price_tick_buckets",
+      "idx": "ix_market_price_tick_buckets_domain",
+      "stat": "1439728 359932"
+    },
+    {
+      "tbl": "market_price_tick_buckets",
+      "idx": "ix_market_price_tick_buckets_market_ticker",
+      "stat": "1439728 185"
+    },
+    {
+      "tbl": "market_price_tick_buckets",
+      "idx": "ix_tick_bucket_start",
+      "stat": "1439728 142"
+    },
+    {
+      "tbl": "market_price_tick_buckets",
+      "idx": "sqlite_autoindex_market_price_tick_buckets_1",
+      "stat": "1439728 185 1 1"
+    },
+    {
+      "tbl": "market_price_ticks",
+      "idx": "ix_market_price_ticks_market_ticker",
+      "stat": "466950 704"
+    },
+    {
+      "tbl": "market_price_ticks",
+      "idx": "ix_market_price_ticks_ticker_observed",
+      "stat": "466950 704 1"
+    },
+    {
+      "tbl": "market_research_packets",
+      "idx": "ix_market_research_packets_domain",
+      "stat": "15407 3082"
+    },
+    {
+      "tbl": "market_research_packets",
+      "idx": "ix_market_research_packets_market_ticker",
+      "stat": "15407 3"
+    },
+    {
+      "tbl": "market_research_packets",
+      "idx": "ix_market_research_packets_scanner_run_id",
+      "stat": "15407 67"
+    },
+    {
+      "tbl": "market_resolution_assessments",
+      "idx": "ix_market_resolution_assessments_market_ticker",
+      "stat": "15407 3"
+    },
+    {
+      "tbl": "market_resolution_assessments",
+      "idx": "ix_market_resolution_assessments_scanner_run_id",
+      "stat": "15407 67"
+    },
+    {
+      "tbl": "market_snapshots",
+      "idx": "ix_market_snapshots_market_captured",
+      "stat": "188898 2 1"
+    },
+    {
+      "tbl": "market_snapshots",
+      "idx": "ix_market_snapshots_market_id",
+      "stat": "188898 2"
+    },
+    {
+      "tbl": "market_snapshots",
+      "idx": "ix_market_snapshots_scanner_run_id",
+      "stat": "188898 808"
+    },
+    {
+      "tbl": "marketops_alerts",
+      "idx": "ix_marketops_alerts_alert_type",
+      "stat": "6848 979"
+    },
+    {
+      "tbl": "marketops_alerts",
+      "idx": "ix_marketops_alerts_status",
+      "stat": "6848 3424"
+    },
+    {
+      "tbl": "marketops_runs",
+      "idx": null,
+      "stat": "9225"
+    },
+    {
+      "tbl": "markets",
+      "idx": "ix_markets_event_ticker",
+      "stat": "121888 8"
+    },
+    {
+      "tbl": "markets",
+      "idx": "ix_markets_status",
+      "stat": "121888 60944"
+    },
+    {
+      "tbl": "markets",
+      "idx": "ix_markets_ticker",
+      "stat": "121888 1"
+    },
+    {
+      "tbl": "meme_attention_snapshots",
+      "idx": "ix_meme_attention_chain",
+      "stat": "56209 56209"
+    },
+    {
+      "tbl": "meme_attention_snapshots",
+      "idx": "ix_meme_attention_run_id",
+      "stat": "56209 30"
+    },
+    {
+      "tbl": "meme_attention_snapshots",
+      "idx": "ix_meme_attention_token",
+      "stat": "56209 10"
+    },
+    {
+      "tbl": "meme_attention_snapshots",
+      "idx": "ix_meme_attention_token_observed",
+      "stat": "56209 10 1"
+    },
+    {
+      "tbl": "meme_catalyst_events",
+      "idx": "ix_meme_catalyst_run_id",
+      "stat": "130585 70"
+    },
+    {
+      "tbl": "meme_catalyst_events",
+      "idx": "ix_meme_catalyst_source",
+      "stat": "130585 130585"
+    },
+    {
+      "tbl": "meme_catalyst_events",
+      "idx": "ix_meme_catalyst_subject_ref",
+      "stat": "130585 23"
+    },
+    {
+      "tbl": "meme_catalyst_events",
+      "idx": "ix_meme_catalyst_subject_type",
+      "stat": "130585 130585"
+    },
+    {
+      "tbl": "meme_catalyst_events",
+      "idx": "ix_meme_catalyst_type",
+      "stat": "130585 32647"
+    },
+    {
+      "tbl": "meme_scout_runs",
+      "idx": null,
+      "stat": "1875"
+    },
+    {
+      "tbl": "opportunity_signals",
+      "idx": "ix_opportunity_signals_market_ticker",
+      "stat": "41854 7"
+    },
+    {
+      "tbl": "opportunity_signals",
+      "idx": "ix_opportunity_signals_signal_status",
+      "stat": "41854 13952"
+    },
+    {
+      "tbl": "opportunity_signals",
+      "idx": "ix_opportunity_signals_signal_type",
+      "stat": "41854 8371"
+    },
+    {
+      "tbl": "pipeline_runs",
+      "idx": "ix_pipeline_runs_run_type",
+      "stat": "251 251"
+    },
+    {
+      "tbl": "pipeline_runs",
+      "idx": "ix_pipeline_runs_status",
+      "stat": "251 84"
+    },
+    {
+      "tbl": "pipeline_stage_runs",
+      "idx": "ix_pipeline_stage_runs_pipeline_run_id",
+      "stat": "2008 8"
+    },
+    {
+      "tbl": "polymarket_domain_inventory_snapshots",
+      "idx": "ix_polymarket_domain_inv_domain",
+      "stat": "52 1"
+    },
+    {
+      "tbl": "polymarket_domain_inventory_snapshots",
+      "idx": "ix_polymarket_domain_inv_run_id",
+      "stat": "52 26"
+    },
+    {
+      "tbl": "scanner_runs",
+      "idx": null,
+      "stat": "238"
+    },
+    {
+      "tbl": "tennis_tape_links",
+      "idx": "ix_tennis_tape_links_link_label",
+      "stat": "2870 718"
+    },
+    {
+      "tbl": "tennis_tape_links",
+      "idx": "ix_tennis_tape_links_market_ticker",
+      "stat": "2870 18"
+    },
+    {
+      "tbl": "tennis_tape_links",
+      "idx": "ix_tennis_tape_links_tape_run_id",
+      "stat": "2870 96"
+    },
+    {
+      "tbl": "tennis_tape_market_snapshots",
+      "idx": "ix_tennis_tape_market_snapshots_market_ticker",
+      "stat": "2870 18"
+    },
+    {
+      "tbl": "tennis_tape_market_snapshots",
+      "idx": "ix_tennis_tape_market_snapshots_observed_at",
+      "stat": "2870 96"
+    },
+    {
+      "tbl": "tennis_tape_market_snapshots",
+      "idx": "ix_tennis_tape_market_snapshots_tape_run_id",
+      "stat": "2870 96"
+    },
+    {
+      "tbl": "tennis_tape_runs",
+      "idx": null,
+      "stat": "30"
+    },
+    {
+      "tbl": "tennis_tape_score_snapshots",
+      "idx": "ix_tennis_tape_score_snapshots_observed_at",
+      "stat": "1219 41"
+    },
+    {
+      "tbl": "tennis_tape_score_snapshots",
+      "idx": "ix_tennis_tape_score_snapshots_provider_event_id",
+      "stat": "1219 19"
+    },
+    {
+      "tbl": "tennis_tape_score_snapshots",
+      "idx": "ix_tennis_tape_score_snapshots_tape_run_id",
+      "stat": "1219 41"
+    },
+    {
+      "tbl": "tick_aggregation_runs",
+      "idx": null,
+      "stat": "708"
+    },
+    {
+      "tbl": "watcher_runs",
+      "idx": null,
+      "stat": "41490"
+    }
+  ],
+  "probes": {
+    "recon.load_sources": {
+      "group": "recon",
+      "probe_wall_s": {
+        "reps": 3,
+        "p50": 0.078413,
+        "min": 0.04937,
+        "max": 0.086421
+      },
+      "statements": [
+        {
+          "sql": "SELECT crypto_token_discovery_events.id, crypto_token_discovery_events.chain, crypto_token_discovery_events.token_address, crypto_token_discovery_events.pair_address, crypto_token_discovery_events.source, crypto_token_discovery_events.event_type, crypto_token_discovery_events.observed_at, crypto_token_discovery_events.raw_payload, crypto_token_discovery_events.created_at FROM crypto_token_discover",
+          "n": 40,
+          "wall_s": 0.002383,
+          "p50_ms": 0.0289,
+          "p95_ms": 0.1568,
+          "max_ms": 0.3542,
+          "plan": [
+            "SEARCH crypto_token_discovery_events USING INDEX ix_crypto_token_discovery_events_token_address (token_address=?)",
+            "USE TEMP B-TREE FOR ORDER BY"
+          ],
+          "index": "ix_crypto_token_discovery_events_token_address",
+          "full_scan": false,
+          "temp_btree": true
+        },
+        {
+          "sql": "SELECT crypto_token_risk_assessments.id, crypto_token_risk_assessments.chain, crypto_token_risk_assessments.token_address, crypto_token_risk_assessments.provider, crypto_token_risk_assessments.risk_score, crypto_token_risk_assessments.risk_level, crypto_token_risk_assessments.flags, crypto_token_risk_assessments.raw_payload, crypto_token_risk_assessments.liquidity_risk_score, crypto_token_risk_ass",
+          "n": 40,
+          "wall_s": 0.001343,
+          "p50_ms": 0.0162,
+          "p95_ms": 0.1046,
+          "max_ms": 0.3259,
+          "plan": [
+            "SEARCH crypto_token_risk_assessments USING INDEX ix_crypto_token_risk_assessments_token_address (token_address=?)",
+            "USE TEMP B-TREE FOR ORDER BY"
+          ],
+          "index": "ix_crypto_token_risk_assessments_token_address",
+          "full_scan": false,
+          "temp_btree": true
+        },
+        {
+          "sql": "SELECT meme_attention_snapshots.id, meme_attention_snapshots.run_id, meme_attention_snapshots.chain, meme_attention_snapshots.token_address, meme_attention_snapshots.pair_address, meme_attention_snapshots.symbol, meme_attention_snapshots.name, meme_attention_snapshots.first_seen_at, meme_attention_snapshots.token_age_seconds, meme_attention_snapshots.price_usd, meme_attention_snapshots.liquidity_u",
+          "n": 40,
+          "wall_s": 0.000491,
+          "p50_ms": 0.0108,
+          "p95_ms": 0.0147,
+          "max_ms": 0.0568,
+          "plan": [
+            "SEARCH meme_attention_snapshots USING INDEX ix_meme_attention_token (token_address=?)"
+          ],
+          "index": "ix_meme_attention_token",
+          "full_scan": false,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT crypto_price_ticks.id, crypto_price_ticks.chain, crypto_price_ticks.token_address, crypto_price_ticks.pair_address, crypto_price_ticks.observed_at, crypto_price_ticks.price_usd, crypto_price_ticks.liquidity_usd, crypto_price_ticks.volume_5m_usd, crypto_price_ticks.volume_1h_usd, crypto_price_ticks.volume_24h_usd, crypto_price_ticks.price_change_5m, crypto_price_ticks.price_change_1h, crypto",
+          "n": 40,
+          "wall_s": 0.000408,
+          "p50_ms": 0.0097,
+          "p95_ms": 0.0116,
+          "max_ms": 0.0237,
+          "plan": [
+            "SEARCH crypto_price_ticks USING INDEX ix_crypto_price_ticks_token_address (token_address=?)",
+            "USE TEMP B-TREE FOR ORDER BY"
+          ],
+          "index": "ix_crypto_price_ticks_token_address",
+          "full_scan": false,
+          "temp_btree": true
+        },
+        {
+          "sql": "SELECT crypto_pairs.id, crypto_pairs.chain, crypto_pairs.pair_address, crypto_pairs.base_token_address, crypto_pairs.quote_token_address, crypto_pairs.dex_id, crypto_pairs.url, crypto_pairs.pair_created_at, crypto_pairs.metadata, crypto_pairs.first_seen_at, crypto_pairs.last_seen_at, crypto_pairs.created_at FROM crypto_pairs WHERE crypto_pairs.chain = ? AND crypto_pairs.base_token_address = ? ORDE",
+          "n": 40,
+          "wall_s": 0.000399,
+          "p50_ms": 0.0095,
+          "p95_ms": 0.0132,
+          "max_ms": 0.0188,
+          "plan": [
+            "SEARCH crypto_pairs USING INDEX ix_crypto_pairs_base_token_address (base_token_address=?)"
+          ],
+          "index": "ix_crypto_pairs_base_token_address",
+          "full_scan": false,
+          "temp_btree": false
+        },
+        {
+          "sql": "SELECT count(*) AS count_1 FROM meme_catalyst_events WHERE meme_catalyst_events.subject_ref = ? AND meme_catalyst_events.observed_at >= ?",
+          "n": 40,
+          "wall_s": 0.000333,
+          "p50_ms": 0.0081,
+          "p95_ms": 0.0101,
+          "max_ms": 0.0175,
+          "plan": [
+            "SEARCH meme_catalyst_events USING INDEX ix_meme_catalyst_subject_ref (subject_ref=?)"
+          ],
+          "index": "ix_meme_catalyst_subject_ref",
+          "full_scan": false,
+          "temp_btree": false
+        }
+      ]
+    },
+    "recon.universe": {
+      "group": "recon",
+      "probe_wall_s": {
+        "reps": 3,
+        "p50": 0.012315,
+        "min": 0.012127,
+        "max": 0.016549
+      },
+      "statements": [
+        {
+          "sql": "SELECT DISTINCT crypto_tokens.id, crypto_tokens.chain, crypto_tokens.token_address, crypto_tokens.symbol, crypto_tokens.name, crypto_tokens.decimals, crypto_tokens.metadata, crypto_tokens.first_seen_at, crypto_tokens.last_seen_at, crypto_tokens.created_at FROM crypto_tokens LEFT OUTER JOIN crypto_token_survival_outcomes ON crypto_token_survival_outcomes.token_address = crypto_tokens.token_address ",
+          "n": 1,
+          "wall_s": 0.007627,
+          "p50_ms": 7.627,
+          "p95_ms": 7.627,
+          "max_ms": 7.627,
+          "plan": [
+            "SEARCH crypto_tokens USING INDEX ix_crypto_tokens_chain_address (chain=?)",
+            "SEARCH crypto_token_survival_outcomes USING INDEX ix_crypto_token_survival_outcomes_token_address (token_address=?) LEFT-JOIN",
+            "USE TEMP B-TREE FOR ORDER BY"
+          ],
+          "index": "ix_crypto_tokens_chain_address",
+          "full_scan": false,
+          "temp_btree": true
+        }
+      ]
+    },
+    "recon.universe_size": {
+      "group": "recon",
+      "probe_wall_s": {
+        "reps": 3,
+        "p50": 0.001839,
+        "min": 0.001773,
+        "max": 0.002628
+      },
+      "statements": [
+        {
+          "sql": "SELECT count(distinct(crypto_tokens.id)) AS count_1 FROM crypto_tokens LEFT OUTER JOIN crypto_token_survival_outcomes ON crypto_token_survival_outcomes.token_address = crypto_tokens.token_address AND crypto_token_survival_outcomes.chain = crypto_tokens.chain WHERE crypto_tokens.chain = ? AND crypto_tokens.first_seen_at >= ? AND crypto_tokens.first_seen_at <= ? AND (crypto_token_survival_outcomes.i",
+          "n": 1,
+          "wall_s": 0.001477,
+          "p50_ms": 1.4771,
+          "p95_ms": 1.4771,
+          "max_ms": 1.4771,
+          "plan": [
+            "SCAN crypto_tokens",
+            "SEARCH crypto_token_survival_outcomes USING INDEX ix_crypto_token_survival_outcomes_token_address (token_address=?) LEFT-JOIN"
+          ],
+          "index": "ix_crypto_token_survival_outcomes_token_address",
+          "full_scan": true,
+          "temp_btree": false
+        }
+      ]
+    },
+    "recon.unreconciled_backlog": {
+      "group": "recon",
+      "probe_wall_s": {
+        "reps": 3,
+        "p50": 0.03356,
+        "min": 0.033186,
+        "max": 0.03426
+      },
+      "statements": [
+        {
+          "sql": "SELECT DISTINCT crypto_tokens.id, crypto_tokens.chain, crypto_tokens.token_address, crypto_tokens.symbol, crypto_tokens.name, crypto_tokens.decimals, crypto_tokens.metadata, crypto_tokens.first_seen_at, crypto_tokens.last_seen_at, crypto_tokens.created_at FROM crypto_tokens LEFT OUTER JOIN crypto_token_survival_outcomes ON crypto_token_survival_outcomes.token_address = crypto_tokens.token_address ",
+          "n": 1,
+          "wall_s": 0.023482,
+          "p50_ms": 23.4823,
+          "p95_ms": 23.4823,
+          "max_ms": 23.4823,
+          "plan": [
+            "SEARCH crypto_tokens USING INDEX ix_crypto_tokens_chain_address (chain=?)",
+            "SEARCH crypto_token_survival_outcomes USING INDEX ix_crypto_token_survival_outcomes_token_address (token_address=?) LEFT-JOIN",
+            "USE TEMP B-TREE FOR ORDER BY"
+          ],
+          "index": "ix_crypto_tokens_chain_address",
+          "full_scan": false,
+          "temp_btree": true
+        }
+      ]
+    },
+    "recon.backlog_size": {
+      "group": "recon",
+      "probe_wall_s": {
+        "reps": 3,
+        "p50": 0.005709,
+        "min": 0.005521,
+        "max": 0.006229
+      },
+      "statements": [
+        {
+          "sql": "SELECT count(distinct(crypto_tokens.id)) AS count_1 FROM crypto_tokens LEFT OUTER JOIN crypto_token_survival_outcomes ON crypto_token_survival_outcomes.token_address = crypto_tokens.token_address AND crypto_token_survival_outcomes.chain = crypto_tokens.chain WHERE crypto_tokens.chain = ? AND crypto_tokens.first_seen_at < ? AND (crypto_token_survival_outcomes.id IS NULL OR crypto_token_survival_out",
+          "n": 1,
+          "wall_s": 0.005209,
+          "p50_ms": 5.2085,
+          "p95_ms": 5.2085,
+          "max_ms": 5.2085,
+          "plan": [
+            "SCAN crypto_tokens",
+            "SEARCH crypto_token_survival_outcomes USING INDEX ix_crypto_token_survival_outcomes_token_address (token_address=?) LEFT-JOIN"
+          ],
+          "index": "ix_crypto_token_survival_outcomes_token_address",
+          "full_scan": true,
+          "temp_btree": false
+        }
+      ]
+    },
+    "recon.oldest_unreconciled": {
+      "group": "recon",
+      "probe_wall_s": {
+        "reps": 3,
+        "p50": 0.005447,
+        "min": 0.005366,
+        "max": 0.005934
+      },
+      "statements": [
+        {
+          "sql": "SELECT min(crypto_tokens.first_seen_at) AS min_1 FROM crypto_tokens LEFT OUTER JOIN crypto_token_survival_outcomes ON crypto_token_survival_outcomes.token_address = crypto_tokens.token_address AND crypto_token_survival_outcomes.chain = crypto_tokens.chain WHERE crypto_tokens.chain = ? AND crypto_tokens.first_seen_at < ? AND (crypto_token_survival_outcomes.id IS NULL OR crypto_token_survival_outcom",
+          "n": 1,
+          "wall_s": 0.00509,
+          "p50_ms": 5.0904,
+          "p95_ms": 5.0904,
+          "max_ms": 5.0904,
+          "plan": [
+            "SEARCH crypto_tokens",
+            "SEARCH crypto_token_survival_outcomes USING INDEX ix_crypto_token_survival_outcomes_token_address (token_address=?) LEFT-JOIN"
+          ],
+          "index": "ix_crypto_token_survival_outcomes_token_address",
+          "full_scan": false,
+          "temp_btree": false
+        }
+      ]
+    }
+  }
+}

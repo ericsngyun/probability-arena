@@ -1,0 +1,72 @@
+{
+  "action": "ANALYZE",
+  "db": "/home/miko_node_001/projects/probability-arena/data/probability_arena.db",
+  "started_at": "2026-08-11T07:04:01.185995+00:00",
+  "dry_run": true,
+  "preflight": {
+    "checks": {
+      "db_exists": {
+        "ok": true,
+        "detail": "/home/miko_node_001/projects/probability-arena/data/probability_arena.db"
+      },
+      "confirm_path_matches": {
+        "ok": true,
+        "detail": "'/home/miko_node_001/projects/probability-arena/data/probability_arena.db' vs /home/miko_node_001/projects/probability-arena/data/probability_arena.db"
+      },
+      "confirm_phrase": {
+        "ok": true,
+        "detail": "exact phrase required"
+      },
+      "backup_fresh": {
+        "ok": true,
+        "detail": {
+          "newest": "backup-20260811T013803Z.db.gz",
+          "age_hours": 5.43,
+          "limit_hours": 36.0
+        }
+      },
+      "quick_check_ok": {
+        "ok": true,
+        "detail": "ok"
+      },
+      "alembic_matches": {
+        "ok": true,
+        "detail": {
+          "found": "0027",
+          "expected": "0027"
+        }
+      }
+    },
+    "passed": true
+  },
+  "before": {
+    "file_bytes": 4550623232,
+    "page_size": 4096,
+    "page_count": 1110992,
+    "freelist_count": 419034,
+    "journal_mode": "delete",
+    "busy_timeout": 5000,
+    "user_version": 0,
+    "freelist_share": 0.3772,
+    "sqlite_stat_tables": [],
+    "sqlite_stat1_rows": 0,
+    "alembic_version": "0027",
+    "lock_telemetry": {
+      "file": "/home/miko_node_001/probability-arena-telemetry/sqlite-writes.jsonl",
+      "exists": true,
+      "events": 6790,
+      "lock_events": 8,
+      "malformed_lines": 0,
+      "last_event_at": "2026-08-11T06:02:03.943167Z",
+      "last_lock_event": {
+        "started_at": "2026-08-08T14:35:11.265899Z",
+        "operation_name": "commit_unit",
+        "writer_name": "tick_aggregation",
+        "lock_wait_ms": 32054,
+        "retry_count": 1,
+        "outcome": "retried_success"
+      }
+    }
+  },
+  "result": "DRY RUN \u2014 preflight passed; ANALYZE not executed"
+}
