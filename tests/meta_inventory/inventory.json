@@ -3015,8 +3015,7 @@
           "example_chain": [
             "archive_migrate_legacy",
             "migrate_legacy_archive",
-            "initialize_archive",
-            "_publish_generation",
+            "SegmentWriter.submit",
             "app.realtime.canonical.parse_canonical(...)"
           ],
           "manually_bridged": false,
@@ -4286,117 +4285,6 @@
           "archive_migrate_legacy",
           "migrate_legacy_archive",
           "SegmentWriter.submit",
-          "WorkBudget(...) [from app.realtime.canonical import WorkBudget]"
-        ],
-        [
-          "archive_migrate_legacy",
-          "migrate_legacy_archive",
-          "SegmentWriter.submit",
-          "_structural_reason",
-          "WorkBudget(...) [from app.realtime.canonical import WorkBudget]"
-        ],
-        [
-          "archive_migrate_legacy",
-          "migrate_legacy_archive",
-          "SegmentWriter.submit",
-          "_structural_reason",
-          "_budget.consume(...) [receiver type unknown]"
-        ],
-        [
-          "archive_migrate_legacy",
-          "migrate_legacy_archive",
-          "SegmentWriter.submit",
-          "_structural_reason",
-          "enumerate(...) [unbound name]"
-        ],
-        [
-          "archive_migrate_legacy",
-          "migrate_legacy_archive",
-          "SegmentWriter.submit",
-          "_structural_reason",
-          "isinstance(...) [unbound name]"
-        ],
-        [
-          "archive_migrate_legacy",
-          "migrate_legacy_archive",
-          "SegmentWriter.submit",
-          "_structural_reason",
-          "len(...) [unbound name]"
-        ],
-        [
-          "archive_migrate_legacy",
-          "migrate_legacy_archive",
-          "SegmentWriter.submit",
-          "_structural_reason",
-          "seen_keys.add(...) [receiver type unknown]"
-        ],
-        [
-          "archive_migrate_legacy",
-          "migrate_legacy_archive",
-          "SegmentWriter.submit",
-          "_structural_reason",
-          "set(...) [unbound name]"
-        ],
-        [
-          "archive_migrate_legacy",
-          "migrate_legacy_archive",
-          "SegmentWriter.submit",
-          "_structural_reason",
-          "str(...) [unbound name]"
-        ],
-        [
-          "archive_migrate_legacy",
-          "migrate_legacy_archive",
-          "SegmentWriter.submit",
-          "_structural_reason",
-          "type(...) [unbound name]"
-        ],
-        [
-          "archive_migrate_legacy",
-          "migrate_legacy_archive",
-          "SegmentWriter.submit",
-          "_structural_reason",
-          "value.as_tuple(...) [receiver type unknown]"
-        ],
-        [
-          "archive_migrate_legacy",
-          "migrate_legacy_archive",
-          "SegmentWriter.submit",
-          "_structural_reason",
-          "value.bit_length(...) [receiver type unknown]"
-        ],
-        [
-          "archive_migrate_legacy",
-          "migrate_legacy_archive",
-          "SegmentWriter.submit",
-          "_structural_reason",
-          "value.encode(...) [receiver type unknown]"
-        ],
-        [
-          "archive_migrate_legacy",
-          "migrate_legacy_archive",
-          "SegmentWriter.submit",
-          "_structural_reason",
-          "value.is_finite(...) [receiver type unknown]"
-        ],
-        [
-          "archive_migrate_legacy",
-          "migrate_legacy_archive",
-          "SegmentWriter.submit",
-          "_structural_reason",
-          "value.items(...) [receiver type unknown]"
-        ],
-        [
-          "archive_migrate_legacy",
-          "migrate_legacy_archive",
-          "SegmentWriter.submit",
-          "_structural_reason",
-          "value.utcoffset(...) [receiver type unknown]"
-        ],
-        [
-          "archive_migrate_legacy",
-          "migrate_legacy_archive",
-          "SegmentWriter.submit",
           "build_record",
           "envelope_fields.get(...) [receiver type unknown]"
         ],
@@ -5050,6 +4938,126 @@
           "non_canonical_reason",
           "canonicalize_or_reason",
           "WorkBudget(...) [from app.realtime.canonical import WorkBudget]"
+        ],
+        [
+          "archive_migrate_legacy",
+          "migrate_legacy_archive",
+          "non_canonical_reason",
+          "canonicalize_or_reason",
+          "_structural_reason",
+          "WorkBudget(...) [from app.realtime.canonical import WorkBudget]"
+        ],
+        [
+          "archive_migrate_legacy",
+          "migrate_legacy_archive",
+          "non_canonical_reason",
+          "canonicalize_or_reason",
+          "_structural_reason",
+          "_budget.consume(...) [receiver type unknown]"
+        ],
+        [
+          "archive_migrate_legacy",
+          "migrate_legacy_archive",
+          "non_canonical_reason",
+          "canonicalize_or_reason",
+          "_structural_reason",
+          "enumerate(...) [unbound name]"
+        ],
+        [
+          "archive_migrate_legacy",
+          "migrate_legacy_archive",
+          "non_canonical_reason",
+          "canonicalize_or_reason",
+          "_structural_reason",
+          "isinstance(...) [unbound name]"
+        ],
+        [
+          "archive_migrate_legacy",
+          "migrate_legacy_archive",
+          "non_canonical_reason",
+          "canonicalize_or_reason",
+          "_structural_reason",
+          "len(...) [unbound name]"
+        ],
+        [
+          "archive_migrate_legacy",
+          "migrate_legacy_archive",
+          "non_canonical_reason",
+          "canonicalize_or_reason",
+          "_structural_reason",
+          "seen_keys.add(...) [receiver type unknown]"
+        ],
+        [
+          "archive_migrate_legacy",
+          "migrate_legacy_archive",
+          "non_canonical_reason",
+          "canonicalize_or_reason",
+          "_structural_reason",
+          "set(...) [unbound name]"
+        ],
+        [
+          "archive_migrate_legacy",
+          "migrate_legacy_archive",
+          "non_canonical_reason",
+          "canonicalize_or_reason",
+          "_structural_reason",
+          "str(...) [unbound name]"
+        ],
+        [
+          "archive_migrate_legacy",
+          "migrate_legacy_archive",
+          "non_canonical_reason",
+          "canonicalize_or_reason",
+          "_structural_reason",
+          "type(...) [unbound name]"
+        ],
+        [
+          "archive_migrate_legacy",
+          "migrate_legacy_archive",
+          "non_canonical_reason",
+          "canonicalize_or_reason",
+          "_structural_reason",
+          "value.as_tuple(...) [receiver type unknown]"
+        ],
+        [
+          "archive_migrate_legacy",
+          "migrate_legacy_archive",
+          "non_canonical_reason",
+          "canonicalize_or_reason",
+          "_structural_reason",
+          "value.bit_length(...) [receiver type unknown]"
+        ],
+        [
+          "archive_migrate_legacy",
+          "migrate_legacy_archive",
+          "non_canonical_reason",
+          "canonicalize_or_reason",
+          "_structural_reason",
+          "value.encode(...) [receiver type unknown]"
+        ],
+        [
+          "archive_migrate_legacy",
+          "migrate_legacy_archive",
+          "non_canonical_reason",
+          "canonicalize_or_reason",
+          "_structural_reason",
+          "value.is_finite(...) [receiver type unknown]"
+        ],
+        [
+          "archive_migrate_legacy",
+          "migrate_legacy_archive",
+          "non_canonical_reason",
+          "canonicalize_or_reason",
+          "_structural_reason",
+          "value.items(...) [receiver type unknown]"
+        ],
+        [
+          "archive_migrate_legacy",
+          "migrate_legacy_archive",
+          "non_canonical_reason",
+          "canonicalize_or_reason",
+          "_structural_reason",
+          "value.utcoffset(...) [receiver type unknown]"
         ],
         [
           "archive_migrate_legacy",
@@ -6877,6 +6885,17 @@
           ],
           "manually_bridged": true,
           "name": "digest_hex",
+          "namespace": "app.realtime.canonical"
+        },
+        {
+          "classification": "CANONICAL ENCODING",
+          "example_chain": [
+            "EventArchive.append",
+            "[MANUAL] SegmentWriter.submit",
+            "app.realtime.canonical.parse_canonical(...)"
+          ],
+          "manually_bridged": true,
+          "name": "parse_canonical",
           "namespace": "app.realtime.canonical"
         },
         {
@@ -17912,8 +17931,7 @@
           "classification": "CANONICAL ENCODING",
           "example_chain": [
             "migrate_legacy_archive",
-            "initialize_archive",
-            "_publish_generation",
+            "SegmentWriter.submit",
             "app.realtime.canonical.parse_canonical(...)"
           ],
           "manually_bridged": false,
@@ -19046,101 +19064,6 @@
         [
           "migrate_legacy_archive",
           "SegmentWriter.submit",
-          "WorkBudget(...) [from app.realtime.canonical import WorkBudget]"
-        ],
-        [
-          "migrate_legacy_archive",
-          "SegmentWriter.submit",
-          "_structural_reason",
-          "WorkBudget(...) [from app.realtime.canonical import WorkBudget]"
-        ],
-        [
-          "migrate_legacy_archive",
-          "SegmentWriter.submit",
-          "_structural_reason",
-          "_budget.consume(...) [receiver type unknown]"
-        ],
-        [
-          "migrate_legacy_archive",
-          "SegmentWriter.submit",
-          "_structural_reason",
-          "enumerate(...) [unbound name]"
-        ],
-        [
-          "migrate_legacy_archive",
-          "SegmentWriter.submit",
-          "_structural_reason",
-          "isinstance(...) [unbound name]"
-        ],
-        [
-          "migrate_legacy_archive",
-          "SegmentWriter.submit",
-          "_structural_reason",
-          "len(...) [unbound name]"
-        ],
-        [
-          "migrate_legacy_archive",
-          "SegmentWriter.submit",
-          "_structural_reason",
-          "seen_keys.add(...) [receiver type unknown]"
-        ],
-        [
-          "migrate_legacy_archive",
-          "SegmentWriter.submit",
-          "_structural_reason",
-          "set(...) [unbound name]"
-        ],
-        [
-          "migrate_legacy_archive",
-          "SegmentWriter.submit",
-          "_structural_reason",
-          "str(...) [unbound name]"
-        ],
-        [
-          "migrate_legacy_archive",
-          "SegmentWriter.submit",
-          "_structural_reason",
-          "type(...) [unbound name]"
-        ],
-        [
-          "migrate_legacy_archive",
-          "SegmentWriter.submit",
-          "_structural_reason",
-          "value.as_tuple(...) [receiver type unknown]"
-        ],
-        [
-          "migrate_legacy_archive",
-          "SegmentWriter.submit",
-          "_structural_reason",
-          "value.bit_length(...) [receiver type unknown]"
-        ],
-        [
-          "migrate_legacy_archive",
-          "SegmentWriter.submit",
-          "_structural_reason",
-          "value.encode(...) [receiver type unknown]"
-        ],
-        [
-          "migrate_legacy_archive",
-          "SegmentWriter.submit",
-          "_structural_reason",
-          "value.is_finite(...) [receiver type unknown]"
-        ],
-        [
-          "migrate_legacy_archive",
-          "SegmentWriter.submit",
-          "_structural_reason",
-          "value.items(...) [receiver type unknown]"
-        ],
-        [
-          "migrate_legacy_archive",
-          "SegmentWriter.submit",
-          "_structural_reason",
-          "value.utcoffset(...) [receiver type unknown]"
-        ],
-        [
-          "migrate_legacy_archive",
-          "SegmentWriter.submit",
           "build_record",
           "envelope_fields.get(...) [receiver type unknown]"
         ],
@@ -19701,6 +19624,111 @@
           "non_canonical_reason",
           "canonicalize_or_reason",
           "WorkBudget(...) [from app.realtime.canonical import WorkBudget]"
+        ],
+        [
+          "migrate_legacy_archive",
+          "non_canonical_reason",
+          "canonicalize_or_reason",
+          "_structural_reason",
+          "WorkBudget(...) [from app.realtime.canonical import WorkBudget]"
+        ],
+        [
+          "migrate_legacy_archive",
+          "non_canonical_reason",
+          "canonicalize_or_reason",
+          "_structural_reason",
+          "_budget.consume(...) [receiver type unknown]"
+        ],
+        [
+          "migrate_legacy_archive",
+          "non_canonical_reason",
+          "canonicalize_or_reason",
+          "_structural_reason",
+          "enumerate(...) [unbound name]"
+        ],
+        [
+          "migrate_legacy_archive",
+          "non_canonical_reason",
+          "canonicalize_or_reason",
+          "_structural_reason",
+          "isinstance(...) [unbound name]"
+        ],
+        [
+          "migrate_legacy_archive",
+          "non_canonical_reason",
+          "canonicalize_or_reason",
+          "_structural_reason",
+          "len(...) [unbound name]"
+        ],
+        [
+          "migrate_legacy_archive",
+          "non_canonical_reason",
+          "canonicalize_or_reason",
+          "_structural_reason",
+          "seen_keys.add(...) [receiver type unknown]"
+        ],
+        [
+          "migrate_legacy_archive",
+          "non_canonical_reason",
+          "canonicalize_or_reason",
+          "_structural_reason",
+          "set(...) [unbound name]"
+        ],
+        [
+          "migrate_legacy_archive",
+          "non_canonical_reason",
+          "canonicalize_or_reason",
+          "_structural_reason",
+          "str(...) [unbound name]"
+        ],
+        [
+          "migrate_legacy_archive",
+          "non_canonical_reason",
+          "canonicalize_or_reason",
+          "_structural_reason",
+          "type(...) [unbound name]"
+        ],
+        [
+          "migrate_legacy_archive",
+          "non_canonical_reason",
+          "canonicalize_or_reason",
+          "_structural_reason",
+          "value.as_tuple(...) [receiver type unknown]"
+        ],
+        [
+          "migrate_legacy_archive",
+          "non_canonical_reason",
+          "canonicalize_or_reason",
+          "_structural_reason",
+          "value.bit_length(...) [receiver type unknown]"
+        ],
+        [
+          "migrate_legacy_archive",
+          "non_canonical_reason",
+          "canonicalize_or_reason",
+          "_structural_reason",
+          "value.encode(...) [receiver type unknown]"
+        ],
+        [
+          "migrate_legacy_archive",
+          "non_canonical_reason",
+          "canonicalize_or_reason",
+          "_structural_reason",
+          "value.is_finite(...) [receiver type unknown]"
+        ],
+        [
+          "migrate_legacy_archive",
+          "non_canonical_reason",
+          "canonicalize_or_reason",
+          "_structural_reason",
+          "value.items(...) [receiver type unknown]"
+        ],
+        [
+          "migrate_legacy_archive",
+          "non_canonical_reason",
+          "canonicalize_or_reason",
+          "_structural_reason",
+          "value.utcoffset(...) [receiver type unknown]"
         ],
         [
           "migrate_legacy_archive",
@@ -22028,6 +22056,7 @@
         "app/realtime/segment.py::SegmentWriter.submit",
         "app/realtime/segment.py::_structural_reason",
         "app/realtime/segment.py::build_record",
+        "app/realtime/segment.py::canonicalize_or_reason",
         "app/realtime/segment.py::fold_stream_digest"
       ],
       "manual_bridges": [],
@@ -22065,6 +22094,16 @@
           "namespace": "app.realtime.canonical"
         },
         {
+          "classification": "CANONICAL ENCODING",
+          "example_chain": [
+            "SegmentWriter.submit",
+            "app.realtime.canonical.parse_canonical(...)"
+          ],
+          "manually_bridged": false,
+          "name": "parse_canonical",
+          "namespace": "app.realtime.canonical"
+        },
+        {
           "classification": "HASHING",
           "example_chain": [
             "SegmentWriter.submit",
@@ -22095,87 +22134,108 @@
         ],
         [
           "SegmentWriter.submit",
+          "build_record",
+          "envelope_fields.get(...) [receiver type unknown]"
+        ],
+        [
+          "SegmentWriter.submit",
+          "canonicalize_or_reason",
           "WorkBudget(...) [from app.realtime.canonical import WorkBudget]"
         ],
         [
           "SegmentWriter.submit",
+          "canonicalize_or_reason",
           "_structural_reason",
           "WorkBudget(...) [from app.realtime.canonical import WorkBudget]"
         ],
         [
           "SegmentWriter.submit",
+          "canonicalize_or_reason",
           "_structural_reason",
           "_budget.consume(...) [receiver type unknown]"
         ],
         [
           "SegmentWriter.submit",
+          "canonicalize_or_reason",
           "_structural_reason",
           "enumerate(...) [unbound name]"
         ],
         [
           "SegmentWriter.submit",
+          "canonicalize_or_reason",
           "_structural_reason",
           "isinstance(...) [unbound name]"
         ],
         [
           "SegmentWriter.submit",
+          "canonicalize_or_reason",
           "_structural_reason",
           "len(...) [unbound name]"
         ],
         [
           "SegmentWriter.submit",
+          "canonicalize_or_reason",
           "_structural_reason",
           "seen_keys.add(...) [receiver type unknown]"
         ],
         [
           "SegmentWriter.submit",
+          "canonicalize_or_reason",
           "_structural_reason",
           "set(...) [unbound name]"
         ],
         [
           "SegmentWriter.submit",
+          "canonicalize_or_reason",
           "_structural_reason",
           "str(...) [unbound name]"
         ],
         [
           "SegmentWriter.submit",
+          "canonicalize_or_reason",
           "_structural_reason",
           "type(...) [unbound name]"
         ],
         [
           "SegmentWriter.submit",
+          "canonicalize_or_reason",
           "_structural_reason",
           "value.as_tuple(...) [receiver type unknown]"
         ],
         [
           "SegmentWriter.submit",
+          "canonicalize_or_reason",
           "_structural_reason",
           "value.bit_length(...) [receiver type unknown]"
         ],
         [
           "SegmentWriter.submit",
+          "canonicalize_or_reason",
           "_structural_reason",
           "value.encode(...) [receiver type unknown]"
         ],
         [
           "SegmentWriter.submit",
+          "canonicalize_or_reason",
           "_structural_reason",
           "value.is_finite(...) [receiver type unknown]"
         ],
         [
           "SegmentWriter.submit",
+          "canonicalize_or_reason",
           "_structural_reason",
           "value.items(...) [receiver type unknown]"
         ],
         [
           "SegmentWriter.submit",
+          "canonicalize_or_reason",
           "_structural_reason",
           "value.utcoffset(...) [receiver type unknown]"
         ],
         [
           "SegmentWriter.submit",
-          "build_record",
-          "envelope_fields.get(...) [receiver type unknown]"
+          "canonicalize_or_reason",
+          "type(...) [unbound name]"
         ],
         [
           "SegmentWriter.submit",
