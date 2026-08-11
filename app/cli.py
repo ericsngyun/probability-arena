@@ -94,9 +94,9 @@ async def scan(
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         result = await run_scan(session, adapter=adapter, max_markets=limit, source="cli")
@@ -152,9 +152,9 @@ async def assess_resolution(
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         judge = judge or get_judge()
@@ -223,9 +223,9 @@ async def enrich_details(
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         run = session.execute(
@@ -272,9 +272,9 @@ async def collect_research(
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         run = session.execute(
@@ -386,9 +386,9 @@ async def forecast(
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         run = session.execute(
@@ -473,9 +473,9 @@ async def sync_outcomes(
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         service = OutcomeService(adapter=adapter)
@@ -501,9 +501,9 @@ async def score_forecasts(
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         counts = CalibrationService().score_unscored(session, limit=limit)
@@ -525,9 +525,9 @@ async def calibration_report(session=None) -> int:
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         summary = CalibrationService().summary(session)
@@ -1105,9 +1105,9 @@ def outcome_sync_coverage_report(
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         r = build_coverage_report(
@@ -1224,9 +1224,9 @@ def outcome_sync_backfill(
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         result = _asyncio.run(run_backfill(
@@ -1293,9 +1293,9 @@ async def forecast_scorability_audit_report(
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         r = build_scorability_report(
@@ -1369,9 +1369,9 @@ async def forecast_reliability_decomposition_report(
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         r = build_reliability_report(
@@ -1460,9 +1460,9 @@ async def run_baseline(
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         config = BaselineConfig.from_settings(
@@ -1502,9 +1502,9 @@ async def pipeline_status(limit: int = 5, session=None) -> int:
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         runs = session.execute(
@@ -1544,9 +1544,9 @@ async def watch_once(
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         watcher = RealtimeWatcher(adapter=adapter)
@@ -1599,9 +1599,9 @@ async def watch_loop(
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
 
     stop = aio.Event()
     loop = aio.get_running_loop()
@@ -2057,9 +2057,9 @@ def retention_coverage_report(
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         report = build_retention_coverage(session, include_dbstat=not no_dbstat)
@@ -2138,9 +2138,9 @@ async def prune_retention(
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         config = RetentionConfig.from_settings(
@@ -2186,9 +2186,9 @@ async def db_stats(session=None) -> int:
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         url = make_url(get_settings().database_url)
@@ -2261,9 +2261,9 @@ async def db_growth_report(top: int = 12, session=None) -> int:
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         r = build_growth_report(session)
@@ -2362,9 +2362,9 @@ async def aggregate_market_ticks(
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         stats = TickAggregationService().aggregate(
@@ -2416,9 +2416,9 @@ async def tick_aggregation_report(session=None) -> int:
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         r = TickAggregationReportService().build(session)
@@ -2478,9 +2478,9 @@ async def signals_recent(limit: int = 20, signal_status: str | None = None, sess
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         rows = SignalPromotionService().list_recent(session, limit=limit, signal_status=signal_status)
@@ -2508,9 +2508,9 @@ async def promote_signals(limit: int = 5, session=None) -> int:
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         promoted = SignalPromotionService().promote_top(session, limit=limit)
@@ -2531,9 +2531,9 @@ async def process_promoted_signals(limit: int = 5, services=None, session=None) 
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         from app.services.signal_workflow import refreshed_packet_summary
@@ -2572,9 +2572,9 @@ async def signal_report(session=None) -> int:
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         report = build_signal_report(session)
@@ -2605,9 +2605,9 @@ async def research_canary_report(session=None) -> int:
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         report = build_research_canary_report(session)
@@ -2660,9 +2660,9 @@ async def crypto_scan_once(
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         service = services or CryptoDiscoveryService()
@@ -2707,9 +2707,9 @@ async def crypto_signals_recent(limit: int = 20, session=None) -> int:
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         rows = session.execute(
@@ -2736,9 +2736,9 @@ async def crypto_report(session=None) -> int:
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         report = CryptoReportService().build(session)
@@ -2808,9 +2808,9 @@ async def crypto_tape_run_once(
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         if source_crypto_run_id is not None:
@@ -3071,9 +3071,9 @@ async def crypto_tape_session(
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         r = await run_tape_session(
@@ -3151,9 +3151,9 @@ async def crypto_tape_report(hours: int = 24, top: int = 5, session=None) -> int
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         r = build_tape_report(session, hours=hours, top=top)
@@ -3221,9 +3221,9 @@ async def crypto_horizon_cohort_create(
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         r = CryptoHorizonService().create_cohort(
@@ -3324,9 +3324,9 @@ async def crypto_horizon_observe_once(
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         r = await CryptoHorizonService().observe_once(
@@ -3368,9 +3368,9 @@ async def crypto_horizon_schedule_report(
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         r = build_schedule_report(session, cohort_id)
@@ -3460,9 +3460,9 @@ async def crypto_horizon_reminder_plan(cohort_id: int, session=None) -> dict:
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         r = build_reminder_plan(session, cohort_id)
@@ -3515,9 +3515,9 @@ async def crypto_horizon_arm_cohort(
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         orchestrator = orchestrator or CryptoHorizonOrchestrator()
@@ -3566,9 +3566,9 @@ async def crypto_horizon_run_job(
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         orchestrator = orchestrator or CryptoHorizonOrchestrator()
@@ -3601,9 +3601,9 @@ async def crypto_horizon_orchestrator_report(
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         orchestrator = orchestrator or CryptoHorizonOrchestrator()
@@ -3695,9 +3695,9 @@ async def crypto_horizon_shared_candidate_feasibility_report(
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         r = build_feasibility_report(
@@ -3779,9 +3779,9 @@ async def crypto_horizon_candidate_readiness_report(
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         r = evaluate_readiness(
@@ -3894,9 +3894,9 @@ async def crypto_horizon_observation_report(
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         if shadow:
@@ -3967,9 +3967,9 @@ async def crypto_horizon_pair_selection_report(
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         r = build_pair_selection_report(session, cohort_id, top=top)
@@ -4009,9 +4009,9 @@ async def crypto_horizon_outcome_reconciliation_report(
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         r = build_outcome_reconciliation_report(session, cohort_id, top=top)
@@ -4049,9 +4049,9 @@ async def crypto_tape_coverage_report(
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         r = build_coverage_report(session, hours=hours, top=top, limit=limit)
@@ -4135,9 +4135,9 @@ async def crypto_retrospect_report(
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         r = build_retrospect_report(session, hours=hours, top=top, cohort=cohort)
@@ -4271,9 +4271,9 @@ async def edge_precheck(
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         svc = service or EdgePrecheckService()
@@ -4319,9 +4319,9 @@ async def edge_precheck_report(session=None) -> int:
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         report = EdgePrecheckReportService().build(session)
@@ -4382,9 +4382,9 @@ async def frontier_eval_report(
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         started_at = datetime.now(timezone.utc)
@@ -4465,9 +4465,9 @@ async def edge_followthrough_diagnostic_report(hours: int = 24, top: int = 5, se
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         r = EdgeFollowthroughDiagnosticService().build(session, hours=hours, top=top)
@@ -4534,9 +4534,9 @@ async def trigger_timing_shadow_report(hours: int = 24, top: int = 5, session=No
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         r = TriggerTimingShadowReportService().build(session, hours=hours, top=top)
@@ -4616,9 +4616,9 @@ async def edge_selection_validation_report(
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         r = EdgeSelectionValidationReportService().build(
@@ -4677,9 +4677,9 @@ async def edge_cost_shadow_report(hours: int = 24, top: int = 5, session=None) -
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         r = EdgeCostShadowReportService().build(session, hours=hours, top=top)
@@ -4736,9 +4736,9 @@ async def live_market_state_report(
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         r = LiveMarketStateReportService().build(
@@ -4825,9 +4825,9 @@ async def tennis_live_source_report(top: int = 10, hours: int = 24, session=None
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         r = await TennisLiveSourceReportService().build(session, top=top, hours=hours)
@@ -4894,9 +4894,9 @@ async def tennis_watch_scan_once(
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         r = await TennisTickWatcher().scan_once(
@@ -4930,9 +4930,9 @@ async def tennis_watch_report(hours: int = 24, session=None) -> int:
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         r = build_tennis_watch_report(session, hours=hours)
@@ -4974,9 +4974,9 @@ async def tennis_tape_capture_once(
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         r = await TennisTapeRecorder().capture_once(
@@ -5018,9 +5018,9 @@ async def tennis_tape_capture_session(
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         r = await run_capture_session(
@@ -5068,9 +5068,9 @@ async def tennis_tape_report(hours: int = 24, top: int = 5, session=None) -> int
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         r = build_tape_report(session, hours=hours, top=top)
@@ -5124,9 +5124,9 @@ async def tennis_api_livefeed_probe(
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         r = await TennisLiveFeedProbe().probe(
@@ -5180,9 +5180,9 @@ async def tennis_goalserve_probe(
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         r = await GoalserveValidationService().validate(
@@ -5250,9 +5250,9 @@ async def edge_selection_retirement_report(session=None) -> int:
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         print("edge-selection retirement report — experiment registry only, never advice")
@@ -5298,9 +5298,9 @@ async def forecast_anchor_diagnostic_report(hours: int = 24, top: int = 5, sessi
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         r = ForecastAnchorDiagnosticService().build(session, hours=hours, top=top)
@@ -5364,9 +5364,9 @@ async def edge_filter_shadow_report(hours: int = 24, top: int = 5, session=None)
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         r = EdgeFilterShadowReportService().build(session, hours=hours, top=top)
@@ -5427,9 +5427,9 @@ async def edge_cohort_report(hours: int = 24, session=None) -> int:
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         report = EdgeCohortReportService().build(session, hours=hours)
@@ -5494,9 +5494,9 @@ async def edge_policy_report(hours: int = 24, session=None) -> int:
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         report = EdgePolicyReportService().build(session, hours=hours)
@@ -5576,9 +5576,9 @@ async def meme_scan_once(limit: int | None = None, service=None, session=None) -
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         service = service or MemeScoutService()
@@ -5603,9 +5603,9 @@ async def meme_scout_report(session=None) -> int:
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         report = MemeScoutReportService().build(session)
@@ -5637,9 +5637,9 @@ async def catalyst_report(session=None) -> int:
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         report = CatalystReportService().build(session)
@@ -5664,9 +5664,9 @@ async def domain_scout_report(session=None) -> int:
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         report = DomainScoutService().build(session, persist=True)
@@ -5709,9 +5709,9 @@ async def meme_news_run_once(
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         runner = runner or MemeNewsScoutRunner()
@@ -5738,9 +5738,9 @@ async def meme_news_report(hours: int = 24, session=None) -> int:
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         r = MemeNewsReportService().build(session, hours=hours)
@@ -5780,9 +5780,9 @@ async def meme_news_alerts(hours: int = 6, session=None) -> int:
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         alerts = MemeNewsAlertService().evaluate(session, hours=hours)
@@ -5807,9 +5807,9 @@ async def meme_mas_report(hours: int = 24, top: int = 10, session=None) -> int:
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         r = MemeMasReportService().build(session, hours=hours, top=top)
@@ -5845,9 +5845,9 @@ async def meme_mas_assess(limit: int = 20, hours: int = 24, session=None) -> int
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         results = MemeMasReportService().assess_all(session, hours=hours)
@@ -5878,9 +5878,9 @@ async def meme_shadow_report(lookback_hours: int = 48, top: int = 8, session=Non
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         r = MemeShadowReportService().build(session, lookback_hours=lookback_hours)
@@ -5923,9 +5923,9 @@ async def meme_mas_calibration_report(lookback_hours: int = 48, session=None) ->
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         rv1 = MemeShadowReportService(profile=PROFILE_V1).build(session, lookback_hours=lookback_hours)
@@ -5967,9 +5967,9 @@ async def meme_mas_objectives_report(lookback_hours: int = 48, session=None) -> 
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         o1 = MemeShadowObjectivesService(profile=PROFILE_V1).build(session, lookback_hours=lookback_hours)
@@ -6058,9 +6058,9 @@ async def polymarket_scan_once(
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         runner = runner or PolymarketScoutRunner()
@@ -6108,9 +6108,9 @@ async def polymarket_coverage_report(top: int = 30, kalshi_limit: int = 4000, se
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         r = PolymarketCoverageReportService().build(session, top=top, kalshi_limit=kalshi_limit)
@@ -6160,9 +6160,9 @@ async def polymarket_report(hours: int = 24, session=None) -> int:
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         r = PolymarketReportService().build(session, hours=hours)
@@ -6212,9 +6212,9 @@ async def polymarket_domain_report(session=None) -> int:
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         r = PolymarketDomainReportService().build(session)
@@ -6259,9 +6259,9 @@ async def cross_venue_match_once(
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         run = CrossVenueMatchingService().match_once(
@@ -6315,9 +6315,9 @@ async def xvenue_observation_report(top: int = 10, session=None) -> int:
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         r = XVenueObservationReportService().build(session, top=top)
@@ -6370,9 +6370,9 @@ async def cross_venue_report(session=None) -> int:
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         r = CrossVenueReportService().build(session)
@@ -6421,9 +6421,9 @@ async def cross_venue_candidates(label: str | None = None, session=None) -> int:
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         last = session.execute(
@@ -6628,9 +6628,9 @@ async def crypto_risk_assess(
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         engine = engine or CryptoRiskEngine()
@@ -6726,9 +6726,9 @@ async def crypto_risk_report(session=None) -> int:
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         report = CryptoRiskReportService().build(session)
@@ -6798,9 +6798,9 @@ async def crypto_provider_health_report(session=None) -> int:
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         r = CryptoProviderHealthReportService().build(session)
@@ -6834,9 +6834,9 @@ async def crypto_provider_budget_report(session=None) -> int:
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         r = SolanaTrackerBudgetService().status(session)
@@ -6878,9 +6878,9 @@ async def meme_risk_coverage_report(hours: int = 24, session=None) -> int:
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         r = MemeRiskCoverageReportService().build(session, hours=hours)
@@ -6911,9 +6911,9 @@ async def marketops_run_once(services=None, session=None) -> int:
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         service = services or MarketOpsAutopilotService()
@@ -6951,9 +6951,9 @@ async def marketops_report(session=None) -> int:
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         report = MarketOpsReportService().build(session)
@@ -7038,9 +7038,9 @@ async def marketops_alerts(limit: int = 20, alert_status: str | None = None, ses
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         rows = MarketOpsAlertService().list_recent(session, limit=limit, status=alert_status)
@@ -7078,9 +7078,9 @@ def marketops_reconcile_db_growth_alerts(
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         report = reconcile_db_growth_alerts(session, confirm=confirm)
@@ -7134,9 +7134,9 @@ async def marketops_resolve_alert(alert_id: int, session=None) -> int:
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         try:
@@ -7175,9 +7175,9 @@ async def marketops_loop(
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
 
     stop = aio.Event()
     loop = aio.get_running_loop()
@@ -7297,9 +7297,9 @@ async def champion_challenger_report(
 
     owns_session = session is None
     if owns_session:
-        from app.db import get_sessionmaker, run_migrations
+        from app.db import ensure_schema_current, get_sessionmaker
 
-        run_migrations()
+        ensure_schema_current()
         session = get_sessionmaker()()
     try:
         summary = ChampionChallengerService().compare(

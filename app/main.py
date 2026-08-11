@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.config import get_settings
-from app.db import run_migrations
+from app.db import ensure_schema_current
 from app.routers.calibration import router as calibration_router
 from app.routers.crypto import router as crypto_router
 from app.routers.edge_precheck import router as edge_precheck_router
@@ -25,7 +25,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Migrations only.
+    """Schema-currency check only — no auto-migration.
 
     The Kalshi WebSocket snapshot service was removed in
     KALSHI-OBSERVER-PREAUTH-HARDENING-001. It carried the repository's second
@@ -34,8 +34,14 @@ async def lifespan(app: FastAPI):
     systemd unit starts this API, `orderbook_snapshots` held zero rows, and
     nothing read that table. Two signing implementations with different
     security contracts is one more than the boundary permits.
+
+    CRYPTO-COVERAGE-REPAIR-001 B10: this used to unconditionally apply
+    pending Alembic migrations on every service start (`app.db.run_migrations`,
+    called directly). It now calls `ensure_schema_current()`, which fails
+    closed with `MigrationRequiredError` in the default `migration_mode=
+    "guarded"` instead of auto-upgrading — see `app.db.ensure_schema_current`.
     """
-    run_migrations()
+    ensure_schema_current()
     yield
 
 

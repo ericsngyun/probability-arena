@@ -257,6 +257,29 @@ class Settings(BaseSettings):
     backup_retention_days: int = 30
     backup_dir: str = "data/backups"
 
+    # CRYPTO-COVERAGE-REPAIR-001 B10 — migration governance. Ordinary runtime
+    # (roughly 100 call sites in app/cli.py, plus app/main.py's FastAPI
+    # startup) used to call `run_migrations()` unconditionally, so any `git
+    # pull` got its pending Alembic migrations auto-applied by the next
+    # 5-minute MarketOps timer tick — ahead of any operator step, ahead of
+    # any backup. This setting is the explicit, named switch between the two
+    # allowed behaviours; it is NEVER inferred from a hostname, a path, or
+    # any other brittle signal.
+    #   guarded (default, SAFE) - runtime CHECKS the schema revision; if the
+    #     database is behind the code's required head, it raises
+    #     `MigrationRequiredError` (`MIGRATION_REQUIRED`) and does nothing
+    #     else. Deployment owns the upgrade (backup-freshness check, explicit
+    #     `alembic upgrade head`, integrity + revision verification, then
+    #     runtime is permitted) — see `app.db.ensure_schema_current` and
+    #     `docs/EVO_X2_RUNBOOK.md`.
+    #   auto - restores the pre-B10 always-upgrade behaviour (stamp legacy
+    #     `create_all` databases, then `alembic upgrade head`, on every call).
+    #     Convenient for local development and first-install bootstrapping.
+    #     Must be set DELIBERATELY (`MIGRATION_MODE=auto`); an unconfigured
+    #     deployment stays on the safe default.
+    # Any other value is treated as `guarded` (fail closed on typos too).
+    migration_mode: str = "guarded"
+
     # RAW-PAYLOAD-STORAGE-001: whether the FULL provider response body is
     # persisted alongside the normalized columns extracted from it. Default
     # "full" preserves current behaviour exactly, so deploying the code changes

@@ -46,12 +46,31 @@ systemctl --user disable --now probability-arena-retention.timer    # stop daily
 
 ## Deployment update sequence
 
+CRYPTO-COVERAGE-REPAIR-001 B10 — migration governance. `MIGRATION_MODE`
+defaults to `guarded` (never overridden on this host): every ordinary runtime
+call — `run-baseline`, every other CLI command, the watcher/marketops timers,
+the FastAPI service — now CHECKS the schema revision and fails closed with
+`MIGRATION_REQUIRED` if the database is behind the code's head, instead of
+silently applying Alembic. This is deliberate: it stops a `git pull` with a
+pending migration from getting auto-upgraded by the next 5-minute MarketOps
+timer tick, ahead of a backup or this explicit step. If a migration is
+pending after `git pull`, apply it explicitly BEFORE restarting/resuming any
+service or timer:
+
 ```bash
 cd ~/projects/probability-arena
 git status --short                      # must be clean; stop and report if dirty
 git pull --ff-only
 .venv/bin/pip install -q -r requirements-dev.txt     # if deps changed
-.venv/bin/python -m app.cli run-baseline --dry-run   # applies migrations, audit-only
+
+# Only if a migration is pending (a command above/below raises
+# MIGRATION_REQUIRED, or `alembic current` != the new head):
+.venv/bin/python -m app.cli sqlite-backup-freshness-report   # 1) confirm a fresh backup exists
+.venv/bin/alembic upgrade head                                # 2) apply explicitly
+sqlite3 "$DB_PATH" "PRAGMA integrity_check"                   # 3) verify integrity == ok
+.venv/bin/python -m app.cli agent-context                     # 3) verify alembic revision == head
+
+.venv/bin/python -m app.cli run-baseline --dry-run   # audit-only; fails closed if a migration is still pending
 .venv/bin/python -m app.cli db-stats                 # sanity
 # restart long-running services after code changes:
 systemctl --user restart probability-arena-watcher.service

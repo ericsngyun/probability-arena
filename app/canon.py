@@ -179,4 +179,5 @@ KEY_FEATURE_FLAGS = (
     "enable_realtime_watcher",
     "enable_watcher_retention",
     "enable_pipeline_retention",
+    "migration_mode",
 )

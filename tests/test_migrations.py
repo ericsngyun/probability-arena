@@ -1,9 +1,10 @@
+import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import create_engine, inspect, text
 
 from app.config import get_settings
-from app.db import PROJECT_ROOT, Base, run_migrations
+from app.db import PROJECT_ROOT, Base, MigrationRequiredError, ensure_schema_current, run_migrations
 
 
 def _columns(url: str, table: str) -> set[str]:
@@ -663,3 +664,157 @@ def test_migration_under_a_real_blocking_lock_waits_the_declared_policy_then_fai
     # No partial upgrade: revision unchanged (already at head; the failed
     # attempt touched nothing).
     assert _current_rev() == head_before
+
+
+# CRYPTO-COVERAGE-REPAIR-001 B10 — migration governance. Ordinary runtime
+# (~100 call sites in app/cli.py, plus app/main.py's FastAPI startup) used
+# to call `run_migrations()` unconditionally, so any deployed `git pull`
+# with a pending migration got it auto-applied by the very next 5-minute
+# MarketOps timer tick — before any operator step, possibly before a
+# backup. `ensure_schema_current()` is the guarded gate every such call site
+# now goes through instead: it CHECKS the schema revision and fails closed
+# with `MigrationRequiredError` in the default `migration_mode="guarded"`,
+# never auto-upgrading. `migration_mode="auto"` (never the production
+# default) restores the old behaviour for dev/test convenience.
+
+
+def _current_rev_of(url: str) -> str | None:
+    engine = create_engine(url)
+    try:
+        if not inspect(engine).has_table("alembic_version"):
+            return None
+        with engine.connect() as conn:
+            row = conn.execute(text("SELECT version_num FROM alembic_version")).fetchone()
+            return row[0] if row else None
+    finally:
+        engine.dispose()
+
+
+def test_default_migration_mode_is_guarded_when_unconfigured(monkeypatch):
+    """The safe (production) behaviour is the DEFAULT — an unconfigured
+    deployment fails closed rather than silently auto-upgrading. This must
+    never be inferred from a hostname/path; it is read from settings only."""
+    monkeypatch.delenv("MIGRATION_MODE", raising=False)
+    get_settings.cache_clear()
+    try:
+        assert get_settings().migration_mode == "guarded"
+    finally:
+        get_settings.cache_clear()
+
+
+def test_ensure_schema_current_guarded_mode_fails_closed_when_behind_and_does_not_upgrade(
+    tmp_path, monkeypatch,
+):
+    """Production-mode gate, behind revision: must raise MIGRATION_REQUIRED
+    and must NOT touch the database — no partial upgrade, no silent apply."""
+    monkeypatch.delenv("MIGRATION_MODE", raising=False)
+    get_settings.cache_clear()
+
+    url = f"sqlite:///{tmp_path}/behind.db"
+    run_migrations(url)  # bring to head directly, bypassing the gate
+    command.downgrade(_config(url), "0001")  # now genuinely behind head
+    assert _current_rev_of(url) == "0001"
+
+    try:
+        with pytest.raises(MigrationRequiredError) as exc_info:
+            ensure_schema_current(url)
+    finally:
+        get_settings.cache_clear()
+
+    message = str(exc_info.value)
+    assert "MIGRATION_REQUIRED" in message
+    assert "alembic upgrade head" in message
+    assert "sqlite-backup-freshness-report" in message
+    assert "0001" in message  # names the actual current revision
+
+    # No partial/silent upgrade happened.
+    assert _current_rev_of(url) == "0001"
+
+
+def test_ensure_schema_current_guarded_mode_on_a_current_db_never_calls_run_migrations(
+    tmp_path, monkeypatch,
+):
+    """Production-mode gate, already at head: must proceed as a pure no-op —
+    not merely 'succeed', but never invoke the upgrade path at all."""
+    import app.db as db_mod
+
+    monkeypatch.delenv("MIGRATION_MODE", raising=False)
+    get_settings.cache_clear()
+
+    url = f"sqlite:///{tmp_path}/current.db"
+    run_migrations(url)
+    head = _current_rev_of(url)
+
+    calls = []
+    monkeypatch.setattr(db_mod, "run_migrations", lambda *a, **k: calls.append((a, k)))
+    try:
+        ensure_schema_current(url)  # must not raise
+    finally:
+        get_settings.cache_clear()
+
+    assert calls == [], "guarded mode must never call run_migrations when already at head"
+    assert _current_rev_of(url) == head
+
+
+def test_ensure_schema_current_auto_mode_upgrades_a_fresh_database(tmp_path, monkeypatch):
+    """Dev/test convenience: MIGRATION_MODE=auto, set EXPLICITLY, restores
+    the old always-upgrade behaviour (including legacy create_all stamping)."""
+    monkeypatch.setenv("MIGRATION_MODE", "auto")
+    get_settings.cache_clear()
+
+    url = f"sqlite:///{tmp_path}/auto.db"
+    try:
+        ensure_schema_current(url)  # fresh db, no tables at all
+    finally:
+        get_settings.cache_clear()
+
+    tables = _tables(url)
+    assert "alembic_version" in tables
+    assert "markets" in tables
+    assert _current_rev_of(url) is not None
+
+
+def test_ensure_schema_current_rejects_unrecognized_mode_value_fails_closed(
+    tmp_path, monkeypatch,
+):
+    """A typo'd/unrecognized MIGRATION_MODE value must fail closed (treated
+    as guarded), not silently be treated as an opt-in to auto-upgrade —
+    proves the check is `== "auto"`, not `!= "guarded"`."""
+    monkeypatch.setenv("MIGRATION_MODE", "Auto")  # not exactly "auto"
+    get_settings.cache_clear()
+
+    url = f"sqlite:///{tmp_path}/typo.db"
+    try:
+        with pytest.raises(MigrationRequiredError):
+            ensure_schema_current(url)
+    finally:
+        get_settings.cache_clear()
+
+    # Nothing was written — the DB file was never even created/migrated.
+    assert _current_rev_of(url) is None
+
+
+def test_no_runtime_call_site_in_cli_calls_run_migrations_directly():
+    """Structural regression pin: every ordinary runtime call site in
+    app/cli.py must go through the guarded `ensure_schema_current()` gate,
+    not `run_migrations()` directly — a single reverted call site would
+    silently restore the pre-B10 always-upgrade hazard for that one
+    command. `run_migrations()` may still appear in prose comments
+    explaining a command's deliberate exemption (e.g. read-only reports)."""
+    source = (PROJECT_ROOT / "app" / "cli.py").read_text()
+    for line in source.splitlines():
+        if line.strip() == "run_migrations()":
+            raise AssertionError(
+                f"app/cli.py has a live call to run_migrations() bypassing "
+                f"the ensure_schema_current() gate: {line!r}"
+            )
+    assert source.count("ensure_schema_current()") >= 90, (
+        "expected ~100 runtime call sites to route through the guarded gate"
+    )
+
+
+def test_main_lifespan_uses_the_guarded_gate_not_run_migrations_directly():
+    """Same structural pin for app/main.py's FastAPI startup path."""
+    main_source = (PROJECT_ROOT / "app" / "main.py").read_text()
+    assert "ensure_schema_current()" in main_source
+    assert "run_migrations()" not in main_source

@@ -102,6 +102,23 @@ measurement milestones only and never authorize live capital.
 instead of failing; Postgres unaffected), `BACKUP_RETENTION_DAYS=30`,
 `BACKUP_DIR=data/backups` (relative paths anchor next to the data directory).
 
+## Migration governance (CRYPTO-COVERAGE-REPAIR-001 B10)
+
+| Flag | Default | Gates |
+|---|---|---|
+| `MIGRATION_MODE` | `guarded` | `guarded` (the only value ever set on a production/deploy host): every ordinary runtime call site — all `app/cli.py` commands' internal DB setup (~100 sites), `watch-loop`, `marketops-run-once`, and the FastAPI service startup — calls `app.db.ensure_schema_current()` instead of applying Alembic. If the database's stamped revision is not exactly the code's head (including a brand-new/legacy database with no `alembic_version` row), it raises `MigrationRequiredError` (`MIGRATION_REQUIRED`) naming the exact operator sequence, and does nothing else — no partial upgrade, no silent auto-apply. `auto` restores the pre-B10 always-upgrade-on-every-call behaviour, for local development/first-install convenience ONLY; it must be set deliberately and is never inferred from a hostname or path. Any value other than exactly `auto` is treated as `guarded` |
+
+Deployment upgrade sequence (owns the migration, runtime never does):
+1. Confirm a fresh backup exists — `python -m app.cli sqlite-backup-freshness-report` (exits non-zero if unhealthy).
+2. Apply the migration explicitly — `alembic upgrade head` (repo root, deploy target's `DATABASE_URL`; the migration engine shares the app's declared `SQLITE_BUSY_TIMEOUT_MS` busy policy via `connect_args_for`, not Python's incidental 5s default — CRYPTO-COVERAGE-REPAIR-001 B11).
+3. Verify integrity and revision — `sqlite3 <db> "PRAGMA integrity_check"` should return `ok`; `python -m app.cli agent-context` should show `alembic revision` equal to the new head.
+4. Only then restart/resume runtime (the timer unit, the service, or the CLI invocation that raised `MIGRATION_REQUIRED`).
+
+`run_migrations()` (the raw, unconditional upgrade function in `app/db.py`)
+still exists and is still used directly by test fixtures, `MIGRATION_MODE=auto`,
+and step 2 above — it is not itself guarded; `ensure_schema_current()` is the
+policy wrapper runtime calls instead of it.
+
 ## Crypto risk engine (CRYPTO-002 — risk intelligence, never trade advice)
 
 | Flag | Default | Gates |
