@@ -57,7 +57,7 @@ again.
 | B5 the real finding | the observation lane's median **last** tick is **83 minutes** after birth; in a cohort where **nothing has been pruned**, 24 h tick coverage is **4.0 %**. The 24 h evidence is not being deleted — it was never recorded |
 | B6 | the shipped frontier-first policy services arrivals with **7.5× margin** and leaves a **6.5-pass** frontier slack. **Not** INSUFFICIENT |
 | B7 | recommend **7 d → 14 d**, LOW priority: +35.1 MiB absorbed by the existing 1.72 GB freelist, **file size change 0**; it buys outage tolerance, **not** denominator |
-| B8 | live `ANALYZE` **EXECUTED** under gate: **0.4597 s**, 130 stat rows, **Δ file bytes 0**, `integrity_check ok`, Alembic still 0027. One production unit **did fail** inside the change window — `tick_aggregation` at 08:04, on a pre-existing MarketOps race that also fired on 2026-08-08 and that this branch already fixes (§8.5) |
+| B8 | live `ANALYZE` **EXECUTED** under gate: **0.4597 s**, 130 stat rows, **Δ file bytes 0**, `integrity_check ok`, Alembic still 0027, **0 new lock events**. One production unit **did fail** inside the change window — `tick_aggregation` at 08:04, on a pre-existing MarketOps race that also fired on 2026-08-08 and that this branch already fixes (§8.5). It recovered unaided on its next firing with **identical write-lock behaviour** against the new statistics (§8.6) |
 
 ---
 
@@ -1155,7 +1155,48 @@ will recur whenever the hourly tick-aggregation timer drifts into a MarketOps
 cycle — roughly, whenever their start times land within ~50 s of each other.
 
 The run that matters for the original question — does tick aggregation behave
-normally against the new statistics — is recorded in §8.6.
+normally against the new statistics — is §8.6, and it does.
+
+### 8.6 The first tick-aggregation run to complete against the new statistics
+
+**2026-08-11 09:04:44 UTC, run 783 — `ok`.** The unit recovered on its next
+scheduled firing with no intervention; its systemd state went from `failed`
+back to `inactive`.
+
+| | 09:04 (post) | the five preceding runs (pre) |
+|---|---|---|
+| status | **ok** | ok |
+| rows read | 103 800 | 103 200 – 111 450 |
+| buckets written | 21 927 | 21 848 – 23 442 |
+| truncated | 0 | 0 |
+| **write-lock hold, sum over 16 commit units** | **4 008 ms** | 3 952 / 3 995 / 4 043 / 4 270 / 4 351 ms |
+| **write-lock hold, max** | **387 ms** | 378 / 402 / 422 / 392 / 431 ms |
+| commit time, sum | 6 608 ms | 49 / 58 / 67 / 967 / 3 556 ms |
+| **new lock events** | **0** | 0 |
+| retries | 0 | 0 |
+
+**The safety-relevant number is the write-lock hold, and it is unchanged.** The
+post-`ANALYZE` run's hold sum (4 008 ms) and max (387 ms) sit in the middle of
+the pre-change distribution on both measures. Sixteen commit units, every one
+`outcome=success`, `retry_count=0`, `lock_wait_ms=null`. The lock-event tally
+across the whole telemetry file is still **8**, all of them predating this work.
+
+**What did NOT show up, stated because B2 predicted it would.** §2.1 measured
+the read half of this loop getting 4.9× and 11.8× faster (38.88 → 7.98 ms per
+sub-window fetch, 23.65 → 2.01 ms per count, over 13 sub-windows ≈ 0.7 s of
+read saved per run). That saving is invisible here, for a reason that is
+structural rather than disappointing: those reads happen **outside** the write
+transaction, so they cannot move `transaction_hold_ms`, and the end-to-end
+`duration_ms` is dominated by commit time, which ranged 49 ms – 6 608 ms across
+six runs on the same data. A ~0.7 s read saving is below the noise floor of the
+only end-to-end metric this unit records. The read improvement is real and
+measured (§2.1); this run neither confirms nor contradicts it, and claiming it
+did would be reading a number that is not there.
+
+**B8's health question is answered:** the one production writer whose plan
+`ANALYZE` materially changed, and the only writer that has ever produced a lock
+event on this host, now runs against the new statistics with identical
+write-lock behaviour and zero lock events.
 
 ---
 
@@ -1296,15 +1337,21 @@ Not measured, and why:
   defence in depth). The fifth script, `sqlite_analyze_maintenance.py`, exists
   to touch the live file and is gated as described in §8.2.
 * **Disk hygiene:** peak scratch usage 18 GB across four 4.55 GB copies;
-  `/mnt/data` never fell below 696 GB free, and all copies were deleted —
-  `/mnt/data` is back to **39 G used / 709 G free**, exactly its pre-session
-  state. The remaining 8.8 MB of scratch is the JSON evidence, also committed
-  under `docs/evidence/crypto-query-plan-and-denominator-recovery-001/`.
+  `/mnt/data` never fell below 696 GB free, and every copy was deleted —
+  `/mnt/data` is back to **39 G used / 709 G free**, byte-identical to its
+  pre-session state. The remaining 8.9 MB of scratch is the JSON evidence,
+  also committed under
+  `docs/evidence/crypto-query-plan-and-denominator-recovery-001/`. A prior
+  session filled this disk; that did not recur.
 * **Secrets:** none read, printed or committed. The evidence JSONs were
   scanned for credential-shaped keys before being added.
 * **Production state changed:** exactly one thing — `sqlite_stat1` now exists
   on EVO's live database with 130 rows. No `.env`, no systemd unit, no
-  migration, no flag, no schema, no application row. EVO remains on `main` at
+  migration, no flag, no schema, no application row. One unit
+  (`probability-arena-tick-aggregation.service`) entered `failed` state during
+  the window and **recovered unaided** on its next firing (§8.5, §8.6); its
+  failed state was deliberately not cleared while it stood, so the operator
+  would see it. EVO remains on `main` at
   `2c8f75b`; this branch was never installed there (its source was extracted to
   the scratch directory with `git archive` and run with the existing venv
   interpreter).
