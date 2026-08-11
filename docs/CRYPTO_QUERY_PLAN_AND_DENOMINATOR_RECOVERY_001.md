@@ -811,6 +811,45 @@ every step below is unchanged by the 1 280 → 1 180 revision. Throughput would
 have to fall below 1 000 tokens/pass before this lane felt it — a 15 % margin
 on top of the 8.9× arrival margin.
 
+> ### ⚠️ STALE — this section predates B1 (CRYPTO-BACKLOG-SELECTION-AND-OPERATOR-PATH-001 R6)
+>
+> **Every figure in §"Inputs" above and in Steps 1-3 below was measured against
+> the PRE-B1 selection path and no longer describes the shipped code.** B1
+> replaced naive oldest-first `LIMIT` selection with a full-backlog
+> `classify_backlog` partition plus a reserved write-off sub-budget, which
+> changes both the per-pass cost and what a "slot" buys.
+>
+> **The 15 % margin asserted in the paragraph directly above is consumed.**
+> Post-B1 measurement across six trials on the f200f25 selection path:
+> **980, 985, 1 130, 1 230, 1 235, 1 240 tokens/pass** — *two of the six are
+> below the 1 000-token reserve*, which is the exact threshold this paragraph
+> claims throughput "would have to fall below" before the lane felt it. The
+> backlog lane is therefore **no longer reserve-capped; it is
+> throughput-capped** at the low end of the observed range.
+>
+> Consequences that follow by arithmetic from the measured minimum (these are
+> derivations, not new measurements):
+>
+> | | pre-B1 claim | at the measured post-B1 minimum C = 980 |
+> |---|---|---|
+> | backlog lane | `min(1000, 1180)` = **1 000**/pass | `min(1000, 980)` = **980**/pass |
+> | in-window lane | `1180 − 1000` = **180**/pass | `980 − 980` = **0**/pass |
+> | `C_day` | **4 720** | **3 920** |
+> | arrival margin (Step 2) | 7.5× | `980 / 132.5` = **7.4×** |
+>
+> The backlog lane survives with margin; the **in-window lane is the casualty
+> — at C = 980 it receives zero slots for the whole pass.** `C = 1 180`,
+> `C_day = 4 720` and the "8.9× arrival margin" headline should be read as
+> **upper bounds observed pre-B1**, not as current capacity.
+>
+> **Not re-derived here.** Producing a trustworthy post-B1 `C` requires a
+> fresh multi-trial run with a live competing writer on EVO-X2, which this
+> review round did not perform and was not authorized to perform (no EVO
+> mutation, no live-database access). The measured minimum **≈ 980** is
+> recorded above so the next reader has the real floor rather than a stale
+> margin; the rest of Steps 1-3 is left intact and explicitly marked stale
+> rather than rewritten around numbers nobody measured.
+
 **Step 2 — does the backlog lane service arrivals?** Tokens enter the backlog
 lane at the arrival rate, one pass-slot each per pass they remain selectable:
 ```

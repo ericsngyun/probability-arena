@@ -2252,6 +2252,65 @@ async def db_stats(session=None) -> int:
             session.close()
 
 
+def _resolve_db_target(url_str: str):
+    """CRYPTO-BACKLOG-SELECTION-AND-OPERATOR-PATH-001 R2 — the guard
+    `db_schema_report`/`db_integrity_check` CLAIMED to have and did not.
+
+    Both docstrings promised to FAIL if the resolved path is "empty or
+    unexpected", but the check only asserted that the URL string was
+    non-empty and carried a path COMPONENT. Pointed at a path that does not
+    exist, `db-integrity-check` therefore printed
+    `integrity_check duration: 0.00s / ok / PASS`, exited 0, and left a
+    0-byte SQLite database behind — it CREATED the very file it claimed to
+    have inspected and then certified the empty result as green. That is
+    the identical defect class as the original `sqlite3 ""` HIGH-2 this
+    command was written to replace: a green result carrying zero diagnostic
+    content. It matters most in the two places the command exists for — the
+    4.55 GB production migration gate, and the restore flow, where pointing
+    at a not-yet-restored target is a realistic operator mistake and a
+    false PASS is worse than no check at all.
+
+    Returns `(resolved_display, sqlite_path_or_None, failure_message_or_None)`.
+    Non-SQLite backends skip the file checks (there is no local file to
+    stat); the URL-shape checks still apply.
+    """
+    from pathlib import Path
+
+    from sqlalchemy.engine.url import make_url
+
+    url = make_url(url_str)
+    resolved = url.render_as_string(hide_password=True)
+    if not url_str or not resolved:
+        return resolved, None, "resolved database path is empty"
+    if url.get_backend_name() != "sqlite":
+        return resolved, None, None
+    if not url.database:
+        return resolved, None, (
+            "sqlite URL resolved with no file path (e.g. an in-memory or blank DSN)"
+        )
+    if url.database == ":memory:":
+        return resolved, None, (
+            "sqlite URL resolved to an in-memory database — there is no "
+            "persistent file to inspect"
+        )
+    path = Path(url.database).expanduser()
+    try:
+        size = path.stat().st_size
+    except FileNotFoundError:
+        return resolved, path, (
+            f"resolved database file does not exist: {path} — refusing to "
+            "create it and report the empty result as a pass"
+        )
+    except OSError as exc:
+        return resolved, path, f"cannot stat resolved database file {path}: {exc}"
+    if size == 0:
+        return resolved, path, (
+            f"resolved database file is 0 bytes: {path} — an empty file "
+            "trivially passes every check while proving nothing"
+        )
+    return resolved, path, None
+
+
 async def db_schema_report() -> int:
     """CRYPTO-BACKLOG-SELECTION-AND-OPERATOR-PATH-001 B7/B9 — a
     repository-owned revision report replacing `sqlite3 "$DB_PATH" ...`
@@ -2277,14 +2336,13 @@ async def db_schema_report() -> int:
 
     settings = get_settings()
     url_str = settings.database_url
-    url = make_url(url_str)
-    resolved = url.render_as_string(hide_password=True)
+    resolved, _path, failure = _resolve_db_target(url_str)
     print(f"resolved database path: {resolved}")
-    if not url_str or not resolved:
-        print("FAIL: resolved database path is empty")
-        return 1
-    if url.get_backend_name() == "sqlite" and not url.database:
-        print("FAIL: sqlite URL resolved with no file path (e.g. an in-memory or blank DSN)")
+    # R2: stat the file BEFORE `_current_revision`, which opens a read-write
+    # engine and would otherwise create a 0-byte database at a bad path and
+    # then report `current revision: None` about it.
+    if failure is not None:
+        print(f"FAIL: {failure}")
         return 1
 
     config = _alembic_config(url_str)
@@ -2305,40 +2363,71 @@ async def db_integrity_check() -> int:
     diagnostic content. Worse, the `sqlite3` binary is not installed on
     EVO-X2 at all (`ssh mikolabs which sqlite3` -> absent), so that
     command could never have run there. This uses the application's OWN
-    resolved database (`app.config.get_settings().database_url`) through
-    its own engine, prints the resolved path before running anything (so a
-    caller can see exactly what was inspected), and FAILS if that path is
-    empty or unexpected — the same guard `db_schema_report` uses. Measured
-    duration at the current EVO-X2 database size: ~7m18s; this is NOT
-    fast, and should not be run casually inside a tight maintenance
-    window."""
+    resolved database (`app.config.get_settings().database_url`), prints the
+    resolved path before running anything (so a caller can see exactly what
+    was inspected), and — R2 — refuses to run at all unless that path
+    resolves to a file that EXISTS and is NON-EMPTY, opening it READ-ONLY so
+    it can never create or mutate what it inspects. See `_resolve_db_target`
+    for why: the previous guard checked only the URL *string*, so pointing
+    this at a nonexistent path created a 0-byte database and certified it
+    `ok / PASS / exit 0`.
+
+    DURATION (R0, corrected). This docstring used to claim "~7m18s at the
+    current EVO-X2 database size". That figure was never measured — the
+    milestone doc records it as carried forward from a review brief — and
+    the repository's own on-host artifact refutes it:
+    `docs/evidence/crypto-query-plan-and-denominator-recovery-001/analyze_live.json`
+    records a session against the live 4 550 623 232-byte database whose
+    TOTAL elapsed time (`started_at` -> `finished_at`) is **7.206 s**, and
+    that session included a full `PRAGMA integrity_check` on the live file
+    returning `ok`. A 438-second check cannot fit in a 7.2-second session;
+    `7m18s` is almost certainly a unit transcription of ~7.2 SECONDS.
+
+    The real cost is **~7 s warm** at 4.55 GB. It is strongly cache-bound:
+    EVO holds the whole database resident (92 GB RAM, ~21 GB page cache) so
+    it is always warm there, whereas on a memory-constrained host the same
+    check degrades into random 4 KiB reads and takes orders of magnitude
+    longer. That is a property of the measuring host, not of this command.
+    See "Step 6: integrity without blocking writers" in
+    `docs/EVO_X2_RUNBOOK.md`."""
     import time as _time
 
-    from sqlalchemy import text
-    from sqlalchemy.engine.url import make_url
+    from sqlalchemy import create_engine, text
 
     from app.config import get_settings
-    from app.db import get_engine
+    from app.db import connect_args_for, get_engine
 
     settings = get_settings()
     url_str = settings.database_url
-    url = make_url(url_str)
-    resolved = url.render_as_string(hide_password=True)
+    resolved, path, failure = _resolve_db_target(url_str)
     print(f"resolved database path: {resolved}")
-    if not url_str or not resolved:
-        print("FAIL: resolved database path is empty")
-        return 1
-    if url.get_backend_name() == "sqlite" and not url.database:
-        print("FAIL: sqlite URL resolved with no file path (e.g. an in-memory or blank DSN)")
+    if failure is not None:
+        print(f"FAIL: {failure}")
         return 1
 
-    engine = get_engine()
+    # R2: open READ-ONLY. `get_engine()` opens read-write, which is what
+    # allowed a nonexistent path to be created and then certified `ok`.
+    # `mode=ro` makes that physically impossible rather than merely guarded
+    # against — SQLite refuses to create the file at all (verified:
+    # `sqlite3.OperationalError: unable to open database file`, and no file
+    # appears). An integrity check has no business being able to write.
+    # Same busy timeout as every other SQLite reader here (`connect_args_for`).
+    disposable = None
+    if path is not None:
+        ro_url = f"sqlite:///file:{path}?mode=ro&uri=true"
+        engine = disposable = create_engine(
+            ro_url, connect_args=connect_args_for(url_str)
+        )
+    else:
+        engine = get_engine()
     started = _time.monotonic()
     try:
         with engine.connect() as conn:
             rows = conn.execute(text("PRAGMA integrity_check")).fetchall()
     finally:
         duration_s = _time.monotonic() - started
+        if disposable is not None:
+            disposable.dispose()
     results = [r[0] for r in rows]
     print(f"integrity_check duration: {duration_s:.2f}s")
     for line in results:
@@ -3117,6 +3206,27 @@ async def crypto_tape_reconcile(
             f"oldest_unreconciled_first_seen_at="
             f"{r.get('oldest_unreconciled_first_seen_at')}"
         )
+        # CRYPTO-BACKLOG-SELECTION-AND-OPERATOR-PATH-001 R7 — the RAW
+        # frontier printed above is the one this branch just proved reads
+        # ~204h on EVO whatever the pass does, because a single permanent
+        # write-off pins it forever (B3). The RECOVERABLE frontier is the
+        # one that actually moves, and until now it existed only inside the
+        # `backlog_expiring` error string — invisible on every healthy pass,
+        # which is exactly when an operator needs to see it trending. Print
+        # it next to the raw one so the two can be compared at a glance.
+        print(
+            f"recoverable_backlog_count={r.get('recoverable_backlog_count')}  "
+            f"oldest_recoverable_age_seconds="
+            f"{r.get('oldest_recoverable_age_seconds')}  "
+            f"recoverable_at_retention_risk="
+            f"{r.get('recoverable_at_retention_risk')}  "
+            f"writeoff_count={r.get('writeoff_count')}"
+        )
+        # R1 — the full-backlog classification runs BEFORE `_assemble_pass`
+        # and is therefore outside everything `max_duration_seconds` can
+        # bound, while still counting toward `duration_ms`. Printing it is
+        # what makes a deadline overshoot diagnosable instead of mysterious.
+        print(f"classify_ms={r.get('classify_ms')}")
         print(
             f"batches_committed={r.get('batches_committed')}  "
             f"lock_retry_events={r.get('lock_retry_events')}  "

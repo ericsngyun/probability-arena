@@ -101,11 +101,16 @@ git pull --ff-only
 .venv/bin/alembic upgrade head
 # 5) verify the revision actually landed at head
 .venv/bin/python -m app.cli db-schema-report   # must now print status: SCHEMA_MATCH
-# 6) application-owned integrity check (real, using this app's own DB
-#    resolution — NOT the bare `sqlite3` invocation this replaces).
-#    Measured duration at the current EVO-X2 database size: ~7m18s — this
-#    is NOT fast; do not run it casually inside a tight maintenance window.
-.venv/bin/python -m app.cli db-integrity-check
+# 6) POST-migration integrity check — run it against a fresh backup
+#    ARTIFACT, not the live file. `backup-db`'s own verification step IS a
+#    full `PRAGMA integrity_check` (app/services/backup.py `_inspect_sqlite`,
+#    opened mode=ro on the decompressed copy), so this single command both
+#    proves post-migration integrity AND leaves you a known-good restore
+#    point taken AFTER the schema change. Read `status=ok`.
+#    See "Step 6: integrity without blocking writers" below for why this
+#    does not run against the live database, and for the real measured
+#    duration (the old "~7m18s" here was wrong by ~61x).
+.venv/bin/python -m app.cli backup-db
 # 7) rebuild planner statistics for whatever this migration rebuilt (see
 #    "Migration 0028: `ANALYZE` after a table rebuild" below for the
 #    concrete per-migration step — do NOT run a blanket ANALYZE after every
@@ -113,7 +118,13 @@ git pull --ff-only
 # 8) verify a critical reconciliation query plan is still what's expected
 #    (see docs/CRYPTO_QUERY_PLAN_AND_DENOMINATOR_RECOVERY_001.md for the
 #    EXPLAIN QUERY PLAN fingerprint this checks against)
-.venv/bin/python -m app.cli crypto-tape-reconcile --dry-run --force --hours 48 --max-duration-seconds 30
+#
+#    *** EXPECTED: status=backlog_expiring, truncated=True, EXIT CODE 1. ***
+#    *** THIS IS A PASS. Do not read it as a failed deploy.             ***
+#    See "Step 8: why a healthy run exits 1" below before running it, and
+#    do NOT run this step under `set -e` without the `|| true` guard shown
+#    there — it will halt the deploy on a successful check.
+.venv/bin/python -m app.cli crypto-tape-reconcile --dry-run --force --hours 48 --max-duration-seconds 30 || true
 
 .venv/bin/python -m app.cli run-baseline --dry-run   # audit-only; fails closed if a migration is still pending
 .venv/bin/python -m app.cli db-stats                 # sanity
@@ -122,6 +133,194 @@ systemctl --user restart probability-arena-watcher.service
 # 10) observe health for the next few cycles:
 .venv/bin/python -m app.cli marketops-report
 journalctl --user -u probability-arena-watcher.service -n 50 --no-pager
+```
+
+### Step 6: integrity without blocking writers (CRYPTO-BACKLOG-SELECTION-AND-OPERATOR-PATH-001 R3, and the duration correction R0)
+
+**The duration was wrong by ~61x. `~7m18s` was never measured.** The
+milestone doc records it as "carried forward from the review-supplied
+measurement in the task brief, not independently re-measured here". The
+repository's own on-host evidence artifact contradicts it outright:
+`docs/evidence/crypto-query-plan-and-denominator-recovery-001/analyze_live.json`
+is the record of the live ANALYZE session run against **this exact database**
+(`file_bytes = 4 550 623 232`, `page_count = 1 110 992`) on EVO-X2:
+
+| | |
+|---|---|
+| `started_at` | 2026-08-11T07:04:43.950430Z |
+| `finished_at` | 2026-08-11T07:04:51.156672Z |
+| **whole session** | **7.206 s** |
+| of which `analyze_seconds` | 0.4597 s |
+| `integrity_check` | `ok` — a **full** `PRAGMA integrity_check` on the **live** file |
+
+The entire session — preflight, `before` snapshot, `ANALYZE`, `after`
+snapshot, a full live-file `integrity_check`, and the delta — completed in
+**7.206 seconds**. A 438-second (`7m18s`) integrity check cannot fit inside
+it. The true full-`integrity_check` cost on the live 4.55 GB database is
+therefore **under ~6.7 s** warm, consistent with the 4.8 s recorded for the
+same check on a byte-faithful copy in
+`docs/CRYPTO_QUERY_PLAN_AND_DENOMINATOR_RECOVERY_001.md`. **`7m18s` is
+almost certainly a unit transcription of a ~7.2-second measurement.**
+
+**Warm vs cold is the whole story, and EVO is always warm.** EVO has 92 GB
+RAM and ~21 GB of page cache against a 4.55 GB database, so the file is
+fully resident and every EVO figure is a warm figure — this is stated
+explicitly in `CRYPTO_QUERY_PLAN_AND_DENOMINATOR_RECOVERY_001.md`
+§"Cold-disk behaviour". On a memory-constrained host the same check is
+orders of magnitude slower because it degrades into random 4 KiB reads; that
+is a property of the measuring host, **not of EVO**. Do not import a
+cold-cache figure from a laptop into this runbook.
+
+**Measured, cold, on a full-size file (R0 re-measurement).** Two reviewers
+reported 6.59 s and 669.34 s for this same check and disagreed by 100x, so
+it was re-measured directly. Method: a synthetic database built on this
+repo's **real schema** (`alembic upgrade head`; 53 tables, 129 indexes,
+`page_size=4096`) and filled to production scale — **4 612 046 848 bytes,
+1 125 988 pages, 351 426 free** — i.e. slightly *larger* and with
+**774 562 in-use pages vs EVO's 691 912**, so it is a strictly harder file
+than production. No production data was copied. Host: MacBook Air M2, 8 GB
+RAM, `journal_mode=delete`. Cold = page cache evicted by streaming a 6.4 GB
+unrelated file through the buffer cache before each run (`sudo purge` was
+unavailable). Load average is reported because other work shared the host.
+
+| check | engine | cache | duration | load |
+|---|---|---|---|---|
+| `quick_check` | sqlite3 CLI 3.51.0 | **cold** | **50.10 s** | 2.55 |
+| `integrity_check` | sqlite3 CLI 3.51.0 | **cold** | **873.83 s** | 2.71 |
+| `integrity_check` | app engine (SQLAlchemy / py-sqlite 3.45.1) | **cold** | **820.49 s** | 13.18 |
+| `integrity_check` | live EVO-X2, from `analyze_live.json` | **warm** | **≤ 6.75 s** | — |
+
+Three conclusions, each of which settles part of the dispute:
+
+1. **Cache state is the entire 100x.** ~820-874 s cold versus ≤6.75 s warm
+   on EVO is a **~130x** spread on the same operation. Reviewer A's 6.59 s
+   is a *warm* measurement and is correct for EVO. Reviewer B's 669.34 s is
+   a *cold* (or memory-starved) measurement and is correct for the host it
+   was taken on — it is simply not EVO's number, and it does not make
+   "~7m18s" an underestimate.
+2. **"App engine ~50 % slower" is refuted.** At matched cache state the app
+   engine took **820.49 s** and the raw `sqlite3` binary **873.83 s** — the
+   engine was *faster*, and it ran under 5x the system load. The
+   CLI-versus-SQLAlchemy factor is negligible; it cannot explain a 100x gap
+   and it does not even have the claimed sign.
+3. **`quick_check` is ~17x cheaper than `integrity_check`** cold (50.10 s vs
+   873.83 s), which is the other candidate explanation — but neither
+   reviewer's figure matches a `quick_check`, so this is not what they
+   measured.
+
+**Warm at production scale is NOT reproducible on a laptop, and that is the
+point.** At the time of measurement this 8 GB host had ~0.38 GB of
+reclaimable page cache against a 4.6 GB file, so it can never hold the
+database resident; EVO holds all 4.55 GB of it resident permanently. Any
+"warm" number taken on a memory-constrained machine is really a cold number.
+**The authoritative warm figure is EVO's own artifact, not a re-measurement
+elsewhere.**
+
+**Writer contention, measured.** With a competing writer using this app's
+declared 30 s busy timeout against the same full-size
+`journal_mode=delete` file: a 54.01 s reader hold produced a **46.53 s**
+maximum writer wait — the writer is blocked for essentially the entire
+duration of the check, confirming the mechanism. (5 write attempts, 0
+failures, so the reviewer-reported *failure* count was not reproduced at
+this sample size; the wait-tracks-duration relationship is the robust
+finding.) **Writer wait ≈ check duration, roughly 1:1** — which is exactly
+why the duration error mattered: at ~7 s writers wait ~7 s and the 30 s
+busy timeout absorbs it, while at the mistakenly-documented 438 s they
+would exhaust it and fail.
+
+**Why it still runs against a copy.** Even at ~7 s the mechanism is real:
+EVO is `journal_mode=delete`, so a reader holding SHARED prevents any writer
+from reaching EXCLUSIVE to commit. Step 6 sits between step 3 ("ordinary
+additive migrations do not require a manual pause") and step 9 (resume
+services), so MarketOps (5 min), meme-news (5 min), tick-aggregation
+(hourly) and the continuously-writing watcher are **all live throughout**.
+At ~7 s every blocked writer is comfortably inside the 30 s
+`sqlite_busy_timeout_ms` and simply waits; at the mistakenly-documented
+438 s they would have exhausted it and failed. **Running the check against
+the artifact removes the exposure entirely rather than relying on that
+margin**, and costs nothing extra because `backup-db` already performs a
+full `integrity_check` during verification.
+
+Checking the artifact is equivalent to checking the live file: `backup-db`
+uses SQLite's online backup API to produce a byte-faithful copy, so
+corruption present in the live file is present in the copy. This is the same
+reasoning the capacity milestone already used ("`PRAGMA integrity_check` =
+ok on the byte-faithful online copy ... run off-host-path so production was
+not asked to read 4.55 GB before the decision").
+
+**Chosen: check the artifact.** Rejected alternatives, and why:
+
+| Option | Why not |
+|---|---|
+| quiesce writers (stop watcher, mask timers) around step 6 | introduces a real service outage and two extra failure modes (forgetting to unmask, a timer firing mid-window) to avoid a ~7 s wait that the busy timeout already absorbs |
+| check the **step-2** backup | that artifact is taken *before* `alembic upgrade head`; it cannot verify post-migration integrity, which is the entire point of step 6 |
+| check the live file and accept the wait | works today at ~7 s, but couples a production-writer stall to a number nobody re-measures |
+
+**If you specifically need the LIVE file checked** (e.g. investigating
+suspected on-disk corruption rather than verifying a migration), run it
+deliberately and knowingly:
+
+```bash
+.venv/bin/python -m app.cli db-integrity-check     # ~7s warm at 4.55 GB; holds SHARED for that time
+```
+
+### Step 8: why a healthy run exits 1 (CRYPTO-BACKLOG-SELECTION-AND-OPERATOR-PATH-001 R4)
+
+Step 8 is a **mandatory verification step that exits non-zero on success**.
+Both reviewers of this runbook hit this independently, which is exactly how an
+operator will hit it at 2am: a red exit code on a prescribed deploy step reads
+as a failed deploy, and under `set -e` it silently halts the rest of the
+sequence before services are resumed.
+
+**Expected output on EVO-X2's real data:**
+
+```
+status=backlog_expiring  external_calls=0  window=48h  ...
+tokens_considered=...  truncated=True  ...
+recoverable_backlog_count=...  oldest_recoverable_age_seconds=...  ...
+WARNING: ...the oldest RECOVERABLE unreconciled token is <N>h old, >= the
+162.0h frontier threshold...
+```
+**Exit code: 1.** This is the documented, expected result.
+
+**Why.** `app/cli.py` returns `-1` (shell exit 1) for any status other than
+`ok`/`dry_run`, deliberately: "eligible work remains unmeasured" must never
+look healthy. `backlog_expiring` is set by
+`run_scheduled_reconciliation` whenever the oldest *recoverable* token is
+older than `crypto_retention_days*24 − RECONCILER_CADENCE_HOURS` (162h at
+the shipped 7d/6h defaults), and it overrides the dry-run status. On EVO
+that condition is currently TRUE, so a dry run reports it. `--dry-run`
+writes nothing either way — the non-zero exit is a report about the
+*backlog*, not about this command having failed.
+
+**What this step actually verifies** is that the command runs to completion
+against the post-migration schema and emits a plausible pass summary — i.e.
+that the migration did not break the reconciliation query path. It is not a
+health assertion about the backlog.
+
+**What a GENUINE step-8 failure looks like** — any of these means stop and
+investigate, and none of them is `backlog_expiring`:
+
+| Symptom | Meaning |
+|---|---|
+| a Python traceback / non-zero exit with **no** `status=` line | the command did not run — schema or import breakage from the migration |
+| `status=error` (`external_calls=0  error=...`) | the pass refused or crashed internally |
+| `status=migration_required` | step 4/5 did not actually land; go back |
+| `external_calls` **≠ 0** | a provider was contacted; this path must be provider-free |
+| `status=skipped_contention` | never got the DB lock — a writer was not quiesced |
+| `status=unsafe_host_cost` | adaptive batching refused the host cost estimate |
+| `tokens_considered=0` **and** `work_available` > 0 | selection is broken — real work exists but none was selected |
+
+**Scripting it.** Because success is exit 1, assert on the status string, not
+the exit code:
+
+```bash
+out=$(.venv/bin/python -m app.cli crypto-tape-reconcile --dry-run --force \
+        --hours 48 --max-duration-seconds 30 2>&1) || true
+echo "$out"
+grep -qE 'status=(ok|dry_run|dry_run_partial|truncated|partial|backlog_expiring)' <<<"$out" \
+  && grep -q 'external_calls=0' <<<"$out" \
+  || { echo "STEP 8 GENUINELY FAILED"; exit 1; }
 ```
 
 ### AHEAD vs BEHIND (CRYPTO-BACKLOG-SELECTION-AND-OPERATOR-PATH-001 B8)
@@ -161,12 +360,20 @@ documented as safe to reverse:
 - **Write-lock hold during the rebuild: 0.157s** — well under any writer's
   busy-timeout budget; a concurrent MarketOps cycle is not expected to fail
   because of this downgrade alone.
-- **Losslessness for values that fit:** an 18-character value
+- **Losslessness, and the real reason for it:** an 18-character value
   (`"skipped_contention"`) written before the downgrade was verified intact
-  and unmodified after downgrading and re-upgrading — SQLite does not
-  truncate on a batch-table narrow when nothing in the actual row data
-  exceeds the new declared width in this migration's own test data. **This
-  is NOT a length-enforcement guarantee going forward** — SQLite never
+  and unmodified after downgrading and re-upgrading.
+  CRYPTO-BACKLOG-SELECTION-AND-OPERATOR-PATH-001 R8 — this bullet used to
+  attribute that survival to "SQLite does not truncate ... when nothing in
+  the actual row data exceeds the new declared width", which is simply
+  wrong and self-contradictory: the 18-character value **does** exceed the
+  16-character declared width, and it survived anyway. The correct reason is
+  the one the next sentence already gives — **SQLite never enforces
+  `VARCHAR(n)` at all**, so a narrowing `batch_alter_table` cannot truncate
+  regardless of what the data contains. The observation is real; the stated
+  mechanism was not, and believing it would predict data loss for exactly
+  the case that is safe. **This is NOT a length-enforcement guarantee going
+  forward** — SQLite never
   enforces `VARCHAR(n)` length, so nothing stops a value written AFTER the
   downgrade (while running old code with the wide-status vocabulary
   disabled) from exceeding 16 characters again; the downgrade only proves
@@ -185,7 +392,7 @@ documented as safe to reverse:
 .venv/bin/python -m app.cli backup-db
 .venv/bin/alembic downgrade 0027
 .venv/bin/python -m app.cli db-schema-report     # must show current revision 0027, status SCHEMA_MATCH
-.venv/bin/python -m app.cli db-integrity-check   # ~7m18s at current DB size
+.venv/bin/python -m app.cli db-integrity-check   # ~7s warm at 4.55 GB (NOT 7m18s — see "Step 6" above)
 # Statistics: downgrading rebuilds crypto_token_lifecycle_runs AGAIN — see
 # the ANALYZE step below; run it the same way after a downgrade as after
 # the original upgrade.
@@ -216,21 +423,51 @@ with get_engine().connect() as conn:
     conn.commit()
 "
 ```
-A per-table `ANALYZE crypto_token_lifecycle_runs` (rather than a full-database
-`ANALYZE`) is the intended, minimal fix — it rebuilds statistics only for the
-one table the migration actually touched. A full-database `ANALYZE` is also
-acceptable given the measured ~0.46s cost at the current database size (see
-the "Live ANALYZE" entry in `DEPLOYMENT_REPORT_EVO_X2.md`), but the choice
-must be made explicitly, not run reflexively.
+**Use the per-table `ANALYZE crypto_token_lifecycle_runs`. Do not substitute a
+full-database `ANALYZE` here** (CRYPTO-BACKLOG-SELECTION-AND-OPERATOR-PATH-001
+R10). This used to say a full-database `ANALYZE` was "also acceptable given
+the measured ~0.46s cost". That 0.46s is a **warm-cache, host-specific**
+figure — EVO has 92 GB RAM and ~21 GB of page cache against a 4.55 GB
+database, so every table was already resident (see
+`docs/CRYPTO_QUERY_PLAN_AND_DENOMINATOR_RECOVERY_001.md` §"Cold-disk
+behaviour", which states plainly that *every figure there is warm-cache*).
+It is not a bound on what the command costs elsewhere, or on EVO after a
+reboot: a reviewer measured **5m39s cold** for the full-database form against
+**0.203s** for the per-table form. `ANALYZE` also takes a **write lock** for
+its whole duration, so the full-database form blocks every production writer
+for that time — the same failure mode as step 6 (see the writer-quiescing
+note there). The per-table form rebuilds exactly what `0028` invalidated and
+nothing else, which is both correct and three orders of magnitude cheaper.
 
 **Post-migration acceptance criteria** (all four must pass before declaring
 the migration complete):
 1. `db-schema-report` reports the expected revision and `status:
    SCHEMA_MATCH`.
-2. `sqlite_stat1` contains a row for `crypto_token_lifecycle_runs` again
-   (query `SELECT * FROM sqlite_stat1 WHERE tbl='crypto_token_lifecycle_runs'`
-   via `db-integrity-check`'s engine, or any read-only inspection path — do
-   not use the bare `sqlite3` binary, which is not installed on EVO-X2).
+2. `sqlite_stat1` contains a row for `crypto_token_lifecycle_runs` again.
+   CRYPTO-BACKLOG-SELECTION-AND-OPERATOR-PATH-001 R9 — this used to say to
+   run that query "via `db-integrity-check`'s engine", but
+   `db-integrity-check` **takes no SQL**: it runs exactly one hardcoded
+   `PRAGMA integrity_check` and accepts no query argument, so the
+   instruction was not executable. Use the same read-only snippet form the
+   restore section uses (and the same existence gate — after a rebuild the
+   table exists, but this stays correct if it does not):
+   ```bash
+   .venv/bin/python -c "
+   from app.db import get_engine
+   from sqlalchemy import text
+   with get_engine().connect() as conn:
+       present = conn.execute(text(
+           \"SELECT count(*) FROM sqlite_master WHERE type='table' AND name='sqlite_stat1'\"
+       )).scalar()
+       rows = conn.execute(text(
+           \"SELECT * FROM sqlite_stat1 WHERE tbl='crypto_token_lifecycle_runs'\"
+       )).fetchall() if present else []
+       print(f'crypto_token_lifecycle_runs stat rows: {len(rows)}')
+       for r in rows:
+           print('   ', tuple(r))
+   "
+   ```
+   Do not use the bare `sqlite3` binary — it is not installed on EVO-X2.
 3. `db-integrity-check` reports `PASS`.
 4. MarketOps health and watcher health are both green for at least one full
    cycle after resuming services (`marketops-report`, `journalctl --user -u
@@ -250,12 +487,23 @@ explicit post-restore step instead:
 ```bash
 # ... normal restore procedure (see docs/SQLITE_BACKUP_COORDINATION_001.md) ...
 .venv/bin/python -m app.cli db-integrity-check    # 1) integrity restored?
+# CRYPTO-BACKLOG-SELECTION-AND-OPERATOR-PATH-001 R5 — this MUST gate on the
+# table's existence first. An un-ANALYZEd database has no `sqlite_stat1`
+# TABLE at all (SQLite creates it only when `ANALYZE` first runs), and an
+# un-ANALYZEd database is precisely the case this whole procedure exists to
+# catch — every backup artifact taken before 2026-08-11T07:04:51Z. A bare
+# `SELECT count(*) FROM sqlite_stat1` therefore raises
+# `OperationalError: no such table: sqlite_stat1` and the "if 0" branch
+# below is unreachable for the only input that matters.
 .venv/bin/python -c "
 from app.db import get_engine
 from sqlalchemy import text
 with get_engine().connect() as conn:
-    n = conn.execute(text('SELECT count(*) FROM sqlite_stat1')).scalar()
-    print(f'sqlite_stat1 rows: {n}')
+    present = conn.execute(text(
+        \"SELECT count(*) FROM sqlite_master WHERE type='table' AND name='sqlite_stat1'\"
+    )).scalar()
+    n = conn.execute(text('SELECT count(*) FROM sqlite_stat1')).scalar() if present else 0
+    print(f'sqlite_stat1 rows: {n}' + ('' if present else '  (table absent: never ANALYZEd)'))
 "
 # 2) if 0 (or fewer rows than expected — 130 as of the 2026-08-11 baseline,
 #    see DEPLOYMENT_REPORT_EVO_X2.md), the restored backup predates the
@@ -491,6 +739,35 @@ unscheduled.
   the HIGH-1 age-exclusion fix — it is NOT current. Do not budget against it;
   re-measure real per-pass row growth once the flag is flipped, against a real
   4x/day cadence, before revisiting retention or raising the cadence.
+- **One-off write-off memorialization cost — expect it, it is not a leak**
+  (CRYPTO-BACKLOG-SELECTION-AND-OPERATOR-PATH-001 R11). B1's reserved
+  write-off sub-budget exists to *drain* the permanent write-offs
+  (`RETENTION_LOST` / `MISSING_REQUIRED_INITIAL_STATE`) that were burying
+  recoverable work. Draining them means **visiting and memorialising each
+  one exactly once** (`final=True`, so it never returns — proven idempotent
+  by B4). At the measured backlog composition that is a bounded, one-time
+  cost, and it should be **expected rather than discovered halfway through**:
+
+  | | |
+  |---|---|
+  | write-offs to memorialise | **~11 101** |
+  | drain rate | **~590/pass** (the reserved sub-budget actually used) |
+  | time to drain | **~4.7 days** at the 4 passes/day cadence |
+  | rows written per write-off | **~4** (outcome + lifecycle snapshot + actor observation + run accounting) |
+  | **permanent rows added** | **~44 000** |
+
+  Those rows land in `crypto_token_lifecycle_snapshots` and
+  `crypto_token_actor_observations` — **neither of which `retention.py`
+  prunes** (its crypto coverage is `crypto_tokens`, `crypto_pairs`,
+  `crypto_price_ticks`, `crypto_token_discovery_events`,
+  `crypto_token_risk_assessments`, `crypto_opportunity_signals`,
+  `crypto_watcher_runs`; the survival/lifecycle/actor tables are absent).
+  This was a **deliberate design choice** — a write-off is a permanent
+  finding about a token whose evidence is gone, and re-deriving it every
+  pass forever is strictly worse than storing it once — but it is a
+  permanent addition, so it is recorded here rather than being noticed later
+  as unexplained growth. It is one-time: once drained, the lane's steady
+  state is the arrival rate, not the backlog.
 
 **Provider gate (CRYPTO-DISCOVERY-PROVIDER-GATE-001).** `crypto-scan-once` and
 `crypto-risk-assess` are now **fail-closed**: a bare command prints a zero-call

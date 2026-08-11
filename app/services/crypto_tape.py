@@ -993,6 +993,7 @@ class CryptoLifecycleTapeRecorder:
 
     def recoverable_backlog_summary(
         self, session: Session, cutoff: datetime, *, now: datetime | None = None,
+        classes: dict[str, list[str]] | None = None,
     ) -> dict:
         """CRYPTO-BACKLOG-SELECTION-AND-OPERATOR-PATH-001 B3 — the
         RECOVERABLE frontier, as opposed to the raw backlog-row frontier
@@ -1006,9 +1007,19 @@ class CryptoLifecycleTapeRecorder:
         perfectly healthy pass: "alarm always on" carries the same
         information as no alarm at all, exactly the failure
         `backlog_expiring` exists to avoid. Reuses `classify_backlog`
-        (never re-derives the same predicate with different code)."""
+        (never re-derives the same predicate with different code).
+
+        `classes` (CRYPTO-BACKLOG-SELECTION-AND-OPERATOR-PATH-001 R1) — an
+        ALREADY-COMPUTED partition from `classify_backlog`, for callers that
+        also call `unreconciled_backlog` in the same pass and would
+        otherwise pay for the identical classification twice. Must have been
+        derived from the SAME `session`/`cutoff`/`now`; passing a partition
+        derived from anything else silently reports a frontier for a
+        different instant. `None` (the default) classifies here, keeping
+        every existing caller byte-for-byte unchanged."""
         now = now or _now()
-        classes = self.classify_backlog(session, cutoff, now=now)
+        if classes is None:
+            classes = self.classify_backlog(session, cutoff, now=now)
         writeoff_count = {
             cls: len(classes.get(cls, [])) for cls in self.BACKLOG_WRITEOFF_CLASSES
         }
@@ -1056,6 +1067,7 @@ class CryptoLifecycleTapeRecorder:
     def unreconciled_backlog(
         self, session: Session, cutoff: datetime, *, limit: int,
         now: datetime | None = None,
+        classes: dict[str, list[str]] | None = None,
     ) -> list[CryptoToken]:
         """Tokens OLDER than the window whose outcome is still not final —
         including tokens that were NEVER reconciled at all (no outcome row
@@ -1084,8 +1096,24 @@ class CryptoLifecycleTapeRecorder:
         reserves a small, bounded slice of `limit` for write-offs so they
         still get flushed (memorialised as `final=True`, and therefore
         excluded from every future call) without ever consuming a whole
-        pass's budget."""
-        classes = self.classify_backlog(session, cutoff, now=now)
+        pass's budget.
+
+        `classes` (CRYPTO-BACKLOG-SELECTION-AND-OPERATOR-PATH-001 R1) — see
+        `recoverable_backlog_summary`'s note of the same name. `run_once`
+        calls BOTH this method and that one on every backlog-enabled pass,
+        and each used to classify the whole backlog independently: two
+        identical full-backlog scans per pass, measured at 1.92 s + 1.94 s
+        cold and 4.02 s + 3.21 s warm on a fast Mac. That cost is not
+        merely wasted, it is UNBOUNDED with respect to
+        `max_duration_seconds`: the deadline is anchored at pass start
+        (`_assemble_pass_locked`'s `deadline = started + ...`) but only
+        CHECKED between batches, so every second spent here is subtracted
+        from the batch loop's budget before the first token is reconciled.
+        Threading one partition through halves that prelude. `None` (the
+        default) classifies here, keeping every existing caller
+        byte-for-byte unchanged."""
+        if classes is None:
+            classes = self.classify_backlog(session, cutoff, now=now)
         writeoff_addrs = [
             addr
             for cls in (
@@ -1819,9 +1847,27 @@ class CryptoLifecycleTapeRecorder:
         # (`backlog_processed=175` every pass, frontier 157.8h -> 59.8h).
         backlog_total = 0
         reserved_backlog_budget = 0
+        # CRYPTO-BACKLOG-SELECTION-AND-OPERATOR-PATH-001 R1 — classify the
+        # backlog ONCE per pass. `unreconciled_backlog` and
+        # `recoverable_backlog_summary` are both called below with the same
+        # `session`, `cutoff` and `now=started`, and each used to run its
+        # own full-backlog `classify_backlog`: two identical scans, measured
+        # at 1.92 s + 1.94 s cold and 4.02 s + 3.21 s warm on a fast Mac
+        # (10-33 % of a 20 s pass budget; the code's own ~62x per-token EVO
+        # slowdown note means the prelude alone can consume a whole EVO
+        # deadline before one token is reconciled). Nothing writes between
+        # the two call sites, so one partition is exactly what both used to
+        # derive separately.
+        #
+        # This does NOT bound the residual: see `classify_ms` below.
+        backlog_classes: dict[str, list[str]] | None = None
+        classify_ms: float | None = None
         if include_backlog:
             backlog_total = self.backlog_size(session, cutoff)
             reserved_backlog_budget = min(backlog_total, limit // 2)
+            _classify_started = time.monotonic()
+            backlog_classes = self.classify_backlog(session, cutoff, now=started)
+            classify_ms = (time.monotonic() - _classify_started) * 1000.0
         in_window_limit = max(0, limit - reserved_backlog_budget)
         tokens = self._universe(
             session, in_window_limit, cutoff, oldest_first=oldest_first,
@@ -1849,6 +1895,7 @@ class CryptoLifecycleTapeRecorder:
                 extra = [
                     t for t in self.unreconciled_backlog(
                         session, cutoff, limit=room, now=started,
+                        classes=backlog_classes,
                     )
                     if t.token_address not in seen
                 ]
@@ -1902,7 +1949,7 @@ class CryptoLifecycleTapeRecorder:
                     started - _aware(oldest_unreconciled_first_seen_at)
                 ).total_seconds() / 3600.0
             recoverable_backlog = self.recoverable_backlog_summary(
-                session, cutoff, now=started
+                session, cutoff, now=started, classes=backlog_classes,
             )
         config = {"limit": limit, "hours": hours, "chain": self.config.chain}
         config.update(run_config_extra or {})
@@ -1914,6 +1961,31 @@ class CryptoLifecycleTapeRecorder:
                 ),
                 "oldest_unreconciled_age_hours": oldest_unreconciled_age_hours,
             }
+            # CRYPTO-BACKLOG-SELECTION-AND-OPERATOR-PATH-001 R7 — the
+            # RECOVERABLE frontier belongs in the durable run row too, not
+            # only in the `backlog_expiring` error string. The raw
+            # `oldest_unreconciled_age_hours` above reads ~204h regardless
+            # of pass health once any permanent write-off exists (B3), so a
+            # run row carrying only that number cannot distinguish a healthy
+            # pass from a starving one after the fact. These four can.
+            if recoverable_backlog is not None:
+                config["frontier"].update({
+                    "recoverable_backlog_count":
+                        recoverable_backlog["recoverable_backlog_count"],
+                    "oldest_recoverable_due_at":
+                        recoverable_backlog["oldest_recoverable_due_at"],
+                    "oldest_recoverable_age_seconds":
+                        recoverable_backlog["oldest_recoverable_age_seconds"],
+                    "recoverable_at_retention_risk":
+                        recoverable_backlog["recoverable_at_retention_risk"],
+                    "writeoff_count": recoverable_backlog["writeoff_count"],
+                })
+            # R1 — the residual, made OBSERVABLE. This is the one-and-only
+            # full-backlog classification this pass ran, and it is spent
+            # BEFORE `_assemble_pass` starts checking the deadline, so it is
+            # the part of `duration_ms` that `max_duration_seconds` cannot
+            # reach. See the note on `unreconciled_backlog`'s `classes`.
+            config["frontier"]["classify_ms"] = classify_ms
         summary = self._assemble_pass(
             session, tokens, started=started, dry_run=dry_run,
             window_hours=hours,
@@ -1939,6 +2011,9 @@ class CryptoLifecycleTapeRecorder:
             summary["oldest_recoverable_age_seconds"] = recoverable_backlog["oldest_recoverable_age_seconds"]
             summary["recoverable_at_retention_risk"] = recoverable_backlog["recoverable_at_retention_risk"]
             summary["writeoff_count"] = recoverable_backlog["writeoff_count"]
+        # R1 — surfaced on the summary as well as in `config["frontier"]`, so
+        # the CLI can print it without re-reading the run row.
+        summary["classify_ms"] = classify_ms
         summary["oldest_unreconciled_first_seen_at"] = oldest_unreconciled_first_seen_at
         summary["oldest_unreconciled_age_hours"] = oldest_unreconciled_age_hours
         tokens_accounted = summary.get("tokens_processed", len(tokens))
