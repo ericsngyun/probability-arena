@@ -9,15 +9,22 @@ or the whole file — verified as intact; and every producer held its own file
 descriptor, so concurrent appends interleaved gzip members and destroyed the
 file.
 
-The shape:
+The shape (KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A1: synchronous, not
+queue-based — see `SegmentWriter.submit`'s docstring for why the queue and
+its background writer thread were removed rather than hardened further):
 
-    N producers ─→ bounded queue ─→ ONE ArchiveWriter ─→ ONE open segment
+    N producers ─→ self._lock (serialises) ─→ ONE open segment
                                                              │
                                           records chained by previous_digest
                                                              │
                                       CLOSING → reconcile → manifest published
                                                              │
                                                           CLOSED
+
+`submit()` canonicalises, chains and writes ONE record entirely on the
+CALLING thread, inside one lock-held call — there is no queue between a
+producer and the file, and no interval in which a caller can be told
+ACCEPTED before the record is durably part of the segment.
 
 **The manifest is the commit record.** A segment is canonical evidence only
 once its manifest exists, and the manifest is published last, by atomic rename.
@@ -39,7 +46,6 @@ import hashlib
 import os
 import contextlib
 import fcntl
-import queue
 import re
 import threading
 import time
@@ -67,13 +73,6 @@ RECORD_SCHEMA_VERSION = 1
 MANIFEST_SCHEMA_VERSION = 1
 ARCHIVE_SCHEMA_VERSION = 1
 WRITER_VERSION = "kalshi-archive-writer/1"
-
-# KALSHI-ARCHIVE-CORE-REMEDIATION-003B A2: the sentinel for "no item is
-# currently claimed" on `SegmentWriter._claimed` -- distinct from `None`,
-# which producers are free to pass as a legitimate field value elsewhere, and
-# distinct from any real queued item (a dict), so `is not _UNCLAIMED` is an
-# unambiguous test regardless of payload shape.
-_UNCLAIMED = object()
 
 EVENTS_FILENAME = "events.jsonl.gz"
 MANIFEST_FILENAME = "manifest.json"
@@ -140,6 +139,57 @@ _ENVELOPE_SOURCED_RECORD_FIELDS = frozenset({
 # budget_consistency.py` for the measured margin this closes).
 _RECORD_ENVELOPE_OVERHEAD_UNITS = (
     len(RECORD_FIELDS) - len(_ENVELOPE_SOURCED_RECORD_FIELDS))
+
+# KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A3 -- BOUNDED ROTATION DEFAULTS.
+#
+# `close()` re-reads and re-verifies the WHOLE segment (reconciliation reads
+# every record back with `read_segment_records`, then `verify_segment` reads
+# it AGAIN independently before it is committed to the head) -- it is not a
+# cheap tail operation, and its cost grows with the segment, not with the
+# marginal record. Measured on the real, synchronous `SegmentWriter` (an ad hoc
+# benchmark against real records through `submit()`/`close()`, not
+# committed as a script -- reproducible by submitting N records to a fresh
+# `SegmentWriter` and timing `close()`):
+#
+#   records   append throughput   close latency   close/1000 records
+#      1,000       ~14,700 ev/s         ~0.07 s               ~75 ms
+#      5,000       ~15,800 ev/s         ~0.36 s               ~71 ms
+#     15,000       ~15,900 ev/s         ~1.17 s               ~78 ms
+#
+# roughly linear at ~70-80 ms of close latency per 1,000 records in this
+# range -- consistent with the review's own ~110-150 ms/1,000 estimate,
+# with the difference explained by A2 (one fewer canonical encode per
+# record) and A1 (no queue-drain/thread-join overhead at close). A
+# 30,000-record trial measured a disproportionate 11.9 s close on this
+# machine, but that run shared the CPU with an unrelated, concurrently
+# running test suite in a sibling working tree -- exactly the kind of
+# resource contention a live host can also experience -- so the bound below
+# is set with real headroom under the CLEAN numbers rather than trusting
+# the contended one.
+#
+# `DEFAULT_MAX_SEGMENT_RECORDS` targets a close latency of roughly two
+# seconds under measured, uncontended throughput -- comfortably above the
+# ~500 events/s assumed peak this milestone's own performance gate used (a
+# two-second close every ~40 seconds of continuous peak traffic), and
+# effectively unreachable at the one real measured Kalshi rate (4 records
+# over ~2 minutes, DEMO). `DEFAULT_MAX_SEGMENT_AGE_S` bounds staleness
+# independently of volume, so a slow trickle still rotates and commits
+# periodically instead of holding one segment open indefinitely.
+# `DEFAULT_MAX_SEGMENT_BYTES` is a THIRD, independent bound on the
+# compressed on-disk size, so an unusually large per-record payload (a deep
+# order book snapshot, say) cannot defeat the record-count bound by simply
+# making each record bigger.
+#
+# These are `EventArchive`'s defaults (the surface a real collector
+# actually constructs), not `SegmentWriter`'s -- `SegmentWriter` stays
+# all-optional (`None` unless a caller asks for a bound) because it is the
+# lower-level primitive many tests construct directly and deliberately
+# leave unbounded. What A3 forbids is SHIPPING synchronous archival with no
+# bound; it does not require every constructor at every layer to refuse to
+# be unbounded when a caller explicitly asks for that.
+DEFAULT_MAX_SEGMENT_RECORDS = 20_000
+DEFAULT_MAX_SEGMENT_AGE_S = 900.0                     # 15 minutes
+DEFAULT_MAX_SEGMENT_BYTES = 32 * 1024 * 1024          # 32 MiB, compressed
 
 # `build_manifest` (below) nests a writer's admitted `subscription_metadata`
 # ONE level deeper than admission ever walked it: `non_canonical_reason`
@@ -338,10 +388,23 @@ class SegmentState(str, Enum):
 
 
 class RejectReason(str, Enum):
-    """Why an event was not written. Every one is counted; none is silent."""
+    """Why an event was not written. Every one is counted; none is silent.
 
-    QUEUE_FULL = "queue_full"
-    ENQUEUE_TIMEOUT = "enqueue_timeout"
+    KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A1 (synchronous canonical archive):
+    `QUEUE_FULL` and `ENQUEUE_TIMEOUT` are RETIRED, not merely unused. They
+    named outcomes of a bounded producer queue that no longer exists --
+    `submit()` now canonicalises and writes before it returns, so there is no
+    queue to be full and nothing to time out waiting on. Both values are kept
+    in the enum (rather than deleted) only so that an OLD segment's
+    `WriterAccounting.rejections` dict -- durable evidence already on disk --
+    still parses if it happens to name one; no CURRENT code path can ever
+    produce them again. `SHUTDOWN_IN_PROGRESS` is NOT retired: it is now the
+    reason a `submit()` returns when it loses the race for `self._lock`
+    against a `close()` already in `CLOSING`/`CLOSED` -- see `submit()`.
+    """
+
+    QUEUE_FULL = "queue_full"                    # retired; see class docstring
+    ENQUEUE_TIMEOUT = "enqueue_timeout"           # retired; see class docstring
     SERIALIZATION_FAILURE = "serialization_failure"
     WRITER_FAILED = "writer_failed"
     SEGMENT_NOT_OPEN = "segment_not_open"
@@ -890,82 +953,56 @@ def safe_segment_id(segment_id: str) -> str:
 class WriterAccounting:
     """Explicit stages, because one identity could not say what happened.
 
-    `generated == written + rejected` cannot distinguish a producer cancelled
-    before its event was ever taken from an accepted event that was then lost —
-    both produce identical counters, and the second is the only one that
-    matters. So acceptance is a stage, not an inference, and every event moves
-    through exactly one path:
+    KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A1 (synchronous canonical archive):
+    this is the SAME identity the queue-based writer used, with the stages a
+    bounded producer queue could put an event in — `pending` (accepted, sitting
+    in the queue, never drained) and `dequeued` (the independent, second-sourced
+    "left the queue but the writer thread died before booking an outcome"
+    check) — REMOVED rather than reworked, because `submit()` no longer has an
+    asynchronous gap for either of them to describe. An event's admission
+    outcome was previously "wherever it ended up: the queue, the written
+    stream, or the failure count", because those were three different places
+    at three different times. There is now exactly one call frame, and by the
+    time `submit()` returns, the event has already reached its ONE terminal
+    outcome:
 
-        attempted -> rejected_before_accept
-        attempted -> accepted -> written
-        attempted -> accepted -> failed_after_accept
-        attempted -> accepted -> pending          (only before close completes)
+        attempted -> rejected_before_accept   (never durable; canonicalisation
+                                                refused it, or the segment was
+                                                not open, BEFORE any write)
+        attempted -> written                  (durable; `submit()` returns
+                                                `None` only after the bytes
+                                                are handed to the gzip stream)
+        attempted -> failed_after_accept      (canonicalisation succeeded but
+                                                the OS write itself failed;
+                                                the segment goes INVALID)
 
-    `pending` is not a counter kept in step with the others — it is measured
-    from the queue at close and cross-checked against the identity, so a drift
-    between what the writer believes and what is actually undrained is a
-    detected failure rather than an invisible one.
-
-    A6: `accepted` is DERIVED, not an independently incremented field. It used
-    to be `self.accounting.accepted += 1`, mutated by `_admit` on the producer
-    thread AFTER `queue.put_nowait()` had already, durably, committed the
-    event to the queue — a real source-line gap an asynchronous exception
-    (SIGINT, `PyThreadState_SetAsyncExc`) could land inside, leaving the event
-    genuinely queued (and later genuinely WRITTEN) while `accepted` stayed one
-    short forever. `disposition_holds()` then failed at close() — not because
-    any evidence was wrong, but because a DIAGNOSTIC counter missed an
-    increment — and `close()` treated that as grounds to invalidate every
-    other record in the segment along with it.
-
-    Defining `accepted := written + failed_after_accept + pending` removes the
-    independent counter (and the gap after it) entirely: an event's admission
-    outcome is measured from where it actually ended up — the queue, the
-    written stream, or the failure count — never tracked separately from that
-    and hoped to stay in step. `disposition_holds()` is therefore true by
-    construction; the identity it used to prove is now a tautology, which is
-    exactly the point (see `close()`'s comment on `admission_holds()`).
+    `accepted` stays a derived property (`written + failed_after_accept`) —
+    it was already correct to derive it before A1, and it stays correct now
+    that there is no third place (a queue) for an accepted item to be
+    "currently sitting". `clean()` — the ONLY gate on publishing a segment as
+    evidence — is unchanged in what it MEANS (no accepted-and-lost event may
+    be published as a clean close): it is `failed_after_accept == 0`, with
+    `pending == 0` true by construction rather than by measurement, because
+    nothing can be "pending" any more.
     """
 
     attempted: int = 0
     rejected_before_accept: int = 0
     written: int = 0
-    failed_after_accept: int = 0      # accepted, then the writer could not write it
-    pending: int = 0                  # accepted, never drained. 0 at a clean close
+    failed_after_accept: int = 0      # accepted, then the write itself failed
     rejections: dict = field(default_factory=dict)
 
-    # KALSHI-ARCHIVE-CORE-REMEDIATION-003 defect F: an INDEPENDENT
-    # observation of admission, restored WITHOUT reopening the A6 race.
-    # `accepted` stays derived (`written + failed_after_accept + pending +
-    # live`) -- A6's fix for the interrupted-increment window is correct and
-    # stays -- but a derived identity can never disagree with the formula
-    # that DEFINES it, so an item that vanishes from ALL THREE of `written`/
-    # `failed_after_accept`/`pending` simultaneously is invisible to
-    # `disposition_holds()`/`reconciles()` BY CONSTRUCTION. `dequeued` is
-    # sourced from a genuinely DIFFERENT moment on the writer thread: `_run`
-    # increments it immediately after `self._queue.get()` succeeds -- before
-    # the `try:` guarding `self._write_one(item)` even begins -- so it books
-    # the item the instant it is irreversibly removed from the queue,
-    # independently of whatever outcome (or non-outcome) follows. `_run`'s
-    # `queue.get()` and `task_done()` sit OUTSIDE its `except BaseException`;
-    # this increment sits INSIDE that same exposed window, deliberately, so
-    # it survives exactly the fault that `written`/`failed_after_accept`
-    # cannot: an exception landing between the dequeue and the write attempt
-    # kills the thread before EITHER of those ever move, but `dequeued` has
-    # already recorded the item.
-    dequeued: int = 0
-
-    # Not a durability field: a live, read-only hook into the writer's queue
-    # depth, so `accepted` reflects events sitting in the queue BEFORE close()
-    # ever measures `pending` (which is only populated by `_measure_pending`
-    # at close). Reading a queue's size mutates nothing and is safe to call
-    # from any thread at any time, so it cannot itself become a source of
-    # torn state the way an independently incremented counter was.
-    live_queue_depth: object = field(default=None, repr=False, compare=False)
+    @property
+    def pending(self) -> int:
+        """Always 0. Kept as a read-only property, not a field, so existing
+        callers (and the manifest/report shapes built from `to_dict()`) stay
+        source-compatible: synchronous `submit()` has no asynchronous gap in
+        which an accepted event can be neither written nor failed."""
+        return 0
 
     @property
     def accepted(self) -> int:
-        live = self.live_queue_depth() if self.live_queue_depth is not None else 0
-        return self.written + self.failed_after_accept + self.pending + live
+        return self.written + self.failed_after_accept
 
     def reject_before_accept(self, reason: RejectReason) -> None:
         self.rejections[reason.value] = self.rejections.get(reason.value, 0) + 1
@@ -976,27 +1013,20 @@ class WriterAccounting:
         self.failed_after_accept += 1
 
     def admission_holds(self) -> bool:
-        """`attempted == rejected_before_accept + accepted` — a DIAGNOSTIC
-        identity. It can still be violated by a producer-side asynchronous
-        exception (see the async accounting harness's four windows), because
-        `attempted` and `rejected_before_accept` are both mutated on the
-        producer thread and no pure-Python critical section can be made
-        immune to an interrupt at every possible instruction boundary. What
-        changed is that this identity no longer gates `clean()` or `close()`:
-        it cannot, because it can never diverge from what is actually
-        durable (see `accepted`'s docstring) — only from how well `submit()`
-        counted its OWN attempts.
+        """`attempted == rejected_before_accept + accepted`. Synchronous
+        `submit()` moves `attempted`, then reaches exactly one terminal
+        booking, all under the same writer lock and the same call frame — so
+        unlike the queue-based writer this identity is no longer merely a
+        diagnostic that can drift from an asynchronous exception; it holds by
+        construction for every call that returns normally. Kept as a method
+        (not inlined) because `close()` and its callers still ask for it by
+        name.
         """
         return self.attempted == self.rejected_before_accept + self.accepted
 
     def disposition_holds(self) -> bool:
-        """Always true. `accepted` IS `written + failed_after_accept +
-        pending` (+ whatever is live in the queue right now, while OPEN — see
-        `live_queue_depth`) — there is no independently mutated counter left
-        for this to compare against, so the comparison this method used to
-        perform is now a tautology BY DEFINITION, not an observation that can
-        pass or fail. Kept as a method, not deleted, so existing callers stay
-        source-compatible."""
+        """Always true; kept as a method so existing callers stay
+        source-compatible. See `WriterAccounting`'s docstring."""
         return True
 
     def reconciles(self) -> bool:
@@ -1004,54 +1034,52 @@ class WriterAccounting:
 
     def clean(self) -> bool:
         """The only state in which a segment may be published as clean
-        evidence — gated on the DURABLE/DISPOSITION side only.
-
-        `admission_holds()` is deliberately NOT part of this. It is a
-        diagnostic identity about how many `submit()` attempts were counted,
-        not about what is durable. A SIGINT may abort a caller and even cost
-        `submit()`'s own bookkeeping an increment, but it must never be able
-        to turn thousands of already-written, already-verified records into
-        an unpublishable segment — that is the defect this replaces.
+        evidence. `pending` is always 0 now (see its docstring), so this
+        reduces to the one condition that was ever load-bearing: no accepted
+        event failed to become durable evidence.
         """
         return self.pending == 0 and self.failed_after_accept == 0
-
-    def dequeue_disposition_gap(self) -> int:
-        """`dequeued - (written + failed_after_accept)`. ZERO for a healthy
-        writer -- every item the writer thread ever removed from the queue
-        reaches a terminal outcome (written or failed) before the thread can
-        die, by the time this is checked at close (after the thread is
-        joined, so nothing is still "in flight" between dequeue and
-        outcome). NONZERO is genuine, otherwise-invisible loss: an item
-        durably dequeued and then lost with no terminal booking anywhere --
-        not `written`, not `failed_after_accept`, and (having already left
-        the queue) not `pending` either. This is independent of `pending` by
-        construction: `pending` counts items that were NEVER dequeued;
-        `dequeued` counts items the queue itself can no longer prove exist.
-        The two cannot be derived from each other, which is what makes a
-        disagreement here a real, second-sourced finding rather than a
-        restatement of `disposition_holds()`'s tautology.
-        """
-        return self.dequeued - (self.written + self.failed_after_accept)
 
     def to_dict(self) -> dict:
         return {"attempted": self.attempted,
                 "rejected_before_accept": self.rejected_before_accept,
                 "accepted": self.accepted, "written": self.written,
                 "failed_after_accept": self.failed_after_accept,
-                "pending": self.pending, "dequeued": self.dequeued,
+                "pending": self.pending,
                 "rejections": dict(self.rejections),
                 "admission_holds": self.admission_holds(),
                 "disposition_holds": self.disposition_holds(),
-                "clean": self.clean(),
-                "dequeue_disposition_gap": self.dequeue_disposition_gap()}
+                "clean": self.clean()}
 
 
 class SegmentWriter:
     """The single owner of one segment's file descriptor.
 
-    Producers never touch the file. They hand events to a bounded queue and one
-    writer thread drains it, so there is exactly one appender and interleaved
-    gzip members are structurally impossible rather than merely unobserved.
+    KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A1 (synchronous canonical archive):
+    producers never touch the file, but there is no longer a queue or a
+    background thread between them and it either. `submit()` canonicalises
+    and appends the record on the CALLER'S thread, serialised against every
+    other `submit()`/`close()` by one lock (`self._lock`), and returns only
+    after the record has been durably handed to the writer -- never before.
+
+    This replaces an eleven-round-hardened queue-ownership protocol
+    (`_claimed`/`_inflight`/`_admission`/`_sealed`, a background writer
+    thread draining a bounded `queue.Queue`) that could not be made to close
+    a real gap: `queue.Queue.get()` does an irreversible `deque.popleft()`
+    and then calls `self.not_full.notify()` -- a Python call, and therefore a
+    real async-exception delivery point -- before it ever returns to the
+    writer thread, so a producer could be told an event was ACCEPTED while
+    the event itself had already, irreversibly, left the only place that
+    made it recoverable. A measured performance gate found the queue was not
+    even faster: synchronous append outperformed it (3,440 vs 1,927 events/s
+    on `SegmentWriter`, sustained 2,500-5,000 events/s, bursts draining
+    ~7,000/s), so removing the queue closes a correctness gap AND a
+    performance one, not one at the cost of the other.
+
+    One consequence worth naming explicitly: **a caller is never told
+    ACCEPTED before the canonical writer owns the event.** There is no
+    interval, of any size, in which `submit()` has returned `None` but the
+    record is not yet durably part of this segment's gzip stream.
 
     Durability is explicit: records are flushed on a cadence, `fsync` happens at
     close, and the manifest is written to a temp file, fsynced, atomically
@@ -1069,6 +1097,13 @@ class SegmentWriter:
                  max_age_s: float | None = None,
                  max_bytes: int | None = None,
                  commit_to_head: bool = True):
+        # `queue_maxsize`/`enqueue_timeout_s` are RETIRED parameters, accepted
+        # and ignored rather than removed. There is no queue left for either
+        # to bound, and deleting them outright would break every existing
+        # caller's keyword arguments (production and test) for no behavioural
+        # gain -- a synchronous writer that silently accepts and discards a
+        # now-meaningless knob is safer than one that raises `TypeError` at
+        # every call site that has not been individually re-audited.
         if environment not in _ENVIRONMENTS:
             raise SegmentError(f"unknown environment {environment!r}")
         self.environment = environment
@@ -1159,12 +1194,21 @@ class SegmentWriter:
         self.opened_at = canonical_datetime(datetime.now(timezone.utc))
         self.closed_at: str | None = None
 
-        self._queue: queue.Queue = queue.Queue(maxsize=queue_maxsize)
-        # See `WriterAccounting.live_queue_depth`'s docstring: a read-only
-        # hook, not a counter another thread mutates.
-        self.accounting.live_queue_depth = self._queue.qsize
-        self._enqueue_timeout = enqueue_timeout_s
         self._flush_every = flush_every
+        # THE serialization lock. Every `submit()` and every `close()` holds
+        # this for the full duration of the work it does -- admission,
+        # canonicalisation, the write itself, and (for `close()`) sealing the
+        # segment -- so "one segment, one writer" is now enforced by ordinary
+        # mutual exclusion on one Python object, not by a background thread
+        # being the only one that ever touches the file descriptor. This is
+        # what replaces the ENTIRE queue-ownership protocol: a `submit()`
+        # that is still running when `close()` is called simply has not
+        # released the lock yet, so `close()` blocks behind it exactly once
+        # and then observes a state that cannot move again -- "close() waits
+        # for the writer" and "append and close are mutually ordered" are now
+        # the same guarantee, provided by the same lock, rather than two
+        # separately-proven protocols (`_seal_admissions` + a queue join)
+        # that eleven rounds of hardening never fully closed.
         self._lock = threading.Lock()
         self._prev_digest = genesis_digest(segment_id=self.segment_id,
                                            environment=environment)
@@ -1172,51 +1216,17 @@ class SegmentWriter:
         self._stream_digest = self._prev_digest
         self._first_digest: str | None = None
         self._last_digest: str | None = None
-        # KALSHI-ARCHIVE-CORE-REMEDIATION-003B A2: see `_run`'s comment.
-        # Written only by the writer thread; read by `_measure_pending`
-        # (called from `close()`, potentially a different thread) and by
-        # nothing else.
-        self._claimed = _UNCLAIMED
         self._writer_error: BaseException | None = None
-        self._shutdown = threading.Event()
         # close() is reachable from several threads (a shutdown handler and an
         # application path, say). Without this the second caller finalises an
         # already-finalised file and the segment is destroyed by its own
         # shutdown.
         self._close_lock = threading.Lock()
-        # B3: the state check and the queue put must be ONE fact. They used to
-        # be two hopeful ones, so a producer descheduled between them had its
-        # event accepted into a queue nobody would drain — and close() then
-        # published close_status "clean" over the loss.
-        self._admission = threading.Lock()
-        # Producers currently INSIDE the admission protocol — between
-        # `attempted` and a terminal stage — counted under `_admission`.
-        # close() seals, then waits for this to reach zero, so it can never
-        # reconcile against counters a producer is still moving.
-        self._inflight = 0
-        self._sealed = False
-        self.queue_high_water = 0
         self.last_rejection_detail: str | None = None
-        # A6 diagnostic: set at close() if `WriterAccounting.admission_holds()`
-        # is false. Never gates publication — see `_close_stages`.
-        self.admission_drift = False
-        self.admission_drift_detail: dict | None = None
-        # KALSHI-ARCHIVE-CORE-REMEDIATION-003 defect G: the SAME "diagnostic
-        # residue must not permanently brick close()" principle
-        # `admission_drift` already established for `admission_holds()`,
-        # applied to `_inflight`. Never gates publication -- see
-        # `_seal_admissions`.
-        self.inflight_drift: int | None = None
-        # KALSHI-ARCHIVE-CORE-REMEDIATION-003B A1: how many producers reached
-        # the pre-commit checkpoint in `_admit` AFTER sealing had already
-        # begun. Diagnostic, like `inflight_drift` -- but where `inflight_drift`
-        # only records that a producer's presence was unresolved at the seal
-        # deadline, this counts producers that were STRUCTURALLY PREVENTED
-        # from turning that unresolved presence into a silent ACCEPTED.
-        self.late_admission_rejected: int = 0
-        # Injection seams. Production leaves both None; tests use them to slow
-        # the writer or fail a specific durability stage without weakening the
-        # real fsync path.
+        # Injection seam. Production leaves it None; tests use it to slow the
+        # writer or fail a specific durability stage without weakening the
+        # real fsync path. Now called synchronously, immediately before the
+        # write it used to precede on the writer thread.
         self.pre_write_hook = None
         self.durability_hooks: dict = {}
 
@@ -1265,9 +1275,6 @@ class SegmentWriter:
             self._release_lock()
             raise
         self._since_flush = 0
-        self._thread = threading.Thread(target=self._run, name="archive-writer",
-                                        daemon=True)
-        self._thread.start()
 
     def _acquire_ownership(self) -> None:
         """One segment, one live writer — enforced by the kernel, not by a file.
@@ -1343,221 +1350,201 @@ class SegmentWriter:
     @property
     def accepting(self) -> bool:
         """Evidence that cannot be durably recorded must not be accepted."""
-        return self.healthy and not self._shutdown.is_set()
+        return self.healthy
 
-    # -- producer side ---------------------------------------------------------
+    # -- producer side -----------------------------------------------------
     def submit(self, envelope_fields: dict) -> RejectReason | None:
-        """Called by producers. Never touches the file.
+        """Canonicalise, chain and append ONE record. Synchronous.
 
-        Returns `None` on acceptance or a typed reason on rejection. There is
-        no path that drops an event without returning a reason.
+        KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A1: there is no queue and no
+        writer thread any more. `self._lock` is held for the WHOLE call --
+        the state check, the canonical walk, the encode, and the actual
+        `write()` -- so `submit()` and `close()` (which takes the same lock
+        to seal the segment) can never interleave: a `submit()` that is still
+        running has not released the lock, and a `close()` that has taken it
+        has already frozen `self.state` before the next `submit()` can even
+        begin. That single fact replaces the ENTIRE `_admission`/`_inflight`/
+        `_sealed` protocol: "no producer admitted before sealing can be told
+        ACCEPTED afterwards" no longer needs a second checkpoint mid-call,
+        because there is no interval during which this call could be
+        preempted by a `close()` racing it to a DIFFERENT lock.
 
-        A6: `attempted` and `rejected_before_accept`, both mutated here on the
-        PRODUCER thread, are DIAGNOSTIC counters — how many calls were made
-        and how many were explicitly refused. Neither can be made immune to an
-        asynchronous exception landing between two Python statements (the
-        four windows the async accounting harness reproduces: after
-        `attempted` moves but before `_inflight` does; inside this method's
-        own exception handler while it books a rejection; and their
-        variants) — no pure-Python critical section can promise that. What
-        makes that acceptable is `accepted` (see `WriterAccounting`): it is
-        DERIVED from `written`/`failed_after_accept`/`pending`, never from a
-        counter this method increments, so nothing this method's own
-        bookkeeping misses can ever touch the durable/queued state `close()`
-        actually gates on. A missed increment here is a diagnostic gap, not
-        data loss, and `close()` no longer treats the two as the same thing.
+        Returns `None` on acceptance -- which now means the record is
+        DURABLY part of this segment's gzip stream, not merely queued -- or
+        a typed reason on rejection. There is no path that drops an event
+        without returning a reason, and no path that returns `None` before
+        the write has actually happened.
         """
-        # ENTER the admission protocol. `attempted` and `_inflight` move
-        # together under one lock, and `_inflight` is not released until this
-        # call has reached a terminal stage. Previously `generated` was
-        # published to the reconciliation identity before the event had any
-        # outcome, so close() could evaluate a TORN counter: one collector
-        # thread plus a shutdown handler destroyed the segment 18 times in 30.
-        with self._admission:
-            if self._sealed:
-                # Counted INSIDE `_inflight` too. A post-seal rejection used to
-                # move `attempted` after close() had observed `_inflight == 0`,
-                # so close() reconciled against counters that were still
-                # changing and refused provably clean segments 8-18% of the time
-                # under contention.
-                self._inflight += 1
-                try:
-                    with self._lock:
-                        self.accounting.attempted += 1
-                        self.accounting.reject_before_accept(
-                            RejectReason.SHUTDOWN_IN_PROGRESS)
-                finally:
-                    self._inflight -= 1
-                return RejectReason.SHUTDOWN_IN_PROGRESS
-            with self._lock:
-                self.accounting.attempted += 1
-            # FAULT-WINDOW: window-a — a fault landing on the NEXT line, after
-            # `attempted` is durably counted but before `_inflight` is, is
-            # outside the `try` below entirely and escapes straight to the
-            # caller. `attempted` is now one ahead of what `rejected_before_
-            # accept`/`accepted` will ever show for this call. Diagnostic-only
-            # (see this method's docstring): nothing was queued, nothing was
-            # written, there is no durable evidence to lose.
-            self._inflight += 1
-        try:
-            # FAULT-WINDOW: safe-before-admit — a fault landing on the NEXT
-            # line is fully covered by this `try`: `attempted` has moved, and
-            # the `except` below books a matching `rejected_before_accept`
-            # for it in the SAME call. A true negative — admission_holds()
-            # must stay true.
-            return self._admit(envelope_fields)
-        except BaseException:
-            # THE IDENTITY IS ENFORCED HERE, not inside the gate. Six rounds
-            # were spent hardening `non_canonical_reason` so it could never
-            # raise, and each round found another way in — a hostile dunder, a
-            # naive datetime, a mapping key, and finally a real SIGINT, which no
-            # amount of `except Exception` can catch. Booking a terminal state
-            # on the exceptional exit keeps the DIAGNOSTIC identity as close to
-            # true as a single Python statement can, and demotes any future
-            # gate defect from data loss to a diagnostic-quality problem.
-            with self._lock:
-                # FAULT-WINDOW: window-d — a SECOND fault landing on the NEXT
-                # line, while this handler is still booking the FIRST fault's
-                # rejection, loses that booking too: `attempted` moved for the
-                # original call, and now neither `rejected_before_accept` nor
-                # `accepted` will ever reflect it. Still diagnostic-only: the
-                # original call never reached the queue (that gate is gone by
-                # the time `_admit` raises, or the payload was refused before
-                # ever being queued), so nothing durable is unaccounted for.
+        with self._lock:
+            self.accounting.attempted += 1
+            if self._writer_error is not None:
+                self.accounting.reject_before_accept(RejectReason.WRITER_FAILED)
+                return RejectReason.WRITER_FAILED
+            if self.state is SegmentState.INVALID:
+                self.accounting.reject_before_accept(RejectReason.SEGMENT_INVALID)
+                return RejectReason.SEGMENT_INVALID
+            if self.state is not SegmentState.OPEN:
+                # Covers both an ordinary CLOSED segment and one seen while
+                # `close()` (holding this same lock a moment ago) is already
+                # CLOSING -- the synchronous replacement for
+                # `RejectReason.SHUTDOWN_IN_PROGRESS`'s old meaning ("a close
+                # is already underway"), reached the same way every other
+                # post-open rejection is: by losing the SAME lock race
+                # `close()` used to seal the segment.
+                reason = (RejectReason.SHUTDOWN_IN_PROGRESS
+                          if self.state is SegmentState.CLOSING
+                          else RejectReason.SEGMENT_NOT_OPEN)
+                self.accounting.reject_before_accept(reason)
+                return reason
+            # A2 -- fewer encodes, but NOT one: the admission round-trip
+            # below is NOT the redundant encode-and-discard step it first
+            # looks like. `canonicalize_or_reason` does two things at once:
+            # it validates, AND it forces `envelope_fields` through
+            # `parse_canonical(canonical_bytes(...))` -- and that round trip
+            # is load-bearing for CORRECTNESS, not merely for the immutable-
+            # copy property A4 named it for. `canonical_bytes` is a fixpoint
+            # for ORDINARY values (`canonical_bytes(x) == canonical_bytes(
+            # parse_canonical(canonical_bytes(x)))`), but NOT for a
+            # pathological-yet-legal one: a mapping whose `__eq__` always
+            # disagrees (so two distinct keys both serialise to the SAME
+            # JSON string, e.g. `_CollidingKey` in `tests/
+            # test_kalshi_encoder_fidelity_harness_001.py`) is ADMITTED
+            # (every individual key/value is canonical on its own terms) but
+            # its raw `canonical_bytes` legitimately contains a JSON object
+            # with a DUPLICATE key -- which `json.loads` collapses
+            # (last-value-wins) the instant anything re-parses it. Skipping
+            # this round trip (an earlier version of this method did) means
+            # `build_record`'s digest is computed over the UNCOLLAPSED, two-
+            # key text while the SAME bytes, read back later, decode to the
+            # COLLAPSED, one-key form -- `record_digest` and the reconciled
+            # self-digest permanently disagree, and `close()` refuses the
+            # segment. Running the round trip HERE, once, means whatever
+            # `build_record` wraps and digests is ALREADY the form a future
+            # read will reproduce -- a true fixpoint -- and it is still only
+            # ONE admission-time encode (not the three a naive "encode
+            # envelope_fields, discard, re-encode for the record digest,
+            # re-encode again for the record's own reconciliation" shape
+            # would cost): `build_record`+`digest_hex` is the ONLY encode of
+            # the WRAPPED 17-field envelope, and `canonical_bytes(record)`
+            # below reuses that same, already-collapsed structure for the
+            # line actually written -- the same two-encode shape
+            # `build_manifest`/`publish_manifest` already use for a self-
+            # referential digest.
+            try:
+                payload_bytes, bad = canonicalize_or_reason(
+                    envelope_fields,
+                    _work_reserve=_RECORD_ENVELOPE_OVERHEAD_UNITS)
+            except BaseException:                 # noqa: BLE001 - see below
+                # A signal-class exception (KeyboardInterrupt/SystemExit)
+                # from a hostile `.items()`/`__iter__` escaping even
+                # `canonicalize_or_reason`'s own guard (which only catches
+                # `Exception`, deliberately -- see its docstring). The
+                # diagnostic identity still books a matching rejection here
+                # before the exception propagates, exactly as production
+                # always did for this window; it is RE-RAISED, not
+                # swallowed, for the same reason the write-time boundary
+                # below re-raises: Ctrl-C must propagate.
                 self.accounting.reject_before_accept(
                     RejectReason.SERIALIZATION_FAILURE)
-                # FAULT-WINDOW: already-terminal — a fault landing HERE, after
-                # the line above completed, is the true-negative twin of
-                # window (d): the booking already happened, there is nothing
-                # left for a second fault to interrupt.
-            raise
-        finally:
-            with self._admission:
-                self._inflight -= 1
-
-    def _reject(self, reason: RejectReason) -> RejectReason:
-        with self._lock:
-            self.accounting.reject_before_accept(reason)
-        return reason
-
-    def _admit(self, envelope_fields: dict) -> RejectReason | None:
-        if self._writer_error is not None:
-            return self._reject(RejectReason.WRITER_FAILED)
-        if self.state is SegmentState.INVALID:
-            return self._reject(RejectReason.SEGMENT_INVALID)
-        if self.state is not SegmentState.OPEN:
-            return self._reject(RejectReason.SEGMENT_NOT_OPEN)
-        # Canonical admissibility is decided BEFORE acceptance, and decided
-        # ONCE: `canonicalize_or_reason` computes `canonical_bytes` and this
-        # keeps it, rather than discarding it and having the writer thread
-        # encode the producer's live object again later. A value the writer
-        # cannot serialise used to be discovered after the producer had been
-        # told the event was recorded, and the only outcomes left were a
-        # silent drop or destroying the whole hour. The contract is uniform
-        # with `canonical.py`: a float is refused, and it is refused here.
-        # KALSHI-ARCHIVE-CORE-REMEDIATION-003B A4: `_work_reserve` accounts
-        # for `build_record` wrapping this SAME `envelope_fields` into the
-        # 17-field record envelope with `_RECORD_ENVELOPE_OVERHEAD_UNITS`
-        # more top-level scalar fields than admission's own structural walk
-        # ever charged for. Without it, a value admitted exactly at the
-        # aggregate work-unit ceiling encodes fine alone and then exceeds
-        # the SAME ceiling once wrapped -- destroying an otherwise-valid
-        # segment at close over a record that was legitimately ACCEPTED.
-        payload_bytes, bad = canonicalize_or_reason(
-            envelope_fields, _work_reserve=_RECORD_ENVELOPE_OVERHEAD_UNITS)
-        if bad is not None:
-            self.last_rejection_detail = bad
-            return self._reject(RejectReason.NOT_CANONICAL)
-        # A4: IMMUTABLE SUBMISSION. `parse_canonical` reconstructs a FRESH
-        # object graph from the accepted bytes — new dicts, new lists, new
-        # strings — sharing NO reference with the caller's `envelope_fields`.
-        # This is what gets queued and, later, what the writer thread encodes
-        # on its own thread. A producer that mutates its own `envelope_fields`
-        # after `submit()` returns cannot reach the accepted evidence: the
-        # exact bytes accepted are the exact bytes that will be committed,
-        # subject only to the writer's deterministic archive framing
-        # (`build_record` wrapping this value with `receive_ordinal` and
-        # `previous_record_digest`, assigned in write order).
-        accepted_fields = parse_canonical(payload_bytes)
-        # KALSHI-ARCHIVE-CORE-REMEDIATION-003B A1: the admission protocol used
-        # to have exactly one checkpoint -- the `_sealed` read at the TOP of
-        # `submit()`, before this call even started. Everything from there to
-        # here (the canonical walk, potentially seconds long for a legal but
-        # slow-iterating payload -- see the genuinely-slow-payload harness) ran
-        # with no further checkpoint at all, so a producer that entered before
-        # `close()` called `_seal_admissions()` could still reach the queue
-        # PUT long after `_seal_admissions` had given up waiting for it,
-        # recorded `inflight_drift`, and let `close()` publish a manifest that
-        # was already final. `submit()` returned ACCEPTED (`None`) for an
-        # event that then sat in a queue with a dead writer thread and no
-        # consumer -- silent loss with no rejection ever reaching the caller.
-        #
-        # The fix is a SECOND checkpoint, at the only place that actually
-        # matters: the moment of commitment into the queue. `_sealed` is
-        # flipped exactly once, under `_admission`, as the FIRST statement of
-        # `_seal_admissions` -- strictly before that function starts waiting
-        # on `_inflight`, and therefore strictly before `close()` can reach
-        # `_close_stages` and publish anything. So by the time a still-running
-        # producer reaches this checkpoint after a seal has begun, `_sealed`
-        # is already durably True (a monotonic one-way flag, set once, never
-        # cleared) -- there is no window in which `close()` has moved past
-        # sealing while this checkpoint could still observe `_sealed is
-        # False`. This turns "admission still active when sealing began" into
-        # a REJECTION instead of a race against how fast `close()` happens to
-        # run: no producer that has not already committed its item before
-        # sealing starts can ever be told ACCEPTED afterwards.
-        with self._admission:
-            if self._sealed:
-                self.late_admission_rejected += 1
-                return self._reject(RejectReason.SHUTDOWN_IN_PROGRESS)
-        try:
-            # FAULT-WINDOW: safe-before-enqueue — a fault landing on the NEXT
-            # line, before `put_nowait` ever runs, means nothing was queued;
-            # `submit()`'s handler books the matching rejection. A true
-            # negative — admission_holds() must stay true.
-            self._queue.put_nowait(accepted_fields)
-        except queue.Full:
-            pass
-        else:
-            # FAULT-WINDOW: window-b — a fault landing on the NEXT line, after
-            # the item is durably in the queue (and so WILL be written), used
-            # to land between a successful `put_nowait` and a SEPARATE
-            # `accepted += 1`, making `written` exceed `accepted` once the
-            # item drained. There is no such statement here any more:
-            # `accepted` is derived from `written`/`failed_after_accept`/
-            # `pending` (see `WriterAccounting`), so there is nothing left
-            # for this window to desynchronise — a fault here can only cost
-            # `_note_depth`'s high-water bookkeeping and this call's own
-            # diagnostic booking, never the item itself.
-            self._note_depth()
+                raise
+            if bad is not None:
+                self.last_rejection_detail = bad
+                self.accounting.reject_before_accept(RejectReason.NOT_CANONICAL)
+                return RejectReason.NOT_CANONICAL
+            # `parse_canonical` reconstructs a FRESH object graph from the
+            # accepted bytes -- new dicts, new lists, new strings, and (per
+            # the fixpoint argument above) already collapsed wherever the
+            # caller's input was not itself a fixpoint. Nothing downstream
+            # ever reads the caller's own `envelope_fields` object again.
+            accepted_fields = parse_canonical(payload_bytes)
+            try:
+                record = build_record(
+                    envelope_fields=accepted_fields, segment_id=self.segment_id,
+                    environment=self.environment,
+                    previous_record_digest=self._prev_digest,
+                    receive_ordinal=self._ordinal)
+                line = canonical_bytes(record)
+            except Exception as exc:              # noqa: BLE001 - a refusal
+                # Nothing has been written yet: `build_record`/`canonical_
+                # bytes` can only fail before the first byte reaches `self.
+                # _fh`. This is therefore a REJECTION -- the caller's payload
+                # was not evidence-representable -- not a writer failure, and
+                # the segment stays healthy for the next `submit()`. Reaching
+                # here at all would mean `accepted_fields` (already proven
+                # canonical by `canonicalize_or_reason` above) somehow fails
+                # to re-encode when WRAPPED with a few extra scalar fields --
+                # covered defensively, per the same "the encoder wins" rule
+                # `canonicalize_or_reason` documents, but not expected to
+                # fire in practice given `_RECORD_ENVELOPE_OVERHEAD_UNITS`'s
+                # reserved budget above.
+                self.last_rejection_detail = f"{type(exc).__name__}: {exc}"
+                self.accounting.reject_before_accept(RejectReason.NOT_CANONICAL)
+                return RejectReason.NOT_CANONICAL
+            try:
+                # `pre_write_hook` runs INSIDE this try, not before it: tests
+                # use it to inject exactly the class of failure this block
+                # exists to contain (a durability/OS-level fault at the
+                # write boundary), and it must be treated identically to a
+                # real `self._fh.write()` failure -- invalidate the segment,
+                # never let it escape as a bare, unbooked exception.
+                if self.pre_write_hook is not None:
+                    self.pre_write_hook(self)
+                # THE commitment point. Nothing before this line is durable;
+                # nothing after it may fail without invalidating the segment
+                # -- a caller must never be told ACCEPTED for an event whose
+                # bytes did not reach the file.
+                self._fh.write(line + b"\n")
+                self._since_flush += 1
+                if self._since_flush >= self._flush_every:
+                    self._fh.flush()
+                    self._since_flush = 0
+            except BaseException as exc:          # noqa: BLE001 - recorded
+                # An OS-level write failure AFTER a value was proven canonical
+                # is the one outcome that must invalidate the whole segment --
+                # continuing would append the NEXT record after a possibly
+                # half-written one and amplify the corruption, exactly as the
+                # old writer thread's terminal `except` did.
+                self._writer_error = exc
+                self.state = SegmentState.INVALID
+                self.accounting.fail_after_accept(RejectReason.WRITER_FAILED)
+                if isinstance(exc, (KeyboardInterrupt, SystemExit, GeneratorExit)):
+                    # A1's OWN new risk, absent from the old design: the
+                    # actual disk write now runs on the PRODUCER's thread,
+                    # not an isolated background writer thread a real signal
+                    # could never reach. `submit()`'s docstring promises "no
+                    # path drops an event without returning a reason" for
+                    # ORDINARY outcomes (a canonical-but-unwritable value, a
+                    # genuine OS write failure) -- it does NOT promise to
+                    # swallow a signal-class exception into an ordinary
+                    # return value. Doing so would mean an operator's Ctrl-C
+                    # (or a `SystemExit` from elsewhere in the process)
+                    # landing on exactly this line silently turns into
+                    # "the writer rejected one event" and the caller's loop
+                    # keeps calling `submit()` -- which now IMMEDIATELY
+                    # rejects every further call as `WRITER_FAILED` (the
+                    # segment is correctly INVALID either way), but the
+                    # process itself never learns it was asked to stop. The
+                    # segment is still marked INVALID above, exactly as for
+                    # any other write fault -- fail-closed evidence handling
+                    # does not change -- but the exception itself is
+                    # RE-RAISED rather than absorbed, matching ordinary
+                    # Python signal semantics -- consistent with the encode
+                    # step just above, which catches only `Exception` (not
+                    # `BaseException`), so a signal-class exception landing
+                    # during canonicalisation was ALREADY never caught there
+                    # in the first place; this branch gives the write step
+                    # the same property explicitly, since it has to catch
+                    # `BaseException` broadly for the OS-failure case.
+                    raise
+                return RejectReason.WRITER_FAILED
+            digest = record["record_digest"]
+            self._first_digest = self._first_digest or digest
+            self._last_digest = digest
+            self._stream_digest = fold_stream_digest(self._stream_digest, digest)
+            self._prev_digest = digest
+            self._ordinal += 1
+            self.accounting.written += 1
             return None
-        # Queue full: wait OUTSIDE the admission gate, so N producers do not
-        # serialise behind each other's full timeouts (8 producers at a 0.5s
-        # timeout measured 4.58s per submit, and close() waited 4.55s before it
-        # could even declare CLOSING). `_inflight` still covers this wait, so
-        # close() cannot seal while it is outstanding.
-        try:
-            self._queue.put(accepted_fields, timeout=self._enqueue_timeout)
-        except queue.Full:
-            return self._reject(RejectReason.ENQUEUE_TIMEOUT)
-        self._note_depth()
-        return None
-
-    def _note_depth(self) -> None:
-        with self._lock:
-            # FAULT-WINDOW: window-c (note-depth-l1) — the event is already
-            # durably queued by the time any statement in this method runs.
-            # A fault landing at any of the three points marked in this
-            # method used to reach `_admit`'s caller and get double-booked
-            # `rejected_before_accept` even though `accepted` (the OLD,
-            # independently-tracked field) had already been incremented.
-            # `queue_high_water` is diagnostic bookkeeping only; losing an
-            # update to it costs nothing durable.
-            depth = self._queue.qsize()
-            # FAULT-WINDOW: window-c (note-depth-l2)
-            if depth > self.queue_high_water:
-                # FAULT-WINDOW: window-c (note-depth-l3)
-                self.queue_high_water = depth
 
     @property
     def rotation_due(self) -> bool:
@@ -1566,7 +1553,10 @@ class SegmentWriter:
         Cheap and side-effect free, so a collector can ask on every event. The
         thresholds are policy inputs rather than a hard-coded cadence, and with
         none set this is always False — the caller decides, and gets a
-        deterministic answer either way.
+        deterministic answer either way. `EventArchive`'s own defaults (see
+        `EventArchive.__init__`) are no longer `None`: A3 requires a bounded
+        default, not merely a bindable one, so a caller that never thinks
+        about rotation still gets it.
         """
         if self.state is not SegmentState.OPEN:
             return False
@@ -1583,98 +1573,6 @@ class SegmentWriter:
                 return False
         return False
 
-    # -- writer side -----------------------------------------------------------
-    def _run(self) -> None:
-        while True:
-            try:
-                # Chained assignment: `self._claimed` is set in the SAME
-                # source line, the same bytecode boundary, as the queue
-                # removal itself -- there is no separate statement between
-                # "the item left the queue" and "the item is durably claimed"
-                # for a fault to land in.
-                item = self._claimed = self._queue.get(timeout=0.05)
-            except queue.Empty:
-                if self._shutdown.is_set() and self._queue.empty():
-                    return
-                continue
-            # KALSHI-ARCHIVE-CORE-REMEDIATION-003B A2: the item is
-            # irreversibly OUT of the queue the instant `.get()` above
-            # returns -- but until now, NOTHING durable recorded that fact
-            # until `dequeued += 1` two lines below ran. A fault landing in
-            # that exact gap (the true window; see `tests/meta_runtime/
-            # queue_gap_locator.py`) was invisible to `written`, to
-            # `failed_after_accept`, to `pending` (the item had already left
-            # the queue `_measure_pending` scans) AND to `dequeued` itself --
-            # the one counter defect F added specifically to make this window
-            # visible sits one statement too late to see a fault landing
-            # before its own increment.
-            #
-            # `self._claimed` (set above, in the SAME statement as the queue
-            # removal) is a plain, unlocked attribute -- CPython attribute
-            # stores are atomic under the GIL, and a reviewer specifically
-            # flagged that this region must NOT gain a new BLOCKING mutex
-            # acquire (63bf0d1 had none here; introducing one would let a
-            # slow/contended lock stall every dequeue). The transfer of
-            # ownership is represented structurally instead: from the moment
-            # the item leaves the queue until it reaches a terminal
-            # disposition (write success, write failure, or the writer
-            # thread dying), `self._claimed` durably holds a reference any
-            # thread — including close()'s — can observe. `_measure_pending`
-            # treats a non-empty `_claimed` exactly like an item still
-            # sitting in the queue. `dequeued` still books at the exact same
-            # place it always did — no increment moved earlier — but it is
-            # now structurally impossible for an item to be neither in the
-            # queue, nor claimed, nor terminally disposed of.
-            with self._lock:
-                self.accounting.dequeued += 1
-            try:
-                self._write_one(item)
-            except BaseException as exc:            # noqa: BLE001 - recorded
-                self._writer_error = exc
-                self.state = SegmentState.INVALID
-                with self._lock:
-                    self.accounting.fail_after_accept(RejectReason.WRITER_FAILED)
-                # Stop. Continuing appends more records after a half-written
-                # one and amplifies the corruption.
-                return
-            finally:
-                self._claimed = _UNCLAIMED
-                self._queue.task_done()
-
-    def _write_one(self, envelope_fields: dict) -> None:
-        if self.pre_write_hook is not None:
-            self.pre_write_hook(self)
-        try:
-            record = build_record(
-                envelope_fields=envelope_fields, segment_id=self.segment_id,
-                environment=self.environment,
-                previous_record_digest=self._prev_digest,
-                receive_ordinal=self._ordinal)
-            line = canonical_bytes(record)
-        except Exception:                       # noqa: BLE001 - booked, not raised
-            # Any serialisation failure, not only CanonicalError. Catching the
-            # narrow type let `decimal.InvalidOperation` — an ArithmeticError —
-            # escape into the writer thread and destroy the whole segment over
-            # one payload. Admission already refuses non-canonical values, so
-            # reaching here is a defect; it must still be contained.
-            with self._lock:
-                self.accounting.fail_after_accept(
-                    RejectReason.SERIALIZATION_FAILURE)
-            return
-        self._fh.write(line + b"\n")
-        self._since_flush += 1
-        if self._since_flush >= self._flush_every:
-            self._fh.flush()
-            self._since_flush = 0
-        digest = record["record_digest"]
-        self._first_digest = self._first_digest or digest
-        self._last_digest = digest
-        self._stream_digest = fold_stream_digest(self._stream_digest, digest)
-        self._prev_digest = digest
-        self._ordinal += 1
-        with self._lock:
-            self.accounting.written += 1
-
     # -- lifecycle -------------------------------------------------------------
     def close(self) -> dict:
         """CLOSING → reconcile → durability → manifest publish → CLOSED.
@@ -1688,95 +1586,25 @@ class SegmentWriter:
                 return self.read_manifest()
             return self._close_locked()
 
-    def _seal_admissions(self) -> None:
-        """Stop new admissions, then WAIT for the ones already inside.
-
-        Steps 1 and 2 of the close sequence, and the reason they are separate:
-        a producer between "attempted" and its terminal stage is not visible in
-        `_pending_waiters` (which only counted producers blocked on a full
-        queue), so close() reconciled against a counter that was still moving.
-        Sealing is idempotent — close() is reachable from several threads.
-
-        KALSHI-ARCHIVE-CORE-REMEDIATION-003 defect G: unreconciled
-        `_inflight` residue used to RAISE past the seal deadline -- and, from
-        `close()`'s OLD shape, that raise happened OUTSIDE `_close_locked`'s
-        try/except, so the flock and the still-open gzip handle were never
-        released. `close()` (and therefore any operator recovery path built
-        on it) permanently depended on this diagnostic counter reaching
-        zero, forever, with no way out. Mirrors `_close_stages`'s own
-        precedent for `admission_holds()` (see `admission_drift`): residue
-        here is RECORDED as a diagnostic (`inflight_drift`), not fatal, and
-        the close sequence proceeds -- by this point the seal deadline
-        (`enqueue_timeout + 5.0`, already generous) has passed, so a
-        producer still showing as "inside" is a leaked counter (its own
-        thread died or was interrupted before decrementing), not one still
-        genuinely executing concurrently with what follows.
-        """
-        with self._admission:
-            self._sealed = True
-        deadline = time.monotonic() + self._enqueue_timeout + 5.0
-        while True:
-            with self._admission:
-                if self._inflight == 0:
-                    return
-            if time.monotonic() > deadline:
-                with self._admission:
-                    self.inflight_drift = self._inflight
-                return
-            time.sleep(0.002)
-
-    def _measure_pending(self) -> int:
-        """Whatever the writer never drained or never terminally disposed
-        of. Measured, not inferred.
-
-        KALSHI-ARCHIVE-CORE-REMEDIATION-003B A2: an item the writer thread
-        already removed from the queue (`self._claimed`, see `_run`) but
-        never reached a terminal disposition for -- because the thread died
-        in the gap between the removal and its own bookkeeping -- is exactly
-        as undelivered as one that never left the queue. Counting it here,
-        the same way, means `clean()` (gated on `pending == 0`) correctly
-        refuses to publish over this loss, without moving `dequeued`'s own
-        increment or inventing a second, competing notion of "pending".
-        """
-        drained = 0
-        while True:
-            try:
-                self._queue.get_nowait()
-                drained += 1
-            except queue.Empty:
-                break
-        if self._claimed is not _UNCLAIMED:
-            drained += 1
-            self._claimed = _UNCLAIMED
-        with self._lock:
-            self.accounting.pending += drained
-        return drained
-
     def _close_locked(self) -> dict:
         try:
-            # KALSHI-ARCHIVE-CORE-REMEDIATION-003 defect G: `_seal_admissions`
-            # (and the INVALID-writer short-circuit that used to sit beside
-            # it in `close()`) now run INSIDE this try, not before it, so
-            # ANY failure from either path -- including the seal deadline,
-            # which used to raise straight out of `close()` with the flock
-            # and the gzip handle still open forever -- reaches the SAME
-            # `except BaseException: self._release_lock()` every other
-            # close-time failure already does.
-            self._seal_admissions()
-            if self.state is SegmentState.INVALID:
-                # This branch short-circuited before the drain ever ran, so a
-                # writer-thread failure left every still-queued event — 197 of
-                # 200 in the reviewer's probe — in no terminal stage at all,
-                # and whether it did depended on a race between two lines in
-                # `_run`.
-                self._shutdown.set()
-                thread = getattr(self, "_thread", None)
-                if thread is not None and thread.is_alive():
-                    thread.join(timeout=1.0)
-                self._measure_pending()
-                raise SegmentError(
-                    f"segment is INVALID and cannot be closed: "
-                    f"{self._writer_error!r} {self.accounting.to_dict()}")
+            # A1: sealing IS taking `self._lock` and moving `self.state` off
+            # OPEN -- there is no separate admission protocol left to seal.
+            # Any `submit()` still running is, structurally, still holding
+            # this same lock; `close()` cannot reach this line until it does
+            # not, at which point that `submit()` has ALREADY reached one of
+            # its terminal states (written, or a typed rejection) with the
+            # lock released. There is no "still inflight" state for a
+            # producer to be in by the time `_close_locked` acquires the lock
+            # below -- the old seal-then-wait-for-`_inflight` protocol
+            # (`_seal_admissions`) existed only because admission and commit
+            # used to run on DIFFERENT threads; they are now the same call.
+            with self._lock:
+                if self.state is SegmentState.INVALID:
+                    raise SegmentError(
+                        f"segment is INVALID and cannot be closed: "
+                        f"{self._writer_error!r} {self.accounting.to_dict()}")
+                self.state = SegmentState.CLOSING
             return self._close_stages()
         except BaseException:
             # Ownership must not leak on ANY failure path, or one mid-stream
@@ -1785,36 +1613,16 @@ class SegmentWriter:
             raise
 
     def _close_stages(self) -> dict:
-        # Admissions are already sealed and every producer that was inside the
-        # protocol has reached a terminal stage (close() did that before this
-        # runs). The acceptance counters are therefore frozen from here on, and
-        # the reconciliation below is against a snapshot that cannot move.
-        with self._admission:
-            self.state = SegmentState.CLOSING
-            self._shutdown.set()
-        self._thread.join(timeout=30)
-        if self._thread.is_alive():
-            # B4: do NOT release ownership here. Releasing while the writer is
-            # still running admitted a second writer to a live segment — the
-            # exact dual-writer condition the O_EXCL lock exists to prevent,
-            # and it destroyed the segment. An unreleasable lock on a hung
-            # writer is the safer failure.
-            self.state = SegmentState.INVALID
-            self._ownership_held_by_live_writer = True
-            raise SegmentError(
-                "writer did not drain within the shutdown timeout; ownership "
-                "is deliberately NOT released while the writer thread is alive")
-        # Whatever the writer never drained is PENDING, and it is measured from
-        # the queue rather than inferred from the difference between counters —
-        # so a drift between what the writer believes and what is actually
-        # undrained is detected here instead of disappearing into the identity.
-        # ONE snapshot, taken under the lock. `reconciles()`/`clean()` read
-        # three fields without synchronisation, so the reconciliation could
-        # observe a torn triple even when every identity held.
-        self._measure_pending()
-        with self._lock:
-            snapshot = WriterAccounting(**{
-                k: v for k, v in vars(self.accounting).items()})
+        # `self.state` moved to CLOSING under `self._lock` in `_close_locked`,
+        # and every `submit()` reads `self.state` under that SAME lock before
+        # it does anything else -- so by the time this runs, no `submit()`
+        # that has not already returned can ever reach the write path again.
+        # The accounting is therefore frozen from here on: there is no
+        # background writer thread to join, no queue to drain, and no
+        # "pending" state to measure -- `WriterAccounting.pending` is always
+        # 0 by construction (see its docstring) rather than something this
+        # method has to prove.
+        snapshot = WriterAccounting(**vars(self.accounting))
         if self._writer_error is not None:
             self.state = SegmentState.INVALID
             raise SegmentError(f"writer failed: {self._writer_error!r} "
@@ -1824,32 +1632,19 @@ class SegmentWriter:
         # `pending == 0 and failed_after_accept == 0` — never on
         # `admission_holds()`. An accepted-but-unwritten event is a loss the
         # producer was told did not happen, and it must never appear behind
-        # close_status "clean": that check stays fatal.
-        #
-        # KALSHI-ARCHIVE-CORE-REMEDIATION-003 defect F: `clean()` alone can
-        # UNDERCOUNT a genuine writer-thread loss (the `_run`-gap race: an
-        # item dequeued and then lost before either `written` or
-        # `failed_after_accept` ever moves is invisible to BOTH of them, so
-        # `pending`'s queue-measurement -- which only sees items that were
-        # NEVER dequeued -- reports one fewer lost item than actually
-        # happened). `dequeue_disposition_gap()` is the independent,
-        # second-sourced check: it disagrees with `written +
-        # failed_after_accept` exactly when this happens, and gates
-        # publication too -- a genuine writer-side loss must never present a
-        # clean close just because the derived/queue-measured side of the
-        # accounting cannot see it.
-        independent_gap = snapshot.dequeue_disposition_gap()
-        if not snapshot.clean() or independent_gap != 0:
+        # close_status "clean": that check stays fatal. `failed_after_accept`
+        # is the only way that can happen now (a canonical value whose OS
+        # write itself failed, see `submit()`) -- and `submit()` already
+        # invalidates the segment the instant that occurs, so `_writer_error`
+        # above will already have raised before this is even reached whenever
+        # `failed_after_accept` is nonzero. This check stays as the second,
+        # independent gate rather than being removed, on the same fail-closed
+        # principle every other redundant check in this module follows.
+        if not snapshot.clean():
             self.state = SegmentState.INVALID
-            gap_detail = (
-                f" independent accounting shows {independent_gap} "
-                "additional item(s) durably dequeued and then lost with no "
-                "terminal booking anywhere (writer-thread run-gap);"
-                if independent_gap else "")
             raise SegmentError(
                 f"{snapshot.failed_after_accept} accepted event(s) were "
-                f"not written and {snapshot.pending} were never drained;"
-                f"{gap_detail} refusing to publish this segment as a clean "
+                f"not written; refusing to publish this segment as a clean "
                 f"close: {snapshot.to_dict()}")
         # A6 CORE PRINCIPLE: the durable/queued event state is authoritative;
         # a DIAGNOSTIC counter must never be able to make already-durable
@@ -2053,15 +1848,19 @@ class SegmentWriter:
         self._fh = None
 
     def _release_lock(self) -> None:
-        # Guard on the THREAD, not on a flag. The flag was set on exactly one
-        # of the paths where the writer can still be running, so forcing the
-        # segment INVALID from elsewhere released ownership under a live writer
-        # and admitted a second one — the dual-writer condition this lock
-        # exists to prevent.
-        thread = getattr(self, "_thread", None)
-        if thread is not None and thread.is_alive():
-            self._ownership_held_by_live_writer = True
-            return
+        # A1: there is no background writer thread to guard against any more
+        # -- `submit()` runs synchronously, under `self._lock`, on whichever
+        # caller's thread invokes it. `_close_locked` takes `self._lock` to
+        # move `self.state` off OPEN before this is ever reached, and every
+        # `submit()` re-checks `self.state` under that SAME lock before it
+        # writes a single byte -- so a `submit()` that starts AFTER the state
+        # transition is rejected outright, and one already in flight when it
+        # happened cannot still be running by the time `close()` observes the
+        # lock is free. There is no interleaving in which a second,
+        # concurrently-running `submit()` could be admitting a dual-writer
+        # condition here. `_ownership_held_by_live_writer` is kept as an
+        # always-False attribute, not removed, so any external check of it
+        # stays source-compatible.
         self._ownership_held_by_live_writer = False
         self._close_fh()
         fd = getattr(self, "_lock_fd", None)
@@ -2192,11 +1991,26 @@ def _decompress_prefix(data: bytes, *, max_decoded_bytes=None):
     """Decompress as far as the stream is intact, OR until `max_decoded_bytes`
     of OUTPUT has been produced, whichever comes first.
 
-    Returns `(bytes, consumed, eof, capped)`. `capped` is True exactly when
-    the byte ceiling stopped this call before the stream's own EOF (or
-    fault) was reached -- the caller (`read_segment_records`) surfaces that
-    as a residue classification distinct from an ordinary torn/malformed
-    stream (see A6), not as a silent truncation indistinguishable from one.
+    Returns `(bytes, consumed, eof, capped, errored)`.
+
+    `capped` is True exactly when the byte ceiling stopped this call before
+    the stream's own EOF (or fault) was reached -- the caller
+    (`read_segment_records`) surfaces that as a residue classification
+    distinct from an ordinary torn/malformed stream (see A6), not as a
+    silent truncation indistinguishable from one.
+
+    `errored` is True exactly when a genuine `zlib`/`EOFError` fault
+    occurred somewhere in this call (which routes to `_salvage_prefix`, see
+    below) -- as opposed to this call simply running out of INPUT with no
+    fault at all, which happens on every call against a LIVE, still-growing
+    segment: `gzip.GzipFile.flush()` (what `SegmentWriter` calls on its
+    flush cadence) emits a `Z_SYNC_FLUSH` marker, never a gzip trailer, so
+    `dec.eof` never becomes true for a segment that has not been `close()`d
+    yet -- `not eof` on its own conflated "genuinely torn/corrupted" with
+    "this is a live segment, working exactly as intended" (KALSHI-ARCHIVE-
+    REPLAY-INTEGRITY-001 A4). `errored` is the caller's way to tell those
+    apart: no fault ever occurred, so whatever prefix decoded is exactly as
+    trustworthy as a fully-terminated stream's.
 
     The previous attempt at recovering a torn stream was dead code, and the
     measurement said so: it caught the failing 64 KiB chunk and re-fed it in
@@ -2236,7 +2050,7 @@ def _decompress_prefix(data: bytes, *, max_decoded_bytes=None):
                 pos += len(pending)
             budget = max_decoded_bytes - total
             if budget <= 0:
-                return b"".join(out), consumed_input, False, True
+                return b"".join(out), consumed_input, False, True, False
             piece = dec.decompress(pending, budget)
             out.append(piece)
             total += len(piece)
@@ -2250,15 +2064,32 @@ def _decompress_prefix(data: bytes, *, max_decoded_bytes=None):
             if dec.eof:
                 break
         if not dec.eof:
-            return b"".join(out), consumed_input, False, False
+            # Clean exhaustion, zero faults -- see `errored`'s docstring
+            # above (the live/`Z_SYNC_FLUSH` case). `errored=False`.
+            return b"".join(out), consumed_input, False, False, False
         out.append(dec.flush())
     except (zlib.error, EOFError):
         return _salvage_prefix(data, max_decoded_bytes=max_decoded_bytes)
-    consumed = len(data) - len(dec.unused_data)
-    return b"".join(out), consumed, True, False
+    # KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A4: `pos`, not `len(data)`. A
+    # multi-member gzip file (a legacy collector may append several members
+    # to one events file) reaches `dec.eof` after consuming only the FIRST
+    # member -- `pos` is how much of `data` this call actually fed to the
+    # decompressor; anything beyond `pos` (member 2..N) was never offered to
+    # it at all and is NOT reflected in `dec.unused_data`. The previous
+    # `len(data) - len(dec.unused_data)` treated every one of those unfed
+    # trailing bytes as "consumed", so the caller's `data = data[consumed:]`
+    # skipped straight past every subsequent member -- a 300-member legacy
+    # file yielded 1 of 300 records through `archive-migrate-legacy`.
+    consumed = pos - len(dec.unused_data)
+    return b"".join(out), consumed, True, False, False
 
 
 def _salvage_prefix(data: bytes, *, max_decoded_bytes=None):
+    """`errored` is always `True` in every return from this function: it is
+    reachable ONLY from `_decompress_prefix`'s `except (zlib.error,
+    EOFError)` handler, so by construction a genuine fault already occurred
+    before this ever runs.
+    """
     import zlib
 
     if max_decoded_bytes is None:
@@ -2267,13 +2098,15 @@ def _salvage_prefix(data: bytes, *, max_decoded_bytes=None):
     dec = zlib.decompressobj(31)
     out = []
     total = 0
+    fed = 0
     for i in range(0, len(data), _SALVAGE_CHUNK):
         pending = data[i:i + _SALVAGE_CHUNK]
+        fed = i + len(pending)
         try:
             while True:
                 budget = max_decoded_bytes - total
                 if budget <= 0:
-                    return b"".join(out), i, False, True
+                    return b"".join(out), i, False, True, True
                 piece = dec.decompress(pending, budget)
                 out.append(piece)
                 total += len(piece)
@@ -2289,9 +2122,14 @@ def _salvage_prefix(data: bytes, *, max_decoded_bytes=None):
             out.append(dec.flush())
         except (zlib.error, EOFError):
             pass
-        consumed = len(data) - len(dec.unused_data)
-        return b"".join(out), consumed, True, False
-    return b"".join(out), len(data), False, False
+        # KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A4: `fed`, not `len(data)` --
+        # the SAME multi-member miscount as `_decompress_prefix`'s fix above,
+        # mirrored here: `fed` is how many bytes THIS loop actually offered
+        # to the decompressor before it reached `dec.eof`, not how many bytes
+        # `data` happens to hold in total.
+        consumed = fed - len(dec.unused_data)
+        return b"".join(out), consumed, True, False, True
+    return b"".join(out), len(data), False, False, True
 
 
 def read_segment_records(events_path: Path) -> list:
@@ -2315,17 +2153,29 @@ def read_segment_records(events_path: Path) -> list:
     # 1 GiB everywhere else in this module.
     data, why = evidence_fs.bounded_read(events_path)
     if why is not None:
-        # Missing file, a directory in place of it, a non-regular-file
-        # refusal, or over the bound -- a reader that raises here takes the
-        # whole verdict down, so this stays the same total, non-raising
-        # empty-list contract the previous `except OSError: return []` had.
-        # Diagnostic attributes reset too -- a caller reading them after
-        # this branch must not see a PREVIOUS call's leftover state.
+        # KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A4: this branch used to be
+        # reached identically by "the file does not exist" (an ordinary,
+        # brand-new OPEN segment with nothing written yet) AND "the file
+        # exists but could not be read" (permission denied, or any other
+        # `evidence_fs.bounded_read` refusal) -- both left every diagnostic
+        # attribute at the SAME "nothing to see" defaults, including
+        # `stream_fully_decoded = True`. `_classify_residue` (below) trusted
+        # that flag, so a chmod-000 residue -- a file that VISIBLY EXISTS
+        # (`verify_segment`'s `allow_open` branch only reaches this function
+        # after its own `presence()` check already confirmed that) but
+        # cannot be READ -- verified `chain_ok=True` over zero recovered
+        # records and was classified `RECOVERABLE_INTACT`: a fail-OPEN
+        # verdict for evidence nobody could actually prove the content of.
+        # `unreadable=True` here is what `_classify_residue` now checks
+        # FIRST, ahead of everything else, so this case is FAIL-CLOSED
+        # (`RESIDUE_UNREADABLE`) instead of indistinguishable from empty.
         read_segment_records.last_unreadable = 0
         read_segment_records.capped = False
         read_segment_records.stream_fully_decoded = True
         read_segment_records.decoded_bytes = 0
         read_segment_records.original_size = 0
+        read_segment_records.decode_had_error = False
+        read_segment_records.unreadable = True
         return []
     original_size = len(data)
     text = ""
@@ -2339,7 +2189,21 @@ def read_segment_records(events_path: Path) -> list:
     # a different, chain-level finding `verify_segment`'s residue
     # classification checks separately -- this flag is about the BYTES
     # only, never inferred from parsed record content.
+    #
+    # KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A4: `stream_fully_decoded` alone
+    # can no longer decide "torn" vs "intact" -- see `decode_had_error`
+    # below, and `_decompress_prefix`'s docstring, for why a LIVE segment
+    # legitimately never reaches `dec.eof` (`Z_SYNC_FLUSH`, not a trailer)
+    # and must not be classified the same way a genuinely corrupted one is.
     stream_fully_decoded = True
+    # True the instant ANY `_decompress_prefix` call in this loop routed
+    # through `_salvage_prefix` -- i.e. a REAL `zlib`/`EOFError` fault
+    # occurred somewhere in this file, as opposed to this read simply
+    # running out of available bytes with zero faults (a live, still-open
+    # segment; see A4). `_classify_residue` uses this, not
+    # `stream_fully_decoded`, to decide whether a prefix that did not reach
+    # a formal end-of-stream is corruption or merely "not finalised yet".
+    decode_had_error = False
     while data:
         # KALSHI-ARCHIVE-CORE-REMEDIATION-003B A5: the budget is CUMULATIVE
         # across every gzip member in this one events file (see
@@ -2352,8 +2216,9 @@ def read_segment_records(events_path: Path) -> list:
             capped = True
             stream_fully_decoded = False
             break
-        decoded, consumed, eof, hit_cap = _decompress_prefix(
+        decoded, consumed, eof, hit_cap, errored = _decompress_prefix(
             data, max_decoded_bytes=remaining_budget)
+        decode_had_error = decode_had_error or errored
         total_decoded += len(decoded)
         try:
             text += decoded.decode("utf-8")
@@ -2394,6 +2259,8 @@ def read_segment_records(events_path: Path) -> list:
     read_segment_records.stream_fully_decoded = stream_fully_decoded
     read_segment_records.decoded_bytes = total_decoded
     read_segment_records.original_size = original_size
+    read_segment_records.decode_had_error = decode_had_error
+    read_segment_records.unreadable = False
     return records
 
 
@@ -2402,6 +2269,8 @@ read_segment_records.capped = False
 read_segment_records.stream_fully_decoded = True
 read_segment_records.decoded_bytes = 0
 read_segment_records.original_size = 0
+read_segment_records.decode_had_error = False
+read_segment_records.unreadable = False
 
 
 # --- verification -----------------------------------------------------------------
@@ -2433,6 +2302,17 @@ RESIDUE_RECOVERABLE_INTACT = "recoverable_intact"
 RESIDUE_TORN_PARTIAL = "torn_partial"
 RESIDUE_MALFORMED = "malformed"
 RESIDUE_UNSAFE_OVER_LIMIT = "unsafe_over_limit"
+# KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A4: a FIFTH, FAIL-CLOSED classification
+# for a residue that VISIBLY EXISTS (`verify_segment`'s `presence()` check
+# already confirmed that before this is ever reached) but could not be READ
+# at all -- permission denied, or any other `evidence_fs.bounded_read`
+# refusal. Previously indistinguishable from a genuinely empty, brand-new
+# OPEN segment (both left `read_segment_records`'s diagnostics at the same
+# "nothing to see" defaults), which let a chmod-000 residue certify
+# `chain_valid=True` and classify `RECOVERABLE_INTACT` -- a fail-OPEN verdict
+# for evidence nobody could prove the content of. This is fail-CLOSED: an
+# operator must never read "intact" for content that was never examined.
+RESIDUE_UNREADABLE = "unreadable"
 
 
 def _classify_residue(*, chain_ok: bool) -> str:
@@ -2442,21 +2322,42 @@ def _classify_residue(*, chain_ok: bool) -> str:
     the SAME file, with nothing else calling `read_segment_records` in
     between.
     """
+    if read_segment_records.unreadable:
+        # Checked FIRST, ahead even of `capped`: a file that could not be
+        # read at all was never examined enough to know whether it is over
+        # any limit. See `RESIDUE_UNREADABLE`'s module-level comment.
+        return RESIDUE_UNREADABLE
     if read_segment_records.capped:
-        # Checked FIRST: a decoded-byte/record-count ceiling is a safety
-        # refusal, not an ordinary content finding -- it must never be
-        # downgraded to "torn" or "intact" just because SOME prefix was
-        # recoverable before the ceiling fired.
+        # A decoded-byte/record-count ceiling is a safety refusal, not an
+        # ordinary content finding -- it must never be downgraded to "torn"
+        # or "intact" just because SOME prefix was recoverable before the
+        # ceiling fired.
         return RESIDUE_UNSAFE_OVER_LIMIT
     if not read_segment_records.stream_fully_decoded:
-        if read_segment_records.decoded_bytes == 0 and read_segment_records.original_size > 0:
-            # Nothing at all was recoverable from a genuinely non-empty
-            # input, and the stream never reached its own EOF -- the
-            # signature of input that was never a valid gzip stream to
-            # begin with (a stray/corrupted file), not a real write that
-            # simply stopped partway through one.
-            return RESIDUE_MALFORMED
-        return RESIDUE_TORN_PARTIAL
+        # KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A4: `stream_fully_decoded` on
+        # its own used to mean "torn" here -- but a LIVE, still-open segment
+        # NEVER reaches a formal gzip trailer (`GzipFile.flush()` emits
+        # `Z_SYNC_FLUSH`, not one), so `RESIDUE_RECOVERABLE_INTACT` was
+        # structurally unreachable for the single most common residue an
+        # operator actually inspects: a collector's current-hour segment
+        # while it is still running. `decode_had_error` is what actually
+        # distinguishes them: it is True only when a REAL `zlib`/`EOFError`
+        # fault occurred (routing through `_salvage_prefix`); a clean read
+        # that simply ran out of available bytes with zero faults is not
+        # corruption, it is "not finalised yet" -- and falls through to the
+        # SAME last-line/chain checks an intact read gets, below.
+        if read_segment_records.decode_had_error:
+            if (read_segment_records.decoded_bytes == 0
+                    and read_segment_records.original_size > 0):
+                # Nothing at all was recoverable from a genuinely non-empty
+                # input, and a fault occurred before any of it decoded -- the
+                # signature of input that was never a valid gzip stream to
+                # begin with (a stray/corrupted file), not a real write that
+                # simply stopped partway through one.
+                return RESIDUE_MALFORMED
+            return RESIDUE_TORN_PARTIAL
+        # No fault occurred; this read merely ran out of bytes. Fall through
+        # to the SAME content-level checks a fully-decoded stream gets.
     if read_segment_records.last_unreadable > 0:
         # The compressed bytes decoded to completion, but at least one
         # decoded LINE was not parseable canonical JSON -- content-level
@@ -2483,12 +2384,12 @@ class SegmentVerdict:
     records_expected: int | None = None
     records_read: int = 0
     chain_valid: bool = False
-    # KALSHI-ARCHIVE-CORE-REMEDIATION-003B A6: only set for a residue
+    # KALSHI-ARCHIVE-CORE-REMEDIATION-003B A6 / A4: only set for a residue
     # verdict (`allow_open=True`, no manifest). One of
     # `RESIDUE_RECOVERABLE_INTACT` / `RESIDUE_TORN_PARTIAL` /
-    # `RESIDUE_MALFORMED` / `RESIDUE_UNSAFE_OVER_LIMIT`, or `None` for an
-    # ordinary (committed, manifest-bearing) verdict where the concept does
-    # not apply.
+    # `RESIDUE_MALFORMED` / `RESIDUE_UNSAFE_OVER_LIMIT` / `RESIDUE_UNREADABLE`,
+    # or `None` for an ordinary (committed, manifest-bearing) verdict where
+    # the concept does not apply.
     residue_classification: str | None = None
     first_digest_match: bool = False
     last_digest_match: bool = False
@@ -2680,7 +2581,14 @@ def verify_segment(directory, *, environment: str, allow_open: bool = False,
             classification = _classify_residue(chain_ok=residue_chain.ok)
             residue_reasons = [
                 "segment has no manifest and is therefore not committed"]
-            if classification == RESIDUE_UNSAFE_OVER_LIMIT:
+            if classification == RESIDUE_UNREADABLE:
+                residue_reasons.append(
+                    "UNREADABLE_RESIDUE: the event file exists but could not "
+                    "be read (permission denied, or another filesystem "
+                    "refusal) -- FAIL-CLOSED. This is NOT reported as "
+                    "RECOVERABLE_INTACT: content that was never examined "
+                    "must never be certified as intact")
+            elif classification == RESIDUE_UNSAFE_OVER_LIMIT:
                 residue_reasons.append(
                     "UNSAFE_OVER_LIMIT_RESIDUE: this residue's decoded size "
                     "or record count exceeded the safety ceiling "

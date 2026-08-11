@@ -212,7 +212,21 @@ def _run(args) -> int:
         # letting it look like a `close()` failure.
         late_fault = f"{type(e).__name__} outside close(): {e}"
 
-    bomb_thread.join(timeout=0.5)  # best-effort; it is a daemon thread
+    try:
+        # KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A1: the docstring above always
+        # claimed this join was covered ("while this process is joining the
+        # bomber thread... is wrapped"), but the code never actually wrapped
+        # it -- a latent gap that stayed invisible while `close()` itself
+        # took several seconds (the old queue-based writer's admission-seal
+        # wait), which gave every bomb thread time to fire well before this
+        # line was ever reached. The synchronous writer's `close()` returns
+        # almost immediately, so a bomb can now genuinely still be pending
+        # when this line runs; without this `try`, that interrupt propagated
+        # as an uncaught `KeyboardInterrupt` and crashed the whole trial
+        # script instead of being classified.
+        bomb_thread.join(timeout=0.5)  # best-effort; it is a daemon thread
+    except BaseException as e:
+        late_fault = late_fault or f"{type(e).__name__} joining bomber: {e}"
 
     result = {
         "target": args.target,

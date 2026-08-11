@@ -68,23 +68,15 @@ class FaultTestEntry:
 # `writer_thread_asyncexc_trial`) with no ledger entry.
 LEDGER: tuple[FaultTestEntry, ...] = (
     # -- tests/test_kalshi_async_accounting_harness_001.py -----------------
-    FaultTestEntry(
-        "tests/test_kalshi_async_accounting_harness_001.py",
-        "TestFourWindowsReproduceDeterministically",
-        SYNTHETIC_STATE_MACHINE_FAULT, "sys.settrace (LineBoundaryInjector)",
-        "the four submit()-side FAULT-WINDOW boundaries, each an exact "
-        "chosen source line"),
-    FaultTestEntry(
-        "tests/test_kalshi_async_accounting_harness_001.py",
-        "TestNegativeControlsDoNotOverFire",
-        SYNTHETIC_STATE_MACHINE_FAULT, "sys.settrace (LineBoundaryInjector)",
-        "negative control: injection at a line NOT inside a FAULT-WINDOW"),
-    FaultTestEntry(
-        "tests/test_kalshi_async_accounting_harness_001.py",
-        "TestDiscriminationDeterministic",
-        SYNTHETIC_STATE_MACHINE_FAULT, "sys.settrace (LineBoundaryInjector)",
-        "planted-bad reference shim vs production, same deterministic "
-        "mechanism applied to both for a fair comparison"),
+    # KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A1/A7: `TestFourWindowsReproduce
+    # Deterministically`/`TestNegativeControlsDoNotOverFire`/
+    # `TestDiscriminationDeterministic` (the `# FAULT-WINDOW:`-marker-based
+    # sections) are RETIRED -- the four submit()-side boundaries they
+    # targeted no longer exist as separate source lines; `submit()` is now
+    # one lock-held call. See that test module's own docstring for the
+    # full mapping. The REALISTIC_SIGNAL_FAULT sections below (unchanged
+    # mechanism, still real subprocess + real SIGINT/asyncexc against the
+    # real, now-synchronous `SegmentWriter.submit()`) are kept.
     FaultTestEntry(
         "tests/test_kalshi_async_accounting_harness_001.py",
         "TestRealSignalReproducesTheSameClass."
@@ -115,120 +107,68 @@ LEDGER: tuple[FaultTestEntry, ...] = (
         "statistical campaign the report's rate numbers were measured with"),
 
     # -- tests/test_kalshi_meta_runtime_independent_accounting_001.py ------
+    # KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A1/A7: RETIRED AND REPLACED. The
+    # writer-thread-targeted `sys.settrace` entries this section used to list
+    # (`TestWriterThreadFaultCatchesRealLoss`, `TestDeadWriterThreadDiagnostic
+    # StateLies`, `TestTaskDoneWindow...`, `TestProducerInterruptionAlso
+    # Reconciles`) targeted `SegmentWriter._run`'s background writer thread,
+    # which no longer exists -- `submit()` now writes synchronously, on the
+    # caller's own thread. The replacement harness
+    # (`tests/meta_runtime/independent_accounting.py`) reconciles an
+    # admission ledger against a FRESH RE-DECODE OF THE FILE (never
+    # `writer.accounting`), and the replacement tests below are a real
+    # (planted-defect / OS-failure) discrimination pair rather than a
+    # `sys.settrace`-injected one -- see that test module's own docstring for
+    # the full old-property -> replacement-property mapping.
     FaultTestEntry(
         "tests/test_kalshi_meta_runtime_independent_accounting_001.py",
-        "TestWriterThreadFaultCatchesRealLoss."
-        "test_ledger_disagrees_with_the_durable_disposition",
-        SYNTHETIC_STATE_MACHINE_FAULT, "sys.settrace (LineBoundaryInjector)",
-        "writer-thread run-gap; exact chosen line (nearest try: to "
-        "_write_one)"),
+        "TestSubmitFailureIsImmediatelyVisible."
+        "test_a_write_failure_invalidates_the_segment_in_the_same_call",
+        SYNTHETIC_STATE_MACHINE_FAULT,
+        "test-owned replacement of self._fh with an object whose write() "
+        "always raises OSError",
+        "the synchronous replacement for the old writer-thread OS-failure "
+        "class: a write fault is now caught, and the segment invalidated, "
+        "inside the SAME call that experienced it"),
     FaultTestEntry(
         "tests/test_kalshi_meta_runtime_independent_accounting_001.py",
-        "TestWriterThreadFaultCatchesRealLoss."
-        "test_productions_own_derived_identity_reports_nothing_wrong",
-        SYNTHETIC_STATE_MACHINE_FAULT, "sys.settrace (LineBoundaryInjector)",
-        "same injection as above, different assertion"),
-    FaultTestEntry(
-        "tests/test_kalshi_meta_runtime_independent_accounting_001.py",
-        "TestWriterThreadFaultCatchesRealLoss."
-        "test_close_undercounts_the_loss_in_its_own_error_message",
-        SYNTHETIC_STATE_MACHINE_FAULT, "sys.settrace (LineBoundaryInjector)",
-        "same injection as above, different assertion"),
-    FaultTestEntry(
-        "tests/test_kalshi_meta_runtime_independent_accounting_001.py",
-        "TestDeadWriterThreadDiagnosticStateLies."
-        "test_state_and_healthy_do_not_reflect_a_dead_writer_thread",
-        SYNTHETIC_STATE_MACHINE_FAULT, "sys.settrace (LineBoundaryInjector)",
-        "same injection, diagnostic-surface assertion"),
-    FaultTestEntry(
-        "tests/test_kalshi_meta_runtime_independent_accounting_001.py",
-        "TestPlantedDerivedIdentityFailsTheMetaTest."
-        "test_the_derived_accepted_identity_is_the_exact_design_that_fails",
-        SYNTHETIC_STATE_MACHINE_FAULT, "sys.settrace (LineBoundaryInjector)",
-        "same injection, discrimination-proof assertion"),
-    FaultTestEntry(
-        "tests/test_kalshi_meta_runtime_independent_accounting_001.py",
-        "TestTaskDoneWindowDoesNotLoseEvidenceButStillKillsTheThread."
-        "test_fault_at_task_done_writes_the_record_but_still_kills_the_thread",
-        SYNTHETIC_STATE_MACHINE_FAULT, "sys.settrace (LineBoundaryInjector)",
-        "second writer-thread window, task_done()"),
-    FaultTestEntry(
-        "tests/test_kalshi_meta_runtime_independent_accounting_001.py",
-        "TestProducerInterruptionAlsoReconciles."
-        "test_a_producer_side_fault_still_reconciles_cleanly",
-        SYNTHETIC_STATE_MACHINE_FAULT, "sys.settrace (target_marker)",
-        "producer-side window-a, restated for the independent-ledger check"),
+        "TestPlantedBadAccountingFailsTheMetaTest."
+        "test_a_bookkeeping_only_increment_fools_disposition_holds_but_not_reconcile",
+        SYNTHETIC_STATE_MACHINE_FAULT,
+        "test-owned direct manipulation of WriterAccounting.written "
+        "(no corresponding write)",
+        "discrimination case: WriterAccounting.disposition_holds() is a "
+        "tautology and cannot see this planted defect; the independent, "
+        "file-re-read reconciliation does"),
 
-    # -- this milestone's own new fault tests -------------------------------
+    # -- tests/test_kalshi_meta_runtime_admission_close_race_001.py --------
+    # KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A1/A7: RETIRED AND REPLACED. The
+    # queue-ownership admission/close race this section used to reproduce
+    # (`ControlledAdmission`/`SlowIterationMapping`/`BusyThreadPool` against
+    # `_admit`/`_seal_admissions`) has no analogue: `submit()` and `close()`
+    # are now mutually exclusive on one lock, with no asynchronous admission
+    # step for either mechanism to hold a thread inside. The replacement
+    # tests use a REAL held producer thread (via `pre_write_hook`, a
+    # legitimate, already-existing test seam) to prove the two calls
+    # genuinely cannot interleave.
     FaultTestEntry(
         "tests/test_kalshi_meta_runtime_admission_close_race_001.py",
-        "TestControlledPauseAcceptsAfterCloseIsClean."
-        "test_seal_gives_up_while_the_producer_is_provably_still_alive",
+        "TestSubmitAndCloseAreMutuallyExclusive."
+        "test_close_never_overlaps_a_running_submit",
         SYNTHETIC_STATE_MACHINE_FAULT,
-        "test-owned module-level monkeypatch of canonicalize_or_reason "
-        "(threading.Event-gated block)",
-        "a controlled pause, not an exception -- proves the SCHEDULING "
-        "shape can occur, not how often a real process hits it"),
+        "test-owned pre_write_hook (threading.Event-gated block) inside a "
+        "real producer thread's submit() call",
+        "a controlled pause, not an exception -- proves close() genuinely "
+        "blocks on self._lock behind a still-running submit()"),
     FaultTestEntry(
         "tests/test_kalshi_meta_runtime_admission_close_race_001.py",
-        "TestControlledPauseAcceptsAfterCloseIsClean."
-        "test_desired_property_no_late_acceptance_after_a_clean_close",
+        "TestSubmitAndCloseAreMutuallyExclusive."
+        "test_no_late_acceptance_after_a_clean_close",
         SYNTHETIC_STATE_MACHINE_FAULT,
-        "test-owned module-level monkeypatch of canonicalize_or_reason",
-        "xfail(strict=True): the desired property, currently false"),
-    FaultTestEntry(
-        "tests/test_kalshi_meta_runtime_admission_close_race_001.py",
-        "TestGenuinelySlowPayloadAlsoRaces."
-        "test_a_legal_but_slow_iterating_payload_still_races_the_seal",
-        SYNTHETIC_STATE_MACHINE_FAULT,
-        "genuinely slow (real wall-clock) but test-constructed Mapping "
-        "iteration, no exception injected",
-        "no exception mechanism at all -- included for completeness, not "
-        "a signal/process fault; the delay is real wall-clock time but the "
-        "PAYLOAD SHAPE is synthetic, not measured from production traffic"),
-    FaultTestEntry(
-        "tests/test_kalshi_meta_runtime_admission_close_race_001.py",
-        "TestUnderSchedulerContention.test_race_reproduces_under_real_thread_contention",
-        SYNTHETIC_STATE_MACHINE_FAULT,
-        "controlled pause + real CPU-bound contending threads",
-        "the block is test-controlled; only the SCHEDULING pressure "
-        "around it is real"),
-    FaultTestEntry(
-        "tests/test_kalshi_meta_runtime_queue_gap_001.py",
-        "TestPredequeueGapEscapesProductionsOwnSecondSourcedCheck."
-        "test_dequeued_never_moves_for_the_lost_item",
-        SYNTHETIC_STATE_MACHINE_FAULT, "sys.settrace (LineBoundaryInjector)",
-        "exact chosen line: the dequeued-counter statement itself"),
-    FaultTestEntry(
-        "tests/test_kalshi_meta_runtime_queue_gap_001.py",
-        "TestPredequeueGapEscapesProductionsOwnSecondSourcedCheck."
-        "test_dequeue_disposition_gap_reports_zero_over_a_real_loss",
-        SYNTHETIC_STATE_MACHINE_FAULT, "sys.settrace (LineBoundaryInjector)",
-        "same injection, second assertion"),
-    FaultTestEntry(
-        "tests/test_kalshi_meta_runtime_queue_gap_001.py",
-        "TestPredequeueGapEscapesProductionsOwnSecondSourcedCheck."
-        "test_desired_property_close_must_refuse_this_loss_on_its_own",
-        SYNTHETIC_STATE_MACHINE_FAULT, "sys.settrace (LineBoundaryInjector)",
-        "xfail(strict=True): the desired property, currently false"),
-    FaultTestEntry(
-        "tests/test_kalshi_meta_runtime_queue_gap_001.py",
-        "TestExistingRunGapWindowStillCaughtByProductionsOwnCheck."
-        "test_the_wider_window_is_still_visible_to_dequeue_disposition_gap",
-        SYNTHETIC_STATE_MACHINE_FAULT, "sys.settrace (LineBoundaryInjector)",
-        "control: the OLD, wider window, confirming it is still caught"),
-    FaultTestEntry(
-        "tests/test_kalshi_meta_runtime_fault_classification_001.py",
-        "TestRealAsyncExcAgainstTheWriterThreadItself."
-        "test_measure_real_asyncexc_landing_rate_against_the_writer_thread",
-        REALISTIC_SIGNAL_FAULT,
-        "real ctypes.pythonapi.PyThreadState_SetAsyncExc targeted at the "
-        "WRITER thread's own OS thread id (not the main/producer thread), "
-        "subprocess + parent-enforced timeout",
-        "NEW measurement: unlike fault_trial.py's sigint/asyncexc (main "
-        "thread only), this targets the background writer thread directly "
-        "-- reports whatever landing rate is empirically observed, no "
-        "target rate is asserted"),
+        "no injection -- direct, deterministic sequencing (close(), then "
+        "submit())",
+        "THE property the retired race violated: no late ACCEPTED after a "
+        "clean close"),
     FaultTestEntry(
         "tests/test_kalshi_meta_runtime_fault_classification_001.py",
         "TestRealProcessKillMidWrite."

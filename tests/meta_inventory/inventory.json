@@ -2769,22 +2769,16 @@
         "app/realtime/legacy_import.py::_read_legacy_records",
         "app/realtime/legacy_import.py::migrate_legacy_archive",
         "app/realtime/legacy_import.py::scan_legacy",
-        "app/realtime/segment.py::SegmentWriter._admit",
         "app/realtime/segment.py::SegmentWriter._close_fh",
         "app/realtime/segment.py::SegmentWriter._close_locked",
         "app/realtime/segment.py::SegmentWriter._close_stages",
-        "app/realtime/segment.py::SegmentWriter._measure_pending",
-        "app/realtime/segment.py::SegmentWriter._note_depth",
-        "app/realtime/segment.py::SegmentWriter._reject",
         "app/realtime/segment.py::SegmentWriter._release_lock",
-        "app/realtime/segment.py::SegmentWriter._seal_admissions",
         "app/realtime/segment.py::SegmentWriter._stage",
         "app/realtime/segment.py::SegmentWriter.close",
         "app/realtime/segment.py::SegmentWriter.read_manifest",
         "app/realtime/segment.py::SegmentWriter.submit",
         "app/realtime/segment.py::WriterAccounting.admission_holds",
         "app/realtime/segment.py::WriterAccounting.clean",
-        "app/realtime/segment.py::WriterAccounting.dequeue_disposition_gap",
         "app/realtime/segment.py::WriterAccounting.disposition_holds",
         "app/realtime/segment.py::WriterAccounting.to_dict",
         "app/realtime/segment.py::_classify_residue",
@@ -2798,6 +2792,7 @@
         "app/realtime/segment.py::_structural_reason",
         "app/realtime/segment.py::assert_contained",
         "app/realtime/segment.py::build_manifest",
+        "app/realtime/segment.py::build_record",
         "app/realtime/segment.py::canonicalize_or_reason",
         "app/realtime/segment.py::containment_reason",
         "app/realtime/segment.py::fold_stream_digest",
@@ -2828,60 +2823,16 @@
           "namespace": "<builtin>"
         },
         {
-          "classification": "QUEUE-ACCOUNTING",
-          "example_chain": [
-            "archive_migrate_legacy",
-            "migrate_legacy_archive",
-            "SegmentWriter.close",
-            "SegmentWriter._close_locked",
-            "SegmentWriter._measure_pending",
-            "get_nowait(...)"
-          ],
-          "manually_bridged": false,
-          "name": "get_nowait",
-          "namespace": "<chained>"
-        },
-        {
           "classification": "HASHING",
           "example_chain": [
             "archive_migrate_legacy",
             "migrate_legacy_archive",
-            "SegmentWriter.close",
-            "SegmentWriter._close_locked",
-            "SegmentWriter._close_stages",
-            "verify_chain",
+            "SegmentWriter.submit",
             "fold_stream_digest",
             "hexdigest(...)"
           ],
           "manually_bridged": false,
           "name": "hexdigest",
-          "namespace": "<chained>"
-        },
-        {
-          "classification": "QUEUE-ACCOUNTING",
-          "example_chain": [
-            "archive_migrate_legacy",
-            "migrate_legacy_archive",
-            "SegmentWriter.submit",
-            "SegmentWriter._admit",
-            "put_nowait(...)"
-          ],
-          "manually_bridged": false,
-          "name": "put_nowait",
-          "namespace": "<chained>"
-        },
-        {
-          "classification": "QUEUE-ACCOUNTING",
-          "example_chain": [
-            "archive_migrate_legacy",
-            "migrate_legacy_archive",
-            "SegmentWriter.submit",
-            "SegmentWriter._admit",
-            "SegmentWriter._note_depth",
-            "qsize(...)"
-          ],
-          "manually_bridged": false,
-          "name": "qsize",
           "namespace": "<chained>"
         },
         {
@@ -3281,13 +3232,6 @@
           "migrate_legacy_archive",
           "SegmentWriter.close",
           "SegmentWriter._close_locked",
-          "<expr>.set(...) [chained call]"
-        ],
-        [
-          "archive_migrate_legacy",
-          "migrate_legacy_archive",
-          "SegmentWriter.close",
-          "SegmentWriter._close_locked",
           "<expr>.to_dict(...) [chained call]"
         ],
         [
@@ -3312,38 +3256,6 @@
           "SegmentWriter._close_locked",
           "SegmentWriter._close_stages",
           "<expr>.flush(...) [chained call]"
-        ],
-        [
-          "archive_migrate_legacy",
-          "migrate_legacy_archive",
-          "SegmentWriter.close",
-          "SegmentWriter._close_locked",
-          "SegmentWriter._close_stages",
-          "<expr>.is_alive(...) [chained call]"
-        ],
-        [
-          "archive_migrate_legacy",
-          "migrate_legacy_archive",
-          "SegmentWriter.close",
-          "SegmentWriter._close_locked",
-          "SegmentWriter._close_stages",
-          "<expr>.items(...) [chained call]"
-        ],
-        [
-          "archive_migrate_legacy",
-          "migrate_legacy_archive",
-          "SegmentWriter.close",
-          "SegmentWriter._close_locked",
-          "SegmentWriter._close_stages",
-          "<expr>.join(...) [chained call]"
-        ],
-        [
-          "archive_migrate_legacy",
-          "migrate_legacy_archive",
-          "SegmentWriter.close",
-          "SegmentWriter._close_locked",
-          "SegmentWriter._close_stages",
-          "<expr>.set(...) [chained call]"
         ],
         [
           "archive_migrate_legacy",
@@ -4001,16 +3913,6 @@
           "SegmentWriter._close_locked",
           "SegmentWriter._close_stages",
           "verify_chain",
-          "fold_stream_digest",
-          "<expr>.encode(...) [chained call]"
-        ],
-        [
-          "archive_migrate_legacy",
-          "migrate_legacy_archive",
-          "SegmentWriter.close",
-          "SegmentWriter._close_locked",
-          "SegmentWriter._close_stages",
-          "verify_chain",
           "hasattr(...) [unbound name]"
         ],
         [
@@ -4359,47 +4261,14 @@
         [
           "archive_migrate_legacy",
           "migrate_legacy_archive",
-          "SegmentWriter.close",
-          "SegmentWriter._close_locked",
-          "SegmentWriter._release_lock",
-          "thread.is_alive(...) [receiver type unknown]"
+          "SegmentWriter.submit",
+          "<expr>.fail_after_accept(...) [chained call]"
         ],
         [
           "archive_migrate_legacy",
           "migrate_legacy_archive",
-          "SegmentWriter.close",
-          "SegmentWriter._close_locked",
-          "SegmentWriter._seal_admissions",
-          "time.monotonic(...) [module alias 'time' not traversable]"
-        ],
-        [
-          "archive_migrate_legacy",
-          "migrate_legacy_archive",
-          "SegmentWriter.close",
-          "SegmentWriter._close_locked",
-          "SegmentWriter._seal_admissions",
-          "time.sleep(...) [module alias 'time' not traversable]"
-        ],
-        [
-          "archive_migrate_legacy",
-          "migrate_legacy_archive",
-          "SegmentWriter.close",
-          "SegmentWriter._close_locked",
-          "getattr(...) [unbound name]"
-        ],
-        [
-          "archive_migrate_legacy",
-          "migrate_legacy_archive",
-          "SegmentWriter.close",
-          "SegmentWriter._close_locked",
-          "thread.is_alive(...) [receiver type unknown]"
-        ],
-        [
-          "archive_migrate_legacy",
-          "migrate_legacy_archive",
-          "SegmentWriter.close",
-          "SegmentWriter._close_locked",
-          "thread.join(...) [receiver type unknown]"
+          "SegmentWriter.submit",
+          "<expr>.flush(...) [chained call]"
         ],
         [
           "archive_migrate_legacy",
@@ -4411,16 +4280,150 @@
           "archive_migrate_legacy",
           "migrate_legacy_archive",
           "SegmentWriter.submit",
-          "SegmentWriter._admit",
-          "<expr>.put(...) [chained call]"
+          "<expr>.write(...) [chained call]"
         ],
         [
           "archive_migrate_legacy",
           "migrate_legacy_archive",
           "SegmentWriter.submit",
-          "SegmentWriter._admit",
-          "SegmentWriter._reject",
-          "<expr>.reject_before_accept(...) [chained call]"
+          "WorkBudget(...) [from app.realtime.canonical import WorkBudget]"
+        ],
+        [
+          "archive_migrate_legacy",
+          "migrate_legacy_archive",
+          "SegmentWriter.submit",
+          "_structural_reason",
+          "WorkBudget(...) [from app.realtime.canonical import WorkBudget]"
+        ],
+        [
+          "archive_migrate_legacy",
+          "migrate_legacy_archive",
+          "SegmentWriter.submit",
+          "_structural_reason",
+          "_budget.consume(...) [receiver type unknown]"
+        ],
+        [
+          "archive_migrate_legacy",
+          "migrate_legacy_archive",
+          "SegmentWriter.submit",
+          "_structural_reason",
+          "enumerate(...) [unbound name]"
+        ],
+        [
+          "archive_migrate_legacy",
+          "migrate_legacy_archive",
+          "SegmentWriter.submit",
+          "_structural_reason",
+          "isinstance(...) [unbound name]"
+        ],
+        [
+          "archive_migrate_legacy",
+          "migrate_legacy_archive",
+          "SegmentWriter.submit",
+          "_structural_reason",
+          "len(...) [unbound name]"
+        ],
+        [
+          "archive_migrate_legacy",
+          "migrate_legacy_archive",
+          "SegmentWriter.submit",
+          "_structural_reason",
+          "seen_keys.add(...) [receiver type unknown]"
+        ],
+        [
+          "archive_migrate_legacy",
+          "migrate_legacy_archive",
+          "SegmentWriter.submit",
+          "_structural_reason",
+          "set(...) [unbound name]"
+        ],
+        [
+          "archive_migrate_legacy",
+          "migrate_legacy_archive",
+          "SegmentWriter.submit",
+          "_structural_reason",
+          "str(...) [unbound name]"
+        ],
+        [
+          "archive_migrate_legacy",
+          "migrate_legacy_archive",
+          "SegmentWriter.submit",
+          "_structural_reason",
+          "type(...) [unbound name]"
+        ],
+        [
+          "archive_migrate_legacy",
+          "migrate_legacy_archive",
+          "SegmentWriter.submit",
+          "_structural_reason",
+          "value.as_tuple(...) [receiver type unknown]"
+        ],
+        [
+          "archive_migrate_legacy",
+          "migrate_legacy_archive",
+          "SegmentWriter.submit",
+          "_structural_reason",
+          "value.bit_length(...) [receiver type unknown]"
+        ],
+        [
+          "archive_migrate_legacy",
+          "migrate_legacy_archive",
+          "SegmentWriter.submit",
+          "_structural_reason",
+          "value.encode(...) [receiver type unknown]"
+        ],
+        [
+          "archive_migrate_legacy",
+          "migrate_legacy_archive",
+          "SegmentWriter.submit",
+          "_structural_reason",
+          "value.is_finite(...) [receiver type unknown]"
+        ],
+        [
+          "archive_migrate_legacy",
+          "migrate_legacy_archive",
+          "SegmentWriter.submit",
+          "_structural_reason",
+          "value.items(...) [receiver type unknown]"
+        ],
+        [
+          "archive_migrate_legacy",
+          "migrate_legacy_archive",
+          "SegmentWriter.submit",
+          "_structural_reason",
+          "value.utcoffset(...) [receiver type unknown]"
+        ],
+        [
+          "archive_migrate_legacy",
+          "migrate_legacy_archive",
+          "SegmentWriter.submit",
+          "build_record",
+          "envelope_fields.get(...) [receiver type unknown]"
+        ],
+        [
+          "archive_migrate_legacy",
+          "migrate_legacy_archive",
+          "SegmentWriter.submit",
+          "fold_stream_digest",
+          "<expr>.encode(...) [chained call]"
+        ],
+        [
+          "archive_migrate_legacy",
+          "migrate_legacy_archive",
+          "SegmentWriter.submit",
+          "isinstance(...) [unbound name]"
+        ],
+        [
+          "archive_migrate_legacy",
+          "migrate_legacy_archive",
+          "SegmentWriter.submit",
+          "self.pre_write_hook(...) [method not indexed, e.g. inherited]"
+        ],
+        [
+          "archive_migrate_legacy",
+          "migrate_legacy_archive",
+          "SegmentWriter.submit",
+          "type(...) [unbound name]"
         ],
         [
           "archive_migrate_legacy",
@@ -5047,126 +5050,6 @@
           "non_canonical_reason",
           "canonicalize_or_reason",
           "WorkBudget(...) [from app.realtime.canonical import WorkBudget]"
-        ],
-        [
-          "archive_migrate_legacy",
-          "migrate_legacy_archive",
-          "non_canonical_reason",
-          "canonicalize_or_reason",
-          "_structural_reason",
-          "WorkBudget(...) [from app.realtime.canonical import WorkBudget]"
-        ],
-        [
-          "archive_migrate_legacy",
-          "migrate_legacy_archive",
-          "non_canonical_reason",
-          "canonicalize_or_reason",
-          "_structural_reason",
-          "_budget.consume(...) [receiver type unknown]"
-        ],
-        [
-          "archive_migrate_legacy",
-          "migrate_legacy_archive",
-          "non_canonical_reason",
-          "canonicalize_or_reason",
-          "_structural_reason",
-          "enumerate(...) [unbound name]"
-        ],
-        [
-          "archive_migrate_legacy",
-          "migrate_legacy_archive",
-          "non_canonical_reason",
-          "canonicalize_or_reason",
-          "_structural_reason",
-          "isinstance(...) [unbound name]"
-        ],
-        [
-          "archive_migrate_legacy",
-          "migrate_legacy_archive",
-          "non_canonical_reason",
-          "canonicalize_or_reason",
-          "_structural_reason",
-          "len(...) [unbound name]"
-        ],
-        [
-          "archive_migrate_legacy",
-          "migrate_legacy_archive",
-          "non_canonical_reason",
-          "canonicalize_or_reason",
-          "_structural_reason",
-          "seen_keys.add(...) [receiver type unknown]"
-        ],
-        [
-          "archive_migrate_legacy",
-          "migrate_legacy_archive",
-          "non_canonical_reason",
-          "canonicalize_or_reason",
-          "_structural_reason",
-          "set(...) [unbound name]"
-        ],
-        [
-          "archive_migrate_legacy",
-          "migrate_legacy_archive",
-          "non_canonical_reason",
-          "canonicalize_or_reason",
-          "_structural_reason",
-          "str(...) [unbound name]"
-        ],
-        [
-          "archive_migrate_legacy",
-          "migrate_legacy_archive",
-          "non_canonical_reason",
-          "canonicalize_or_reason",
-          "_structural_reason",
-          "type(...) [unbound name]"
-        ],
-        [
-          "archive_migrate_legacy",
-          "migrate_legacy_archive",
-          "non_canonical_reason",
-          "canonicalize_or_reason",
-          "_structural_reason",
-          "value.as_tuple(...) [receiver type unknown]"
-        ],
-        [
-          "archive_migrate_legacy",
-          "migrate_legacy_archive",
-          "non_canonical_reason",
-          "canonicalize_or_reason",
-          "_structural_reason",
-          "value.bit_length(...) [receiver type unknown]"
-        ],
-        [
-          "archive_migrate_legacy",
-          "migrate_legacy_archive",
-          "non_canonical_reason",
-          "canonicalize_or_reason",
-          "_structural_reason",
-          "value.encode(...) [receiver type unknown]"
-        ],
-        [
-          "archive_migrate_legacy",
-          "migrate_legacy_archive",
-          "non_canonical_reason",
-          "canonicalize_or_reason",
-          "_structural_reason",
-          "value.is_finite(...) [receiver type unknown]"
-        ],
-        [
-          "archive_migrate_legacy",
-          "migrate_legacy_archive",
-          "non_canonical_reason",
-          "canonicalize_or_reason",
-          "_structural_reason",
-          "value.items(...) [receiver type unknown]"
-        ],
-        [
-          "archive_migrate_legacy",
-          "migrate_legacy_archive",
-          "non_canonical_reason",
-          "canonicalize_or_reason",
-          "_structural_reason",
-          "value.utcoffset(...) [receiver type unknown]"
         ],
         [
           "archive_migrate_legacy",
@@ -6902,28 +6785,15 @@
       ],
       "primitives": [
         {
-          "classification": "QUEUE-ACCOUNTING",
+          "classification": "HASHING",
           "example_chain": [
             "EventArchive.append",
             "[MANUAL] SegmentWriter.submit",
-            "SegmentWriter._admit",
-            "put_nowait(...)"
+            "fold_stream_digest",
+            "hexdigest(...)"
           ],
           "manually_bridged": true,
-          "name": "put_nowait",
-          "namespace": "<chained>"
-        },
-        {
-          "classification": "QUEUE-ACCOUNTING",
-          "example_chain": [
-            "EventArchive.append",
-            "[MANUAL] SegmentWriter.submit",
-            "SegmentWriter._admit",
-            "SegmentWriter._note_depth",
-            "qsize(...)"
-          ],
-          "manually_bridged": true,
-          "name": "qsize",
+          "name": "hexdigest",
           "namespace": "<chained>"
         },
         {
@@ -6991,8 +6861,6 @@
           "example_chain": [
             "EventArchive.append",
             "[MANUAL] SegmentWriter.submit",
-            "SegmentWriter._admit",
-            "canonicalize_or_reason",
             "app.realtime.canonical.canonical_bytes(...)"
           ],
           "manually_bridged": true,
@@ -7000,16 +6868,28 @@
           "namespace": "app.realtime.canonical"
         },
         {
-          "classification": "CANONICAL ENCODING",
+          "classification": "HASHING",
           "example_chain": [
             "EventArchive.append",
             "[MANUAL] SegmentWriter.submit",
-            "SegmentWriter._admit",
-            "app.realtime.canonical.parse_canonical(...)"
+            "build_record",
+            "app.realtime.canonical.digest_hex(...)"
           ],
           "manually_bridged": true,
-          "name": "parse_canonical",
+          "name": "digest_hex",
           "namespace": "app.realtime.canonical"
+        },
+        {
+          "classification": "HASHING",
+          "example_chain": [
+            "EventArchive.append",
+            "[MANUAL] SegmentWriter.submit",
+            "fold_stream_digest",
+            "hashlib.sha256(...)"
+          ],
+          "manually_bridged": true,
+          "name": "sha256",
+          "namespace": "hashlib"
         },
         {
           "classification": "FILESYSTEM ACCESS",
@@ -7248,19 +7128,6 @@
         }
       ],
       "primitives": [
-        {
-          "classification": "QUEUE-ACCOUNTING",
-          "example_chain": [
-            "EventArchive.close",
-            "[MANUAL] SegmentWriter.close",
-            "SegmentWriter._close_locked",
-            "SegmentWriter._measure_pending",
-            "get_nowait(...)"
-          ],
-          "manually_bridged": true,
-          "name": "get_nowait",
-          "namespace": "<chained>"
-        },
         {
           "classification": "HASHING",
           "example_chain": [
@@ -17816,22 +17683,16 @@
         "app/realtime/legacy_import.py::_read_legacy_records",
         "app/realtime/legacy_import.py::migrate_legacy_archive",
         "app/realtime/legacy_import.py::scan_legacy",
-        "app/realtime/segment.py::SegmentWriter._admit",
         "app/realtime/segment.py::SegmentWriter._close_fh",
         "app/realtime/segment.py::SegmentWriter._close_locked",
         "app/realtime/segment.py::SegmentWriter._close_stages",
-        "app/realtime/segment.py::SegmentWriter._measure_pending",
-        "app/realtime/segment.py::SegmentWriter._note_depth",
-        "app/realtime/segment.py::SegmentWriter._reject",
         "app/realtime/segment.py::SegmentWriter._release_lock",
-        "app/realtime/segment.py::SegmentWriter._seal_admissions",
         "app/realtime/segment.py::SegmentWriter._stage",
         "app/realtime/segment.py::SegmentWriter.close",
         "app/realtime/segment.py::SegmentWriter.read_manifest",
         "app/realtime/segment.py::SegmentWriter.submit",
         "app/realtime/segment.py::WriterAccounting.admission_holds",
         "app/realtime/segment.py::WriterAccounting.clean",
-        "app/realtime/segment.py::WriterAccounting.dequeue_disposition_gap",
         "app/realtime/segment.py::WriterAccounting.disposition_holds",
         "app/realtime/segment.py::WriterAccounting.to_dict",
         "app/realtime/segment.py::_classify_residue",
@@ -17845,6 +17706,7 @@
         "app/realtime/segment.py::_structural_reason",
         "app/realtime/segment.py::assert_contained",
         "app/realtime/segment.py::build_manifest",
+        "app/realtime/segment.py::build_record",
         "app/realtime/segment.py::canonicalize_or_reason",
         "app/realtime/segment.py::containment_reason",
         "app/realtime/segment.py::fold_stream_digest",
@@ -17874,56 +17736,15 @@
           "namespace": "<builtin>"
         },
         {
-          "classification": "QUEUE-ACCOUNTING",
-          "example_chain": [
-            "migrate_legacy_archive",
-            "SegmentWriter.close",
-            "SegmentWriter._close_locked",
-            "SegmentWriter._measure_pending",
-            "get_nowait(...)"
-          ],
-          "manually_bridged": false,
-          "name": "get_nowait",
-          "namespace": "<chained>"
-        },
-        {
           "classification": "HASHING",
           "example_chain": [
             "migrate_legacy_archive",
-            "SegmentWriter.close",
-            "SegmentWriter._close_locked",
-            "SegmentWriter._close_stages",
-            "verify_chain",
+            "SegmentWriter.submit",
             "fold_stream_digest",
             "hexdigest(...)"
           ],
           "manually_bridged": false,
           "name": "hexdigest",
-          "namespace": "<chained>"
-        },
-        {
-          "classification": "QUEUE-ACCOUNTING",
-          "example_chain": [
-            "migrate_legacy_archive",
-            "SegmentWriter.submit",
-            "SegmentWriter._admit",
-            "put_nowait(...)"
-          ],
-          "manually_bridged": false,
-          "name": "put_nowait",
-          "namespace": "<chained>"
-        },
-        {
-          "classification": "QUEUE-ACCOUNTING",
-          "example_chain": [
-            "migrate_legacy_archive",
-            "SegmentWriter.submit",
-            "SegmentWriter._admit",
-            "SegmentWriter._note_depth",
-            "qsize(...)"
-          ],
-          "manually_bridged": false,
-          "name": "qsize",
           "namespace": "<chained>"
         },
         {
@@ -18282,12 +18103,6 @@
           "migrate_legacy_archive",
           "SegmentWriter.close",
           "SegmentWriter._close_locked",
-          "<expr>.set(...) [chained call]"
-        ],
-        [
-          "migrate_legacy_archive",
-          "SegmentWriter.close",
-          "SegmentWriter._close_locked",
           "<expr>.to_dict(...) [chained call]"
         ],
         [
@@ -18309,34 +18124,6 @@
           "SegmentWriter._close_locked",
           "SegmentWriter._close_stages",
           "<expr>.flush(...) [chained call]"
-        ],
-        [
-          "migrate_legacy_archive",
-          "SegmentWriter.close",
-          "SegmentWriter._close_locked",
-          "SegmentWriter._close_stages",
-          "<expr>.is_alive(...) [chained call]"
-        ],
-        [
-          "migrate_legacy_archive",
-          "SegmentWriter.close",
-          "SegmentWriter._close_locked",
-          "SegmentWriter._close_stages",
-          "<expr>.items(...) [chained call]"
-        ],
-        [
-          "migrate_legacy_archive",
-          "SegmentWriter.close",
-          "SegmentWriter._close_locked",
-          "SegmentWriter._close_stages",
-          "<expr>.join(...) [chained call]"
-        ],
-        [
-          "migrate_legacy_archive",
-          "SegmentWriter.close",
-          "SegmentWriter._close_locked",
-          "SegmentWriter._close_stages",
-          "<expr>.set(...) [chained call]"
         ],
         [
           "migrate_legacy_archive",
@@ -18927,15 +18714,6 @@
           "SegmentWriter._close_locked",
           "SegmentWriter._close_stages",
           "verify_chain",
-          "fold_stream_digest",
-          "<expr>.encode(...) [chained call]"
-        ],
-        [
-          "migrate_legacy_archive",
-          "SegmentWriter.close",
-          "SegmentWriter._close_locked",
-          "SegmentWriter._close_stages",
-          "verify_chain",
           "hasattr(...) [unbound name]"
         ],
         [
@@ -19247,42 +19025,13 @@
         ],
         [
           "migrate_legacy_archive",
-          "SegmentWriter.close",
-          "SegmentWriter._close_locked",
-          "SegmentWriter._release_lock",
-          "thread.is_alive(...) [receiver type unknown]"
+          "SegmentWriter.submit",
+          "<expr>.fail_after_accept(...) [chained call]"
         ],
         [
           "migrate_legacy_archive",
-          "SegmentWriter.close",
-          "SegmentWriter._close_locked",
-          "SegmentWriter._seal_admissions",
-          "time.monotonic(...) [module alias 'time' not traversable]"
-        ],
-        [
-          "migrate_legacy_archive",
-          "SegmentWriter.close",
-          "SegmentWriter._close_locked",
-          "SegmentWriter._seal_admissions",
-          "time.sleep(...) [module alias 'time' not traversable]"
-        ],
-        [
-          "migrate_legacy_archive",
-          "SegmentWriter.close",
-          "SegmentWriter._close_locked",
-          "getattr(...) [unbound name]"
-        ],
-        [
-          "migrate_legacy_archive",
-          "SegmentWriter.close",
-          "SegmentWriter._close_locked",
-          "thread.is_alive(...) [receiver type unknown]"
-        ],
-        [
-          "migrate_legacy_archive",
-          "SegmentWriter.close",
-          "SegmentWriter._close_locked",
-          "thread.join(...) [receiver type unknown]"
+          "SegmentWriter.submit",
+          "<expr>.flush(...) [chained call]"
         ],
         [
           "migrate_legacy_archive",
@@ -19292,15 +19041,129 @@
         [
           "migrate_legacy_archive",
           "SegmentWriter.submit",
-          "SegmentWriter._admit",
-          "<expr>.put(...) [chained call]"
+          "<expr>.write(...) [chained call]"
         ],
         [
           "migrate_legacy_archive",
           "SegmentWriter.submit",
-          "SegmentWriter._admit",
-          "SegmentWriter._reject",
-          "<expr>.reject_before_accept(...) [chained call]"
+          "WorkBudget(...) [from app.realtime.canonical import WorkBudget]"
+        ],
+        [
+          "migrate_legacy_archive",
+          "SegmentWriter.submit",
+          "_structural_reason",
+          "WorkBudget(...) [from app.realtime.canonical import WorkBudget]"
+        ],
+        [
+          "migrate_legacy_archive",
+          "SegmentWriter.submit",
+          "_structural_reason",
+          "_budget.consume(...) [receiver type unknown]"
+        ],
+        [
+          "migrate_legacy_archive",
+          "SegmentWriter.submit",
+          "_structural_reason",
+          "enumerate(...) [unbound name]"
+        ],
+        [
+          "migrate_legacy_archive",
+          "SegmentWriter.submit",
+          "_structural_reason",
+          "isinstance(...) [unbound name]"
+        ],
+        [
+          "migrate_legacy_archive",
+          "SegmentWriter.submit",
+          "_structural_reason",
+          "len(...) [unbound name]"
+        ],
+        [
+          "migrate_legacy_archive",
+          "SegmentWriter.submit",
+          "_structural_reason",
+          "seen_keys.add(...) [receiver type unknown]"
+        ],
+        [
+          "migrate_legacy_archive",
+          "SegmentWriter.submit",
+          "_structural_reason",
+          "set(...) [unbound name]"
+        ],
+        [
+          "migrate_legacy_archive",
+          "SegmentWriter.submit",
+          "_structural_reason",
+          "str(...) [unbound name]"
+        ],
+        [
+          "migrate_legacy_archive",
+          "SegmentWriter.submit",
+          "_structural_reason",
+          "type(...) [unbound name]"
+        ],
+        [
+          "migrate_legacy_archive",
+          "SegmentWriter.submit",
+          "_structural_reason",
+          "value.as_tuple(...) [receiver type unknown]"
+        ],
+        [
+          "migrate_legacy_archive",
+          "SegmentWriter.submit",
+          "_structural_reason",
+          "value.bit_length(...) [receiver type unknown]"
+        ],
+        [
+          "migrate_legacy_archive",
+          "SegmentWriter.submit",
+          "_structural_reason",
+          "value.encode(...) [receiver type unknown]"
+        ],
+        [
+          "migrate_legacy_archive",
+          "SegmentWriter.submit",
+          "_structural_reason",
+          "value.is_finite(...) [receiver type unknown]"
+        ],
+        [
+          "migrate_legacy_archive",
+          "SegmentWriter.submit",
+          "_structural_reason",
+          "value.items(...) [receiver type unknown]"
+        ],
+        [
+          "migrate_legacy_archive",
+          "SegmentWriter.submit",
+          "_structural_reason",
+          "value.utcoffset(...) [receiver type unknown]"
+        ],
+        [
+          "migrate_legacy_archive",
+          "SegmentWriter.submit",
+          "build_record",
+          "envelope_fields.get(...) [receiver type unknown]"
+        ],
+        [
+          "migrate_legacy_archive",
+          "SegmentWriter.submit",
+          "fold_stream_digest",
+          "<expr>.encode(...) [chained call]"
+        ],
+        [
+          "migrate_legacy_archive",
+          "SegmentWriter.submit",
+          "isinstance(...) [unbound name]"
+        ],
+        [
+          "migrate_legacy_archive",
+          "SegmentWriter.submit",
+          "self.pre_write_hook(...) [method not indexed, e.g. inherited]"
+        ],
+        [
+          "migrate_legacy_archive",
+          "SegmentWriter.submit",
+          "type(...) [unbound name]"
         ],
         [
           "migrate_legacy_archive",
@@ -19843,111 +19706,6 @@
           "migrate_legacy_archive",
           "non_canonical_reason",
           "canonicalize_or_reason",
-          "_structural_reason",
-          "WorkBudget(...) [from app.realtime.canonical import WorkBudget]"
-        ],
-        [
-          "migrate_legacy_archive",
-          "non_canonical_reason",
-          "canonicalize_or_reason",
-          "_structural_reason",
-          "_budget.consume(...) [receiver type unknown]"
-        ],
-        [
-          "migrate_legacy_archive",
-          "non_canonical_reason",
-          "canonicalize_or_reason",
-          "_structural_reason",
-          "enumerate(...) [unbound name]"
-        ],
-        [
-          "migrate_legacy_archive",
-          "non_canonical_reason",
-          "canonicalize_or_reason",
-          "_structural_reason",
-          "isinstance(...) [unbound name]"
-        ],
-        [
-          "migrate_legacy_archive",
-          "non_canonical_reason",
-          "canonicalize_or_reason",
-          "_structural_reason",
-          "len(...) [unbound name]"
-        ],
-        [
-          "migrate_legacy_archive",
-          "non_canonical_reason",
-          "canonicalize_or_reason",
-          "_structural_reason",
-          "seen_keys.add(...) [receiver type unknown]"
-        ],
-        [
-          "migrate_legacy_archive",
-          "non_canonical_reason",
-          "canonicalize_or_reason",
-          "_structural_reason",
-          "set(...) [unbound name]"
-        ],
-        [
-          "migrate_legacy_archive",
-          "non_canonical_reason",
-          "canonicalize_or_reason",
-          "_structural_reason",
-          "str(...) [unbound name]"
-        ],
-        [
-          "migrate_legacy_archive",
-          "non_canonical_reason",
-          "canonicalize_or_reason",
-          "_structural_reason",
-          "type(...) [unbound name]"
-        ],
-        [
-          "migrate_legacy_archive",
-          "non_canonical_reason",
-          "canonicalize_or_reason",
-          "_structural_reason",
-          "value.as_tuple(...) [receiver type unknown]"
-        ],
-        [
-          "migrate_legacy_archive",
-          "non_canonical_reason",
-          "canonicalize_or_reason",
-          "_structural_reason",
-          "value.bit_length(...) [receiver type unknown]"
-        ],
-        [
-          "migrate_legacy_archive",
-          "non_canonical_reason",
-          "canonicalize_or_reason",
-          "_structural_reason",
-          "value.encode(...) [receiver type unknown]"
-        ],
-        [
-          "migrate_legacy_archive",
-          "non_canonical_reason",
-          "canonicalize_or_reason",
-          "_structural_reason",
-          "value.is_finite(...) [receiver type unknown]"
-        ],
-        [
-          "migrate_legacy_archive",
-          "non_canonical_reason",
-          "canonicalize_or_reason",
-          "_structural_reason",
-          "value.items(...) [receiver type unknown]"
-        ],
-        [
-          "migrate_legacy_archive",
-          "non_canonical_reason",
-          "canonicalize_or_reason",
-          "_structural_reason",
-          "value.utcoffset(...) [receiver type unknown]"
-        ],
-        [
-          "migrate_legacy_archive",
-          "non_canonical_reason",
-          "canonicalize_or_reason",
           "type(...) [unbound name]"
         ],
         [
@@ -20454,15 +20212,12 @@
         "app/realtime/segment.py::SegmentWriter._close_fh",
         "app/realtime/segment.py::SegmentWriter._close_locked",
         "app/realtime/segment.py::SegmentWriter._close_stages",
-        "app/realtime/segment.py::SegmentWriter._measure_pending",
         "app/realtime/segment.py::SegmentWriter._release_lock",
-        "app/realtime/segment.py::SegmentWriter._seal_admissions",
         "app/realtime/segment.py::SegmentWriter._stage",
         "app/realtime/segment.py::SegmentWriter.close",
         "app/realtime/segment.py::SegmentWriter.read_manifest",
         "app/realtime/segment.py::WriterAccounting.admission_holds",
         "app/realtime/segment.py::WriterAccounting.clean",
-        "app/realtime/segment.py::WriterAccounting.dequeue_disposition_gap",
         "app/realtime/segment.py::WriterAccounting.disposition_holds",
         "app/realtime/segment.py::WriterAccounting.to_dict",
         "app/realtime/segment.py::_classify_residue",
@@ -20489,18 +20244,6 @@
       ],
       "manual_bridges": [],
       "primitives": [
-        {
-          "classification": "QUEUE-ACCOUNTING",
-          "example_chain": [
-            "SegmentWriter.close",
-            "SegmentWriter._close_locked",
-            "SegmentWriter._measure_pending",
-            "get_nowait(...)"
-          ],
-          "manually_bridged": false,
-          "name": "get_nowait",
-          "namespace": "<chained>"
-        },
         {
           "classification": "HASHING",
           "example_chain": [
@@ -20886,11 +20629,6 @@
         [
           "SegmentWriter.close",
           "SegmentWriter._close_locked",
-          "<expr>.set(...) [chained call]"
-        ],
-        [
-          "SegmentWriter.close",
-          "SegmentWriter._close_locked",
           "<expr>.to_dict(...) [chained call]"
         ],
         [
@@ -20909,30 +20647,6 @@
           "SegmentWriter._close_locked",
           "SegmentWriter._close_stages",
           "<expr>.flush(...) [chained call]"
-        ],
-        [
-          "SegmentWriter.close",
-          "SegmentWriter._close_locked",
-          "SegmentWriter._close_stages",
-          "<expr>.is_alive(...) [chained call]"
-        ],
-        [
-          "SegmentWriter.close",
-          "SegmentWriter._close_locked",
-          "SegmentWriter._close_stages",
-          "<expr>.items(...) [chained call]"
-        ],
-        [
-          "SegmentWriter.close",
-          "SegmentWriter._close_locked",
-          "SegmentWriter._close_stages",
-          "<expr>.join(...) [chained call]"
-        ],
-        [
-          "SegmentWriter.close",
-          "SegmentWriter._close_locked",
-          "SegmentWriter._close_stages",
-          "<expr>.set(...) [chained call]"
         ],
         [
           "SegmentWriter.close",
@@ -22305,83 +22019,34 @@
           "SegmentWriter._close_locked",
           "SegmentWriter._release_lock",
           "getattr(...) [unbound name]"
-        ],
-        [
-          "SegmentWriter.close",
-          "SegmentWriter._close_locked",
-          "SegmentWriter._release_lock",
-          "thread.is_alive(...) [receiver type unknown]"
-        ],
-        [
-          "SegmentWriter.close",
-          "SegmentWriter._close_locked",
-          "SegmentWriter._seal_admissions",
-          "time.monotonic(...) [module alias 'time' not traversable]"
-        ],
-        [
-          "SegmentWriter.close",
-          "SegmentWriter._close_locked",
-          "SegmentWriter._seal_admissions",
-          "time.sleep(...) [module alias 'time' not traversable]"
-        ],
-        [
-          "SegmentWriter.close",
-          "SegmentWriter._close_locked",
-          "getattr(...) [unbound name]"
-        ],
-        [
-          "SegmentWriter.close",
-          "SegmentWriter._close_locked",
-          "thread.is_alive(...) [receiver type unknown]"
-        ],
-        [
-          "SegmentWriter.close",
-          "SegmentWriter._close_locked",
-          "thread.join(...) [receiver type unknown]"
         ]
       ]
     },
     "app/realtime/segment.py::SegmentWriter.submit": {
       "entrypoint": "app/realtime/segment.py::SegmentWriter.submit",
       "functions_visited": [
-        "app/realtime/segment.py::SegmentWriter._admit",
-        "app/realtime/segment.py::SegmentWriter._note_depth",
-        "app/realtime/segment.py::SegmentWriter._reject",
         "app/realtime/segment.py::SegmentWriter.submit",
         "app/realtime/segment.py::_structural_reason",
-        "app/realtime/segment.py::canonicalize_or_reason"
+        "app/realtime/segment.py::build_record",
+        "app/realtime/segment.py::fold_stream_digest"
       ],
       "manual_bridges": [],
       "primitives": [
         {
-          "classification": "QUEUE-ACCOUNTING",
+          "classification": "HASHING",
           "example_chain": [
             "SegmentWriter.submit",
-            "SegmentWriter._admit",
-            "put_nowait(...)"
+            "fold_stream_digest",
+            "hexdigest(...)"
           ],
           "manually_bridged": false,
-          "name": "put_nowait",
-          "namespace": "<chained>"
-        },
-        {
-          "classification": "QUEUE-ACCOUNTING",
-          "example_chain": [
-            "SegmentWriter.submit",
-            "SegmentWriter._admit",
-            "SegmentWriter._note_depth",
-            "qsize(...)"
-          ],
-          "manually_bridged": false,
-          "name": "qsize",
+          "name": "hexdigest",
           "namespace": "<chained>"
         },
         {
           "classification": "CANONICAL ENCODING",
           "example_chain": [
             "SegmentWriter.submit",
-            "SegmentWriter._admit",
-            "canonicalize_or_reason",
             "app.realtime.canonical.canonical_bytes(...)"
           ],
           "manually_bridged": false,
@@ -22389,148 +22054,144 @@
           "namespace": "app.realtime.canonical"
         },
         {
-          "classification": "CANONICAL ENCODING",
+          "classification": "HASHING",
           "example_chain": [
             "SegmentWriter.submit",
-            "SegmentWriter._admit",
-            "app.realtime.canonical.parse_canonical(...)"
+            "build_record",
+            "app.realtime.canonical.digest_hex(...)"
           ],
           "manually_bridged": false,
-          "name": "parse_canonical",
+          "name": "digest_hex",
           "namespace": "app.realtime.canonical"
+        },
+        {
+          "classification": "HASHING",
+          "example_chain": [
+            "SegmentWriter.submit",
+            "fold_stream_digest",
+            "hashlib.sha256(...)"
+          ],
+          "manually_bridged": false,
+          "name": "sha256",
+          "namespace": "hashlib"
         }
       ],
       "unresolved_calls": [
         [
           "SegmentWriter.submit",
+          "<expr>.fail_after_accept(...) [chained call]"
+        ],
+        [
+          "SegmentWriter.submit",
+          "<expr>.flush(...) [chained call]"
+        ],
+        [
+          "SegmentWriter.submit",
           "<expr>.reject_before_accept(...) [chained call]"
         ],
         [
           "SegmentWriter.submit",
-          "SegmentWriter._admit",
-          "<expr>.put(...) [chained call]"
+          "<expr>.write(...) [chained call]"
         ],
         [
           "SegmentWriter.submit",
-          "SegmentWriter._admit",
-          "SegmentWriter._reject",
-          "<expr>.reject_before_accept(...) [chained call]"
-        ],
-        [
-          "SegmentWriter.submit",
-          "SegmentWriter._admit",
-          "canonicalize_or_reason",
           "WorkBudget(...) [from app.realtime.canonical import WorkBudget]"
         ],
         [
           "SegmentWriter.submit",
-          "SegmentWriter._admit",
-          "canonicalize_or_reason",
           "_structural_reason",
           "WorkBudget(...) [from app.realtime.canonical import WorkBudget]"
         ],
         [
           "SegmentWriter.submit",
-          "SegmentWriter._admit",
-          "canonicalize_or_reason",
           "_structural_reason",
           "_budget.consume(...) [receiver type unknown]"
         ],
         [
           "SegmentWriter.submit",
-          "SegmentWriter._admit",
-          "canonicalize_or_reason",
           "_structural_reason",
           "enumerate(...) [unbound name]"
         ],
         [
           "SegmentWriter.submit",
-          "SegmentWriter._admit",
-          "canonicalize_or_reason",
           "_structural_reason",
           "isinstance(...) [unbound name]"
         ],
         [
           "SegmentWriter.submit",
-          "SegmentWriter._admit",
-          "canonicalize_or_reason",
           "_structural_reason",
           "len(...) [unbound name]"
         ],
         [
           "SegmentWriter.submit",
-          "SegmentWriter._admit",
-          "canonicalize_or_reason",
           "_structural_reason",
           "seen_keys.add(...) [receiver type unknown]"
         ],
         [
           "SegmentWriter.submit",
-          "SegmentWriter._admit",
-          "canonicalize_or_reason",
           "_structural_reason",
           "set(...) [unbound name]"
         ],
         [
           "SegmentWriter.submit",
-          "SegmentWriter._admit",
-          "canonicalize_or_reason",
           "_structural_reason",
           "str(...) [unbound name]"
         ],
         [
           "SegmentWriter.submit",
-          "SegmentWriter._admit",
-          "canonicalize_or_reason",
           "_structural_reason",
           "type(...) [unbound name]"
         ],
         [
           "SegmentWriter.submit",
-          "SegmentWriter._admit",
-          "canonicalize_or_reason",
           "_structural_reason",
           "value.as_tuple(...) [receiver type unknown]"
         ],
         [
           "SegmentWriter.submit",
-          "SegmentWriter._admit",
-          "canonicalize_or_reason",
           "_structural_reason",
           "value.bit_length(...) [receiver type unknown]"
         ],
         [
           "SegmentWriter.submit",
-          "SegmentWriter._admit",
-          "canonicalize_or_reason",
           "_structural_reason",
           "value.encode(...) [receiver type unknown]"
         ],
         [
           "SegmentWriter.submit",
-          "SegmentWriter._admit",
-          "canonicalize_or_reason",
           "_structural_reason",
           "value.is_finite(...) [receiver type unknown]"
         ],
         [
           "SegmentWriter.submit",
-          "SegmentWriter._admit",
-          "canonicalize_or_reason",
           "_structural_reason",
           "value.items(...) [receiver type unknown]"
         ],
         [
           "SegmentWriter.submit",
-          "SegmentWriter._admit",
-          "canonicalize_or_reason",
           "_structural_reason",
           "value.utcoffset(...) [receiver type unknown]"
         ],
         [
           "SegmentWriter.submit",
-          "SegmentWriter._admit",
-          "canonicalize_or_reason",
+          "build_record",
+          "envelope_fields.get(...) [receiver type unknown]"
+        ],
+        [
+          "SegmentWriter.submit",
+          "fold_stream_digest",
+          "<expr>.encode(...) [chained call]"
+        ],
+        [
+          "SegmentWriter.submit",
+          "isinstance(...) [unbound name]"
+        ],
+        [
+          "SegmentWriter.submit",
+          "self.pre_write_hook(...) [method not indexed, e.g. inherited]"
+        ],
+        [
+          "SegmentWriter.submit",
           "type(...) [unbound name]"
         ]
       ]

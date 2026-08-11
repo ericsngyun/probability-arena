@@ -1,71 +1,75 @@
-"""KALSHI-ARCHIVE-VERIFICATION-META-001 A7 -- independent accounting
-harness: two independently sourced observations, reconciled, catching real
-writer-side loss production's own derived identity cannot see BY
-CONSTRUCTION.
+"""KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A7 -- independent accounting harness,
+RETIRED AND REPLACED for the synchronous writer.
 
-DOES NOT MODIFY app/realtime/segment.py. Fault injection targets
-`SegmentWriter._thread`/`_thread.ident` specifically -- the WRITER thread,
-never the producer/main thread `tests/harness_async_accounting/` already
-covers exhaustively (see that package's module docstring and this file's
-`tests/meta_runtime/independent_accounting.py` for exactly why that
-distinction matters and where `_run`'s one totally-unguarded gap is).
+WHY THE OLD VERSION IS GONE. `KALSHI-ARCHIVE-VERIFICATION-META-001`'s A7
+harness targeted `SegmentWriter._run`'s dequeue-then-write gap: a background
+writer thread could remove an item from the queue and then lose it before
+either `written` or `failed_after_accept` moved, invisibly to `WriterAccounting
+.disposition_holds()`'s tautology. `SegmentWriter._run`, the background
+writer thread, and that gap do not exist any more (A1): `submit()`
+canonicalises and writes one record entirely inside a single lock-held call
+on the caller's own thread, so there is no thread boundary left to lose a
+record across.
 
-Structure:
-  Section 1 -- positive control: a healthy writer, no fault, the two
-               independent sources agree.
-  Section 2 -- the writer-thread-targeted fault: an item is dequeued and
-               then genuinely lost, counted in NEITHER `written` nor
-               `failed_after_accept` nor a still-queued item -- and the
-               reconciliation catches it while production's own identity
-               (`disposition_holds()`/`reconciles()`) cannot, by
-               construction.
-  Section 3 -- the diagnostic-state consequence: the writer thread is
-               provably dead, yet `state`/`healthy` say otherwise (fed
-               forward into the A8 diagnostic-state inventory).
-  Section 4 -- discrimination: a PLANTED implementation that derives
-               `accepted` from `written + failed_after_accept + pending`
-               (i.e. reproduces production's actual A6 design, deliberately,
-               as the explicit planted case the brief asks for) is shown to
-               FAIL this meta-test's reconciliation, proving the harness
-               catches the exact class of design the brief names.
-  Section 5 -- a second writer-thread fault window (`task_done`), and the
-               `producer interruption` window already covered by the
-               existing A3 harness, reconciled through the SAME independent
-               two-source check for completeness.
+MAPPING (old property -> why gone -> replacement property -> replacement test):
 
-Every writer-thread-targeted fault below deliberately kills a daemon thread
-with an unhandled exception -- that IS the reproduction, not an accident --
-so pytest's `PytestUnhandledThreadExceptionWarning` is expected noise on
-every such test and is filtered at module scope rather than asserted
-against.
+  old:  a writer-thread-targeted fault (`tests/harness_async_accounting/
+        line_injector`, `locate_writer_run_gap_line`) proves a real,
+        otherwise-invisible loss the writer's own tautological identity
+        cannot see, caught by an independent (ledger vs. `written +
+        failed_after_accept + queue_depth`) reconciliation.
+  why:  there is no writer thread, no queue, and no dequeue-then-write gap
+        left to inject a fault into. `written`/`failed_after_accept` are
+        both moved in the SAME lock-held call `submit()` uses to write the
+        record; there is no interval in which one could move without the
+        other.
+  now:  `WriterAccounting.disposition_holds()` is STILL a tautology
+        (`accepted := written + failed_after_accept`, true by construction,
+        see its docstring in `segment.py`) -- so a defect in `submit()`'s
+        OWN bookkeeping (a future change that increments `written` without
+        the corresponding bytes reaching the file, say) would be exactly as
+        invisible to it as the old writer-thread gap was. The independent
+        check that still matters is therefore against something
+        `writer.accounting` never reads at all: the FILE ITSELF, re-decoded
+        from scratch (see `tests/meta_runtime/independent_accounting.py`).
+  test: `TestPositiveControlSourcesAgree` (healthy case) and
+        `TestPlantedBadAccountingFailsTheMetaTest` (discrimination: a
+        planted bookkeeping defect that `disposition_holds()` cannot see is
+        caught by the file re-read) below.
+
+  old:  `TestDeadWriterThreadDiagnosticStateLies` -- `state`/`healthy` do
+        not reflect a writer thread that died from an injected fault.
+  why:  there is no writer thread for `state`/`healthy` to fail to reflect
+        the liveness of. `submit()` sets `self.state = SegmentState.INVALID`
+        itself, synchronously, in the SAME call that observes the write
+        failure -- there is no separate "thread died silently" state left
+        to lie about.
+  now:  a write failure is immediately, synchronously visible: `state`
+        becomes `INVALID` and `healthy` becomes `False` in the exact call
+        that experienced the failure, not discovered later by polling a
+        thread.
+  test: `TestSubmitFailureIsImmediatelyVisible` below.
+
+`locate_writer_run_gap_line`/`locate_task_done_line` (source-scanning writer-
+thread injection-point locators) and the `line_injector`-based fault
+injection this file used are RETIRED along with `_run` itself. The producer/
+main-thread fault classes they were compared against are still covered by
+`tests/test_kalshi_async_accounting_harness_001.py` (also retired/replaced
+for A1 -- see that file's own docstring).
 """
 
 from __future__ import annotations
 
-import time
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
-
-import pytest
 
 from app.realtime import archive_head as ah
 from app.realtime import canonical as cn
 from app.realtime import segment as sg
 
-from tests.harness_async_accounting.line_injector import (
-    InjectedFault, LineBoundaryInjector, target,
-)
 from tests.meta_runtime.independent_accounting import (
     AdmissionLedger,
-    DurableDisposition,
-    locate_task_done_line,
-    locate_writer_run_gap_line,
-    read_durable_disposition,
     reconcile,
 )
-
-pytestmark = pytest.mark.filterwarnings(
-    "ignore::pytest.PytestUnhandledThreadExceptionWarning")
 
 UTC = timezone.utc
 NOW = datetime(2026, 8, 10, 12, 0, tzinfo=UTC)
@@ -88,31 +92,17 @@ def init(root):
     return ah.initialize_archive(root, ENV, archive_identity="kalshi-realtime")
 
 
-def _wait_thread_dead(w, timeout_s=2.0):
-    deadline = time.monotonic() + timeout_s
-    while w._thread.is_alive() and time.monotonic() < deadline:
-        time.sleep(0.01)
-
-
-# =====================================================================
-# 1. POSITIVE CONTROL: healthy writer, no fault, the two independent
-#    sources agree exactly.
-# =====================================================================
-
 class TestPositiveControlSourcesAgree:
     def test_two_independent_sources_reconcile_for_a_healthy_writer(self, tmp_path):
         root = tmp_path / "healthy"
         root.mkdir()
         init(root)
         w = sg.SegmentWriter(root, environment=ENV, segment_id="seg-healthy",
-                             partition_identity="p", commit_to_head=False)
+                             partition_identity="p", commit_to_head=False,
+                             flush_every=1)
         ledger = AdmissionLedger()
         for i in range(20):
             ledger.record(w.submit(fields(i)))
-        # let the writer thread fully drain before reading the durable side
-        deadline = time.monotonic() + 2.0
-        while w.accounting.written < 20 and time.monotonic() < deadline:
-            time.sleep(0.005)
         report = reconcile(ledger, w)
         assert report.matches, report.to_dict()
         assert report.gap == 0
@@ -121,294 +111,156 @@ class TestPositiveControlSourcesAgree:
         assert ledger.accepted == 20
 
 
-# =====================================================================
-# 2. THE WRITER-THREAD FAULT: real, silent loss the derived identity
-#    cannot see, caught by the independent reconciliation.
-# =====================================================================
+class TestSubmitFailureIsImmediatelyVisible:
+    """A1's replacement for `TestDeadWriterThreadDiagnosticStateLies`: an OS-
+    level write failure is caught, synchronously, inside the SAME call that
+    experienced it -- there is no separate thread whose death `state`/
+    `healthy` could fail to reflect."""
 
-class TestWriterThreadFaultCatchesRealLoss:
-    """The `_run`-gap fault: an item is durably dequeued and then lost
-    with no terminal booking anywhere. Deterministic: the writer thread's
-    trace hook is installed via `threading.settrace` BEFORE the writer is
-    constructed (and therefore before its thread starts), which is what
-    makes this reliably land on the writer thread specifically rather than
-    the producer/main thread."""
-
-    def test_ledger_disagrees_with_the_durable_disposition(self, tmp_path):
-        root = tmp_path / "faulted"
-        root.mkdir()
-        init(root)
-        lineno = locate_writer_run_gap_line(sg.SegmentWriter._run)
-        pt = target(sg.__file__, "_run", lineno, hit_index=1,
-                   label="writer-thread-run-gap")
-        ledger = AdmissionLedger()
-        with LineBoundaryInjector(pt):
-            w = sg.SegmentWriter(root, environment=ENV, segment_id="seg-fault",
-                                 partition_identity="p", commit_to_head=False)
-            for i in range(5):
-                ledger.record(w.submit(fields(i)))
-            _wait_thread_dead(w)
-        assert not w._thread.is_alive(), (
-            "the writer thread should have died from the injected fault; "
-            "if it did not, the injection point moved and this test's "
-            "reproduction is stale")
-        report = reconcile(ledger, w)
-        assert not report.matches, (
-            "expected the independent sources to DISAGREE (real writer-"
-            "side loss) -- if they now match, either the fault stopped "
-            "landing (the injection target moved -- see "
-            "locate_writer_run_gap_line) or production closed this gap, "
-            "in which case update this test to assert reconciliation "
-            f"instead of a mismatch: {report.to_dict()}")
-        assert report.gap == 1, (
-            f"expected exactly one silently-lost item (the one dequeued "
-            f"right as the writer thread died); got gap={report.gap}: "
-            f"{report.to_dict()}")
-        print(f"\n[A7] independent reconciliation caught {report.gap} "
-              f"silently-lost item(s): {report.to_dict()}")
-
-    def test_productions_own_derived_identity_reports_nothing_wrong(self, tmp_path):
-        """THE POINT: `WriterAccounting.disposition_holds()`/`reconciles()`
-        are tautologies (`accepted := written + failed_after_accept +
-        pending`), so they report TRUE even while the SAME writer has just
-        silently lost a real, ledger-confirmed item. This is not a defect
-        in `disposition_holds()`'s arithmetic -- the arithmetic is correct
-        by definition -- it is a demonstration that an identity defined
-        FROM one side of a fact can never contradict that same fact,
-        which is exactly why an INDEPENDENT second source (Section 2's
-        ledger) is required at all."""
-        root = tmp_path / "faulted-tautology"
-        root.mkdir()
-        init(root)
-        lineno = locate_writer_run_gap_line(sg.SegmentWriter._run)
-        pt = target(sg.__file__, "_run", lineno, hit_index=1,
-                   label="writer-thread-run-gap-tautology")
-        ledger = AdmissionLedger()
-        with LineBoundaryInjector(pt):
-            w = sg.SegmentWriter(root, environment=ENV,
-                                 segment_id="seg-fault-tautology",
-                                 partition_identity="p", commit_to_head=False)
-            for i in range(5):
-                ledger.record(w.submit(fields(i)))
-            _wait_thread_dead(w)
-        # production's OWN identity: True, always, by construction.
-        assert w.accounting.disposition_holds() is True
-        assert w.accounting.reconciles() or not w.accounting.admission_holds()
-        # yet the independent ledger proves real loss:
-        report = reconcile(ledger, w)
-        assert not report.matches, (
-            "production's tautological identity staying green is only "
-            "meaningful alongside the independent ledger catching the "
-            f"real loss -- but this run's reconciliation also matched: "
-            f"{report.to_dict()}")
-
-    def test_close_undercounts_the_loss_in_its_own_error_message(self, tmp_path):
-        """KALSHI-ARCHIVE-CORE-REMEDIATION-003B A2 REPAIRED, side effect:
-        this test used to demonstrate that even the FAILURE close() reports
-        undercounted the loss -- it named 4 undrained items, never 5,
-        because the one item that fell into this run-gap window was already
-        dequeued (so `_measure_pending`'s queue scan could not find it) and
-        had reached neither `written` nor `failed_after_accept`. Segment.py's
-        A2 repair gives every dequeued-but-not-yet-terminally-disposed item a
-        durable, structurally observable claim (`SegmentWriter._claimed`,
-        set in the SAME statement as the queue removal) that `_measure_
-        pending` now also scans. That closes this exact blind spot as a
-        byproduct: close()'s own report now names all 5, matching what the
-        independent ledger already knew -- production's own accounting no
-        longer undercounts a real loss."""
-        root = tmp_path / "faulted-close"
-        root.mkdir()
-        init(root)
-        lineno = locate_writer_run_gap_line(sg.SegmentWriter._run)
-        pt = target(sg.__file__, "_run", lineno, hit_index=1,
-                   label="writer-thread-run-gap-close")
-        ledger = AdmissionLedger()
-        with LineBoundaryInjector(pt):
-            w = sg.SegmentWriter(root, environment=ENV,
-                                 segment_id="seg-fault-close",
-                                 partition_identity="p", commit_to_head=False)
-            for i in range(5):
-                ledger.record(w.submit(fields(i)))
-            _wait_thread_dead(w)
-        try:
-            w.close()
-            raise AssertionError(
-                "expected close() to refuse a segment with undrained "
-                "items -- if it now succeeds, the loss became invisible "
-                "at an even earlier point than before")
-        except sg.SegmentError as exc:
-            msg = str(exc)
-            assert "never drained" in msg or "not written" in msg, msg
-            assert "5" in msg, (
-                f"expected close()'s own error to name all 5 undrained "
-                f"items now that the A2 repair's `_claimed` handoff makes "
-                f"the previously-invisible fifth item visible to "
-                f"`_measure_pending` too, got: {msg!r}")
-        assert ledger.accepted == 5, (
-            "the independent ledger is the ONLY record anywhere that 5 "
-            "items were ever accepted")
-
-
-# =====================================================================
-# 3. THE DIAGNOSTIC-STATE CONSEQUENCE, fed forward to A8: the writer
-#    thread is dead but `state`/`healthy` do not reflect that.
-# =====================================================================
-
-class TestDeadWriterThreadDiagnosticStateLies:
-    def test_state_and_healthy_do_not_reflect_a_dead_writer_thread(self, tmp_path):
-        root = tmp_path / "dead-thread-diagnostic"
-        root.mkdir()
-        init(root)
-        lineno = locate_writer_run_gap_line(sg.SegmentWriter._run)
-        pt = target(sg.__file__, "_run", lineno, hit_index=1,
-                   label="writer-thread-run-gap-diagnostic")
-        with LineBoundaryInjector(pt):
-            w = sg.SegmentWriter(root, environment=ENV,
-                                 segment_id="seg-dead-diag",
-                                 partition_identity="p", commit_to_head=False)
-            w.submit(fields(0))
-            _wait_thread_dead(w)
-        assert not w._thread.is_alive()
-        assert w.state is sg.SegmentState.OPEN, (
-            "production's `state` should be lying here -- it stays OPEN "
-            "even though the writer thread that services it is provably "
-            "dead; if this now reports something else, the diagnostic "
-            "surface changed and A8's inventory needs revisiting")
-        assert w.healthy is True, (
-            "`healthy` is defined as `state is OPEN and writer_error is "
-            "None` -- both true here despite a dead writer thread, "
-            "confirming `healthy` is a DIAGNOSTIC read of state that "
-            "never observed the thread, not an AUTHORITATIVE liveness "
-            "check")
-        assert w._writer_error is None
-
-
-# =====================================================================
-# 4. DISCRIMINATION: a PLANTED implementation that derives `accepted`
-#    exactly the way the brief describes -- `written + failed + pending`
-#    -- must FAIL this meta-test's reconciliation the same way production
-#    does. Production itself already fits this description (A6's actual
-#    design), so this section demonstrates the SAME reconciliation applied
-#    directly to production is what fails, without introducing a second,
-#    separate toy implementation that could be accused of not matching
-#    production's real shape.
-# =====================================================================
-
-class TestPlantedDerivedIdentityFailsTheMetaTest:
-    def test_the_derived_accepted_identity_is_the_exact_design_that_fails(
+    def test_a_write_failure_invalidates_the_segment_in_the_same_call(
             self, tmp_path):
-        """Restates Section 2's finding as the explicit discrimination
-        claim: `WriterAccounting.accepted` IS `written + failed_after_
-        accept + pending` (see `app/realtime/segment.py`'s
-        `WriterAccounting.accepted` property) -- literally the planted-bad
-        shape the brief names -- and it is caught failing this meta-test's
-        independent reconciliation, not merely differing from it by
-        construction in the abstract."""
-        import inspect
-        src = inspect.getsource(sg.WriterAccounting.accepted.fget)
-        assert "written" in src and "failed_after_accept" in src \
-            and "pending" in src, (
-            "WriterAccounting.accepted no longer derives from these three "
-            "fields -- the planted-bad shape this section targets has "
-            "changed; re-derive this assertion against the new shape")
-
-        root = tmp_path / "planted-derived"
+        root = tmp_path / "write-fails"
         root.mkdir()
         init(root)
-        lineno = locate_writer_run_gap_line(sg.SegmentWriter._run)
-        pt = target(sg.__file__, "_run", lineno, hit_index=1,
-                   label="writer-thread-run-gap-planted")
+        w = sg.SegmentWriter(root, environment=ENV, segment_id="seg-write-fail",
+                             partition_identity="p", commit_to_head=False,
+                             flush_every=1)
         ledger = AdmissionLedger()
-        with LineBoundaryInjector(pt):
-            w = sg.SegmentWriter(root, environment=ENV,
-                                 segment_id="seg-planted-derived",
-                                 partition_identity="p", commit_to_head=False)
-            for i in range(5):
-                ledger.record(w.submit(fields(i)))
-            _wait_thread_dead(w)
-        # The planted-bad identity (production's actual `accepted`
-        # property) reports itself internally consistent...
-        assert w.accounting.accepted == (
-            w.accounting.written + w.accounting.failed_after_accept
-            + w.accounting.pending + w._queue.qsize())
-        # ...while the independent, two-source reconciliation this
-        # milestone requires FAILS it:
-        report = reconcile(ledger, w)
-        assert not report.matches, (
-            "the meta-test's independent reconciliation should have "
-            f"FAILED the derived-identity design; it did not: "
-            f"{report.to_dict()}")
-
-
-# =====================================================================
-# 5. A SECOND WRITER-THREAD WINDOW (task_done) -- no evidence loss (the
-#    record was already durably written before this point), but the
-#    writer thread still dies unnoticed, and PRODUCER-side interruption is
-#    already covered by the existing A3 harness -- reconciled here through
-#    the SAME independent check for completeness, not re-litigated.
-# =====================================================================
-
-class TestTaskDoneWindowDoesNotLoseEvidenceButStillKillsTheThread:
-    def test_fault_at_task_done_writes_the_record_but_still_kills_the_thread(
-            self, tmp_path):
-        root = tmp_path / "task-done-window"
-        root.mkdir()
-        init(root)
-        lineno = locate_task_done_line(sg.SegmentWriter._run)
-        pt = target(sg.__file__, "_run", lineno, hit_index=1,
-                   label="writer-thread-task-done")
-        ledger = AdmissionLedger()
-        with LineBoundaryInjector(pt):
-            w = sg.SegmentWriter(root, environment=ENV,
-                                 segment_id="seg-task-done",
-                                 partition_identity="p", commit_to_head=False)
-            ledger.record(w.submit(fields(0)))
-            _wait_thread_dead(w)
-        # The record itself made it to `written` -- no data was lost here,
-        # unlike the run-gap window above.
-        assert w.accounting.written == 1
-        assert not w._thread.is_alive()
-        report = reconcile(ledger, w)
-        assert report.matches, (
-            "this window should NOT lose the record (it fires AFTER "
-            f"_write_one already completed): {report.to_dict()}")
-        # But the diagnostic surface still lies about liveness, same as
-        # Section 3 -- feeds the same A8 finding from a second angle.
-        assert w.state is sg.SegmentState.OPEN
-        assert w.healthy is True
-
-
-class TestProducerInterruptionAlsoReconciles:
-    """The producer/main-thread windows are the existing A3 harness's
-    territory (`tests/test_kalshi_async_accounting_harness_001.py`); this
-    is a single, brief confirmation that the SAME independent two-source
-    reconciliation this file introduces also holds for that class (no
-    loss expected there post-A6 -- see that file's own required-outcome
-    assertions), for completeness of the accounting picture, not a
-    re-implementation of that harness's own campaign."""
-
-    def test_a_producer_side_fault_still_reconciles_cleanly(self, tmp_path):
-        from tests.harness_async_accounting.line_injector import target_marker
-
-        root = tmp_path / "producer-side"
-        root.mkdir()
-        init(root)
-        w = sg.SegmentWriter(root, environment=ENV, segment_id="seg-producer",
-                             partition_identity="p", commit_to_head=False)
-        ledger = AdmissionLedger()
-        for i in range(5):
+        for i in range(3):
             ledger.record(w.submit(fields(i)))
-        pt = target_marker(sg.__file__, sg.SegmentWriter.submit, "window-a")
-        try:
-            with LineBoundaryInjector(pt):
-                ledger.record(w.submit(fields(99)))
-        except BaseException:
-            pass
-        deadline = time.monotonic() + 2.0
-        while w.accounting.written < 5 and time.monotonic() < deadline:
-            time.sleep(0.005)
+
+        class _ExplodingFh:
+            def write(self, _data):
+                raise OSError("ENOSPC (simulated)")
+
+        w._fh = _ExplodingFh()
+        reason = w.submit(fields(99))
+        ledger.record(reason)
+
+        # Visible IMMEDIATELY, in the same call -- not discovered later by
+        # polling a thread that no longer exists.
+        assert reason == sg.RejectReason.WRITER_FAILED
+        assert w.state is sg.SegmentState.INVALID
+        assert w.healthy is False
+        assert w._writer_error is not None
+
+        # The independent, on-disk source agrees with the ledger: the first
+        # 3 records are durably on disk (re-decoded fresh from the file, not
+        # read off `writer.accounting`); the 4th never reached it.
+        report = reconcile(ledger, w)
+        assert report.matches, report.to_dict()
+        assert ledger.accepted == 3
+
+
+class TestPlantedBadAccountingFailsTheMetaTest:
+    """THE DISCRIMINATION CASE. `WriterAccounting.disposition_holds()` is a
+    tautology (`accepted := written + failed_after_accept`) -- it cannot,
+    BY CONSTRUCTION, ever disagree with itself. This plants exactly the
+    class of defect that tautology cannot see (a `written` increment with
+    no corresponding durable bytes) directly, without needing a fault
+    injector, and shows the independent (file-re-read) reconciliation
+    catches it while `disposition_holds()` stays green throughout."""
+
+    def test_a_bookkeeping_only_increment_fools_disposition_holds_but_not_reconcile(
+            self, tmp_path):
+        root = tmp_path / "planted-bad"
+        root.mkdir()
+        init(root)
+        w = sg.SegmentWriter(root, environment=ENV, segment_id="seg-planted",
+                             partition_identity="p", commit_to_head=False,
+                             flush_every=1)
+        ledger = AdmissionLedger()
+        for i in range(4):
+            ledger.record(w.submit(fields(i)))
+
+        # Plant the defect: book a 5th record as `written` WITHOUT writing
+        # the corresponding bytes -- exactly the shape a future regression
+        # in `submit()` could introduce, and exactly what `written`/
+        # `failed_after_accept` being incremented in a DIFFERENT call than
+        # the one that actually wrote the bytes would look like from the
+        # writer's own perspective.
+        w.accounting.written += 1
+
+        # Production's OWN identity: still true, by construction -- it
+        # cannot see the fabricated increment as wrong, because there is
+        # nothing for it to compare against except itself.
+        assert w.accounting.disposition_holds() is True
+        assert w.accounting.clean() is True
+
+        # The independent, file-sourced reconciliation is not fooled: the
+        # ledger says 4 were accepted by the producer's own call site, and
+        # a fresh re-decode of the file also finds 4 -- but `written` now
+        # claims 5, which is the exact discrepancy this harness exists to
+        # surface via `DurableDisposition`, not via `writer.accounting`.
         report = reconcile(ledger, w)
         assert report.matches, (
-            "a producer-side (main-thread) fault at window (a) should "
-            f"not desynchronise the independent sources post-A6: "
-            f"{report.to_dict()}")
+            "reconcile() compares the ledger against the FILE, not "
+            "writer.accounting.written -- planting a bad `written` "
+            "increment must not move this report at all, which is the "
+            "point: it is independent of the field that was just corrupted")
+        assert report.durable_total == 4
+        assert w.accounting.written == 5
+        # THE discrimination: writer.accounting's own written count now
+        # disagrees with what an independent re-read of the file finds --
+        # a fact `disposition_holds()` cannot express, because it never
+        # looks at the file at all.
+        on_disk = len(sg.read_segment_records(w.events_path))
+        assert on_disk != w.accounting.written, (
+            "the planted defect should have desynchronised `written` from "
+            "the file; if they now agree, the plant above no longer "
+            "reproduces the class of bug this test exists to catch")
+
+
+class TestReconcileItselfCatchesAGenuineGapDispositionHoldsCannotSee:
+    """A SECOND discrimination case, specifically for `reconcile()`'s own
+    `matches`/`gap` verdict (as opposed to `TestPlantedBadAccountingFailsThe
+    MetaTest`'s `durable_total`, which the case above already covers).
+
+    `WriterAccounting.disposition_holds()` is a tautology REGARDLESS of what
+    the ledger says -- it can be True even while the ledger and the file
+    genuinely disagree in RECORD COUNT, not merely in what `writer.
+    accounting` happens to claim about itself. This corrupts the FILE
+    directly, after honest submissions, to produce a REAL ledger-vs-file gap
+    that `disposition_holds()` (which never reads the file) cannot see by
+    construction, while the real, file-sourced `reconcile()` does.
+    """
+
+    def test_a_genuinely_corrupted_file_produces_a_real_gap_disposition_holds_misses(
+            self, tmp_path):
+        root = tmp_path / "file-corrupted"
+        root.mkdir()
+        init(root)
+        w = sg.SegmentWriter(root, environment=ENV, segment_id="seg-corrupt",
+                             partition_identity="p", commit_to_head=False,
+                             flush_every=1)
+        ledger = AdmissionLedger()
+        for i in range(6):
+            ledger.record(w.submit(fields(i)))
+        assert ledger.accepted == 6
+
+        # Corrupt the FILE directly -- simulating loss that happened outside
+        # `submit()`'s own bookkeeping entirely (a hostile actor, a
+        # filesystem fault after the fact, or -- the point of this test --
+        # any FUTURE regression that decouples `written` from what is
+        # actually readable). `writer.accounting` is untouched: `written`
+        # still (truthfully, from ITS perspective) says 6, and
+        # `disposition_holds()` stays True throughout, because it compares
+        # `written`/`failed_after_accept` against a formula defined FROM
+        # them -- never against the file.
+        raw = w.events_path.read_bytes()
+        w.events_path.write_bytes(raw[: len(raw) - 40])
+        on_disk_now = len(sg.read_segment_records(w.events_path))
+        assert on_disk_now < 6, (
+            "the truncation above should have cost at least one recoverable "
+            f"record; got {on_disk_now} still readable")
+
+        assert w.accounting.disposition_holds() is True
+        assert w.accounting.written == 6
+
+        report = reconcile(ledger, w)
+        assert not report.matches, (
+            "the ledger (6) and a fresh re-decode of the file "
+            f"({on_disk_now}) genuinely disagree -- reconcile() must report "
+            f"a mismatch: {report.to_dict()}")
+        assert report.gap == 6 - on_disk_now
+        assert report.durable_total == on_disk_now

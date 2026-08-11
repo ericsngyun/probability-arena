@@ -58,9 +58,26 @@ def write_intact_residue(root, segment_id: str, n: int) -> None:
 
 
 def write_torn_residue(root, segment_id: str, n: int) -> None:
-    """A PARTIAL-TORN residue: the last record's bytes are truncated
-    mid-write -- the realistic shape of a crash landing in the middle of
-    `_fh.write(...)`."""
+    """A PARTIAL-TORN residue: the compressed stream is genuinely CORRUPTED
+    partway through -- a real `zlib.error`, not merely a clean truncation.
+
+    KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A4: a plain truncation of a complete
+    gzip stream (removing only trailing bytes) decompresses the ENTIRE
+    deflate payload cleanly with zero decode faults -- `zlib.decompressobj`
+    simply reports it ran out of input, not yet at `eof`. That is BYTE-FOR-
+    BYTE the same signature a live, still-open segment has (`GzipFile.
+    flush()` emits `Z_SYNC_FLUSH`, never a trailer -- see `segment.
+    read_segment_records`'s `decode_had_error` diagnostic), and is
+    genuinely, structurally indistinguishable from one: there is no fault to
+    observe, only "the stream doesn't have a trailer yet". A REAL crash mid-
+    fsync does not usually leave a byte-perfect prefix of a complete deflate
+    block either -- it leaves a genuinely incomplete/invalid one -- so
+    corrupting a run of bytes partway through the compressed stream (rather
+    than only truncating the tail) is both the more faithful simulation of
+    "a crash landed mid-write" AND the only way to produce the `zlib.error`
+    that actually distinguishes "torn/corrupted" from "live, not yet
+    closed".
+    """
     seg_dir = root / f"env={ENV}" / f"segment={segment_id}"
     seg_dir.mkdir(parents=True, exist_ok=True)
     prev = sg.genesis_digest(segment_id=segment_id, environment=ENV)
@@ -69,11 +86,14 @@ def write_torn_residue(root, segment_id: str, n: int) -> None:
         line, prev = _record_bytes(fields(i), i, prev, segment_id)
         lines.append(line)
     whole = b"".join(lines)
-    compressed = gzip.compress(whole)
-    # Truncate the COMPRESSED stream itself (a crash mid-fsync can leave a
-    # torn gzip member, not merely a torn logical line).
-    torn = compressed[: len(compressed) - 5]
-    (seg_dir / "events.jsonl.gz").write_bytes(torn)
+    compressed = bytearray(gzip.compress(whole))
+    # Corrupt a short run of bytes partway through the deflate payload
+    # (well before the trailer) -- a genuine decode fault, not a clean
+    # truncation.
+    mid = len(compressed) // 2
+    for i in range(mid, min(mid + 20, len(compressed) - 8)):
+        compressed[i] ^= 0xFF
+    (seg_dir / "events.jsonl.gz").write_bytes(bytes(compressed))
 
 
 def write_malformed_residue(root, segment_id: str) -> None:
@@ -227,6 +247,82 @@ class TestResidueIsNowClassifiedDistinctly:
         assert v.records_read == 0
         assert v.residue_classification == sg.RESIDUE_RECOVERABLE_INTACT
         assert v.chain_valid is True
+
+
+class TestA4LiveSegmentAndUnreadableResidue:
+    """KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A4.
+
+    Two residue-classification defects, both about `RESIDUE_RECOVERABLE_
+    INTACT` being reachable for exactly the wrong reason or unreachable for
+    exactly the wrong reason:
+
+    1. `gzip.GzipFile.flush()` (what `SegmentWriter` calls on its flush
+       cadence) emits a `Z_SYNC_FLUSH` marker, never a gzip trailer -- so a
+       LIVE, still-open segment's bytes never reach `dec.eof`, and
+       `RECOVERABLE_INTACT` was structurally UNREACHABLE for the single most
+       common residue an operator actually inspects (a collector's current-
+       hour segment, mid-collection). Fixed by distinguishing "ran out of
+       input with zero decode faults" (a live segment) from "a real zlib/
+       EOFError fault occurred" (genuine corruption) -- see `segment.
+       read_segment_records`'s `decode_had_error` diagnostic.
+    2. A residue that VISIBLY EXISTS but cannot be READ at all (permission
+       denied) used to fall into the SAME diagnostic defaults as a
+       genuinely empty, brand-new segment -- both reporting
+       `stream_fully_decoded: True` -- and therefore verified `chain_ok`
+       over zero recovered records and classified `RECOVERABLE_INTACT`: a
+       fail-OPEN verdict for evidence nobody could prove the content of.
+       Fixed with a dedicated `RESIDUE_UNREADABLE` classification, checked
+       FIRST.
+    """
+
+    def test_a_genuinely_live_open_segment_classifies_recoverable_intact(
+            self, tmp_path):
+        root = tmp_path / "live"
+        root.mkdir()
+        ah.initialize_archive(root, ENV, archive_identity="kalshi-realtime")
+        w = sg.SegmentWriter(root, environment=ENV, segment_id="seg-live",
+                             partition_identity="p", commit_to_head=False,
+                             flush_every=1)
+        try:
+            for i in range(5):
+                assert w.submit(fields(i)) is None
+            # Deliberately NOT closed: this is what a live collector's
+            # current-hour segment looks like on disk at any instant --
+            # every record `flush()`ed (Z_SYNC_FLUSH, never a trailer), no
+            # manifest.
+            v = sg.verify_segment(w.dir, environment=ENV, allow_open=True,
+                                  root=root)
+            assert v.records_read == 5
+            assert v.chain_valid is True
+            assert v.residue_classification == sg.RESIDUE_RECOVERABLE_INTACT, (
+                "a live, still-open segment with zero decode faults must "
+                f"classify RECOVERABLE_INTACT, not {v.residue_classification!r}")
+        finally:
+            w._release_lock()
+
+    def test_an_unreadable_residue_fails_closed_not_recoverable_intact(
+            self, tmp_path, monkeypatch):
+        root = tmp_path / "unreadable"
+        root.mkdir()
+        ah.initialize_archive(root, ENV, archive_identity="kalshi-realtime")
+        write_intact_residue(root, "seg-unreadable", 5)
+        seg_dir = root / f"env={ENV}" / "segment=seg-unreadable"
+        events_path = seg_dir / "events.jsonl.gz"
+        import os
+        os.chmod(events_path, 0o000)
+        try:
+            v = sg.verify_segment(seg_dir, environment=ENV, allow_open=True,
+                                  root=root)
+            assert v.residue_classification == sg.RESIDUE_UNREADABLE, (
+                "a residue that exists but could not be read must FAIL "
+                "CLOSED as RESIDUE_UNREADABLE, never RECOVERABLE_INTACT -- "
+                f"got {v.residue_classification!r}")
+            assert v.residue_classification != sg.RESIDUE_RECOVERABLE_INTACT
+            assert v.valid is False
+            reasons_text = json.dumps(v.reasons).lower()
+            assert "unreadable" in reasons_text
+        finally:
+            os.chmod(events_path, 0o600)
 
 
 class TestArchiveAdoptStructurallyRefusesTheResidueItsOwnWarningNames:

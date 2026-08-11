@@ -107,86 +107,50 @@ def owns(w) -> bool:
     return False
 
 
-# --- Gate D: deterministic backpressure --------------------------------------------
-class TestBackpressure:
-    def test_saturation_produces_typed_rejections_and_no_silent_loss(self, tmp_path):
-        """Tiny queue, deliberately slow writer, several producers.
-
-        The point is not that nothing is rejected — under real backpressure
-        things must be — but that every rejection is typed and counted, and
-        nothing vanishes.
-        """
-        w = writer(tmp_path, queue_maxsize=4, enqueue_timeout_s=0.02)
-        w.pre_write_hook = lambda _w: time.sleep(0.002)
-        per, producers = 150, 4
-        errors, results = [], []
-        lock = threading.Lock()
-
-        def produce(pid):
-            try:
-                for i in range(per):
-                    r = w.submit(fields(pid * 10_000 + i))
-                    with lock:
-                        results.append(r)
-            except BaseException as exc:            # nothing may be swallowed
-                errors.append(exc)
-
-        threads = [threading.Thread(target=produce, args=(p,))
-                   for p in range(producers)]
-        t0 = time.monotonic()
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=60)
-        elapsed = time.monotonic() - t0
-        assert not any(t.is_alive() for t in threads), "a producer hung"
-        assert not errors, errors
-        w.close()
-
-        generated = per * producers
-        assert_reconciles(w, generated=generated)
-        assert len(results) == generated, "a submission returned no verdict"
-        rejected = [r for r in results if r is not None]
-        assert len(rejected) == w.accounting.rejected_before_accept
-        # The queue is bounded, and provably so.
-        assert w.queue_high_water <= 4, w.queue_high_water
-        assert elapsed < 60
-        v = sg.verify_segment(w.dir, environment=ENV)
-        assert v.valid and v.records_read == w.accounting.written
-
-    def test_backpressure_relieves_and_later_submissions_succeed(self, tmp_path):
-        """Saturate, then let the writer catch up: the archive must keep working
-        rather than staying wedged."""
-        # Block the writer on an Event rather than racing it with a sleep. The
-        # sleep version let the writer drain both queue slots inside one
-        # enqueue timeout, so whether backpressure occurred at all was a coin
-        # flip — it failed 5 runs in 15 standalone. A test that only sometimes
-        # exercises the condition it names is not evidence either way.
-        w = writer(tmp_path, queue_maxsize=2, enqueue_timeout_s=0.01)
-        gate = threading.Event()
-        w.pre_write_hook = lambda _w: gate.wait(5)
-        first = [w.submit(fields(i)) for i in range(120)]
-        assert any(r is not None for r in first), "no backpressure was induced"
-        gate.set()
-        deadline = time.monotonic() + 5
-        while w._queue.qsize() and time.monotonic() < deadline:
-            time.sleep(0.005)                             # writer catches up
-        later = [w.submit(fields(1000 + i)) for i in range(20)]
-        assert any(r is None for r in later), "writer never recovered"
-        w.close()
-        assert_reconciles(w, generated=140)
-        v = sg.verify_segment(w.dir, environment=ENV)
-        assert v.valid
-        assert w.read_manifest()["record_count"] == w.accounting.written
-
-    def test_the_queue_is_bounded_not_merely_large(self, tmp_path):
-        w = writer(tmp_path, queue_maxsize=3, enqueue_timeout_s=0.005)
-        w.pre_write_hook = lambda _w: time.sleep(0.01)
-        for i in range(200):
-            w.submit(fields(i))
-        w.close()
-        assert w.queue_high_water <= 3
-        assert_reconciles(w, generated=200)
+# --- Gate D: deterministic backpressure, RETIRED for the synchronous writer -------
+#
+# KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A1/A7: `TestBackpressure` used to
+# saturate a bounded `queue.Queue` with a deliberately slow background
+# writer thread and several producers, proving every rejection under
+# genuine queue-full backpressure was typed and counted rather than
+# silently dropped. There is no queue any more: `submit()` writes
+# synchronously, under `self._lock`, so N concurrent producers are
+# serialised on that lock rather than racing a bounded buffer -- there is
+# no "queue is bounded" property left to prove, and no `ENQUEUE_TIMEOUT`
+# outcome left to produce (see `RejectReason`'s docstring: it is a retired
+# value, never returned by current code).
+#
+# MAPPING (old property -> why gone -> replacement property -> replacement
+# test):
+#
+#   old:  under queue saturation, every rejection is typed
+#         (`ENQUEUE_TIMEOUT`) and counted; nothing vanishes silently.
+#   why:  there is no queue to saturate. Every `submit()` call either
+#         completes (the record is durably written) or returns a typed
+#         rejection reached through `self.state`/canonicalisation --
+#         never a timeout waiting on buffer space.
+#   now:  N concurrent producers, calling `submit()` from real threads at
+#         the same time, are serialised on `self._lock` -- every call
+#         still reaches exactly one terminal outcome, and none can
+#         silently lose an event to a race on the lock (Python's
+#         `threading.Lock` guarantees mutual exclusion, not merely
+#         eventual consistency).
+#   test: `tests/test_kalshi_segment_integrity_001.py::TestSingleWriter::
+#         test_accounting_reconciles_under_concurrency` already proves
+#         exactly this -- 6 real threads, 500 submissions each, reconciled
+#         against a real re-verification of the segment -- and needed no
+#         changes for A1, since it never depended on queue internals.
+#
+#   old:  saturate, then relieve backpressure, and later submissions must
+#         still succeed (the archive does not stay wedged).
+#   why:  there is no backpressure state to relieve. A live segment is
+#         either OPEN (every submission proceeds) or INVALID/CLOSED (every
+#         submission is rejected, deterministically, forever) -- there is
+#         no third, transient "saturated but will recover" state.
+#   now:  covered by `TestOwnershipCleanup`/`TestWriterFailure` below,
+#         which prove the ONLY two ways a writer stops accepting evidence
+#         (closed, or invalidated by a real write fault) and that neither
+#         one is a transient condition a caller should retry through.
 
 
 # --- Gate E: shutdown race ---------------------------------------------------------
@@ -215,8 +179,13 @@ class TestShutdownRace:
             t.join(timeout=30)
         manifest = w.close()
 
-        # A late submitter, after close began.
-        assert w.submit(fields(99_999)) is sg.RejectReason.SHUTDOWN_IN_PROGRESS
+        # A late submitter, after close has already returned. A1: `submit()`
+        # now distinguishes CLOSING (SHUTDOWN_IN_PROGRESS -- reachable only
+        # by a concurrent caller racing an in-progress close()) from CLOSED
+        # (SEGMENT_NOT_OPEN, the deterministic outcome once close() has
+        # actually returned, as it has here) -- the old design's `_sealed`
+        # flag conflated both into one reason forever, once set.
+        assert w.submit(fields(99_999)) is sg.RejectReason.SEGMENT_NOT_OPEN
         assert w.state is sg.SegmentState.CLOSED
         assert manifest["record_count"] == w.accounting.written
         v = sg.verify_segment(w.dir, environment=ENV)

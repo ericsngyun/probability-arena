@@ -171,7 +171,7 @@ MUTATIONS: tuple = (
     ),
     Mutation(
         id="M5_independent_accounting_made_tautological",
-        category="independent accounting (A7)",
+        category="independent accounting (A1/A7)",
         description="reconcile() derives its match/gap verdict from the "
                     "writer's OWN internal consistency check "
                     "(WriterAccounting.disposition_holds(), true BY "
@@ -179,37 +179,36 @@ MUTATIONS: tuple = (
                     "comparing two separately-sourced observations",
         target="tests/meta_runtime/independent_accounting.py",
         old="def reconcile(ledger: AdmissionLedger, writer) -> ReconciliationReport:\n"
-           '    """THE independent check. Never reads `writer.accounting.accepted` or\n'
-           "    calls `writer.accounting.disposition_holds()`/`reconciles()` -- those\n"
-           '    are the tautology this function exists to be independent OF."""\n'
+           '    """THE independent check. Never reads `writer.accounting.accepted`,\n'
+           "    `.written`, or calls `writer.accounting.disposition_holds()`/\n"
+           "    `.reconciles()` -- those are the tautology this function exists to be\n"
+           '    independent OF. Compares the producer-observed ledger against a fresh\n'
+           '    re-decode of the file on disk instead.\n'
+           '    """\n'
            "    durable = read_durable_disposition(writer)\n"
            "    gap = ledger.accepted - durable.total\n"
            "    return ReconciliationReport(ledger.accepted, durable.total, gap == 0, gap)",
         new="def reconcile(ledger: AdmissionLedger, writer) -> ReconciliationReport:\n"
            "    # MUTATION: derives the match verdict from WriterAccounting's own\n"
-           "    # disposition_holds() -- ALWAYS True by construction per A6's\n"
-           "    # docstring (`accepted` IS `written + failed_after_accept + pending\n"
-           "    # + live`, so it cannot disagree with itself) -- the exact tautology\n"
-           "    # this function exists to be independent of. Deliberately NOT\n"
-           "    # reconciles()/admission_holds(), which -- for this specific fault\n"
-           "    # shape only, because `attempted` was already committed before the\n"
-           "    # writer thread died -- happens to still catch the loss, and would\n"
-           "    # not demonstrate the tautology this mutation is meant to prove.\n"
+           "    # disposition_holds() -- ALWAYS True by construction (accepted IS\n"
+           "    # written + failed_after_accept, so it cannot disagree with itself)\n"
+           "    # -- the exact tautology this function exists to be independent of.\n"
            "    durable = read_durable_disposition(writer)\n"
            "    matches = writer.accounting.disposition_holds()\n"
            "    gap = 0 if matches else (ledger.accepted - durable.total)\n"
            "    return ReconciliationReport(ledger.accepted, durable.total, matches, gap)",
         catch_args=(
             "tests/test_kalshi_meta_runtime_independent_accounting_001.py::"
-            "TestWriterThreadFaultCatchesRealLoss::"
-            "test_ledger_disagrees_with_the_durable_disposition",
+            "TestReconcileItselfCatchesAGenuineGapDispositionHoldsCannotSee::"
+            "test_a_genuinely_corrupted_file_produces_a_real_gap_disposition_holds_misses",
         ),
         rationale="`WriterAccounting.disposition_holds()` is TRUE BY "
-                 "CONSTRUCTION (A6: `accepted` is DEFINED as `written + "
-                 "failed_after_accept + pending + live`, so it can never "
-                 "disagree with itself) -- it therefore stays True under the "
-                 "exact writer-thread-loss fault this test injects, and the "
-                 "real gap==1, matches==False finding disappears.",
+                 "CONSTRUCTION (`accepted` is DEFINED as `written + "
+                 "failed_after_accept`, so it can never disagree with "
+                 "itself) -- it therefore stays True even while a genuinely "
+                 "corrupted file leaves the ledger and an independent "
+                 "re-decode disagreeing on record count, and the mutated "
+                 "reconcile() reports `matches: True` over a real gap.",
     ),
     Mutation(
         id="M6_duplicate_key_check_removed",
@@ -300,24 +299,32 @@ MUTATIONS: tuple = (
                  "a pytest-outcome-level one.",
     ),
     Mutation(
-        id="M10_fault_window_marker_resolves_empty",
-        category="async-harness source marker (A7/A8 shared plumbing)",
-        description='the `# FAULT-WINDOW:` marker prefix the async-harness '
-                    "line injector scans for is changed so no marker in "
-                    "segment.py or reference_shim.py matches any more",
-        target="tests/harness_async_accounting/line_injector.py",
-        old='_MARKER_PREFIX = "FAULT-WINDOW:"',
-        new='_MARKER_PREFIX = "FAULT-WINDOW-DOES-NOT-EXIST:"  # MUTATION',
+        id="M10_durable_disposition_reads_the_tautological_source",
+        category="independent accounting, second source (A1/A7)",
+        description="read_durable_disposition() reads writer.accounting."
+                    "written -- the SAME counter a bookkeeping-only defect "
+                    "would corrupt -- instead of independently re-decoding "
+                    "the file on disk",
+        target="tests/meta_runtime/independent_accounting.py",
+        old="    from app.realtime import segment as sg\n\n"
+           "    records = sg.read_segment_records(writer.events_path)\n"
+           "    return DurableDisposition(on_disk_records=len(records))",
+        new="    # MUTATION: reads the writer's OWN counter instead of the file --\n"
+           "    # no longer a second, independent source.\n"
+           "    return DurableDisposition(on_disk_records=writer.accounting.written)",
         catch_args=(
-            "tests/test_kalshi_async_accounting_harness_001.py::"
-            "TestFourWindowsReproduceDeterministically::"
-            "test_window_a_diagnostic_drift_never_blocks_close",
+            "tests/test_kalshi_meta_runtime_independent_accounting_001.py::"
+            "TestPlantedBadAccountingFailsTheMetaTest::"
+            "test_a_bookkeeping_only_increment_fools_disposition_holds_but_not_reconcile",
         ),
-        rationale="`find_marker_line` raises ValueError for every "
-                 "`target_marker(...)` call site the moment no marker "
-                 "matches -- effectively every fault-injection test in the "
-                 "async-accounting family (19 tests) depends on this "
-                 "resolving to a non-empty match.",
+        rationale="the whole point of `read_durable_disposition` is that it "
+                 "is sourced from the FILE, never from `writer.accounting` "
+                 "in any form -- collapsing it onto `writer.accounting."
+                 "written` means a planted, bookkeeping-only increment to "
+                 "that SAME field is now invisible to both sides of the "
+                 "reconciliation at once, and the test's own assertion "
+                 "that `report.durable_total == 4` (the true on-disk count, "
+                 "not the corrupted 5) fails.",
     ),
 )
 

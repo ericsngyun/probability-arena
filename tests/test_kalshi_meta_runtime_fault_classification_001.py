@@ -1,29 +1,31 @@
 """KALSHI-ARCHIVE-CORE-REMEDIATION-003B A3 -- fault-model fidelity.
 
 Validates `tests/meta_runtime/fault_ledger.py`'s completeness/consistency,
-and adds ONE new, genuinely REALISTIC_SIGNAL_FAULT measurement: a real
-`ctypes.pythonapi.PyThreadState_SetAsyncExc` bombardment targeted at the
-WRITER thread's own OS thread id -- unlike every `sigint`/`asyncexc` trial
-in `tests/test_kalshi_async_accounting_harness_001.py`, which can only
-target the main/producer thread (real `SIGINT` handlers are only ever
-delivered there in CPython).
+and keeps ONE genuinely REALISTIC_PROCESS_FAULT measurement: a real SIGKILL
+mid-stream (`TestRealProcessKillMidWrite`, unchanged by KALSHI-ARCHIVE-
+REPLAY-INTEGRITY-001 -- a process-level kill exercises `submit()`/`close()`
+however they are implemented, and does not depend on the queue-vs-
+synchronous internals A1 removed).
 
-DOES NOT MODIFY `app/realtime/segment.py`. The measurement script
-(`tests/meta_runtime/writer_thread_asyncexc_trial.py`) runs as an isolated
-subprocess under `tests/meta_runtime/parent_timeout.run_with_parent_timeout`
--- a wedged trial cannot hang this suite (see that module's docstring for
-why a REAL, external deadline is required for anything that injects
-asynchronous exceptions).
+RETIRED: `TestRealAsyncExcAgainstTheWriterThreadItself`, which used to
+bombard the SegmentWriter background writer thread's own OS thread id with
+real `PyThreadState_SetAsyncExc` deliveries -- a measurement distinct from
+`tests/test_kalshi_async_accounting_harness_001.py`'s main/producer-thread-
+only trials specifically BECAUSE the writer thread was a second, separately
+addressable thread. There is no writer thread any more (A1): `submit()` runs
+entirely on the caller's own thread, so the distinction this class existed
+to measure has collapsed -- the main-thread trials already cover the only
+thread `submit()` ever runs on. See `tests/meta_runtime/
+writer_thread_asyncexc_trial.py`'s own retirement docstring for the full
+argument.
+
+DOES NOT MODIFY `app/realtime/segment.py`.
 """
 
 from __future__ import annotations
 
-import inspect
-import json
 import re
 from pathlib import Path
-
-import pytest
 
 from app.realtime import segment as sg
 
@@ -31,13 +33,6 @@ from tests.meta_runtime import fault_ledger as fl
 from tests.meta_runtime.parent_timeout import run_with_parent_timeout
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-TRIAL_SCRIPT = (REPO_ROOT / "tests" / "meta_runtime"
-                / "writer_thread_asyncexc_trial.py")
-
-# Small: this is a smoke-scale real measurement, not the reviewer's full
-# 50/200 campaign -- see this file's own report note on why a bigger
-# campaign was out of scope here.
-N_TRIALS = 8
 
 
 class TestLedgerIsInternallyConsistent:
@@ -86,7 +81,7 @@ class TestLedgerIsInternallyConsistent:
         to prevent."""
         new_fault_modules = [
             "tests/test_kalshi_meta_runtime_admission_close_race_001.py",
-            "tests/test_kalshi_meta_runtime_queue_gap_001.py",
+            "tests/test_kalshi_meta_runtime_independent_accounting_001.py",
             "tests/test_kalshi_meta_runtime_fault_classification_001.py",
         ]
         ledgered_modules = {e.module for e in fl.LEDGER}
@@ -94,103 +89,6 @@ class TestLedgerIsInternallyConsistent:
             assert m in ledgered_modules, (
                 f"{m} uses fault injection but has no ledger entry in "
                 "tests/meta_runtime/fault_ledger.py")
-
-
-class TestRealAsyncExcAgainstTheWriterThreadItself:
-    def test_measure_real_asyncexc_landing_rate_against_the_writer_thread(
-            self, tmp_path):
-        """Reports, honestly, how often a REAL asynchronous exception
-        delivered directly to the writer thread's own OS thread id lands
-        in a way that kills it mid-write (`landed`) versus harmlessly
-        (thread already idle, or the exception is swallowed/retried) --
-        across a small number of real trials. This is a FREQUENCY-CLASS
-        measurement (REALISTIC_SIGNAL_FAULT); no specific rate is asserted
-        as a requirement, because -- exactly per this milestone's own
-        finding about the reviewer's 0/50 deadlock measurement -- a
-        synthetic mechanism finding a state does not mean a real one lands
-        there at any particular rate, and the reverse claim (asserting a
-        rate) would be just as unjustified without a much larger campaign
-        than fits in this suite's runtime budget.
-        """
-        results = []
-        for seed in range(N_TRIALS):
-            root = tmp_path / f"trial-{seed}"
-            root.mkdir()
-            # Strip the file's own `if __name__ == "__main__":` trailer --
-            # it would otherwise execute FIRST (with the wrong sys.argv,
-            # missing the required --root) the instant this flat script
-            # reaches that line, before the appended block below ever runs.
-            body = TRIAL_SCRIPT.read_text().split(
-                'if __name__ == "__main__":')[0]
-            # `run_with_parent_timeout`'s own preamble is prepended ahead of
-            # this text, so a `from __future__ import annotations` here
-            # would no longer be the first statement in the module (a
-            # SyntaxError) -- dropped; nothing in this script's body
-            # actually depends on deferred annotation evaluation at runtime.
-            body = body.replace("from __future__ import annotations\n", "")
-            # The file's own `REPO_ROOT = Path(__file__)...` line is
-            # meaningless for a flat `-c` script (no `__file__`) --
-            # `run_with_parent_timeout`'s own preamble already inserts the
-            # repo root onto `sys.path` (see its `repo_root=` argument
-            # below), so this line is dropped rather than executed.
-            body = re.sub(
-                r"^REPO_ROOT = Path\(__file__\).*$\n^sys\.path\.insert\(0, "
-                r"str\(REPO_ROOT\)\)$", "", body, flags=re.MULTILINE)
-            script = body + (
-                f"\nsys.argv = [sys.argv[0], '--root', {str(root)!r}, "
-                f"'--segment-id', 'seg', '--n-submits', '300', "
-                f"'--n-bombs', '3', '--seed', '{seed}']\n"
-                "raise SystemExit(main())\n")
-            verdict = run_with_parent_timeout(
-                script, timeout_s=15.0, repo_root=str(REPO_ROOT))
-            assert verdict.classification in ("COMPLETED", "TIMEOUT_FAIL"), (
-                f"trial {seed} CRASHED (not a hang, not a clean exit): "
-                f"{verdict}")
-            if verdict.classification == "TIMEOUT_FAIL":
-                # A genuine, real-world outcome for this delivery mechanism
-                # (`PyThreadState_SetAsyncExc` can land inside CPython's own
-                # internal lock machinery -- see `watchdog.py`'s docstring
-                # for the documented precedent) -- recorded, not asserted
-                # against, and the parent's SIGKILL proves the suite cannot
-                # be hung by it.
-                results.append({"seed": seed, "hang": True})
-                continue
-            line = (verdict.stdout or "").strip().splitlines()[-1] \
-                if verdict.stdout else ""
-            try:
-                results.append(json.loads(line))
-            except (json.JSONDecodeError, IndexError):
-                results.append({"seed": seed, "unparseable": True,
-                                "stdout": verdict.stdout[-500:],
-                                "stderr": verdict.stderr[-500:]})
-
-        n_hang = sum(1 for r in results if r.get("hang"))
-        n_landed = sum(1 for r in results if r.get("landed"))
-        n_usable = sum(1 for r in results
-                       if not r.get("hang") and not r.get("unparseable")
-                       and not r.get("top_level_fault"))
-        print(f"\n[A3] real PyThreadState_SetAsyncExc against the WRITER "
-              f"thread: {n_landed}/{n_usable} usable trials landed mid-write "
-              f"(killed the writer with a recorded writer_error), "
-              f"{n_hang}/{N_TRIALS} hung (caught by the parent timeout, not "
-              "a suite hang). This is a smoke-scale sample "
-              f"(N_TRIALS={N_TRIALS}), not the full statistical campaign a "
-              "production frequency claim would require -- see this "
-              "module's docstring.")
-        for r in results:
-            print(f"  {r}")
-
-        # Mechanism-robustness assertions ONLY -- no claim about the
-        # landing rate itself, which is reported above for the record.
-        assert n_usable >= N_TRIALS // 2, (
-            f"too many trials were unusable to draw any conclusion: "
-            f"{results}")
-        for r in results:
-            if r.get("close_ok") is False:
-                err = r.get("close_error") or ""
-                assert "does not reconcile" not in err, (
-                    "a real writer-thread asyncexc trial produced the OLD "
-                    f"pre-A6 identity-violation shape: {r}")
 
 
 class TestRealProcessKillMidWrite:

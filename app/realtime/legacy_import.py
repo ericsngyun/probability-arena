@@ -198,7 +198,13 @@ def _read_legacy_records(path: Path) -> tuple:
             complete = False
             reasons["capped:decoded_byte_ceiling"] = 1
             break
-        decoded, consumed, eof, hit_cap = _decompress_prefix(
+        # KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A4: `_decompress_prefix` now
+        # returns a 5th element (`errored`) distinguishing a genuine
+        # `zlib`/`EOFError` fault from a clean, fault-free exhaustion of the
+        # available input -- not meaningful for a legacy file read whole into
+        # memory up front (there is no "still growing" case here the way
+        # there is for a live segment), so it is accepted and ignored.
+        decoded, consumed, eof, hit_cap, _errored = _decompress_prefix(
             data, max_decoded_bytes=remaining_budget)
         total_decoded += len(decoded)
         chunks.append(decoded)

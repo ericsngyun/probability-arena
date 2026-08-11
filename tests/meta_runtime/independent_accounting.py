@@ -1,127 +1,60 @@
-"""KALSHI-ARCHIVE-VERIFICATION-META-001 A7 -- two INDEPENDENTLY SOURCED
+"""KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A7 -- two INDEPENDENTLY SOURCED
 observations of what a segment writer actually, durably disposed of.
 
-WHY THIS EXISTS. `WriterAccounting.accepted` is now DERIVED:
+RETIRED AND REPLACED, not merely edited. The original version of this module
+(KALSHI-ARCHIVE-VERIFICATION-META-001 A7) targeted a specific gap in the
+queue-based writer: `SegmentWriter._run`'s dequeue-then-write boundary, where
+an item could be irreversibly removed from the queue and then lost before
+either `written` or `failed_after_accept` ever moved. That boundary, and the
+background writer thread it lived on, do not exist any more (KALSHI-ARCHIVE-
+REPLAY-INTEGRITY-001 A1): `submit()` canonicalises and writes a record
+entirely within one lock-held call, on the caller's own thread, so there is
+no "irreversibly dequeued, not yet disposed of" state left to lose a record
+in.
 
-    accepted := written + failed_after_accept + pending (+ live queue depth)
-
-`disposition_holds()` compares `accepted` against exactly that same formula,
-so it is TRUE BY DEFINITION -- a tautology, not an observation. Any writer-
-side loss that removes an item from ALL THREE of `written`/
-`failed_after_accept`/`pending` simultaneously (rather than double-counting
-or dropping just one of them) is therefore INVISIBLE to every identity
-`WriterAccounting` can state about itself: the formula and the check are the
-same formula, so nothing can ever disagree with itself.
-
-Detecting real loss of that shape requires a SECOND observation that was
-never derived from the writer's own bookkeeping at all:
+WHY THIS STILL MATTERS. `WriterAccounting.accepted` is still DERIVED
+(`written + failed_after_accept`), so `disposition_holds()` is still TRUE BY
+CONSTRUCTION -- a tautology, not an observation, exactly as before. What
+changed is WHERE a genuine loss could hide from that tautology. In the
+synchronous writer, `submit()` only returns `None` (accepted) AFTER
+`self._fh.write(...)` has run, and `WriterAccounting.written` is incremented
+in the SAME lock-held call, immediately after. There is no thread boundary
+left for the two to disagree across -- but there is still a filesystem
+boundary: `written` records what the WRITER believes it wrote, not what is
+actually, verifiably sitting in the file. A defect in `submit()`'s own
+bookkeeping (incrementing `written` without the corresponding bytes reaching
+the file, or vice versa) is exactly as invisible to `disposition_holds()`'s
+tautology as the old writer-thread gap was, and needs the SAME kind of
+independent, second-sourced check to catch: NOT another read of
+`writer.accounting`, but a read of the FILE ITSELF.
 
   Source 1 -- ADMISSION LEDGER, recorded OUTSIDE `SegmentWriter`, at the
-             moment `submit()` returns to its caller. This is simply "how
-             many times did the producer's own call site see `None` (
-             accepted) come back" -- a fact the producer already knows
+             moment `submit()` returns to its caller. Exactly as before:
+             "how many times did the producer's own call site see `None`
+             (accepted) come back" -- a fact the producer already knows
              without reading a single attribute of the writer.
 
-  Source 2 -- DURABLE WRITER DISPOSITION, read from what the writer itself
-             can independently prove happened: `written` + `failed_after_
-             accept` (both incremented only on the writer thread, at the
-             moment of an actual outcome) + whatever is STILL sitting in
-             the queue right now (`_queue.qsize()`, read directly -- not via
-             `WriterAccounting.pending`, which is only populated by
-             `_measure_pending()` at close and would otherwise make this
-             "source" secretly identical to the derived one).
+  Source 2 -- ON-DISK RECORD COUNT, read by re-decoding the segment's own
+             `events.jsonl.gz` with `segment.read_segment_records` --
+             completely independent of `writer.accounting`, `written`,
+             `failed_after_accept`, or any in-process counter. This is the
+             SAME function `close()`'s own reconciliation step uses, which
+             is deliberate: an independent check that used a DIFFERENT
+             reader than production's own reconciliation would prove
+             nothing about whether production's reconciliation itself is
+             trustworthy.
 
-These two are RECONCILED, not each trusted alone: `ledger_accepted ==
-written + failed_after_accept + queue_depth_right_now` must hold for a
-non-lossy writer. A gap means an item the ledger independently confirms was
-accepted is unaccounted for anywhere the writer itself can currently see --
-which is exactly the shape of loss `disposition_holds()`'s tautology cannot
-express, by construction.
-
-FAULT INJECTION TARGETS THE WRITER THREAD SPECIFICALLY
-(`SegmentWriter._thread`/`_thread.ident`), not the producer/main thread that
-`tests/harness_async_accounting/` already covers exhaustively. `_run`'s own
-source (see `locate_writer_run_gap_line`) has exactly one totally-unguarded
-boundary: between `item = self._queue.get(...)` succeeding and the SECOND
-`try:` (the one wrapping `self._write_one(item)` and its `finally:
-self._queue.task_done()`) beginning. A fault landing there is not caught by
-ANY exception handler in `_run` -- it propagates straight out of the
-function, killing the writer thread, with the dequeued item counted
-NOWHERE: not `written` (never reached `_write_one`), not `failed_after_
-accept` (the `except BaseException` around `_write_one` never ran), and not
-`pending` (the item is no longer in the queue for `_measure_pending()` to
-find at close). Nothing here modifies `app/realtime/segment.py`; the target
-line is located by SOURCE SCAN (mirroring `line_injector.find_marker_line`'s
-approach), not by a hardcoded line number, so it moves with the file under
-refactoring.
+These two are RECONCILED, not each trusted alone: `ledger.accepted ==
+len(read_segment_records(writer.events_path))` must hold for a non-lossy
+writer. A gap means an item the ledger independently confirms was accepted
+is unaccounted for in the one place that actually matters -- the durable
+bytes on disk -- which is exactly the shape of loss `disposition_holds()`'s
+tautology cannot express, by construction.
 """
 
 from __future__ import annotations
 
-import inspect
 from dataclasses import dataclass, field
-
-
-def locate_writer_run_gap_line(run_func) -> int:
-    """The line number of the SECOND `try:` inside `SegmentWriter._run` --
-    the one immediately guarding `self._write_one(item)`. An exception
-    injected to fire exactly BEFORE this line runs lands in the one gap
-    `_run`'s own exception handling does not cover: the item has already
-    been irreversibly dequeued (`queue.get()` already returned it) but
-    nothing durable has happened to it yet.
-
-    Located by scanning the function's own source for the line containing
-    `self._write_one(item)` and stepping back to the nearest preceding bare
-    `try:` line, rather than a hardcoded line number -- this is deliberately
-    NOT a `# FAULT-WINDOW:` marker comment (which would require editing
-    `segment.py`, out of scope for this milestone), so it is slightly more
-    fragile against a refactor that changes this shape; that fragility is
-    accepted and made LOUD (an assertion failure naming exactly what was
-    expected to find) rather than silent.
-    """
-    src_lines, first_lineno = inspect.getsourcelines(run_func)
-    target_idx = None
-    for i, line in enumerate(src_lines):
-        if "self._write_one(item)" in line:
-            target_idx = i
-            break
-    if target_idx is None:
-        raise AssertionError(
-            "could not locate 'self._write_one(item)' inside "
-            f"{run_func!r}'s source; the writer-thread injection target "
-            "has moved and this locator needs updating")
-    for j in range(target_idx - 1, -1, -1):
-        stripped = src_lines[j].strip()
-        if stripped == "try:":
-            return first_lineno + j
-        if stripped and not stripped.startswith("#"):
-            # Hit a non-blank, non-comment, non-`try:` line before finding
-            # one -- the shape this locator expects (a bare `try:` directly
-            # guarding the write call) is gone.
-            break
-    raise AssertionError(
-        "could not locate the 'try:' immediately guarding "
-        f"'self._write_one(item)' inside {run_func!r}'s source; the "
-        "writer-thread injection target has moved and this locator needs "
-        "updating rather than being pointed at the wrong line silently")
-
-
-def locate_task_done_line(run_func) -> int:
-    """The line number of `self._queue.task_done()` inside `_run`'s
-    `finally:` block -- the SECOND writer-thread injection target (a fault
-    landing here fires AFTER the record was already durably written or
-    already booked as failed, so no EVIDENCE is lost, but the writer thread
-    still dies without ever calling `task_done()`, which is the "dead
-    writer thread, diagnostic state does not notice" class fed into A8).
-    """
-    src_lines, first_lineno = inspect.getsourcelines(run_func)
-    for i, line in enumerate(src_lines):
-        if "self._queue.task_done()" in line:
-            return first_lineno + i
-    raise AssertionError(
-        "could not locate 'self._queue.task_done()' inside "
-        f"{run_func!r}'s source; the writer-thread injection target has "
-        "moved and this locator needs updating")
 
 
 @dataclass
@@ -147,41 +80,37 @@ class AdmissionLedger:
 
 @dataclass
 class DurableDisposition:
-    """SOURCE 2: read directly off the writer's OWN durable/queued state --
-    never through `WriterAccounting.accepted`/`disposition_holds()` (the
-    tautological identity), and never through `WriterAccounting.pending`
-    (which is only populated by `_measure_pending()` at close -- reading it
-    before that would just be reading zero, not "what's really queued").
+    """SOURCE 2: what is ACTUALLY, VERIFIABLY on disk right now -- read by
+    re-decoding the segment's own gzip stream, never through
+    `writer.accounting` in any form (not `.written`, not `.accepted`, not
+    `.disposition_holds()`). `on_disk_records` is the count `segment.
+    read_segment_records` recovers from the file as it stands at the moment
+    this is called; for an OPEN segment this includes whatever has been
+    `flush()`ed so far (see `SegmentWriter._flush_every`), which is why the
+    reconciliation tests below flush after every submit.
     """
 
-    written: int
-    failed_after_accept: int
-    queue_depth_now: int
+    on_disk_records: int
 
     @property
     def total(self) -> int:
-        return self.written + self.failed_after_accept + self.queue_depth_now
+        return self.on_disk_records
 
 
 def read_durable_disposition(writer) -> DurableDisposition:
-    """KALSHI-ARCHIVE-CORE-REMEDIATION-003 defect F, deliberate ledger
-    update: this used to read `writer.accounting.accepted` -- the SAME
-    tautological, derived property this module's own docstring names as the
-    thing it exists to be independent of. It happened to still catch the
-    `_run`-gap fault numerically (the live `accepted` property's queue-depth
-    read excludes an already-dequeued item the same way a direct
-    `_queue.qsize()` read would), which is exactly the "first attempt that
-    didn't demonstrate a real hole" shape this milestone's own docs warn
-    about elsewhere -- coincidental agreement, not structural independence.
-    Reads `written`/`failed_after_accept` directly (both incremented only on
-    the writer thread, at the moment of an actual outcome) and the queue
-    depth directly via `_queue.qsize()`, exactly as the module docstring
-    always specified.
+    """Re-decode `writer.events_path` directly. Deliberately the SAME reader
+    function production's own `close()`-time reconciliation uses
+    (`segment.read_segment_records`) -- an independent check that used a
+    DIFFERENT decoder than production would prove nothing about whether
+    production's own reconciliation step can be trusted; the independence
+    this module provides is in the SOURCE (the file, not `writer.
+    accounting`), not in re-implementing a second parser that is merely
+    intended to agree with the first.
     """
-    return DurableDisposition(
-        written=writer.accounting.written,
-        failed_after_accept=writer.accounting.failed_after_accept,
-        queue_depth_now=writer._queue.qsize())
+    from app.realtime import segment as sg
+
+    records = sg.read_segment_records(writer.events_path)
+    return DurableDisposition(on_disk_records=len(records))
 
 
 @dataclass
@@ -198,9 +127,12 @@ class ReconciliationReport:
 
 
 def reconcile(ledger: AdmissionLedger, writer) -> ReconciliationReport:
-    """THE independent check. Never reads `writer.accounting.accepted` or
-    calls `writer.accounting.disposition_holds()`/`reconciles()` -- those
-    are the tautology this function exists to be independent OF."""
+    """THE independent check. Never reads `writer.accounting.accepted`,
+    `.written`, or calls `writer.accounting.disposition_holds()`/
+    `.reconciles()` -- those are the tautology this function exists to be
+    independent OF. Compares the producer-observed ledger against a fresh
+    re-decode of the file on disk instead.
+    """
     durable = read_durable_disposition(writer)
     gap = ledger.accepted - durable.total
     return ReconciliationReport(ledger.accepted, durable.total, gap == 0, gap)

@@ -628,14 +628,21 @@ class TestAdmissionSealing:
         assert manifest["record_count"] == acc.written
         assert acc.attempted == len(seen)
 
-    def test_the_seal_refuses_to_reconcile_against_a_moving_counter(self, tmp_path):
+    def test_a_closed_segment_deterministically_refuses_further_submission(
+            self, tmp_path):
+        """KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A1: RETIRED AND REPLACED.
+        `_inflight`/`_sealed` (a separate admission-protocol counter/flag a
+        producer could move independently of `close()`) do not exist any
+        more -- `self.state`, read and written under the SAME lock every
+        `submit()`/`close()` call takes, is the one fact both sides consult.
+        There is no "moving counter" left to race against; a closed
+        segment's `state` cannot un-close itself."""
         init(tmp_path)
         w = sg.SegmentWriter(tmp_path, environment=ENV, segment_id="seg-seal",
                              partition_identity="p", commit_to_head=False)
-        assert w._inflight == 0
         w.close()
-        assert w._sealed is True
-        assert w.submit(fields(1)) is sg.RejectReason.SHUTDOWN_IN_PROGRESS
+        assert w.state is sg.SegmentState.CLOSED
+        assert w.submit(fields(1)) is sg.RejectReason.SEGMENT_NOT_OPEN
 
 
 # --- Section 8: durability semantics ------------------------------------------------

@@ -29,6 +29,9 @@ from pathlib import Path
 
 from app.realtime.book import EventEnvelope
 from app.realtime.segment import (
+    DEFAULT_MAX_SEGMENT_AGE_S,
+    DEFAULT_MAX_SEGMENT_BYTES,
+    DEFAULT_MAX_SEGMENT_RECORDS,
     EVENTS_FILENAME,
     MANIFEST_FILENAME,
     SegmentError,
@@ -161,9 +164,9 @@ class EventArchive:
 
     def __init__(self, root: str | Path, *, environment: str, venue: str = "kalshi",
                  expected_archive_id: str | None = None,
-                 max_segment_records: int | None = None,
-                 max_segment_age_s: float | None = None,
-                 max_segment_bytes: int | None = None):
+                 max_segment_records: int | None = DEFAULT_MAX_SEGMENT_RECORDS,
+                 max_segment_age_s: float | None = DEFAULT_MAX_SEGMENT_AGE_S,
+                 max_segment_bytes: int | None = DEFAULT_MAX_SEGMENT_BYTES):
         from app.realtime.kalshi import ENVIRONMENTS
 
         if environment not in ENVIRONMENTS:
@@ -186,11 +189,16 @@ class EventArchive:
         # hits the segment's exclusive lock. The lock below is what makes
         # "one writer per segment" true for the *creation* step too.
         self._writers_lock = threading.Lock()
-        # Rotation policy, passed through to every writer. All-optional: the
-        # production thresholds come from measurement, not from a number
-        # invented here. What is no longer acceptable is committing nothing
-        # until process shutdown — a collector running for a day held every
-        # hour open, and a SIGKILL lost all of them at once.
+        # Rotation policy, passed through to every writer. A3 (synchronous
+        # canonical archive): these default to `segment.py`'s measured,
+        # bounded constants -- not `None` -- because shipping synchronous
+        # archival with an unbounded segment is exactly what this milestone
+        # forbids: an hour-long segment at a few thousand events/s would be
+        # millions of records and take minutes to close. A caller can still
+        # pass `None` explicitly to opt out, the same way it always could.
+        # What is NOT acceptable is committing nothing until process
+        # shutdown — a collector running for a day held every hour open, and
+        # a SIGKILL lost all of them at once.
         self.max_segment_records = max_segment_records
         self.max_segment_age_s = max_segment_age_s
         self.max_segment_bytes = max_segment_bytes

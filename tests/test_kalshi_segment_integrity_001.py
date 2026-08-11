@@ -323,7 +323,10 @@ class TestLifecycleAndCrash:
         w.submit(fields(0))
         w.close()
         assert w.state is sg.SegmentState.CLOSED
-        assert w.submit(fields(1)) is sg.RejectReason.SHUTDOWN_IN_PROGRESS
+        # A1: SEGMENT_NOT_OPEN once close() has actually returned;
+        # SHUTDOWN_IN_PROGRESS is reserved for a caller racing an
+        # in-progress close() (see RejectReason's docstring).
+        assert w.submit(fields(1)) is sg.RejectReason.SEGMENT_NOT_OPEN
 
     def test_an_open_segment_is_not_canonical_evidence(self, tmp_path):
         _init_archive(tmp_path)
@@ -426,29 +429,84 @@ class TestSingleWriter:
         assert w.submit(fields(0)) is sg.RejectReason.WRITER_FAILED
         assert w.accounting.reconciles()
 
-    def test_producers_never_hold_a_file_descriptor(self):
-        """Structural: `submit` must not touch the filesystem at all."""
+    def test_submit_writes_directly_but_only_inside_the_serialization_lock(self):
+        """Structural, INVERTED for KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A1.
+
+        The OLD invariant this test asserted -- `submit()` must never touch
+        `_fh`/`write`/`gzip` at all -- was the queue-based design's core
+        safety property: a producer handed its event to a bounded queue and
+        ONE background writer thread was the only code that ever touched the
+        file descriptor. A1 removes that queue and writer thread ON PURPOSE
+        (see `SegmentWriter`'s class docstring): `submit()` now IS the
+        writer, canonicalising and writing on the caller's own thread. That
+        makes the old assertion structurally FALSE by design, not a
+        regression to patch around -- asserting it here would be asserting
+        the milestone did not happen.
+
+        The property that actually matters now is not "submit() never
+        touches the file" but "submit() only ever touches the file while
+        holding `self._lock`" -- the SAME single fact that makes one
+        segment, one writer, still true without a background thread to
+        enforce it structurally. Verified by AST: every `self._fh` /
+        `write(` / `flush(` reference inside `submit()` must be lexically
+        nested inside a `with self._lock:` block.
+        """
         import ast
         from pathlib import Path
 
-        # Locate `submit` by parsing the FILE, not via inspect.getsource.
-        # getsource resolves the function's line number through linecache,
-        # which refreshes on mtime while the already-imported code object keeps
-        # its original co_firstlineno. Editing segment.py during a suite run
-        # therefore made this test read a DIFFERENT function: any edit shifting
-        # submit by >=11 lines returned `_open_events`/`_write_one` and failed
-        # with exactly "submit() touches open/gzip/_fh". That is a non-hermetic
-        # test, not a product defect, and it is the demonstrated mechanism
-        # behind "one randomized run failed, the next passed".
+        # Locate `submit` by parsing the FILE, not via inspect.getsource --
+        # see the historical note this test used to carry: getsource
+        # resolves through linecache, which can desync from the already-
+        # imported code object's line numbers under a mid-suite edit.
         module = ast.parse(Path(sg.__file__).read_text())
         cls = next(n for n in module.body
                    if isinstance(n, ast.ClassDef) and n.name == "SegmentWriter")
         tree = next(n for n in cls.body
                     if isinstance(n, ast.FunctionDef) and n.name == "submit")
+
+        # THE INVERTED POSITIVE ASSERTION: submit() must actually reach the
+        # file -- if it does not, A1's own architecture (a caller must never
+        # be told ACCEPTED before the canonical writer owns the event) is not
+        # implemented by this function at all.
         names = {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
         names |= {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
-        for banned in ("open", "write", "gzip", "flush", "fsync", "_fh"):
-            assert banned not in names, f"submit() touches {banned}"
+        for expected in ("write", "_fh"):
+            assert expected in names, (
+                f"submit() no longer touches {expected!r} -- either the "
+                "synchronous write moved elsewhere, or this test needs "
+                "updating to point at wherever it now lives")
+
+        # THE LOCK-CONTAINMENT ASSERTION: walk the function body; every
+        # `with` statement whose context expression is `self._lock` opens a
+        # region, and every `self._fh` / `.write(` / `.flush(` reference must
+        # be lexically inside at least one such region.
+        def _is_self_lock(expr) -> bool:
+            return (isinstance(expr, ast.Attribute) and expr.attr == "_lock"
+                    and isinstance(expr.value, ast.Name) and expr.value.id == "self")
+
+        def _references_fh_or_write(node) -> bool:
+            for n in ast.walk(node):
+                if isinstance(n, ast.Attribute) and n.attr in ("_fh", "write", "flush"):
+                    return True
+            return False
+
+        def _walk(node, inside_lock: bool):
+            if isinstance(node, ast.With):
+                lock_here = any(_is_self_lock(item.context_expr)
+                                for item in node.items)
+                for child in node.body:
+                    _walk(child, inside_lock or lock_here)
+                return
+            if isinstance(node, ast.Attribute) and node.attr in ("_fh", "write", "flush"):
+                assert inside_lock, (
+                    f"submit() references .{node.attr} at line {node.lineno} "
+                    "outside any `with self._lock:` block -- the write path "
+                    "must be fully contained by the serialization lock")
+            for child in ast.iter_child_nodes(node):
+                _walk(child, inside_lock)
+
+        for stmt in tree.body:
+            _walk(stmt, inside_lock=False)
 
 
 # --- verification surface ----------------------------------------------------------
