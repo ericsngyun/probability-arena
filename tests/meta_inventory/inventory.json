@@ -45,6 +45,7 @@
         "app/realtime/evidence_fs.py::safe_enumerate",
         "app/realtime/evidence_fs.py::stat_and_sha256_bounded",
         "app/realtime/segment.py::_abandoned_residue",
+        "app/realtime/segment.py::_classify_residue",
         "app/realtime/segment.py::_decompress_prefix",
         "app/realtime/segment.py::_empty_verdict",
         "app/realtime/segment.py::_partition_for_segment",
@@ -1582,13 +1583,6 @@
           "verify_segment",
           "read_segment_records",
           "_decompress_prefix",
-          "range(...) [unbound name]"
-        ],
-        [
-          "archive_adopt",
-          "verify_segment",
-          "read_segment_records",
-          "_decompress_prefix",
           "zlib.decompressobj(...) [module alias 'zlib' not traversable]"
         ],
         [
@@ -1596,6 +1590,12 @@
           "verify_segment",
           "read_segment_records",
           "decoded.decode(...) [receiver type unknown]"
+        ],
+        [
+          "archive_adopt",
+          "verify_segment",
+          "read_segment_records",
+          "enumerate(...) [unbound name]"
         ],
         [
           "archive_adopt",
@@ -1625,6 +1625,11 @@
           "archive_adopt",
           "verify_segment",
           "reasons.append(...) [receiver type unknown]"
+        ],
+        [
+          "archive_adopt",
+          "verify_segment",
+          "residue_reasons.append(...) [receiver type unknown]"
         ],
         [
           "archive_adopt",
@@ -2782,6 +2787,7 @@
         "app/realtime/segment.py::WriterAccounting.dequeue_disposition_gap",
         "app/realtime/segment.py::WriterAccounting.disposition_holds",
         "app/realtime/segment.py::WriterAccounting.to_dict",
+        "app/realtime/segment.py::_classify_residue",
         "app/realtime/segment.py::_decompress_prefix",
         "app/realtime/segment.py::_durable_generation_commits",
         "app/realtime/segment.py::_fsync_directory",
@@ -3906,6 +3912,15 @@
           "SegmentWriter._close_locked",
           "SegmentWriter._close_stages",
           "read_segment_records",
+          "enumerate(...) [unbound name]"
+        ],
+        [
+          "archive_migrate_legacy",
+          "migrate_legacy_archive",
+          "SegmentWriter.close",
+          "SegmentWriter._close_locked",
+          "SegmentWriter._close_stages",
+          "read_segment_records",
           "len(...) [unbound name]"
         ],
         [
@@ -4286,6 +4301,15 @@
           "SegmentWriter._close_locked",
           "SegmentWriter._close_stages",
           "verify_segment",
+          "residue_reasons.append(...) [receiver type unknown]"
+        ],
+        [
+          "archive_migrate_legacy",
+          "migrate_legacy_archive",
+          "SegmentWriter.close",
+          "SegmentWriter._close_locked",
+          "SegmentWriter._close_stages",
+          "verify_segment",
           "set(...) [unbound name]"
         ],
         [
@@ -4530,13 +4554,6 @@
           "migrate_legacy_archive",
           "_read_legacy_records",
           "_decompress_prefix",
-          "range(...) [unbound name]"
-        ],
-        [
-          "archive_migrate_legacy",
-          "migrate_legacy_archive",
-          "_read_legacy_records",
-          "_decompress_prefix",
           "zlib.decompressobj(...) [module alias 'zlib' not traversable]"
         ],
         [
@@ -4556,6 +4573,12 @@
           "migrate_legacy_archive",
           "_read_legacy_records",
           "json.loads(...) [module alias 'json' not traversable]"
+        ],
+        [
+          "archive_migrate_legacy",
+          "migrate_legacy_archive",
+          "_read_legacy_records",
+          "len(...) [unbound name]"
         ],
         [
           "archive_migrate_legacy",
@@ -5023,6 +5046,13 @@
           "migrate_legacy_archive",
           "non_canonical_reason",
           "canonicalize_or_reason",
+          "WorkBudget(...) [from app.realtime.canonical import WorkBudget]"
+        ],
+        [
+          "archive_migrate_legacy",
+          "migrate_legacy_archive",
+          "non_canonical_reason",
+          "canonicalize_or_reason",
           "_structural_reason",
           "WorkBudget(...) [from app.realtime.canonical import WorkBudget]"
         ],
@@ -5343,6 +5373,7 @@
         "app/realtime/evidence_fs.py::containment_reason",
         "app/realtime/evidence_fs.py::presence",
         "app/realtime/evidence_fs.py::stat_and_sha256_bounded",
+        "app/realtime/segment.py::_classify_residue",
         "app/realtime/segment.py::_decompress_prefix",
         "app/realtime/segment.py::_partition_for_segment",
         "app/realtime/segment.py::_presence",
@@ -6556,15 +6587,6 @@
           "verify_segment",
           "read_segment_records",
           "_decompress_prefix",
-          "range(...) [unbound name]"
-        ],
-        [
-          "archive_recover_head",
-          "recover_current_head_",
-          "recover_current_head",
-          "verify_segment",
-          "read_segment_records",
-          "_decompress_prefix",
           "zlib.decompressobj(...) [module alias 'zlib' not traversable]"
         ],
         [
@@ -6574,6 +6596,14 @@
           "verify_segment",
           "read_segment_records",
           "decoded.decode(...) [receiver type unknown]"
+        ],
+        [
+          "archive_recover_head",
+          "recover_current_head_",
+          "recover_current_head",
+          "verify_segment",
+          "read_segment_records",
+          "enumerate(...) [unbound name]"
         ],
         [
           "archive_recover_head",
@@ -6613,6 +6643,13 @@
           "recover_current_head",
           "verify_segment",
           "reasons.append(...) [receiver type unknown]"
+        ],
+        [
+          "archive_recover_head",
+          "recover_current_head_",
+          "recover_current_head",
+          "verify_segment",
+          "residue_reasons.append(...) [receiver type unknown]"
         ],
         [
           "archive_recover_head",
@@ -7700,6 +7737,7 @@
         "app/realtime/evidence_fs.py::safe_enumerate",
         "app/realtime/evidence_fs.py::stat_and_sha256_bounded",
         "app/realtime/segment.py::_abandoned_residue",
+        "app/realtime/segment.py::_classify_residue",
         "app/realtime/segment.py::_decompress_prefix",
         "app/realtime/segment.py::_empty_verdict",
         "app/realtime/segment.py::_partition_for_segment",
@@ -8227,14 +8265,6 @@
           "EventArchive._read_records",
           "read_segment_records",
           "_decompress_prefix",
-          "range(...) [unbound name]"
-        ],
-        [
-          "EventArchive.read_all",
-          "EventArchive.read_verified",
-          "EventArchive._read_records",
-          "read_segment_records",
-          "_decompress_prefix",
           "zlib.decompressobj(...) [module alias 'zlib' not traversable]"
         ],
         [
@@ -8243,6 +8273,13 @@
           "EventArchive._read_records",
           "read_segment_records",
           "decoded.decode(...) [receiver type unknown]"
+        ],
+        [
+          "EventArchive.read_all",
+          "EventArchive.read_verified",
+          "EventArchive._read_records",
+          "read_segment_records",
+          "enumerate(...) [unbound name]"
         ],
         [
           "EventArchive.read_all",
@@ -8991,6 +9028,14 @@
           "_verify_archive_inner",
           "verify_segment",
           "reasons.append(...) [receiver type unknown]"
+        ],
+        [
+          "EventArchive.read_all",
+          "EventArchive.read_verified",
+          "verify_archive",
+          "_verify_archive_inner",
+          "verify_segment",
+          "residue_reasons.append(...) [receiver type unknown]"
         ],
         [
           "EventArchive.read_all",
@@ -10100,13 +10145,6 @@
           "EventArchive._read_records",
           "read_segment_records",
           "_decompress_prefix",
-          "range(...) [unbound name]"
-        ],
-        [
-          "EventArchive.read_unverified_diagnostic",
-          "EventArchive._read_records",
-          "read_segment_records",
-          "_decompress_prefix",
           "zlib.decompressobj(...) [module alias 'zlib' not traversable]"
         ],
         [
@@ -10166,6 +10204,12 @@
           "EventArchive._read_records",
           "read_segment_records",
           "decoded.decode(...) [receiver type unknown]"
+        ],
+        [
+          "EventArchive.read_unverified_diagnostic",
+          "EventArchive._read_records",
+          "read_segment_records",
+          "enumerate(...) [unbound name]"
         ],
         [
           "EventArchive.read_unverified_diagnostic",
@@ -10354,6 +10398,7 @@
         "app/realtime/evidence_fs.py::safe_enumerate",
         "app/realtime/evidence_fs.py::stat_and_sha256_bounded",
         "app/realtime/segment.py::_abandoned_residue",
+        "app/realtime/segment.py::_classify_residue",
         "app/realtime/segment.py::_decompress_prefix",
         "app/realtime/segment.py::_empty_verdict",
         "app/realtime/segment.py::_partition_for_segment",
@@ -10831,13 +10876,6 @@
           "EventArchive._read_records",
           "read_segment_records",
           "_decompress_prefix",
-          "range(...) [unbound name]"
-        ],
-        [
-          "EventArchive.read_verified",
-          "EventArchive._read_records",
-          "read_segment_records",
-          "_decompress_prefix",
           "zlib.decompressobj(...) [module alias 'zlib' not traversable]"
         ],
         [
@@ -10845,6 +10883,12 @@
           "EventArchive._read_records",
           "read_segment_records",
           "decoded.decode(...) [receiver type unknown]"
+        ],
+        [
+          "EventArchive.read_verified",
+          "EventArchive._read_records",
+          "read_segment_records",
+          "enumerate(...) [unbound name]"
         ],
         [
           "EventArchive.read_verified",
@@ -11502,6 +11546,13 @@
           "verify_archive",
           "_verify_archive_inner",
           "verify_segment",
+          "residue_reasons.append(...) [receiver type unknown]"
+        ],
+        [
+          "EventArchive.read_verified",
+          "verify_archive",
+          "_verify_archive_inner",
+          "verify_segment",
           "set(...) [unbound name]"
         ],
         [
@@ -11887,6 +11938,7 @@
         "app/realtime/evidence_fs.py::safe_enumerate",
         "app/realtime/evidence_fs.py::stat_and_sha256_bounded",
         "app/realtime/segment.py::_abandoned_residue",
+        "app/realtime/segment.py::_classify_residue",
         "app/realtime/segment.py::_decompress_prefix",
         "app/realtime/segment.py::_empty_verdict",
         "app/realtime/segment.py::_partition_for_segment",
@@ -12792,15 +12844,6 @@
           "verify_segment",
           "read_segment_records",
           "_decompress_prefix",
-          "range(...) [unbound name]"
-        ],
-        [
-          "EventArchive.verify",
-          "verify_archive",
-          "_verify_archive_inner",
-          "verify_segment",
-          "read_segment_records",
-          "_decompress_prefix",
           "zlib.decompressobj(...) [module alias 'zlib' not traversable]"
         ],
         [
@@ -12810,6 +12853,14 @@
           "verify_segment",
           "read_segment_records",
           "decoded.decode(...) [receiver type unknown]"
+        ],
+        [
+          "EventArchive.verify",
+          "verify_archive",
+          "_verify_archive_inner",
+          "verify_segment",
+          "read_segment_records",
+          "enumerate(...) [unbound name]"
         ],
         [
           "EventArchive.verify",
@@ -12849,6 +12900,13 @@
           "_verify_archive_inner",
           "verify_segment",
           "reasons.append(...) [receiver type unknown]"
+        ],
+        [
+          "EventArchive.verify",
+          "verify_archive",
+          "_verify_archive_inner",
+          "verify_segment",
+          "residue_reasons.append(...) [receiver type unknown]"
         ],
         [
           "EventArchive.verify",
@@ -16562,6 +16620,7 @@
         "app/realtime/evidence_fs.py::containment_reason",
         "app/realtime/evidence_fs.py::presence",
         "app/realtime/evidence_fs.py::stat_and_sha256_bounded",
+        "app/realtime/segment.py::_classify_residue",
         "app/realtime/segment.py::_decompress_prefix",
         "app/realtime/segment.py::_partition_for_segment",
         "app/realtime/segment.py::_presence",
@@ -17488,13 +17547,6 @@
           "verify_segment",
           "read_segment_records",
           "_decompress_prefix",
-          "range(...) [unbound name]"
-        ],
-        [
-          "recover_current_head",
-          "verify_segment",
-          "read_segment_records",
-          "_decompress_prefix",
           "zlib.decompressobj(...) [module alias 'zlib' not traversable]"
         ],
         [
@@ -17502,6 +17554,12 @@
           "verify_segment",
           "read_segment_records",
           "decoded.decode(...) [receiver type unknown]"
+        ],
+        [
+          "recover_current_head",
+          "verify_segment",
+          "read_segment_records",
+          "enumerate(...) [unbound name]"
         ],
         [
           "recover_current_head",
@@ -17531,6 +17589,11 @@
           "recover_current_head",
           "verify_segment",
           "reasons.append(...) [receiver type unknown]"
+        ],
+        [
+          "recover_current_head",
+          "verify_segment",
+          "residue_reasons.append(...) [receiver type unknown]"
         ],
         [
           "recover_current_head",
@@ -17771,6 +17834,7 @@
         "app/realtime/segment.py::WriterAccounting.dequeue_disposition_gap",
         "app/realtime/segment.py::WriterAccounting.disposition_holds",
         "app/realtime/segment.py::WriterAccounting.to_dict",
+        "app/realtime/segment.py::_classify_residue",
         "app/realtime/segment.py::_decompress_prefix",
         "app/realtime/segment.py::_durable_generation_commits",
         "app/realtime/segment.py::_fsync_directory",
@@ -18784,6 +18848,14 @@
           "SegmentWriter._close_locked",
           "SegmentWriter._close_stages",
           "read_segment_records",
+          "enumerate(...) [unbound name]"
+        ],
+        [
+          "migrate_legacy_archive",
+          "SegmentWriter.close",
+          "SegmentWriter._close_locked",
+          "SegmentWriter._close_stages",
+          "read_segment_records",
           "len(...) [unbound name]"
         ],
         [
@@ -19124,6 +19196,14 @@
           "SegmentWriter._close_locked",
           "SegmentWriter._close_stages",
           "verify_segment",
+          "residue_reasons.append(...) [receiver type unknown]"
+        ],
+        [
+          "migrate_legacy_archive",
+          "SegmentWriter.close",
+          "SegmentWriter._close_locked",
+          "SegmentWriter._close_stages",
+          "verify_segment",
           "set(...) [unbound name]"
         ],
         [
@@ -19335,12 +19415,6 @@
           "migrate_legacy_archive",
           "_read_legacy_records",
           "_decompress_prefix",
-          "range(...) [unbound name]"
-        ],
-        [
-          "migrate_legacy_archive",
-          "_read_legacy_records",
-          "_decompress_prefix",
           "zlib.decompressobj(...) [module alias 'zlib' not traversable]"
         ],
         [
@@ -19357,6 +19431,11 @@
           "migrate_legacy_archive",
           "_read_legacy_records",
           "json.loads(...) [module alias 'json' not traversable]"
+        ],
+        [
+          "migrate_legacy_archive",
+          "_read_legacy_records",
+          "len(...) [unbound name]"
         ],
         [
           "migrate_legacy_archive",
@@ -19753,6 +19832,12 @@
         [
           "migrate_legacy_archive",
           "list(...) [unbound name]"
+        ],
+        [
+          "migrate_legacy_archive",
+          "non_canonical_reason",
+          "canonicalize_or_reason",
+          "WorkBudget(...) [from app.realtime.canonical import WorkBudget]"
         ],
         [
           "migrate_legacy_archive",
@@ -20234,12 +20319,6 @@
           "scan_legacy",
           "_read_legacy_records",
           "_decompress_prefix",
-          "range(...) [unbound name]"
-        ],
-        [
-          "scan_legacy",
-          "_read_legacy_records",
-          "_decompress_prefix",
           "zlib.decompressobj(...) [module alias 'zlib' not traversable]"
         ],
         [
@@ -20256,6 +20335,11 @@
           "scan_legacy",
           "_read_legacy_records",
           "json.loads(...) [module alias 'json' not traversable]"
+        ],
+        [
+          "scan_legacy",
+          "_read_legacy_records",
+          "len(...) [unbound name]"
         ],
         [
           "scan_legacy",
@@ -20381,6 +20465,7 @@
         "app/realtime/segment.py::WriterAccounting.dequeue_disposition_gap",
         "app/realtime/segment.py::WriterAccounting.disposition_holds",
         "app/realtime/segment.py::WriterAccounting.to_dict",
+        "app/realtime/segment.py::_classify_residue",
         "app/realtime/segment.py::_decompress_prefix",
         "app/realtime/segment.py::_durable_generation_commits",
         "app/realtime/segment.py::_fsync_directory",
@@ -21706,14 +21791,6 @@
           "SegmentWriter._close_stages",
           "read_segment_records",
           "_decompress_prefix",
-          "range(...) [unbound name]"
-        ],
-        [
-          "SegmentWriter.close",
-          "SegmentWriter._close_locked",
-          "SegmentWriter._close_stages",
-          "read_segment_records",
-          "_decompress_prefix",
           "zlib.decompressobj(...) [module alias 'zlib' not traversable]"
         ],
         [
@@ -21754,6 +21831,13 @@
           "SegmentWriter._close_stages",
           "read_segment_records",
           "decoded.decode(...) [receiver type unknown]"
+        ],
+        [
+          "SegmentWriter.close",
+          "SegmentWriter._close_locked",
+          "SegmentWriter._close_stages",
+          "read_segment_records",
+          "enumerate(...) [unbound name]"
         ],
         [
           "SegmentWriter.close",
@@ -22179,6 +22263,13 @@
           "SegmentWriter._close_locked",
           "SegmentWriter._close_stages",
           "verify_segment",
+          "residue_reasons.append(...) [receiver type unknown]"
+        ],
+        [
+          "SegmentWriter.close",
+          "SegmentWriter._close_locked",
+          "SegmentWriter._close_stages",
+          "verify_segment",
           "set(...) [unbound name]"
         ],
         [
@@ -22324,6 +22415,12 @@
           "SegmentWriter._admit",
           "SegmentWriter._reject",
           "<expr>.reject_before_accept(...) [chained call]"
+        ],
+        [
+          "SegmentWriter.submit",
+          "SegmentWriter._admit",
+          "canonicalize_or_reason",
+          "WorkBudget(...) [from app.realtime.canonical import WorkBudget]"
         ],
         [
           "SegmentWriter.submit",
@@ -22920,11 +23017,6 @@
         [
           "read_segment_records",
           "_decompress_prefix",
-          "range(...) [unbound name]"
-        ],
-        [
-          "read_segment_records",
-          "_decompress_prefix",
           "zlib.decompressobj(...) [module alias 'zlib' not traversable]"
         ],
         [
@@ -22968,6 +23060,10 @@
         [
           "read_segment_records",
           "decoded.decode(...) [receiver type unknown]"
+        ],
+        [
+          "read_segment_records",
+          "enumerate(...) [unbound name]"
         ],
         [
           "read_segment_records",
@@ -23016,6 +23112,7 @@
         "app/realtime/evidence_fs.py::safe_enumerate",
         "app/realtime/evidence_fs.py::stat_and_sha256_bounded",
         "app/realtime/segment.py::_abandoned_residue",
+        "app/realtime/segment.py::_classify_residue",
         "app/realtime/segment.py::_decompress_prefix",
         "app/realtime/segment.py::_empty_verdict",
         "app/realtime/segment.py::_partition_for_segment",
@@ -23804,14 +23901,6 @@
           "verify_segment",
           "read_segment_records",
           "_decompress_prefix",
-          "range(...) [unbound name]"
-        ],
-        [
-          "verify_archive",
-          "_verify_archive_inner",
-          "verify_segment",
-          "read_segment_records",
-          "_decompress_prefix",
           "zlib.decompressobj(...) [module alias 'zlib' not traversable]"
         ],
         [
@@ -23820,6 +23909,13 @@
           "verify_segment",
           "read_segment_records",
           "decoded.decode(...) [receiver type unknown]"
+        ],
+        [
+          "verify_archive",
+          "_verify_archive_inner",
+          "verify_segment",
+          "read_segment_records",
+          "enumerate(...) [unbound name]"
         ],
         [
           "verify_archive",
@@ -23854,6 +23950,12 @@
           "_verify_archive_inner",
           "verify_segment",
           "reasons.append(...) [receiver type unknown]"
+        ],
+        [
+          "verify_archive",
+          "_verify_archive_inner",
+          "verify_segment",
+          "residue_reasons.append(...) [receiver type unknown]"
         ],
         [
           "verify_archive",
@@ -24465,6 +24567,7 @@
         "app/realtime/evidence_fs.py::containment_reason",
         "app/realtime/evidence_fs.py::presence",
         "app/realtime/evidence_fs.py::stat_and_sha256_bounded",
+        "app/realtime/segment.py::_classify_residue",
         "app/realtime/segment.py::_decompress_prefix",
         "app/realtime/segment.py::_partition_for_segment",
         "app/realtime/segment.py::_presence",
@@ -24916,18 +25019,17 @@
           "verify_segment",
           "read_segment_records",
           "_decompress_prefix",
-          "range(...) [unbound name]"
-        ],
-        [
-          "verify_segment",
-          "read_segment_records",
-          "_decompress_prefix",
           "zlib.decompressobj(...) [module alias 'zlib' not traversable]"
         ],
         [
           "verify_segment",
           "read_segment_records",
           "decoded.decode(...) [receiver type unknown]"
+        ],
+        [
+          "verify_segment",
+          "read_segment_records",
+          "enumerate(...) [unbound name]"
         ],
         [
           "verify_segment",
@@ -24952,6 +25054,10 @@
         [
           "verify_segment",
           "reasons.append(...) [receiver type unknown]"
+        ],
+        [
+          "verify_segment",
+          "residue_reasons.append(...) [receiver type unknown]"
         ],
         [
           "verify_segment",

@@ -111,40 +111,46 @@ class TestAsymmetryDemonstration:
                     segment_id="seg", environment=ENV),
                 receive_ordinal=0)
 
-    def test_end_to_end_through_a_real_writer_accepted_then_segment_destroyed(
+    def test_end_to_end_through_a_real_writer_refuses_cleanly_at_admission(
             self, tmp_path):
+        """KALSHI-ARCHIVE-CORE-REMEDIATION-003B A4 REPAIRED: `env` sits at
+        the RAW (unreserved) admission ceiling -- `sg.non_canonical_reason`
+        (called with no reservation, exactly as `minimal_key_envelope_at_
+        admission_ceiling` tuned it) still says it is legal on its own. The
+        REAL writer path (`w.submit` -> `_admit` -> `canonicalize_or_reason`
+        with `_work_reserve=_RECORD_ENVELOPE_OVERHEAD_UNITS`) now reserves
+        exactly the headroom `build_record`'s wrapper will need, so THIS
+        value -- which used to be silently accepted and then destroy the
+        segment at commit -- is refused cleanly at admission instead. No
+        segment is ever touched; the producer is told NOT_CANONICAL and can
+        act on it immediately, instead of being told ACCEPTED for a record
+        that a background thread would destroy seconds later."""
         env = minimal_key_envelope_at_admission_ceiling()
-        assert sg.non_canonical_reason(env) is None
+        assert sg.non_canonical_reason(env) is None, (
+            "the raw (unreserved) ceiling construction should still be "
+            "legal on its own -- if this is no longer true, the "
+            "ceiling-tuning needs re-deriving for the current "
+            "CapabilityLimits")
 
         w, root = make_writer(tmp_path, "seg-work-unit-margin")
-        # ACCEPTED -- submit() returns None, the exact contract a producer
-        # relies on to know the event is durable.
         result = w.submit(env)
-        assert result is None, (
-            f"expected ACCEPTED (None); got {result!r} -- if admission now "
-            "refuses this value, the ceiling-tuning in "
+        assert result == sg.RejectReason.NOT_CANONICAL, (
+            f"expected the real writer's reserved admission budget to "
+            f"refuse a value that only fits the wrapped record's budget by "
+            f"accident -- got {result!r}. If admission now accepts this "
+            "value, the ceiling-tuning in "
             "minimal_key_envelope_at_admission_ceiling needs re-deriving "
-            "for the current CapabilityLimits")
+            "for the current CapabilityLimits/overhead reservation")
+        assert w.last_rejection_detail is not None
+        assert "aggregate work bound" in w.last_rejection_detail
 
-        deadline_iterations = 0
-        while w.accounting.written == 0 and w.accounting.failed_after_accept == 0:
-            deadline_iterations += 1
-            assert deadline_iterations < 2000, "writer thread never finished"
-            import time
-            time.sleep(0.005)
-
-        assert w.accounting.failed_after_accept == 1, (
-            f"expected the writer thread to have failed this record after "
-            f"accepting it: {w.accounting.to_dict()}")
-        assert w.accounting.written == 0
-
-        # `close()` REFUSES to publish -- an accepted record that failed
-        # after acceptance makes `clean()` false, and this is the ONLY
-        # record in the segment: the entire segment is lost, not merely
-        # this one record, because a segment cannot publish partially.
-        with pytest.raises(sg.SegmentError, match="not written"):
-            w.close()
-        assert w.state is sg.SegmentState.INVALID
+        # No record was ever accepted -- close() publishes a genuinely
+        # empty, clean segment rather than destroying one over a wrapper
+        # overhead nobody outside `build_record` used to account for.
+        manifest = w.close()
+        assert manifest["close_status"] == "clean"
+        assert manifest["record_count"] == 0
+        assert w.state is sg.SegmentState.CLOSED
 
 
 # =====================================================================
@@ -164,21 +170,50 @@ class TestSubscriptionMetadataDepthMismatch:
         with pytest.raises(cn.CanonicalError, match="depth bound"):
             cn.canonical_bytes(body)
 
-    def test_end_to_end_a_legally_admitted_metadata_value_kills_the_whole_segment(
+    def test_end_to_end_metadata_at_the_raw_ceiling_is_now_refused_at_construction(
             self, tmp_path):
+        """KALSHI-ARCHIVE-CORE-REMEDIATION-003B A4 REPAIRED: `meta` sits at
+        the RAW (unreserved) depth ceiling -- `sg.non_canonical_reason`
+        (called with no reservation) still says it is legal on its own. The
+        constructor now validates `subscription_metadata` with
+        `_depth_reserve=_MANIFEST_METADATA_DEPTH_RESERVE`, reserving the
+        one level `build_manifest` will always add -- so THIS value, which
+        used to be silently admitted and then destroy five already-durable
+        records at close, is refused cleanly at construction instead, before
+        the segment ever accepts a single record."""
         meta = nested_mapping(MAX_DEPTH)
+        assert sg.non_canonical_reason(meta) is None, (
+            "the raw (unreserved) ceiling construction should still be "
+            "legal on its own -- if this is no longer true, MAX_DEPTH "
+            "handling changed and this needs re-deriving")
+
+        root = tmp_path / "seg-depth-mismatch"
+        root.mkdir()
+        ah.initialize_archive(root, ENV, archive_identity="kalshi-realtime")
+        with pytest.raises(sg.SegmentError, match="depth bound"):
+            sg.SegmentWriter(root, environment=ENV,
+                             segment_id="seg-depth-mismatch",
+                             partition_identity="p",
+                             subscription_metadata=meta, commit_to_head=False)
+        # Nothing was ever opened for this segment id -- construction failed
+        # before any record could be accepted, let alone destroyed.
+        assert not (root / f"env={ENV}" / "segment=seg-depth-mismatch"
+                    / sg.MANIFEST_FILENAME).exists()
+
+    def test_end_to_end_metadata_one_level_shallower_survives_the_real_wrap(
+            self, tmp_path):
+        """The other half of the property: a value that respects the
+        reserved headroom is admitted AND survives being wrapped one level
+        deeper by `build_manifest`/`publish_manifest` -- the reservation is
+        exactly the overhead commit adds, not an over-broad refusal of
+        everything near the ceiling."""
+        meta = nested_mapping(MAX_DEPTH - 1)
         assert sg.non_canonical_reason(meta) is None
 
-        w, root = make_writer(tmp_path, "seg-depth-mismatch",
+        w, root = make_writer(tmp_path, "seg-depth-ok",
                               subscription_metadata=meta)
-        # The constructor's own admission gate accepted it -- exactly the
-        # contract `SegmentWriter.__init__`'s docstring states ("A failure
-        # now surfaces at construction, as a SegmentError, before any
-        # record is ever accepted").
         assert w.subscription_metadata is not None
 
-        # Ordinary records write and commit normally -- the defect is
-        # specific to the metadata wrapping, not to the writer generally.
         for i in range(5):
             assert w.submit(fields(i)) is None
         deadline_iterations = 0
@@ -188,39 +223,13 @@ class TestSubscriptionMetadataDepthMismatch:
             import time
             time.sleep(0.005)
 
-        # THE VIOLATION: five genuinely durable, already-written,
-        # already-verifiable records are destroyed at close because a
-        # value admitted as legal at construction fails to encode one
-        # level deeper than admission ever checked.
-        #
-        # NOTE ON THE EXACT FAILURE SHAPE: `build_manifest` itself
-        # SUCCEEDS -- `subscription_metadata_digest` is computed as its own
-        # ROOT-level digest (`digest_hex(subscription_metadata or {})`,
-        # same depth as admission checked), so `_close_stages`'s narrower
-        # `except CanonicalError` block around `build_manifest`
-        # (documented as catching exactly this class, with the friendlier
-        # "subscription_metadata could not be canonically digested at
-        # close" message) never fires. The depth violation instead surfaces
-        # one call later, inside `publish_manifest`'s
-        # `canonical_bytes(manifest)` (the WHOLE manifest dict, with
-        # `subscription_metadata` nested one level inside it) -- caught only
-        # by the generic `except BaseException` around `publish_manifest`,
-        # producing a less specific "manifest publication failed at stage
-        # 'fsync'" message. Both are SegmentError; the segment is destroyed
-        # either way -- this is a second, smaller finding (the diagnostic
-        # message's own precondition is stale) riding along with the main
-        # one.
-        with pytest.raises(
-                sg.SegmentError,
-                match="manifest publication failed"):
-            w.close()
-        assert w.state is sg.SegmentState.INVALID
-        # `verify_segment` on the untouched-on-disk evidence shows exactly
-        # what was lost: real, chain-valid records with no manifest to
-        # ever certify them, because close() never reached publication.
-        verdict = sg.verify_segment(w.dir, environment=ENV, allow_open=True,
-                                    root=root)
-        assert verdict.records_read == 5, verdict
+        manifest = w.close()
+        assert manifest["close_status"] == "clean"
+        assert manifest["record_count"] == 5
+        assert w.state is sg.SegmentState.CLOSED
+        verdict = sg.verify_segment(w.dir, environment=ENV, root=root)
+        assert verdict.valid, verdict.reasons
+        assert verdict.records_read == 5
 
 
 # =====================================================================

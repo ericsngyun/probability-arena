@@ -103,8 +103,15 @@ def write_deleted_record_residue(root, segment_id: str, n: int) -> None:
     (seg_dir / "events.jsonl.gz").write_bytes(gzip.compress(b"".join(lines)))
 
 
-class TestChainValidIsHardcodedFalseForEveryResidue:
-    def test_an_intact_chain_valid_residue_reports_chain_valid_false(
+class TestChainValidIsNowReallyComputedForResidue:
+    """KALSHI-ARCHIVE-CORE-REMEDIATION-003B A6 REPAIRED: `chain_valid` used
+    to be hardcoded `False` for EVERY residue -- an actually intact,
+    chain-valid residue and one with a deliberately deleted middle record
+    were structurally indistinguishable. `verify_segment`'s `allow_open`
+    path now runs a REAL `verify_chain` call over whatever was recovered,
+    so the two cases below now genuinely differ."""
+
+    def test_an_intact_chain_valid_residue_reports_chain_valid_true(
             self, tmp_path):
         root = tmp_path / "intact"
         root.mkdir()
@@ -113,16 +120,10 @@ class TestChainValidIsHardcodedFalseForEveryResidue:
         v = sg.verify_segment(seg_dir, environment=ENV, allow_open=True,
                               root=root)
         assert v.records_read == 10
-        # THE DEFECT: an actually, genuinely chain-valid residue is
-        # reported chain_valid=False -- structurally indistinguishable
-        # from the deleted-record case below.
-        assert v.chain_valid is False, (
-            "if this is now True, verify_segment's allow_open path has "
-            "started actually checking the chain for residue -- update "
-            "this file's docstrings/assertions to match the repaired "
-            "behaviour rather than leaving this as a stale false negative")
+        assert v.chain_valid is True
+        assert v.residue_classification == sg.RESIDUE_RECOVERABLE_INTACT
 
-    def test_a_residue_with_a_deleted_middle_record_ALSO_reports_chain_valid_false(
+    def test_a_residue_with_a_deleted_middle_record_reports_chain_valid_false(
             self, tmp_path):
         root = tmp_path / "deleted"
         root.mkdir()
@@ -131,17 +132,15 @@ class TestChainValidIsHardcodedFalseForEveryResidue:
         v = sg.verify_segment(seg_dir, environment=ENV, allow_open=True,
                               root=root)
         assert v.chain_valid is False
+        assert v.residue_classification == sg.RESIDUE_TORN_PARTIAL
 
-    def test_intact_and_deleted_record_residue_are_indistinguishable_by_chain_valid(
+    def test_intact_and_deleted_record_residue_are_now_distinguishable_by_chain_valid(
             self, tmp_path):
-        """THE PROPERTY THIS SECTION PROVES: `chain_valid` carries ZERO
-        information for a residue -- it is False in BOTH the genuinely
-        intact case and the genuinely tampered (deletion) case, so an
-        operator reading `uncommitted_segment_detail` cannot use this field
-        to tell them apart. `records_read` differs (9 vs 10) ONLY because
-        this test's deletion happens to change the count; a deletion at
-        the position `verify_chain` would report first (rather than the
-        one this test chose) would not even change that."""
+        """THE REPAIRED PROPERTY: `chain_valid` now carries real
+        information for a residue -- True for the genuinely intact case,
+        False for the genuinely tampered (deletion) case, so an operator
+        reading `uncommitted_segment_detail` CAN use this field (and
+        `residue_classification`) to tell them apart."""
         root = tmp_path / "compare"
         root.mkdir()
         write_intact_residue(root, "seg-a", 10)
@@ -150,11 +149,20 @@ class TestChainValidIsHardcodedFalseForEveryResidue:
                                environment=ENV, allow_open=True, root=root)
         vb = sg.verify_segment(root / f"env={ENV}" / "segment=seg-b",
                                environment=ENV, allow_open=True, root=root)
-        assert va.chain_valid == vb.chain_valid == False  # noqa: E712
+        assert va.chain_valid is True
+        assert vb.chain_valid is False
+        assert va.residue_classification != vb.residue_classification
 
 
-class TestUnreadableResidueIsVALIDWithNoReason:
-    def test_a_torn_residue_reports_valid_archive_with_no_warning(
+class TestResidueIsNowClassifiedDistinctly:
+    """KALSHI-ARCHIVE-CORE-REMEDIATION-003B A6 REPAIRED. Both cases below
+    used to report `verdict: VALID` with NOTHING in the returned shape
+    distinguishing "torn"/"malformed" residue from an ordinary in-progress
+    OPEN segment. Residue STILL never gates the overall archive verdict
+    (by design -- an in-progress OPEN segment from a live collector is
+    ordinary, not a defect) -- but each state is now labelled."""
+
+    def test_a_torn_residue_reports_valid_archive_but_is_labelled_torn(
             self, tmp_path):
         root = tmp_path / "torn"
         root.mkdir()
@@ -162,23 +170,17 @@ class TestUnreadableResidueIsVALIDWithNoReason:
         write_torn_residue(root, "seg-torn", 20)
 
         result = sg.verify_archive(root, environment=ENV)
-        # Residue never gates the overall verdict (by design, documented in
-        # segment.py) -- but the torn residue is ALSO not surfaced as a
-        # warning distinct from an intact one at all: `read_segment_records`
-        # recovers whatever decodable prefix it can and reports it as
-        # ordinary `records_read`, with no torn/malformed flag anywhere in
-        # the returned shape.
+        # Residue never gates the overall verdict.
         assert result["verdict"] == "VALID", result
         detail = result["uncommitted_segment_detail"]
         matched = next(d for d in detail if d["segment_id"] == "seg-torn")
-        # Some prefix was recovered -- but nothing in this record's shape
-        # says "torn" as opposed to "this segment simply has fewer
-        # records than usual so far."
+        # Some prefix was recovered -- AND it is now labelled, both in the
+        # structured `residue_classification` field and in `reasons`' text.
+        assert matched["residue_classification"] == sg.RESIDUE_TORN_PARTIAL
         reasons_text = json.dumps(matched["reasons"]).lower()
-        assert "torn" not in reasons_text
-        assert "truncat" not in reasons_text
+        assert "torn" in reasons_text
 
-    def test_a_malformed_non_gzip_residue_reports_zero_records_no_reason(
+    def test_a_malformed_non_gzip_residue_is_labelled_malformed_not_boilerplate(
             self, tmp_path):
         root = tmp_path / "malformed"
         root.mkdir()
@@ -191,27 +193,52 @@ class TestUnreadableResidueIsVALIDWithNoReason:
             f"overall archive verdict -- got {result}")
         detail = result["uncommitted_segment_detail"]
         matched = next(d for d in detail if d["segment_id"] == "seg-malformed")
-        # THE DEFECT: records_read == 0, reasons == [], state == "OPEN" --
-        # byte-for-byte indistinguishable from an ordinary, brand-new,
-        # genuinely empty segment a live collector just created.
+        # REPAIRED: records_read == 0, but `residue_classification` and
+        # `reasons` now distinguish "malformed, unparseable gzip" from an
+        # ordinary, brand-new, genuinely empty OPEN segment -- no longer
+        # byte-for-byte identical to "nothing written yet".
         assert matched["records_read"] == 0
-        assert matched["reasons"] == [
-            "segment has no manifest and is therefore not committed"], (
-            f"expected the SAME boilerplate reason an ordinary empty-but-"
-            f"healthy OPEN segment gets, with nothing distinguishing "
-            f"'malformed, unparseable gzip' from 'nothing written yet': "
-            f"{matched}")
+        assert matched["residue_classification"] == sg.RESIDUE_MALFORMED
         reasons_text = json.dumps(matched["reasons"]).lower()
-        assert "malformed" not in reasons_text
-        assert "corrupt" not in reasons_text
-        # No warning at the archive level either (gated on
-        # `uncommitted_records_present`, which is 0 here).
+        assert "malformed" in reasons_text
+        # No warning at the ARCHIVE level (gated on
+        # `uncommitted_records_present`, which is 0 here -- residue that
+        # recovered zero records never crosses that threshold) -- the
+        # classification is visible per-segment in `uncommitted_segment_
+        # detail`, which is the correct scope for a 0-record finding.
         assert not any("MALFORMED" in w or "CORRUPT" in w
                        for w in result["warnings"])
 
+    def test_an_ordinary_empty_open_segment_is_not_misclassified_as_malformed(
+            self, tmp_path):
+        """Negative control: a genuinely empty (zero-byte) events file --
+        what a brand-new OPEN segment looks like the instant it is created,
+        before any record is ever written -- must NOT be classified as
+        malformed just because it decodes to zero records."""
+        root = tmp_path / "empty-open"
+        root.mkdir()
+        ah.initialize_archive(root, ENV, archive_identity="kalshi-realtime")
+        seg_dir = root / f"env={ENV}" / "segment=seg-empty-open"
+        seg_dir.mkdir(parents=True)
+        (seg_dir / "events.jsonl.gz").write_bytes(b"")
+
+        v = sg.verify_segment(seg_dir, environment=ENV, allow_open=True,
+                              root=root)
+        assert v.records_read == 0
+        assert v.residue_classification == sg.RESIDUE_RECOVERABLE_INTACT
+        assert v.chain_valid is True
+
 
 class TestArchiveAdoptStructurallyRefusesTheResidueItsOwnWarningNames:
-    def test_uncommitted_residue_warning_names_archive_adopt(self, tmp_path):
+    def test_uncommitted_residue_warning_no_longer_recommends_archive_adopt(
+            self, tmp_path):
+        """KALSHI-ARCHIVE-CORE-REMEDIATION-003B A6 REPAIRED: the warning
+        used to tell an operator to "resolve with 'archive-adopt'" for
+        EVERY uncommitted residue -- a command that (proven below) refuses
+        manifest-less residue unconditionally. The warning may still
+        MENTION 'archive-adopt' (to explain why it does not apply), but
+        must no longer recommend it as the resolution, and must say
+        plainly that no operator command accepts this state."""
         root = tmp_path / "warning-text"
         root.mkdir()
         ah.initialize_archive(root, ENV, archive_identity="kalshi-realtime")
@@ -219,7 +246,8 @@ class TestArchiveAdoptStructurallyRefusesTheResidueItsOwnWarningNames:
         result = sg.verify_archive(root, environment=ENV)
         warning = next(w for w in result["warnings"]
                        if "UNCOMMITTED_SEGMENT_RESIDUE" in w)
-        assert "archive-adopt" in warning, warning
+        assert "resolve with 'archive-adopt'" not in warning, warning
+        assert "no operator command" in warning.lower(), warning
 
     def test_archive_adopt_refuses_that_exact_residue(self, tmp_path):
         """THE VIOLATION: the command the warning names is bounded (by its

@@ -62,6 +62,7 @@ from app.realtime.canonical import (
 )
 from app.realtime.segment import (
     EVENTS_FILENAME,
+    _MAX_RESIDUE_DECODED_BYTES,
     _decompress_prefix,
     assert_contained,
     SegmentError,
@@ -183,15 +184,34 @@ def _read_legacy_records(path: Path) -> tuple:
     # `records_refused_at_import` 0, so the provenance record certified that
     # nothing was lost. That is the failure this replaced, at twice the size.
     chunks, complete = [], True
+    total_decoded = 0
     while data:
-        decoded, consumed, eof = _decompress_prefix(data)
+        # KALSHI-ARCHIVE-CORE-REMEDIATION-003B A5: the SAME cumulative,
+        # cross-member decoded-byte ceiling `segment.read_segment_records`
+        # applies -- `_decompress_prefix` now streams output through
+        # `zlib.decompressobj.decompress(chunk, max_length)` rather than
+        # decompressing an unbounded amount per call, and legacy import
+        # reads a whole file with no size bound of its own at all, so this
+        # path needs the same cap, not a weaker one.
+        remaining_budget = _MAX_RESIDUE_DECODED_BYTES - total_decoded
+        if remaining_budget <= 0:
+            complete = False
+            reasons["capped:decoded_byte_ceiling"] = 1
+            break
+        decoded, consumed, eof, hit_cap = _decompress_prefix(
+            data, max_decoded_bytes=remaining_budget)
+        total_decoded += len(decoded)
         chunks.append(decoded)
+        if hit_cap:
+            complete = False
+            reasons["capped:decoded_byte_ceiling"] = 1
+            break
         if not eof:
             complete = False
             break
         data = data[consumed:] if consumed else b""
     raw = b"".join(chunks)
-    if not complete:
+    if not complete and "capped:decoded_byte_ceiling" not in reasons:
         reasons["torn:incomplete_member"] = 1
     for line in raw.split(b"\n"):
         if not line.strip():

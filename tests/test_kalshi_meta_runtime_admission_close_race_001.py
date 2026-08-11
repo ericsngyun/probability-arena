@@ -40,8 +40,6 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 
-import pytest
-
 from app.realtime import archive_head as ah
 from app.realtime import canonical as cn
 from app.realtime import segment as sg
@@ -163,34 +161,29 @@ class TestControlledPauseAcceptsAfterCloseIsClean:
         t.join(timeout=5.0)
         assert not t.is_alive(), "producer did not finish after release"
 
-        # THE VIOLATION: submit() returns None -- ACCEPTED -- to a producer
-        # calling into a writer whose manifest was already published clean,
-        # over zero records, and whose writer thread is provably dead.
-        assert result_holder["reject_reason"] is None, (
-            f"expected the producer to receive ACCEPTED (None) after the "
-            f"writer had already closed clean -- got "
-            f"{result_holder['reject_reason']!r}. If this is no longer "
-            "None, either the race no longer reproduces (fixed) or the "
-            "shape of the failure moved and this assertion needs revisiting")
+        # KALSHI-ARCHIVE-CORE-REMEDIATION-003B A1 REPAIRED: `_admit` now
+        # carries a second checkpoint at the moment of commitment into the
+        # queue (see its docstring). `_sealed` was flipped True as the very
+        # first statement of `_seal_admissions`, strictly before `close()`
+        # could reach `_close_stages` and publish -- so this producer, still
+        # executing after that seal began, is REJECTED here rather than
+        # silently accepted into a queue nobody will ever drain. This is the
+        # "shape of the failure moved (fixed)" case this assertion's original
+        # docstring anticipated.
+        assert result_holder["reject_reason"] == sg.RejectReason.SHUTDOWN_IN_PROGRESS, (
+            f"expected the producer to be REJECTED (SHUTDOWN_IN_PROGRESS) "
+            f"once the writer had already sealed and closed clean -- got "
+            f"{result_holder['reject_reason']!r}")
         assert not w._thread.is_alive(), (
             "the writer thread should already be dead (joined during "
-            "close()) at the moment the late admission completes")
-        # The record is durably enqueued -- and nothing will ever consume
-        # it. It is not on disk, not in the published manifest, and the
-        # producer was never told it was lost.
-        assert w._queue.qsize() == 1, (
-            "the late-accepted record should be sitting, unconsumed, in "
-            "the writer's queue -- this is the leaked evidence")
+            "close()) at the moment the late admission is rejected")
+        # Nothing was queued. The structural fix rejects BEFORE the queue
+        # put, not after, so there is no leaked evidence sitting unconsumed.
+        assert w._queue.qsize() == 0, (
+            "the late admission attempt must be rejected before it ever "
+            "reaches the queue")
+        assert w.late_admission_rejected == 1
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="KALSHI-ARCHIVE-CORE-REMEDIATION-003B A1: no producer may "
-        "receive ACCEPTED after the writer has permanently stopped "
-        "accepting durable evidence, and a close that cannot prove "
-        "admissions finished must not publish 'clean'. 63bf0d1 violates "
-        "both halves of this property (see the reproduction above) -- this "
-        "is the same scenario restated as the DESIRED, currently-failing "
-        "property so the repair has an exact target to turn green.")
     def test_desired_property_no_late_acceptance_after_a_clean_close(
             self, tmp_path):
         w, root = make_writer(tmp_path, "seg-desired-property")
@@ -282,11 +275,12 @@ class TestGenuinelySlowPayloadAlsoRaces:
             "the slow producer's real admission walk did not finish within "
             "60s -- either this host is unusually loaded or the mapping's "
             "own iteration is slower than expected")
-        # The producer's own, real structural walk eventually finishes and
-        # (because the payload is canonically legal) is accepted --
-        # into a queue nobody drains, after a clean close.
-        assert result_holder["reject_reason"] is None
-        assert w._queue.qsize() == 1
+        # KALSHI-ARCHIVE-CORE-REMEDIATION-003B A1 REPAIRED: the producer's
+        # own, real structural walk eventually finishes and is legal, but the
+        # pre-commit checkpoint in `_admit` sees `_sealed is True` (set well
+        # before this walk even finished) and rejects it -- no queue leak.
+        assert result_holder["reject_reason"] == sg.RejectReason.SHUTDOWN_IN_PROGRESS
+        assert w._queue.qsize() == 0
 
 
 # =====================================================================
@@ -325,5 +319,8 @@ class TestUnderSchedulerContention:
             ctl.release()
             t.join(timeout=5.0)
 
-        assert result_holder["reject_reason"] is None
-        assert w._queue.qsize() == 1
+        # KALSHI-ARCHIVE-CORE-REMEDIATION-003B A1 REPAIRED: rejected even
+        # under real thread contention -- the checkpoint is a plain read of
+        # a monotonic, lock-protected flag, not a timing-sensitive race.
+        assert result_holder["reject_reason"] == sg.RejectReason.SHUTDOWN_IN_PROGRESS
+        assert w._queue.qsize() == 0

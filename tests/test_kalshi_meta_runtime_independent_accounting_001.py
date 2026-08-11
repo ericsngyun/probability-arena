@@ -203,11 +203,19 @@ class TestWriterThreadFaultCatchesRealLoss:
             f"{report.to_dict()}")
 
     def test_close_undercounts_the_loss_in_its_own_error_message(self, tmp_path):
-        """Even the FAILURE close() eventually reports (via the 'not
-        clean' pending check, once the surviving un-drained items are
-        measured) does not mention the one item that fell into this gap:
-        close() sees 4 undrained items, never 5. The ledger is the only
-        thing that ever knew 5 were accepted."""
+        """KALSHI-ARCHIVE-CORE-REMEDIATION-003B A2 REPAIRED, side effect:
+        this test used to demonstrate that even the FAILURE close() reports
+        undercounted the loss -- it named 4 undrained items, never 5,
+        because the one item that fell into this run-gap window was already
+        dequeued (so `_measure_pending`'s queue scan could not find it) and
+        had reached neither `written` nor `failed_after_accept`. Segment.py's
+        A2 repair gives every dequeued-but-not-yet-terminally-disposed item a
+        durable, structurally observable claim (`SegmentWriter._claimed`,
+        set in the SAME statement as the queue removal) that `_measure_
+        pending` now also scans. That closes this exact blind spot as a
+        byproduct: close()'s own report now names all 5, matching what the
+        independent ledger already knew -- production's own accounting no
+        longer undercounts a real loss."""
         root = tmp_path / "faulted-close"
         root.mkdir()
         init(root)
@@ -231,10 +239,11 @@ class TestWriterThreadFaultCatchesRealLoss:
         except sg.SegmentError as exc:
             msg = str(exc)
             assert "never drained" in msg or "not written" in msg, msg
-            assert "4" in msg, (
-                f"expected close()'s own error to name 4 undrained items "
-                f"(not 5 -- the fifth is INVISIBLE even to the failure "
-                f"report), got: {msg!r}")
+            assert "5" in msg, (
+                f"expected close()'s own error to name all 5 undrained "
+                f"items now that the A2 repair's `_claimed` handoff makes "
+                f"the previously-invisible fifth item visible to "
+                f"`_measure_pending` too, got: {msg!r}")
         assert ledger.accepted == 5, (
             "the independent ledger is the ONLY record anywhere that 5 "
             "items were ever accepted")

@@ -110,7 +110,19 @@ class ControlledAdmission:
         self.released_at: float | None = None
         self.entered_at: float | None = None
 
-        def wrapper(value, _path=""):
+        def wrapper(value, _path="", **kwargs):
+            # KALSHI-ARCHIVE-CORE-REMEDIATION-003B A4: `**kwargs` forwards
+            # whatever keyword-only arguments `canonicalize_or_reason`
+            # grows in the future (`_depth_reserve`/`_work_reserve`, added
+            # by the A4 repair) straight through to the real function.
+            # Without this, a leaked monkeypatch here (this class never
+            # calls `.restore()` inside the test methods that use it --
+            # only `__exit__` does, and several call sites use it WITHOUT
+            # the `with` form) breaks EVERY OTHER test in the same process
+            # that constructs a `SegmentWriter` afterwards with a bare
+            # `TypeError: wrapper() got an unexpected keyword argument`,
+            # cascading a single test file's instrumentation into dozens of
+            # unrelated failures elsewhere in the suite.
             self.entered_at = time.monotonic()
             self._entered.set()
             # Genuinely blocks the calling (producer) thread -- not a fixed
@@ -122,7 +134,7 @@ class ControlledAdmission:
             # would trivially catch.
             self._gate.wait()
             self.released_at = time.monotonic()
-            return self._original(value, _path)
+            return self._original(value, _path, **kwargs)
 
         module.canonicalize_or_reason = wrapper
 

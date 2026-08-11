@@ -68,6 +68,13 @@ MANIFEST_SCHEMA_VERSION = 1
 ARCHIVE_SCHEMA_VERSION = 1
 WRITER_VERSION = "kalshi-archive-writer/1"
 
+# KALSHI-ARCHIVE-CORE-REMEDIATION-003B A2: the sentinel for "no item is
+# currently claimed" on `SegmentWriter._claimed` -- distinct from `None`,
+# which producers are free to pass as a legitimate field value elsewhere, and
+# distinct from any real queued item (a dict), so `is not _UNCLAIMED` is an
+# unambiguous test regardless of payload shape.
+_UNCLAIMED = object()
+
 EVENTS_FILENAME = "events.jsonl.gz"
 MANIFEST_FILENAME = "manifest.json"
 MANIFEST_TEMP_SUFFIX = ".tmp"
@@ -99,6 +106,50 @@ RECORD_FIELDS = (
 )
 
 REQUIRED_RECORD_FIELDS = RECORD_FIELDS + ("record_digest",)
+
+# KALSHI-ARCHIVE-CORE-REMEDIATION-003B A4 -- WORK-BUDGET CONSISTENCY.
+#
+# `build_record` (below) wraps `envelope_fields` into the 17-field `RECORD_
+# FIELDS` envelope by pulling exactly these ten keys straight from it:
+_ENVELOPE_SOURCED_RECORD_FIELDS = frozenset({
+    "connection_generation", "subscription_id", "subscription_generation",
+    "message_type", "market_ticker", "seq", "received_at_utc",
+    "received_monotonic_ns", "raw_event", "normalized_event",
+})
+# Every OTHER field in `RECORD_FIELDS` (`schema_version`,
+# `canonical_schema_version`, `environment`, `segment_id`, `receive_ordinal`,
+# `previous_record_digest`) is new top-level content `build_record` adds that
+# admission's own structural walk of `envelope_fields` alone never saw or
+# charged a single canonical work unit for. Each is a scalar leaf (an int or
+# a short str, no substructure), so each costs EXACTLY one extra
+# `canonical._encode` unit when `build_record`'s wrapper is encoded --
+# derived here, not hand-counted, so it cannot silently drift if
+# `RECORD_FIELDS` gains or loses a field later.
+#
+# `_structural_reason`'s Mapping branch charges MORE per node than
+# `_encode`'s (two units per key -- one for the key, one for the value --
+# against `_encode`'s one), so for any value `v`,
+# `structural_cost(v) >= encode_cost(v)` always. Reserving this many units
+# out of admission's structural-walk ceiling therefore GUARANTEES that
+# `encode_cost(envelope_fields) + _RECORD_ENVELOPE_OVERHEAD_UNITS` --
+# exactly what `build_record`'s own `digest_hex` call will spend encoding
+# `record` -- fits inside the SAME canonical work-unit ceiling admission
+# advertises. One contract, carried from admission through commit, rather
+# than two independently-fresh budgets that happen to agree on production's
+# own envelope shape by accident (see `tests/meta_runtime/
+# budget_consistency.py` for the measured margin this closes).
+_RECORD_ENVELOPE_OVERHEAD_UNITS = (
+    len(RECORD_FIELDS) - len(_ENVELOPE_SOURCED_RECORD_FIELDS))
+
+# `build_manifest` (below) nests a writer's admitted `subscription_metadata`
+# ONE level deeper than admission ever walked it: `non_canonical_reason`
+# validates it at ITS OWN root (depth 0), but `body["subscription_metadata"]
+# = subscription_metadata or {}` then wraps it inside the manifest dict,
+# which `publish_manifest` encodes whole. Reserving one level of depth at
+# admission time (walking as if it were already nested one level deep)
+# guarantees a value admitted at exactly `CapabilityLimits.MAX_DEPTH` cannot
+# encode at `MAX_DEPTH + 1` once wrapped.
+_MANIFEST_METADATA_DEPTH_RESERVE = 1
 
 
 def write_all(fd: int, payload: bytes) -> int:
@@ -302,7 +353,8 @@ class RejectReason(str, Enum):
     NOT_CANONICAL = "not_canonical"
 
 
-def canonicalize_or_reason(value, _path: str = ""):
+def canonicalize_or_reason(value, _path: str = "", *, _depth_reserve: int = 0,
+                           _work_reserve: int = 0):
     """Validate AND encode, exactly once. `(canonical_bytes, None)` on
     success, `(None, reason)` on refusal.
 
@@ -331,6 +383,16 @@ def canonicalize_or_reason(value, _path: str = ""):
     had already been validated once. Returning the bytes here means the gate
     and the commit are the SAME encode: whatever passed admission is exactly
     what gets queued (see `_admit`'s `parse_canonical(payload_bytes)`).
+
+    KALSHI-ARCHIVE-CORE-REMEDIATION-003B A4: `_depth_reserve`/`_work_reserve`
+    are the ONE budget contract, carried forward from whatever wrapping the
+    caller KNOWS commit will apply on top of `value` -- not two independently
+    fresh budgets that happen to agree by accident. A caller that knows its
+    accepted value will later be nested one level deeper, or wrapped with N
+    known extra scalar fields, reserves that here so a value admitted now is
+    GUARANTEED commit-encodable later, rather than merely encodable in
+    isolation today. Both default to 0 -- ordinary callers (this module's own
+    tests, `legacy_import.py`) get the exact previous behaviour.
     """
     try:
         # The WALK is inside the guard too. It was outside, so an exception from
@@ -341,7 +403,8 @@ def canonicalize_or_reason(value, _path: str = ""):
         # failure, produced by the commit whose thesis was "stop patching the
         # leaf": the `utcoffset()` leaf was guarded and the walk calling it was
         # not.
-        structural = _structural_reason(value, _path)
+        budget = WorkBudget(_MAX_CANONICAL_WORK_UNITS - _work_reserve)
+        structural = _structural_reason(value, _path, _depth_reserve, budget)
         if structural is not None:
             return None, structural
         payload = canonical_bytes(value)
@@ -355,14 +418,16 @@ def canonicalize_or_reason(value, _path: str = ""):
     return payload, None
 
 
-def non_canonical_reason(value, _path: str = "") -> str | None:
+def non_canonical_reason(value, _path: str = "", *, _depth_reserve: int = 0,
+                         _work_reserve: int = 0) -> str | None:
     """Why this value cannot become evidence, or None.
 
     Thin wrapper over `canonicalize_or_reason` for callers (and tests) that
     only want the refusal reason, not the bytes. `_admit` calls
     `canonicalize_or_reason` directly so it never encodes twice.
     """
-    _, reason = canonicalize_or_reason(value, _path)
+    _, reason = canonicalize_or_reason(
+        value, _path, _depth_reserve=_depth_reserve, _work_reserve=_work_reserve)
     return reason
 
 
@@ -1022,7 +1087,17 @@ class SegmentWriter:
         # rejection. A failure now surfaces at construction, as a
         # `SegmentError`, before any record is ever accepted.
         metadata = subscription_metadata or {}
-        bad = non_canonical_reason(metadata)
+        # KALSHI-ARCHIVE-CORE-REMEDIATION-003B A4: `_depth_reserve` accounts
+        # for `build_manifest` nesting this SAME value one level deeper
+        # (`body["subscription_metadata"] = subscription_metadata or {}`,
+        # then `publish_manifest` encodes the whole manifest body) than this
+        # root-level admission walk would otherwise check. Without it, a
+        # value admitted at exactly `CapabilityLimits.MAX_DEPTH` here
+        # encodes at `MAX_DEPTH + 1` when wrapped -- destroying every
+        # already-durable record in the segment at close, over a value
+        # admission itself certified as legal.
+        bad = non_canonical_reason(
+            metadata, _depth_reserve=_MANIFEST_METADATA_DEPTH_RESERVE)
         if bad is not None:
             raise SegmentError(
                 f"subscription_metadata is not canonically representable: "
@@ -1097,6 +1172,11 @@ class SegmentWriter:
         self._stream_digest = self._prev_digest
         self._first_digest: str | None = None
         self._last_digest: str | None = None
+        # KALSHI-ARCHIVE-CORE-REMEDIATION-003B A2: see `_run`'s comment.
+        # Written only by the writer thread; read by `_measure_pending`
+        # (called from `close()`, potentially a different thread) and by
+        # nothing else.
+        self._claimed = _UNCLAIMED
         self._writer_error: BaseException | None = None
         self._shutdown = threading.Event()
         # close() is reachable from several threads (a shutdown handler and an
@@ -1127,6 +1207,13 @@ class SegmentWriter:
         # applied to `_inflight`. Never gates publication -- see
         # `_seal_admissions`.
         self.inflight_drift: int | None = None
+        # KALSHI-ARCHIVE-CORE-REMEDIATION-003B A1: how many producers reached
+        # the pre-commit checkpoint in `_admit` AFTER sealing had already
+        # begun. Diagnostic, like `inflight_drift` -- but where `inflight_drift`
+        # only records that a producer's presence was unresolved at the seal
+        # deadline, this counts producers that were STRUCTURALLY PREVENTED
+        # from turning that unresolved presence into a silent ACCEPTED.
+        self.late_admission_rejected: int = 0
         # Injection seams. Production leaves both None; tests use them to slow
         # the writer or fail a specific durability stage without weakening the
         # real fsync path.
@@ -1368,7 +1455,16 @@ class SegmentWriter:
         # told the event was recorded, and the only outcomes left were a
         # silent drop or destroying the whole hour. The contract is uniform
         # with `canonical.py`: a float is refused, and it is refused here.
-        payload_bytes, bad = canonicalize_or_reason(envelope_fields)
+        # KALSHI-ARCHIVE-CORE-REMEDIATION-003B A4: `_work_reserve` accounts
+        # for `build_record` wrapping this SAME `envelope_fields` into the
+        # 17-field record envelope with `_RECORD_ENVELOPE_OVERHEAD_UNITS`
+        # more top-level scalar fields than admission's own structural walk
+        # ever charged for. Without it, a value admitted exactly at the
+        # aggregate work-unit ceiling encodes fine alone and then exceeds
+        # the SAME ceiling once wrapped -- destroying an otherwise-valid
+        # segment at close over a record that was legitimately ACCEPTED.
+        payload_bytes, bad = canonicalize_or_reason(
+            envelope_fields, _work_reserve=_RECORD_ENVELOPE_OVERHEAD_UNITS)
         if bad is not None:
             self.last_rejection_detail = bad
             return self._reject(RejectReason.NOT_CANONICAL)
@@ -1383,6 +1479,37 @@ class SegmentWriter:
         # (`build_record` wrapping this value with `receive_ordinal` and
         # `previous_record_digest`, assigned in write order).
         accepted_fields = parse_canonical(payload_bytes)
+        # KALSHI-ARCHIVE-CORE-REMEDIATION-003B A1: the admission protocol used
+        # to have exactly one checkpoint -- the `_sealed` read at the TOP of
+        # `submit()`, before this call even started. Everything from there to
+        # here (the canonical walk, potentially seconds long for a legal but
+        # slow-iterating payload -- see the genuinely-slow-payload harness) ran
+        # with no further checkpoint at all, so a producer that entered before
+        # `close()` called `_seal_admissions()` could still reach the queue
+        # PUT long after `_seal_admissions` had given up waiting for it,
+        # recorded `inflight_drift`, and let `close()` publish a manifest that
+        # was already final. `submit()` returned ACCEPTED (`None`) for an
+        # event that then sat in a queue with a dead writer thread and no
+        # consumer -- silent loss with no rejection ever reaching the caller.
+        #
+        # The fix is a SECOND checkpoint, at the only place that actually
+        # matters: the moment of commitment into the queue. `_sealed` is
+        # flipped exactly once, under `_admission`, as the FIRST statement of
+        # `_seal_admissions` -- strictly before that function starts waiting
+        # on `_inflight`, and therefore strictly before `close()` can reach
+        # `_close_stages` and publish anything. So by the time a still-running
+        # producer reaches this checkpoint after a seal has begun, `_sealed`
+        # is already durably True (a monotonic one-way flag, set once, never
+        # cleared) -- there is no window in which `close()` has moved past
+        # sealing while this checkpoint could still observe `_sealed is
+        # False`. This turns "admission still active when sealing began" into
+        # a REJECTION instead of a race against how fast `close()` happens to
+        # run: no producer that has not already committed its item before
+        # sealing starts can ever be told ACCEPTED afterwards.
+        with self._admission:
+            if self._sealed:
+                self.late_admission_rejected += 1
+                return self._reject(RejectReason.SHUTDOWN_IN_PROGRESS)
         try:
             # FAULT-WINDOW: safe-before-enqueue — a fault landing on the NEXT
             # line, before `put_nowait` ever runs, means nothing was queued;
@@ -1460,18 +1587,44 @@ class SegmentWriter:
     def _run(self) -> None:
         while True:
             try:
-                item = self._queue.get(timeout=0.05)
+                # Chained assignment: `self._claimed` is set in the SAME
+                # source line, the same bytecode boundary, as the queue
+                # removal itself -- there is no separate statement between
+                # "the item left the queue" and "the item is durably claimed"
+                # for a fault to land in.
+                item = self._claimed = self._queue.get(timeout=0.05)
             except queue.Empty:
                 if self._shutdown.is_set() and self._queue.empty():
                     return
                 continue
-            # KALSHI-ARCHIVE-CORE-REMEDIATION-003 defect F: booked the
-            # INSTANT the item is irreversibly removed from the queue --
-            # deliberately BEFORE the `try:` below, in the one gap `_run`'s
-            # own exception handling does not cover. `queue.get()` already
-            # returned; if a fault lands anywhere from here through the end
-            # of `_write_one`/`task_done()`, `dequeued` is the one place
-            # that still remembers this item existed.
+            # KALSHI-ARCHIVE-CORE-REMEDIATION-003B A2: the item is
+            # irreversibly OUT of the queue the instant `.get()` above
+            # returns -- but until now, NOTHING durable recorded that fact
+            # until `dequeued += 1` two lines below ran. A fault landing in
+            # that exact gap (the true window; see `tests/meta_runtime/
+            # queue_gap_locator.py`) was invisible to `written`, to
+            # `failed_after_accept`, to `pending` (the item had already left
+            # the queue `_measure_pending` scans) AND to `dequeued` itself --
+            # the one counter defect F added specifically to make this window
+            # visible sits one statement too late to see a fault landing
+            # before its own increment.
+            #
+            # `self._claimed` (set above, in the SAME statement as the queue
+            # removal) is a plain, unlocked attribute -- CPython attribute
+            # stores are atomic under the GIL, and a reviewer specifically
+            # flagged that this region must NOT gain a new BLOCKING mutex
+            # acquire (63bf0d1 had none here; introducing one would let a
+            # slow/contended lock stall every dequeue). The transfer of
+            # ownership is represented structurally instead: from the moment
+            # the item leaves the queue until it reaches a terminal
+            # disposition (write success, write failure, or the writer
+            # thread dying), `self._claimed` durably holds a reference any
+            # thread — including close()'s — can observe. `_measure_pending`
+            # treats a non-empty `_claimed` exactly like an item still
+            # sitting in the queue. `dequeued` still books at the exact same
+            # place it always did — no increment moved earlier — but it is
+            # now structurally impossible for an item to be neither in the
+            # queue, nor claimed, nor terminally disposed of.
             with self._lock:
                 self.accounting.dequeued += 1
             try:
@@ -1485,6 +1638,7 @@ class SegmentWriter:
                 # one and amplifies the corruption.
                 return
             finally:
+                self._claimed = _UNCLAIMED
                 self._queue.task_done()
 
     def _write_one(self, envelope_fields: dict) -> None:
@@ -1572,7 +1726,18 @@ class SegmentWriter:
             time.sleep(0.002)
 
     def _measure_pending(self) -> int:
-        """Whatever the writer never drained. Measured, not inferred."""
+        """Whatever the writer never drained or never terminally disposed
+        of. Measured, not inferred.
+
+        KALSHI-ARCHIVE-CORE-REMEDIATION-003B A2: an item the writer thread
+        already removed from the queue (`self._claimed`, see `_run`) but
+        never reached a terminal disposition for -- because the thread died
+        in the gap between the removal and its own bookkeeping -- is exactly
+        as undelivered as one that never left the queue. Counting it here,
+        the same way, means `clean()` (gated on `pending == 0`) correctly
+        refuses to publish over this loss, without moving `dequeued`'s own
+        increment or inventing a second, competing notion of "pending".
+        """
         drained = 0
         while True:
             try:
@@ -1580,6 +1745,9 @@ class SegmentWriter:
                 drained += 1
             except queue.Empty:
                 break
+        if self._claimed is not _UNCLAIMED:
+            drained += 1
+            self._claimed = _UNCLAIMED
         with self._lock:
             self.accounting.pending += drained
         return drained
@@ -1992,45 +2160,126 @@ _SALVAGE_CHUNK = 512
 # `<partition>.rNNNN` — a rotated segment of the same partition.
 _ROTATION_SUFFIX_RE = re.compile(r"\.r\d{4,}$")
 
+# KALSHI-ARCHIVE-CORE-REMEDIATION-003B A5 -- RESIDUE DECOMPRESSION BOUND.
+#
+# `read_segment_records` is reachable over UNCOMMITTED evidence -- no
+# manifest, no writer lock, no prior admission gate -- via `verify_archive`'s
+# own residue-inspection loop over every uncommitted segment directory it
+# finds. `evidence_fs.bounded_read` already caps the COMPRESSED bytes read
+# from disk, but `zlib.decompressobj.decompress()` called with no
+# `max_length` decompresses AS FAR AS THE INPUT ALLOWS, unbounded in its
+# OUTPUT regardless of how small that compressed input was: a 2.18 MB
+# gzip-compressed residue expanded to 1.79 GB / 20.6s peak RSS in the
+# reviewer's measurement, entirely within the compressed-bytes bound. A
+# hostile (or merely accidentally-highly-compressible) uncommitted
+# directory must not turn a read-only verification pass into an OOM/DoS
+# primitive.
+#
+# Chosen comfortably above any legitimate single segment's decompressed
+# size (production rotation policy keeps live segments well under this) and
+# far below where decompressing genuinely untrusted residue becomes a
+# practical amplification attack.
+_MAX_RESIDUE_DECODED_BYTES = 64 * 1024 * 1024            # 64 MiB
+_MAX_RESIDUE_DECODED_LINES = 500_000
+# The chunk size `dec.decompress(chunk, max_length)` is fed per call. Kept
+# small relative to the byte cap so the cap is enforced with fine granularity
+# rather than being able to overshoot by up to one chunk's worth of
+# amplification on a single call.
+_DECODE_INPUT_CHUNK = 65536
 
-def _decompress_prefix(data: bytes):
-    """Decompress as far as the stream is intact. Returns (bytes, consumed, eof).
 
-    The previous attempt at this was dead code, and the measurement said so: it
-    caught the failing 64 KiB chunk and re-fed it in 512-byte slices **into the
-    same decompressobj**, which is permanently in error state once it has
-    raised. Every retry iteration raised immediately and contributed nothing, so
-    a mid-stream fault still lost the whole chunk — 664 records recovered where
-    998 were available, and a small segment recovered 0. The suite asserted no
-    recovered count, so nothing caught it.
+def _decompress_prefix(data: bytes, *, max_decoded_bytes=None):
+    """Decompress as far as the stream is intact, OR until `max_decoded_bytes`
+    of OUTPUT has been produced, whichever comes first.
 
-    A `decompressobj` is never reused after it raises. The fast path feeds large
-    chunks; on the first fault the object is DISCARDED and a fresh one re-reads
-    from the start in small increments, so the recovered prefix is bounded by
-    the salvage chunk rather than by the fast-path chunk.
+    Returns `(bytes, consumed, eof, capped)`. `capped` is True exactly when
+    the byte ceiling stopped this call before the stream's own EOF (or
+    fault) was reached -- the caller (`read_segment_records`) surfaces that
+    as a residue classification distinct from an ordinary torn/malformed
+    stream (see A6), not as a silent truncation indistinguishable from one.
+
+    The previous attempt at recovering a torn stream was dead code, and the
+    measurement said so: it caught the failing 64 KiB chunk and re-fed it in
+    512-byte slices **into the same decompressobj**, which is permanently in
+    error state once it has raised. Every retry iteration raised immediately
+    and contributed nothing, so a mid-stream fault still lost the whole
+    chunk — 664 records recovered where 998 were available, and a small
+    segment recovered 0. The suite asserted no recovered count, so nothing
+    caught it.
+
+    A `decompressobj` is never reused after it raises. The fast path feeds
+    large chunks of COMPRESSED input; on the first fault the object is
+    DISCARDED and a fresh one re-reads from the start in small increments
+    (`_salvage_prefix`), so the recovered prefix is bounded by the salvage
+    chunk rather than by the fast-path chunk. Both paths now ALSO bound
+    DECOMPRESSED output via `max_length`, streamed rather than requested in
+    one call, so neither path can be turned into an unbounded-memory read
+    regardless of how the input is shaped.
     """
     import zlib
 
+    if max_decoded_bytes is None:
+        max_decoded_bytes = _MAX_RESIDUE_DECODED_BYTES
+
     dec = zlib.decompressobj(31)
     out = []
+    total = 0
+    consumed_input = 0
     try:
-        for i in range(0, len(data), 65536):
-            out.append(dec.decompress(data[i:i + 65536]))
+        pos = 0
+        pending = b""
+        while True:
+            if not pending:
+                if pos >= len(data):
+                    break
+                pending = data[pos:pos + _DECODE_INPUT_CHUNK]
+                pos += len(pending)
+            budget = max_decoded_bytes - total
+            if budget <= 0:
+                return b"".join(out), consumed_input, False, True
+            piece = dec.decompress(pending, budget)
+            out.append(piece)
+            total += len(piece)
+            consumed_input = pos - len(dec.unconsumed_tail)
+            # `max_length` may leave undecoded output buffered internally
+            # (`unconsumed_tail` non-empty) when this call's budget ran out
+            # before `pending` was fully expanded -- keep it and ask for
+            # more budget/output on the NEXT iteration rather than dropping
+            # it or advancing past unconsumed compressed bytes.
+            pending = dec.unconsumed_tail
+            if dec.eof:
+                break
+        if not dec.eof:
+            return b"".join(out), consumed_input, False, False
         out.append(dec.flush())
     except (zlib.error, EOFError):
-        return _salvage_prefix(data)
-    consumed = len(data) - len(dec.unused_data) if dec.eof else len(data)
-    return b"".join(out), consumed, dec.eof
+        return _salvage_prefix(data, max_decoded_bytes=max_decoded_bytes)
+    consumed = len(data) - len(dec.unused_data)
+    return b"".join(out), consumed, True, False
 
 
-def _salvage_prefix(data: bytes):
+def _salvage_prefix(data: bytes, *, max_decoded_bytes=None):
     import zlib
+
+    if max_decoded_bytes is None:
+        max_decoded_bytes = _MAX_RESIDUE_DECODED_BYTES
 
     dec = zlib.decompressobj(31)
     out = []
+    total = 0
     for i in range(0, len(data), _SALVAGE_CHUNK):
+        pending = data[i:i + _SALVAGE_CHUNK]
         try:
-            out.append(dec.decompress(data[i:i + _SALVAGE_CHUNK]))
+            while True:
+                budget = max_decoded_bytes - total
+                if budget <= 0:
+                    return b"".join(out), i, False, True
+                piece = dec.decompress(pending, budget)
+                out.append(piece)
+                total += len(piece)
+                pending = dec.unconsumed_tail
+                if dec.eof or not pending:
+                    break
         except (zlib.error, EOFError):
             break                    # terminal: STOP, never reuse this object
         if dec.eof:
@@ -2041,8 +2290,8 @@ def _salvage_prefix(data: bytes):
         except (zlib.error, EOFError):
             pass
         consumed = len(data) - len(dec.unused_data)
-        return b"".join(out), consumed, True
-    return b"".join(out), len(data), False
+        return b"".join(out), consumed, True, False
+    return b"".join(out), len(data), False, False
 
 
 def read_segment_records(events_path: Path) -> list:
@@ -2070,20 +2319,64 @@ def read_segment_records(events_path: Path) -> list:
         # refusal, or over the bound -- a reader that raises here takes the
         # whole verdict down, so this stays the same total, non-raising
         # empty-list contract the previous `except OSError: return []` had.
+        # Diagnostic attributes reset too -- a caller reading them after
+        # this branch must not see a PREVIOUS call's leftover state.
+        read_segment_records.last_unreadable = 0
+        read_segment_records.capped = False
+        read_segment_records.stream_fully_decoded = True
+        read_segment_records.decoded_bytes = 0
+        read_segment_records.original_size = 0
         return []
+    original_size = len(data)
     text = ""
+    total_decoded = 0
+    capped = False
+    # KALSHI-ARCHIVE-CORE-REMEDIATION-003B A6: True unless the loop below
+    # breaks EARLY (a decoded-byte cap, or a stream that ended before its
+    # own EOF) -- i.e. True exactly when every gzip member in this file was
+    # decompressed to genuine completion. A residue whose bytes decode
+    # fully but whose CONTENT is still broken (a deleted middle record) is
+    # a different, chain-level finding `verify_segment`'s residue
+    # classification checks separately -- this flag is about the BYTES
+    # only, never inferred from parsed record content.
+    stream_fully_decoded = True
     while data:
-        decoded, consumed, eof = _decompress_prefix(data)
+        # KALSHI-ARCHIVE-CORE-REMEDIATION-003B A5: the budget is CUMULATIVE
+        # across every gzip member in this one events file (see
+        # `TestLegacyMultiMember` -- a legacy collector can append several
+        # members to one file), not reset per `_decompress_prefix` call, or
+        # an attacker could evade the cap entirely by splitting the bomb
+        # across many small members.
+        remaining_budget = _MAX_RESIDUE_DECODED_BYTES - total_decoded
+        if remaining_budget <= 0:
+            capped = True
+            stream_fully_decoded = False
+            break
+        decoded, consumed, eof, hit_cap = _decompress_prefix(
+            data, max_decoded_bytes=remaining_budget)
+        total_decoded += len(decoded)
         try:
             text += decoded.decode("utf-8")
         except UnicodeDecodeError:
             text += decoded.decode("utf-8", errors="ignore")
+        if hit_cap:
+            capped = True
+            stream_fully_decoded = False
+            break
         if not eof:
+            stream_fully_decoded = False
             break                    # stream ended mid-member: nothing follows
         data = data[consumed:] if consumed else b""
     records = []
     lines = [ln for ln in text.split("\n") if ln.strip()]
-    for line in lines:
+    for i, line in enumerate(lines):
+        # KALSHI-ARCHIVE-CORE-REMEDIATION-003B A5: a record-count cap
+        # alongside the byte cap -- a decoded stream near the byte ceiling
+        # but built of pathologically short lines could still produce an
+        # unbounded number of parsed record objects in memory otherwise.
+        if i >= _MAX_RESIDUE_DECODED_LINES:
+            capped = True
+            break
         try:
             records.append(parse_canonical(line))
         except Exception:
@@ -2091,13 +2384,92 @@ def read_segment_records(events_path: Path) -> list:
     # How many decodable lines the reader had to abandon. Reported rather than
     # silently dropped: a torn tail and a clean file must not look alike.
     read_segment_records.last_unreadable = len(lines) - len(records)
+    # KALSHI-ARCHIVE-CORE-REMEDIATION-003B A5/A6: whether this read was cut
+    # off by the decoded-bytes/record-count ceiling rather than reaching a
+    # genuine stream EOF or the first unparseable line. A6's residue
+    # classification reads this to distinguish "unsafe, over the limit"
+    # residue from an ordinary torn or malformed one -- the two look
+    # identical from `records`/`last_unreadable` alone.
+    read_segment_records.capped = capped
+    read_segment_records.stream_fully_decoded = stream_fully_decoded
+    read_segment_records.decoded_bytes = total_decoded
+    read_segment_records.original_size = original_size
     return records
 
 
 read_segment_records.last_unreadable = 0
+read_segment_records.capped = False
+read_segment_records.stream_fully_decoded = True
+read_segment_records.decoded_bytes = 0
+read_segment_records.original_size = 0
 
 
 # --- verification -----------------------------------------------------------------
+
+
+# KALSHI-ARCHIVE-CORE-REMEDIATION-003B A6 -- RESIDUE SEMANTICS.
+#
+# Before this, EVERY uncommitted (manifest-less) segment directory presented
+# identically in three ways, regardless of what was actually on disk:
+#
+#   1. `chain_valid` was hardcoded `False` -- an actually intact,
+#      chain-valid residue and one with a deliberately deleted middle
+#      record were INDISTINGUISHABLE (both `False`), because `verify_chain`
+#      was never even called for the `allow_open=True` path.
+#   2. A malformed (not-even-gzip) residue reported `records_read: 0` with
+#      the SAME boilerplate `reasons` an ordinary, brand-new, genuinely
+#      empty OPEN segment gets -- byte-for-byte identical to "nothing
+#      written yet".
+#   3. A torn (mid-write-crash) residue silently recovered whatever prefix
+#      it could and reported it as ordinary `records_read`, with no
+#      "torn"/"truncated" signal anywhere in the returned shape.
+#
+# These four labels are the minimum the milestone brief names, derived from
+# `read_segment_records`'s own diagnostics (`stream_fully_decoded`,
+# `decoded_bytes`, `original_size`, `capped`, `last_unreadable`) plus a REAL
+# `verify_chain` call over whatever records were actually recovered -- never
+# inferred from a hardcoded default.
+RESIDUE_RECOVERABLE_INTACT = "recoverable_intact"
+RESIDUE_TORN_PARTIAL = "torn_partial"
+RESIDUE_MALFORMED = "malformed"
+RESIDUE_UNSAFE_OVER_LIMIT = "unsafe_over_limit"
+
+
+def _classify_residue(*, chain_ok: bool) -> str:
+    """The residue classification for the file `read_segment_records` JUST
+    read -- reads its diagnostic attributes (set fresh on every call, see
+    `read_segment_records`), so this must be called immediately after, on
+    the SAME file, with nothing else calling `read_segment_records` in
+    between.
+    """
+    if read_segment_records.capped:
+        # Checked FIRST: a decoded-byte/record-count ceiling is a safety
+        # refusal, not an ordinary content finding -- it must never be
+        # downgraded to "torn" or "intact" just because SOME prefix was
+        # recoverable before the ceiling fired.
+        return RESIDUE_UNSAFE_OVER_LIMIT
+    if not read_segment_records.stream_fully_decoded:
+        if read_segment_records.decoded_bytes == 0 and read_segment_records.original_size > 0:
+            # Nothing at all was recoverable from a genuinely non-empty
+            # input, and the stream never reached its own EOF -- the
+            # signature of input that was never a valid gzip stream to
+            # begin with (a stray/corrupted file), not a real write that
+            # simply stopped partway through one.
+            return RESIDUE_MALFORMED
+        return RESIDUE_TORN_PARTIAL
+    if read_segment_records.last_unreadable > 0:
+        # The compressed bytes decoded to completion, but at least one
+        # decoded LINE was not parseable canonical JSON -- content-level
+        # corruption inside an otherwise-complete gzip stream.
+        return RESIDUE_TORN_PARTIAL
+    if not chain_ok:
+        # The bytes decoded fully AND every line parsed -- but the records
+        # do not chain (a deletion, insertion, reorder, or a copied
+        # record). Real, structural brokenness that "torn" already names;
+        # this is not a fifth category, it is the SAME finding reached
+        # through a different mechanism than a truncated write.
+        return RESIDUE_TORN_PARTIAL
+    return RESIDUE_RECOVERABLE_INTACT
 
 
 @dataclass
@@ -2111,6 +2483,13 @@ class SegmentVerdict:
     records_expected: int | None = None
     records_read: int = 0
     chain_valid: bool = False
+    # KALSHI-ARCHIVE-CORE-REMEDIATION-003B A6: only set for a residue
+    # verdict (`allow_open=True`, no manifest). One of
+    # `RESIDUE_RECOVERABLE_INTACT` / `RESIDUE_TORN_PARTIAL` /
+    # `RESIDUE_MALFORMED` / `RESIDUE_UNSAFE_OVER_LIMIT`, or `None` for an
+    # ordinary (committed, manifest-bearing) verdict where the concept does
+    # not apply.
+    residue_classification: str | None = None
     first_digest_match: bool = False
     last_digest_match: bool = False
     stream_digest_match: bool = False
@@ -2282,10 +2661,53 @@ def verify_segment(directory, *, environment: str, allow_open: bool = False,
         return SegmentVerdict(seg_id, SegmentState.INVALID, False, [why])
     if not manifest_present:
         if allow_open and has_events:
-            return SegmentVerdict(
-                seg_id, SegmentState.OPEN, False,
-                ["segment has no manifest and is therefore not committed"],
-                None, len(read_segment_records(events_path)))
+            # KALSHI-ARCHIVE-CORE-REMEDIATION-003B A6: a REAL `verify_chain`
+            # call over whatever was actually recovered -- never a
+            # hardcoded `False` -- plus the byte/content-level diagnostics
+            # `read_segment_records` now exposes, classify what kind of
+            # residue this actually is rather than presenting every
+            # uncommitted directory identically. This does NOT bless the
+            # residue as committed evidence (still not entered anywhere
+            # `expected`/`records_expected` reads) and does NOT change
+            # `valid` (residue is never gating) -- it makes the difference
+            # between "an ordinary in-progress OPEN segment", "a crash left
+            # a partial write", "this is not even a gzip file", and "this
+            # exceeded the safety ceiling and was only partially read"
+            # actually visible instead of collapsing to one shape.
+            residue_records = read_segment_records(events_path)
+            residue_chain = verify_chain(
+                residue_records, segment_id=seg_id, environment=environment)
+            classification = _classify_residue(chain_ok=residue_chain.ok)
+            residue_reasons = [
+                "segment has no manifest and is therefore not committed"]
+            if classification == RESIDUE_UNSAFE_OVER_LIMIT:
+                residue_reasons.append(
+                    "UNSAFE_OVER_LIMIT_RESIDUE: this residue's decoded size "
+                    "or record count exceeded the safety ceiling "
+                    f"({_MAX_RESIDUE_DECODED_BYTES} decoded bytes / "
+                    f"{_MAX_RESIDUE_DECODED_LINES} records) -- decompression "
+                    "was deliberately stopped early, so only a PARTIAL, "
+                    "capped prefix was read; this is a refusal to keep "
+                    "decompressing untrusted residue, not a report that the "
+                    "residue itself only holds this much evidence")
+            elif classification == RESIDUE_MALFORMED:
+                residue_reasons.append(
+                    "MALFORMED_RESIDUE: the event file is not a valid gzip "
+                    "stream at all -- a stray or corrupted file, not a real "
+                    "write that stopped partway through one")
+            elif classification == RESIDUE_TORN_PARTIAL:
+                residue_reasons.append(
+                    "TORN_PARTIAL_RESIDUE: only a partial prefix could be "
+                    "recovered -- the compressed stream ended before its "
+                    "own EOF, a decoded line was not parseable canonical "
+                    "JSON, or the recovered records do not chain (a "
+                    "deletion, insertion, reorder, or a copied record)")
+            v = SegmentVerdict(
+                seg_id, SegmentState.OPEN, False, residue_reasons,
+                None, len(residue_records))
+            v.chain_valid = residue_chain.ok
+            v.residue_classification = classification
+            return v
         return SegmentVerdict(
             seg_id, SegmentState.INVALID, False,
             ["no manifest: a segment without its commit record is not evidence, "
@@ -2877,18 +3299,37 @@ def _verify_archive_inner(root, *, environment: str, expected_archive_id,
             "segment_id": seg_id, "state": rv.state.value,
             "records_read": rv.records_read, "chain_valid": rv.chain_valid,
             "reasons": rv.reasons,
+            # KALSHI-ARCHIVE-CORE-REMEDIATION-003B A6: exposed here too, not
+            # only inside `reasons`' free text, so a caller reading this
+            # structured shape (rather than grepping strings) can branch on
+            # it directly.
+            "residue_classification": rv.residue_classification,
         })
     uncommitted_records_present = sum(
         d["records_read"] for d in uncommitted_detail)
     if uncommitted_records_present:
+        # KALSHI-ARCHIVE-CORE-REMEDIATION-003B A6: this warning used to
+        # name 'archive-adopt' as the resolution path -- but `archive-adopt`
+        # is bounded (by its own docstring, deliberately) to
+        # ORPHANED_COMMITTED_SEGMENT (a segment WITH a manifest the head
+        # does not mention) and structurally refuses EVERY uncommitted
+        # residue, every time, because manifest-less residue is not the
+        # state it exists for. That sent an operator to a command that
+        # cannot act on the state it was named for. No command in this
+        # codebase accepts manifest-less residue today -- so this says
+        # that plainly instead of naming one that does not apply.
         warnings.append(
             f"UNCOMMITTED_SEGMENT_RESIDUE: {uncommitted_records_present} "
             f"durable record(s) across {len(uncommitted_detail)} "
             "uncommitted segment(s) are on disk but not part of the "
-            "committed history -- never automatically adopted; resolve "
-            "with 'archive-adopt' (if this is real evidence a crash left "
-            "behind) or direct, reviewed operator access, not silently "
-            f"assumed benign: {uncommitted_detail}")
+            "committed history -- never automatically adopted. There is NO "
+            "operator command that accepts this state: 'archive-adopt' is "
+            "bounded to ORPHANED_COMMITTED_SEGMENT (a manifest-bearing "
+            "segment the head does not mention) and refuses manifest-less "
+            "residue like this unconditionally. Resolving it -- whether "
+            "that means letting the writer reopen and continue the "
+            "segment, or discarding it -- requires direct, reviewed "
+            f"operator access, not a scripted command: {uncommitted_detail}")
     if orphaned:
         reasons.append(
             f"ORPHANED_COMMITTED_SEGMENT: {orphaned} are committed evidence on "

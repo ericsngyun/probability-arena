@@ -174,14 +174,23 @@ class TestPredequeueGapEscapesProductionsOwnSecondSourcedCheck:
             "pre-dequeue window has been closed and this test should be "
             "updated to assert detection instead")
 
-        # `_measure_pending` sees nothing either -- the item already left
-        # the queue via `.get()` before the fault fired.
+        # KALSHI-ARCHIVE-CORE-REMEDIATION-003B A2 REPAIRED: `dequeued` above
+        # is UNCHANGED -- still 0, still never moved earlier, exactly as
+        # required. What changed is that the item is no longer invisible
+        # to `_measure_pending`: `_run` now durably claims the item (`self.
+        # _claimed`, set in the SAME statement as the queue removal) before
+        # anything else can happen to it, and `_measure_pending` counts a
+        # still-claimed item the same way it counts one still sitting in the
+        # queue. `clean()` therefore correctly refuses this loss.
         w._measure_pending()
-        assert w.accounting.pending == 0
-        assert w.accounting.clean() is True, (
-            "expected clean() to report True -- pending==0 and "
-            "failed_after_accept==0 -- which is exactly what makes this "
-            "loss publishable as close_status: 'clean'")
+        assert w.accounting.pending == 1, (
+            "expected the structurally-claimed item to be found and "
+            "counted as pending -- if this is 0 again, the A2 repair's "
+            "`_claimed` handoff is no longer being measured at close")
+        assert w.accounting.clean() is False, (
+            "expected clean() to report False now that the claimed-but-"
+            "undisposed item is counted as pending -- a real loss must "
+            "never present as close_status: 'clean'")
 
         # The INDEPENDENT ledger (never reads dequeued, written,
         # failed_after_accept via any derived/self-referential path) is the
@@ -193,15 +202,6 @@ class TestPredequeueGapEscapesProductionsOwnSecondSourcedCheck:
             f"this (it never reads `dequeued`): {report.to_dict()}")
         assert report.gap == 1
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="KALSHI-ARCHIVE-CORE-REMEDIATION-003B A2: the desired "
-        "property is that ANY writer-thread loss between queue.get() "
-        "returning and a terminal booking must be visible to production's "
-        "OWN dequeue_disposition_gap() check -- the one close() actually "
-        "gates on, with no test-side ledger required. 63bf0d1's counter "
-        "sits one statement too late to see the true window, so this "
-        "currently FAILS; it is the exact target for the eventual repair.")
     def test_desired_property_close_must_refuse_this_loss_on_its_own(
             self, tmp_path):
         root = tmp_path / "predequeue-desired"
