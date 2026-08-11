@@ -108,6 +108,16 @@ ENTRY_POINTS = (
 
 # The known finding this tool exists to reproduce and pin: A1's acceptance
 # text requires it appear explicitly, so it is asserted, not merely hoped for.
+#
+# KALSHI-ARCHIVE-CORE-REMEDIATION-003 defect A, deliberate ledger update:
+# this chain was THE FINDING. `verify_segment` no longer calls `file_sha256`
+# at all (both are replaced, at their one former call site, by
+# `evidence_fs.stat_and_sha256_bounded`), and `file_sha256` itself no longer
+# contains a raw `open(...)` (it now delegates to `evidence_fs.
+# sha256_bounded`). The tuple is left unmodified as the frozen historical
+# shape of the defect; the test that references it now asserts the chain is
+# ABSENT from the current inventory, proving the fix rather than merely
+# documenting the old defect.
 REQUIRED_CHAIN = ("verify_segment", "file_sha256", "open(...)")
 
 # --- manual bridge edges --------------------------------------------------
@@ -262,9 +272,28 @@ class _ModuleInfo:
                     bound = alias.asname or alias.name
                     # `from app.realtime import evidence_fs` binds a MODULE
                     # alias, not a name import -- the submodule becomes
-                    # importable as `evidence_fs.presence(...)`.
-                    full = f"{node.module}.{alias.name}" if node.module else alias.name
-                    self.name_imports[bound] = (node.module, alias.name)
+                    # importable as `evidence_fs.presence(...)`. This was
+                    # previously computed (`full`) and then never used: every
+                    # `from PACKAGE import SUBMODULE` was stored as a name
+                    # import regardless, which made `_resolve_call` treat
+                    # `evidence_fs.sha256_bounded(...)` as attribute access
+                    # on an unresolvable imported NAME rather than as a call
+                    # into a traversable module -- exactly backward for the
+                    # one import shape (`from app.realtime import
+                    # evidence_fs`) every canonical reader uses to reach the
+                    # reviewed evidence-filesystem abstraction. Fixed here:
+                    # if `PACKAGE.SUBMODULE` resolves to a module this tool
+                    # can traverse, `bound` is a module alias for it, not a
+                    # name import.
+                    full = f"{node.module}.{alias.name}"
+                    dotted_to_relpath = {
+                        m.replace("/", ".").removesuffix(".py"): m
+                        for m in TRAVERSABLE_MODULES
+                    }
+                    if full in dotted_to_relpath:
+                        self.module_aliases[bound] = full
+                    else:
+                        self.name_imports[bound] = (node.module, alias.name)
 
         _Collector().visit(self.tree)
 

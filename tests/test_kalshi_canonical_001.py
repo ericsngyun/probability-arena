@@ -136,6 +136,24 @@ class TestRefusals:
         with pytest.raises(cn.CanonicalError, match="no canonical representation"):
             cn.canonical_bytes({"x": Thing()})
 
+    def test_lone_surrogate_value_is_a_typed_canonical_error_not_a_crash(self):
+        """KALSHI-ARCHIVE-CORE-REMEDIATION-003 defect C: a lone UTF-16
+        surrogate (`"\\ud800"`) is legal JSON and round-trips through
+        `json.loads` as an ordinary `str`, but `str.encode("utf-8")` refuses
+        it with `UnicodeEncodeError` -- a `ValueError`, NOT a
+        `CanonicalError`. Before this fix, that error surfaced raw at
+        `canonical_bytes`'s final `.encode("utf-8")`, so `verify_chain`
+        (which catches only `CanonicalError`) crashed on any record
+        containing one rather than reporting a typed refusal."""
+        with pytest.raises(cn.CanonicalError, match="surrogate"):
+            cn.canonical_bytes("\ud800")
+        with pytest.raises(cn.CanonicalError, match="surrogate"):
+            cn.canonical_bytes({"x": "\ud800"})
+
+    def test_lone_surrogate_mapping_key_is_a_typed_canonical_error_not_a_crash(self):
+        with pytest.raises(cn.CanonicalError, match="surrogate"):
+            cn.canonical_bytes({"\ud800": "v"})
+
 
 class TestDeterminism:
     def test_key_order_does_not_affect_bytes(self):

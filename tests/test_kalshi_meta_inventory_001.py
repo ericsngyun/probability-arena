@@ -98,16 +98,46 @@ class TestA1CallGraphInventory:
         expected = {f"{m}::{q}" for m, q in cg.ENTRY_POINTS}
         assert enumerated == expected
 
-    def test_verify_segment_to_file_sha256_to_raw_open_is_explicit(self):
-        """A1's acceptance text: 'The known finding `verify_segment ->
-        file_sha256 -> raw open()` MUST appear explicitly in your inventory
-        output; if your tool does not surface it, your tool is wrong.'
+    def test_verify_segment_to_file_sha256_to_raw_open_is_no_longer_reachable(self):
+        """A1's original acceptance text required the finding `verify_segment
+        -> file_sha256 -> raw open()` to appear explicitly in the inventory.
+        KALSHI-ARCHIVE-CORE-REMEDIATION-003 defect A fixed it structurally:
+        `verify_segment` no longer calls `file_sha256` (both are replaced,
+        at their one former call site, by `evidence_fs.
+        stat_and_sha256_bounded`), and `file_sha256` no longer contains a
+        raw `open(...)` at all (it delegates to `evidence_fs.
+        sha256_bounded`). This is the deliberate ledger update: the same
+        frozen `cg.REQUIRED_CHAIN` tuple that used to be REQUIRED present is
+        now asserted ABSENT, proving the fix rather than silently dropping
+        the regression coverage.
         """
         inv = cg.load_committed_inventory()
         chain = cg.find_chain(inv, "verify_segment", "open")
-        assert chain == list(cg.REQUIRED_CHAIN), (
-            f"expected the chain {cg.REQUIRED_CHAIN!r} to be explicit in the "
-            f"inventory; got {chain!r}")
+        # `verify_segment` still reaches AN `open(...)` -- but now it is the
+        # ONE reviewed, allowlisted `os.open(...)` inside `evidence_fs.
+        # _open_verified_fd` (fd-based, O_NOFOLLOW, fstat-verified), not the
+        # historical `file_sha256` raw builtin `open(...)`. The chain no
+        # longer routes through `file_sha256` at all -- `verify_segment` and
+        # `file_sha256` do not call each other any more, both replaced at
+        # their one former call site by `evidence_fs.
+        # stat_and_sha256_bounded`.
+        assert chain != list(cg.REQUIRED_CHAIN), (
+            f"the historical defect chain {cg.REQUIRED_CHAIN!r} must be gone")
+        assert "file_sha256" not in (chain or []), (
+            f"verify_segment must no longer reach open() THROUGH "
+            f"file_sha256; got {chain!r}")
+        assert chain == ["verify_segment", "bounded_read", "_open_verified_fd",
+                         "os.open(...)"], (
+            f"expected verify_segment's open() to route through the "
+            f"reviewed evidence_fs primitive; got {chain!r}")
+        # And `file_sha256` itself no longer reaches a raw builtin
+        # `open(...)` from ANY entry point that traces through it -- it now
+        # reaches `evidence_fs`'s reviewed fd-based primitive instead.
+        fsha_key = "app/realtime/segment.py::file_sha256"
+        fsha_prims = {(p["namespace"], p["name"])
+                     for p in inv["entry_points"][fsha_key]["primitives"]}
+        assert ("<builtin>", "open") not in fsha_prims, (
+            f"file_sha256 still reaches a raw open(): {fsha_prims}")
 
     def test_classifications_are_from_the_closed_vocabulary(self):
         """FILESYSTEM ACCESS / CANONICAL ENCODING / STATE MUTATION /
@@ -290,10 +320,21 @@ class TestA2RedTeamGuard:
         comment in `ast_audit.py` and is necessarily human-reviewed, not
         asserted here.
         """
+        # KALSHI-ARCHIVE-CORE-REMEDIATION-003 defect A, deliberate ledger
+        # update: this set originally named FIVE newly-visible call sites,
+        # one of which (`verify_segment`'s `<expr>.stat(...)`) was the "not
+        # independently safe" reported finding -- corroborating evidence of
+        # the `root=None` containment-skip gap, sitting next to the
+        # already-named `file_sha256` raw `open()`. Defect A's structural
+        # fix removed BOTH calls from `verify_segment` entirely (replaced by
+        # one call to `evidence_fs.stat_and_sha256_bounded`), so there is no
+        # longer a `verify_segment` `<expr>.stat(...)` call site to review --
+        # its allowlist entry is gone, not merely re-justified, and this
+        # ledger is updated to match rather than left asserting a call site
+        # that no longer exists.
         expected_new_sites = {
             ("app/realtime/segment.py", "SegmentWriter.rotation_due", "<expr>.stat(...)"),
             ("app/realtime/segment.py", "SegmentWriter._close_stages", "<expr>.stat(...)"),
-            ("app/realtime/segment.py", "verify_segment", "<expr>.stat(...)"),
             ("app/realtime/segment.py", "_abandoned_residue", "<expr>.stat(...)"),
             ("app/realtime/evidence_fs.py", "open_bounded_gzip", "gzip.GzipFile(...)"),
         }
@@ -377,20 +418,23 @@ class TestA3ArgumentShapeMatrix:
         assert not hung_or_crashed, f"unbounded healthy-fixture cells: {hung_or_crashed}"
         assert not untyped_raises, f"raw builtin exceptions escaped: {untyped_raises}"
 
-    def test_root_none_on_symlinked_fifo_hangs_while_every_other_root_shape_refuses(
+    def test_root_none_on_symlinked_fifo_no_longer_hangs_it_now_raises(
             self, poisoned_layout):
-        """THE finding this milestone names explicitly: `verify_segment`'s
-        default (`root` omitted, deriving `_DERIVE_ROOT`) and every
-        EXPLICIT non-None root safely refuse a symlink-to-FIFO events path
-        (the containment check's `is_symlink()` component rejection fires
-        before any `open()`). `root=None` skips that ENTIRE containment
-        block, reaches `file_sha256`'s raw `open()`, and hangs.
+        """DELIBERATE LEDGER UPDATE (KALSHI-ARCHIVE-CORE-REMEDIATION-003
+        defect A): this test used to prove `verify_segment`'s default
+        (`root` omitted) and every EXPLICIT non-None root safely refuse a
+        symlink-to-FIFO events path, while `root=None` skipped the entire
+        containment block, reached `file_sha256`'s raw `open()`, and hung.
 
-        This is asserted, not merely printed, because "root=None is
-        documented and supported and hangs" is a production finding this
-        milestone exists to prove empirically — and REPORT, not fix (no
-        edit to `app/realtime/segment.py` happens anywhere in this repo
-        change).
+        Defect A's structural fix makes `root=None` UNREACHABLE as a way to
+        skip containment: it now raises a typed `SegmentError` immediately,
+        before any containment or filesystem work happens, rather than
+        silently deriving no containment at all. This test's own original
+        docstring anticipated exactly this outcome ("If this now
+        returns/raises instead of hanging, the underlying defect may have
+        been fixed elsewhere -- update this test's expectation
+        deliberately, do not silently loosen it") -- this is that update:
+        `root=None` now RAISES for every fixture, not just the poisoned one.
         """
         outcomes = {}
         for cell in am.build_poisoned_matrix():
@@ -410,14 +454,13 @@ class TestA3ArgumentShapeMatrix:
             assert outcome["detail"]["valid"] is False
 
         none_outcome = outcomes["none"]
-        assert none_outcome["classification"] == "TIMEOUT", (
-            "EXPECTED FINDING: verify_segment(..., root=None) against a "
-            "symlink-to-FIFO events path should hang past the parent-"
-            f"enforced timeout. Got {none_outcome['classification']!r} "
-            f"instead: {none_outcome}. If this now returns/raises instead "
-            "of hanging, the underlying defect may have been fixed "
-            "elsewhere -- update this test's expectation deliberately, "
-            "do not silently loosen it.")
+        assert none_outcome["classification"] == "RAISED", (
+            "root=None must now be refused with a typed exception before "
+            f"any containment/filesystem work happens; got "
+            f"{none_outcome['classification']!r}: {none_outcome}")
+        assert none_outcome["exception_type"] == "SegmentError", none_outcome
+        assert "root=None" in (none_outcome.get("exception_message") or ""), (
+            none_outcome)
 
     def test_driver_reports_typed_failures_not_silence(self, tmp_path):
         """A DIRECT unit test of `matrix_cell_driver.py`'s own exception

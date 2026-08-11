@@ -221,48 +221,45 @@ class TestNegativeControlNoDuplicateKeys:
 # =====================================================================
 
 class TestProductionIsSilentlyLossy:
-    """KNOWN DEFECT, pinned (deterministic -- always reproduces). If
-    production is changed to EXPLICITLY_REJECT duplicate-key-capable
-    mappings, or to represent them LOSSLESSLY, `classify_duplicate_key_
-    handling` will start returning something other than SILENTLY_LOSSY and
-    every assertion below will fail loudly, demanding this file be updated
-    -- which is the intended "known-defect ledger" behaviour."""
+    """DELIBERATE LEDGER UPDATE (KALSHI-ARCHIVE-CORE-REMEDIATION-003 defect
+    D): this class used to be a KNOWN DEFECT, pinned as deterministic
+    (production was SILENTLY_LOSSY). Defect D's structural fix adds an
+    explicit REJECTION policy -- a `seen_keys` set threaded through both
+    `segment._structural_reason`'s and `canonical._encode`'s Mapping
+    branches, checked against `.items()` (the raw source of truth both
+    already iterate) BEFORE any value is accepted or encoded. Production is
+    now EXPLICITLY_REJECTED, one of the two permissible outcomes this
+    harness's own docstring names -- these tests are updated to prove that,
+    not to weaken the property being checked."""
 
-    def test_classifier_detects_silently_lossy_at_the_encoder_layer(self):
+    def test_classifier_detects_explicit_rejection_at_the_gate(self):
         d = DuplicateKeyMapping([("a", "first"), ("a", "second")])
         report = classify_duplicate_key_handling(d)
-        assert report["verdict"] == "SILENTLY_LOSSY", report
-        assert report["gate_reason"] is None, (
-            "admission REFUSED this non-hostile mapping -- that would "
-            "actually be the EXPLICITLY_REJECTED outcome, which is "
-            "permissible; update this test's classification, don't "
-            "weaken it")
-        assert report["round_trip"] == {"a": "second"}, (
-            "expected last-wins collapse; if the shape of the loss "
-            "changed, update this pinned expectation deliberately")
-        assert report["lossy_keys"] == ["a"]
+        assert report["verdict"] == "EXPLICITLY_REJECTED", report
+        assert report["gate_reason"] is not None, (
+            "admission must refuse this non-hostile duplicate-key mapping "
+            "with a stated reason, not silently admit it")
+        assert "presented more than once" in report["gate_reason"]
 
-    def test_digest_is_computed_over_the_already_collapsed_value(self):
-        """The digest is internally self-consistent -- it is NOT what is
-        broken. What is broken is that the digest represents a value that
-        silently dropped information the caller believed was submitted.
-        Confirms the digest is stable/reproducible over the SAME mapping,
-        which rules out "the digest itself is flaky" as an alternative
-        explanation for anything downstream."""
+    def test_canonical_bytes_called_directly_also_refuses_it(self):
+        """The encoder enforces the same policy even bypassing admission
+        entirely -- symmetric with every other bound in `CapabilityLimits`
+        (see `TestSharedCapabilityContractCannotDiverge` in the encoder
+        fidelity harness): a standalone `canonical_bytes()` call must not
+        silently collapse a duplicate key just because nothing gated it
+        first."""
         d = DuplicateKeyMapping([("a", "first"), ("a", "second")])
-        assert cn.digest_hex(d) == cn.digest_hex(d)
-        only_second = {"a": "second"}
-        assert cn.digest_hex(d) == cn.digest_hex(only_second), (
-            "the duplicate-key mapping and a plain dict holding only the "
-            "SURVIVING value digest identically -- proof that 'first' "
-            "left no trace anywhere the digest could reveal it")
+        with pytest.raises(cn.CanonicalError, match="presented more than once"):
+            cn.canonical_bytes(d)
+        with pytest.raises(cn.CanonicalError, match="presented more than once"):
+            cn.digest_hex(d)
 
-    def test_producer_is_told_accepted_end_to_end_through_a_real_writer(
+    def test_producer_is_told_rejected_end_to_end_through_a_real_writer(
             self, tmp_path):
-        """The full pipeline: submit() accepts, close() reports clean,
-        verify_segment() reports VALID -- and the archived record only
-        ever held 'second'. Nothing in the accepted-evidence path ever
-        surfaces that 'first' existed."""
+        """The full pipeline now refuses at submission: the producer is
+        told NOT_CANONICAL, nothing is queued or written, and no evidence
+        for this record is ever durable -- the opposite of the old
+        signature (accepted, clean close, VALID verify, silent collapse)."""
         _init_archive(tmp_path)
         w = sg.SegmentWriter(tmp_path, environment="demo",
                              segment_id="seg-dup-key",
@@ -270,19 +267,14 @@ class TestProductionIsSilentlyLossy:
                              commit_to_head=False)
         dup = DuplicateKeyMapping([("a", "first"), ("a", "second")])
         producer_verdict = w.submit(_fields(0, dup))
-        assert producer_verdict is None, (
-            "producer told ACCEPTED -- the defect signature: no rejection "
-            "reason was ever returned for a value that just lost data")
+        assert producer_verdict == sg.RejectReason.NOT_CANONICAL, (
+            "expected the producer to be told the duplicate-key mapping "
+            f"was refused before acceptance; got {producer_verdict!r}")
         manifest = w.close()
-        assert manifest["close_status"] == "clean"
-        assert manifest["record_count"] == 1
-        verifier_verdict = sg.verify_segment(w.dir, environment="demo")
-        assert verifier_verdict.valid, verifier_verdict.reasons
-        records = sg.read_segment_records(w.events_path)
-        assert records[0]["raw_event"] == {"a": "second"}, (
-            "the durable, verified-VALID evidence holds only the SURVIVING "
-            "value -- 'first' is gone from every layer: gate, submit, "
-            "close, and verify all reported success")
+        assert manifest["close_status"] == "clean", (
+            "the SEGMENT is still clean -- nothing was ever admitted for "
+            "this record, so there is nothing for close() to lose")
+        assert manifest["record_count"] == 0
 
 
 # =====================================================================

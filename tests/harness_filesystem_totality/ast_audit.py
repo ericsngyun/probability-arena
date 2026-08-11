@@ -435,18 +435,24 @@ ALLOWLIST = {
     # a reader being handed an untrusted path.
     ("app/realtime/segment.py", "SegmentWriter._quarantine_abandoned_events", "<expr>.stat(...)"),
     ("app/realtime/segment.py", "SegmentWriter.read_manifest", "<expr>.read_bytes(...)"),
-    ("app/realtime/segment.py", "file_sha256", "open(...)"),
+    # KALSHI-ARCHIVE-CORE-REMEDIATION-003 defect A, FIXED: `file_sha256`'s
+    # raw `open(...)` (the named finding, `verify_segment -> file_sha256 ->
+    # open()`) is gone -- `file_sha256` now delegates entirely to
+    # `evidence_fs.sha256_bounded`, so there is nothing left to allowlist
+    # for it here. Left as a comment, not a silently-dropped line, so the
+    # history of what used to be here stays visible in the diff.
     ("app/realtime/segment.py", "publish_manifest", "<expr>.read_bytes(...)"),
     ("app/realtime/segment.py", "publish_manifest", "os.open(...)"),
     ("app/realtime/segment.py", "publish_manifest", "os.path.lexists(...)"),
 
-    # --- segment.py: read_segment_records -- unchanged; already correctly
-    # checked `is_file()` before reading (the property `_undecodable_tail_
-    # records`'s sibling call in `archive.py` was missing -- fixed by
-    # routing THAT call through `evidence_fs.bounded_read` instead, so it no
-    # longer appears as a raw call in `archive.py` at all).
-    ("app/realtime/segment.py", "read_segment_records", "<expr>.is_file(...)"),
-    ("app/realtime/segment.py", "read_segment_records", "<expr>.read_bytes(...)"),
+    # --- segment.py: read_segment_records -- KALSHI-ARCHIVE-CORE-
+    # REMEDIATION-003 defect A, FIXED: the `<expr>.is_file()` (check) then
+    # `<expr>.read_bytes()` (use) shape was a TOCTOU on the same
+    # symlink-to-FIFO/regular-file swap `verify_segment`'s containment block
+    # exists to refuse, with no size bound at all. Both calls are gone --
+    # `read_segment_records` now routes through `evidence_fs.bounded_read`
+    # (the fd-based, race-free, size-bounded primitive), matching the fix
+    # already applied to `archive.py`'s sibling call noted below.
 
     # --- segment.py: the outer enumeration loops now route through
     # `evidence_fs.safe_enumerate` (honest about EACCES; fixes finding #2)
@@ -469,10 +475,21 @@ ALLOWLIST = {
     # matching a candidate spelling of the target against the root with
     # `resolve` (twice: once for the root, once for a target that itself
     # exists); `safe_enumerate` uses `os.scandir` directly because it is
-    # honest about `EACCES`, unlike `Path.glob`; `bounded_read` uses
-    # `os.stat` (follows symlinks, to see what a chain ultimately resolves
-    # to) then a guarded `open` -- never called until the `stat` has already
-    # proven the target is a regular file under the size bound.
+    # honest about `EACCES`, unlike `Path.glob`.
+    #
+    # KALSHI-ARCHIVE-CORE-REMEDIATION-003 defect A, FIXED: `bounded_read`
+    # used to `os.stat(path)` (check) then a separately-guarded `open(path)`
+    # (use) -- a check-then-use TOCTOU, and `open()`/`Path.open()` follow a
+    # symlink at the final component regardless of what the earlier `stat`
+    # proved. `bounded_read`, `sha256_bounded` and `stat_and_sha256_bounded`
+    # now all route through `_open_verified_fd`: ONE `os.open(...,
+    # O_NOFOLLOW)` acquires the fd atomically (refusing a final-component
+    # symlink as part of the same syscall), then `os.fstat` proves the type
+    # ON THE FD -- not the path -- so nothing that happens to the name after
+    # the open can change what gets read. This is the ONE new raw-open call
+    # site in the whole evidence-path -- deliberately, since it is the
+    # reviewed primitive every canonical reader now goes through instead of
+    # calling `open()` itself.
     ("app/realtime/evidence_fs.py", "presence", "os.lstat(...)"),
     ("app/realtime/evidence_fs.py", "assert_contained", "<expr>.resolve(...)"),
     ("app/realtime/evidence_fs.py", "assert_contained", "<expr>.exists(...)"),
@@ -480,8 +497,7 @@ ALLOWLIST = {
     ("app/realtime/evidence_fs.py", "assert_contained", "<expr>.is_dir(...)"),
     ("app/realtime/evidence_fs.py", "safe_enumerate", "os.scandir(...)"),
     ("app/realtime/evidence_fs.py", "is_regular_file", "os.stat(...)"),
-    ("app/realtime/evidence_fs.py", "bounded_read", "os.stat(...)"),
-    ("app/realtime/evidence_fs.py", "bounded_read", "open(...)"),
+    ("app/realtime/evidence_fs.py", "_open_verified_fd", "os.open(...)"),
 
     # --- NEWLY VISIBLE, KALSHI-ARCHIVE-VERIFICATION-META-001 -- the five
     # call sites the ORIGINAL (pre-consolidation) scanner's narrower
@@ -517,24 +533,22 @@ ALLOWLIST = {
     # scanned" rather than silently skipping) -- no content is ever read.
     ("app/realtime/segment.py", "_abandoned_residue", "<expr>.stat(...)"),
 
-    # REPORTED FINDING, allowlisted as a KNOWN, TRACKED, UNFIXED gap (no
-    # production edit happens anywhere in this milestone) -- NOT
-    # independently safe. `events_path.stat()` sits inside `verify_segment`
-    # at the exact point A3's argument-shape matrix already proved is
-    # UNGUARDED when `root=None` is passed explicitly: the containment
-    # block above (`if root is not None: ...`) is skipped entirely for that
-    # call shape, so this `.stat()` runs with ZERO containment checking on
-    # a symlink-to-FIFO events path, immediately adjacent to (three lines
-    # before) the ALREADY-KNOWN `file_sha256` raw `open()` that is the named
-    # defect A3 reproduces as a hang. `.stat()` itself does not block on a
-    # FIFO (stat is metadata-only, unlike open+read), so it is not what
-    # causes the hang -- but its presence here is corroborating evidence of
-    # the SAME missing-containment root cause, not a separate, independent
-    # call site: this allowlist entry and the `file_sha256` entry above it
-    # under `segment.py` are two symptoms of the one `root=None` gap A3
-    # already pins with an executable, currently-passing (proving the
-    # defect reproduces) test.
-    ("app/realtime/segment.py", "verify_segment", "<expr>.stat(...)"),
+    # KALSHI-ARCHIVE-CORE-REMEDIATION-003 defect A, FIXED (both halves of
+    # this gap, together): `events_path.stat()` used to sit directly inside
+    # `verify_segment`, immediately adjacent to the also-now-fixed
+    # `file_sha256` raw `open()`, and ran with ZERO containment checking
+    # whenever `root=None` was passed explicitly (the containment block used
+    # to read `if root is not None: ...`, silently skipping itself for that
+    # one falsy value). Both halves are closed: (1) `root=None` now RAISES
+    # instead of skipping containment -- see `verify_segment`'s own
+    # docstring/comment -- so the containment block always runs before any
+    # read is reachable; (2) the raw `.stat()` + `file_sha256`'s raw `open()`
+    # are both gone, replaced by ONE call to
+    # `evidence_fs.stat_and_sha256_bounded`, which is a LOCAL function call
+    # in `segment.py` (not a direct `<expr>.stat(...)`/`open(...)` in this
+    # module at all) that itself routes through the fd-based
+    # `_open_verified_fd` primitive allowlisted above. There is deliberately
+    # nothing left to allowlist for `verify_segment` here.
 
     # SAFE -- operates on `io.BytesIO(data)`, an IN-MEMORY buffer already
     # produced by `bounded_read(path, ...)` two lines above, never on a

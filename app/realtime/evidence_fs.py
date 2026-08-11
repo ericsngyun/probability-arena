@@ -34,6 +34,7 @@ before the syscall that could hang or read without bound is ever reached.
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import os
 import stat as _stat
 from pathlib import Path
@@ -205,39 +206,165 @@ def is_regular_file(path) -> bool:
     return _stat.S_ISREG(st.st_mode)
 
 
-def bounded_read(path, *, max_bytes: int = DEFAULT_MAX_READ_BYTES) -> tuple:
-    """(data, reason). `data` is `None` iff `reason` is not `None`.
+def _open_verified_fd(path):
+    """(fd, stat_result, reason). `fd` and `stat_result` are `None` iff
+    `reason` is not `None`; a returned `fd` is the caller's to `os.close`.
 
-    Refuses anything that does not resolve (through at most the ordinary
-    symlink-following `os.stat` does) to a regular file BEFORE calling
-    `open()` -- so a FIFO, a socket, a device node, or a symlink to any of
-    those can never reach the `open()`/`read()` call that would block or
-    read forever. The declared size is checked before a single byte is read
-    (so a device node lying about its size, or an ordinary file that grew
-    past the bound, is refused up front), and the actual bytes read are
-    checked against the same bound again (so a file that grows WHILE it is
-    being read cannot exceed it either).
+    THE PRIMITIVE THAT CLOSES BOTH THE SHAPE AND THE RACE: `bounded_read`
+    used to `os.stat(path)` (check) and then separately `open(path, "rb")`
+    (use) -- a plain check-then-use, so a component swapped between the two
+    calls (a regular file replaced by a symlink to a FIFO, for instance)
+    made the stat's regular-file proof say nothing about what `open()`
+    actually opened. `open(path)`/`Path.open()` also follow a symlink at the
+    final component even when every path component up to it was already
+    proven safe by containment, so a swap at the LAST component specifically
+    bypassed a caller that had done everything else right.
+
+    `os.open(..., O_NOFOLLOW)` refuses a symlink at the final component
+    atomically as part of the same syscall that acquires the fd -- there is
+    no window between "look at the final component" and "open what's
+    there" for anything to swap. `O_NONBLOCK` means the open itself cannot
+    block even if the previous check somehow raced against a FIFO/device
+    swap (a regular file is unaffected by the flag; only a FIFO opened for
+    read would otherwise block until a writer attaches). The type proof
+    then runs `fstat` ON THE FD, not the path -- once a real regular-file fd
+    is obtained, nothing that happens to the name afterward (delete,
+    rename, re-symlink) can change what this reads, because reads through
+    an already-open fd are bound to the inode, not the path.
     """
     path = Path(path)
     try:
-        st = os.stat(path)
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW
+                     | os.O_CLOEXEC)
     except OSError as exc:
-        return None, f"{path.name} could not be examined: {exc!r}"
-    if not _stat.S_ISREG(st.st_mode):
-        return None, (f"{path.name} is not a regular file "
-                      f"(mode {_stat.S_IFMT(st.st_mode):#o})")
-    if st.st_size > max_bytes:
-        return None, (f"{path.name} is {st.st_size} bytes, over the "
-                      f"{max_bytes}-byte bound for a canonical evidence read")
+        return None, None, f"{path.name} could not be opened: {exc!r}"
     try:
-        with open(path, "rb") as fh:
-            data = fh.read(max_bytes + 1)
+        st = os.fstat(fd)
+    except OSError as exc:
+        os.close(fd)
+        return None, None, f"{path.name} could not be examined: {exc!r}"
+    if not _stat.S_ISREG(st.st_mode):
+        os.close(fd)
+        return None, None, (f"{path.name} is not a regular file "
+                            f"(mode {_stat.S_IFMT(st.st_mode):#o})")
+    return fd, st, None
+
+
+def bounded_read(path, *, max_bytes: int = DEFAULT_MAX_READ_BYTES) -> tuple:
+    """(data, reason). `data` is `None` iff `reason` is not `None`.
+
+    Routed entirely through `_open_verified_fd` -- see that primitive's
+    docstring for why an fd-based open-then-fstat closes the check-then-use
+    race that a stat-then-open shape cannot. The declared size is checked
+    before a single byte is read (so a device node lying about its size, or
+    an ordinary file that grew past the bound, is refused up front), and the
+    actual bytes read are checked against the same bound again (so a file
+    that grows WHILE it is being read cannot exceed it either).
+    """
+    path = Path(path)
+    fd, st, reason = _open_verified_fd(path)
+    if reason is not None:
+        return None, reason
+    try:
+        if st.st_size > max_bytes:
+            return None, (f"{path.name} is {st.st_size} bytes, over the "
+                          f"{max_bytes}-byte bound for a canonical evidence read")
+        chunks = []
+        total = 0
+        while True:
+            chunk = os.read(fd, 1 << 20)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > max_bytes:
+                return None, (f"{path.name} grew past the {max_bytes}-byte "
+                              "bound while it was being read")
+            chunks.append(chunk)
+        return b"".join(chunks), None
     except OSError as exc:
         return None, f"{path.name} could not be read: {exc!r}"
-    if len(data) > max_bytes:
-        return None, (f"{path.name} grew past the {max_bytes}-byte bound "
-                      "while it was being read")
-    return data, None
+    finally:
+        os.close(fd)
+
+
+def stat_and_sha256_bounded(path, *, max_bytes: int = DEFAULT_MAX_READ_BYTES) -> tuple:
+    """(size, hex_digest, reason). `size` and `hex_digest` are `None` iff
+    `reason` is not `None`.
+
+    A caller that needs BOTH the size and the digest of the same evidence
+    file (`verify_segment` checks `event_file_size_bytes` and
+    `event_file_sha256` against the same manifest) used to get them from two
+    SEPARATE filesystem calls (`Path.stat()` then `file_sha256`'s own
+    `open()`) -- two independent opportunities for the file under the name
+    to have changed between them, and, before this module, no shared
+    containment or regular-file proof between the two at all. This opens
+    ONCE, through `_open_verified_fd`, and reads the size from the SAME fd's
+    `fstat` that then gets hashed -- the size and the digest are provably of
+    the identical bytes.
+    """
+    path = Path(path)
+    fd, st, reason = _open_verified_fd(path)
+    if reason is not None:
+        return None, None, reason
+    try:
+        if st.st_size > max_bytes:
+            return None, None, (f"{path.name} is {st.st_size} bytes, over the "
+                                f"{max_bytes}-byte bound for a canonical evidence read")
+        h = hashlib.sha256()
+        total = 0
+        while True:
+            chunk = os.read(fd, 1 << 20)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > max_bytes:
+                return None, None, (f"{path.name} grew past the {max_bytes}-byte "
+                                    "bound while it was being hashed")
+            h.update(chunk)
+        if total != st.st_size:
+            return None, None, (f"{path.name} was {st.st_size} bytes at open "
+                                f"but {total} bytes were read (grew or shrank "
+                                "while being hashed)")
+        return st.st_size, h.hexdigest(), None
+    except OSError as exc:
+        return None, None, f"{path.name} could not be read: {exc!r}"
+    finally:
+        os.close(fd)
+
+
+def sha256_bounded(path, *, max_bytes: int = DEFAULT_MAX_READ_BYTES) -> tuple:
+    """(hex_digest, reason). The canonical replacement for a raw `open()` +
+    `hashlib.sha256()` loop: hashes a STREAM read through the same
+    fd-based, TOCTOU-free, size-bounded primitive as `bounded_read`, without
+    ever materializing the whole file in memory (unlike `bounded_read`,
+    which a hasher does not need to -- a segment's events file is exactly
+    the artifact `bounded_read`'s own DEFAULT_MAX_READ_BYTES docstring notes
+    can legitimately approach the bound).
+    """
+    path = Path(path)
+    fd, st, reason = _open_verified_fd(path)
+    if reason is not None:
+        return None, reason
+    try:
+        if st.st_size > max_bytes:
+            return None, (f"{path.name} is {st.st_size} bytes, over the "
+                          f"{max_bytes}-byte bound for a canonical evidence hash")
+        h = hashlib.sha256()
+        total = 0
+        while True:
+            chunk = os.read(fd, 1 << 20)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > max_bytes:
+                return None, (f"{path.name} grew past the {max_bytes}-byte "
+                              "bound while it was being hashed")
+            h.update(chunk)
+        return h.hexdigest(), None
+    except OSError as exc:
+        return None, f"{path.name} could not be read: {exc!r}"
+    finally:
+        os.close(fd)
 
 
 def open_bounded_gzip(path, *, max_bytes: int = DEFAULT_MAX_READ_BYTES):

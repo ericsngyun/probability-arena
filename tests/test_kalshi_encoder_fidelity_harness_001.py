@@ -339,6 +339,11 @@ class TestSharedCapabilityContractCannotDiverge:
         "MAX_DEPTH", "MAX_MAPPING_ELEMENTS", "MAX_SEQUENCE_ELEMENTS",
         "MAX_STRING_LENGTH", "MAX_DECIMAL_EXPONENT", "MAX_DECIMAL_DIGITS",
         "MAX_INT_BITS",
+        # KALSHI-ARCHIVE-CORE-REMEDIATION-003 defect B: the aggregate
+        # canonical-work budget is a bound of the SAME kind (admission's
+        # `_structural_reason` and the encoder's `_encode` each enforce
+        # their own copy) and must not be allowed to drift apart either.
+        "MAX_CANONICAL_WORK_UNITS",
     ])
     def test_segment_bound_is_the_same_object_as_the_encoder_bound(self, name):
         encoder_value = getattr(cn.CapabilityLimits, name)
@@ -899,15 +904,27 @@ except cn.CanonicalError as exc:
                              partition_identity="date=2026-08-08/hour=12",
                              subscription_metadata=deeply_nested)
 
-    def test_deep_metadata_mutated_after_construction_surfaces_as_SegmentError_at_close(
+    def test_deep_metadata_mutated_after_construction_is_inert_not_a_close_time_crash(
             self, tmp_path):
-        """Defense in depth for the same class of defect: even if
-        subscription_metadata is mutated in place AFTER construction (the
-        same live-reference hazard `submit()` has for event payloads, out of
-        this remediation's scope to fix generally), close()'s own
-        build_manifest -> digest_hex -> canonical_bytes call is bounded (A3)
-        and any CanonicalError it raises is normalised into a SegmentError,
-        never a bare RecursionError or an unbounded hang."""
+        """DELIBERATE LEDGER UPDATE (KALSHI-ARCHIVE-CORE-REMEDIATION-003
+        defect E): this test used to prove that mutating
+        `subscription_metadata` in place AFTER construction (the same
+        live-reference hazard `submit()` has for event payloads, called out
+        at the time as "out of this remediation's scope to fix generally")
+        still reached `close()`'s `build_manifest -> digest_hex ->
+        canonical_bytes` and surfaced as a bounded `SegmentError` rather than
+        a raw crash -- defense in depth for a hazard that was still live.
+
+        Defect E closed that hazard at its root instead of merely bounding
+        its symptom: `SegmentWriter.__init__` now stores an immutable
+        SNAPSHOT (`parse_canonical(canonical_bytes(metadata))`), sharing no
+        container with the caller's `subscription_metadata` argument. A
+        mutation to the caller's object after construction can no longer
+        reach the writer at all -- not even to fail loudly at close() -- so
+        this now proves the mutation is INERT: close() succeeds normally,
+        using the value validated at construction, exactly as if the
+        mutation had never happened.
+        """
         _init_archive(tmp_path)
         metadata = {"x": 1}
         w = sg.SegmentWriter(tmp_path, environment="demo",
@@ -919,8 +936,10 @@ except cn.CanonicalError as exc:
         for _ in range(3000):
             deeply_nested = {"n": deeply_nested}
         metadata["n"] = deeply_nested       # mutate the live dict in place
-        with pytest.raises(sg.SegmentError, match="subscription_metadata"):
-            w.close()
+        manifest = w.close()
+        assert manifest["subscription_metadata"] == {"x": 1}, (
+            "the post-construction mutation must never reach the published "
+            "manifest")
 
     @pytest.mark.skipif(not EXHAUSTIVE, reason=(
         "1,000,000-element walk; run with KALSHI_HARNESS_EXHAUSTIVE=1 for "

@@ -191,6 +191,24 @@ class TestOrderedChain:
         v = sg.verify_chain(records_of(w), segment_id="other-seg", environment=ENV)
         assert not v.ok
 
+    def test_a_lone_surrogate_tamper_is_a_typed_refusal_not_a_crash(self, tmp_path):
+        """KALSHI-ARCHIVE-CORE-REMEDIATION-003 defect C: a lone UTF-16
+        surrogate (`"\\ud800"`) is legal JSON and round-trips from a
+        committed file. Before the fix, a record whose `raw_event` had been
+        tampered to carry one made `verify_record_self_digest` ->
+        `digest_hex` -> `canonical_bytes` raise a raw `UnicodeEncodeError`
+        (a `ValueError`) instead of `CanonicalError`, which crashed
+        `verify_chain` -- it catches only `CanonicalError`/
+        `RecordSchemaError` -- exactly the "tamper-evidence path that
+        crashes on attacker-controlled input" anti-pattern `canonical.py`'s
+        own docstring names."""
+        w, _ = write_segment(tmp_path, n=6)
+        recs = [dict(r) for r in records_of(w)]
+        recs[3]["raw_event"] = {"evil": "\ud800"}
+        v = sg.verify_chain(recs, segment_id=SEG, environment=ENV)
+        assert not v.ok
+        assert "surrogate" in (v.reason or ""), v.reason
+
 
 # --- Gate 4: manifest --------------------------------------------------------------
 class TestManifest:
@@ -202,6 +220,39 @@ class TestManifest:
             assert f in manifest, f
         assert manifest["record_count"] == 5
         assert sg.verify_manifest_self_digest(manifest)
+        assert sg.verify_segment(w.dir, environment=ENV).valid
+
+    def test_caller_mutation_of_subscription_metadata_after_construction_is_inert(
+            self, tmp_path):
+        """KALSHI-ARCHIVE-CORE-REMEDIATION-003 defect E: `self.
+        subscription_metadata = metadata` used to retain the CALLER's live
+        reference. Before the fix, mutating the caller's dict AFTER
+        constructing the writer -- even benignly -- silently landed in the
+        published manifest with a self-consistent digest that verified
+        VALID, and a hostile mutation could inject content that was never
+        admitted through `non_canonical_reason`. This proves the accepted
+        representation is an immutable SNAPSHOT, not a shared reference."""
+        _init_archive(tmp_path)
+        meta = {"market_tickers": ["KXA"]}
+        w = sg.SegmentWriter(tmp_path, environment=ENV, segment_id=SEG,
+                             partition_identity="date=2026-08-08/hour=12",
+                             subscription_metadata=meta)
+        # Mutate the CALLER's object after construction -- a relabel and an
+        # injection, neither of which should ever be able to reach the
+        # writer or the manifest it will publish.
+        meta["market_tickers"] = ["TAMPERED"]
+        meta["injected"] = "never admitted through non_canonical_reason"
+        assert w.subscription_metadata == {"market_tickers": ["KXA"]}, (
+            "the writer's stored subscription_metadata must not reflect a "
+            "mutation made to the caller's object after construction")
+        for i in range(3):
+            assert w.submit(fields(i)) is None
+        manifest = w.close()
+        assert manifest["subscription_metadata"] == {
+            "market_tickers": ["KXA"]}, (
+            "the PUBLISHED manifest must hold the value validated at "
+            "construction, not whatever the caller's object mutated into "
+            "afterward")
         assert sg.verify_segment(w.dir, environment=ENV).valid
 
     @pytest.mark.parametrize("attack", [
@@ -420,3 +471,45 @@ class TestArchiveVerification:
         assert out["verdict"] == "INVALID"
         assert out["closed_segments"] == 1
         assert out["invalid_segments"] + out["open_segments"] == 1
+
+    def test_durable_uncommitted_residue_is_typed_and_visible_not_invisible(
+            self, tmp_path):
+        """KALSHI-ARCHIVE-CORE-REMEDIATION-003 defect G (part 2): a segment
+        with durable, chain-valid records that never published a manifest
+        (a writer crash before close(), or -- before defect G part 1's fix
+        -- a permanently bricked `_inflight` seal) used to be visible ONLY
+        as a bare id in `uncommitted_segments`; `records_read` summed only
+        the COMMITTED segments, so it read 0 regardless of how much real
+        evidence was sitting on disk, and `verdict`/`reasons` gave no
+        indication anything needed attention. This proves the residue is
+        now a TYPED, inspectable state -- without being automatically
+        blessed as committed evidence (still VALID, still not part of
+        `records_expected`/`segments`)."""
+        _init_archive(tmp_path)
+        w = sg.SegmentWriter(tmp_path, environment=ENV, segment_id="seg-crashed",
+                             partition_identity="p", commit_to_head=False,
+                             flush_every=1)
+        for i in range(20):
+            assert w.submit(fields(i)) is None
+        # Simulate a crash: the writer thread has flushed real records, but
+        # close()/publish_manifest() never ran -- no manifest exists.
+        import time
+        deadline = time.monotonic() + 2.0
+        while w.accounting.written < 20 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert not w.manifest_path.exists()
+
+        out = sg.verify_archive(tmp_path, environment=ENV)
+        assert out["verdict"] == "VALID", (
+            "an in-progress/crashed-but-uncommitted segment must not, by "
+            f"itself, invalidate the archive: {out}")
+        assert out["uncommitted_segments"] == ["seg-crashed"]
+        assert out["uncommitted_records_present"] == 20, (
+            "the durable record count on disk must be visible, not 0 -- "
+            f"{out}")
+        detail = out["uncommitted_segment_detail"]
+        assert len(detail) == 1
+        assert detail[0]["segment_id"] == "seg-crashed"
+        assert detail[0]["records_read"] == 20
+        assert any("UNCOMMITTED_SEGMENT_RESIDUE" in w_ for w_ in out["warnings"]), (
+            f"expected a loud, non-gating warning naming the residue: {out}")

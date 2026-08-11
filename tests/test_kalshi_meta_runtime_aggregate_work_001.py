@@ -170,13 +170,21 @@ class TestAggregateWorkPropertyViolatedByProduction:
 # =====================================================================
 
 class TestAdmissionWalkHangsAtReviewerDepth:
-    def test_depth_61_admission_walk_never_returns_within_a_generous_bound(self):
-        """"25 objects becomes 67 MB in 31 s, 61 objects never returns" --
-        the reviewer's own numbers. This reproduces the SAME call path the
-        review found: `SegmentWriter.submit()` -> `_admit()` ->
+    def test_depth_61_admission_walk_now_returns_a_bounded_refusal(self):
+        """DELIBERATE LEDGER UPDATE (KALSHI-ARCHIVE-CORE-REMEDIATION-003
+        defect B): "25 objects becomes 67 MB in 31 s, 61 objects never
+        returns" was the reviewer's own finding, reproducing the SAME call
+        path the review found: `SegmentWriter.submit()` -> `_admit()` ->
         `canonicalize_or_reason()` -> `non_canonical_reason`'s structural
-        walk, which is what actually runs PRE-ACCEPTANCE, inside
-        `_inflight` (see the A8 harness for the consequence of that)."""
+        walk, which runs PRE-ACCEPTANCE, inside `_inflight`. Defect B added
+        a shared, TOTAL work budget (`canonical.WorkBudget`, threaded
+        through `segment._structural_reason` as well as `canonical._encode`)
+        that is consumed once per node VISITED regardless of local
+        depth/width legality -- at depth 61 the total node count vastly
+        exceeds `CapabilityLimits.MAX_CANONICAL_WORK_UNITS` long before the
+        walk would otherwise still be running, so this now returns quickly
+        with a typed refusal instead of hanging.
+        """
         script = """
 from app.realtime import segment as sg
 x = 0
@@ -186,13 +194,15 @@ r = sg.non_canonical_reason(x)
 print("RESULT:" + repr(r))
 """
         v = run_with_parent_timeout(script, timeout_s=4.0, repo_root=REPO_ROOT)
-        assert v.classification == "TIMEOUT_FAIL", (
-            f"expected the admission walk at depth 61 to still be running "
-            f"after 4s (the reviewer's own finding: 'never returns'); got "
+        assert v.classification == "COMPLETED", (
+            f"expected the admission walk at depth 61 to return quickly "
+            f"with a bounded refusal now that defect B is fixed; got "
             f"{v.classification} instead (stdout={v.stdout!r} "
-            f"stderr={v.stderr[-300:]!r}). If production now bounds "
-            "aggregate work, update this test to assert a fast, bounded "
-            "refusal instead -- do not weaken it to pass on a technicality")
+            f"stderr={v.stderr[-300:]!r})")
+        assert "RESULT:None" not in v.stdout, (
+            "depth 61 must be REFUSED (aggregate work over budget), not "
+            f"silently admitted: {v.stdout!r}")
+        assert "exceeded the total aggregate work bound" in v.stdout, v.stdout
 
     def test_a_moderate_depth_the_walk_can_still_finish_at_is_a_true_negative(self):
         """Calibration control: depth 15 must NOT time out, or the assertion

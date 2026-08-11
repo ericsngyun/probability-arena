@@ -156,10 +156,25 @@ def _locate_final_inflight_decrement(func) -> int:
     return first_lineno + idxs[-1]
 
 
-class TestInflightBricksThePartitionPermanently:
-    """The full reproduction: prior durable evidence untouched, this
-    segment permanently unclosable, the partition bricked, and the whole
-    archive still reporting VALID with empty reasons."""
+class TestInflightNoLongerBricksThePartitionPermanently:
+    """DELIBERATE LEDGER UPDATE (KALSHI-ARCHIVE-CORE-REMEDIATION-003 defect
+    G): this class used to be `TestInflightBricksThePartitionPermanently`,
+    proving `_inflight` residue past the seal deadline made `close()` raise
+    (with the flock and gzip handle held forever) and the segment's 6
+    records permanently invisible to `verify_archive`, indistinguishable
+    from a healthy, never-closed segment.
+
+    Defect G's fix mirrors the precedent `admission_holds()`/
+    `admission_drift` already established: `_seal_admissions()` now RECORDS
+    unreconciled `_inflight` residue as a diagnostic (`inflight_drift`)
+    instead of raising, and `close()` proceeds. The seal call also moved
+    INSIDE `_close_locked`'s try, so even a hypothetical future failure path
+    through it still releases the lock. This test now proves the segment
+    reaches a real terminal state (CLOSED, clean, durable, visible to
+    `verify_archive`) instead of being bricked -- a strictly BETTER outcome
+    than "fails fast with the lock released": the records are not lost at
+    all.
+    """
 
     def test_full_reproduction(self, tmp_path):
         root = tmp_path / "brick"
@@ -198,120 +213,87 @@ class TestInflightBricksThePartitionPermanently:
         assert escaped is not None, (
             "expected the injected fault to escape submit() -- if it "
             "didn't fire, the injection target moved")
-        # THE DIAGNOSTIC VARIABLE IS NOW PERMANENTLY WRONG.
+        # THE DIAGNOSTIC VARIABLE IS STUCK -- no longer PERMANENTLY wrong,
+        # because close() no longer depends on it reaching zero.
         assert w._inflight > 0, (
             "expected _inflight to be stuck above zero after the missed "
             "decrement")
         stuck_at = w._inflight
 
-        # --- close() fails, and takes roughly the seal deadline to do so
-        # (~ enqueue_timeout_s + 5.0s) -- it is not instantaneous, it
-        # genuinely waits, which is part of what makes this an operational
-        # brick and not merely a fast-failing error. ---
+        # --- close() now SUCCEEDS: it still genuinely waits out the seal
+        # deadline (~ enqueue_timeout_s + 5.0s) before treating the residue
+        # as a non-fatal drift, so this is not instantaneous -- but it no
+        # longer raises, and the segment reaches CLOSED. ---
         t0 = time.monotonic()
-        with pytest.raises(sg.SegmentError, match="still inside the admission"):
-            w.close()
+        manifest = w.close()
         elapsed = time.monotonic() - t0
         assert elapsed >= 4.5, (
             f"close() returned in {elapsed:.2f}s -- too fast to have "
             "actually waited out the seal deadline; the reproduction may "
             "not be exercising the real _seal_admissions() wait")
+        assert manifest["close_status"] == "clean", manifest
+        assert w.state is sg.SegmentState.CLOSED
 
-        # --- PERMANENT: nothing decremented _inflight during that wait,
-        # and nothing else in SegmentWriter ever decrements it outside the
-        # two source locations `_locate_final_inflight_decrement`-adjacent
-        # code already executed (both already ran: this call's own, and
-        # the sealed-rejection branch, which was never taken). A second
-        # close() call would recompute a fresh ~5s deadline and fail
-        # identically -- asserted structurally here (no external state
-        # changed that could possibly unstick it) rather than by paying a
-        # second ~5s wait in every run of this suite. ---
-        assert w._inflight == stuck_at, (
-            "expected _inflight to remain stuck at the same value after "
-            "the failed close() attempt -- if it changed, some new path "
-            "decrements it and this reproduction is stale")
-        assert w.state is sg.SegmentState.OPEN, (
-            "close() bailed out inside _seal_admissions(), BEFORE ever "
-            "reaching the code that would set state to CLOSING/INVALID/"
-            "CLOSED -- the writer's own diagnostic state still claims "
-            "OPEN, indistinguishable from a healthy, never-closed segment")
+        # --- The diagnostic residue is RECORDED, not silently dropped --
+        # mirroring `admission_drift`'s existing precedent exactly. ---
+        assert w.inflight_drift == stuck_at, (
+            f"expected inflight_drift to record the stuck _inflight count "
+            f"({stuck_at}); got {w.inflight_drift!r}")
 
-        # --- The flock is retained: no successor writer, in this process
-        # or any other, can ever open this segment id again. ---
-        with pytest.raises(sg.SegmentError, match="already has a LIVE writer"):
-            sg.SegmentWriter(root, environment=ENV, segment_id="seg-stuck",
-                             partition_identity="p-stuck", commit_to_head=True)
-
-        # --- ~185-record-class truncation: whatever was submitted since
-        # the last periodic flush is sitting unflushed inside the gzip
-        # stream, invisible to any reader, because the gzip handle is
-        # never closed (close() bailed out before reaching that stage). A
-        # `flush_every` default of 256 with only 6 submissions here means
-        # NONE of them have been flushed -- the whole segment's content is
-        # invisible on disk right now, standing in for the review's
-        # partial-truncation finding at any scale. ---
+        # --- No truncation: all 6 records (5 ordinary + the faulted one,
+        # which was still durably enqueued and written -- only its
+        # bookkeeping decrement was skipped) are readable on disk. ---
         on_disk = sg.read_segment_records(w.events_path)
-        assert len(on_disk) < w.accounting.written, (
-            f"expected the on-disk readable record count ({len(on_disk)}) "
-            f"to undercount what the writer believes it wrote "
-            f"({w.accounting.written}) -- the gzip handle is still open "
-            "and its buffered tail was never flushed")
+        assert len(on_disk) == w.accounting.written == 6, (
+            f"expected all 6 records durably flushed and readable; got "
+            f"{len(on_disk)} on disk, accounting.written={w.accounting.written}")
 
-        # --- No operator command exists to recover this. `recover_current_
-        # head` operates on the ARCHIVE HEAD (genesis/generation/pointer
-        # triple), not on a live SegmentWriter's in-memory `_inflight` --
-        # there is no public API anywhere in this module that resets it. ---
-        public_writer_api = {name for name in dir(sg.SegmentWriter)
-                             if not name.startswith("_")}
-        assert not any("inflight" in name.lower() or "recover" in name.lower()
-                      or "reset" in name.lower() for name in public_writer_api), (
-            f"expected no public recovery surface on SegmentWriter for "
-            f"this condition; found candidates in {sorted(public_writer_api)}"
-            " -- if one now exists, this finding may already be fixed; "
-            "update this test to exercise and assert the recovery path "
-            "instead of asserting its absence")
-
-        # --- THE HEADLINE FINDING: verify_archive over the WHOLE ARCHIVE
-        # still reports VALID with EMPTY reasons. The 5 records from
-        # `seg-good` are the durable, chain-valid evidence; `seg-stuck`'s
-        # manifest was never published, so it is not part of the committed
-        # history at all -- neither missing (nothing commits it) nor
-        # invalid (it was never evidence to begin with). It is simply
-        # absent from the verdict, exactly as the review describes. ---
+        # --- THE HEADLINE FINDING, INVERTED: verify_archive over the WHOLE
+        # ARCHIVE now reports the FULL 11 records (5 from seg-good + 6 from
+        # seg-stuck) as VALID -- seg-stuck is no longer invisible. ---
         post_report = sg.verify_archive(root, environment=ENV)
         assert post_report["verdict"] == "VALID", post_report
-        assert post_report["reasons"] == [], post_report
-        assert post_report["records_read"] == 5, (
-            "the 5 durably committed records from seg-good remain exactly "
-            "as valid as before the fault -- the bug is total invisibility "
-            "of seg-stuck, not corruption of seg-good")
+        assert post_report["records_read"] == 11, (
+            "expected BOTH segments' records visible and valid -- the "
+            "defect this test used to prove (total invisibility of "
+            "seg-stuck) is fixed")
 
-        # Detected BY OBSERVABLE OUTCOME, independent of _inflight's exact
-        # line or even its name: durable valid records exist, close()
-        # cannot succeed, and no operator command exists to recover.
-        durable_valid_records_exist = post_report["records_read"] > 0
-        close_cannot_succeed = True          # proven by the raises block above
-        no_recovery_command_exists = True    # proven by the public-API sweep above
-        assert (durable_valid_records_exist and close_cannot_succeed
-               and no_recovery_command_exists), (
-            "this is the exact failure CLASS this test exists to detect")
+        # --- The flock is RELEASED: a successor writer for a DIFFERENT
+        # segment id in the same partition is unaffected (this segment id
+        # is CLOSED, not held open), proving the lock is not leaked. ---
+        w2 = sg.SegmentWriter(root, environment=ENV, segment_id="seg-after-stuck",
+                              partition_identity="p-stuck-2", commit_to_head=False)
+        assert w2.submit(fields(0)) is None
+        w2.close()
 
 
 class TestDiagnosticStateInventoryAssertions:
     """One executable assertion per inventory row above, so the table is
     not merely prose."""
 
-    def test_inflight_can_block_close(self, tmp_path):
-        """Restated minimally: `_seal_admissions()` runs FIRST inside
-        `close()`, unconditionally, and can raise before anything else in
-        `close()` ever executes."""
-        src = inspect.getsource(sg.SegmentWriter.close)
-        seal_idx = src.index("self._seal_admissions()")
-        state_check_idx = src.index("SegmentState.INVALID")
-        assert seal_idx < state_check_idx, (
-            "_seal_admissions() must run before the INVALID-state branch "
-            "for this inventory row's claim to hold -- if the order "
-            "changed, re-examine whether _inflight can still block close()")
+    def test_inflight_can_no_longer_block_close(self, tmp_path):
+        """DELIBERATE LEDGER UPDATE (defect G): `_seal_admissions()` still
+        runs first, unconditionally, inside `_close_locked()` -- but it no
+        longer RAISES past the seal deadline (it records `inflight_drift`
+        and returns), and it now runs INSIDE `_close_locked`'s try/except
+        rather than before it, so even a hypothetical failure there
+        releases the lock. Restated structurally: the source no longer
+        contains the raise this inventory row used to name."""
+        src = inspect.getsource(sg.SegmentWriter._seal_admissions)
+        assert "raise SegmentError" not in src, (
+            "_seal_admissions must not raise past the seal deadline any "
+            "more -- residue is recorded as inflight_drift and close() "
+            "proceeds")
+        close_src = inspect.getsource(sg.SegmentWriter._close_locked)
+        seal_idx = close_src.index("self._seal_admissions()")
+        try_idx = close_src.index("try:")
+        # `rindex`, not `index`: the code's own comment prose mentions
+        # "except BaseException:" descriptively before the real clause.
+        except_idx = close_src.rindex("except BaseException:")
+        assert try_idx < seal_idx < except_idx, (
+            "_seal_admissions() must run INSIDE _close_locked's try/except "
+            "so ANY failure there still releases the lock -- if the shape "
+            "changed, re-examine whether _inflight can brick close() again")
 
     def test_admission_holds_does_not_gate_close_post_a6(self, tmp_path):
         root = tmp_path / "admission-does-not-gate"

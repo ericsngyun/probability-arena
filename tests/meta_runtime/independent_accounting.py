@@ -164,13 +164,24 @@ class DurableDisposition:
 
 
 def read_durable_disposition(writer) -> DurableDisposition:
-    # MUTATION: derived from the SAME tautological source A7's
-    # own docstring names as the thing this function exists to
-    # be independent of.
+    """KALSHI-ARCHIVE-CORE-REMEDIATION-003 defect F, deliberate ledger
+    update: this used to read `writer.accounting.accepted` -- the SAME
+    tautological, derived property this module's own docstring names as the
+    thing it exists to be independent of. It happened to still catch the
+    `_run`-gap fault numerically (the live `accepted` property's queue-depth
+    read excludes an already-dequeued item the same way a direct
+    `_queue.qsize()` read would), which is exactly the "first attempt that
+    didn't demonstrate a real hole" shape this milestone's own docs warn
+    about elsewhere -- coincidental agreement, not structural independence.
+    Reads `written`/`failed_after_accept` directly (both incremented only on
+    the writer thread, at the moment of an actual outcome) and the queue
+    depth directly via `_queue.qsize()`, exactly as the module docstring
+    always specified.
+    """
     return DurableDisposition(
-        written=writer.accounting.accepted,
-        failed_after_accept=0,
-        queue_depth_now=0)
+        written=writer.accounting.written,
+        failed_after_accept=writer.accounting.failed_after_accept,
+        queue_depth_now=writer._queue.qsize())
 
 
 @dataclass

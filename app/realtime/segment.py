@@ -54,6 +54,7 @@ from app.realtime.canonical import (
     CANONICAL_SCHEMA_VERSION,
     CanonicalError,
     CapabilityLimits,
+    WorkBudget,
     canonical_bytes,
     canonical_datetime,
     digest_hex,
@@ -275,6 +276,7 @@ _MAX_SEQUENCE_ELEMENTS = CapabilityLimits.MAX_SEQUENCE_ELEMENTS
 _MAX_MAPPING_ELEMENTS = CapabilityLimits.MAX_MAPPING_ELEMENTS
 _MAX_STRING_LENGTH = CapabilityLimits.MAX_STRING_LENGTH
 _MAX_DEPTH = CapabilityLimits.MAX_DEPTH
+_MAX_CANONICAL_WORK_UNITS = CapabilityLimits.MAX_CANONICAL_WORK_UNITS
 
 
 class SegmentState(str, Enum):
@@ -364,8 +366,22 @@ def non_canonical_reason(value, _path: str = "") -> str | None:
     return reason
 
 
-def _structural_reason(value, _path: str = "", _depth: int = 0) -> str | None:
+def _structural_reason(value, _path: str = "", _depth: int = 0,
+                       _budget: WorkBudget | None = None) -> str | None:
     """Why this value cannot become evidence, or None. Type walk, no encoding.
+
+    `_budget` is the AGGREGATE work counter (defect B): shared across the
+    WHOLE recursive walk, so it bounds TOTAL nodes visited, not merely each
+    container's own local element count. Per-container bounds
+    (`_MAX_MAPPING_ELEMENTS`, `_MAX_SEQUENCE_ELEMENTS`, `_MAX_DEPTH`) stay
+    legal at every level for `x = 0; for _ in range(60): x = [x, x]` (depth
+    60 < 256, width 2 per list) while the SAME two-element list is shared
+    and re-walked from both parents at every level -- 2**60 total nodes,
+    entirely invisible to a check that only ever looks at the container
+    immediately in front of it. This walk runs pre-acceptance, inside
+    `_inflight` (see `_admit`), so an unbounded admission walk is exactly as
+    much a defect as an unbounded encode -- see `canonical.WorkBudget` for
+    the mirrored bound applied to `canonical_bytes` itself.
 
     `canonical.py` refuses `float` because a float written bare and re-read as
     `Decimal` re-serialises differently, so its digest can never match. That
@@ -382,6 +398,12 @@ def _structural_reason(value, _path: str = "", _depth: int = 0) -> str | None:
     Python float reaching submission is a contract violation, and this says so
     before anything is accepted.
     """
+    if _budget is None:
+        _budget = WorkBudget(_MAX_CANONICAL_WORK_UNITS)
+    try:
+        _budget.consume(_path or "value")
+    except CanonicalError as exc:
+        return str(exc)
     if isinstance(value, bool) or value is None:
         return None
     if isinstance(value, float):
@@ -453,6 +475,7 @@ def _structural_reason(value, _path: str = "", _depth: int = 0) -> str | None:
         # this closes: both container branches now count their own elements
         # rather than trusting `__len__`.
         count = 0
+        seen_keys: set = set()
         for k, v in value.items():
             count += 1
             if count > _MAX_MAPPING_ELEMENTS:
@@ -460,6 +483,20 @@ def _structural_reason(value, _path: str = "", _depth: int = 0) -> str | None:
                         f"{_MAX_MAPPING_ELEMENTS} elements")
             if not isinstance(k, str):
                 return f"{_path or 'value'} has a non-string key {k!r}"
+            # KALSHI-ARCHIVE-CORE-REMEDIATION-003 defect D, mirrored on the
+            # admission side: an ORDINARY (non-hostile) Mapping backed by an
+            # association list can present the same logical string key more
+            # than once via `.items()` -- the raw source of truth this walk
+            # (and `_encode`'s Mapping branch) both iterate. Rejected here,
+            # BEFORE acceptance, matching the encoder's policy exactly (see
+            # `canonical._encode`'s Mapping branch) -- PREFER REJECTION,
+            # never accept-and-silently-drop.
+            if k in seen_keys:
+                return (f"{_path or 'value'} key {k!r} is presented more "
+                        "than once by this Mapping's .items(); duplicate "
+                        "logical keys are refused rather than silently "
+                        "collapsed to the last value")
+            seen_keys.add(k)
             # KEYS go through the same check as values. The UTF-8 guard was
             # added to the value branch only, so a lone surrogate in a KEY
             # position — which `json.loads` decodes without complaint — was
@@ -472,11 +509,11 @@ def _structural_reason(value, _path: str = "", _depth: int = 0) -> str | None:
             # end-to-end throughput 946 -> 362 rec/s on venue-controlled input.
             # The invariant is established by the single root-level encode.
             key_problem = _structural_reason(
-                k, f"{_path}.<key>" if _path else "<key>", _depth + 1)
+                k, f"{_path}.<key>" if _path else "<key>", _depth + 1, _budget)
             if key_problem is not None:
                 return key_problem
             found = _structural_reason(
-                v, f"{_path}.{k}" if _path else k, _depth + 1)
+                v, f"{_path}.{k}" if _path else k, _depth + 1, _budget)
             if found is not None:
                 return found
         return None
@@ -497,7 +534,7 @@ def _structural_reason(value, _path: str = "", _depth: int = 0) -> str | None:
             if i >= _MAX_SEQUENCE_ELEMENTS:
                 return (f"{_path or 'value'} has more than "
                         f"{_MAX_SEQUENCE_ELEMENTS} elements")
-            found = _structural_reason(v, f"{_path}[{i}]", _depth + 1)
+            found = _structural_reason(v, f"{_path}[{i}]", _depth + 1, _budget)
             if found is not None:
                 return found
         return None
@@ -749,11 +786,27 @@ def verify_manifest_self_digest(manifest: dict) -> bool:
 
 
 def file_sha256(path: Path) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as fh:
-        for chunk in iter(lambda: fh.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
+    """Routed through `evidence_fs.sha256_bounded`, not a raw `open()`.
+
+    `verify_segment -> file_sha256 -> open(...)` was A1's named finding: a
+    raw `open()` two hops below a canonical entry point, bypassing every
+    containment/regular-file check the reviewed evidence-filesystem
+    abstraction exists to enforce, reachable via `verify_segment`'s
+    `root=None` shape (which used to skip its containment block entirely)
+    and via a stat-then-open TOCTOU race in every other shape. Routing here
+    through `sha256_bounded` closes the class: this function can no longer
+    reach the filesystem except through the fd-based, race-free,
+    size-bounded primitive.
+
+    Raises `SegmentError` (a typed archive exception, not a raw `OSError`)
+    on any refusal, so a caller that used to catch `OSError` around this
+    call keeps working -- `SegmentError` is what every other canonical
+    reader in this module already raises for an evidence-access refusal.
+    """
+    digest, reason = evidence_fs.sha256_bounded(path)
+    if reason is not None:
+        raise SegmentError(f"{path} could not be hashed: {reason}")
+    return digest
 
 
 def safe_segment_id(segment_id: str) -> str:
@@ -814,6 +867,27 @@ class WriterAccounting:
     failed_after_accept: int = 0      # accepted, then the writer could not write it
     pending: int = 0                  # accepted, never drained. 0 at a clean close
     rejections: dict = field(default_factory=dict)
+
+    # KALSHI-ARCHIVE-CORE-REMEDIATION-003 defect F: an INDEPENDENT
+    # observation of admission, restored WITHOUT reopening the A6 race.
+    # `accepted` stays derived (`written + failed_after_accept + pending +
+    # live`) -- A6's fix for the interrupted-increment window is correct and
+    # stays -- but a derived identity can never disagree with the formula
+    # that DEFINES it, so an item that vanishes from ALL THREE of `written`/
+    # `failed_after_accept`/`pending` simultaneously is invisible to
+    # `disposition_holds()`/`reconciles()` BY CONSTRUCTION. `dequeued` is
+    # sourced from a genuinely DIFFERENT moment on the writer thread: `_run`
+    # increments it immediately after `self._queue.get()` succeeds -- before
+    # the `try:` guarding `self._write_one(item)` even begins -- so it books
+    # the item the instant it is irreversibly removed from the queue,
+    # independently of whatever outcome (or non-outcome) follows. `_run`'s
+    # `queue.get()` and `task_done()` sit OUTSIDE its `except BaseException`;
+    # this increment sits INSIDE that same exposed window, deliberately, so
+    # it survives exactly the fault that `written`/`failed_after_accept`
+    # cannot: an exception landing between the dequeue and the write attempt
+    # kills the thread before EITHER of those ever move, but `dequeued` has
+    # already recorded the item.
+    dequeued: int = 0
 
     # Not a durability field: a live, read-only hook into the writer's queue
     # depth, so `accepted` reflects events sitting in the queue BEFORE close()
@@ -876,15 +950,35 @@ class WriterAccounting:
         """
         return self.pending == 0 and self.failed_after_accept == 0
 
+    def dequeue_disposition_gap(self) -> int:
+        """`dequeued - (written + failed_after_accept)`. ZERO for a healthy
+        writer -- every item the writer thread ever removed from the queue
+        reaches a terminal outcome (written or failed) before the thread can
+        die, by the time this is checked at close (after the thread is
+        joined, so nothing is still "in flight" between dequeue and
+        outcome). NONZERO is genuine, otherwise-invisible loss: an item
+        durably dequeued and then lost with no terminal booking anywhere --
+        not `written`, not `failed_after_accept`, and (having already left
+        the queue) not `pending` either. This is independent of `pending` by
+        construction: `pending` counts items that were NEVER dequeued;
+        `dequeued` counts items the queue itself can no longer prove exist.
+        The two cannot be derived from each other, which is what makes a
+        disagreement here a real, second-sourced finding rather than a
+        restatement of `disposition_holds()`'s tautology.
+        """
+        return self.dequeued - (self.written + self.failed_after_accept)
+
     def to_dict(self) -> dict:
         return {"attempted": self.attempted,
                 "rejected_before_accept": self.rejected_before_accept,
                 "accepted": self.accepted, "written": self.written,
                 "failed_after_accept": self.failed_after_accept,
-                "pending": self.pending, "rejections": dict(self.rejections),
+                "pending": self.pending, "dequeued": self.dequeued,
+                "rejections": dict(self.rejections),
                 "admission_holds": self.admission_holds(),
                 "disposition_holds": self.disposition_holds(),
-                "clean": self.clean()}
+                "clean": self.clean(),
+                "dequeue_disposition_gap": self.dequeue_disposition_gap()}
 
 
 class SegmentWriter:
@@ -933,7 +1027,22 @@ class SegmentWriter:
             raise SegmentError(
                 f"subscription_metadata is not canonically representable: "
                 f"{bad}")
-        self.subscription_metadata = metadata
+        # KALSHI-ARCHIVE-CORE-REMEDIATION-003 defect E: `self.
+        # subscription_metadata = metadata` used to retain the CALLER's live
+        # reference -- validated once, at construction, but never snapshotted,
+        # so a caller mutating its own dict AFTER construction silently
+        # mutated the manifest this writer will publish at close(). A benign
+        # mutation landed in the manifest with a self-consistent digest that
+        # verified VALID; a hostile one could inject content that was NEVER
+        # admitted through `non_canonical_reason` above. The same principle
+        # `_admit` already applies to every SUBMITTED record --
+        # `parse_canonical(canonical_bytes(value))`, reconstructing the
+        # accepted value from its own canonical bytes rather than keeping the
+        # producer's live object -- applies here too: the stored
+        # representation is a fresh structure built from the validated bytes,
+        # sharing no container with the caller's `subscription_metadata`
+        # argument, so no later mutation of THAT object can reach it.
+        self.subscription_metadata = parse_canonical(canonical_bytes(metadata))
         self.archive_identity = archive_identity
         # The archive this writer is configured for. A root that holds a
         # different archive_id is not this archive, however consistent it looks
@@ -1012,6 +1121,12 @@ class SegmentWriter:
         # is false. Never gates publication — see `_close_stages`.
         self.admission_drift = False
         self.admission_drift_detail: dict | None = None
+        # KALSHI-ARCHIVE-CORE-REMEDIATION-003 defect G: the SAME "diagnostic
+        # residue must not permanently brick close()" principle
+        # `admission_drift` already established for `admission_holds()`,
+        # applied to `_inflight`. Never gates publication -- see
+        # `_seal_admissions`.
+        self.inflight_drift: int | None = None
         # Injection seams. Production leaves both None; tests use them to slow
         # the writer or fail a specific durability stage without weakening the
         # real fsync path.
@@ -1350,6 +1465,15 @@ class SegmentWriter:
                 if self._shutdown.is_set() and self._queue.empty():
                     return
                 continue
+            # KALSHI-ARCHIVE-CORE-REMEDIATION-003 defect F: booked the
+            # INSTANT the item is irreversibly removed from the queue --
+            # deliberately BEFORE the `try:` below, in the one gap `_run`'s
+            # own exception handling does not cover. `queue.get()` already
+            # returned; if a fault lands anywhere from here through the end
+            # of `_write_one`/`task_done()`, `dequeued` is the one place
+            # that still remembers this item existed.
+            with self._lock:
+                self.accounting.dequeued += 1
             try:
                 self._write_one(item)
             except BaseException as exc:            # noqa: BLE001 - recorded
@@ -1408,25 +1532,6 @@ class SegmentWriter:
         with self._close_lock:
             if self.state is SegmentState.CLOSED:
                 return self.read_manifest()
-            self._seal_admissions()
-            if self.state is SegmentState.INVALID:
-                # Seal the disposition too. This branch short-circuited before
-                # the drain ever ran, so a writer-thread failure left every
-                # still-queued event — 197 of 200 in the reviewer's probe — in
-                # no terminal stage at all, and whether it did depended on a
-                # race between two lines in `_run`.
-                self._shutdown.set()
-                thread = getattr(self, "_thread", None)
-                if thread is not None and thread.is_alive():
-                    thread.join(timeout=1.0)
-                self._measure_pending()
-                # Release here too. This is the path a mid-stream writer error
-                # takes, and it was the one path still leaking ownership —
-                # leaving the partition unwritable by every future process.
-                self._release_lock()
-                raise SegmentError(
-                    f"segment is INVALID and cannot be closed: "
-                    f"{self._writer_error!r} {self.accounting.to_dict()}")
             return self._close_locked()
 
     def _seal_admissions(self) -> None:
@@ -1437,6 +1542,21 @@ class SegmentWriter:
         `_pending_waiters` (which only counted producers blocked on a full
         queue), so close() reconciled against a counter that was still moving.
         Sealing is idempotent — close() is reachable from several threads.
+
+        KALSHI-ARCHIVE-CORE-REMEDIATION-003 defect G: unreconciled
+        `_inflight` residue used to RAISE past the seal deadline -- and, from
+        `close()`'s OLD shape, that raise happened OUTSIDE `_close_locked`'s
+        try/except, so the flock and the still-open gzip handle were never
+        released. `close()` (and therefore any operator recovery path built
+        on it) permanently depended on this diagnostic counter reaching
+        zero, forever, with no way out. Mirrors `_close_stages`'s own
+        precedent for `admission_holds()` (see `admission_drift`): residue
+        here is RECORDED as a diagnostic (`inflight_drift`), not fatal, and
+        the close sequence proceeds -- by this point the seal deadline
+        (`enqueue_timeout + 5.0`, already generous) has passed, so a
+        producer still showing as "inside" is a leaked counter (its own
+        thread died or was interrupted before decrementing), not one still
+        genuinely executing concurrently with what follows.
         """
         with self._admission:
             self._sealed = True
@@ -1446,13 +1566,9 @@ class SegmentWriter:
                 if self._inflight == 0:
                     return
             if time.monotonic() > deadline:
-                # Never silently continue with producers still inside. The
-                # accounting that follows would be exactly the torn snapshot
-                # this exists to prevent.
-                raise SegmentError(
-                    f"{self._inflight} producer(s) are still inside the "
-                    "admission protocol after the seal deadline; refusing to "
-                    "reconcile against a counter that is still moving")
+                with self._admission:
+                    self.inflight_drift = self._inflight
+                return
             time.sleep(0.002)
 
     def _measure_pending(self) -> int:
@@ -1470,6 +1586,29 @@ class SegmentWriter:
 
     def _close_locked(self) -> dict:
         try:
+            # KALSHI-ARCHIVE-CORE-REMEDIATION-003 defect G: `_seal_admissions`
+            # (and the INVALID-writer short-circuit that used to sit beside
+            # it in `close()`) now run INSIDE this try, not before it, so
+            # ANY failure from either path -- including the seal deadline,
+            # which used to raise straight out of `close()` with the flock
+            # and the gzip handle still open forever -- reaches the SAME
+            # `except BaseException: self._release_lock()` every other
+            # close-time failure already does.
+            self._seal_admissions()
+            if self.state is SegmentState.INVALID:
+                # This branch short-circuited before the drain ever ran, so a
+                # writer-thread failure left every still-queued event — 197 of
+                # 200 in the reviewer's probe — in no terminal stage at all,
+                # and whether it did depended on a race between two lines in
+                # `_run`.
+                self._shutdown.set()
+                thread = getattr(self, "_thread", None)
+                if thread is not None and thread.is_alive():
+                    thread.join(timeout=1.0)
+                self._measure_pending()
+                raise SegmentError(
+                    f"segment is INVALID and cannot be closed: "
+                    f"{self._writer_error!r} {self.accounting.to_dict()}")
             return self._close_stages()
         except BaseException:
             # Ownership must not leak on ANY failure path, or one mid-stream
@@ -1518,13 +1657,32 @@ class SegmentWriter:
         # `admission_holds()`. An accepted-but-unwritten event is a loss the
         # producer was told did not happen, and it must never appear behind
         # close_status "clean": that check stays fatal.
-        if not snapshot.clean():
+        #
+        # KALSHI-ARCHIVE-CORE-REMEDIATION-003 defect F: `clean()` alone can
+        # UNDERCOUNT a genuine writer-thread loss (the `_run`-gap race: an
+        # item dequeued and then lost before either `written` or
+        # `failed_after_accept` ever moves is invisible to BOTH of them, so
+        # `pending`'s queue-measurement -- which only sees items that were
+        # NEVER dequeued -- reports one fewer lost item than actually
+        # happened). `dequeue_disposition_gap()` is the independent,
+        # second-sourced check: it disagrees with `written +
+        # failed_after_accept` exactly when this happens, and gates
+        # publication too -- a genuine writer-side loss must never present a
+        # clean close just because the derived/queue-measured side of the
+        # accounting cannot see it.
+        independent_gap = snapshot.dequeue_disposition_gap()
+        if not snapshot.clean() or independent_gap != 0:
             self.state = SegmentState.INVALID
+            gap_detail = (
+                f" independent accounting shows {independent_gap} "
+                "additional item(s) durably dequeued and then lost with no "
+                "terminal booking anywhere (writer-thread run-gap);"
+                if independent_gap else "")
             raise SegmentError(
                 f"{snapshot.failed_after_accept} accepted event(s) were "
-                f"not written and {snapshot.pending} were never drained; "
-                "refusing to publish this segment as a clean close: "
-                f"{snapshot.to_dict()}")
+                f"not written and {snapshot.pending} were never drained;"
+                f"{gap_detail} refusing to publish this segment as a clean "
+                f"close: {snapshot.to_dict()}")
         # A6 CORE PRINCIPLE: the durable/queued event state is authoritative;
         # a DIAGNOSTIC counter must never be able to make already-durable
         # evidence disappear. `admission_holds()` can still be false — a real
@@ -1562,9 +1720,13 @@ class SegmentWriter:
             self._release_lock()
             raise SegmentError(f"event-file durability failed: {exc!r}") from exc
 
-        # Reconcile what we believe we wrote against what is on disk.
-        size = self.events_path.stat().st_size
-        file_hash = file_sha256(self.events_path)
+        # Reconcile what we believe we wrote against what is on disk. Single
+        # fd-based read for size+digest -- see `evidence_fs.
+        # stat_and_sha256_bounded`.
+        size, file_hash, why = evidence_fs.stat_and_sha256_bounded(self.events_path)
+        if why is not None:
+            self.state = SegmentState.INVALID
+            raise SegmentError(f"reconciliation could not read the event file: {why}")
         on_disk = read_segment_records(self.events_path)
         if len(on_disk) != self.accounting.written:
             self.state = SegmentState.INVALID
@@ -1895,13 +2057,19 @@ def read_segment_records(events_path: Path) -> list:
     import zlib
 
     events_path = Path(events_path)
-    try:
-        if not events_path.is_file():
-            return []
-        data = events_path.read_bytes()
-    except OSError:
-        # Mode-0, a directory in place of the file, or any other filesystem
-        # refusal. A reader that raises here takes the whole verdict down.
+    # Routed through `evidence_fs.bounded_read`: the previous shape
+    # (`events_path.is_file()` then `events_path.read_bytes()`) was a
+    # check-then-use TOCTOU on the SAME symlink-to-FIFO/regular-file swap
+    # `verify_segment`'s containment block exists to refuse, plus no size
+    # bound at all -- a 1.5 GiB events file was read whole into memory here
+    # even though `evidence_fs.bounded_read` refuses the same artifact at
+    # 1 GiB everywhere else in this module.
+    data, why = evidence_fs.bounded_read(events_path)
+    if why is not None:
+        # Missing file, a directory in place of it, a non-regular-file
+        # refusal, or over the bound -- a reader that raises here takes the
+        # whole verdict down, so this stays the same total, non-raising
+        # empty-list contract the previous `except OSError: return []` had.
         return []
     text = ""
     while data:
@@ -2072,20 +2240,34 @@ def verify_segment(directory, *, environment: str, allow_open: bool = False,
     # safe behaviour the thing you have to remember to ask for is how the one
     # in-module production caller ended up omitting it. `<root>/env=<name>/
     # segment=<id>` is the layout, so the root is two levels up.
+    #
+    # `root=None` is NOT a supported way to skip containment. It used to be:
+    # `if root is not None:` let a caller pass `root=None` explicitly and
+    # silently disable the entire containment-and-symlink block below,
+    # reaching `file_sha256`'s raw `open()` (before this milestone's fix) on
+    # a symlink-to-FIFO events path with zero containment checking -- a
+    # documented, reachable public argument shape that hung forever. There is
+    # no legitimate reason for a canonical verifier to run unbounded, so the
+    # sentinel meaning "derive" and the value meaning "explicitly skip" are
+    # no longer the same falsy check: an explicit `None` is refused outright.
     if root is _DERIVE_ROOT:
         root = directory.parent.parent
-    if root is not None:
-        for path in (events_path, manifest_path):
-            present, why = _presence(path)
-            if why is not None:
-                return SegmentVerdict(seg_id, SegmentState.INVALID, False, [why])
-            if not present:
-                continue
-            reason = containment_reason(root, path)
-            if reason is not None:
-                return SegmentVerdict(
-                    seg_id, SegmentState.INVALID, False,
-                    [f"{path.name} is not bounded by the archive root: {reason}"])
+    elif root is None:
+        raise SegmentError(
+            "verify_segment(root=None) is refused: None is not a supported "
+            "way to skip containment checking. Omit `root` to derive it, or "
+            "pass the archive root explicitly.")
+    for path in (events_path, manifest_path):
+        present, why = _presence(path)
+        if why is not None:
+            return SegmentVerdict(seg_id, SegmentState.INVALID, False, [why])
+        if not present:
+            continue
+        reason = containment_reason(root, path)
+        if reason is not None:
+            return SegmentVerdict(
+                seg_id, SegmentState.INVALID, False,
+                [f"{path.name} is not bounded by the archive root: {reason}"])
 
     # THESE are the calls that actually raise. The previous fix wrapped
     # `os.path.lexists`, which swallows OSError internally and can never raise,
@@ -2169,14 +2351,18 @@ def verify_segment(directory, *, environment: str, allow_open: bool = False,
         if not ok:
             reasons.append(f"{name} does not match the manifest")
 
-    try:
-        size = events_path.stat().st_size
-        actual_digest = file_sha256(events_path)
-    except OSError as exc:
+    # A SINGLE fd-based read proves the size and the digest are of the
+    # identical bytes (see `evidence_fs.stat_and_sha256_bounded`) -- the
+    # previous shape (`events_path.stat()` then `file_sha256`'s own
+    # `open()`) was two independent filesystem accesses, each its own
+    # TOCTOU window, only one of which routed through the reviewed
+    # evidence-filesystem abstraction at all.
+    size, actual_digest, why = evidence_fs.stat_and_sha256_bounded(events_path)
+    if why is not None:
         # A mode-0 or directory events file used to raise straight out of the
         # public verifier and out of `recover_current_head`, so the documented
         # repair path died with a raw OSError that no operator tool catches.
-        reasons.append(f"event file is unreadable ({type(exc).__name__}: {exc})")
+        reasons.append(f"event file is unreadable ({why})")
         v.valid = False
         v.state = SegmentState.INVALID
         return v
@@ -2367,6 +2553,7 @@ def _empty_verdict(environment: str, **over) -> dict:
            "head_state": None, "head_generation": None, "head_digest": None,
            "generations_present": [], "segments": 0, "closed_segments": 0,
            "open_segments": 0, "uncommitted_segments": [],
+           "uncommitted_segment_detail": [], "uncommitted_records_present": 0,
            "abandoned_segments": [], "invalid_segments": 0,
            "orphaned_committed_segments": [], "records_expected": 0,
            "records_read": 0, "segment_verdicts": [], "reasons": [],
@@ -2661,6 +2848,47 @@ def _verify_archive_inner(root, *, environment: str, expected_archive_id,
             f"determined ({unexaminable[:3]}); an evidence directory the "
             "verifier cannot examine is never certified as absent")
     uncommitted = sorted(s for s in discovered if s not in orphaned)
+    # `warnings` is initialized HERE, before the residue-diagnostics below,
+    # rather than at its historical spot beside `_abandoned_residue` --
+    # both write into the SAME list now.
+    warnings: list = []
+    # KALSHI-ARCHIVE-CORE-REMEDIATION-003 defect G (part 2): a durable,
+    # chain-valid, but never-manifested segment (the review's "3,001
+    # durable chain-valid records that never published a manifest") used to
+    # be visible ONLY as a bare id in `uncommitted_segments` -- no record
+    # count, no chain-validity, `records_read` summed only the COMMITTED
+    # segments so it stayed 0 regardless of how much real evidence was
+    # sitting right there, and the overall `verdict` stayed VALID with
+    # EMPTY `reasons`. That is "structurally ignoring it": nothing in the
+    # returned shape distinguished "an empty stub directory" from "3,001
+    # real records an operator needs to resolve". This does NOT
+    # automatically bless the residue as committed evidence (it still never
+    # enters `expected`/`results`/`records_expected` -- only the head can do
+    # that) and does NOT gate `verdict` (an in-progress OPEN segment from a
+    # live collector is a completely ordinary state, not a defect) -- it
+    # makes the residue INSPECTABLE as a typed per-segment state instead of
+    # a name with no properties.
+    uncommitted_detail = []
+    for seg_id in uncommitted:
+        residue_dir = discovered[seg_id]
+        rv = verify_segment(residue_dir, environment=environment,
+                            allow_open=True, root=root)
+        uncommitted_detail.append({
+            "segment_id": seg_id, "state": rv.state.value,
+            "records_read": rv.records_read, "chain_valid": rv.chain_valid,
+            "reasons": rv.reasons,
+        })
+    uncommitted_records_present = sum(
+        d["records_read"] for d in uncommitted_detail)
+    if uncommitted_records_present:
+        warnings.append(
+            f"UNCOMMITTED_SEGMENT_RESIDUE: {uncommitted_records_present} "
+            f"durable record(s) across {len(uncommitted_detail)} "
+            "uncommitted segment(s) are on disk but not part of the "
+            "committed history -- never automatically adopted; resolve "
+            "with 'archive-adopt' (if this is real evidence a crash left "
+            "behind) or direct, reviewed operator access, not silently "
+            f"assumed benign: {uncommitted_detail}")
     if orphaned:
         reasons.append(
             f"ORPHANED_COMMITTED_SEGMENT: {orphaned} are committed evidence on "
@@ -2687,7 +2915,6 @@ def _verify_archive_inner(root, *, environment: str, expected_archive_id,
     # `read_verified()` then refused untouched, fully committed segments. It is
     # not evidence and it cannot hide a deletion, so it is a warning.
     residue, residue_errors = _abandoned_residue(env_dir)
-    warnings = []
     if residue:
         warnings.append(
             f"ABANDONED_EVIDENCE: {len(residue)} quarantined event file(s) "
@@ -2710,6 +2937,14 @@ def _verify_archive_inner(root, *, environment: str, expected_archive_id,
         closed_segments=len([r for r in results if r.state is SegmentState.CLOSED]),
         open_segments=len(uncommitted),
         uncommitted_segments=uncommitted,
+        # KALSHI-ARCHIVE-CORE-REMEDIATION-003 defect G (part 2): the TYPED
+        # per-segment state `uncommitted_segments` (a bare id list) never
+        # carried -- one entry per id in `uncommitted`, each independently
+        # verified with `allow_open=True` so a durable-but-never-manifested
+        # segment's record count and chain validity are inspectable, not
+        # merely its existence.
+        uncommitted_segment_detail=uncommitted_detail,
+        uncommitted_records_present=uncommitted_records_present,
         # Every segment directory, not the residue of `discovered.pop(...)`.
         # Quarantine happens when a crashed segment id is REUSED, and the
         # successor then commits it — so the residue always lands in a
