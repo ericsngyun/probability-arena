@@ -551,30 +551,33 @@ class TestSurvivalLabels:
         assert out["final"] is True
         assert out["details"]["finality"] == "observed_terminal"
 
-    def test_not_final_when_window_closed_but_evidence_still_within_retention(
+    def test_final_when_window_closed_and_evidence_provably_missing(
         self, session,
     ):
-        """CRYPTO-COVERAGE-REPAIR-001 B5 regression pin — the defect this
-        fix removes: age alone used to set `final=True` the instant the 24h
-        window closed, with NO regard for whether the evidence had actually
-        been observed. Because `exclude_final=True` is exactly what the
-        scheduled reconciler uses to pick which tokens to revisit, that
-        permanently wrote off any token whose evidence simply hadn't been
-        reconciled yet — the review that opened this milestone measured
-        this at 27.9% of the backlog. Here the 24h window has closed (37h
-        old) with NO evidence at all, but the closing edge (anchor + 36h)
-        has not yet aged past `crypto_retention_days` (7 days default) — the
-        evidence, if it exists, has not been pruned yet and a future
-        reconciliation pass could still recover it. `final` must stay
-        False so the token is NOT excluded from future passes."""
+        """CRYPTO-BACKLOG-SELECTION-AND-OPERATOR-PATH-001 B2 fix (replaces
+        the old `still_recoverable` regression pin, which an independent
+        review disproved). Here the 24h window has closed (37h old) with NO
+        tick evidence at all, and the closing edge (anchor + 36h) has not
+        yet aged past `crypto_retention_days` — so this is NOT the
+        `retention_lost` case. But `make_sources(token)` here is exactly
+        what `_load_sources` would have loaded for real: EVERY tick this
+        token has as of `now`, unfiltered by time. This call has therefore
+        already exhaustively searched for a qualifying 24h tick and found
+        none — and because every future tick gets `observed_at=now()` at
+        write time (always AFTER this already-closed window), no future
+        pass can ever find one either. The label is proven permanently
+        unobtainable THIS call, not merely un-reconciled, so `final=True`
+        is the honest answer, with `finality="permanently_missing_evidence"`
+        distinguishing it from a real measurement (`observed_terminal`) and
+        from pruned evidence (`retention_lost`)."""
         anchor = NOW - timedelta(hours=37)
         token = add_token(session, first_seen=anchor)
         out = recorder().compute_survival(
             self._birth(anchor), make_sources(token), NOW
         )
         assert out["labels"]["survived_24h"] is None
-        assert out["final"] is False
-        assert out["details"]["finality"] == "still_recoverable"
+        assert out["final"] is True
+        assert out["details"]["finality"] == "permanently_missing_evidence"
 
     def test_final_once_evidence_window_is_truly_retention_lost(self, session):
         """CRYPTO-COVERAGE-REPAIR-001 B5 — once the 24h window's closing

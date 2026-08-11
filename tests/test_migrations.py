@@ -4,7 +4,14 @@ from alembic.config import Config
 from sqlalchemy import create_engine, inspect, text
 
 from app.config import get_settings
-from app.db import PROJECT_ROOT, Base, MigrationRequiredError, ensure_schema_current, run_migrations
+from app.db import (
+    PROJECT_ROOT,
+    Base,
+    MigrationRequiredError,
+    SchemaAheadOfCodeError,
+    ensure_schema_current,
+    run_migrations,
+)
 
 
 def _columns(url: str, table: str) -> set[str]:
@@ -792,6 +799,80 @@ def test_ensure_schema_current_rejects_unrecognized_mode_value_fails_closed(
 
     # Nothing was written — the DB file was never even created/migrated.
     assert _current_rev_of(url) is None
+
+
+# --- CRYPTO-BACKLOG-SELECTION-AND-OPERATOR-PATH-001 B8 ------------------------
+# AHEAD vs BEHIND: a database whose stamped revision the code doesn't even
+# have a migration script for (e.g. `0028` stamped, then the code deploy
+# that added it reverted) must NOT raise the same `MigrationRequiredError`
+# as a genuinely BEHIND database — that error's remediation text
+# ("`alembic upgrade head`") is a no-op in the AHEAD case, so an operator
+# following it loops forever.
+
+def test_ensure_schema_current_raises_distinct_error_when_database_is_ahead_of_code(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.delenv("MIGRATION_MODE", raising=False)
+    get_settings.cache_clear()
+
+    url = f"sqlite:///{tmp_path}/ahead.db"
+    run_migrations(url)  # bring to this code's real head
+    engine = create_engine(url)
+    try:
+        with engine.begin() as conn:
+            # Simulate a revision this code's alembic/versions/ has no
+            # script for at all — the exact 0028-applied-then-reverted
+            # shape, without depending on 0028 actually existing here.
+            conn.execute(text(
+                "UPDATE alembic_version SET version_num = "
+                "'9999_future_revision_not_in_this_code'"
+            ))
+    finally:
+        engine.dispose()
+    assert _current_rev_of(url) == "9999_future_revision_not_in_this_code"
+
+    try:
+        with pytest.raises(SchemaAheadOfCodeError) as exc_info:
+            ensure_schema_current(url)
+    finally:
+        get_settings.cache_clear()
+
+    message = str(exc_info.value)
+    assert "SCHEMA_AHEAD_OF_CODE" in message
+    assert "9999_future_revision_not_in_this_code" in message
+    assert "NO-OP" in message  # explicitly warns upgrade head will not help
+    assert "downgrade" in message.lower()
+
+    # Never a MigrationRequiredError — a caller that only catches that
+    # (the BEHIND case) must not silently swallow the AHEAD case too.
+    assert not isinstance(exc_info.value, MigrationRequiredError)
+
+    # No auto-downgrade happened — the DB is untouched.
+    assert _current_rev_of(url) == "9999_future_revision_not_in_this_code"
+
+
+def test_ensure_schema_current_still_raises_migration_required_when_genuinely_behind(
+    tmp_path, monkeypatch,
+):
+    """Regression pin alongside the AHEAD test above: an ordinary BEHIND
+    database must still raise the original `MigrationRequiredError`, not the
+    new `SchemaAheadOfCodeError` — the classification must not have merged
+    the two cases the other direction."""
+    monkeypatch.delenv("MIGRATION_MODE", raising=False)
+    get_settings.cache_clear()
+
+    url = f"sqlite:///{tmp_path}/still-behind.db"
+    run_migrations(url)
+    command.downgrade(_config(url), "0001")
+
+    try:
+        with pytest.raises(MigrationRequiredError) as exc_info:
+            ensure_schema_current(url)
+    finally:
+        get_settings.cache_clear()
+
+    assert not isinstance(exc_info.value, SchemaAheadOfCodeError)
+    assert "SCHEMA_BEHIND_CODE" in str(exc_info.value)
 
 
 def test_no_runtime_call_site_in_cli_calls_run_migrations_directly():

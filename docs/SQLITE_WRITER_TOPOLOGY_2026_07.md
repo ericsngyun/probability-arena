@@ -305,7 +305,7 @@ above), which otherwise still describes the pre-fix shape.
 
 | Writer | Entry | Sched | Session | Tables written | Commit shape | Network in open txn? | Retry class |
 |---|---|---|---|---|---|---|---|
-| **crypto-tape reconciler** `run_scheduled_reconciliation`→`run_once` (`crypto_tape.py`) | `crypto-tape-reconcile` | timer 4×/day (03/09/15/21:20 UTC, `RandomizedDelaySec=300`) | owns | lifecycle tape (birth/outcome upsert) | **per-batch** (default 25 tokens/commit) + one finalize commit — **not** the single terminal commit the pre-fix `crypto-tape` row above describes | **no** — DB-only (`external_calls=0`) | `BOUNDED_RETRY_SAFE` PER BATCH (below) |
+| **crypto-tape reconciler** `run_scheduled_reconciliation`→`run_once` (`crypto_tape.py`) | `crypto-tape-reconcile` | timer 4×/day (03/09/15/21:07 UTC, `RandomizedDelaySec=300`) | owns | lifecycle tape (birth/outcome upsert) | **per-batch** (shipped default **5** tokens/commit — `crypto_tape_reconciler_batch_size`, `app/config.py`; a doc-drift correction, this row previously said 25, which was the pre-NEW-HIGH-1 value before the batch-size-hold measurement lowered it) + one finalize commit — **not** the single terminal commit the pre-fix `crypto-tape` row above describes | **no** — DB-only (`external_calls=0`) | `BOUNDED_RETRY_SAFE` PER BATCH (below) |
 
 **Commit-shape reclassification.** The pre-fix `crypto-tape` row (line 60/125
 above) belongs in this doc's "one terminal commit over a long loop" group

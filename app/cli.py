@@ -2252,6 +2252,102 @@ async def db_stats(session=None) -> int:
             session.close()
 
 
+async def db_schema_report() -> int:
+    """CRYPTO-BACKLOG-SELECTION-AND-OPERATOR-PATH-001 B7/B9 — a
+    repository-owned revision report replacing `sqlite3 "$DB_PATH" ...`
+    (undefined variable) in the operator runbook. Prints the RESOLVED
+    database path (no secrets — password hidden by SQLAlchemy's own
+    `render_as_string(hide_password=True)`) via THIS application's own
+    resolution (`app.config.get_settings().database_url`), the database's
+    stamped Alembic revision, the code's head revision, and the
+    SCHEMA_MATCH/SCHEMA_BEHIND_CODE/SCHEMA_AHEAD_OF_CODE status
+    (`app.db._schema_status` — see `ensure_schema_current`, B8). Read-only:
+    never applies a migration. Returns 0 on SCHEMA_MATCH, 1 otherwise, so a
+    scripted post-migration check can assert success without parsing text."""
+    from sqlalchemy.engine.url import make_url
+
+    from app.config import get_settings
+    from app.db import (
+        SCHEMA_MATCH,
+        _alembic_config,
+        _current_revision,
+        _head_revision,
+        _schema_status,
+    )
+
+    settings = get_settings()
+    url_str = settings.database_url
+    url = make_url(url_str)
+    resolved = url.render_as_string(hide_password=True)
+    print(f"resolved database path: {resolved}")
+    if not url_str or not resolved:
+        print("FAIL: resolved database path is empty")
+        return 1
+    if url.get_backend_name() == "sqlite" and not url.database:
+        print("FAIL: sqlite URL resolved with no file path (e.g. an in-memory or blank DSN)")
+        return 1
+
+    config = _alembic_config(url_str)
+    head = _head_revision(config)
+    current = _current_revision(url_str)
+    status = _schema_status(current, head, config)
+    print(f"current revision: {current!r}")
+    print(f"head revision:    {head!r}")
+    print(f"status:           {status}")
+    return 0 if status == SCHEMA_MATCH else 1
+
+
+async def db_integrity_check() -> int:
+    """CRYPTO-BACKLOG-SELECTION-AND-OPERATOR-PATH-001 B7 — replaces
+    `sqlite3 "" "PRAGMA integrity_check"` in the operator runbook, which
+    opens a TEMPORARY, empty database (the `""` argument) and prints `ok`
+    with exit 0 having inspected NOTHING — a green result with zero
+    diagnostic content. Worse, the `sqlite3` binary is not installed on
+    EVO-X2 at all (`ssh mikolabs which sqlite3` -> absent), so that
+    command could never have run there. This uses the application's OWN
+    resolved database (`app.config.get_settings().database_url`) through
+    its own engine, prints the resolved path before running anything (so a
+    caller can see exactly what was inspected), and FAILS if that path is
+    empty or unexpected — the same guard `db_schema_report` uses. Measured
+    duration at the current EVO-X2 database size: ~7m18s; this is NOT
+    fast, and should not be run casually inside a tight maintenance
+    window."""
+    import time as _time
+
+    from sqlalchemy import text
+    from sqlalchemy.engine.url import make_url
+
+    from app.config import get_settings
+    from app.db import get_engine
+
+    settings = get_settings()
+    url_str = settings.database_url
+    url = make_url(url_str)
+    resolved = url.render_as_string(hide_password=True)
+    print(f"resolved database path: {resolved}")
+    if not url_str or not resolved:
+        print("FAIL: resolved database path is empty")
+        return 1
+    if url.get_backend_name() == "sqlite" and not url.database:
+        print("FAIL: sqlite URL resolved with no file path (e.g. an in-memory or blank DSN)")
+        return 1
+
+    engine = get_engine()
+    started = _time.monotonic()
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(text("PRAGMA integrity_check")).fetchall()
+    finally:
+        duration_s = _time.monotonic() - started
+    results = [r[0] for r in rows]
+    print(f"integrity_check duration: {duration_s:.2f}s")
+    for line in results:
+        print(f"  {line}")
+    ok = results == ["ok"]
+    print("PASS" if ok else "FAIL")
+    return 0 if ok else 1
+
+
 async def db_growth_report(top: int = 12, session=None) -> int:
     """OPS-011 read-only DB growth/retention observability: size, table row
     counts + est MiB (dbstat when available), largest tables, tick age
@@ -7682,6 +7778,18 @@ def build_parser() -> argparse.ArgumentParser:
     prune_parser.add_argument("--signal-days", type=int, default=None)
     prune_parser.add_argument("--batch-size", type=int, default=None)
     subparsers.add_parser("db-stats", help="Print database overview and row counts")
+    subparsers.add_parser(
+        "db-schema-report",
+        help="Print the resolved DB path, current/head Alembic revision, and "
+             "SCHEMA_MATCH/SCHEMA_BEHIND_CODE/SCHEMA_AHEAD_OF_CODE status "
+             "(read-only; exit 0 iff SCHEMA_MATCH)",
+    )
+    subparsers.add_parser(
+        "db-integrity-check",
+        help="Run PRAGMA integrity_check via this app's own resolved "
+             "database (replaces the runbook's bare `sqlite3` invocation); "
+             "prints the resolved path and fails if it is empty/unexpected",
+    )
     growth_parser = subparsers.add_parser(
         "db-growth-report",
         help="OPS-011: DB size/growth, tick age+domain buckets, retention windows, alert thresholds",
@@ -8554,6 +8662,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "db-stats":
         total = asyncio.run(db_stats())
         return 0 if total >= 0 else 1
+    if args.command == "db-schema-report":
+        return asyncio.run(db_schema_report())
+    if args.command == "db-integrity-check":
+        return asyncio.run(db_integrity_check())
     if args.command == "db-growth-report":
         total = asyncio.run(db_growth_report(top=args.top))
         return 0 if total >= 0 else 1

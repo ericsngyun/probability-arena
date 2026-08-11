@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import and_, func, or_, select, text, update
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
@@ -454,6 +454,46 @@ def _ratio(numerator: float | None, denominator: float | None) -> float | None:
     return round(numerator / denominator, 4)
 
 
+def _iso(dt: datetime) -> str:
+    return dt.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _split_backlog_budget(
+    recoverable_n: int, writeoff_n: int, room: int,
+) -> tuple[int, int]:
+    """CRYPTO-BACKLOG-SELECTION-AND-OPERATOR-PATH-001 B1 — how much of one
+    pass's backlog `room` goes to genuinely recoverable work versus
+    write-offs (`RETENTION_LOST`/`MISSING_REQUIRED_INITIAL_STATE`).
+
+    Write-offs are monotone and permanent (scripts/crypto_backlog_
+    partition.py:292-297): a token in one of those classes never leaves it,
+    so a plain oldest-first ordering over the WHOLE backlog buries
+    recoverable work behind them forever once write-offs accumulate (the
+    measured shape: 51 RECOVERABLE_NOW tokens at ranks 9,519-12,093 of
+    12,100, behind ~9,500 write-offs). But write-offs must still be visited
+    EVENTUALLY — until a pass actually runs `compute_survival` on one and
+    persists `final=True`, it keeps occupying `unreconciled_backlog`
+    forever too, competing for room on every future pass. Reserve a small,
+    bounded slice (10%, floor 1 when any exist) for write-offs so they get
+    flushed without ever consuming a whole pass; hand any slack in either
+    pool to the other so `room` is never left idle.
+
+    Returns `(writeoff_budget, recoverable_budget)`."""
+    if room <= 0:
+        return 0, 0
+    writeoff_budget = min(writeoff_n, max(1, room // 10)) if writeoff_n else 0
+    recoverable_budget = room - writeoff_budget
+    if recoverable_budget > recoverable_n:
+        slack = recoverable_budget - recoverable_n
+        recoverable_budget = recoverable_n
+        writeoff_budget = min(writeoff_n, writeoff_budget + slack)
+    if writeoff_budget > writeoff_n:
+        slack = writeoff_budget - writeoff_n
+        writeoff_budget = writeoff_n
+        recoverable_budget = min(recoverable_n, recoverable_budget + slack)
+    return writeoff_budget, recoverable_budget
+
+
 def _resolve_lock_dir(settings: Settings | None) -> Path:
     """Host-local directory to anchor the reconciliation overlap lock (B4).
     Prefers the directory the sqlite file itself lives in — co-located,
@@ -616,6 +656,25 @@ class CryptoLifecycleTapeRecorder:
     """One derived tape assembly pass over already-persisted rows. Session-only
     (no adapter, no HTTP client); dry-run persists nothing."""
 
+    # CRYPTO-BACKLOG-SELECTION-AND-OPERATOR-PATH-001 B1/B3 — the typed
+    # backlog partition, read straight off `compute_survival`'s own decision
+    # surface (see `classify_backlog`). Kept in insertion-priority order:
+    # highest-value-first for selection (B1), and iterated in this order
+    # wherever a caller needs "recoverable" as one group.
+    BACKLOG_CLASS_RECOVERABLE_NOW = "RECOVERABLE_NOW"
+    BACKLOG_CLASS_OTHER_TYPED_REASON = "OTHER_TYPED_REASON"
+    BACKLOG_CLASS_UNRESOLVABLE_WINDOW_CLOSED = "UNRESOLVABLE_WINDOW_CLOSED"
+    BACKLOG_CLASS_NOT_YET_DUE = "NOT_YET_DUE"
+    BACKLOG_CLASS_RETENTION_LOST = "RETENTION_LOST"
+    BACKLOG_CLASS_MISSING_REQUIRED_INITIAL_STATE = "MISSING_REQUIRED_INITIAL_STATE"
+    # Monotone, permanent write-offs: cheap (timestamp/birth-join only, no
+    # tick scan) and, once true, never leave the class — the same two
+    # classes scripts/crypto_backlog_partition.py:292-305 documents as
+    # "written off once and excluded from selection forever".
+    BACKLOG_WRITEOFF_CLASSES = frozenset({
+        BACKLOG_CLASS_RETENTION_LOST, BACKLOG_CLASS_MISSING_REQUIRED_INITIAL_STATE,
+    })
+
     def __init__(self, config: CryptoTapeConfig | None = None):
         self.config = config or CryptoTapeConfig.from_settings()
 
@@ -687,8 +746,316 @@ class CryptoLifecycleTapeRecorder:
         stmt = stmt.order_by(*order).limit(limit)
         return list(session.execute(stmt).scalars().all())
 
+    def _backlog_rows(self, session: Session, cutoff: datetime):
+        """The raw still-open (or never-reconciled) backlog set, each row
+        carrying enough to classify it WITHOUT a second round trip: the
+        token, and — via an outer join, `None` when no birth event exists
+        yet — the birth event's `first_evidence_at`/`initial_liquidity_usd`.
+        Oldest-first, since that evidence is closest to being pruned. Shared
+        by `classify_backlog` and (indirectly) everything downstream of it,
+        so the OUTER-join predicate is written exactly once."""
+        return session.execute(
+            select(
+                CryptoToken.token_address, CryptoToken.first_seen_at,
+                CryptoTokenBirthEvent.first_evidence_at,
+                CryptoTokenBirthEvent.initial_liquidity_usd,
+            )
+            .select_from(CryptoToken)
+            .outerjoin(
+                CryptoTokenSurvivalOutcome,
+                and_(
+                    CryptoTokenSurvivalOutcome.token_address == CryptoToken.token_address,
+                    CryptoTokenSurvivalOutcome.chain == CryptoToken.chain,
+                ),
+            )
+            .outerjoin(
+                CryptoTokenBirthEvent,
+                and_(
+                    CryptoTokenBirthEvent.token_address == CryptoToken.token_address,
+                    CryptoTokenBirthEvent.chain == CryptoToken.chain,
+                ),
+            )
+            .where(
+                CryptoToken.chain == self.config.chain,
+                CryptoToken.first_seen_at < cutoff,
+                or_(
+                    CryptoTokenSurvivalOutcome.id.is_(None),
+                    CryptoTokenSurvivalOutcome.final.is_(False),
+                ),
+            )
+            .order_by(CryptoToken.first_seen_at.asc(), CryptoToken.id.asc())
+            .distinct()
+        ).all()
+
+    def classify_backlog(
+        self, session: Session, cutoff: datetime, *, now: datetime | None = None,
+    ) -> dict[str, list[str]]:
+        """CRYPTO-BACKLOG-SELECTION-AND-OPERATOR-PATH-001 B1/B3 — an EXACT,
+        typed partition of the still-open backlog, read straight off
+        `compute_survival`'s own decision surface (the same classes
+        `scripts/crypto_backlog_partition.py` derives offline). Two classes
+        are cheap and monotone WRITE-OFFS (no tick scan — a pure timestamp
+        compare or one birth-table lookup); the rest need one batched,
+        indexed tick probe to tell apart:
+
+          RETENTION_LOST                   anchor + 36h is already older
+                                            than `crypto_retention_days` —
+                                            any tick that could have
+                                            answered this is pruned.
+          MISSING_REQUIRED_INITIAL_STATE   no birth row, or no
+                                            `initial_liquidity_usd` — the
+                                            survival fraction is
+                                            unmeasurable no matter what
+                                            evidence exists.
+          RECOVERABLE_NOW                  window closed, a real tick sits
+                                            inside the 24h tolerance, and
+                                            initial liquidity is known — a
+                                            pass right now produces a
+                                            genuine `survived_24h` answer.
+          OTHER_TYPED_REASON               window closed, no 24h tick, but
+                                            a tick sits inside the 15m/1h/6h
+                                            tolerance — a pass still learns
+                                            real sub-horizon labels even
+                                            though the 24h answer never
+                                            will exist.
+          UNRESOLVABLE_WINDOW_CLOSED       window closed, liquidity known,
+                                            but NOT ONE tick lands in any
+                                            horizon — the pass that visits
+                                            this token proves the 24h label
+                                            permanently unobtainable
+                                            (`compute_survival`'s
+                                            `permanently_missing_evidence`,
+                                            see B2) the moment it runs, but
+                                            has not run yet, so it is not a
+                                            write-off UNTIL it does.
+          NOT_YET_DUE                      the closing edge has not passed
+                                            (should not occur past `cutoff`
+                                            in practice — 36h < the 48h
+                                            default window — kept for
+                                            correctness if the window is
+                                            ever configured narrower).
+
+        Anchor approximation: uses the birth event's `first_evidence_at`
+        when one already exists, else `CryptoToken.first_seen_at` — the
+        same fallback `build_birth_event` itself uses when no discovery
+        event/tick predates `first_seen_at`. This is a SELECTION-TIME
+        estimate only; `compute_survival` derives the real anchor once a
+        pass actually visits the token.
+
+        Returns `{class_name: [token_address, ...]}`, oldest-first within
+        each class, in selection-priority order (highest-value-first)."""
+        now = now or _now()
+        retention_cutoff = now - timedelta(days=self.config.retention_days)
+        rows = self._backlog_rows(session, cutoff)
+
+        classes: dict[str, list[str]] = {
+            self.BACKLOG_CLASS_RECOVERABLE_NOW: [],
+            self.BACKLOG_CLASS_OTHER_TYPED_REASON: [],
+            self.BACKLOG_CLASS_UNRESOLVABLE_WINDOW_CLOSED: [],
+            self.BACKLOG_CLASS_NOT_YET_DUE: [],
+            self.BACKLOG_CLASS_RETENTION_LOST: [],
+            self.BACKLOG_CLASS_MISSING_REQUIRED_INITIAL_STATE: [],
+        }
+        candidates: list[tuple[str, datetime]] = []
+        # Tokens with NO birth event yet (the majority of a never-touched
+        # backlog) always read `init_liq is None` from the outer join —
+        # that is "no birth row exists", not "liquidity is unmeasurable".
+        # `build_birth_event` (the function that WOULD create that row) sets
+        # `initial_liquidity_usd` from the token's EARLIEST persisted tick
+        # (`sources.ticks[0].liquidity_usd`), so treating "no birth row" as
+        # an automatic MISSING_REQUIRED_INITIAL_STATE write-off would
+        # misclassify almost the entire never-reconciled backlog — real
+        # liquidity evidence already sits in `crypto_price_ticks`, simply
+        # not yet consolidated. Defer these to a batched first-tick lookup
+        # below instead of writing them off on birth-row absence alone.
+        needs_liquidity_check: list[tuple[str, datetime]] = []
+        for addr, first_seen, first_evidence_at, init_liq in rows:
+            has_birth = first_evidence_at is not None or init_liq is not None
+            anchor = _aware(first_evidence_at) or _aware(first_seen)
+            if anchor is None:
+                classes[self.BACKLOG_CLASS_MISSING_REQUIRED_INITIAL_STATE].append(addr)
+                continue
+            closing_edge = anchor + timedelta(minutes=1440 * (1 + HORIZON_TOLERANCE))
+            if closing_edge < retention_cutoff:
+                classes[self.BACKLOG_CLASS_RETENTION_LOST].append(addr)
+                continue
+            if has_birth:
+                if init_liq is None:
+                    classes[self.BACKLOG_CLASS_MISSING_REQUIRED_INITIAL_STATE].append(addr)
+                    continue
+                candidates.append((addr, anchor))
+            else:
+                needs_liquidity_check.append((addr, anchor))
+
+        if needs_liquidity_check:
+            conn = session.connection()
+            conn.exec_driver_sql(
+                "CREATE TEMP TABLE IF NOT EXISTS _crypto_backlog_liq_probe "
+                "(addr TEXT PRIMARY KEY)"
+            )
+            conn.exec_driver_sql("DELETE FROM _crypto_backlog_liq_probe")
+            conn.execute(
+                text("INSERT INTO _crypto_backlog_liq_probe (addr) VALUES (:addr)"),
+                [{"addr": addr} for addr, _ in needs_liquidity_check],
+            )
+            try:
+                # Earliest tick per token (mirrors `build_birth_event`'s
+                # `sources.ticks[0]`, which orders by `observed_at, id`) —
+                # liquidity known iff that specific tick has a value.
+                liq_rows = conn.execute(text(
+                    "SELECT k.token_address, k.liquidity_usd "
+                    "FROM crypto_price_ticks k "
+                    "JOIN ("
+                    "  SELECT token_address, MIN(observed_at) AS first_at "
+                    "  FROM crypto_price_ticks "
+                    "  WHERE chain = :chain "
+                    "    AND token_address IN "
+                    "      (SELECT addr FROM _crypto_backlog_liq_probe) "
+                    "  GROUP BY token_address"
+                    ") f ON f.token_address = k.token_address "
+                    "     AND f.first_at = k.observed_at "
+                    "WHERE k.chain = :chain"
+                ), {"chain": self.config.chain}).fetchall()
+            finally:
+                conn.exec_driver_sql(
+                    "DROP TABLE IF EXISTS _crypto_backlog_liq_probe"
+                )
+            liq_known = {addr for addr, liq in liq_rows if liq is not None}
+            for addr, anchor in needs_liquidity_check:
+                if addr in liq_known:
+                    candidates.append((addr, anchor))
+                else:
+                    classes[self.BACKLOG_CLASS_MISSING_REQUIRED_INITIAL_STATE].append(addr)
+
+        if not candidates:
+            return classes
+        # Restore oldest-first ordering: the liquidity-check deferral above
+        # appends its candidates after the birth-backed ones, breaking the
+        # otherwise-oldest-first order `_backlog_rows` provides.
+        candidates.sort(key=lambda c: c[1])
+
+        # One batched, indexed tick probe over a session-temp table — never
+        # one round trip per candidate. Mirrors
+        # scripts/crypto_backlog_partition.py's approach exactly (that
+        # script uses an attached :memory: db; a session-scoped TEMP TABLE
+        # does the same job inside an already-open ORM session/connection).
+        conn = session.connection()
+        conn.exec_driver_sql(
+            "CREATE TEMP TABLE IF NOT EXISTS _crypto_backlog_anchor_probe "
+            "(addr TEXT PRIMARY KEY, a TEXT)"
+        )
+        conn.exec_driver_sql("DELETE FROM _crypto_backlog_anchor_probe")
+        conn.execute(
+            text(
+                "INSERT INTO _crypto_backlog_anchor_probe (addr, a) "
+                "VALUES (:addr, :a)"
+            ),
+            [{"addr": addr, "a": _iso(anchor)} for addr, anchor in candidates],
+        )
+        try:
+            hits_24h: set[str] = set()
+            hits_sub_horizon: set[str] = set()
+            for label, minutes in HORIZONS:
+                tol = minutes * HORIZON_TOLERANCE
+                rows_h = conn.execute(
+                    text(
+                        "SELECT DISTINCT p.addr FROM "
+                        "_crypto_backlog_anchor_probe p "
+                        "JOIN crypto_price_ticks k ON k.chain = :chain "
+                        "  AND k.token_address = p.addr "
+                        "WHERE k.observed_at > p.a "
+                        f"  AND k.observed_at >= datetime(p.a, "
+                        f"    '+{minutes - tol} minutes') "
+                        f"  AND k.observed_at <= datetime(p.a, "
+                        f"    '+{minutes + tol} minutes')"
+                        + ("  AND k.liquidity_usd IS NOT NULL" if label == "24h" else "")
+                    ),
+                    {"chain": self.config.chain},
+                ).fetchall()
+                hit_set = hits_24h if label == "24h" else hits_sub_horizon
+                hit_set.update(r[0] for r in rows_h)
+        finally:
+            conn.exec_driver_sql(
+                "DROP TABLE IF EXISTS _crypto_backlog_anchor_probe"
+            )
+
+        for addr, anchor in candidates:
+            closing_edge = anchor + timedelta(minutes=1440 * (1 + HORIZON_TOLERANCE))
+            if now < closing_edge:
+                classes[self.BACKLOG_CLASS_NOT_YET_DUE].append(addr)
+            elif addr in hits_24h:
+                classes[self.BACKLOG_CLASS_RECOVERABLE_NOW].append(addr)
+            elif addr in hits_sub_horizon:
+                classes[self.BACKLOG_CLASS_OTHER_TYPED_REASON].append(addr)
+            else:
+                classes[self.BACKLOG_CLASS_UNRESOLVABLE_WINDOW_CLOSED].append(addr)
+        return classes
+
+    def recoverable_backlog_summary(
+        self, session: Session, cutoff: datetime, *, now: datetime | None = None,
+    ) -> dict:
+        """CRYPTO-BACKLOG-SELECTION-AND-OPERATOR-PATH-001 B3 — the
+        RECOVERABLE frontier, as opposed to the raw backlog-row frontier
+        `oldest_unreconciled_first_seen_at` reports. That raw frontier
+        measures the oldest BACKLOG ROW regardless of whether anything can
+        still be learned from it; once any `RETENTION_LOST`/
+        `MISSING_REQUIRED_INITIAL_STATE` write-off sits in the backlog —
+        which, once a pass ever falls behind by more than
+        `crypto_retention_days`, it always will — that row is a permanent
+        write-off and the raw frontier can NEVER recover, even on a
+        perfectly healthy pass: "alarm always on" carries the same
+        information as no alarm at all, exactly the failure
+        `backlog_expiring` exists to avoid. Reuses `classify_backlog`
+        (never re-derives the same predicate with different code)."""
+        now = now or _now()
+        classes = self.classify_backlog(session, cutoff, now=now)
+        writeoff_count = {
+            cls: len(classes.get(cls, [])) for cls in self.BACKLOG_WRITEOFF_CLASSES
+        }
+        recoverable_addrs = [
+            addr for cls, addrs in classes.items()
+            if cls not in self.BACKLOG_WRITEOFF_CLASSES
+            for addr in addrs
+        ]
+        result: dict = {
+            "recoverable_backlog_count": len(recoverable_addrs),
+            "oldest_recoverable_due_at": None,
+            "oldest_recoverable_age_seconds": None,
+            "recoverable_at_retention_risk": 0,
+            "writeoff_count": writeoff_count,
+        }
+        if not recoverable_addrs:
+            return result
+        rows = session.execute(
+            select(CryptoToken.token_address, CryptoToken.first_seen_at).where(
+                CryptoToken.chain == self.config.chain,
+                CryptoToken.token_address.in_(recoverable_addrs),
+            )
+        ).all()
+        retention_cutoff = now - timedelta(days=self.config.retention_days)
+        risk_cutoff = retention_cutoff + timedelta(hours=RECONCILER_CADENCE_HOURS)
+        oldest_first_seen: datetime | None = None
+        at_risk = 0
+        for _, first_seen in rows:
+            anchor = _aware(first_seen)
+            if anchor is None:
+                continue
+            if oldest_first_seen is None or anchor < oldest_first_seen:
+                oldest_first_seen = anchor
+            closing_edge = anchor + timedelta(minutes=1440 * (1 + HORIZON_TOLERANCE))
+            if closing_edge < risk_cutoff:
+                at_risk += 1
+        if oldest_first_seen is not None:
+            result["oldest_recoverable_due_at"] = oldest_first_seen.isoformat()
+            result["oldest_recoverable_age_seconds"] = (
+                now - oldest_first_seen
+            ).total_seconds()
+        result["recoverable_at_retention_risk"] = at_risk
+        return result
+
     def unreconciled_backlog(
-        self, session: Session, cutoff: datetime, *, limit: int
+        self, session: Session, cutoff: datetime, *, limit: int,
+        now: datetime | None = None,
     ) -> list[CryptoToken]:
         """Tokens OLDER than the window whose outcome is still not final —
         including tokens that were NEVER reconciled at all (no outcome row
@@ -704,29 +1071,50 @@ class CryptoLifecycleTapeRecorder:
         push a cohort out of the window permanently, and the same gap means the
         pre-existing backlog is never reconciled at first enablement. Selection
         must therefore be driven by STATE (is this outcome still open, or
-        nonexistent?) and not only by recency. Oldest-first, because that
-        evidence is closest to being pruned."""
-        return list(session.execute(
-            select(CryptoToken)
-            .outerjoin(
-                CryptoTokenSurvivalOutcome,
-                and_(
-                    CryptoTokenSurvivalOutcome.token_address == CryptoToken.token_address,
-                    CryptoTokenSurvivalOutcome.chain == CryptoToken.chain,
-                ),
+        nonexistent?) and not only by recency.
+
+        CRYPTO-BACKLOG-SELECTION-AND-OPERATOR-PATH-001 B1 — a naive
+        oldest-first `LIMIT` over the raw backlog buries genuinely
+        recoverable work behind permanent write-offs (measured: 51
+        `RECOVERABLE_NOW` tokens at ranks 9,519-12,093 of 12,100, behind
+        ~9,500 `RETENTION_LOST`/`MISSING_REQUIRED_INITIAL_STATE` rows that
+        can never yield a real answer). `classify_backlog` partitions the
+        FULL backlog — not just the head a naive `LIMIT` would have taken —
+        BEFORE any per-pass budget is applied, and `_split_backlog_budget`
+        reserves a small, bounded slice of `limit` for write-offs so they
+        still get flushed (memorialised as `final=True`, and therefore
+        excluded from every future call) without ever consuming a whole
+        pass's budget."""
+        classes = self.classify_backlog(session, cutoff, now=now)
+        writeoff_addrs = [
+            addr
+            for cls in (
+                self.BACKLOG_CLASS_RETENTION_LOST,
+                self.BACKLOG_CLASS_MISSING_REQUIRED_INITIAL_STATE,
             )
-            .where(
+            for addr in classes.get(cls, [])
+        ]
+        recoverable_addrs = [
+            addr for cls, addrs in classes.items()
+            if cls not in self.BACKLOG_WRITEOFF_CLASSES
+            for addr in addrs
+        ]
+        writeoff_budget, recoverable_budget = _split_backlog_budget(
+            len(recoverable_addrs), len(writeoff_addrs), limit
+        )
+        selected_addrs = (
+            recoverable_addrs[:recoverable_budget] + writeoff_addrs[:writeoff_budget]
+        )
+        if not selected_addrs:
+            return []
+        rows = session.execute(
+            select(CryptoToken).where(
                 CryptoToken.chain == self.config.chain,
-                CryptoToken.first_seen_at < cutoff,
-                or_(
-                    CryptoTokenSurvivalOutcome.id.is_(None),
-                    CryptoTokenSurvivalOutcome.final.is_(False),
-                ),
+                CryptoToken.token_address.in_(selected_addrs),
             )
-            .order_by(CryptoToken.first_seen_at.asc(), CryptoToken.id.asc())
-            .distinct()
-            .limit(limit)
-        ).scalars().all())
+        ).scalars().all()
+        by_addr = {t.token_address: t for t in rows}
+        return [by_addr[addr] for addr in selected_addrs if addr in by_addr]
 
     def backlog_size(self, session: Session, cutoff: datetime) -> int:
         """How many still-open (or never-reconciled) outcomes sit outside the
@@ -1267,18 +1655,33 @@ class CryptoLifecycleTapeRecorder:
         #     gone — `final=True` is the honest (if unhappy) answer, not a
         #     guess, and is worth its own classification so a reader can
         #     tell "measured: no" apart from "we gave up".
-        #   * STILL-RECOVERABLE — the 24h window closed, no answer was ever
-        #     recorded, but the closing edge has NOT yet aged past
-        #     `crypto_retention_days`. This is the exact shape the review
-        #     that opened this milestone measured at 27.9% of the backlog:
-        #     a real, already-persisted tick sitting inside the tolerance
-        #     window, simply never joined because nothing ever ran
-        #     `run_once` on the token. Marking it `final` here would
-        #     permanently exclude it from every future reconciliation pass
-        #     (`exclude_final=True`) even though the very next pass could
-        #     recover it. `final` MUST stay False so it keeps being
-        #     selected until either it matures or its evidence window
-        #     genuinely expires into RETENTION-LOST.
+        #   * PERMANENTLY-MISSING-EVIDENCE (CRYPTO-BACKLOG-SELECTION-AND-
+        #     OPERATOR-PATH-001 B2 fix, replacing a disproved
+        #     "still_recoverable" branch below) — the 24h window closed, no
+        #     answer was recorded, and the closing edge has NOT yet aged past
+        #     `crypto_retention_days`. Before this fix `final` stayed False
+        #     here on the theory that "a future pass could still recover
+        #     it" — but `_load_sources` (this call's own caller) already
+        #     loaded EVERY tick this token will ever have as of `now`, with
+        #     no time filter at all, and every tick writer sets
+        #     `observed_at=now()` at write time. Once `now >= closing_edge`,
+        #     any tick written AFTER this moment has `observed_at > now >=
+        #     closing_edge`, so it can never land inside the 24h tolerance
+        #     window either — the window is BEHIND `now`, not ahead of it.
+        #     That means this exact call has already exhaustively searched
+        #     every tick that could ever satisfy `survived_24h` and found
+        #     none: the label is PROVEN unobtainable this instant, not
+        #     merely "not yet reconciled". Re-selecting it (the old
+        #     `final=False` behaviour) burns budget re-deriving the
+        #     identical negative result forever — it never once produces a
+        #     different answer. `final=True` here is therefore honest, not
+        #     a guess; `finality="permanently_missing_evidence"` reuses the
+        #     existing per-horizon missing-cause vocabulary
+        #     (`details["horizons"]["24h"] == "no_observation_in_window"`,
+        #     set above) to say WHY, and is kept distinct from
+        #     `retention_lost` (evidence was pruned) and `observed_terminal`
+        #     (a real answer exists) so a reader can always tell which of
+        #     the three actually happened.
         closing_edge = anchor + timedelta(minutes=1440 * (1 + HORIZON_TOLERANCE))
         window_closed = now >= closing_edge
         if not window_closed:
@@ -1295,8 +1698,8 @@ class CryptoLifecycleTapeRecorder:
                 final = True
                 finality = "retention_lost"
             else:
-                final = False
-                finality = "still_recoverable"
+                final = True
+                finality = "permanently_missing_evidence"
         details["finality"] = finality
         return {"labels": labels, "details": details, "final": final}
 
@@ -1444,7 +1847,9 @@ class CryptoLifecycleTapeRecorder:
             if room:
                 seen = {t.token_address for t in tokens}
                 extra = [
-                    t for t in self.unreconciled_backlog(session, cutoff, limit=room)
+                    t for t in self.unreconciled_backlog(
+                        session, cutoff, limit=room, now=started,
+                    )
                     if t.token_address not in seen
                 ]
                 backlog_selected = len(extra)
@@ -1480,6 +1885,14 @@ class CryptoLifecycleTapeRecorder:
         # round trip inside the write-lock-sensitive part of the pass.
         oldest_unreconciled_first_seen_at = None
         oldest_unreconciled_age_hours = None
+        # CRYPTO-BACKLOG-SELECTION-AND-OPERATOR-PATH-001 B3 — computed
+        # PRE-PASS, same as the raw frontier above and for the same reason:
+        # this pass is about to reconcile (and finalise) some of these exact
+        # tokens, so measuring the recoverable frontier AFTER `_assemble_pass`
+        # would report "how good things look now that we just fixed it"
+        # instead of "how far behind was the reconciler when this pass
+        # started" — the actual health signal `backlog_expiring` needs.
+        recoverable_backlog = None
         if include_backlog:
             oldest_unreconciled_first_seen_at = self.oldest_unreconciled_first_seen_at(
                 session, cutoff
@@ -1488,6 +1901,9 @@ class CryptoLifecycleTapeRecorder:
                 oldest_unreconciled_age_hours = (
                     started - _aware(oldest_unreconciled_first_seen_at)
                 ).total_seconds() / 3600.0
+            recoverable_backlog = self.recoverable_backlog_summary(
+                session, cutoff, now=started
+            )
         config = {"limit": limit, "hours": hours, "chain": self.config.chain}
         config.update(run_config_extra or {})
         if include_backlog:
@@ -1517,6 +1933,12 @@ class CryptoLifecycleTapeRecorder:
         summary["universe_size"] = total
         summary["backlog_size"] = backlog_total
         summary["work_available"] = total + backlog_total
+        if recoverable_backlog is not None:
+            summary["recoverable_backlog_count"] = recoverable_backlog["recoverable_backlog_count"]
+            summary["oldest_recoverable_due_at"] = recoverable_backlog["oldest_recoverable_due_at"]
+            summary["oldest_recoverable_age_seconds"] = recoverable_backlog["oldest_recoverable_age_seconds"]
+            summary["recoverable_at_retention_risk"] = recoverable_backlog["recoverable_at_retention_risk"]
+            summary["writeoff_count"] = recoverable_backlog["writeoff_count"]
         summary["oldest_unreconciled_first_seen_at"] = oldest_unreconciled_first_seen_at
         summary["oldest_unreconciled_age_hours"] = oldest_unreconciled_age_hours
         tokens_accounted = summary.get("tokens_processed", len(tokens))
@@ -3441,8 +3863,28 @@ def run_scheduled_reconciliation(
     # whether THIS pass's own truncated/partial shortfall is otherwise
     # ordinary. Deliberately does not override the hard-refused statuses
     # (those already returned above, before this point is ever reached).
-    frontier_hours = summary.get("oldest_unreconciled_age_hours")
-    if frontier_hours is not None:
+    # CRYPTO-BACKLOG-SELECTION-AND-OPERATOR-PATH-001 B3 — the RAW frontier
+    # above (`oldest_unreconciled_age_hours`) measures the oldest BACKLOG
+    # ROW regardless of whether anything can still be learned from it. Once
+    # any `RETENTION_LOST`/`MISSING_REQUIRED_INITIAL_STATE` write-off sits
+    # in the backlog — which, once a pass ever falls behind by more than
+    # `crypto_retention_days`, it always will — that row is a PERMANENT
+    # write-off, so the raw frontier can never again drop below the
+    # threshold even on a perfectly healthy pass: `backlog_expiring` was
+    # measured permanently ON (frontier ~204h vs a 162h threshold, the
+    # oneshot unit sitting permanently failed) — exactly the "alarm always
+    # on carries no information" failure this status exists to avoid.
+    # `recoverable_backlog_summary` (reusing `classify_backlog`, never
+    # re-deriving the predicate) gives the frontier that actually answers
+    # "is there real, at-risk work this pass could still do" — write-offs
+    # excluded, because no amount of scheduling saves them.
+    # `run_once` already computed this PRE-PASS (see its own comment) and
+    # put it straight on `summary` — recomputing here would measure the
+    # backlog AFTER this pass's own writes, hiding exactly the shortfall
+    # this status exists to report.
+    frontier_seconds = summary.get("oldest_recoverable_age_seconds")
+    if frontier_seconds is not None:
+        frontier_hours = frontier_seconds / 3600.0
         retention_days = int(getattr(s, "crypto_retention_days", 7))
         frontier_threshold_hours = (
             retention_days * 24 - RECONCILER_CADENCE_HOURS
@@ -3451,11 +3893,13 @@ def run_scheduled_reconciliation(
             summary["status"] = STATUS_BACKLOG_EXPIRING
             summary["frontier_threshold_hours"] = frontier_threshold_hours
             frontier_note = (
-                f"the oldest unreconciled token is {frontier_hours:.1f}h old, "
-                f">= the {frontier_threshold_hours:.1f}h frontier threshold "
+                f"the oldest RECOVERABLE unreconciled token is "
+                f"{frontier_hours:.1f}h old, >= the "
+                f"{frontier_threshold_hours:.1f}h frontier threshold "
                 f"(crypto_retention_days={retention_days}d minus one "
                 f"{RECONCILER_CADENCE_HOURS}h cadence interval); it may be "
-                "pruned before the next scheduled pass reaches it"
+                "pruned before the next scheduled pass reaches it "
+                f"(write-offs excluded: {summary.get('writeoff_count')})"
             )
             summary["error"] = (
                 f"{summary['error']}; additionally, {frontier_note}"

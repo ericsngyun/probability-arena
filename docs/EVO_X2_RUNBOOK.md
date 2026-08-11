@@ -50,12 +50,26 @@ CRYPTO-COVERAGE-REPAIR-001 B10 — migration governance. `MIGRATION_MODE`
 defaults to `guarded` (never overridden on this host): every ordinary runtime
 call — `run-baseline`, every other CLI command, the watcher/marketops timers,
 the FastAPI service — now CHECKS the schema revision and fails closed with
-`MIGRATION_REQUIRED` if the database is behind the code's head, instead of
-silently applying Alembic. This is deliberate: it stops a `git pull` with a
-pending migration from getting auto-upgraded by the next 5-minute MarketOps
-timer tick, ahead of a backup or this explicit step. If a migration is
-pending after `git pull`, apply it explicitly BEFORE restarting/resuming any
-service or timer:
+`MIGRATION_REQUIRED` (`SCHEMA_BEHIND_CODE`) if the database is behind the
+code's head, instead of silently applying Alembic. This is deliberate: it
+stops a `git pull` with a pending migration from getting auto-upgraded by the
+next 5-minute MarketOps timer tick, ahead of a backup or this explicit step.
+If a migration is pending after `git pull`, apply it explicitly BEFORE
+restarting/resuming any service or timer.
+
+**CRYPTO-BACKLOG-SELECTION-AND-OPERATOR-PATH-001 B7 correction — the sequence
+below used to be non-executable and is now repository-owned end to end.**
+`$DB_PATH` was referenced but defined NOWHERE in this repo — it was never a
+real environment variable — and `sqlite3 "$DB_PATH" "PRAGMA integrity_check"`
+therefore expanded to `sqlite3 "" "PRAGMA integrity_check"`, which opens a
+**temporary, throwaway** database (SQLite's `""` filename convention) and
+prints `ok` with exit `0` having inspected **nothing at all** — a green
+result carrying zero diagnostic content. Worse: **the `sqlite3` binary is not
+installed on EVO-X2** (`ssh mikolabs which sqlite3` → nothing), so this line
+could never have run there even with a real path. Every command below is a
+real, tested `app.cli` subcommand using this application's own database
+resolution — none of it depends on a shell variable that doesn't exist or a
+binary that isn't installed:
 
 ```bash
 cd ~/projects/probability-arena
@@ -63,17 +77,199 @@ git status --short                      # must be clean; stop and report if dirt
 git pull --ff-only
 .venv/bin/pip install -q -r requirements-dev.txt     # if deps changed
 
-# Only if a migration is pending (a command above/below raises
-# MIGRATION_REQUIRED, or `alembic current` != the new head):
-.venv/bin/python -m app.cli sqlite-backup-freshness-report   # 1) confirm a fresh backup exists
-.venv/bin/alembic upgrade head                                # 2) apply explicitly
-sqlite3 "$DB_PATH" "PRAGMA integrity_check"                   # 3) verify integrity == ok
-.venv/bin/python -m app.cli agent-context                     # 3) verify alembic revision == head
+# 1) verify version + resolved DB path (read-only; never applies a migration)
+.venv/bin/python -m app.cli db-schema-report
+#   prints: resolved database path, current revision, head revision, status
+#   status == SCHEMA_MATCH -> nothing pending, skip to "run-baseline --dry-run" below
+#   status == SCHEMA_BEHIND_CODE -> continue with steps 2-7
+#   status == SCHEMA_AHEAD_OF_CODE -> STOP. Do NOT run `alembic upgrade head`
+#     (it is a no-op here and will not resolve this) — see "AHEAD vs BEHIND"
+#     below for the required operator decision.
+
+# Only if SCHEMA_BEHIND_CODE (a migration is genuinely pending):
+# 2) verify backup freshness, THEN take one more immediately before the
+#    upgrade — do not rely on a backup that may be up to 36h old for a
+#    schema change (CRYPTO-BACKLOG-SELECTION-AND-OPERATOR-PATH-001 B9)
+.venv/bin/python -m app.cli sqlite-backup-freshness-report
+.venv/bin/python -m app.cli backup-db
+# 3) pause affected writers if the pending migration touches a table an
+#    active writer holds open across a long span (check the migration's own
+#    docstring / alembic/versions/<rev>_*.py for a note); ordinary additive
+#    migrations do not require this — the batch-alter-table ones (e.g. 0028)
+#    complete in a few seconds and do not need a manual pause
+# 4) apply the migration explicitly
+.venv/bin/alembic upgrade head
+# 5) verify the revision actually landed at head
+.venv/bin/python -m app.cli db-schema-report   # must now print status: SCHEMA_MATCH
+# 6) application-owned integrity check (real, using this app's own DB
+#    resolution — NOT the bare `sqlite3` invocation this replaces).
+#    Measured duration at the current EVO-X2 database size: ~7m18s — this
+#    is NOT fast; do not run it casually inside a tight maintenance window.
+.venv/bin/python -m app.cli db-integrity-check
+# 7) rebuild planner statistics for whatever this migration rebuilt (see
+#    "Migration 0028: `ANALYZE` after a table rebuild" below for the
+#    concrete per-migration step — do NOT run a blanket ANALYZE after every
+#    migration; only migrations that rebuild a table need one)
+# 8) verify a critical reconciliation query plan is still what's expected
+#    (see docs/CRYPTO_QUERY_PLAN_AND_DENOMINATOR_RECOVERY_001.md for the
+#    EXPLAIN QUERY PLAN fingerprint this checks against)
+.venv/bin/python -m app.cli crypto-tape-reconcile --dry-run --force --hours 48 --max-duration-seconds 30
 
 .venv/bin/python -m app.cli run-baseline --dry-run   # audit-only; fails closed if a migration is still pending
 .venv/bin/python -m app.cli db-stats                 # sanity
-# restart long-running services after code changes:
+# 9) resume services / restart long-running services after code changes:
 systemctl --user restart probability-arena-watcher.service
+# 10) observe health for the next few cycles:
+.venv/bin/python -m app.cli marketops-report
+journalctl --user -u probability-arena-watcher.service -n 50 --no-pager
+```
+
+### AHEAD vs BEHIND (CRYPTO-BACKLOG-SELECTION-AND-OPERATOR-PATH-001 B8)
+
+`db-schema-report` distinguishes three states instead of the old binary
+"current == head" check, which raised the identical `MIGRATION_REQUIRED`
+whether the database was behind OR ahead of the code — with remediation text
+("run `alembic upgrade head`") that is a no-op when ahead, so an operator
+following it loops forever. This is exactly the state after applying `0028`
+and then reverting the merge that added it.
+
+- **`SCHEMA_MATCH`** — nothing to do.
+- **`SCHEMA_BEHIND_CODE`** — the normal case after a `git pull` that added a
+  migration. Follow steps 1-8 above.
+- **`SCHEMA_AHEAD_OF_CODE`** — the database's stamped revision is not an
+  ancestor of the running code's head (the code doesn't even have a script
+  for it, or it's simply newer). **Never auto-downgrade.** This requires an
+  explicit operator decision between exactly two options:
+  1. **Redeploy the newer code** this database revision belongs to
+     (`git pull --ff-only` to the commit whose Alembic head matches the
+     database's current revision, then re-run `db-schema-report`); or
+  2. **Downgrade the database** to this code's head — see the `0028`
+     rollback procedure immediately below for the one case this repo has
+     actually measured. Confirm a fresh backup exists first.
+
+### Migration `0028` rollback procedure (measured, CRYPTO-BACKLOG-SELECTION-AND-OPERATOR-PATH-001 B8)
+
+`0028` widens `crypto_token_lifecycle_runs.status` from `VARCHAR(16)` to
+`VARCHAR(32)` via `batch_alter_table` (SQLite cannot `ALTER COLUMN` in
+place — batch mode rebuilds the table). The downgrade re-narrows it back to
+`VARCHAR(16)`, which is lossy IF any stored value exceeds 16 characters
+(`"skipped_contention"` is 18 chars, `"dry_run_partial"` is 16 and fits with
+zero headroom). Measured independently on a production copy before this was
+documented as safe to reverse:
+
+- **Downgrade wall time: 3.25s.**
+- **Write-lock hold during the rebuild: 0.157s** — well under any writer's
+  busy-timeout budget; a concurrent MarketOps cycle is not expected to fail
+  because of this downgrade alone.
+- **Losslessness for values that fit:** an 18-character value
+  (`"skipped_contention"`) written before the downgrade was verified intact
+  and unmodified after downgrading and re-upgrading — SQLite does not
+  truncate on a batch-table narrow when nothing in the actual row data
+  exceeds the new declared width in this migration's own test data. **This
+  is NOT a length-enforcement guarantee going forward** — SQLite never
+  enforces `VARCHAR(n)` length, so nothing stops a value written AFTER the
+  downgrade (while running old code with the wide-status vocabulary
+  disabled) from exceeding 16 characters again; the downgrade only proves
+  existing data survives the round trip, not that future writes are
+  constrained.
+- **Foreign-key dependency:** `0028`'s `batch_alter_table` rebuild depends on
+  `PRAGMA foreign_keys=OFF` being in effect for the duration of the table
+  swap (SQLite's batch-mode default). **Production carries 7,345
+  pre-existing dangling FK rows** (documented, not new) — if a downgrade or
+  upgrade of this migration is ever run with foreign key enforcement
+  deliberately turned ON, expect it to fail loudly on those pre-existing
+  rows, not on anything this migration itself introduces.
+
+```bash
+# Confirm a fresh backup exists FIRST.
+.venv/bin/python -m app.cli backup-db
+.venv/bin/alembic downgrade 0027
+.venv/bin/python -m app.cli db-schema-report     # must show current revision 0027, status SCHEMA_MATCH
+.venv/bin/python -m app.cli db-integrity-check   # ~7m18s at current DB size
+# Statistics: downgrading rebuilds crypto_token_lifecycle_runs AGAIN — see
+# the ANALYZE step below; run it the same way after a downgrade as after
+# the original upgrade.
+```
+
+### Migration `0028`: `ANALYZE` after a table rebuild (CRYPTO-BACKLOG-SELECTION-AND-OPERATOR-PATH-001 B5)
+
+`0028`'s `batch_alter_table` rebuild of `crypto_token_lifecycle_runs`
+(`CREATE` new table, copy rows, `DROP` old, rename) does not carry that
+table's `sqlite_stat1` row across the rebuild — **measured 130 → 129 rows**
+applying `0028` to a production copy that had already been `ANALYZE`d. This
+is an intentional, explicit, per-migration operator step — **this repo does
+NOT auto-rerun `ANALYZE` after every migration**; most migrations here are
+additive (`CREATE TABLE`/`ADD COLUMN`) and never touch existing statistics at
+all, so a blanket "always ANALYZE after upgrade" policy would run an
+unnecessary ~0.46s (whole-database) to potentially much longer (at larger
+scale) statistics rebuild for migrations that don't need it. Only migrations
+that rebuild a table (any `batch_alter_table` on SQLite) need this step, and
+`0028` is currently the only one:
+
+```bash
+.venv/bin/python -m app.cli db-integrity-check   # confirm ok before touching statistics
+.venv/bin/python -c "
+from app.db import get_engine
+from sqlalchemy import text
+with get_engine().connect() as conn:
+    conn.execute(text('ANALYZE crypto_token_lifecycle_runs'))
+    conn.commit()
+"
+```
+A per-table `ANALYZE crypto_token_lifecycle_runs` (rather than a full-database
+`ANALYZE`) is the intended, minimal fix — it rebuilds statistics only for the
+one table the migration actually touched. A full-database `ANALYZE` is also
+acceptable given the measured ~0.46s cost at the current database size (see
+the "Live ANALYZE" entry in `DEPLOYMENT_REPORT_EVO_X2.md`), but the choice
+must be made explicitly, not run reflexively.
+
+**Post-migration acceptance criteria** (all four must pass before declaring
+the migration complete):
+1. `db-schema-report` reports the expected revision and `status:
+   SCHEMA_MATCH`.
+2. `sqlite_stat1` contains a row for `crypto_token_lifecycle_runs` again
+   (query `SELECT * FROM sqlite_stat1 WHERE tbl='crypto_token_lifecycle_runs'`
+   via `db-integrity-check`'s engine, or any read-only inspection path — do
+   not use the bare `sqlite3` binary, which is not installed on EVO-X2).
+3. `db-integrity-check` reports `PASS`.
+4. MarketOps health and watcher health are both green for at least one full
+   cycle after resuming services (`marketops-report`, `journalctl --user -u
+   probability-arena-watcher.service`).
+
+### Restoring a backup: planner state is NOT integrity (CRYPTO-BACKLOG-SELECTION-AND-OPERATOR-PATH-001 B6)
+
+**Every backup artifact taken before 2026-08-11T07:04:51Z predates the live
+`ANALYZE`** (see the "Live ANALYZE" entry in `DEPLOYMENT_REPORT_EVO_X2.md`) —
+restoring one of those restores an **UNANALYSED** planner state silently,
+even though the schema and every row of data are otherwise fully intact.
+"Integrity restored" (`db-integrity-check` reports `PASS`) is NOT the same
+claim as "planner state restored" — do not equate the two. Backup artifacts
+themselves are never modified to fix this; the restore procedure adds an
+explicit post-restore step instead:
+
+```bash
+# ... normal restore procedure (see docs/SQLITE_BACKUP_COORDINATION_001.md) ...
+.venv/bin/python -m app.cli db-integrity-check    # 1) integrity restored?
+.venv/bin/python -c "
+from app.db import get_engine
+from sqlalchemy import text
+with get_engine().connect() as conn:
+    n = conn.execute(text('SELECT count(*) FROM sqlite_stat1')).scalar()
+    print(f'sqlite_stat1 rows: {n}')
+"
+# 2) if 0 (or fewer rows than expected — 130 as of the 2026-08-11 baseline,
+#    see DEPLOYMENT_REPORT_EVO_X2.md), the restored backup predates the
+#    live ANALYZE. Rebuild planner statistics explicitly before declaring
+#    the environment fully operational:
+.venv/bin/python -c "
+from app.db import get_engine
+from sqlalchemy import text
+with get_engine().connect() as conn:
+    conn.execute(text('ANALYZE'))
+    conn.commit()
+"
+# 3) only NOW is the environment fully operational — integrity AND planner
+#    state both verified, not just integrity.
 ```
 
 ## Feature flag rollout sequence (one flag at a time)
@@ -137,7 +333,7 @@ Read-only DEX Screener GETs; no wallets/swaps/execution exist anywhere.
 **CRYPTO-COVERAGE-REPAIR-001 — the deliberate rollout step this doc anticipated.**
 This milestone ships a crypto timer unit
 (`infra/systemd/user/probability-arena-crypto-reconcile.{service,timer}`,
-03/09/15/21:20 UTC, running `crypto-tape-reconcile`) on branch
+03/09/15/21:07 UTC, running `crypto-tape-reconcile`) on branch
 `worktree/crypto-coverage-repair`. **As of this writing that branch is not
 merged to `main` and NOTHING is installed on EVO-X2** — there is still zero
 crypto timers running in production. The steps below are what an operator
@@ -242,8 +438,18 @@ unscheduled.
     `--batch-size N --limit N --max-duration-seconds 600` so the whole pass
     IS one batch and read `duration_ms`), and set
     `CRYPTO_TAPE_RECONCILER_BATCH_SIZE` so that measured hold stays
-    comfortably under `sqlite_busy_timeout_ms` (30s) — never trust the
-    shipped default on an unmeasured host.
+    comfortably under `sqlite_busy_timeout_ms` — never trust the shipped
+    default on an unmeasured host.
+    **Doc-drift correction (CRYPTO-BACKLOG-SELECTION-AND-OPERATOR-PATH-001
+    B9):** `sqlite_busy_timeout_ms` is **30s**, but that is a PER-STATEMENT
+    timeout (SQLite's `busy_timeout` re-arms on every statement that hits
+    `SQLITE_BUSY`), not a bound on the whole transaction/batch. One batch
+    commit issues several statements (birth upsert, snapshot insert, actor
+    insert, outcome upsert, plus the run-row bookkeeping), and each one gets
+    its own up-to-30s wait if it lands on the lock — so the REAL worst-case
+    hold a single stalled batch can impose is closer to **~47s**, not 30s.
+    Anywhere this doc says "the 30s busy bound", read that as the
+    per-statement figure, not the batch's total worst case.
   It runs `Nice=10 IOWeight=20` and aborts when the latest MarketOps run
   errored. Exit code is non-zero on a refused, truncated, partial, locked, or
   overlap-skipped pass — a green unit that reconciled nothing is exactly the

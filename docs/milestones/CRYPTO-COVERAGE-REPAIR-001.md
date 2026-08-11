@@ -46,7 +46,7 @@ Safe throughput, measured directly (not estimated) at the shipped scheduled-path
 | 2 | 130 | 26 | 20.46 |
 | 3 | 130 | 26 | 20.56 |
 
-Deterministic: 130 tokens/pass every trial. At the shipped cadence (4x/day: 03/09/15/21:20 UTC), **safe capacity = 130 x 4 = 520 tokens/day.**
+Deterministic: 130 tokens/pass every trial. At the shipped cadence (4x/day: 03/09/15/21:07 UTC), **safe capacity = 130 x 4 = 520 tokens/day.**
 
 Adaptive batching (B1/B3, calibrated with the recommended `initial_per_token_cost_seconds=0.71`, `time_budget_seconds=2.0`, `batch_size=25` as a MAXIMUM only) was also measured directly, to check whether it closes the gap: **133, 143, 140 tokens/pass across three trials — a ~5-8% improvement, not the multiple this milestone's earlier text speculated `batch_size` alone was blocking.** Root cause: total pass wall time is dominated by `tokens_processed x per_token_cost`, which is roughly invariant to how those tokens are chunked into commits (only the per-batch `RECONCILE_POST_BATCH_YIELD_SECONDS` overhead scales with batch count, and it is small — 26 vs 21 batches costs ~0.25s of the 20s deadline). **The lever that actually changes capacity is `max_duration_seconds` or cadence, not batch sizing.**
 
@@ -164,7 +164,7 @@ this is a thin wrapper over the existing, already-proven `run_once`.
   result.
 - CLI `crypto-tape-reconcile` (`--dry-run`, `--force`, `--hours`, `--limit`,
   `--batch-size`, `--max-duration-seconds`).
-- User systemd timer at 03/09/15/21:20 UTC, not auto-installed. Chosen so any
+- User systemd timer at 03/09/15/21:07 UTC, not auto-installed. Chosen so any
   maturing horizon is reconciled within ≤6h of its window closing, with ~5 days
   of slack before pruning, and so it never lands near the 01:30 UTC backup.
 
