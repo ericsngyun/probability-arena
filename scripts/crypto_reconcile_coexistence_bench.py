@@ -24,10 +24,14 @@ cycle, so the wait it experiences is a draw from the wait distribution of a
 uniformly-random arrival during the pass. Sampling that distribution once per
 60 s would give ~0 samples in a 20 s pass — no statistical power at all — so
 the probe writer instead issues ONE real write transaction per `--probe-period`
-seconds (default 1.0 s, jittered). Each attempt is an independent uniform
-arrival, and at ~1 ms of work per second the probe's own duty cycle is ~0.1 %:
-it samples the system without materially perturbing it, which is exactly the
-property the tight-loop competitor lacks.
+seconds (default 1.0 s) on a FIXED ABSOLUTE SCHEDULE with a random initial
+phase. The absolute schedule is the part that makes it an estimator rather than
+a renewal process: sleeping a fresh interval *after* each transaction would
+couple arrivals to the system, under-sampling exactly the intervals where the
+reconciler holds the lock longest and biasing the measured wait downward. At
+~1 ms of work per second the probe's own duty cycle is ~0.1 %, so it samples
+the system without materially perturbing it — which is exactly the property the
+tight-loop competitor lacks.
 
 A `paced` mode is also provided which fires at the literal EVO cadences
 (watcher 60 s, MarketOps 300 s) for face validity. It is honest but low-n; it
@@ -74,6 +78,32 @@ from pathlib import Path
 
 _DEPLOYMENT_MARKERS = ("projects/probability-arena/data", "/var/lib/", "/srv/")
 
+_PRODUCTION_BASENAMES = ("probability_arena.db",)
+
+
+def _refuse_non_scratch(path) -> None:
+    """Refuse anything that looks like a real deployment OR development
+    database.
+
+    A three-substring blacklist tuned to one host is not a guard: a
+    developer's own `<repo>/data/probability_arena.db` matches none of those
+    fragments, and this script WRITES. The filename check is what actually
+    stops that case; the repo-root check stops a scratch copy landing inside a
+    checkout."""
+    from pathlib import Path as _P
+    s = str(path)
+    for frag in _DEPLOYMENT_MARKERS:
+        if frag in s:
+            raise SystemExit(f"refusing a deployment-looking path: {path}")
+    if _P(s).name in _PRODUCTION_BASENAMES:
+        raise SystemExit(
+            f"refusing {_P(s).name!r}: that is the production database "
+            "filename. Copy it to a scratch name first."
+        )
+    repo_root = _P(__file__).resolve().parents[1]
+    if repo_root in _P(s).resolve().parents:
+        raise SystemExit(f"refusing a path inside the repo checkout: {path}")
+
 
 def _pctl(values, p):
     if not values:
@@ -109,6 +139,9 @@ def _competitor(db_path: str, mode: str, busy_timeout_ms: int, probe_period: flo
     t_start = time.perf_counter()
     paced_next = {"watcher": t_start + random.random() * 60.0,
                   "marketops": t_start + random.random() * 300.0}
+    # probe mode: an absolute schedule with a random initial phase, so the
+    # first arrival is not pinned to t=0 of every trial either.
+    probe_next = [t_start + random.random() * probe_period]
 
     while not stop.is_set():
         now = time.perf_counter()
@@ -123,9 +156,19 @@ def _competitor(db_path: str, mode: str, busy_timeout_ms: int, probe_period: flo
                 if now >= paced_next[k]:
                     paced_next[k] = now + period
         else:                          # "probe" — uniform-arrival estimator
-            time.sleep(max(0.0, probe_period * (0.5 + random.random())))
-            if stop.is_set():
-                break
+            # FIXED ABSOLUTE SCHEDULE, not sleep-after-work. Sleeping for a
+            # fresh interval after each transaction couples the arrival process
+            # to the system being measured: a transaction that waits a long
+            # time pushes the next arrival back, so exactly the intervals where
+            # the reconciler holds the lock longest get UNDER-sampled and the
+            # measured wait is biased downward. Advancing an absolute deadline
+            # keeps the arrival times independent of what the reconciler is
+            # doing; a late attempt catches up instead of shifting the schedule.
+            if now < probe_next[0]:
+                time.sleep(min(0.02, probe_next[0] - now))
+                continue
+            while probe_next[0] <= now:
+                probe_next[0] += probe_period
 
         seq += 1
         t0 = time.perf_counter()
@@ -225,20 +268,31 @@ def _run_pass(db_path: str, batch_size: int, max_duration: float,
     rec = ct.CryptoLifecycleTapeRecorder(ct.CryptoTapeConfig.from_settings(settings))
     session = get_sessionmaker()()
     t0 = time.perf_counter()
-    summary = rec.run_once(
-        session, limit=2000, hours=48, dry_run=False,
-        oldest_first=True, include_backlog=True, exclude_final=True,
-        min_age_minutes=ct.SHORTEST_HORIZON_CLOSING_EDGE_MINUTES,
-        run_config_extra={"mode": "scheduled_reconciliation", "forced": True,
-                          "bench": "coexistence"},
-        skip_redundant_when_final=True,
-        batch_size=batch_size, max_duration_seconds=max_duration,
-        sleeper=time.sleep,
-    )
+    # `Session.commit` is patched GLOBALLY. If `run_once` raises — which it
+    # does in every adversarial trial — restoring it in the happy path only
+    # would leave the patch installed, leak the session and engine, and make
+    # the NEXT trial capture the already-patched function as its "original",
+    # nesting wrappers and keeping the previous trial's `holds` alive through
+    # the closure. try/finally, always.
+    try:
+        summary = rec.run_once(
+            session, limit=2000, hours=48, dry_run=False,
+            oldest_first=True, include_backlog=True, exclude_final=True,
+            min_age_minutes=ct.SHORTEST_HORIZON_CLOSING_EDGE_MINUTES,
+            run_config_extra={"mode": "scheduled_reconciliation", "forced": True,
+                              "bench": "coexistence"},
+            skip_redundant_when_final=True,
+            batch_size=batch_size, max_duration_seconds=max_duration,
+            sleeper=time.sleep,
+        )
+    finally:
+        Session.commit = original_commit
+        try:
+            session.close()
+        except Exception:
+            pass
+        engine.dispose()
     wall = time.perf_counter() - t0
-    session.close()
-    Session.commit = original_commit
-    engine.dispose()
     return {
         "status": summary.get("status"),
         "tokens_processed": summary.get("tokens_processed"),
@@ -264,16 +318,28 @@ def main() -> int:
                     default="probe")
     ap.add_argument("--analyze", action="store_true",
                     help="ANALYZE the restored copy before each pass")
+    ap.add_argument("--drop-stats", action="store_true",
+                    help="DELETE every sqlite_stat1 row on the restored copy "
+                         "before each pass, reconstructing the no-statistics "
+                         "planner state. Needed once ANALYZE has been run on "
+                         "the source database: from that point on, no copy of "
+                         "production is un-analysed, so the 'before' arm can "
+                         "only be reconstructed, not found. SQLite treats an "
+                         "empty sqlite_stat1 exactly as it treats a missing "
+                         "one — verified in crypto_query_plan_mechanism.py's "
+                         "V0 variant, which reproduces the un-analysed plans "
+                         "and latencies on an analysed file.")
     ap.add_argument("--batch-size", type=int, default=5)
     ap.add_argument("--max-duration-seconds", type=float, default=20.0)
     ap.add_argument("--busy-timeout-ms", type=int, default=30000)
     ap.add_argument("--probe-period", type=float, default=1.0)
     args = ap.parse_args()
 
-    for p in (args.work_db,):
-        for frag in _DEPLOYMENT_MARKERS:
-            if frag in str(Path(p).resolve()):
-                raise SystemExit(f"refusing a deployment-looking path: {p}")
+    # BOTH paths, not just --work-db: --pristine-db is read every trial and a
+    # typo pointing it at the live file would read production 12 times under a
+    # write-saturating competitor.
+    for p in (args.work_db, args.pristine_db):
+        _refuse_non_scratch(Path(p).resolve())
     if not Path(args.pristine_db).exists():
         raise SystemExit(f"no such pristine copy: {args.pristine_db}")
 
@@ -286,12 +352,25 @@ def main() -> int:
             Path(args.work_db + suffix).unlink(missing_ok=True)
         shutil.copyfile(args.pristine_db, args.work_db)
         analyze_s = None
-        if args.analyze:
+        stats_rows = None
+        if args.analyze or args.drop_stats:
             c = sqlite3.connect(args.work_db)
-            a0 = time.perf_counter()
-            c.execute("ANALYZE")
-            c.commit()
-            analyze_s = round(time.perf_counter() - a0, 3)
+            if args.drop_stats:
+                try:
+                    c.execute("DELETE FROM sqlite_stat1")
+                    c.commit()
+                except sqlite3.Error:
+                    pass          # no sqlite_stat1 at all is the same state
+            if args.analyze:
+                a0 = time.perf_counter()
+                c.execute("ANALYZE")
+                c.commit()
+                analyze_s = round(time.perf_counter() - a0, 3)
+            try:
+                stats_rows = c.execute(
+                    "SELECT count(*) FROM sqlite_stat1").fetchone()[0]
+            except sqlite3.Error:
+                stats_rows = 0
             c.close()
 
         q: mp.Queue = mp.Queue()
@@ -334,6 +413,7 @@ def main() -> int:
         trial = {
             "trial": t,
             "analyze_seconds": analyze_s,
+            "sqlite_stat1_rows_at_pass_start": stats_rows,
             "pass": res,
             "competitor": {
                 **comp,
@@ -354,6 +434,7 @@ def main() -> int:
     report = {
         "mode": args.mode,
         "analyzed": args.analyze,
+        "stats_dropped": args.drop_stats,
         "trials": trials,
         "aggregate": {
             "tokens_processed": [t["pass"]["tokens_processed"] for t in trials],

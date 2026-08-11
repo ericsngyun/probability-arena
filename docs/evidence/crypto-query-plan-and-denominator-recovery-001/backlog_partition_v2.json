@@ -1,30 +1,30 @@
 {
   "db": "/mnt/data/cqp-bench/part.db",
-  "measured_at": "2026-08-11T07:00:52.351705+00:00",
+  "measured_at": "2026-08-11T07:50:25.334658+00:00",
   "retention_days": 7,
   "window_hours": 48,
   "closing_edge_minutes": 2160.0,
   "b4_arrivals": {
     "windows": {
       "24h": {
-        "tokens": 520,
-        "per_day": 520.0
+        "tokens": 523,
+        "per_day": 523.0
       },
       "3d": {
-        "tokens": 1363,
-        "per_day": 454.3
+        "tokens": 1367,
+        "per_day": 455.7
       },
       "7d": {
-        "tokens": 2945,
-        "per_day": 420.7
+        "tokens": 2940,
+        "per_day": 420.0
       },
       "14d": {
-        "tokens": 5545,
+        "tokens": 5546,
         "per_day": 396.1
       },
       "30d": {
-        "tokens": 10231,
-        "per_day": 341.0
+        "tokens": 10237,
+        "per_day": 341.2
       }
     },
     "per_utc_day": {
@@ -106,30 +106,30 @@
   },
   "b5_backlog": {
     "totals": {
-      "tokens_total": 12863,
-      "outcomes_total": 7436,
+      "tokens_total": 12874,
+      "outcomes_total": 7447,
       "outcomes_final": 2,
-      "birth_events": 7436
+      "birth_events": 7447
     },
-    "backlog_size": 11918,
-    "anchored": 11918,
+    "backlog_size": 11926,
+    "anchored": 11926,
     "classes": {
-      "RETENTION_LOST": 9306,
+      "RETENTION_LOST": 9320,
       "RECOVERABLE_NOW": 47,
-      "PARTIALLY_RECOVERABLE": 789,
+      "PARTIALLY_RECOVERABLE": 792,
       "MISSING_REQUIRED_INITIAL_STATE": 1581,
       "NOT_YET_DUE": 0,
-      "NO_EVIDENCE_IN_ANY_HORIZON": 195
+      "NO_EVIDENCE_IN_ANY_HORIZON": 186
     },
     "class_share": {
-      "RETENTION_LOST": 78.08,
+      "RETENTION_LOST": 78.15,
       "RECOVERABLE_NOW": 0.39,
-      "PARTIALLY_RECOVERABLE": 6.62,
-      "MISSING_REQUIRED_INITIAL_STATE": 13.27,
+      "PARTIALLY_RECOVERABLE": 6.64,
+      "MISSING_REQUIRED_INITIAL_STATE": 13.26,
       "NOT_YET_DUE": 0.0,
-      "NO_EVIDENCE_IN_ANY_HORIZON": 1.64
+      "NO_EVIDENCE_IN_ANY_HORIZON": 1.56
     },
-    "sum_check": 11918,
+    "sum_check": 11926,
     "cheap_identification": {
       "RETENTION_LOST": "pure timestamp range on crypto_tokens.first_seen_at: anchor < now - (7d + 2160.0min). No source load, no join \u2014 one indexable predicate, and it is MONOTONE (a token never leaves this class), so it can be written off once and excluded from selection forever.",
       "NOT_YET_DUE": "first_seen_at > now - closing_edge; already implemented as `max_first_seen_at`/`min_age_minutes` on _universe.",
@@ -137,22 +137,103 @@
       "RECOVERABLE_NOW / PARTIALLY_RECOVERABLE / NO_EVIDENCE_IN_ANY_HORIZON": "these three CANNOT be told apart without touching crypto_price_ticks, but the tick probe is a single EXISTS query on ix_crypto_price_ticks_token_address (~0.01 ms post-ANALYZE, ~13 ms pre-ANALYZE) \u2014 cheap only once the query plan is fixed."
     },
     "horizon_hit_counts": {
-      "15m": 1023,
-      "1h": 1139,
-      "6h": 245,
+      "15m": 1027,
+      "1h": 1144,
+      "6h": 246,
       "24h": 72
     },
-    "backlog_tokens_with_any_tick": 2255,
+    "backlog_tokens_with_any_tick": 2263,
     "oldest_backlog_first_seen_at": "2026-07-04 01:36:16.276833"
+  },
+  "b5_3_observation_coverage": {
+    "cohorts": [
+      {
+        "cohort": "36h-3d_zero_pruning_possible",
+        "age_hours": [
+          36,
+          72
+        ],
+        "tokens": 622,
+        "horizon_hits": {
+          "15m": 615,
+          "1h": 607,
+          "6h": 81,
+          "24h": 25
+        },
+        "horizon_share_pct": {
+          "15m": 98.9,
+          "1h": 97.6,
+          "6h": 13.0,
+          "24h": 4.0
+        },
+        "initial_liquidity_known": 245,
+        "initial_liquidity_share_pct": 39.4
+      },
+      {
+        "cohort": "3d-7d",
+        "age_hours": [
+          72,
+          168
+        ],
+        "tokens": 1573,
+        "horizon_hits": {
+          "15m": 1559,
+          "1h": 1530,
+          "6h": 227,
+          "24h": 54
+        },
+        "horizon_share_pct": {
+          "15m": 99.1,
+          "1h": 97.3,
+          "6h": 14.4,
+          "24h": 3.4
+        },
+        "initial_liquidity_known": 620,
+        "initial_liquidity_share_pct": 39.4
+      },
+      {
+        "cohort": "7d-8.5d_24h_window_partly_pruned",
+        "age_hours": [
+          168,
+          204
+        ],
+        "tokens": 612,
+        "horizon_hits": {
+          "15m": 122,
+          "1h": 139,
+          "6h": 34,
+          "24h": 13
+        },
+        "horizon_share_pct": {
+          "15m": 19.9,
+          "1h": 22.7,
+          "6h": 5.6,
+          "24h": 2.1
+        },
+        "initial_liquidity_known": 244,
+        "initial_liquidity_share_pct": 39.9
+      }
+    ],
+    "observation_span_minutes": {
+      "tokens_with_any_tick": 2364,
+      "p50": 83.0,
+      "p90": 322.0,
+      "max": 11267.9
+    },
+    "birth_initial_liquidity": {
+      "not_null": 2994,
+      "null": 4453
+    },
+    "note": "The 36h-3d cohort cannot have lost anything to retention, so its horizon coverage measures ONLY what the observation lane wrote. If 24h coverage is low there, the evidence was never recorded and no retention window recovers it."
   },
   "b7_retention": {
     "page_size": 4096,
     "page_count": 1110992,
-    "freelist_pages": 419080,
-    "freelist_bytes": 1716551680,
-    "freelist_share": 0.3772,
-    "crypto_price_ticks_rows": 143107,
-    "crypto_price_ticks_bytes": 38813696,
+    "freelist_pages": 418021,
+    "freelist_bytes": 1712214016,
+    "freelist_share": 0.3763,
+    "crypto_price_ticks_rows": 143762,
+    "crypto_price_ticks_bytes": 38989824,
     "bytes_per_tick_row": 271.2,
     "tick_rows_per_complete_day": 19375.8,
     "tick_span": [
@@ -167,34 +248,34 @@
         "incremental_bytes": 0,
         "incremental_mib": 0.0,
         "absorbed_by_existing_freelist": true,
-        "counterfactual_backlog_inside_window": 2612
+        "counterfactual_backlog_inside_window": 2606
       },
       "10d": {
         "recovery_deadline_age_days": 11.5,
         "extra_days_vs_current": 3,
         "incremental_tick_rows": 58128,
-        "incremental_bytes": 15765428,
+        "incremental_bytes": 15764813,
         "incremental_mib": 15.0,
         "absorbed_by_existing_freelist": true,
-        "counterfactual_backlog_inside_window": 3613
+        "counterfactual_backlog_inside_window": 3608
       },
       "14d": {
         "recovery_deadline_age_days": 15.5,
         "extra_days_vs_current": 7,
         "incremental_tick_rows": 135631,
-        "incremental_bytes": 36785999,
+        "incremental_bytes": 36784563,
         "incremental_mib": 35.1,
         "absorbed_by_existing_freelist": true,
-        "counterfactual_backlog_inside_window": 5176
+        "counterfactual_backlog_inside_window": 5171
       },
       "21d": {
         "recovery_deadline_age_days": 22.5,
         "extra_days_vs_current": 14,
         "incremental_tick_rows": 271262,
-        "incremental_bytes": 73571998,
+        "incremental_bytes": 73569126,
         "incremental_mib": 70.2,
         "absorbed_by_existing_freelist": true,
-        "counterfactual_backlog_inside_window": 7404
+        "counterfactual_backlog_inside_window": 7407
       }
     },
     "note": "Retention is NOT retroactive: rows already pruned cannot be recovered by lengthening the window, so the counterfactual column is a ceiling on what a LONGER WINDOW WOULD HAVE SAVED, never a forecast of what extending it now recovers. And because SQLite DELETE never shrinks the file, incremental rows are absorbed by the existing freelist until they exceed it \u2014 so a longer window is close to free in disk terms while the freelist holds, and shortening it frees no disk at all."

@@ -45,6 +45,32 @@ from pathlib import Path
 
 _DEPLOYMENT_MARKERS = ("projects/probability-arena/data", "/var/lib/", "/srv/")
 
+_PRODUCTION_BASENAMES = ("probability_arena.db",)
+
+
+def _refuse_non_scratch(path) -> None:
+    """Refuse anything that looks like a real deployment OR development
+    database.
+
+    A three-substring blacklist tuned to one host is not a guard: a
+    developer's own `<repo>/data/probability_arena.db` matches none of those
+    fragments, and this script WRITES. The filename check is what actually
+    stops that case; the repo-root check stops a scratch copy landing inside a
+    checkout."""
+    from pathlib import Path as _P
+    s = str(path)
+    for frag in _DEPLOYMENT_MARKERS:
+        if frag in s:
+            raise SystemExit(f"refusing a deployment-looking path: {path}")
+    if _P(s).name in _PRODUCTION_BASENAMES:
+        raise SystemExit(
+            f"refusing {_P(s).name!r}: that is the production database "
+            "filename. Copy it to a scratch name first."
+        )
+    repo_root = _P(__file__).resolve().parents[1]
+    if repo_root in _P(s).resolve().parents:
+        raise SystemExit(f"refusing a path inside the repo checkout: {path}")
+
 # The real statements, verbatim in shape from app/services/crypto_tape.py
 # `_load_sources` / `_universe` / `unreconciled_backlog` (the ORM emits the
 # same predicates and ORDER BY; `SELECT *` stands in for the column list,
@@ -87,11 +113,25 @@ def eqp(conn: sqlite3.Connection, sql: str, params) -> list[str]:
     return [r[3] for r in conn.execute("EXPLAIN QUERY PLAN " + sql, params)]
 
 
-def chosen_index(detail: list[str], table: str) -> str | None:
+def conn_rowcount(db: Path, table: str) -> int:
+    c = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    try:
+        return c.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+    finally:
+        c.close()
+
+
+def chosen_index(detail: list[str], table: str, alias: str | None = None) -> str | None:
+    """The index driving `table`. `alias` matters: EQP prints the ALIAS, not
+    the table name, for an aliased FROM — without it a `SCAN t` reads back as
+    "no index found" and a plan change is silently recorded as None."""
+    names = [n for n in (table, alias) if n]
     for d in detail:
-        if table in d and "USING INDEX" in d:
+        if any(n in d for n in names) and "USING INDEX" in d:
             return d.split("USING INDEX", 1)[1].split("(")[0].strip()
-        if table in d and d.startswith("SCAN"):
+        if any(n in d for n in names) and "USING COVERING INDEX" in d:
+            return d.split("USING COVERING INDEX", 1)[1].split("(")[0].strip()
+        if any(d.startswith(f"SCAN {n}") for n in names):
             return "<table scan>"
     return None
 
@@ -115,9 +155,7 @@ def main() -> int:
     args = ap.parse_args()
 
     db = Path(args.db_path).resolve()
-    for frag in _DEPLOYMENT_MARKERS:
-        if frag in str(db):
-            raise SystemExit(f"refusing a deployment-looking path: {db}")
+    _refuse_non_scratch(db)
     if not db.exists():
         raise SystemExit(f"no such database: {db}")
 
@@ -129,7 +167,12 @@ def main() -> int:
     addrs = [r[0] for r in boot.execute(
         "SELECT token_address FROM crypto_tokens ORDER BY first_seen_at "
         f"LIMIT {args.samples}")]
-    cutoff = boot.execute("SELECT max(first_seen_at) FROM crypto_tokens").fetchone()[0]
+    # The SAME cutoff `unreconciled_backlog` uses (now − window_hours), not
+    # max(first_seen_at). Binding the maximum would select every token in the
+    # table and produce a timing that cannot be compared with the audit
+    # harness's measurement of the real, 48h-bounded selection.
+    cutoff = boot.execute(
+        "SELECT datetime('now', '-48 hours')").fetchone()[0]
     boot.close()
 
     by_tbl: dict[str, list[tuple]] = {}
@@ -156,9 +199,16 @@ def main() -> int:
         sel_col = "base_token_address" if table == "crypto_pairs" else "token_address"
         sel_idx = f"ix_{table}_{sel_col}"
 
+        # SQLite only writes an `idx IS NULL` row for a table that has NO
+        # indexes, so filtering ANALYZE's own output for it selects nothing on
+        # every table here — V1 would silently be a duplicate of V0 and any
+        # conclusion drawn from it would be a conclusion drawn from an empty
+        # test. Synthesize the row instead, so V1 actually tests what it claims
+        # to: does the table's row-count estimate alone move the planner?
+        table_rows = conn_rowcount(db, table)
         variants = {
             "V0_no_statistics": [],
-            "V1_table_row_only": [r for r in rows_for_table if r[1] is None],
+            "V1_synthetic_table_row_only": [(table, None, str(table_rows))],
             "V2_chain_index_only": [r for r in rows_for_table if r[1] == chain_idx],
             "V3_selective_index_only": [r for r in rows_for_table if r[1] == sel_idx],
             "V4_both_index_rows": [
@@ -197,19 +247,20 @@ def main() -> int:
     }.items():
         conn = set_stat(rows)
         detail = eqp(conn, UNIVERSE_SQL, ("solana", cutoff))
-        t0 = time.perf_counter()
-        conn.execute(UNIVERSE_SQL, ("solana", cutoff)).fetchall()
-        ms = round((time.perf_counter() - t0) * 1000, 4)
+        # median of `--samples`, not a single execution: the four-table path
+        # medians and this one must be comparable, and a lone timing on a
+        # multi-GB file is jitter, not a measurement.
+        ms = timed(conn, UNIVERSE_SQL, [("solana", cutoff)] * args.samples)
         conn.close()
         uni.append({
             "variant": vname,
             "stat_rows": [{"tbl": t, "idx": i, "stat": s} for t, i, s in rows],
             "plan": detail,
-            "index": chosen_index(detail, "crypto_tokens"),
+            "index": chosen_index(detail, "crypto_tokens", alias="t"),
             "temp_btree": any("TEMP B-TREE" in d for d in detail),
             "median_ms": ms,
         })
-    results["universe_selection"] = uni
+    results["unreconciled_backlog_selection"] = uni
 
     Path(args.out).write_text(json.dumps(results, indent=2))
     for qname, variants in results.items():

@@ -69,6 +69,32 @@ from pathlib import Path
 
 _DEPLOYMENT_MARKERS = ("projects/probability-arena/data", "/var/lib/", "/srv/")
 
+_PRODUCTION_BASENAMES = ("probability_arena.db",)
+
+
+def _refuse_non_scratch(path) -> None:
+    """Refuse anything that looks like a real deployment OR development
+    database.
+
+    A three-substring blacklist tuned to one host is not a guard: a
+    developer's own `<repo>/data/probability_arena.db` matches none of those
+    fragments, and this script WRITES. The filename check is what actually
+    stops that case; the repo-root check stops a scratch copy landing inside a
+    checkout."""
+    from pathlib import Path as _P
+    s = str(path)
+    for frag in _DEPLOYMENT_MARKERS:
+        if frag in s:
+            raise SystemExit(f"refusing a deployment-looking path: {path}")
+    if _P(s).name in _PRODUCTION_BASENAMES:
+        raise SystemExit(
+            f"refusing {_P(s).name!r}: that is the production database "
+            "filename. Copy it to a scratch name first."
+        )
+    repo_root = _P(__file__).resolve().parents[1]
+    if repo_root in _P(s).resolve().parents:
+        raise SystemExit(f"refusing a path inside the repo checkout: {path}")
+
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
@@ -92,12 +118,7 @@ def _parse_args() -> argparse.Namespace:
 
 ARGS = _parse_args()
 DB_PATH = Path(ARGS.db_path).resolve()
-for _frag in _DEPLOYMENT_MARKERS:
-    if _frag in str(DB_PATH):
-        raise SystemExit(
-            f"refusing to audit a deployment-looking path: {DB_PATH}\n"
-            "Point this at a throwaway copy."
-        )
+_refuse_non_scratch(DB_PATH)
 if not DB_PATH.exists():
     raise SystemExit(f"no such database: {DB_PATH}")
 

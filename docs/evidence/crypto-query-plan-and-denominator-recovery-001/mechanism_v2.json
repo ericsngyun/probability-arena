@@ -9,18 +9,24 @@
       ],
       "index": "ix_crypto_token_discovery_events_chain",
       "temp_btree": true,
-      "median_ms": 65.8024
+      "median_ms": 69.6089
     },
     {
-      "variant": "V1_table_row_only",
-      "stat_rows": [],
+      "variant": "V1_synthetic_table_row_only",
+      "stat_rows": [
+        {
+          "tbl": "crypto_token_discovery_events",
+          "idx": null,
+          "stat": "397625"
+        }
+      ],
       "plan": [
         "SEARCH crypto_token_discovery_events USING INDEX ix_crypto_token_discovery_events_chain (chain=?)",
         "USE TEMP B-TREE FOR ORDER BY"
       ],
       "index": "ix_crypto_token_discovery_events_chain",
       "temp_btree": true,
-      "median_ms": 64.9593
+      "median_ms": 67.893
     },
     {
       "variant": "V2_chain_index_only",
@@ -28,7 +34,7 @@
         {
           "tbl": "crypto_token_discovery_events",
           "idx": "ix_crypto_token_discovery_events_chain",
-          "stat": "396669 396669"
+          "stat": "397625 397625"
         }
       ],
       "plan": [
@@ -37,7 +43,7 @@
       ],
       "index": "ix_crypto_token_discovery_events_token_address",
       "temp_btree": true,
-      "median_ms": 0.0386
+      "median_ms": 0.0379
     },
     {
       "variant": "V3_selective_index_only",
@@ -45,7 +51,7 @@
         {
           "tbl": "crypto_token_discovery_events",
           "idx": "ix_crypto_token_discovery_events_token_address",
-          "stat": "396669 31"
+          "stat": "397625 31"
         }
       ],
       "plan": [
@@ -54,7 +60,7 @@
       ],
       "index": "ix_crypto_token_discovery_events_chain",
       "temp_btree": true,
-      "median_ms": 65.157
+      "median_ms": 66.5384
     },
     {
       "variant": "V4_both_index_rows",
@@ -62,12 +68,12 @@
         {
           "tbl": "crypto_token_discovery_events",
           "idx": "ix_crypto_token_discovery_events_token_address",
-          "stat": "396669 31"
+          "stat": "397625 31"
         },
         {
           "tbl": "crypto_token_discovery_events",
           "idx": "ix_crypto_token_discovery_events_chain",
-          "stat": "396669 396669"
+          "stat": "397625 397625"
         }
       ],
       "plan": [
@@ -76,7 +82,7 @@
       ],
       "index": "ix_crypto_token_discovery_events_token_address",
       "temp_btree": true,
-      "median_ms": 0.0385
+      "median_ms": 0.0379
     },
     {
       "variant": "V5_full_ANALYZE_for_this_table",
@@ -84,17 +90,17 @@
         {
           "tbl": "crypto_token_discovery_events",
           "idx": "ix_crypto_token_discovery_events_event_type",
-          "stat": "396669 132223"
+          "stat": "397625 132542"
         },
         {
           "tbl": "crypto_token_discovery_events",
           "idx": "ix_crypto_token_discovery_events_token_address",
-          "stat": "396669 31"
+          "stat": "397625 31"
         },
         {
           "tbl": "crypto_token_discovery_events",
           "idx": "ix_crypto_token_discovery_events_chain",
-          "stat": "396669 396669"
+          "stat": "397625 397625"
         }
       ],
       "plan": [
@@ -103,7 +109,7 @@
       ],
       "index": "ix_crypto_token_discovery_events_token_address",
       "temp_btree": true,
-      "median_ms": 0.0376
+      "median_ms": 0.0367
     },
     {
       "variant": "V6_full_ANALYZE_everything",
@@ -111,22 +117,22 @@
         {
           "tbl": "crypto_token_survival_outcomes",
           "idx": "ix_crypto_token_survival_outcomes_birth_event_id",
-          "stat": "7420 1"
+          "stat": "7447 1"
         },
         {
           "tbl": "crypto_token_survival_outcomes",
           "idx": "ix_crypto_token_survival_outcomes_final",
-          "stat": "7420 3710"
+          "stat": "7447 3724"
         },
         {
           "tbl": "crypto_token_survival_outcomes",
           "idx": "ix_crypto_token_survival_outcomes_token_address",
-          "stat": "7420 1"
+          "stat": "7447 1"
         },
         {
           "tbl": "crypto_token_survival_outcomes",
           "idx": "ix_crypto_token_survival_outcomes_chain",
-          "stat": "7420 7420"
+          "stat": "7447 7447"
         },
         {
           "tbl": "tennis_tape_links",
@@ -201,52 +207,52 @@
         {
           "tbl": "tick_aggregation_runs",
           "idx": null,
-          "stat": "708"
+          "stat": "710"
         },
         {
           "tbl": "crypto_token_birth_events",
           "idx": "ix_crypto_birth_chain_token",
-          "stat": "7420 7420 1"
+          "stat": "7447 7447 1"
         },
         {
           "tbl": "crypto_token_birth_events",
           "idx": "ix_crypto_token_birth_events_run_id",
-          "stat": "7420 3"
+          "stat": "7447 3"
         },
         {
           "tbl": "crypto_token_birth_events",
           "idx": "ix_crypto_token_birth_events_first_evidence_at",
-          "stat": "7420 2"
+          "stat": "7447 2"
         },
         {
           "tbl": "crypto_token_birth_events",
           "idx": "ix_crypto_token_birth_events_chain",
-          "stat": "7420 7420"
+          "stat": "7447 7447"
         },
         {
           "tbl": "crypto_token_birth_events",
           "idx": "ix_crypto_token_birth_events_token_address",
-          "stat": "7420 1"
+          "stat": "7447 1"
         },
         {
           "tbl": "crypto_opportunity_signals",
           "idx": "ix_crypto_opportunity_signals_signal_status",
-          "stat": "90356 90356"
+          "stat": "90571 90571"
         },
         {
           "tbl": "crypto_opportunity_signals",
           "idx": "ix_crypto_opportunity_signals_signal_type",
-          "stat": "90356 10040"
+          "stat": "90571 10064"
         },
         {
           "tbl": "crypto_opportunity_signals",
           "idx": "ix_crypto_opportunity_signals_token_address",
-          "stat": "90356 7"
+          "stat": "90571 7"
         },
         {
           "tbl": "crypto_opportunity_signals",
           "idx": "ix_crypto_opportunity_signals_chain",
-          "stat": "90356 90356"
+          "stat": "90571 90571"
         },
         {
           "tbl": "market_resolution_assessments",
@@ -261,27 +267,27 @@
         {
           "tbl": "crypto_token_actor_observations",
           "idx": "ix_crypto_token_actor_observations_birth_event_id",
-          "stat": "8474 2"
+          "stat": "8501 2"
         },
         {
           "tbl": "crypto_token_actor_observations",
           "idx": "ix_crypto_token_actor_observations_token_address",
-          "stat": "8474 2"
+          "stat": "8501 2"
         },
         {
           "tbl": "crypto_token_actor_observations",
           "idx": "ix_crypto_token_actor_observations_run_id",
-          "stat": "8474 3"
+          "stat": "8501 3"
         },
         {
           "tbl": "crypto_token_actor_observations",
           "idx": "ix_crypto_token_actor_observations_chain",
-          "stat": "8474 8474"
+          "stat": "8501 8501"
         },
         {
           "tbl": "crypto_token_lifecycle_runs",
           "idx": null,
-          "stat": "3467"
+          "stat": "3479"
         },
         {
           "tbl": "frontier_eval_runs",
@@ -291,12 +297,12 @@
         {
           "tbl": "crypto_token_risk_assessments",
           "idx": "ix_crypto_token_risk_assessments_token_address",
-          "stat": "311214 25"
+          "stat": "312023 25"
         },
         {
           "tbl": "crypto_token_risk_assessments",
           "idx": "ix_crypto_token_risk_assessments_chain",
-          "stat": "311214 311214"
+          "stat": "312023 312023"
         },
         {
           "tbl": "scanner_runs",
@@ -326,7 +332,7 @@
         {
           "tbl": "crypto_watcher_runs",
           "idx": null,
-          "stat": "1746"
+          "stat": "1764"
         },
         {
           "tbl": "pipeline_runs",
@@ -406,27 +412,27 @@
         {
           "tbl": "crypto_token_lifecycle_snapshots",
           "idx": "ix_crypto_lifecycle_snap_token_observed",
-          "stat": "8474 2 1"
+          "stat": "8501 2 1"
         },
         {
           "tbl": "crypto_token_lifecycle_snapshots",
           "idx": "ix_crypto_token_lifecycle_snapshots_run_id",
-          "stat": "8474 3"
+          "stat": "8501 3"
         },
         {
           "tbl": "crypto_token_lifecycle_snapshots",
           "idx": "ix_crypto_token_lifecycle_snapshots_chain",
-          "stat": "8474 8474"
+          "stat": "8501 8501"
         },
         {
           "tbl": "crypto_token_lifecycle_snapshots",
           "idx": "ix_crypto_token_lifecycle_snapshots_birth_event_id",
-          "stat": "8474 2"
+          "stat": "8501 2"
         },
         {
           "tbl": "crypto_token_lifecycle_snapshots",
           "idx": "ix_crypto_token_lifecycle_snapshots_token_address",
-          "stat": "8474 2"
+          "stat": "8501 2"
         },
         {
           "tbl": "alembic_version",
@@ -446,22 +452,22 @@
         {
           "tbl": "market_outcomes",
           "idx": "ix_market_outcomes_market_ticker",
-          "stat": "17720 1"
+          "stat": "17760 1"
         },
         {
           "tbl": "crypto_token_discovery_events",
           "idx": "ix_crypto_token_discovery_events_event_type",
-          "stat": "396669 132223"
+          "stat": "397625 132542"
         },
         {
           "tbl": "crypto_token_discovery_events",
           "idx": "ix_crypto_token_discovery_events_token_address",
-          "stat": "396669 31"
+          "stat": "397625 31"
         },
         {
           "tbl": "crypto_token_discovery_events",
           "idx": "ix_crypto_token_discovery_events_chain",
-          "stat": "396669 396669"
+          "stat": "397625 397625"
         },
         {
           "tbl": "pipeline_stage_runs",
@@ -471,72 +477,72 @@
         {
           "tbl": "crypto_price_ticks",
           "idx": "ix_crypto_price_ticks_pair_observed",
-          "stat": "142253 24 1"
+          "stat": "143762 24 1"
         },
         {
           "tbl": "crypto_price_ticks",
           "idx": "ix_crypto_price_ticks_pair_address",
-          "stat": "142253 24"
+          "stat": "143762 24"
         },
         {
           "tbl": "crypto_price_ticks",
           "idx": "ix_crypto_price_ticks_token_address",
-          "stat": "142253 44"
+          "stat": "143762 44"
         },
         {
           "tbl": "crypto_price_ticks",
           "idx": "ix_crypto_price_ticks_chain",
-          "stat": "142253 142253"
+          "stat": "143762 143762"
         },
         {
           "tbl": "market_price_ticks",
           "idx": "ix_market_price_ticks_ticker_observed",
-          "stat": "466950 704 1"
+          "stat": "483300 728 1"
         },
         {
           "tbl": "market_price_ticks",
           "idx": "ix_market_price_ticks_market_ticker",
-          "stat": "466950 704"
+          "stat": "483300 728"
         },
         {
           "tbl": "crypto_pairs",
           "idx": "ix_crypto_pairs_chain_address",
-          "stat": "26736 26736 1"
+          "stat": "26788 26788 1"
         },
         {
           "tbl": "crypto_pairs",
           "idx": "ix_crypto_pairs_base_token_address",
-          "stat": "26736 3"
+          "stat": "26788 3"
         },
         {
           "tbl": "crypto_pairs",
           "idx": "ix_crypto_pairs_pair_address",
-          "stat": "26736 1"
+          "stat": "26788 1"
         },
         {
           "tbl": "crypto_pairs",
           "idx": "ix_crypto_pairs_chain",
-          "stat": "26736 26736"
+          "stat": "26788 26788"
         },
         {
           "tbl": "meme_attention_snapshots",
           "idx": "ix_meme_attention_token_observed",
-          "stat": "56209 10 1"
+          "stat": "56539 10 1"
         },
         {
           "tbl": "meme_attention_snapshots",
           "idx": "ix_meme_attention_token",
-          "stat": "56209 10"
+          "stat": "56539 10"
         },
         {
           "tbl": "meme_attention_snapshots",
           "idx": "ix_meme_attention_chain",
-          "stat": "56209 56209"
+          "stat": "56539 56539"
         },
         {
           "tbl": "meme_attention_snapshots",
           "idx": "ix_meme_attention_run_id",
-          "stat": "56209 30"
+          "stat": "56539 30"
         },
         {
           "tbl": "edge_precheck_snapshots",
@@ -576,22 +582,22 @@
         {
           "tbl": "watcher_runs",
           "idx": null,
-          "stat": "41490"
+          "stat": "41599"
         },
         {
           "tbl": "crypto_tokens",
           "idx": "ix_crypto_tokens_chain_address",
-          "stat": "12847 12847 1"
+          "stat": "12874 12874 1"
         },
         {
           "tbl": "crypto_tokens",
           "idx": "ix_crypto_tokens_token_address",
-          "stat": "12847 1"
+          "stat": "12874 1"
         },
         {
           "tbl": "crypto_tokens",
           "idx": "ix_crypto_tokens_chain",
-          "stat": "12847 12847"
+          "stat": "12874 12874"
         },
         {
           "tbl": "marketops_alerts",
@@ -606,7 +612,7 @@
         {
           "tbl": "meme_scout_runs",
           "idx": null,
-          "stat": "1875"
+          "stat": "1886"
         },
         {
           "tbl": "domain_scout_runs",
@@ -631,27 +637,27 @@
         {
           "tbl": "marketops_runs",
           "idx": null,
-          "stat": "9225"
+          "stat": "9243"
         },
         {
           "tbl": "market_price_tick_buckets",
           "idx": "ix_tick_bucket_start",
-          "stat": "1439728 142"
+          "stat": "1443328 142"
         },
         {
           "tbl": "market_price_tick_buckets",
           "idx": "ix_market_price_tick_buckets_domain",
-          "stat": "1439728 359932"
+          "stat": "1443328 360832"
         },
         {
           "tbl": "market_price_tick_buckets",
           "idx": "ix_market_price_tick_buckets_market_ticker",
-          "stat": "1439728 185"
+          "stat": "1443328 185"
         },
         {
           "tbl": "market_price_tick_buckets",
           "idx": "sqlite_autoindex_market_price_tick_buckets_1",
-          "stat": "1439728 185 1 1"
+          "stat": "1443328 185 1 1"
         },
         {
           "tbl": "crypto_horizon_cohorts",
@@ -706,27 +712,27 @@
         {
           "tbl": "meme_catalyst_events",
           "idx": "ix_meme_catalyst_type",
-          "stat": "130585 32647"
+          "stat": "131324 32831"
         },
         {
           "tbl": "meme_catalyst_events",
           "idx": "ix_meme_catalyst_subject_ref",
-          "stat": "130585 23"
+          "stat": "131324 23"
         },
         {
           "tbl": "meme_catalyst_events",
           "idx": "ix_meme_catalyst_subject_type",
-          "stat": "130585 130585"
+          "stat": "131324 131324"
         },
         {
           "tbl": "meme_catalyst_events",
           "idx": "ix_meme_catalyst_source",
-          "stat": "130585 130585"
+          "stat": "131324 131324"
         },
         {
           "tbl": "meme_catalyst_events",
           "idx": "ix_meme_catalyst_run_id",
-          "stat": "130585 70"
+          "stat": "131324 70"
         },
         {
           "tbl": "cross_venue_market_candidates",
@@ -765,7 +771,7 @@
       ],
       "index": "ix_crypto_token_discovery_events_token_address",
       "temp_btree": true,
-      "median_ms": 0.0369
+      "median_ms": 0.0366
     }
   ],
   "risk_assessments": [
@@ -778,18 +784,24 @@
       ],
       "index": "ix_crypto_token_risk_assessments_chain",
       "temp_btree": true,
-      "median_ms": 40.5157
+      "median_ms": 43.6793
     },
     {
-      "variant": "V1_table_row_only",
-      "stat_rows": [],
+      "variant": "V1_synthetic_table_row_only",
+      "stat_rows": [
+        {
+          "tbl": "crypto_token_risk_assessments",
+          "idx": null,
+          "stat": "312023"
+        }
+      ],
       "plan": [
         "SEARCH crypto_token_risk_assessments USING INDEX ix_crypto_token_risk_assessments_chain (chain=?)",
         "USE TEMP B-TREE FOR ORDER BY"
       ],
       "index": "ix_crypto_token_risk_assessments_chain",
       "temp_btree": true,
-      "median_ms": 39.971
+      "median_ms": 42.1106
     },
     {
       "variant": "V2_chain_index_only",
@@ -797,7 +809,68 @@
         {
           "tbl": "crypto_token_risk_assessments",
           "idx": "ix_crypto_token_risk_assessments_chain",
-          "stat": "311214 311214"
+          "stat": "312023 312023"
+        }
+      ],
+      "plan": [
+        "SEARCH crypto_token_risk_assessments USING INDEX ix_crypto_token_risk_assessments_token_address (token_address=?)",
+        "USE TEMP B-TREE FOR ORDER BY"
+      ],
+      "index": "ix_crypto_token_risk_assessments_token_address",
+      "temp_btree": true,
+      "median_ms": 0.0217
+    },
+    {
+      "variant": "V3_selective_index_only",
+      "stat_rows": [
+        {
+          "tbl": "crypto_token_risk_assessments",
+          "idx": "ix_crypto_token_risk_assessments_token_address",
+          "stat": "312023 25"
+        }
+      ],
+      "plan": [
+        "SEARCH crypto_token_risk_assessments USING INDEX ix_crypto_token_risk_assessments_chain (chain=?)",
+        "USE TEMP B-TREE FOR ORDER BY"
+      ],
+      "index": "ix_crypto_token_risk_assessments_chain",
+      "temp_btree": true,
+      "median_ms": 41.4591
+    },
+    {
+      "variant": "V4_both_index_rows",
+      "stat_rows": [
+        {
+          "tbl": "crypto_token_risk_assessments",
+          "idx": "ix_crypto_token_risk_assessments_token_address",
+          "stat": "312023 25"
+        },
+        {
+          "tbl": "crypto_token_risk_assessments",
+          "idx": "ix_crypto_token_risk_assessments_chain",
+          "stat": "312023 312023"
+        }
+      ],
+      "plan": [
+        "SEARCH crypto_token_risk_assessments USING INDEX ix_crypto_token_risk_assessments_token_address (token_address=?)",
+        "USE TEMP B-TREE FOR ORDER BY"
+      ],
+      "index": "ix_crypto_token_risk_assessments_token_address",
+      "temp_btree": true,
+      "median_ms": 0.0642
+    },
+    {
+      "variant": "V5_full_ANALYZE_for_this_table",
+      "stat_rows": [
+        {
+          "tbl": "crypto_token_risk_assessments",
+          "idx": "ix_crypto_token_risk_assessments_token_address",
+          "stat": "312023 25"
+        },
+        {
+          "tbl": "crypto_token_risk_assessments",
+          "idx": "ix_crypto_token_risk_assessments_chain",
+          "stat": "312023 312023"
         }
       ],
       "plan": [
@@ -809,88 +882,27 @@
       "median_ms": 0.0228
     },
     {
-      "variant": "V3_selective_index_only",
-      "stat_rows": [
-        {
-          "tbl": "crypto_token_risk_assessments",
-          "idx": "ix_crypto_token_risk_assessments_token_address",
-          "stat": "311214 25"
-        }
-      ],
-      "plan": [
-        "SEARCH crypto_token_risk_assessments USING INDEX ix_crypto_token_risk_assessments_chain (chain=?)",
-        "USE TEMP B-TREE FOR ORDER BY"
-      ],
-      "index": "ix_crypto_token_risk_assessments_chain",
-      "temp_btree": true,
-      "median_ms": 39.9916
-    },
-    {
-      "variant": "V4_both_index_rows",
-      "stat_rows": [
-        {
-          "tbl": "crypto_token_risk_assessments",
-          "idx": "ix_crypto_token_risk_assessments_token_address",
-          "stat": "311214 25"
-        },
-        {
-          "tbl": "crypto_token_risk_assessments",
-          "idx": "ix_crypto_token_risk_assessments_chain",
-          "stat": "311214 311214"
-        }
-      ],
-      "plan": [
-        "SEARCH crypto_token_risk_assessments USING INDEX ix_crypto_token_risk_assessments_token_address (token_address=?)",
-        "USE TEMP B-TREE FOR ORDER BY"
-      ],
-      "index": "ix_crypto_token_risk_assessments_token_address",
-      "temp_btree": true,
-      "median_ms": 0.0227
-    },
-    {
-      "variant": "V5_full_ANALYZE_for_this_table",
-      "stat_rows": [
-        {
-          "tbl": "crypto_token_risk_assessments",
-          "idx": "ix_crypto_token_risk_assessments_token_address",
-          "stat": "311214 25"
-        },
-        {
-          "tbl": "crypto_token_risk_assessments",
-          "idx": "ix_crypto_token_risk_assessments_chain",
-          "stat": "311214 311214"
-        }
-      ],
-      "plan": [
-        "SEARCH crypto_token_risk_assessments USING INDEX ix_crypto_token_risk_assessments_token_address (token_address=?)",
-        "USE TEMP B-TREE FOR ORDER BY"
-      ],
-      "index": "ix_crypto_token_risk_assessments_token_address",
-      "temp_btree": true,
-      "median_ms": 0.0232
-    },
-    {
       "variant": "V6_full_ANALYZE_everything",
       "stat_rows": [
         {
           "tbl": "crypto_token_survival_outcomes",
           "idx": "ix_crypto_token_survival_outcomes_birth_event_id",
-          "stat": "7420 1"
+          "stat": "7447 1"
         },
         {
           "tbl": "crypto_token_survival_outcomes",
           "idx": "ix_crypto_token_survival_outcomes_final",
-          "stat": "7420 3710"
+          "stat": "7447 3724"
         },
         {
           "tbl": "crypto_token_survival_outcomes",
           "idx": "ix_crypto_token_survival_outcomes_token_address",
-          "stat": "7420 1"
+          "stat": "7447 1"
         },
         {
           "tbl": "crypto_token_survival_outcomes",
           "idx": "ix_crypto_token_survival_outcomes_chain",
-          "stat": "7420 7420"
+          "stat": "7447 7447"
         },
         {
           "tbl": "tennis_tape_links",
@@ -965,52 +977,52 @@
         {
           "tbl": "tick_aggregation_runs",
           "idx": null,
-          "stat": "708"
+          "stat": "710"
         },
         {
           "tbl": "crypto_token_birth_events",
           "idx": "ix_crypto_birth_chain_token",
-          "stat": "7420 7420 1"
+          "stat": "7447 7447 1"
         },
         {
           "tbl": "crypto_token_birth_events",
           "idx": "ix_crypto_token_birth_events_run_id",
-          "stat": "7420 3"
+          "stat": "7447 3"
         },
         {
           "tbl": "crypto_token_birth_events",
           "idx": "ix_crypto_token_birth_events_first_evidence_at",
-          "stat": "7420 2"
+          "stat": "7447 2"
         },
         {
           "tbl": "crypto_token_birth_events",
           "idx": "ix_crypto_token_birth_events_chain",
-          "stat": "7420 7420"
+          "stat": "7447 7447"
         },
         {
           "tbl": "crypto_token_birth_events",
           "idx": "ix_crypto_token_birth_events_token_address",
-          "stat": "7420 1"
+          "stat": "7447 1"
         },
         {
           "tbl": "crypto_opportunity_signals",
           "idx": "ix_crypto_opportunity_signals_signal_status",
-          "stat": "90356 90356"
+          "stat": "90571 90571"
         },
         {
           "tbl": "crypto_opportunity_signals",
           "idx": "ix_crypto_opportunity_signals_signal_type",
-          "stat": "90356 10040"
+          "stat": "90571 10064"
         },
         {
           "tbl": "crypto_opportunity_signals",
           "idx": "ix_crypto_opportunity_signals_token_address",
-          "stat": "90356 7"
+          "stat": "90571 7"
         },
         {
           "tbl": "crypto_opportunity_signals",
           "idx": "ix_crypto_opportunity_signals_chain",
-          "stat": "90356 90356"
+          "stat": "90571 90571"
         },
         {
           "tbl": "market_resolution_assessments",
@@ -1025,27 +1037,27 @@
         {
           "tbl": "crypto_token_actor_observations",
           "idx": "ix_crypto_token_actor_observations_birth_event_id",
-          "stat": "8474 2"
+          "stat": "8501 2"
         },
         {
           "tbl": "crypto_token_actor_observations",
           "idx": "ix_crypto_token_actor_observations_token_address",
-          "stat": "8474 2"
+          "stat": "8501 2"
         },
         {
           "tbl": "crypto_token_actor_observations",
           "idx": "ix_crypto_token_actor_observations_run_id",
-          "stat": "8474 3"
+          "stat": "8501 3"
         },
         {
           "tbl": "crypto_token_actor_observations",
           "idx": "ix_crypto_token_actor_observations_chain",
-          "stat": "8474 8474"
+          "stat": "8501 8501"
         },
         {
           "tbl": "crypto_token_lifecycle_runs",
           "idx": null,
-          "stat": "3467"
+          "stat": "3479"
         },
         {
           "tbl": "frontier_eval_runs",
@@ -1055,12 +1067,12 @@
         {
           "tbl": "crypto_token_risk_assessments",
           "idx": "ix_crypto_token_risk_assessments_token_address",
-          "stat": "311214 25"
+          "stat": "312023 25"
         },
         {
           "tbl": "crypto_token_risk_assessments",
           "idx": "ix_crypto_token_risk_assessments_chain",
-          "stat": "311214 311214"
+          "stat": "312023 312023"
         },
         {
           "tbl": "scanner_runs",
@@ -1090,7 +1102,7 @@
         {
           "tbl": "crypto_watcher_runs",
           "idx": null,
-          "stat": "1746"
+          "stat": "1764"
         },
         {
           "tbl": "pipeline_runs",
@@ -1170,27 +1182,27 @@
         {
           "tbl": "crypto_token_lifecycle_snapshots",
           "idx": "ix_crypto_lifecycle_snap_token_observed",
-          "stat": "8474 2 1"
+          "stat": "8501 2 1"
         },
         {
           "tbl": "crypto_token_lifecycle_snapshots",
           "idx": "ix_crypto_token_lifecycle_snapshots_run_id",
-          "stat": "8474 3"
+          "stat": "8501 3"
         },
         {
           "tbl": "crypto_token_lifecycle_snapshots",
           "idx": "ix_crypto_token_lifecycle_snapshots_chain",
-          "stat": "8474 8474"
+          "stat": "8501 8501"
         },
         {
           "tbl": "crypto_token_lifecycle_snapshots",
           "idx": "ix_crypto_token_lifecycle_snapshots_birth_event_id",
-          "stat": "8474 2"
+          "stat": "8501 2"
         },
         {
           "tbl": "crypto_token_lifecycle_snapshots",
           "idx": "ix_crypto_token_lifecycle_snapshots_token_address",
-          "stat": "8474 2"
+          "stat": "8501 2"
         },
         {
           "tbl": "alembic_version",
@@ -1210,22 +1222,22 @@
         {
           "tbl": "market_outcomes",
           "idx": "ix_market_outcomes_market_ticker",
-          "stat": "17720 1"
+          "stat": "17760 1"
         },
         {
           "tbl": "crypto_token_discovery_events",
           "idx": "ix_crypto_token_discovery_events_event_type",
-          "stat": "396669 132223"
+          "stat": "397625 132542"
         },
         {
           "tbl": "crypto_token_discovery_events",
           "idx": "ix_crypto_token_discovery_events_token_address",
-          "stat": "396669 31"
+          "stat": "397625 31"
         },
         {
           "tbl": "crypto_token_discovery_events",
           "idx": "ix_crypto_token_discovery_events_chain",
-          "stat": "396669 396669"
+          "stat": "397625 397625"
         },
         {
           "tbl": "pipeline_stage_runs",
@@ -1235,72 +1247,72 @@
         {
           "tbl": "crypto_price_ticks",
           "idx": "ix_crypto_price_ticks_pair_observed",
-          "stat": "142253 24 1"
+          "stat": "143762 24 1"
         },
         {
           "tbl": "crypto_price_ticks",
           "idx": "ix_crypto_price_ticks_pair_address",
-          "stat": "142253 24"
+          "stat": "143762 24"
         },
         {
           "tbl": "crypto_price_ticks",
           "idx": "ix_crypto_price_ticks_token_address",
-          "stat": "142253 44"
+          "stat": "143762 44"
         },
         {
           "tbl": "crypto_price_ticks",
           "idx": "ix_crypto_price_ticks_chain",
-          "stat": "142253 142253"
+          "stat": "143762 143762"
         },
         {
           "tbl": "market_price_ticks",
           "idx": "ix_market_price_ticks_ticker_observed",
-          "stat": "466950 704 1"
+          "stat": "483300 728 1"
         },
         {
           "tbl": "market_price_ticks",
           "idx": "ix_market_price_ticks_market_ticker",
-          "stat": "466950 704"
+          "stat": "483300 728"
         },
         {
           "tbl": "crypto_pairs",
           "idx": "ix_crypto_pairs_chain_address",
-          "stat": "26736 26736 1"
+          "stat": "26788 26788 1"
         },
         {
           "tbl": "crypto_pairs",
           "idx": "ix_crypto_pairs_base_token_address",
-          "stat": "26736 3"
+          "stat": "26788 3"
         },
         {
           "tbl": "crypto_pairs",
           "idx": "ix_crypto_pairs_pair_address",
-          "stat": "26736 1"
+          "stat": "26788 1"
         },
         {
           "tbl": "crypto_pairs",
           "idx": "ix_crypto_pairs_chain",
-          "stat": "26736 26736"
+          "stat": "26788 26788"
         },
         {
           "tbl": "meme_attention_snapshots",
           "idx": "ix_meme_attention_token_observed",
-          "stat": "56209 10 1"
+          "stat": "56539 10 1"
         },
         {
           "tbl": "meme_attention_snapshots",
           "idx": "ix_meme_attention_token",
-          "stat": "56209 10"
+          "stat": "56539 10"
         },
         {
           "tbl": "meme_attention_snapshots",
           "idx": "ix_meme_attention_chain",
-          "stat": "56209 56209"
+          "stat": "56539 56539"
         },
         {
           "tbl": "meme_attention_snapshots",
           "idx": "ix_meme_attention_run_id",
-          "stat": "56209 30"
+          "stat": "56539 30"
         },
         {
           "tbl": "edge_precheck_snapshots",
@@ -1340,22 +1352,22 @@
         {
           "tbl": "watcher_runs",
           "idx": null,
-          "stat": "41490"
+          "stat": "41599"
         },
         {
           "tbl": "crypto_tokens",
           "idx": "ix_crypto_tokens_chain_address",
-          "stat": "12847 12847 1"
+          "stat": "12874 12874 1"
         },
         {
           "tbl": "crypto_tokens",
           "idx": "ix_crypto_tokens_token_address",
-          "stat": "12847 1"
+          "stat": "12874 1"
         },
         {
           "tbl": "crypto_tokens",
           "idx": "ix_crypto_tokens_chain",
-          "stat": "12847 12847"
+          "stat": "12874 12874"
         },
         {
           "tbl": "marketops_alerts",
@@ -1370,7 +1382,7 @@
         {
           "tbl": "meme_scout_runs",
           "idx": null,
-          "stat": "1875"
+          "stat": "1886"
         },
         {
           "tbl": "domain_scout_runs",
@@ -1395,27 +1407,27 @@
         {
           "tbl": "marketops_runs",
           "idx": null,
-          "stat": "9225"
+          "stat": "9243"
         },
         {
           "tbl": "market_price_tick_buckets",
           "idx": "ix_tick_bucket_start",
-          "stat": "1439728 142"
+          "stat": "1443328 142"
         },
         {
           "tbl": "market_price_tick_buckets",
           "idx": "ix_market_price_tick_buckets_domain",
-          "stat": "1439728 359932"
+          "stat": "1443328 360832"
         },
         {
           "tbl": "market_price_tick_buckets",
           "idx": "ix_market_price_tick_buckets_market_ticker",
-          "stat": "1439728 185"
+          "stat": "1443328 185"
         },
         {
           "tbl": "market_price_tick_buckets",
           "idx": "sqlite_autoindex_market_price_tick_buckets_1",
-          "stat": "1439728 185 1 1"
+          "stat": "1443328 185 1 1"
         },
         {
           "tbl": "crypto_horizon_cohorts",
@@ -1470,27 +1482,27 @@
         {
           "tbl": "meme_catalyst_events",
           "idx": "ix_meme_catalyst_type",
-          "stat": "130585 32647"
+          "stat": "131324 32831"
         },
         {
           "tbl": "meme_catalyst_events",
           "idx": "ix_meme_catalyst_subject_ref",
-          "stat": "130585 23"
+          "stat": "131324 23"
         },
         {
           "tbl": "meme_catalyst_events",
           "idx": "ix_meme_catalyst_subject_type",
-          "stat": "130585 130585"
+          "stat": "131324 131324"
         },
         {
           "tbl": "meme_catalyst_events",
           "idx": "ix_meme_catalyst_source",
-          "stat": "130585 130585"
+          "stat": "131324 131324"
         },
         {
           "tbl": "meme_catalyst_events",
           "idx": "ix_meme_catalyst_run_id",
-          "stat": "130585 70"
+          "stat": "131324 70"
         },
         {
           "tbl": "cross_venue_market_candidates",
@@ -1529,7 +1541,7 @@
       ],
       "index": "ix_crypto_token_risk_assessments_token_address",
       "temp_btree": true,
-      "median_ms": 0.0222
+      "median_ms": 0.0225
     }
   ],
   "price_ticks": [
@@ -1542,18 +1554,24 @@
       ],
       "index": "ix_crypto_price_ticks_chain",
       "temp_btree": true,
-      "median_ms": 13.4634
+      "median_ms": 14.6332
     },
     {
-      "variant": "V1_table_row_only",
-      "stat_rows": [],
+      "variant": "V1_synthetic_table_row_only",
+      "stat_rows": [
+        {
+          "tbl": "crypto_price_ticks",
+          "idx": null,
+          "stat": "143762"
+        }
+      ],
       "plan": [
-        "SEARCH crypto_price_ticks USING INDEX ix_crypto_price_ticks_chain (chain=?)",
+        "SEARCH crypto_price_ticks USING INDEX ix_crypto_price_ticks_token_address (token_address=?)",
         "USE TEMP B-TREE FOR ORDER BY"
       ],
-      "index": "ix_crypto_price_ticks_chain",
+      "index": "ix_crypto_price_ticks_token_address",
       "temp_btree": true,
-      "median_ms": 13.0265
+      "median_ms": 0.0063
     },
     {
       "variant": "V2_chain_index_only",
@@ -1561,7 +1579,7 @@
         {
           "tbl": "crypto_price_ticks",
           "idx": "ix_crypto_price_ticks_chain",
-          "stat": "142253 142253"
+          "stat": "143762 143762"
         }
       ],
       "plan": [
@@ -1570,7 +1588,7 @@
       ],
       "index": "ix_crypto_price_ticks_token_address",
       "temp_btree": true,
-      "median_ms": 0.0061
+      "median_ms": 0.0045
     },
     {
       "variant": "V3_selective_index_only",
@@ -1578,7 +1596,7 @@
         {
           "tbl": "crypto_price_ticks",
           "idx": "ix_crypto_price_ticks_token_address",
-          "stat": "142253 44"
+          "stat": "143762 44"
         }
       ],
       "plan": [
@@ -1587,7 +1605,7 @@
       ],
       "index": "ix_crypto_price_ticks_chain",
       "temp_btree": true,
-      "median_ms": 13.3719
+      "median_ms": 14.4097
     },
     {
       "variant": "V4_both_index_rows",
@@ -1595,12 +1613,12 @@
         {
           "tbl": "crypto_price_ticks",
           "idx": "ix_crypto_price_ticks_token_address",
-          "stat": "142253 44"
+          "stat": "143762 44"
         },
         {
           "tbl": "crypto_price_ticks",
           "idx": "ix_crypto_price_ticks_chain",
-          "stat": "142253 142253"
+          "stat": "143762 143762"
         }
       ],
       "plan": [
@@ -1609,7 +1627,7 @@
       ],
       "index": "ix_crypto_price_ticks_token_address",
       "temp_btree": true,
-      "median_ms": 0.0062
+      "median_ms": 0.006
     },
     {
       "variant": "V5_full_ANALYZE_for_this_table",
@@ -1617,22 +1635,22 @@
         {
           "tbl": "crypto_price_ticks",
           "idx": "ix_crypto_price_ticks_pair_observed",
-          "stat": "142253 24 1"
+          "stat": "143762 24 1"
         },
         {
           "tbl": "crypto_price_ticks",
           "idx": "ix_crypto_price_ticks_pair_address",
-          "stat": "142253 24"
+          "stat": "143762 24"
         },
         {
           "tbl": "crypto_price_ticks",
           "idx": "ix_crypto_price_ticks_token_address",
-          "stat": "142253 44"
+          "stat": "143762 44"
         },
         {
           "tbl": "crypto_price_ticks",
           "idx": "ix_crypto_price_ticks_chain",
-          "stat": "142253 142253"
+          "stat": "143762 143762"
         }
       ],
       "plan": [
@@ -1641,7 +1659,7 @@
       ],
       "index": "ix_crypto_price_ticks_token_address",
       "temp_btree": true,
-      "median_ms": 0.0048
+      "median_ms": 0.0045
     },
     {
       "variant": "V6_full_ANALYZE_everything",
@@ -1649,22 +1667,22 @@
         {
           "tbl": "crypto_token_survival_outcomes",
           "idx": "ix_crypto_token_survival_outcomes_birth_event_id",
-          "stat": "7420 1"
+          "stat": "7447 1"
         },
         {
           "tbl": "crypto_token_survival_outcomes",
           "idx": "ix_crypto_token_survival_outcomes_final",
-          "stat": "7420 3710"
+          "stat": "7447 3724"
         },
         {
           "tbl": "crypto_token_survival_outcomes",
           "idx": "ix_crypto_token_survival_outcomes_token_address",
-          "stat": "7420 1"
+          "stat": "7447 1"
         },
         {
           "tbl": "crypto_token_survival_outcomes",
           "idx": "ix_crypto_token_survival_outcomes_chain",
-          "stat": "7420 7420"
+          "stat": "7447 7447"
         },
         {
           "tbl": "tennis_tape_links",
@@ -1739,52 +1757,52 @@
         {
           "tbl": "tick_aggregation_runs",
           "idx": null,
-          "stat": "708"
+          "stat": "710"
         },
         {
           "tbl": "crypto_token_birth_events",
           "idx": "ix_crypto_birth_chain_token",
-          "stat": "7420 7420 1"
+          "stat": "7447 7447 1"
         },
         {
           "tbl": "crypto_token_birth_events",
           "idx": "ix_crypto_token_birth_events_run_id",
-          "stat": "7420 3"
+          "stat": "7447 3"
         },
         {
           "tbl": "crypto_token_birth_events",
           "idx": "ix_crypto_token_birth_events_first_evidence_at",
-          "stat": "7420 2"
+          "stat": "7447 2"
         },
         {
           "tbl": "crypto_token_birth_events",
           "idx": "ix_crypto_token_birth_events_chain",
-          "stat": "7420 7420"
+          "stat": "7447 7447"
         },
         {
           "tbl": "crypto_token_birth_events",
           "idx": "ix_crypto_token_birth_events_token_address",
-          "stat": "7420 1"
+          "stat": "7447 1"
         },
         {
           "tbl": "crypto_opportunity_signals",
           "idx": "ix_crypto_opportunity_signals_signal_status",
-          "stat": "90356 90356"
+          "stat": "90571 90571"
         },
         {
           "tbl": "crypto_opportunity_signals",
           "idx": "ix_crypto_opportunity_signals_signal_type",
-          "stat": "90356 10040"
+          "stat": "90571 10064"
         },
         {
           "tbl": "crypto_opportunity_signals",
           "idx": "ix_crypto_opportunity_signals_token_address",
-          "stat": "90356 7"
+          "stat": "90571 7"
         },
         {
           "tbl": "crypto_opportunity_signals",
           "idx": "ix_crypto_opportunity_signals_chain",
-          "stat": "90356 90356"
+          "stat": "90571 90571"
         },
         {
           "tbl": "market_resolution_assessments",
@@ -1799,27 +1817,27 @@
         {
           "tbl": "crypto_token_actor_observations",
           "idx": "ix_crypto_token_actor_observations_birth_event_id",
-          "stat": "8474 2"
+          "stat": "8501 2"
         },
         {
           "tbl": "crypto_token_actor_observations",
           "idx": "ix_crypto_token_actor_observations_token_address",
-          "stat": "8474 2"
+          "stat": "8501 2"
         },
         {
           "tbl": "crypto_token_actor_observations",
           "idx": "ix_crypto_token_actor_observations_run_id",
-          "stat": "8474 3"
+          "stat": "8501 3"
         },
         {
           "tbl": "crypto_token_actor_observations",
           "idx": "ix_crypto_token_actor_observations_chain",
-          "stat": "8474 8474"
+          "stat": "8501 8501"
         },
         {
           "tbl": "crypto_token_lifecycle_runs",
           "idx": null,
-          "stat": "3467"
+          "stat": "3479"
         },
         {
           "tbl": "frontier_eval_runs",
@@ -1829,12 +1847,12 @@
         {
           "tbl": "crypto_token_risk_assessments",
           "idx": "ix_crypto_token_risk_assessments_token_address",
-          "stat": "311214 25"
+          "stat": "312023 25"
         },
         {
           "tbl": "crypto_token_risk_assessments",
           "idx": "ix_crypto_token_risk_assessments_chain",
-          "stat": "311214 311214"
+          "stat": "312023 312023"
         },
         {
           "tbl": "scanner_runs",
@@ -1864,7 +1882,7 @@
         {
           "tbl": "crypto_watcher_runs",
           "idx": null,
-          "stat": "1746"
+          "stat": "1764"
         },
         {
           "tbl": "pipeline_runs",
@@ -1944,27 +1962,27 @@
         {
           "tbl": "crypto_token_lifecycle_snapshots",
           "idx": "ix_crypto_lifecycle_snap_token_observed",
-          "stat": "8474 2 1"
+          "stat": "8501 2 1"
         },
         {
           "tbl": "crypto_token_lifecycle_snapshots",
           "idx": "ix_crypto_token_lifecycle_snapshots_run_id",
-          "stat": "8474 3"
+          "stat": "8501 3"
         },
         {
           "tbl": "crypto_token_lifecycle_snapshots",
           "idx": "ix_crypto_token_lifecycle_snapshots_chain",
-          "stat": "8474 8474"
+          "stat": "8501 8501"
         },
         {
           "tbl": "crypto_token_lifecycle_snapshots",
           "idx": "ix_crypto_token_lifecycle_snapshots_birth_event_id",
-          "stat": "8474 2"
+          "stat": "8501 2"
         },
         {
           "tbl": "crypto_token_lifecycle_snapshots",
           "idx": "ix_crypto_token_lifecycle_snapshots_token_address",
-          "stat": "8474 2"
+          "stat": "8501 2"
         },
         {
           "tbl": "alembic_version",
@@ -1984,22 +2002,22 @@
         {
           "tbl": "market_outcomes",
           "idx": "ix_market_outcomes_market_ticker",
-          "stat": "17720 1"
+          "stat": "17760 1"
         },
         {
           "tbl": "crypto_token_discovery_events",
           "idx": "ix_crypto_token_discovery_events_event_type",
-          "stat": "396669 132223"
+          "stat": "397625 132542"
         },
         {
           "tbl": "crypto_token_discovery_events",
           "idx": "ix_crypto_token_discovery_events_token_address",
-          "stat": "396669 31"
+          "stat": "397625 31"
         },
         {
           "tbl": "crypto_token_discovery_events",
           "idx": "ix_crypto_token_discovery_events_chain",
-          "stat": "396669 396669"
+          "stat": "397625 397625"
         },
         {
           "tbl": "pipeline_stage_runs",
@@ -2009,72 +2027,72 @@
         {
           "tbl": "crypto_price_ticks",
           "idx": "ix_crypto_price_ticks_pair_observed",
-          "stat": "142253 24 1"
+          "stat": "143762 24 1"
         },
         {
           "tbl": "crypto_price_ticks",
           "idx": "ix_crypto_price_ticks_pair_address",
-          "stat": "142253 24"
+          "stat": "143762 24"
         },
         {
           "tbl": "crypto_price_ticks",
           "idx": "ix_crypto_price_ticks_token_address",
-          "stat": "142253 44"
+          "stat": "143762 44"
         },
         {
           "tbl": "crypto_price_ticks",
           "idx": "ix_crypto_price_ticks_chain",
-          "stat": "142253 142253"
+          "stat": "143762 143762"
         },
         {
           "tbl": "market_price_ticks",
           "idx": "ix_market_price_ticks_ticker_observed",
-          "stat": "466950 704 1"
+          "stat": "483300 728 1"
         },
         {
           "tbl": "market_price_ticks",
           "idx": "ix_market_price_ticks_market_ticker",
-          "stat": "466950 704"
+          "stat": "483300 728"
         },
         {
           "tbl": "crypto_pairs",
           "idx": "ix_crypto_pairs_chain_address",
-          "stat": "26736 26736 1"
+          "stat": "26788 26788 1"
         },
         {
           "tbl": "crypto_pairs",
           "idx": "ix_crypto_pairs_base_token_address",
-          "stat": "26736 3"
+          "stat": "26788 3"
         },
         {
           "tbl": "crypto_pairs",
           "idx": "ix_crypto_pairs_pair_address",
-          "stat": "26736 1"
+          "stat": "26788 1"
         },
         {
           "tbl": "crypto_pairs",
           "idx": "ix_crypto_pairs_chain",
-          "stat": "26736 26736"
+          "stat": "26788 26788"
         },
         {
           "tbl": "meme_attention_snapshots",
           "idx": "ix_meme_attention_token_observed",
-          "stat": "56209 10 1"
+          "stat": "56539 10 1"
         },
         {
           "tbl": "meme_attention_snapshots",
           "idx": "ix_meme_attention_token",
-          "stat": "56209 10"
+          "stat": "56539 10"
         },
         {
           "tbl": "meme_attention_snapshots",
           "idx": "ix_meme_attention_chain",
-          "stat": "56209 56209"
+          "stat": "56539 56539"
         },
         {
           "tbl": "meme_attention_snapshots",
           "idx": "ix_meme_attention_run_id",
-          "stat": "56209 30"
+          "stat": "56539 30"
         },
         {
           "tbl": "edge_precheck_snapshots",
@@ -2114,22 +2132,22 @@
         {
           "tbl": "watcher_runs",
           "idx": null,
-          "stat": "41490"
+          "stat": "41599"
         },
         {
           "tbl": "crypto_tokens",
           "idx": "ix_crypto_tokens_chain_address",
-          "stat": "12847 12847 1"
+          "stat": "12874 12874 1"
         },
         {
           "tbl": "crypto_tokens",
           "idx": "ix_crypto_tokens_token_address",
-          "stat": "12847 1"
+          "stat": "12874 1"
         },
         {
           "tbl": "crypto_tokens",
           "idx": "ix_crypto_tokens_chain",
-          "stat": "12847 12847"
+          "stat": "12874 12874"
         },
         {
           "tbl": "marketops_alerts",
@@ -2144,7 +2162,7 @@
         {
           "tbl": "meme_scout_runs",
           "idx": null,
-          "stat": "1875"
+          "stat": "1886"
         },
         {
           "tbl": "domain_scout_runs",
@@ -2169,27 +2187,27 @@
         {
           "tbl": "marketops_runs",
           "idx": null,
-          "stat": "9225"
+          "stat": "9243"
         },
         {
           "tbl": "market_price_tick_buckets",
           "idx": "ix_tick_bucket_start",
-          "stat": "1439728 142"
+          "stat": "1443328 142"
         },
         {
           "tbl": "market_price_tick_buckets",
           "idx": "ix_market_price_tick_buckets_domain",
-          "stat": "1439728 359932"
+          "stat": "1443328 360832"
         },
         {
           "tbl": "market_price_tick_buckets",
           "idx": "ix_market_price_tick_buckets_market_ticker",
-          "stat": "1439728 185"
+          "stat": "1443328 185"
         },
         {
           "tbl": "market_price_tick_buckets",
           "idx": "sqlite_autoindex_market_price_tick_buckets_1",
-          "stat": "1439728 185 1 1"
+          "stat": "1443328 185 1 1"
         },
         {
           "tbl": "crypto_horizon_cohorts",
@@ -2244,27 +2262,27 @@
         {
           "tbl": "meme_catalyst_events",
           "idx": "ix_meme_catalyst_type",
-          "stat": "130585 32647"
+          "stat": "131324 32831"
         },
         {
           "tbl": "meme_catalyst_events",
           "idx": "ix_meme_catalyst_subject_ref",
-          "stat": "130585 23"
+          "stat": "131324 23"
         },
         {
           "tbl": "meme_catalyst_events",
           "idx": "ix_meme_catalyst_subject_type",
-          "stat": "130585 130585"
+          "stat": "131324 131324"
         },
         {
           "tbl": "meme_catalyst_events",
           "idx": "ix_meme_catalyst_source",
-          "stat": "130585 130585"
+          "stat": "131324 131324"
         },
         {
           "tbl": "meme_catalyst_events",
           "idx": "ix_meme_catalyst_run_id",
-          "stat": "130585 70"
+          "stat": "131324 70"
         },
         {
           "tbl": "cross_venue_market_candidates",
@@ -2303,7 +2321,7 @@
       ],
       "index": "ix_crypto_price_ticks_token_address",
       "temp_btree": true,
-      "median_ms": 0.0049
+      "median_ms": 0.0048
     }
   ],
   "pairs": [
@@ -2315,17 +2333,23 @@
       ],
       "index": "ix_crypto_pairs_chain",
       "temp_btree": false,
-      "median_ms": 3.1752
+      "median_ms": 2.771
     },
     {
-      "variant": "V1_table_row_only",
-      "stat_rows": [],
+      "variant": "V1_synthetic_table_row_only",
+      "stat_rows": [
+        {
+          "tbl": "crypto_pairs",
+          "idx": null,
+          "stat": "26788"
+        }
+      ],
       "plan": [
         "SEARCH crypto_pairs USING INDEX ix_crypto_pairs_chain (chain=?)"
       ],
       "index": "ix_crypto_pairs_chain",
       "temp_btree": false,
-      "median_ms": 2.3228
+      "median_ms": 2.3824
     },
     {
       "variant": "V2_chain_index_only",
@@ -2333,7 +2357,7 @@
         {
           "tbl": "crypto_pairs",
           "idx": "ix_crypto_pairs_chain",
-          "stat": "26736 26736"
+          "stat": "26788 26788"
         }
       ],
       "plan": [
@@ -2349,7 +2373,7 @@
         {
           "tbl": "crypto_pairs",
           "idx": "ix_crypto_pairs_base_token_address",
-          "stat": "26736 3"
+          "stat": "26788 3"
         }
       ],
       "plan": [
@@ -2357,7 +2381,7 @@
       ],
       "index": "ix_crypto_pairs_base_token_address",
       "temp_btree": false,
-      "median_ms": 0.0091
+      "median_ms": 0.0083
     },
     {
       "variant": "V4_both_index_rows",
@@ -2365,12 +2389,12 @@
         {
           "tbl": "crypto_pairs",
           "idx": "ix_crypto_pairs_base_token_address",
-          "stat": "26736 3"
+          "stat": "26788 3"
         },
         {
           "tbl": "crypto_pairs",
           "idx": "ix_crypto_pairs_chain",
-          "stat": "26736 26736"
+          "stat": "26788 26788"
         }
       ],
       "plan": [
@@ -2378,7 +2402,7 @@
       ],
       "index": "ix_crypto_pairs_base_token_address",
       "temp_btree": false,
-      "median_ms": 0.0089
+      "median_ms": 0.0082
     },
     {
       "variant": "V5_full_ANALYZE_for_this_table",
@@ -2386,22 +2410,22 @@
         {
           "tbl": "crypto_pairs",
           "idx": "ix_crypto_pairs_chain_address",
-          "stat": "26736 26736 1"
+          "stat": "26788 26788 1"
         },
         {
           "tbl": "crypto_pairs",
           "idx": "ix_crypto_pairs_base_token_address",
-          "stat": "26736 3"
+          "stat": "26788 3"
         },
         {
           "tbl": "crypto_pairs",
           "idx": "ix_crypto_pairs_pair_address",
-          "stat": "26736 1"
+          "stat": "26788 1"
         },
         {
           "tbl": "crypto_pairs",
           "idx": "ix_crypto_pairs_chain",
-          "stat": "26736 26736"
+          "stat": "26788 26788"
         }
       ],
       "plan": [
@@ -2409,7 +2433,7 @@
       ],
       "index": "ix_crypto_pairs_base_token_address",
       "temp_btree": false,
-      "median_ms": 0.0089
+      "median_ms": 0.0082
     },
     {
       "variant": "V6_full_ANALYZE_everything",
@@ -2417,22 +2441,22 @@
         {
           "tbl": "crypto_token_survival_outcomes",
           "idx": "ix_crypto_token_survival_outcomes_birth_event_id",
-          "stat": "7420 1"
+          "stat": "7447 1"
         },
         {
           "tbl": "crypto_token_survival_outcomes",
           "idx": "ix_crypto_token_survival_outcomes_final",
-          "stat": "7420 3710"
+          "stat": "7447 3724"
         },
         {
           "tbl": "crypto_token_survival_outcomes",
           "idx": "ix_crypto_token_survival_outcomes_token_address",
-          "stat": "7420 1"
+          "stat": "7447 1"
         },
         {
           "tbl": "crypto_token_survival_outcomes",
           "idx": "ix_crypto_token_survival_outcomes_chain",
-          "stat": "7420 7420"
+          "stat": "7447 7447"
         },
         {
           "tbl": "tennis_tape_links",
@@ -2507,52 +2531,52 @@
         {
           "tbl": "tick_aggregation_runs",
           "idx": null,
-          "stat": "708"
+          "stat": "710"
         },
         {
           "tbl": "crypto_token_birth_events",
           "idx": "ix_crypto_birth_chain_token",
-          "stat": "7420 7420 1"
+          "stat": "7447 7447 1"
         },
         {
           "tbl": "crypto_token_birth_events",
           "idx": "ix_crypto_token_birth_events_run_id",
-          "stat": "7420 3"
+          "stat": "7447 3"
         },
         {
           "tbl": "crypto_token_birth_events",
           "idx": "ix_crypto_token_birth_events_first_evidence_at",
-          "stat": "7420 2"
+          "stat": "7447 2"
         },
         {
           "tbl": "crypto_token_birth_events",
           "idx": "ix_crypto_token_birth_events_chain",
-          "stat": "7420 7420"
+          "stat": "7447 7447"
         },
         {
           "tbl": "crypto_token_birth_events",
           "idx": "ix_crypto_token_birth_events_token_address",
-          "stat": "7420 1"
+          "stat": "7447 1"
         },
         {
           "tbl": "crypto_opportunity_signals",
           "idx": "ix_crypto_opportunity_signals_signal_status",
-          "stat": "90356 90356"
+          "stat": "90571 90571"
         },
         {
           "tbl": "crypto_opportunity_signals",
           "idx": "ix_crypto_opportunity_signals_signal_type",
-          "stat": "90356 10040"
+          "stat": "90571 10064"
         },
         {
           "tbl": "crypto_opportunity_signals",
           "idx": "ix_crypto_opportunity_signals_token_address",
-          "stat": "90356 7"
+          "stat": "90571 7"
         },
         {
           "tbl": "crypto_opportunity_signals",
           "idx": "ix_crypto_opportunity_signals_chain",
-          "stat": "90356 90356"
+          "stat": "90571 90571"
         },
         {
           "tbl": "market_resolution_assessments",
@@ -2567,27 +2591,27 @@
         {
           "tbl": "crypto_token_actor_observations",
           "idx": "ix_crypto_token_actor_observations_birth_event_id",
-          "stat": "8474 2"
+          "stat": "8501 2"
         },
         {
           "tbl": "crypto_token_actor_observations",
           "idx": "ix_crypto_token_actor_observations_token_address",
-          "stat": "8474 2"
+          "stat": "8501 2"
         },
         {
           "tbl": "crypto_token_actor_observations",
           "idx": "ix_crypto_token_actor_observations_run_id",
-          "stat": "8474 3"
+          "stat": "8501 3"
         },
         {
           "tbl": "crypto_token_actor_observations",
           "idx": "ix_crypto_token_actor_observations_chain",
-          "stat": "8474 8474"
+          "stat": "8501 8501"
         },
         {
           "tbl": "crypto_token_lifecycle_runs",
           "idx": null,
-          "stat": "3467"
+          "stat": "3479"
         },
         {
           "tbl": "frontier_eval_runs",
@@ -2597,12 +2621,12 @@
         {
           "tbl": "crypto_token_risk_assessments",
           "idx": "ix_crypto_token_risk_assessments_token_address",
-          "stat": "311214 25"
+          "stat": "312023 25"
         },
         {
           "tbl": "crypto_token_risk_assessments",
           "idx": "ix_crypto_token_risk_assessments_chain",
-          "stat": "311214 311214"
+          "stat": "312023 312023"
         },
         {
           "tbl": "scanner_runs",
@@ -2632,7 +2656,7 @@
         {
           "tbl": "crypto_watcher_runs",
           "idx": null,
-          "stat": "1746"
+          "stat": "1764"
         },
         {
           "tbl": "pipeline_runs",
@@ -2712,27 +2736,27 @@
         {
           "tbl": "crypto_token_lifecycle_snapshots",
           "idx": "ix_crypto_lifecycle_snap_token_observed",
-          "stat": "8474 2 1"
+          "stat": "8501 2 1"
         },
         {
           "tbl": "crypto_token_lifecycle_snapshots",
           "idx": "ix_crypto_token_lifecycle_snapshots_run_id",
-          "stat": "8474 3"
+          "stat": "8501 3"
         },
         {
           "tbl": "crypto_token_lifecycle_snapshots",
           "idx": "ix_crypto_token_lifecycle_snapshots_chain",
-          "stat": "8474 8474"
+          "stat": "8501 8501"
         },
         {
           "tbl": "crypto_token_lifecycle_snapshots",
           "idx": "ix_crypto_token_lifecycle_snapshots_birth_event_id",
-          "stat": "8474 2"
+          "stat": "8501 2"
         },
         {
           "tbl": "crypto_token_lifecycle_snapshots",
           "idx": "ix_crypto_token_lifecycle_snapshots_token_address",
-          "stat": "8474 2"
+          "stat": "8501 2"
         },
         {
           "tbl": "alembic_version",
@@ -2752,22 +2776,22 @@
         {
           "tbl": "market_outcomes",
           "idx": "ix_market_outcomes_market_ticker",
-          "stat": "17720 1"
+          "stat": "17760 1"
         },
         {
           "tbl": "crypto_token_discovery_events",
           "idx": "ix_crypto_token_discovery_events_event_type",
-          "stat": "396669 132223"
+          "stat": "397625 132542"
         },
         {
           "tbl": "crypto_token_discovery_events",
           "idx": "ix_crypto_token_discovery_events_token_address",
-          "stat": "396669 31"
+          "stat": "397625 31"
         },
         {
           "tbl": "crypto_token_discovery_events",
           "idx": "ix_crypto_token_discovery_events_chain",
-          "stat": "396669 396669"
+          "stat": "397625 397625"
         },
         {
           "tbl": "pipeline_stage_runs",
@@ -2777,72 +2801,72 @@
         {
           "tbl": "crypto_price_ticks",
           "idx": "ix_crypto_price_ticks_pair_observed",
-          "stat": "142253 24 1"
+          "stat": "143762 24 1"
         },
         {
           "tbl": "crypto_price_ticks",
           "idx": "ix_crypto_price_ticks_pair_address",
-          "stat": "142253 24"
+          "stat": "143762 24"
         },
         {
           "tbl": "crypto_price_ticks",
           "idx": "ix_crypto_price_ticks_token_address",
-          "stat": "142253 44"
+          "stat": "143762 44"
         },
         {
           "tbl": "crypto_price_ticks",
           "idx": "ix_crypto_price_ticks_chain",
-          "stat": "142253 142253"
+          "stat": "143762 143762"
         },
         {
           "tbl": "market_price_ticks",
           "idx": "ix_market_price_ticks_ticker_observed",
-          "stat": "466950 704 1"
+          "stat": "483300 728 1"
         },
         {
           "tbl": "market_price_ticks",
           "idx": "ix_market_price_ticks_market_ticker",
-          "stat": "466950 704"
+          "stat": "483300 728"
         },
         {
           "tbl": "crypto_pairs",
           "idx": "ix_crypto_pairs_chain_address",
-          "stat": "26736 26736 1"
+          "stat": "26788 26788 1"
         },
         {
           "tbl": "crypto_pairs",
           "idx": "ix_crypto_pairs_base_token_address",
-          "stat": "26736 3"
+          "stat": "26788 3"
         },
         {
           "tbl": "crypto_pairs",
           "idx": "ix_crypto_pairs_pair_address",
-          "stat": "26736 1"
+          "stat": "26788 1"
         },
         {
           "tbl": "crypto_pairs",
           "idx": "ix_crypto_pairs_chain",
-          "stat": "26736 26736"
+          "stat": "26788 26788"
         },
         {
           "tbl": "meme_attention_snapshots",
           "idx": "ix_meme_attention_token_observed",
-          "stat": "56209 10 1"
+          "stat": "56539 10 1"
         },
         {
           "tbl": "meme_attention_snapshots",
           "idx": "ix_meme_attention_token",
-          "stat": "56209 10"
+          "stat": "56539 10"
         },
         {
           "tbl": "meme_attention_snapshots",
           "idx": "ix_meme_attention_chain",
-          "stat": "56209 56209"
+          "stat": "56539 56539"
         },
         {
           "tbl": "meme_attention_snapshots",
           "idx": "ix_meme_attention_run_id",
-          "stat": "56209 30"
+          "stat": "56539 30"
         },
         {
           "tbl": "edge_precheck_snapshots",
@@ -2882,22 +2906,22 @@
         {
           "tbl": "watcher_runs",
           "idx": null,
-          "stat": "41490"
+          "stat": "41599"
         },
         {
           "tbl": "crypto_tokens",
           "idx": "ix_crypto_tokens_chain_address",
-          "stat": "12847 12847 1"
+          "stat": "12874 12874 1"
         },
         {
           "tbl": "crypto_tokens",
           "idx": "ix_crypto_tokens_token_address",
-          "stat": "12847 1"
+          "stat": "12874 1"
         },
         {
           "tbl": "crypto_tokens",
           "idx": "ix_crypto_tokens_chain",
-          "stat": "12847 12847"
+          "stat": "12874 12874"
         },
         {
           "tbl": "marketops_alerts",
@@ -2912,7 +2936,7 @@
         {
           "tbl": "meme_scout_runs",
           "idx": null,
-          "stat": "1875"
+          "stat": "1886"
         },
         {
           "tbl": "domain_scout_runs",
@@ -2937,27 +2961,27 @@
         {
           "tbl": "marketops_runs",
           "idx": null,
-          "stat": "9225"
+          "stat": "9243"
         },
         {
           "tbl": "market_price_tick_buckets",
           "idx": "ix_tick_bucket_start",
-          "stat": "1439728 142"
+          "stat": "1443328 142"
         },
         {
           "tbl": "market_price_tick_buckets",
           "idx": "ix_market_price_tick_buckets_domain",
-          "stat": "1439728 359932"
+          "stat": "1443328 360832"
         },
         {
           "tbl": "market_price_tick_buckets",
           "idx": "ix_market_price_tick_buckets_market_ticker",
-          "stat": "1439728 185"
+          "stat": "1443328 185"
         },
         {
           "tbl": "market_price_tick_buckets",
           "idx": "sqlite_autoindex_market_price_tick_buckets_1",
-          "stat": "1439728 185 1 1"
+          "stat": "1443328 185 1 1"
         },
         {
           "tbl": "crypto_horizon_cohorts",
@@ -3012,27 +3036,27 @@
         {
           "tbl": "meme_catalyst_events",
           "idx": "ix_meme_catalyst_type",
-          "stat": "130585 32647"
+          "stat": "131324 32831"
         },
         {
           "tbl": "meme_catalyst_events",
           "idx": "ix_meme_catalyst_subject_ref",
-          "stat": "130585 23"
+          "stat": "131324 23"
         },
         {
           "tbl": "meme_catalyst_events",
           "idx": "ix_meme_catalyst_subject_type",
-          "stat": "130585 130585"
+          "stat": "131324 131324"
         },
         {
           "tbl": "meme_catalyst_events",
           "idx": "ix_meme_catalyst_source",
-          "stat": "130585 130585"
+          "stat": "131324 131324"
         },
         {
           "tbl": "meme_catalyst_events",
           "idx": "ix_meme_catalyst_run_id",
-          "stat": "130585 70"
+          "stat": "131324 70"
         },
         {
           "tbl": "cross_venue_market_candidates",
@@ -3070,10 +3094,10 @@
       ],
       "index": "ix_crypto_pairs_base_token_address",
       "temp_btree": false,
-      "median_ms": 0.0089
+      "median_ms": 0.0082
     }
   ],
-  "universe_selection": [
+  "unreconciled_backlog_selection": [
     {
       "variant": "V0_no_statistics",
       "stat_rows": [],
@@ -3084,7 +3108,7 @@
       ],
       "index": "ix_crypto_tokens_chain",
       "temp_btree": true,
-      "median_ms": 11.8215
+      "median_ms": 9.4785
     },
     {
       "variant": "V2_chain_index_only",
@@ -3092,7 +3116,7 @@
         {
           "tbl": "crypto_tokens",
           "idx": "ix_crypto_tokens_chain",
-          "stat": "12847 12847"
+          "stat": "12874 12874"
         }
       ],
       "plan": [
@@ -3102,7 +3126,7 @@
       ],
       "index": "ix_crypto_tokens_chain_address",
       "temp_btree": true,
-      "median_ms": 23.3009
+      "median_ms": 21.5022
     },
     {
       "variant": "V2b_chain_address_index_only",
@@ -3110,7 +3134,7 @@
         {
           "tbl": "crypto_tokens",
           "idx": "ix_crypto_tokens_chain_address",
-          "stat": "12847 12847 1"
+          "stat": "12874 12874 1"
         }
       ],
       "plan": [
@@ -3120,7 +3144,7 @@
       ],
       "index": "ix_crypto_tokens_chain",
       "temp_btree": true,
-      "median_ms": 10.0167
+      "median_ms": 9.4235
     },
     {
       "variant": "V4_both_index_rows",
@@ -3128,12 +3152,12 @@
         {
           "tbl": "crypto_tokens",
           "idx": "ix_crypto_tokens_chain_address",
-          "stat": "12847 12847 1"
+          "stat": "12874 12874 1"
         },
         {
           "tbl": "crypto_tokens",
           "idx": "ix_crypto_tokens_chain",
-          "stat": "12847 12847"
+          "stat": "12874 12874"
         }
       ],
       "plan": [
@@ -3141,9 +3165,9 @@
         "SEARCH o USING INDEX ix_crypto_token_survival_outcomes_token_address (token_address=?) LEFT-JOIN",
         "USE TEMP B-TREE FOR ORDER BY"
       ],
-      "index": null,
+      "index": "<table scan>",
       "temp_btree": true,
-      "median_ms": 9.6071
+      "median_ms": 9.0707
     },
     {
       "variant": "V6_full_ANALYZE_everything",
@@ -3151,22 +3175,22 @@
         {
           "tbl": "crypto_token_survival_outcomes",
           "idx": "ix_crypto_token_survival_outcomes_birth_event_id",
-          "stat": "7420 1"
+          "stat": "7447 1"
         },
         {
           "tbl": "crypto_token_survival_outcomes",
           "idx": "ix_crypto_token_survival_outcomes_final",
-          "stat": "7420 3710"
+          "stat": "7447 3724"
         },
         {
           "tbl": "crypto_token_survival_outcomes",
           "idx": "ix_crypto_token_survival_outcomes_token_address",
-          "stat": "7420 1"
+          "stat": "7447 1"
         },
         {
           "tbl": "crypto_token_survival_outcomes",
           "idx": "ix_crypto_token_survival_outcomes_chain",
-          "stat": "7420 7420"
+          "stat": "7447 7447"
         },
         {
           "tbl": "tennis_tape_links",
@@ -3241,52 +3265,52 @@
         {
           "tbl": "tick_aggregation_runs",
           "idx": null,
-          "stat": "708"
+          "stat": "710"
         },
         {
           "tbl": "crypto_token_birth_events",
           "idx": "ix_crypto_birth_chain_token",
-          "stat": "7420 7420 1"
+          "stat": "7447 7447 1"
         },
         {
           "tbl": "crypto_token_birth_events",
           "idx": "ix_crypto_token_birth_events_run_id",
-          "stat": "7420 3"
+          "stat": "7447 3"
         },
         {
           "tbl": "crypto_token_birth_events",
           "idx": "ix_crypto_token_birth_events_first_evidence_at",
-          "stat": "7420 2"
+          "stat": "7447 2"
         },
         {
           "tbl": "crypto_token_birth_events",
           "idx": "ix_crypto_token_birth_events_chain",
-          "stat": "7420 7420"
+          "stat": "7447 7447"
         },
         {
           "tbl": "crypto_token_birth_events",
           "idx": "ix_crypto_token_birth_events_token_address",
-          "stat": "7420 1"
+          "stat": "7447 1"
         },
         {
           "tbl": "crypto_opportunity_signals",
           "idx": "ix_crypto_opportunity_signals_signal_status",
-          "stat": "90356 90356"
+          "stat": "90571 90571"
         },
         {
           "tbl": "crypto_opportunity_signals",
           "idx": "ix_crypto_opportunity_signals_signal_type",
-          "stat": "90356 10040"
+          "stat": "90571 10064"
         },
         {
           "tbl": "crypto_opportunity_signals",
           "idx": "ix_crypto_opportunity_signals_token_address",
-          "stat": "90356 7"
+          "stat": "90571 7"
         },
         {
           "tbl": "crypto_opportunity_signals",
           "idx": "ix_crypto_opportunity_signals_chain",
-          "stat": "90356 90356"
+          "stat": "90571 90571"
         },
         {
           "tbl": "market_resolution_assessments",
@@ -3301,27 +3325,27 @@
         {
           "tbl": "crypto_token_actor_observations",
           "idx": "ix_crypto_token_actor_observations_birth_event_id",
-          "stat": "8474 2"
+          "stat": "8501 2"
         },
         {
           "tbl": "crypto_token_actor_observations",
           "idx": "ix_crypto_token_actor_observations_token_address",
-          "stat": "8474 2"
+          "stat": "8501 2"
         },
         {
           "tbl": "crypto_token_actor_observations",
           "idx": "ix_crypto_token_actor_observations_run_id",
-          "stat": "8474 3"
+          "stat": "8501 3"
         },
         {
           "tbl": "crypto_token_actor_observations",
           "idx": "ix_crypto_token_actor_observations_chain",
-          "stat": "8474 8474"
+          "stat": "8501 8501"
         },
         {
           "tbl": "crypto_token_lifecycle_runs",
           "idx": null,
-          "stat": "3467"
+          "stat": "3479"
         },
         {
           "tbl": "frontier_eval_runs",
@@ -3331,12 +3355,12 @@
         {
           "tbl": "crypto_token_risk_assessments",
           "idx": "ix_crypto_token_risk_assessments_token_address",
-          "stat": "311214 25"
+          "stat": "312023 25"
         },
         {
           "tbl": "crypto_token_risk_assessments",
           "idx": "ix_crypto_token_risk_assessments_chain",
-          "stat": "311214 311214"
+          "stat": "312023 312023"
         },
         {
           "tbl": "scanner_runs",
@@ -3366,7 +3390,7 @@
         {
           "tbl": "crypto_watcher_runs",
           "idx": null,
-          "stat": "1746"
+          "stat": "1764"
         },
         {
           "tbl": "pipeline_runs",
@@ -3446,27 +3470,27 @@
         {
           "tbl": "crypto_token_lifecycle_snapshots",
           "idx": "ix_crypto_lifecycle_snap_token_observed",
-          "stat": "8474 2 1"
+          "stat": "8501 2 1"
         },
         {
           "tbl": "crypto_token_lifecycle_snapshots",
           "idx": "ix_crypto_token_lifecycle_snapshots_run_id",
-          "stat": "8474 3"
+          "stat": "8501 3"
         },
         {
           "tbl": "crypto_token_lifecycle_snapshots",
           "idx": "ix_crypto_token_lifecycle_snapshots_chain",
-          "stat": "8474 8474"
+          "stat": "8501 8501"
         },
         {
           "tbl": "crypto_token_lifecycle_snapshots",
           "idx": "ix_crypto_token_lifecycle_snapshots_birth_event_id",
-          "stat": "8474 2"
+          "stat": "8501 2"
         },
         {
           "tbl": "crypto_token_lifecycle_snapshots",
           "idx": "ix_crypto_token_lifecycle_snapshots_token_address",
-          "stat": "8474 2"
+          "stat": "8501 2"
         },
         {
           "tbl": "alembic_version",
@@ -3486,22 +3510,22 @@
         {
           "tbl": "market_outcomes",
           "idx": "ix_market_outcomes_market_ticker",
-          "stat": "17720 1"
+          "stat": "17760 1"
         },
         {
           "tbl": "crypto_token_discovery_events",
           "idx": "ix_crypto_token_discovery_events_event_type",
-          "stat": "396669 132223"
+          "stat": "397625 132542"
         },
         {
           "tbl": "crypto_token_discovery_events",
           "idx": "ix_crypto_token_discovery_events_token_address",
-          "stat": "396669 31"
+          "stat": "397625 31"
         },
         {
           "tbl": "crypto_token_discovery_events",
           "idx": "ix_crypto_token_discovery_events_chain",
-          "stat": "396669 396669"
+          "stat": "397625 397625"
         },
         {
           "tbl": "pipeline_stage_runs",
@@ -3511,72 +3535,72 @@
         {
           "tbl": "crypto_price_ticks",
           "idx": "ix_crypto_price_ticks_pair_observed",
-          "stat": "142253 24 1"
+          "stat": "143762 24 1"
         },
         {
           "tbl": "crypto_price_ticks",
           "idx": "ix_crypto_price_ticks_pair_address",
-          "stat": "142253 24"
+          "stat": "143762 24"
         },
         {
           "tbl": "crypto_price_ticks",
           "idx": "ix_crypto_price_ticks_token_address",
-          "stat": "142253 44"
+          "stat": "143762 44"
         },
         {
           "tbl": "crypto_price_ticks",
           "idx": "ix_crypto_price_ticks_chain",
-          "stat": "142253 142253"
+          "stat": "143762 143762"
         },
         {
           "tbl": "market_price_ticks",
           "idx": "ix_market_price_ticks_ticker_observed",
-          "stat": "466950 704 1"
+          "stat": "483300 728 1"
         },
         {
           "tbl": "market_price_ticks",
           "idx": "ix_market_price_ticks_market_ticker",
-          "stat": "466950 704"
+          "stat": "483300 728"
         },
         {
           "tbl": "crypto_pairs",
           "idx": "ix_crypto_pairs_chain_address",
-          "stat": "26736 26736 1"
+          "stat": "26788 26788 1"
         },
         {
           "tbl": "crypto_pairs",
           "idx": "ix_crypto_pairs_base_token_address",
-          "stat": "26736 3"
+          "stat": "26788 3"
         },
         {
           "tbl": "crypto_pairs",
           "idx": "ix_crypto_pairs_pair_address",
-          "stat": "26736 1"
+          "stat": "26788 1"
         },
         {
           "tbl": "crypto_pairs",
           "idx": "ix_crypto_pairs_chain",
-          "stat": "26736 26736"
+          "stat": "26788 26788"
         },
         {
           "tbl": "meme_attention_snapshots",
           "idx": "ix_meme_attention_token_observed",
-          "stat": "56209 10 1"
+          "stat": "56539 10 1"
         },
         {
           "tbl": "meme_attention_snapshots",
           "idx": "ix_meme_attention_token",
-          "stat": "56209 10"
+          "stat": "56539 10"
         },
         {
           "tbl": "meme_attention_snapshots",
           "idx": "ix_meme_attention_chain",
-          "stat": "56209 56209"
+          "stat": "56539 56539"
         },
         {
           "tbl": "meme_attention_snapshots",
           "idx": "ix_meme_attention_run_id",
-          "stat": "56209 30"
+          "stat": "56539 30"
         },
         {
           "tbl": "edge_precheck_snapshots",
@@ -3616,22 +3640,22 @@
         {
           "tbl": "watcher_runs",
           "idx": null,
-          "stat": "41490"
+          "stat": "41599"
         },
         {
           "tbl": "crypto_tokens",
           "idx": "ix_crypto_tokens_chain_address",
-          "stat": "12847 12847 1"
+          "stat": "12874 12874 1"
         },
         {
           "tbl": "crypto_tokens",
           "idx": "ix_crypto_tokens_token_address",
-          "stat": "12847 1"
+          "stat": "12874 1"
         },
         {
           "tbl": "crypto_tokens",
           "idx": "ix_crypto_tokens_chain",
-          "stat": "12847 12847"
+          "stat": "12874 12874"
         },
         {
           "tbl": "marketops_alerts",
@@ -3646,7 +3670,7 @@
         {
           "tbl": "meme_scout_runs",
           "idx": null,
-          "stat": "1875"
+          "stat": "1886"
         },
         {
           "tbl": "domain_scout_runs",
@@ -3671,27 +3695,27 @@
         {
           "tbl": "marketops_runs",
           "idx": null,
-          "stat": "9225"
+          "stat": "9243"
         },
         {
           "tbl": "market_price_tick_buckets",
           "idx": "ix_tick_bucket_start",
-          "stat": "1439728 142"
+          "stat": "1443328 142"
         },
         {
           "tbl": "market_price_tick_buckets",
           "idx": "ix_market_price_tick_buckets_domain",
-          "stat": "1439728 359932"
+          "stat": "1443328 360832"
         },
         {
           "tbl": "market_price_tick_buckets",
           "idx": "ix_market_price_tick_buckets_market_ticker",
-          "stat": "1439728 185"
+          "stat": "1443328 185"
         },
         {
           "tbl": "market_price_tick_buckets",
           "idx": "sqlite_autoindex_market_price_tick_buckets_1",
-          "stat": "1439728 185 1 1"
+          "stat": "1443328 185 1 1"
         },
         {
           "tbl": "crypto_horizon_cohorts",
@@ -3746,27 +3770,27 @@
         {
           "tbl": "meme_catalyst_events",
           "idx": "ix_meme_catalyst_type",
-          "stat": "130585 32647"
+          "stat": "131324 32831"
         },
         {
           "tbl": "meme_catalyst_events",
           "idx": "ix_meme_catalyst_subject_ref",
-          "stat": "130585 23"
+          "stat": "131324 23"
         },
         {
           "tbl": "meme_catalyst_events",
           "idx": "ix_meme_catalyst_subject_type",
-          "stat": "130585 130585"
+          "stat": "131324 131324"
         },
         {
           "tbl": "meme_catalyst_events",
           "idx": "ix_meme_catalyst_source",
-          "stat": "130585 130585"
+          "stat": "131324 131324"
         },
         {
           "tbl": "meme_catalyst_events",
           "idx": "ix_meme_catalyst_run_id",
-          "stat": "130585 70"
+          "stat": "131324 70"
         },
         {
           "tbl": "cross_venue_market_candidates",
@@ -3806,7 +3830,7 @@
       ],
       "index": "ix_crypto_tokens_chain_address",
       "temp_btree": true,
-      "median_ms": 22.6295
+      "median_ms": 21.4163
     }
   ]
 }

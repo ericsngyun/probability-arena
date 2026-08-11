@@ -50,6 +50,7 @@ without running `ANALYZE`.
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
 import sqlite3
 import time
@@ -135,6 +136,9 @@ def main() -> int:
     ap.add_argument("--backup-dir", required=True)
     ap.add_argument("--expect-alembic", required=True)
     ap.add_argument("--max-backup-age-hours", type=float, default=36.0)
+    ap.add_argument("--min-backup-bytes", type=int, default=50_000_000,
+                    help="a plausible compressed backup floor; a "
+                         "truncated archive is not a rollback path")
     ap.add_argument("--out", required=True)
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--telemetry-file",
@@ -163,12 +167,34 @@ def main() -> int:
     newest = backups[-1] if backups else None
     age_h = ((now.timestamp() - newest.stat().st_mtime) / 3600.0
              if newest else None)
+    # Freshness alone is a weak gate: a zero-byte or truncated
+    # `backup-*.db.gz` would pass the one check whose entire purpose is "we can
+    # restore if this goes wrong". Verify the gzip stream actually decodes and
+    # is not trivially small before treating it as a rollback path.
+    backup_bytes = newest.stat().st_size if newest else 0
+    gzip_ok = False
+    gzip_error = None
+    if newest is not None:
+        try:
+            with gzip.open(newest, "rb") as fh:
+                head = fh.read(16)
+                while fh.read(8 * 1024 * 1024):
+                    pass
+            gzip_ok = head.startswith(b"SQLite format 3")
+            if not gzip_ok:
+                gzip_error = "decompressed stream is not a SQLite database"
+        except Exception as exc:
+            gzip_error = f"{type(exc).__name__}: {exc}"
     check("backup_fresh",
           newest is not None and age_h is not None
           and age_h <= args.max_backup_age_hours,
           {"newest": newest.name if newest else None,
            "age_hours": round(age_h, 2) if age_h is not None else None,
            "limit_hours": args.max_backup_age_hours})
+    check("backup_restorable",
+          gzip_ok and backup_bytes >= args.min_backup_bytes,
+          {"bytes": backup_bytes, "min_bytes": args.min_backup_bytes,
+           "gzip_decodes_to_sqlite": gzip_ok, "error": gzip_error})
 
     quick = None
     alembic = None

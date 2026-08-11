@@ -65,6 +65,37 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+_DEPLOYMENT_MARKERS = ("projects/probability-arena/data", "/var/lib/", "/srv/")
+_PRODUCTION_BASENAMES = ("probability_arena.db",)
+
+
+def _refuse_non_scratch(path: Path) -> None:
+    """Refuse anything that looks like a real deployment OR development
+    database.
+
+    A three-substring blacklist tuned to one host is not a guard: a developer's
+    own `<repo>/data/probability_arena.db` matches none of those fragments. The
+    filename check is what actually stops that case, and the repo-root check
+    stops a scratch copy accidentally landing inside a checkout. This script is
+    read-only (`mode=ro`), so the guard is defence in depth rather than the
+    only thing standing between it and a real file — but every script in this
+    set should refuse the same paths, or the stated safety property is not the
+    implemented one.
+    """
+    s = str(path)
+    for frag in _DEPLOYMENT_MARKERS:
+        if frag in s:
+            raise SystemExit(f"refusing a deployment-looking path: {path}")
+    if path.name in _PRODUCTION_BASENAMES:
+        raise SystemExit(
+            f"refusing {path.name!r}: that is the production database "
+            "filename. Copy it to a scratch name first."
+        )
+    repo_root = Path(__file__).resolve().parents[1]
+    if repo_root in path.parents:
+        raise SystemExit(f"refusing a path inside the repo checkout: {path}")
+
+
 HORIZONS = (("15m", 15), ("1h", 60), ("6h", 360), ("24h", 1440))
 HORIZON_TOLERANCE = 0.5
 WINDOW_HOURS = 48
@@ -84,6 +115,7 @@ def main() -> int:
     args = ap.parse_args()
 
     db = Path(args.db_path).resolve()
+    _refuse_non_scratch(db)
     if not db.exists():
         raise SystemExit(f"no such database: {db}")
     conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
@@ -290,6 +322,85 @@ def main() -> int:
         "backlog_tokens_with_any_tick": len(any_tick),
         "oldest_backlog_first_seen_at": min(
             (str(r[1]) for r in rows), default=None),
+    }
+
+    # --------------------------------------------------------------- B5.3 ---
+    # Is the missing 24h evidence PRUNED, or was it never RECORDED? Retention
+    # can only be the cause for tokens whose evidence window has aged past it.
+    # So slice by age: the 36h-3d cohort's entire 24h window (anchor+12h ..
+    # anchor+36h) is at most 3 days old, i.e. comfortably inside a 7-day
+    # retention — if an observation was ever written for those tokens, it is
+    # still on disk. Whatever coverage that cohort shows is a pure measure of
+    # what the observation lane recorded, with retention held out.
+    cohorts = []
+    for lo_h, hi_h, name in ((36, 72, "36h-3d_zero_pruning_possible"),
+                             (72, 168, "3d-7d"),
+                             (168, 204, "7d-8.5d_24h_window_partly_pruned")):
+        conn.execute("DROP TABLE IF EXISTS mem.c")
+        conn.execute(
+            "CREATE TABLE mem.c AS SELECT token_address addr, first_seen_at fs "
+            "FROM crypto_tokens WHERE chain='solana' "
+            f"AND first_seen_at <= datetime('now','-{lo_h} hours') "
+            f"AND first_seen_at >  datetime('now','-{hi_h} hours')")
+        n = conn.execute("SELECT count(*) FROM mem.c").fetchone()[0]
+        hits = {}
+        for label, minutes in HORIZONS:
+            tol = minutes * HORIZON_TOLERANCE
+            hits[label] = conn.execute(
+                "SELECT count(DISTINCT c.addr) FROM mem.c c "
+                "JOIN crypto_price_ticks k ON k.chain='solana' "
+                "  AND k.token_address = c.addr "
+                f"WHERE k.observed_at >= datetime(c.fs,'+{minutes - tol} minutes') "
+                f"  AND k.observed_at <= datetime(c.fs,'+{minutes + tol} minutes')"
+            ).fetchone()[0]
+        liq = conn.execute(
+            "SELECT count(*) FROM mem.c c JOIN crypto_token_birth_events b "
+            "ON b.chain='solana' AND b.token_address = c.addr "
+            "WHERE b.initial_liquidity_usd IS NOT NULL").fetchone()[0]
+        cohorts.append({
+            "cohort": name, "age_hours": [lo_h, hi_h], "tokens": n,
+            "horizon_hits": hits,
+            "horizon_share_pct": {k: (round(100 * v / n, 1) if n else None)
+                                  for k, v in hits.items()},
+            "initial_liquidity_known": liq,
+            "initial_liquidity_share_pct": (round(100 * liq / n, 1) if n else None),
+        })
+
+    # How long does the observation lane actually watch a token? First evidence
+    # to the LAST tick it ever wrote, for every token that has any tick.
+    conn.execute("DROP TABLE IF EXISTS mem.c")
+    conn.execute(
+        "CREATE TABLE mem.c AS SELECT token_address addr, first_seen_at fs "
+        "FROM crypto_tokens WHERE chain='solana' "
+        "AND first_seen_at <= datetime('now','-36 hours') "
+        "AND first_seen_at >  datetime('now','-204 hours')")
+    spans = [r[0] for r in conn.execute(
+        "SELECT (julianday(max(k.observed_at)) - julianday(c.fs)) * 1440 "
+        "FROM mem.c c JOIN crypto_price_ticks k "
+        "  ON k.chain='solana' AND k.token_address = c.addr "
+        "GROUP BY c.addr").fetchall() if r[0] is not None]
+    spans.sort()
+    birth_liq = conn.execute(
+        "SELECT (initial_liquidity_usd IS NULL), count(*) "
+        "FROM crypto_token_birth_events GROUP BY 1").fetchall()
+    report["b5_3_observation_coverage"] = {
+        "cohorts": cohorts,
+        "observation_span_minutes": {
+            "tokens_with_any_tick": len(spans),
+            "p50": round(pctl(spans, 0.5), 1) if spans else None,
+            "p90": round(pctl(spans, 0.90), 1) if spans else None,
+            "max": round(max(spans), 1) if spans else None,
+        },
+        "birth_initial_liquidity": {
+            "not_null": next((c for null, c in birth_liq if null == 0), 0),
+            "null": next((c for null, c in birth_liq if null == 1), 0),
+        },
+        "note": (
+            "The 36h-3d cohort cannot have lost anything to retention, so its "
+            "horizon coverage measures ONLY what the observation lane wrote. "
+            "If 24h coverage is low there, the evidence was never recorded and "
+            "no retention window recovers it."
+        ),
     }
 
     # ---------------------------------------------------------------- B7 ----
