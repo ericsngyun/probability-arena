@@ -363,10 +363,14 @@ def assert_live_tree_unchanged(before: dict, stage: str) -> None:
                       if before[k] != after[k])
     if added or removed or modified:
         raise LiveTreeDirty(
-            f"[{stage}] the live working tree CHANGED across the campaign "
-            "-- the isolation has regressed and this run wrote to "
-            f"{REPO_ROOT}.\n  modified: {modified}\n  added: {added}\n  "
-            f"removed: {removed}")
+            f"[{stage}] the live working tree at {REPO_ROOT} CHANGED across "
+            "the campaign. EITHER the isolation regressed and this run wrote "
+            "to it, OR another process (an editor, an agent, a second "
+            "checkout's tooling) modified it concurrently -- this tripwire "
+            "cannot tell those apart, and both mean the campaign's verdict "
+            "is about a tree that no longer exists. Check the paths, then "
+            "re-run over a quiescent tree.\n  modified: "
+            f"{modified}\n  added: {added}\n  removed: {removed}")
 
 
 # ---------------------------------------------------------------------------
