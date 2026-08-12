@@ -799,6 +799,12 @@ def test_a_cte_wrapped_write_is_classified_as_a_write():
 
 # --- BLOCKER 1(b): the finalize keeps its own budget ----------------------
 
+# How long the competing writer holds the lock across the run row's finalize
+# commit. Must comfortably exceed what a REVERTED (0.5s floor) finalize can
+# spend before giving up, INCLUDING this host's load-driven overshoot —
+# measured up to 3.8x at 500ms on the dev Mac at load average ~5-6.
+_FINALIZE_HOLD_SECONDS = 3.0
+
 def test_a_contended_finalize_still_persists_the_run_row_and_the_histogram(tmp_path):
     """THE GATE'S EVIDENCE, on the passes that carry it.
 
@@ -822,12 +828,17 @@ def test_a_contended_finalize_still_persists_the_run_row_and_the_histogram(tmp_p
 
     Deterministic, not timing-hopeful: a real RESERVED holder is taken at the
     exact moment the run row's finalize UPDATE is about to execute, and
-    released 1.5s later from its own thread. `max_lock_attempts=1` removes the
-    retry ladder so the finalize budget is the only thing that can save the
-    row.
+    released `_FINALIZE_HOLD_SECONDS` later from its own thread.
+    `max_lock_attempts=1` removes the retry ladder so the finalize budget is
+    the only thing that can save the row.
 
-    Fails on revert: restore the 0.5s floor and the finalize gives up before
-    1.5s, leaving `run.status='running'` and no `write_coordination` at all.
+    Fails on revert: restore the 0.5s floor and the finalize gives up long
+    before the holder releases, leaving `run.status='running'` and no
+    `write_coordination` at all. The hold is sized against the OVERSHOOT, not
+    against the nominal floor — a 500ms busy timeout was measured reaching
+    1.91s of wall time on this dev Mac under load, so a 1.5s hold made this
+    test pass under BOTH the fix and the revert on a busy machine. It is not
+    a discriminator unless it clears the loaded-host overshoot with margin.
     """
     d = tmp_path / "finalize"
     d.mkdir()
@@ -837,7 +848,7 @@ def test_a_contended_finalize_still_persists_the_run_row_and_the_histogram(tmp_p
     def _grab(conn, cursor, statement, parameters, context, executemany):
         text = statement.strip().lower()
         if text.startswith("update crypto_token_lifecycle_runs") and not holders:
-            holders.append(_TimedHolder(db.path, 1.5))
+            holders.append(_TimedHolder(db.path, _FINALIZE_HOLD_SECONDS))
 
     event.listen(db.engine, "before_cursor_execute", _grab)
     session = db.Factory()
@@ -859,7 +870,7 @@ def test_a_contended_finalize_still_persists_the_run_row_and_the_histogram(tmp_p
     assert r["status"] == "ok", r
     assert r["external_calls"] == 0
     # The finalize really did block — otherwise this proves nothing.
-    assert r["blocked_ms"] >= 1000, r
+    assert r["blocked_ms"] >= 1000 * _FINALIZE_HOLD_SECONDS * 0.6, r
 
     verify = db.Factory()
     run = verify.execute(
