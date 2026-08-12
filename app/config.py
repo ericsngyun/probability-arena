@@ -470,6 +470,31 @@ class Settings(BaseSettings):
     crypto_tape_reconciler_time_budget_seconds: float | None = None
     crypto_tape_reconciler_initial_per_token_cost_seconds: float | None = None
 
+    # CRYPTO-RECONCILER-LOCK-WAIT-BUDGET-001 — the reconciler's LOCK-WAIT
+    # budget, in seconds per SQLite lock acquisition. A DIFFERENT quantity
+    # from `crypto_tape_reconciler_time_budget_seconds` above: that one
+    # bounds how long a reconciler transaction may HOLD the write lock; this
+    # one bounds how long it may WAIT for it.
+    #
+    # Why this exists: `sqlite_busy_timeout_ms` (30s) is a PER-LOCK-
+    # ACQUISITION timeout applied to every connection in the process, and one
+    # blocked write statement performs more than one acquisition — measured
+    # 1.7-2.9x the configured value before "database is locked" (see
+    # RECONCILE_LOCK_WAIT_STATEMENT_OVERSHOOT in app/services/crypto_tape.py
+    # for the table). On EVO that turned a `--max-duration-seconds 30` pass
+    # into `duration_ms=61,047` with `blocked_ms=45,744`.
+    #
+    # None (the default, and what ships) means the budget is DERIVED per
+    # attempt from the pass's own remaining wall-clock deadline —
+    # `max(floor, remaining / 4)` — so the reconciler can never wait past its
+    # own deadline. A positive value is an operator CAP on top of that
+    # derived budget, never a floor under it. Deliberately no invented
+    # absolute default: one production data point cannot set a percentile of
+    # the contention distribution. The `lock_wait_ms` histogram this
+    # milestone persists on every run row is what a real value would be
+    # derived from later.
+    crypto_tape_reconciler_lock_wait_budget_seconds: float | None = None
+
     # Crypto risk engine (CRYPTO-002) — read-only risk INTELLIGENCE only.
     # A risk score flags danger for avoidance/review; it is never a trade
     # recommendation, and no execution capability exists anywhere. Provider

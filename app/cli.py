@@ -3100,6 +3100,7 @@ async def crypto_tape_reconcile(
     max_duration_seconds: float | None = None,
     time_budget_seconds: float | None = None,
     initial_per_token_cost_seconds: float | None = None,
+    lock_wait_budget_seconds: float | None = None,
     session=None,
 ) -> int:
     """CRYPTO-COVERAGE-REPAIR-001 scheduled provider-free reconciliation: one
@@ -3142,6 +3143,10 @@ async def crypto_tape_reconcile(
             extra_kwargs["time_budget_seconds"] = time_budget_seconds
         if initial_per_token_cost_seconds is not None:
             extra_kwargs["initial_per_token_cost_seconds"] = initial_per_token_cost_seconds
+        # CRYPTO-RECONCILER-LOCK-WAIT-BUDGET-001: same pass-through pattern.
+        # Omitted entirely when unset so the deadline-derived budget governs.
+        if lock_wait_budget_seconds is not None:
+            extra_kwargs["lock_wait_budget_seconds"] = lock_wait_budget_seconds
         r = run_scheduled_reconciliation(
             session, dry_run=dry_run, force=force, window_hours=hours, limit=limit,
             **extra_kwargs,
@@ -3227,6 +3232,25 @@ async def crypto_tape_reconcile(
         # bound, while still counting toward `duration_ms`. Printing it is
         # what makes a deadline overshoot diagnosable instead of mysterious.
         print(f"classify_ms={r.get('classify_ms')}")
+        # CRYPTO-RECONCILER-LOCK-WAIT-BUDGET-001 — the measured lock WAIT,
+        # printed next to `blocked_ms` (which is wait PLUS the pass's own
+        # write work) precisely so the two are never read as the same
+        # number. `lock_wait_budget_ms` is the budget that was actually in
+        # force; `write_hold_ms_max` is the largest single write-lock HOLD,
+        # the quantity the 2.0s write-time SLO is about.
+        print(
+            f"lock_wait_ms={r.get('lock_wait_ms')}  "
+            f"lock_wait_ms_max={r.get('lock_wait_ms_max')}  "
+            f"lock_wait_measurements={r.get('lock_wait_measurements')}  "
+            f"lock_wait_budget_ms={r.get('lock_wait_budget_ms')}  "
+            f"lock_wait_budget_ms_min={r.get('lock_wait_budget_ms_min')}"
+        )
+        print(
+            f"write_hold_ms_max={r.get('write_hold_ms_max')}  "
+            f"write_hold_slo_seconds={r.get('write_hold_slo_seconds')}  "
+            f"write_hold_slo_violations={r.get('write_hold_slo_violations')}  "
+            f"lock_wait_histogram_ms={r.get('lock_wait_histogram_ms')}"
+        )
         print(
             f"batches_committed={r.get('batches_committed')}  "
             f"lock_retry_events={r.get('lock_retry_events')}  "
@@ -8060,6 +8084,16 @@ def build_parser() -> argparse.ArgumentParser:
              "wall time on the target host (see crypto_tape.py's "
              "AdaptiveBatchCostEstimate); never guess it. Must be > 0.",
     )
+    tape_reconcile_parser.add_argument(
+        "--lock-wait-budget-seconds", type=_positive_float_arg, default=None,
+        help="CRYPTO-RECONCILER-LOCK-WAIT-BUDGET-001: a CAP (seconds) on how "
+             "long ONE SQLite lock acquisition may WAIT. Distinct from "
+             "--time-budget-seconds, which bounds how long a transaction may "
+             "HOLD the lock. Omitted (the default) means the budget is "
+             "derived per attempt from the pass's own remaining "
+             "--max-duration-seconds, so a blocked statement can never push "
+             "the pass past its deadline. Must be > 0.",
+    )
     tape_report_parser = subparsers.add_parser(
         "crypto-tape-report",
         help="Lifecycle tape report: coverage, survival labels, actor patterns "
@@ -8864,6 +8898,7 @@ def main(argv: list[str] | None = None) -> int:
                 max_duration_seconds=args.max_duration_seconds,
                 time_budget_seconds=args.time_budget_seconds,
                 initial_per_token_cost_seconds=args.initial_per_token_cost_seconds,
+                lock_wait_budget_seconds=args.lock_wait_budget_seconds,
             )
         )
         return 0 if n >= 0 else 1

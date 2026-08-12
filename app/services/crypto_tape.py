@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from sqlalchemy import and_, func, or_, select, text, update
+from sqlalchemy import and_, event, func, or_, select, text, update
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
@@ -339,6 +339,383 @@ RECONCILE_POST_BATCH_YIELD_SECONDS = 0.05
 # configurations). Never touches the database's own locking; kernel-released
 # if the process dies, so a crash can never leave a stale lock.
 RECONCILE_LOCK_FILENAME = ".crypto-tape-reconcile-{chain}.lock"
+
+# ---------------------------------------------------------------------------
+# CRYPTO-RECONCILER-LOCK-WAIT-BUDGET-001 — the reconciler's own LOCK-WAIT
+# budget. This is a DIFFERENT quantity from RECONCILE_WRITE_TIME_SLO_SECONDS
+# above and the two must never be conflated:
+#
+#   * RECONCILE_WRITE_TIME_SLO_SECONDS bounds how long the reconciler may
+#     HOLD the SQLite write lock (a courtesy to co-tenants).
+#   * the constants below bound how long the reconciler may WAIT for it (its
+#     own robustness — a blocked reconciler is the VICTIM, not the aggressor).
+#
+# MOTIVATING PRODUCTION MEASUREMENT (EVO, tape_run_id=3618, bounded `--force`
+# run-once): the pass succeeded — external_calls=0, 236 batches committed,
+# 1,182 final outcomes — but recorded `lock_retry_events=1`,
+# `blocked_ms=45,744` and `duration_ms=61,047` against
+# `--max-duration-seconds 30`. The entire 2x deadline overshoot was that one
+# blocked window. A concurrent MarketOps run (#9405) completed `ok`, so the
+# reconciler was purely the blocked party.
+#
+# WHY `sqlite_busy_timeout_ms=30000` did not bound it at 30s. SQLite's busy
+# timeout is PER LOCK-ACQUISITION ATTEMPT, not per statement and not per
+# transaction, and one blocked write statement performs more than one such
+# attempt. Measured directly on this repo's dev Mac with raw `sqlite3` (no
+# SQLAlchemy in the path), a single competing connection holding RESERVED:
+#
+#     configured busy_timeout   observed wall time before "database is
+#                               locked"        ratio
+#     -----------------------   -----------------------------   -----
+#     250 ms                    0.734 s / 0.663 s               2.93x / 2.65x
+#     500 ms                    1.077 s / 1.151 s               2.15x / 2.30x
+#     1000 ms                   1.779 s / 1.993 s               1.78x / 1.99x
+#     2000 ms                   3.416 s / 3.373 s               1.71x / 1.69x
+#     (BEGIN IMMEDIATE, i.e. a single nominal acquisition, behaves the same:
+#      500 ms -> 1.131 s, 1000 ms -> 1.991 s, 2000 ms -> 3.300 s)
+#
+# The ratio converges toward ~2x as the budget grows (the excess above 2x at
+# small budgets is the busy handler's fixed sleep-schedule granularity). The
+# production number is consistent with this and NOT with a 1x bound:
+# 45.744 s / 30 s = 1.52x. `test_one_blocked_statement_exceeds_its_configured
+# _busy_timeout` in tests/test_crypto_reconciler_lock_wait_budget_001.py
+# re-derives the >1x property on demand; the exact ratios above are a
+# dev-Mac measurement and must be re-measured on any host before being
+# quoted as that host's number.
+#
+# STATEMENT_OVERSHOOT is therefore 2.0 — the measured asymptote, not a guess.
+RECONCILE_LOCK_WAIT_STATEMENT_OVERSHOOT = 2.0
+# Points inside ONE batch attempt at which SQLite can block, in this
+# database's rollback-journal mode (no `journal_mode=WAL` is set anywhere in
+# this repo — see app/db.py): (1) the transaction's first write statement,
+# acquiring RESERVED, and (2) COMMIT, acquiring PENDING/EXCLUSIVE behind any
+# live reader. A cache spill would add a third, which a 5-token batch does
+# not produce; if `crypto_tape_reconciler_batch_size` is ever raised far
+# enough to spill the page cache mid-batch, this constant is the thing to
+# revisit.
+RECONCILE_LOCK_WAIT_BLOCKING_POINTS = 2
+# Worst-case multiple of the CONFIGURED per-acquisition budget that ONE batch
+# attempt can actually spend blocked: 2 blocking points x ~2x each.
+RECONCILE_LOCK_WAIT_ATTEMPT_MULTIPLIER = (
+    RECONCILE_LOCK_WAIT_BLOCKING_POINTS * RECONCILE_LOCK_WAIT_STATEMENT_OVERSHOOT
+)
+# The floor under the derived budget, so a pass that is already at (or past)
+# its deadline still gets a real chance to take the lock rather than failing
+# on contention it never actually waited for. DERIVED, not chosen: at the
+# floor, one attempt's worst-case WAIT is
+# `floor x RECONCILE_LOCK_WAIT_ATTEMPT_MULTIPLIER` = exactly
+# RECONCILE_WRITE_TIME_SLO_SECONDS — i.e. the reconciler may never wait
+# longer, in the worst case, than it is itself allowed to hold.
+RECONCILE_LOCK_WAIT_FLOOR_SECONDS = (
+    RECONCILE_WRITE_TIME_SLO_SECONDS / RECONCILE_LOCK_WAIT_ATTEMPT_MULTIPLIER
+)
+# Fixed histogram edges (milliseconds) for the persisted lock-wait
+# distribution. Fixed edges are what make per-pass histograms ADDABLE across
+# many passes without keeping every raw sample on every run row — the
+# downstream goal is a distribution of real lock waits, and a per-pass list
+# of raw samples neither aggregates nor bounds its own size.
+RECONCILE_LOCK_WAIT_BUCKET_EDGES_MS = (1, 10, 100, 1000, 5000, 15000, 30000)
+# How many raw per-attempt samples the IN-MEMORY summary keeps (never
+# persisted). Bounded so a 2000-token pass cannot build an unbounded list.
+RECONCILE_LOCK_WAIT_SAMPLE_CAP = 256
+
+_WRITE_STATEMENT_PREFIXES = ("INSERT", "UPDATE", "DELETE", "REPLACE")
+
+
+def _is_write_statement(statement: str) -> bool:
+    """True for the statement kinds that take SQLite's RESERVED write lock."""
+    return statement.lstrip()[:7].upper().startswith(_WRITE_STATEMENT_PREFIXES)
+
+
+class LockWaitMeter:
+    """CRYPTO-RECONCILER-LOCK-WAIT-BUDGET-001 — measures the SQLite write-lock
+    WAIT of one batch attempt, as distinct from the attempt's total wall time
+    (`blocked_ms`, which has always included the attempt's real work).
+
+    What it measures, precisely, and what it does not:
+
+      * `lock_acquire_seconds` — the wall time of the transaction's FIRST
+        write statement. In rollback-journal mode that statement is where
+        RESERVED is acquired, so its duration is the RESERVED wait plus the
+        cost of executing one small DML statement. Measured uncontended on
+        the dev Mac that cost is ~1.3 ms, so this is a TIGHT UPPER BOUND on
+        the wait, not an exact figure.
+      * `commit_seconds` — the wall time of `session.commit()` MINUS the wall
+        time of any statements SQLAlchemy emitted inside it (the final
+        flush). What remains is the COMMIT itself: the PENDING/EXCLUSIVE wait
+        plus the journal fsync. Again an upper bound, overstated by the
+        fsync.
+      * `hold_seconds` — from the moment RESERVED was acquired to the moment
+        COMMIT returned: the reconciler's actual write-lock HOLD, the
+        quantity RECONCILE_WRITE_TIME_SLO_SECONDS is about. Recorded, never
+        enforced (enforcement needs adaptive batching, which needs a
+        measured `initial_per_token_cost_seconds`).
+
+    Python's `sqlite3` exposes no busy-handler callback, so there is no way
+    from this process to split a SUCCEEDING statement's duration into "slept
+    in the busy handler" and "did work". Timing the one statement whose only
+    job is to take the lock is the closest honest approximation, and it costs
+    no extra statement and no extra lock hold. On the FAILING path the
+    statement did no work at all, so the measurement there is exact.
+    """
+
+    # Deliberately `time.monotonic`, not `time.perf_counter`: several
+    # existing tests inject a scripted fake `time.perf_counter` on the
+    # STDLIB module to drive `blocked_ms`/adaptive-cost arithmetic by
+    # counting calls, and an instrumentation path that silently consumed
+    # entries from that script would change what those tests measure. This
+    # meter must observe the clock without perturbing anyone else's
+    # measurement of it.
+    def __init__(self):
+        self.lock_acquire_seconds = 0.0
+        self.commit_seconds = 0.0
+        self.hold_seconds = 0.0
+        self._statement_seconds = 0.0
+        self._pending_t0: float | None = None
+        self._pending_is_write = False
+        self._acquired = False
+        self._acquired_at: float | None = None
+        self._commit_t0: float | None = None
+        self._commit_statement_baseline = 0.0
+
+    # -- engine event hooks -------------------------------------------------
+    def _before(self, conn, cursor, statement, parameters, context, executemany):
+        self._pending_t0 = time.monotonic()
+        self._pending_is_write = _is_write_statement(statement)
+
+    def _after(self, conn, cursor, statement, parameters, context, executemany):
+        if self._pending_t0 is None:  # pragma: no cover - defensive
+            return
+        elapsed = time.monotonic() - self._pending_t0
+        self._statement_seconds += elapsed
+        if self._pending_is_write and not self._acquired:
+            self._acquired = True
+            self._acquired_at = time.monotonic()
+            self.lock_acquire_seconds += elapsed
+        self._pending_t0 = None
+        self._pending_is_write = False
+
+    # -- caller-driven markers ---------------------------------------------
+    def mark_commit_start(self) -> None:
+        self._commit_t0 = time.monotonic()
+        self._commit_statement_baseline = self._statement_seconds
+
+    def mark_commit_end(self) -> None:
+        if self._commit_t0 is None:  # pragma: no cover - defensive
+            return
+        now = time.monotonic()
+        inner_statements = self._statement_seconds - self._commit_statement_baseline
+        self.commit_seconds += max(0.0, (now - self._commit_t0) - inner_statements)
+        if self._acquired_at is not None:
+            self.hold_seconds = max(0.0, now - self._acquired_at)
+        self._commit_t0 = None
+
+    def mark_failed(self) -> None:
+        """A `database is locked` error ended this attempt. Attribute the
+        elapsed time of whatever was in flight — a statement that never got
+        its `after_cursor_execute`, or an in-flight COMMIT — to lock wait.
+        On this path the elapsed time IS pure wait: the statement did no
+        work, it timed out trying to start."""
+        now = time.monotonic()
+        if self._pending_t0 is not None:
+            elapsed = now - self._pending_t0
+            self._statement_seconds += elapsed
+            self.lock_acquire_seconds += elapsed
+            self._pending_t0 = None
+            self._pending_is_write = False
+        elif self._commit_t0 is not None:
+            inner = self._statement_seconds - self._commit_statement_baseline
+            self.commit_seconds += max(0.0, (now - self._commit_t0) - inner)
+            self._commit_t0 = None
+
+    @property
+    def lock_wait_seconds(self) -> float:
+        return self.lock_acquire_seconds + self.commit_seconds
+
+
+@contextmanager
+def _lock_wait_meter(session: Session, enabled: bool = True):
+    """Attach a `LockWaitMeter` to THIS session's current connection for the
+    duration of one batch attempt. Scoped to the Connection instance (not the
+    Engine) so it can never observe, or slow down, any other session sharing
+    the same engine. Degrades to an inert meter if the session cannot produce
+    a connection — instrumentation must never be able to fail a pass.
+
+    `enabled=False` yields an inert meter and never touches the session at
+    all, so a caller that did not opt into lock-wait accounting keeps its
+    exact pre-milestone connection behaviour."""
+    meter = LockWaitMeter()
+    conn = None
+    if not enabled:
+        yield meter
+        return
+    try:
+        conn = session.connection()
+        event.listen(conn, "before_cursor_execute", meter._before)
+        event.listen(conn, "after_cursor_execute", meter._after)
+    except Exception:  # pragma: no cover - defensive
+        logger.debug("crypto tape: lock-wait meter could not attach", exc_info=True)
+        conn = None
+    try:
+        yield meter
+    finally:
+        if conn is not None:
+            for name, fn in (
+                ("before_cursor_execute", meter._before),
+                ("after_cursor_execute", meter._after),
+            ):
+                try:
+                    event.remove(conn, name, fn)
+                except Exception:  # pragma: no cover - defensive
+                    pass
+
+
+def derive_lock_wait_budget_seconds(
+    explicit_budget_seconds: float | None,
+    remaining_deadline_seconds: float | None,
+) -> float | None:
+    """The reconciler's per-lock-acquisition wait budget for the NEXT attempt.
+
+    Returns `None` when there is nothing to derive from and nothing was
+    configured — the caller then leaves the connection's busy timeout exactly
+    as `app.db.connect_args_for` set it (today's behaviour, unchanged).
+
+    Derivation, and why it is NOT a number invented against the contention
+    distribution: one production data point (45.744 s of blocked time against
+    a healthy concurrent MarketOps run) cannot establish a percentile of that
+    distribution, so it cannot honestly set an absolute timeout. What CAN be
+    derived without a distribution is the budget the pass's OWN wall-clock
+    contract can afford: at most `remaining_deadline` may be spent waiting,
+    and one attempt can spend up to
+    `RECONCILE_LOCK_WAIT_ATTEMPT_MULTIPLIER x budget` (measured — see that
+    constant), so
+
+        budget = max(FLOOR, remaining_deadline / ATTEMPT_MULTIPLIER)
+
+    This is self-tightening: as a pass burns its deadline the budget shrinks,
+    so a late batch fails fast into `partial` (durable prior batches, retried
+    next pass) instead of turning a 30 s run into a 61 s one.
+
+    An explicit `crypto_tape_reconciler_lock_wait_budget_seconds` acts as a
+    CAP on top of the derived value, never as a floor under it — that is the
+    knob for a contention-informed number once the `lock_wait_ms` histogram
+    this milestone records has produced a real distribution.
+    """
+    if remaining_deadline_seconds is None:
+        return explicit_budget_seconds
+    derived = max(
+        RECONCILE_LOCK_WAIT_FLOOR_SECONDS,
+        remaining_deadline_seconds / RECONCILE_LOCK_WAIT_ATTEMPT_MULTIPLIER,
+    )
+    if explicit_budget_seconds is None:
+        return derived
+    return min(explicit_budget_seconds, derived)
+
+
+def _apply_lock_wait_budget(session: Session, budget_seconds: float | None) -> int | None:
+    """Set `PRAGMA busy_timeout` on THIS session's SQLite connection to the
+    reconciler's budget. Connection-scoped: no other writer's busy policy
+    changes, and the process-wide `sqlite_busy_timeout_ms` is untouched.
+
+    Returns the applied value in ms, or None if nothing was applied (no
+    budget, non-SQLite backend, or the PRAGMA failed). A failure here
+    degrades to today's behaviour and is never allowed to fail the pass."""
+    if budget_seconds is None:
+        return None
+    ms = max(0, int(budget_seconds * 1000))
+    try:
+        conn = session.connection()
+        if conn.dialect.name != "sqlite":
+            return None
+        conn.exec_driver_sql(f"PRAGMA busy_timeout = {ms}")
+    except Exception:  # pragma: no cover - defensive
+        logger.warning(
+            "crypto tape: could not apply the reconciler lock-wait budget "
+            "(%s ms); this pass keeps the connection's existing busy timeout",
+            ms, exc_info=True,
+        )
+        return None
+    return ms
+
+
+def _read_busy_timeout_ms(session: Session) -> int | None:
+    """The connection's CURRENT busy timeout, so the pass can put it back."""
+    try:
+        conn = session.connection()
+        if conn.dialect.name != "sqlite":
+            return None
+        return int(conn.exec_driver_sql("PRAGMA busy_timeout").scalar())
+    except Exception:  # pragma: no cover - defensive
+        return None
+
+
+class LockWaitAccounting:
+    """Per-pass aggregation of `LockWaitMeter` samples. Bounded by
+    construction: a fixed histogram plus scalars, never an unbounded list of
+    raw samples on the run row."""
+
+    def __init__(self):
+        self.total_seconds = 0.0
+        self.max_seconds = 0.0
+        self.measurements = 0
+        self.samples_ms: list[int] = []
+        self.buckets = [0] * (len(RECONCILE_LOCK_WAIT_BUCKET_EDGES_MS) + 1)
+        self.budget_ms_applied: int | None = None
+        self.budget_ms_min: int | None = None
+        self.hold_seconds_max = 0.0
+        self.hold_slo_violations = 0
+
+    def record_budget(self, budget_ms: int | None) -> None:
+        if budget_ms is None:
+            return
+        if self.budget_ms_applied is None:
+            self.budget_ms_applied = budget_ms
+        self.budget_ms_min = (
+            budget_ms if self.budget_ms_min is None
+            else min(self.budget_ms_min, budget_ms)
+        )
+
+    def record(self, meter: LockWaitMeter) -> None:
+        wait = meter.lock_wait_seconds
+        self.total_seconds += wait
+        self.max_seconds = max(self.max_seconds, wait)
+        self.measurements += 1
+        ms = int(wait * 1000)
+        if len(self.samples_ms) < RECONCILE_LOCK_WAIT_SAMPLE_CAP:
+            self.samples_ms.append(ms)
+        index = len(RECONCILE_LOCK_WAIT_BUCKET_EDGES_MS)
+        for i, edge in enumerate(RECONCILE_LOCK_WAIT_BUCKET_EDGES_MS):
+            if ms < edge:
+                index = i
+                break
+        self.buckets[index] += 1
+        if meter.hold_seconds > 0:
+            self.hold_seconds_max = max(self.hold_seconds_max, meter.hold_seconds)
+            if meter.hold_seconds > RECONCILE_WRITE_TIME_SLO_SECONDS:
+                self.hold_slo_violations += 1
+
+    def histogram(self) -> dict:
+        edges = RECONCILE_LOCK_WAIT_BUCKET_EDGES_MS
+        labels = [f"<{edges[0]}"]
+        labels += [f"{edges[i]}-{edges[i + 1]}" for i in range(len(edges) - 1)]
+        labels.append(f">={edges[-1]}")
+        return {label: count for label, count in zip(labels, self.buckets)}
+
+    def as_summary(self) -> dict:
+        """The telemetry contract. `lock_wait_ms` is the pass total; the
+        histogram is what aggregates across passes into the distribution this
+        milestone exists to make possible."""
+        return {
+            "lock_wait_ms": int(self.total_seconds * 1000),
+            "lock_wait_ms_max": int(self.max_seconds * 1000),
+            "lock_wait_measurements": self.measurements,
+            "lock_wait_histogram_ms": self.histogram(),
+            "lock_wait_budget_ms": self.budget_ms_applied,
+            "lock_wait_budget_ms_min": self.budget_ms_min,
+            "write_hold_ms_max": int(self.hold_seconds_max * 1000),
+            "write_hold_slo_seconds": RECONCILE_WRITE_TIME_SLO_SECONDS,
+            "write_hold_slo_violations": self.hold_slo_violations,
+        }
 
 
 class AdaptiveBatchCostEstimate:
@@ -1754,6 +2131,7 @@ class CryptoLifecycleTapeRecorder:
         sleeper=time.sleep,
         time_budget_seconds: float | None = None,
         initial_per_token_cost_seconds: float | None = None,
+        lock_wait_budget_seconds: float | None = None,
     ) -> dict:
         """One bounded reconciliation pass.
 
@@ -2000,6 +2378,7 @@ class CryptoLifecycleTapeRecorder:
             backlog_token_addresses=backlog_addresses,
             time_budget_seconds=time_budget_seconds,
             initial_per_token_cost_seconds=initial_per_token_cost_seconds,
+            lock_wait_budget_seconds=lock_wait_budget_seconds,
         )
         # A cap that silently drops work reads as "complete" to every caller.
         summary["universe_size"] = total
@@ -2226,6 +2605,9 @@ class CryptoLifecycleTapeRecorder:
     def _commit_with_retry(
         self, session: Session, prepare, max_attempts: int, retry_seconds: float,
         sleeper=time.sleep,
+        *,
+        budget_provider=None,
+        accounting: "LockWaitAccounting | None" = None,
     ) -> tuple[bool, int]:
         """CRYPTO-COVERAGE-REPAIR-001 B5 — bounded retry ladder for one commit,
         reusing the DB_LOCKED_* constants `run_tape_session` already uses.
@@ -2256,20 +2638,42 @@ class CryptoLifecycleTapeRecorder:
         contract broken on exactly the failure path this ladder exists for.
         `prepare()` must be INSIDE the try so a lock hit during PREPARE gets
         exactly the same retry/rollback treatment as a lock hit during
-        commit."""
+        commit.
+
+        CRYPTO-RECONCILER-LOCK-WAIT-BUDGET-001: `budget_provider`, when given,
+        is called before EVERY attempt and returns this attempt's per-lock-
+        acquisition wait budget in seconds (or None). It is re-applied per
+        attempt on purpose — `session.commit()`/`rollback()` return the
+        connection to the pool, so a budget set once cannot be assumed to
+        survive to the next attempt, and the derived budget shrinks as the
+        pass's deadline is consumed. `accounting`, when given, receives the
+        measured lock wait of each attempt. Both default to None, which keeps
+        this method byte-identical to its pre-milestone behaviour."""
         for attempt in range(1, max(1, max_attempts) + 1):
-            try:
-                prepare()
-                session.commit()
-                return True, attempt
-            except OperationalError as exc:
-                session.rollback()
-                if _is_db_locked(exc) and attempt < max_attempts:
-                    sleeper(retry_seconds)
-                    continue
-                if _is_db_locked(exc):
-                    return False, attempt
-                raise
+            if budget_provider is not None:
+                budget_ms = _apply_lock_wait_budget(session, budget_provider())
+                if accounting is not None:
+                    accounting.record_budget(budget_ms)
+            with _lock_wait_meter(session, accounting is not None) as meter:
+                try:
+                    prepare()
+                    meter.mark_commit_start()
+                    session.commit()
+                    meter.mark_commit_end()
+                    if accounting is not None:
+                        accounting.record(meter)
+                    return True, attempt
+                except OperationalError as exc:
+                    meter.mark_failed()
+                    if accounting is not None:
+                        accounting.record(meter)
+                    session.rollback()
+                    if _is_db_locked(exc) and attempt < max_attempts:
+                        sleeper(retry_seconds)
+                        continue
+                    if _is_db_locked(exc):
+                        return False, attempt
+                    raise
         return False, max(1, max_attempts)  # pragma: no cover - defensive
 
     def _process_batch(
@@ -2468,6 +2872,7 @@ class CryptoLifecycleTapeRecorder:
         backlog_token_addresses: frozenset[str] | None = None,
         time_budget_seconds: float | None = None,
         initial_per_token_cost_seconds: float | None = None,
+        lock_wait_budget_seconds: float | None = None,
     ) -> dict:
         """B4 overlap guard entry point. A non-blocking, per-chain flock (see
         `_reconcile_overlap_lock`) wraps the ENTIRE pass — from the
@@ -2488,6 +2893,7 @@ class CryptoLifecycleTapeRecorder:
                 backlog_token_addresses=backlog_token_addresses,
                 time_budget_seconds=time_budget_seconds,
                 initial_per_token_cost_seconds=initial_per_token_cost_seconds,
+                lock_wait_budget_seconds=lock_wait_budget_seconds,
             )
         lock_dir = self.config.lock_dir or _resolve_lock_dir(None)
         with _reconcile_overlap_lock(lock_dir, self.config.chain) as acquired:
@@ -2510,6 +2916,10 @@ class CryptoLifecycleTapeRecorder:
                     "batch_size": batch_size, "stop_reason": "overlap",
                     "lock_retry_events": 0,
                     "blocked_ms": 0,
+                    # Nothing was read or written, so every lock-wait figure
+                    # is a real zero — not a missing key the CLI would print
+                    # as None.
+                    **LockWaitAccounting().as_summary(),
                     "backlog_outcomes_written": 0,
                     "error": (
                         f"another crypto-tape reconciliation pass already "
@@ -2529,6 +2939,7 @@ class CryptoLifecycleTapeRecorder:
                 backlog_token_addresses=backlog_token_addresses,
                 time_budget_seconds=time_budget_seconds,
                 initial_per_token_cost_seconds=initial_per_token_cost_seconds,
+                lock_wait_budget_seconds=lock_wait_budget_seconds,
             )
 
     def _assemble_pass_locked(
@@ -2549,6 +2960,7 @@ class CryptoLifecycleTapeRecorder:
         backlog_token_addresses: frozenset[str] | None = None,
         time_budget_seconds: float | None = None,
         initial_per_token_cost_seconds: float | None = None,
+        lock_wait_budget_seconds: float | None = None,
     ) -> dict:
         """The actual assembly work, run with the overlap lock already held
         (or dry-run, which needs none).
@@ -2610,6 +3022,54 @@ class CryptoLifecycleTapeRecorder:
             started + timedelta(seconds=max_duration_seconds)
             if (chunked and max_duration_seconds is not None) else None
         )
+        # CRYPTO-RECONCILER-LOCK-WAIT-BUDGET-001 — the reconciler's OWN
+        # lock-wait budget, live only on the chunked WRITE path. A dry run
+        # never commits, and legacy single-transaction mode must stay
+        # byte-identical (`record_discovery_run`'s one-bounded-transaction
+        # guarantee), so neither gets a budget or a meter.
+        lock_budget_active = chunked and not dry_run
+        lock_accounting = LockWaitAccounting()
+        original_busy_timeout_ms = (
+            _read_busy_timeout_ms(session) if lock_budget_active else None
+        )
+
+        def _remaining_deadline_seconds() -> float | None:
+            if deadline is None:
+                return None
+            return (deadline - _now()).total_seconds()
+
+        def _next_lock_wait_budget() -> float | None:
+            """This attempt's per-lock-acquisition wait budget. Re-derived
+            per attempt so it tightens as the pass's deadline is spent."""
+            if not lock_budget_active:
+                return None
+            return derive_lock_wait_budget_seconds(
+                lock_wait_budget_seconds, _remaining_deadline_seconds()
+            )
+
+        def _finalize_lock_wait_budget() -> float | None:
+            """The run row's own finalize commit runs AFTER the deadline has
+            normally been consumed, so a deadline-derived budget would be the
+            bare floor anyway. Give it the floor explicitly (capped by an
+            operator-set budget if one exists) rather than letting it inherit
+            an already-expired deadline."""
+            if not lock_budget_active:
+                return None
+            return derive_lock_wait_budget_seconds(lock_wait_budget_seconds, 0.0)
+
+        def _restore_busy_timeout() -> None:
+            """Put the connection's busy timeout back where the pass found
+            it. The budget is applied per attempt on whatever connection the
+            session currently holds; this restores the same way. Caveat,
+            stated rather than hidden: with a connection POOL, a pass that
+            touched more than one pooled connection restores only the one it
+            ends on. In production the reconciler is a single-threaded
+            one-shot CLI process that ends immediately afterwards, so the
+            residue is unobservable; in-process (tests, a long-lived engine)
+            it is bounded by `sqlite_busy_timeout_ms` being re-applied on
+            every new connection by `app.db.connect_args_for`."""
+            if original_busy_timeout_ms is not None:
+                _apply_lock_wait_budget(session, original_busy_timeout_ms / 1000.0)
 
         # --- read phase: no write transaction is open for any of this -------
         existing_births = {
@@ -2698,6 +3158,8 @@ class CryptoLifecycleTapeRecorder:
                 ok, attempts = self._commit_with_retry(
                     session, _prepare_run_creation, max_lock_attempts,
                     lock_retry_seconds, sleeper,
+                    budget_provider=_next_lock_wait_budget,
+                    accounting=lock_accounting if lock_budget_active else None,
                 )
                 blocked_seconds += time.perf_counter() - _t0
                 lock_retry_events += max(0, attempts - 1)
@@ -2705,6 +3167,7 @@ class CryptoLifecycleTapeRecorder:
                 # see the module-level comment on `run_id` above.
                 run_id = run.id if ok else None
                 if not ok:
+                    _restore_busy_timeout()
                     return {
                         "status": STATUS_SKIPPED_CONTENTION,
                         "note": TAPE_NOTE,
@@ -2724,6 +3187,7 @@ class CryptoLifecycleTapeRecorder:
                         "batch_size": batch_size, "stop_reason": "contention",
                         "lock_retry_events": lock_retry_events,
                         "blocked_ms": int(blocked_seconds * 1000),
+                        **lock_accounting.as_summary(),
                         "backlog_outcomes_written": 0,
                         "error": (
                             f"database is locked; exhausted {max_lock_attempts} "
@@ -2785,56 +3249,95 @@ class CryptoLifecycleTapeRecorder:
 
                 if chunked:
                     result = None
+                    lock_budget_expired = False
                     for attempt in range(1, max_lock_attempts + 1):
+                        # CRYPTO-RECONCILER-LOCK-WAIT-BUDGET-001: re-derive
+                        # and re-apply THIS attempt's lock-wait budget. Per
+                        # attempt, not once per pass, for two reasons: the
+                        # previous attempt's commit/rollback returned the
+                        # connection to the pool (a PRAGMA set on one
+                        # checkout cannot be assumed to survive), and the
+                        # derived budget shrinks as the deadline is spent.
+                        _attempt_budget_ms = _apply_lock_wait_budget(
+                            session, _next_lock_wait_budget()
+                        )
+                        lock_accounting.record_budget(_attempt_budget_ms)
                         # NEW-MEDIUM-2 fix: measure wall time spent in THIS
                         # attempt's process+commit — including a successful
                         # first attempt that itself spent real time inside
                         # SQLite's busy handler before winning the lock —
                         # not just attempts that were caught and retried.
                         _attempt_t0 = time.perf_counter()
-                        try:
-                            result = self._process_batch(
-                                session, chunk, run=run, started=started,
-                                dry_run=dry_run,
-                                existing_births_snapshot=existing_births,
-                                final_by_birth_id=final_by_birth_id,
-                                skip_redundant_when_final=skip_redundant_when_final,
-                                backlog_token_addresses=backlog_token_addresses,
-                            )
-                            if not dry_run:
-                                session.commit()
-                                _attempt_duration = time.perf_counter() - _attempt_t0
-                                blocked_seconds += _attempt_duration
-                                # B3: feed the ACTUAL measured commit wall time
-                                # back into the conservative cost estimate
-                                # before sizing the NEXT batch (the generator
-                                # above reads `cost_estimate` again on its
-                                # next iteration). Only successful commits
-                                # teach real per-token cost; a retried/failed
-                                # attempt's wait time is contention, not
-                                # per-token write cost.
-                                if adaptive:
-                                    cost_estimate.observe(_attempt_duration, len(chunk))
-                                # NEW-H1 fix: yield the write lock briefly
-                                # AFTER a real commit so a waiting competing
-                                # writer gets a genuine chance to win the
-                                # race — see RECONCILE_POST_BATCH_YIELD_SECONDS.
-                                sleeper(RECONCILE_POST_BATCH_YIELD_SECONDS)
-                            break
-                        except OperationalError as exc:
-                            blocked_seconds += time.perf_counter() - _attempt_t0
-                            session.rollback()
-                            result = None
-                            if _is_db_locked(exc):
-                                lock_retry_events += 1
-                                if attempt < max_lock_attempts:
-                                    sleeper(lock_retry_seconds)
-                                    continue
-                                break  # exhausted — handled below as contention
-                            raise  # a real DB error, not lock contention
+                        with _lock_wait_meter(session, lock_budget_active) as _meter:
+                            try:
+                                result = self._process_batch(
+                                    session, chunk, run=run, started=started,
+                                    dry_run=dry_run,
+                                    existing_births_snapshot=existing_births,
+                                    final_by_birth_id=final_by_birth_id,
+                                    skip_redundant_when_final=skip_redundant_when_final,
+                                    backlog_token_addresses=backlog_token_addresses,
+                                )
+                                if not dry_run:
+                                    _meter.mark_commit_start()
+                                    session.commit()
+                                    _meter.mark_commit_end()
+                                    lock_accounting.record(_meter)
+                                    _attempt_duration = time.perf_counter() - _attempt_t0
+                                    blocked_seconds += _attempt_duration
+                                    # B3: feed the ACTUAL measured commit wall time
+                                    # back into the conservative cost estimate
+                                    # before sizing the NEXT batch (the generator
+                                    # above reads `cost_estimate` again on its
+                                    # next iteration). Only successful commits
+                                    # teach real per-token cost; a retried/failed
+                                    # attempt's wait time is contention, not
+                                    # per-token write cost.
+                                    if adaptive:
+                                        cost_estimate.observe(_attempt_duration, len(chunk))
+                                    # NEW-H1 fix: yield the write lock briefly
+                                    # AFTER a real commit so a waiting competing
+                                    # writer gets a genuine chance to win the
+                                    # race — see RECONCILE_POST_BATCH_YIELD_SECONDS.
+                                    sleeper(RECONCILE_POST_BATCH_YIELD_SECONDS)
+                                break
+                            except OperationalError as exc:
+                                _meter.mark_failed()
+                                lock_accounting.record(_meter)
+                                blocked_seconds += time.perf_counter() - _attempt_t0
+                                session.rollback()
+                                result = None
+                                if _is_db_locked(exc):
+                                    lock_retry_events += 1
+                                    # THE BUDGET-EXPIRY DECISION. Only the
+                                    # CURRENT batch is discarded (the rollback
+                                    # above); every batch committed earlier in
+                                    # this pass is already durable and stays
+                                    # durable. Before this milestone the ladder
+                                    # slept and retried regardless of the
+                                    # deadline, so a pass could keep spending
+                                    # wall-clock time it no longer had — the
+                                    # 61s-against-30s shape. Now: if the
+                                    # deadline is already gone, stop here and
+                                    # let the typed status say so.
+                                    _remaining = _remaining_deadline_seconds()
+                                    if _remaining is not None and _remaining <= 0:
+                                        lock_budget_expired = True
+                                        break
+                                    if attempt < max_lock_attempts:
+                                        # Never sleep past the deadline either.
+                                        sleeper(
+                                            lock_retry_seconds if _remaining is None
+                                            else min(lock_retry_seconds, _remaining)
+                                        )
+                                        continue
+                                    break  # exhausted — handled below as contention
+                                raise  # a real DB error, not lock contention
 
                     if result is None:
-                        stop_reason = "contention"
+                        stop_reason = (
+                            "lock_wait_budget" if lock_budget_expired else "contention"
+                        )
                         break
                 else:
                     # LEGACY: no retry, no intermediate commit — any exception
@@ -2898,7 +3401,12 @@ class CryptoLifecycleTapeRecorder:
                 "batch_size": batch_size,
                 "stop_reason": stop_reason,
                 "lock_retry_events": lock_retry_events,
+                # `blocked_ms` is the attempt's TOTAL wall time (wait + real
+                # work); `lock_wait_ms` below is the measured WAIT alone. The
+                # two are deliberately both reported — their difference is
+                # the pass's own write cost.
                 "blocked_ms": int(blocked_seconds * 1000),
+                **lock_accounting.as_summary(),
                 "backlog_outcomes_written": backlog_outcomes_written_total,
                 "_births": births_seen,
             }
@@ -2942,6 +3450,29 @@ class CryptoLifecycleTapeRecorder:
                         "selected tokens; nothing was written (dry-run never "
                         "writes) and nothing beyond the examined tokens was "
                         "measured"
+                    )
+                elif stop_reason == "lock_wait_budget":
+                    # CRYPTO-RECONCILER-LOCK-WAIT-BUDGET-001 — the pass's
+                    # lock-wait budget (and with it the wall-clock deadline)
+                    # was exhausted while a batch was blocked. Same typed
+                    # vocabulary as every other contention stop: `partial`
+                    # when earlier batches are durable, `skipped_contention`
+                    # when nothing was written at all. Only the CURRENT
+                    # batch was rolled back.
+                    summary["status"] = (
+                        STATUS_PARTIAL if batches_committed > 0
+                        else STATUS_SKIPPED_CONTENTION
+                    )
+                    summary["error"] = (
+                        "lock-wait budget exhausted: the pass was blocked on "
+                        "the SQLite write lock with no wall-clock budget left "
+                        f"(lock_wait_ms={int(lock_accounting.total_seconds * 1000)}, "
+                        f"budget_ms={lock_accounting.budget_ms_min}). "
+                        f"{batches_committed} batch(es) / {tokens_processed} of "
+                        f"{len(tokens)} selected tokens were committed before "
+                        "this pass stopped; those batches are durable and the "
+                        "rolled-back batch is neither duplicated nor lost — it "
+                        "returns to the backlog for the next pass"
                     )
                 elif stop_reason == "contention" and batches_committed == 0:
                     # LOW-3 fix: the first token batch itself exhausted the
@@ -3077,12 +3608,32 @@ class CryptoLifecycleTapeRecorder:
                             # RETURNED summary dict (see `run_once`'s
                             # in-memory result), just not re-persisted here
                             # to avoid a second write after this same commit.
+                            #
+                            # CRYPTO-RECONCILER-LOCK-WAIT-BUDGET-001: the
+                            # measured lock WAIT (not the attempt's total
+                            # wall time) is persisted here too, as scalars
+                            # plus a FIXED-EDGE histogram. Fixed edges are
+                            # the point: per-pass histograms add up across
+                            # many passes into the `lock_wait_ms`
+                            # DISTRIBUTION this milestone exists to make
+                            # possible, without keeping an unbounded list of
+                            # raw samples on every run row. Same "before
+                            # finalize" caveat as `blocked_ms_before_
+                            # finalize`: this closure runs BEFORE the
+                            # finalize commit, so the finalize's own wait is
+                            # on the returned summary, not in this column.
                             "write_coordination": {
                                 "lock_retry_events": lock_retry_events,
                                 "batches_committed": batches_committed,
                                 "blocked_ms_before_finalize": int(
                                     blocked_seconds * 1000
                                 ),
+                                **{
+                                    f"{k}_before_finalize" if k in (
+                                        "lock_wait_ms", "lock_wait_measurements"
+                                    ) else k: v
+                                    for k, v in lock_accounting.as_summary().items()
+                                },
                             },
                         }
                         session.add(run)
@@ -3091,11 +3642,14 @@ class CryptoLifecycleTapeRecorder:
                 ok, attempts = self._commit_with_retry(
                     session, _prepare_finalize, max_lock_attempts,
                     lock_retry_seconds, sleeper,
+                    budget_provider=_finalize_lock_wait_budget,
+                    accounting=lock_accounting if lock_budget_active else None,
                 )
                 blocked_seconds += time.perf_counter() - _finalize_t0
                 lock_retry_events += max(0, attempts - 1)
                 summary["lock_retry_events"] = lock_retry_events
                 summary["blocked_ms"] = int(blocked_seconds * 1000)
+                summary.update(lock_accounting.as_summary())
                 if not ok:
                     # The token batches already committed are real, durable,
                     # correct work — only the run row's own bookkeeping commit
@@ -3192,6 +3746,11 @@ class CryptoLifecycleTapeRecorder:
             except Exception:
                 session.rollback()
             raise
+        finally:
+            # CRYPTO-RECONCILER-LOCK-WAIT-BUDGET-001 — the lock-wait budget is
+            # this pass's, not the process's. Put the connection's busy
+            # timeout back on every exit path, including the error one.
+            _restore_busy_timeout()
 
 
 # --- report -------------------------------------------------------------------
@@ -3510,6 +4069,7 @@ def run_scheduled_reconciliation(
     sleeper=time.sleep,
     time_budget_seconds: float | None = None,
     initial_per_token_cost_seconds: float | None = None,
+    lock_wait_budget_seconds: float | None = None,
 ) -> dict:
     """CRYPTO-COVERAGE-REPAIR-001 — one bounded, provider-free reconciliation
     pass over already-persisted tokens whose survival horizons have matured.
@@ -3732,6 +4292,24 @@ def run_scheduled_reconciliation(
             "invalid_time_budget_seconds",
             f"time_budget_seconds {resolved_time_budget} must be > 0",
         )
+    # CRYPTO-RECONCILER-LOCK-WAIT-BUDGET-001 — the LOCK-WAIT budget. This is
+    # NOT `time_budget_seconds` (which bounds how long a transaction may
+    # HOLD the write lock) and the two must never be conflated. None keeps
+    # the deadline-derived budget (see `derive_lock_wait_budget_seconds`),
+    # which is what ships; a positive value is an operator CAP on top of it,
+    # for the day the persisted `lock_wait_ms` histogram has produced a real
+    # contention distribution to set it from.
+    resolved_lock_wait_budget = (
+        lock_wait_budget_seconds if lock_wait_budget_seconds is not None
+        else getattr(s, "crypto_tape_reconciler_lock_wait_budget_seconds", None)
+    )
+    if resolved_lock_wait_budget is not None and resolved_lock_wait_budget <= 0:
+        return _refused(
+            "invalid_lock_wait_budget_seconds",
+            f"lock_wait_budget_seconds {resolved_lock_wait_budget} must be "
+            "> 0 — a zero/negative wait budget makes every contended batch "
+            "fail before it has waited at all",
+        )
     try:
         summary = rec.run_once(
             session, limit=cap, hours=hours, dry_run=dry_run,
@@ -3767,6 +4345,10 @@ def run_scheduled_reconciliation(
             # positive, measured value — see the resolution block above.
             time_budget_seconds=resolved_time_budget,
             initial_per_token_cost_seconds=resolved_initial_cost,
+            # CRYPTO-RECONCILER-LOCK-WAIT-BUDGET-001: an operator-set CAP on
+            # the deadline-derived per-lock-acquisition wait budget. None
+            # (the default) means the derived budget governs alone.
+            lock_wait_budget_seconds=resolved_lock_wait_budget,
         )
     except Exception as exc:
         # A poisoned transaction must not leak into the caller's session, and a
@@ -3842,6 +4424,7 @@ def run_scheduled_reconciliation(
         "selection_limit": cap,
         "batch_size": batch,
         "max_duration_seconds": deadline_seconds,
+        "lock_wait_budget_seconds": resolved_lock_wait_budget,
         "gate_bypassed": bypass,
         "duration_ms": max(0, int((_now() - started).total_seconds() * 1000)),
     })
