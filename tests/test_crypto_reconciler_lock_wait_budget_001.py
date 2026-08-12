@@ -925,6 +925,19 @@ def test_the_finalize_budget_is_not_the_data_deadline_share(filedb):
     assert filedb.pragmas[-2] == 30000, filedb.pragmas
     assert 500 in filedb.pragmas, filedb.pragmas
 
+    # And the explicit override is live, not dead scaffolding: a caller that
+    # names the finalize's budget gets exactly that, still independent of the
+    # spent data deadline.
+    filedb.pragmas.clear()
+    session = filedb.Factory()
+    rec.run_once(
+        session, limit=20, hours=48, batch_size=5,
+        max_duration_seconds=0.0, sleeper=lambda _s: None,
+        finalize_lock_wait_budget_seconds=7.0,
+    )
+    session.close()
+    assert filedb.pragmas[-2] == 7000, filedb.pragmas
+
 
 # --- BLOCKER 2: the budget covers the reads, not just the write loop ------
 
