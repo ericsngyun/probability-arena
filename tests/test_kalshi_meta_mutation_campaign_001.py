@@ -26,6 +26,19 @@ Mutations run ONE AT A TIME (never two mutated files live simultaneously),
 serially, so a failure in one case's restore cannot cascade into a false
 catch/hole verdict for the next.
 
+ISOLATION (KALSHI-ARCHIVE-REPLAY-INTEGRITY-001). Every case below mutates a
+DISPOSABLE COPY of the repository, never the live working tree -- because
+this module parametrizes over `MUTATIONS`, the previous design meant every
+full-suite run edited production test files in place, and an interrupted
+one left them edited. The module-scoped `sandbox` fixture materialises one
+copy for the whole file (cleaned up on success, PRESERVED and printed if
+any test in this module failed), and the autouse `_live_tree_tripwire`
+fixture censuses `tests/` and `app/` before and after EVERY test so an
+isolation regression fails here rather than silently corrupting the tree.
+See `tests/meta_mutation/campaign.py`'s module docstring for the design and
+`tests/test_kalshi_meta_mutation_isolation_001.py` for the proofs (SIGINT,
+SIGKILL, and two concurrent runs).
+
 SCOPE, STATED PLAINLY (KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A8). Every
 mutation here targets `tests/`; none targets `app/`. A full-green run means
 "the verification layer's guard vocabulary is intact", and nothing more. It
@@ -48,15 +61,46 @@ import pytest
 from tests.meta_mutation import campaign as camp
 
 
+@pytest.fixture(scope="module")
+def sandbox(request):
+    """One disposable repository copy for this whole module.
+
+    Deleted when every test in the module passed; on ANY failure here it is
+    left in place and its path printed, because the mutated-and-restored
+    copy is the evidence you need to debug a HOLE or a restore fault.
+    """
+    root = camp.create_sandbox(label="pytest")
+    failed_before = request.session.testsfailed
+    try:
+        yield root
+    finally:
+        if request.session.testsfailed > failed_before:
+            print(f"\nmeta-mutation: sandbox PRESERVED for debugging: {root}")
+        else:
+            camp.destroy_sandbox(root)
+
+
+@pytest.fixture(autouse=True)
+def _live_tree_tripwire():
+    """Defence in depth: isolation can regress, so census the live tree
+    before and after EVERY test in this module and fail loudly, naming the
+    offending paths, rather than letting a corrupted tree out of here."""
+    camp.assert_live_tree_clean("preflight")
+    before = camp.live_tree_census()
+    yield
+    camp.assert_live_tree_unchanged(before, "postflight")
+    camp.assert_live_tree_clean("postflight")
+
+
 @pytest.mark.parametrize(
     "mutation", camp.MUTATIONS, ids=[m.id for m in camp.MUTATIONS])
-def test_mutation_is_caught_by_its_named_proof(mutation):
-    original = camp.apply_mutation(mutation)
+def test_mutation_is_caught_by_its_named_proof(mutation, sandbox):
+    original = camp.apply_mutation(mutation, root=sandbox)
     try:
-        proc = camp.run_catch_command(mutation)
+        proc = camp.run_catch_command(mutation, root=sandbox)
         caught = proc.returncode != 0
     finally:
-        camp.restore_mutation(mutation, original)
+        camp.restore_mutation(mutation, original, root=sandbox)
     assert caught, (
         f"HOLE: mutation {mutation.id!r} ({mutation.category}) left "
         f"{mutation.catch_args!r} GREEN (returncode=0). "
@@ -82,15 +126,51 @@ def test_every_mutation_targets_a_file_under_tests_never_app():
 
 def test_campaign_leaves_the_working_tree_unchanged_when_run_end_to_end():
     """The end-to-end guarantee the whole campaign depends on: running
-    EVERY mutation, one at a time, leaves every target file byte-identical
-    to how it started. Runs the catch commands too (not just apply/restore)
-    so this also proves restore survives a mutation that was actually
-    exercised, not merely written and immediately reverted.
+    EVERY mutation, one at a time, leaves the LIVE working tree byte-
+    identical to how it started. Runs the catch commands too (not just
+    apply/restore) so this also proves the guarantee survives a mutation
+    that was actually exercised, not merely written and immediately
+    reverted.
+
+    Censuses `tests/` AND `app/` in full -- not merely the catalogue's ten
+    target files -- because the failure this exists to catch is "isolation
+    regressed and the harness wrote somewhere in the live tree", and the
+    old target-file-only comparison could not have seen that.
     """
-    before = {m.target: camp._read(m.target) for m in camp.MUTATIONS}
+    before = camp.live_tree_census()
+    assert before, "the live-tree census found no files -- it is not looking"
     camp.run_campaign(camp.MUTATIONS, verbose=False)
-    after = {m.target: camp._read(m.target) for m in camp.MUTATIONS}
-    assert before == after, "the working tree changed after a full campaign run"
+    after = camp.live_tree_census()
+    assert before == after, (
+        "the LIVE working tree changed after a full campaign run: "
+        f"{sorted(k for k in set(before) | set(after) if before.get(k) != after.get(k))}")
+
+
+def test_campaign_never_writes_into_the_live_working_tree():
+    """The structural guarantee, asserted directly: every write path is
+    gated on `_sandbox_root`, and pointing it at the live tree (or at an
+    ancestor of it, or at a plain directory with no sandbox marker) raises
+    instead of writing. This is what makes "the harness corrupted the repo"
+    a raised exception rather than a possible outcome.
+    """
+    m = camp.MUTATIONS[0]
+    for bad_root in (camp.REPO_ROOT,
+                     camp.REPO_ROOT / "tests",
+                     camp.REPO_ROOT.parent):
+        with pytest.raises(camp.LiveTreeWriteBlocked):
+            camp.apply_mutation(m, root=bad_root)
+        with pytest.raises(camp.LiveTreeWriteBlocked):
+            camp.restore_mutation(m, "whatever", root=bad_root)
+        with pytest.raises(camp.LiveTreeWriteBlocked):
+            camp.run_catch_command(m, root=bad_root)
+
+
+def test_a_directory_without_the_sandbox_marker_is_not_a_sandbox(tmp_path):
+    """An unmarked directory -- e.g. a half-built copy, or someone's own
+    scratch checkout -- must not be accepted as a mutation target."""
+    (tmp_path / "tests").mkdir()
+    with pytest.raises(camp.LiveTreeWriteBlocked):
+        camp._sandbox_root(tmp_path)
 
 
 # =====================================================================

@@ -16,6 +16,20 @@ own logic, and is reported as such rather than hidden.
 
 Nothing here ever uses `git checkout --`/`git restore` to undo a mutation --
 a prior agent lost uncommitted work that way. Every mutation is applied and
-restored by reading/writing the exact file bytes in Python, inside a
-`try`/`finally`, so a mutation can never survive a crash mid-campaign.
+restored by reading/writing the exact file bytes in Python.
+
+CORRECTION (KALSHI-ARCHIVE-REPLAY-INTEGRITY-001). This docstring used to
+end "...inside a `try`/`finally`, so a mutation can never survive a crash
+mid-campaign". That claim was FALSE and the harness proved it false: no
+`finally` runs on SIGKILL or on a killed parent shell, and an orphaned
+reviewer process duly left `tests/meta_runtime/aggregate_work.py` mutated
+in the live tree. `try`/`finally` is a tidiness measure, not an isolation
+mechanism.
+
+What actually makes a mutation unable to survive a crash is that mutations
+are no longer written to the live tree AT ALL. `campaign.py` copies the
+repository into a disposable sandbox, mutates and runs pytest THERE, and
+only ever reads the live tree -- see its module docstring for why a
+filesystem copy rather than `git worktree add`, and for the live-tree
+tripwire that runs before and after every campaign.
 """

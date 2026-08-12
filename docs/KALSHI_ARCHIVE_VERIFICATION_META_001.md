@@ -75,6 +75,30 @@ non-zero exit (the target went red), then restore the original bytes
 byte-for-byte and re-assert the round trip. Mutations run strictly one at a
 time.
 
+**All of that happens inside a disposable copy of the repository, never in
+the working tree** (KALSHI-ARCHIVE-REPLAY-INTEGRITY-001). The original
+design applied each mutation to the real file and undid it in a `finally`;
+an orphaned reviewer process duly left `tests/meta_runtime/aggregate_work.py`
+mutated on disk, because no `finally` runs on SIGKILL. `run_campaign` now
+copies the repo into a sandbox (`create_sandbox()` / `isolated_repo()`),
+mutates and runs `pytest` there, and only ever READS the live tree; the
+sandbox is deleted on success and preserved-with-its-path-printed on
+failure. `apply_mutation` / `restore_mutation` / `run_catch_command`
+therefore all take a required keyword-only `root=`, and `_write` refuses
+structurally to write anywhere under `REPO_ROOT`. Two concurrent campaigns
+get two sandboxes and cannot interact.
+
+As defence in depth, a `git diff --quiet -- tests/` cleanliness check plus a
+sha256 census of `tests/` and `app/` run before and after every campaign and
+fail loudly with the offending paths -- which means **the campaign refuses
+to start over a dirty `tests/`**, since a modified file there is
+indistinguishable from a leftover mutation. The proofs (normal completion,
+SIGINT, SIGTERM, SIGKILL, and two concurrent runs) are in
+`tests/test_kalshi_meta_mutation_isolation_001.py`. A sandbox deliberately
+contains no `.git`: this checkout's `.git` is a pointer file into a shared
+git directory, so a copied one would make any stray `git restore` inside the
+sandbox hit the real working tree.
+
 | id | what it falsifies | catch |
 |---|---|---|
 | M1 | drop `read_text` from the guard's detection set | `TestA2RedTeamGuard::test_the_one_guard_discriminates_the_entire_corpus_both_directions` |
