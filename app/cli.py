@@ -3182,6 +3182,22 @@ async def crypto_tape_reconcile(
         ):
             # Non-zero: a unit that reconciles nothing must never look healthy.
             print(f"status={r['status']}  external_calls=0  error={r['error']}")
+            # A3 (independent review): a refusal carries the whole lock-wait
+            # contract (BLOCKER-1(a)) but this branch used to print none of
+            # it — so the `db_locked` passes that carry the most information
+            # for the recurring-timer gate were invisible to the operator
+            # running the counted `--force` passes. Print the fields that
+            # decide how the row is counted, including whether it belongs in
+            # the wait distribution at all or in the separately-counted
+            # prelude-blocked tally.
+            print(
+                f"lock_wait_ms={r.get('lock_wait_ms')}  "
+                f"lock_wait_measurements={r.get('lock_wait_measurements')}  "
+                f"duration_ms={r.get('duration_ms')}  "
+                f"lock_wait_distribution_eligible="
+                f"{r.get('lock_wait_distribution_eligible')}"
+            )
+            print(f"lock_wait_histogram_ms={r.get('lock_wait_histogram_ms')}")
             return -1
         print(
             f"status={r['status']}  external_calls={r['external_calls']}  "
@@ -3231,7 +3247,27 @@ async def crypto_tape_reconcile(
         # and is therefore outside everything `max_duration_seconds` can
         # bound, while still counting toward `duration_ms`. Printing it is
         # what makes a deadline overshoot diagnosable instead of mysterious.
-        print(f"classify_ms={r.get('classify_ms')}")
+        # A4 (independent review): `classify_ms` covers ONLY `classify_backlog`
+        # while five more prelude queries run inside the same budgeted block,
+        # so a block in any of them inflated `duration_ms` alone. `prelude_ms`
+        # is the whole block, and `prelude_ms - classify_ms` is the part that
+        # used to be unattributable.
+        print(
+            f"prelude_ms={r.get('prelude_ms')}  "
+            f"classify_ms={r.get('classify_ms')}"
+        )
+        # A5 (independent review): the pass's own wall time against its
+        # MODELLED worst case, per pass, because "observed non-exceedance
+        # across the counted passes" is the recurring-timer precondition and
+        # no constant can be one (the overshoot term tracks host load).
+        # `lock_wait_distribution_eligible` says whether this row may be
+        # summed into the wait distribution at all.
+        print(
+            f"wall_time_model_ms={r.get('wall_time_model_ms')}  "
+            f"wall_time_model_exceeded={r.get('wall_time_model_exceeded')}  "
+            f"lock_wait_distribution_eligible="
+            f"{r.get('lock_wait_distribution_eligible')}"
+        )
         # CRYPTO-RECONCILER-LOCK-WAIT-BUDGET-001 — the measured lock WAIT,
         # printed next to `blocked_ms` (which is wait PLUS the pass's own
         # write work) precisely so the two are never read as the same

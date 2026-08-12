@@ -487,7 +487,175 @@ RECONCILE_LOCK_WAIT_FLOOR_SECONDS = (
 RECONCILE_LOCK_WAIT_BUCKET_EDGES_MS = (1, 10, 100, 1000, 5000, 15000, 30000)
 # How many raw per-attempt samples the IN-MEMORY summary keeps (never
 # persisted). Bounded so a 2000-token pass cannot build an unbounded list.
+# ALSO the window the per-attempt bias BASELINE is estimated over — see
+# `LockWaitAccounting.baseline_ms`.
 RECONCILE_LOCK_WAIT_SAMPLE_CAP = 256
+# THE DECISION BUCKET. A2 (independent review of this branch): the `>=100 ms`
+# tail the runbook nominated as the threshold source is CONTAMINATED by the
+# pass's own fsync. Measured on two genuinely uncontended passes (no competing
+# writer at all):
+#
+#     lock_wait_ms_max=485  write_hold_ms_max=484
+#     lock_wait_ms_max=480  write_hold_ms_max=479
+#
+# i.e. ONE fsync stall counted once as a HOLD and once again as a "lock wait",
+# landing a phantom sample in `100-1000` on a pass whose true wait is exactly
+# zero. Over ~100 counted passes that is ~100 phantom samples in the bucket the
+# threshold would be read from.
+#
+# The fix chosen here is to MOVE THE DISCRIMINATOR to `>=1000 ms` rather than
+# to subtract an uncontended reference pass's `>=100` count. Reasons, in order:
+#   * it needs no reference pass to be captured, stored, kept current per host,
+#     or remembered by whoever reads the histogram in three months;
+#   * `>=1000` was 0 on BOTH measured uncontended passes, so it is clean on the
+#     deployment host today;
+#   * the contaminating mechanism is bounded by `write_hold_ms_max`, which was
+#     484/479 ms — an order of magnitude below 1000 ms — so the separation is
+#     not a coincidence of two samples but a property of what the contamination
+#     IS. If a future host's `write_hold_ms_max` ever approaches 1000 ms, this
+#     edge has to move with it, and that is the trigger to watch.
+# CROSS-CHECK for anyone reading a single pass: a `100-1000` sample whose value
+# is within a few ms of that pass's `write_hold_ms_max` is the pass's own fsync,
+# not a wait.
+RECONCILE_LOCK_WAIT_DECISION_EDGE_MS = 1000
+# How many attempts the run row's own FINALIZE commit gets. B1 (independent
+# review of this branch): the finalize inherits the connection's busy timeout
+# (30 s in production), so a 3-attempt ladder against a holder that never
+# releases costs `3 x 30 s x overshoot + 2 x 3 s` — ~97 s at EVO's measured
+# idle overshoot of 1.01x, ~186 s at the shipped 2.0 constant, and ~528 s at
+# the 5.80x measured on this repo's dev Mac at load average 5-6. The unit's
+# `TimeoutStartSec=5min` (300 s) is exceeded at the upper end, and a real
+# blocked pass has been measured at `lock_wait_ms=206284`.
+#
+# ONE ATTEMPT, deliberately, and the reasoning is not "it is cheaper":
+#   * this commit is BOOKKEEPING — one small row, written once. A second
+#     attempt 3 s later against the SAME holder rarely helps (the holders that
+#     matter here are the 20-45 s MarketOps/watcher writes, not 3 s ones) while
+#     tripling the ceiling;
+#   * the failure mode is NON-CORRUPTING: committed token batches are durable,
+#     and the run row simply stays at `status="running"`. The failure mode of
+#     exceeding `TimeoutStartSec` is a SIGKILL landing mid-finalize, which
+#     produces the SAME orphaned row plus an angry unit;
+#   * the gate's evidence is NOT lost by this. `summary` carries the full
+#     lock-wait accounting whether or not the finalize commits (see
+#     `_assemble_pass_locked`), so an attended `--force` pass — which is the
+#     only shape authorised today — still prints every number. What a failed
+#     finalize costs is the PERSISTED copy on the run row, which is why the
+#     finalize keeps the connection's full busy timeout for its one attempt
+#     rather than the batch loop's tight derived budget.
+RECONCILE_FINALIZE_MAX_LOCK_ATTEMPTS = 1
+
+
+def _lock_wait_histogram_labels() -> list[str]:
+    """The histogram's bucket labels, derived from the edges so the labels and
+    the edges can never drift apart."""
+    edges = RECONCILE_LOCK_WAIT_BUCKET_EDGES_MS
+    labels = [f"<{edges[0]}"]
+    labels += [f"{edges[i]}-{edges[i + 1]}" for i in range(len(edges) - 1)]
+    labels.append(f">={edges[-1]}")
+    return labels
+
+
+# The bucket labels at or above `RECONCILE_LOCK_WAIT_DECISION_EDGE_MS`, i.e.
+# exactly the ones a recurring-timer threshold may be read from.
+RECONCILE_LOCK_WAIT_DECISION_LABELS = tuple(
+    label
+    for label, lower_edge_ms in zip(
+        _lock_wait_histogram_labels(), (0,) + RECONCILE_LOCK_WAIT_BUCKET_EDGES_MS
+    )
+    if lower_edge_ms >= RECONCILE_LOCK_WAIT_DECISION_EDGE_MS
+)
+
+
+def lock_wait_decision_tail(histogram: dict | None) -> int:
+    """How many samples in this pass's histogram are at or above the decision
+    edge — the ONE number a recurring-timer threshold may be derived from.
+
+    Executable rather than prose on purpose: the previous protocol lived in a
+    runbook sentence saying "read the `>=100` buckets", and a reviewer measured
+    that reading it as written counts the pass's own fsync as contention. A
+    reader who calls this cannot make that mistake."""
+    if not histogram:
+        return 0
+    return sum(int(histogram.get(label, 0) or 0) for label in RECONCILE_LOCK_WAIT_DECISION_LABELS)
+
+
+def lock_wait_distribution_eligible(result: dict) -> bool:
+    """Whether this pass's lock-wait row may be SUMMED INTO the distribution.
+
+    A3 (independent review of this branch). H3's fix made the abandon path
+    emit a full contract of real zeros instead of a row of `None`s — which is
+    honest per-pass but makes a PRELUDE-BLOCKED pass indistinguishable from a
+    healthy one once histograms are added up. A zero row averaged in as benign
+    is worse for the distribution than a missing row was.
+
+    The documented diagnostic ("a pass whose wall time exceeds the model with
+    an empty tail was most likely blocked in the prelude") does NOT fire: both
+    measured prelude-blocked passes came in at 15.04 s against a 42 s model and
+    a 30 s deadline, i.e. well UNDER the model. The signature that IS
+    unambiguous, observed on both, is the one implemented here:
+
+        status == "db_locked"  AND  lock_wait_measurements == 0  AND
+        duration_ms > 0
+
+    `status="db_locked"` says contention ended the pass; `measurements == 0`
+    says the write phase — the only thing the accounting object lives inside —
+    was never reached; `duration_ms > 0` says the process nevertheless ran.
+    Nothing else produces that combination: a pass abandoned INSIDE the write
+    phase carries `measurements >= 1` (the accounting rides out on the
+    exception), and a validation refusal is not `db_locked`.
+
+    Such passes are EXCLUDED from the wait distribution and COUNTED SEPARATELY
+    — how often the reconciler is blocked before it can start is itself a
+    result, not a censored sample."""
+    return not (
+        result.get("status") == "db_locked"
+        and int(result.get("lock_wait_measurements") or 0) == 0
+        and int(result.get("duration_ms") or 0) > 0
+    )
+
+
+def modelled_pass_wall_seconds(
+    *,
+    deadline_seconds: float,
+    lock_wait_budget_seconds: float | None,
+    finalize_lock_wait_budget_seconds: float | None,
+    max_lock_attempts: int = DB_LOCKED_MAX_ATTEMPTS,
+    lock_retry_seconds: float = DB_LOCKED_RETRY_SECONDS,
+) -> float:
+    """The pass's MODELLED worst-case wall time, in seconds:
+
+        data deadline
+      + one in-flight batch's whole retry ladder
+            (`attempts x ATTEMPT_MULTIPLIER x budget + (attempts-1) x retry`)
+      + the finalize's single attempt (`OVERSHOOT x finalize budget`)
+
+    A5 (independent review of this branch). "Model, not guarantee" is enough
+    for the attended `--force` phase — a longer-than-modelled pass still
+    terminates and rolls back cleanly with a human watching. It is NOT enough
+    unattended, and the answer is not a better constant: the overshoot term is
+    a function of HOST LOAD (1.01x idle on EVO, 5.80x on this dev Mac at load
+    5-6), so no constant bounds it. What CAN be required is OBSERVED
+    non-exceedance, which needs the model recorded next to the wall time on
+    every counted pass — which is what this function exists to make possible.
+    See the runbook's timer preconditions."""
+    attempts = max(1, int(max_lock_attempts))
+    model = float(deadline_seconds)
+    if lock_wait_budget_seconds is not None:
+        model += (
+            attempts
+            * RECONCILE_LOCK_WAIT_ATTEMPT_MULTIPLIER
+            * float(lock_wait_budget_seconds)
+            + (attempts - 1) * float(lock_retry_seconds)
+        )
+    if finalize_lock_wait_budget_seconds is not None:
+        model += (
+            RECONCILE_FINALIZE_MAX_LOCK_ATTEMPTS
+            * RECONCILE_LOCK_WAIT_STATEMENT_OVERSHOOT
+            * float(finalize_lock_wait_budget_seconds)
+        )
+    return model
+
 
 _WRITE_STATEMENT_PREFIXES = ("INSERT", "UPDATE", "DELETE", "REPLACE")
 
@@ -809,18 +977,19 @@ class LockWaitAccounting:
 
     Two consequences, both now handled here rather than in a reader's head:
 
-      * the bias is per-ATTEMPT and near-constant, so the pass's own MINIMUM
-        observed attempt is a direct, in-band estimate of it. It is reported
-        as `lock_wait_ms_baseline_per_attempt`, and `lock_wait_ms_net`
-        subtracts `baseline x measurements` from the total. On a
-        zero-contention pass that drives the net to ~0, which is the correct
-        answer; under contention it removes the fixed per-attempt floor and
-        leaves the real waiting.
+      * the bias is per-ATTEMPT, so the pass's own attempts estimate it in
+        band. It is reported as `lock_wait_ms_baseline_per_attempt`, and
+        `lock_wait_ms_net` subtracts `baseline x measurements` from the total.
+        The estimator is the MEDIAN attempt, not the minimum — see
+        `baseline_ms` for the measurement that forced that change.
       * the HISTOGRAM survives the bias far better than any scalar, because
         the bias lands almost entirely in the `1-10` bucket. **The
-        eventual gate threshold must be derived from the `>=100` buckets of
+        eventual gate threshold must be derived from the tail of
         `lock_wait_histogram_ms`, never from pass-total `lock_wait_ms`** —
-        see docs/EVO_X2_RUNBOOK.md's lock-wait section.
+        at or above `RECONCILE_LOCK_WAIT_DECISION_EDGE_MS`, via
+        `lock_wait_decision_tail`, NOT the `>=100` tail the first version of
+        this docstring nominated (that one counts the pass's own fsync; see
+        the constant). See docs/EVO_X2_RUNBOOK.md's lock-wait section.
     """
 
     def __init__(self):
@@ -868,33 +1037,74 @@ class LockWaitAccounting:
                 self.hold_slo_violations += 1
 
     def histogram(self) -> dict:
-        edges = RECONCILE_LOCK_WAIT_BUCKET_EDGES_MS
-        labels = [f"<{edges[0]}"]
-        labels += [f"{edges[i]}-{edges[i + 1]}" for i in range(len(edges) - 1)]
-        labels.append(f">={edges[-1]}")
-        return {label: count for label, count in zip(labels, self.buckets)}
+        return {
+            label: count
+            for label, count in zip(_lock_wait_histogram_labels(), self.buckets)
+        }
+
+    @property
+    def baseline_ms(self) -> int:
+        """The pass's own per-attempt measurement bias, estimated in band as
+        the MEDIAN of the attempts it retained.
+
+        A1 (independent review of this branch). This used to be the MINIMUM
+        observed attempt, on the reasoning that the residue (DML + commit
+        fsync) is near-constant per attempt so the cheapest attempt is that
+        residue. Measured, it is not near-constant — it is right-skewed, and a
+        min-estimator under-corrects a right-skewed distribution badly. On a
+        genuine zero-contention pass (no competing writer at all, so the true
+        wait is exactly 0 and `lock_wait_ms_net` should be too):
+
+            lock_wait_ms=3810  measurements=390  -> mean bias 9.77 ms/attempt
+            min-estimated baseline = 4 ms
+            lock_wait_ms_net = 3810 - 4*390 = 2250 ms
+
+        i.e. the min recovered 1560 of 3810 ms — 41% of the bias — and the
+        "goes to ~0 on a zero-contention pass" claim was wrong by 2.25
+        seconds. Reproduced across two independent runs (3810/390 and
+        3809/392 attempts).
+
+        The median tracks the bulk of a right-skewed distribution far better
+        than its minimum does, while still sitting BELOW the mean (a median
+        is never dragged by the tail), so the correction stays conservative:
+        it under-corrects rather than over-corrects, and `lock_wait_ms_net`
+        remains an upper bound on the true wait.
+
+        TWO HONEST LIMITS, stated rather than discovered later:
+          * the estimator is over the samples actually retained, i.e. the
+            first `RECONCILE_LOCK_WAIT_SAMPLE_CAP` attempts of the pass. That
+            is a bounded-memory choice, not a statistical one.
+          * on a pass where MORE THAN HALF the retained attempts are genuinely
+            contended, the median contains real waiting and the net
+            UNDER-reports. That direction is why the scalar is not the
+            decision basis at all: use `lock_wait_decision_tail`.
+
+        A pass with a single measurement has no way to distinguish bias from
+        signal, so it reports no baseline rather than declaring its only
+        sample to be pure bias."""
+        if self.measurements < 2 or not self.samples_ms:
+            return 0
+        ordered = sorted(self.samples_ms)
+        n = len(ordered)
+        mid = n // 2
+        if n % 2:
+            return ordered[mid]
+        return (ordered[mid - 1] + ordered[mid]) // 2
 
     @property
     def baseline_seconds(self) -> float:
-        """The pass's own per-attempt measurement bias, estimated in band as
-        the SMALLEST wait it observed. See the class docstring: the meter
-        cannot separate a successful statement's wait from its work, and the
-        residue (DML + commit fsync) is near-constant per attempt, so the
-        cheapest attempt in a pass is that residue. A pass with a single
-        measurement has no way to distinguish bias from signal, so it reports
-        no baseline rather than declaring its only sample to be pure bias."""
-        if self.min_seconds is None or self.measurements < 2:
-            return 0.0
-        return self.min_seconds
+        """`baseline_ms` in seconds. Kept as the historical name; the
+        estimator is the median (see `baseline_ms`), not the minimum."""
+        return self.baseline_ms / 1000.0
 
     def as_summary(self) -> dict:
         """The telemetry contract. `lock_wait_ms` is the pass total (biased
         HIGH — see the class docstring), `lock_wait_ms_net` is that total with
         the measured per-attempt baseline removed, and the histogram is what
         aggregates across passes into the distribution this milestone exists
-        to make possible. Thresholds come from the histogram's `>=100`
-        buckets, never from the scalar."""
-        baseline_ms = int(self.baseline_seconds * 1000)
+        to make possible. Thresholds come from `lock_wait_decision_tail` of
+        the histogram, never from the scalar."""
+        baseline_ms = self.baseline_ms
         total_ms = int(self.total_seconds * 1000)
         return {
             "lock_wait_ms": total_ms,
@@ -957,7 +1167,14 @@ def _lock_wait_evidence(exc: BaseException | None) -> dict:
     all-zero accounting when the exception never reached instrumented code
     (e.g. a blocked read in the caller's own prelude). Zeros with
     `lock_wait_measurements=0` say "nothing was measured", which is a
-    different and honest statement from a missing key printed as None."""
+    different and honest statement from a missing key printed as None.
+
+    A3 (independent review of this branch): honest per pass is not the same as
+    safe to AGGREGATE. A row of real zeros sums into a histogram exactly like a
+    healthy pass, so a prelude-blocked pass would read as benign in the very
+    distribution the gate is about. `lock_wait_distribution_eligible` names the
+    signature that separates them, and every governed result carries its
+    verdict."""
     evidence = getattr(exc, LOCK_WAIT_EVIDENCE_ATTR, None) if exc is not None else None
     if isinstance(evidence, dict):
         return dict(evidence)
@@ -2497,6 +2714,17 @@ class CryptoLifecycleTapeRecorder:
             )
             else None
         )
+        # A4 (independent review of this branch): TIME THE WHOLE BUDGETED
+        # BLOCK, not just its classify step. `classify_ms` below wraps ONLY
+        # `classify_backlog`, while `backlog_size`, `_universe`,
+        # `universe_size`, `unreconciled_backlog` and both frontier queries sit
+        # outside that timer and inside this one — so a block in any of those
+        # five inflated `duration_ms` alone and was invisible. That is why the
+        # runbook's prelude diagnostic never fired: the reviewer's two
+        # prelude-blocked passes came in at 15.04 s against a 42 s model, i.e.
+        # UNDER it, with nothing pointing at the prelude. `prelude_ms` next to
+        # `classify_ms` makes the residual attributable instead of mysterious.
+        _prelude_started = time.monotonic()
         with _lock_wait_budgeted_reads(session, _prelude_lock_budget):
             backlog_total = 0
             reserved_backlog_budget = 0
@@ -2604,6 +2832,7 @@ class CryptoLifecycleTapeRecorder:
                 recoverable_backlog = self.recoverable_backlog_summary(
                     session, cutoff, now=started, classes=backlog_classes,
                 )
+        prelude_ms = (time.monotonic() - _prelude_started) * 1000.0
         config = {"limit": limit, "hours": hours, "chain": self.config.chain}
         config.update(run_config_extra or {})
         if include_backlog:
@@ -2639,6 +2868,9 @@ class CryptoLifecycleTapeRecorder:
             # the part of `duration_ms` that `max_duration_seconds` cannot
             # reach. See the note on `unreconciled_backlog`'s `classes`.
             config["frontier"]["classify_ms"] = classify_ms
+            # A4 — the WHOLE budgeted prelude, of which `classify_ms` is one
+            # part. `prelude_ms >= classify_ms` by construction.
+            config["frontier"]["prelude_ms"] = prelude_ms
         summary = self._assemble_pass(
             session, tokens, started=started, dry_run=dry_run,
             window_hours=hours,
@@ -2669,6 +2901,10 @@ class CryptoLifecycleTapeRecorder:
         # R1 — surfaced on the summary as well as in `config["frontier"]`, so
         # the CLI can print it without re-reading the run row.
         summary["classify_ms"] = classify_ms
+        # A4 — same treatment, and reported on EVERY pass (including
+        # `include_backlog=False`, where `classify_ms` is None but the other
+        # four prelude queries still run and can still block).
+        summary["prelude_ms"] = prelude_ms
         summary["oldest_unreconciled_first_seen_at"] = oldest_unreconciled_first_seen_at
         summary["oldest_unreconciled_age_hours"] = oldest_unreconciled_age_hours
         tokens_accounted = summary.get("tokens_processed", len(tokens))
@@ -3365,7 +3601,14 @@ class CryptoLifecycleTapeRecorder:
             pathologically small busy timeout still gets a real attempt. The
             residual this adds to the pass's wall time is stated, not hidden:
             see RESIDUAL OVERSHOOT in the milestone commit message and the
-            runbook."""
+            runbook.
+
+            B1 SIZING (independent review of this branch): keeping the full
+            30s budget is only affordable because the finalize gets exactly
+            ONE attempt — `RECONCILE_FINALIZE_MAX_LOCK_ATTEMPTS`, which is
+            where that whole trade-off is written down. Budget x attempts is
+            the quantity `TimeoutStartSec` has to cover, and this function
+            owns only the first factor."""
             if not lock_budget_active:
                 return None
             base = (
@@ -3999,9 +4242,20 @@ class CryptoLifecycleTapeRecorder:
                         }
                         session.add(run)
 
+                # B1 (independent review of this branch): the finalize gets
+                # ONE attempt, not the caller's `max_lock_attempts` ladder —
+                # see `RECONCILE_FINALIZE_MAX_LOCK_ATTEMPTS` for the sizing
+                # against `TimeoutStartSec` and for why losing this commit is
+                # a non-corrupting outcome whose evidence still reaches the
+                # operator through `summary`.
+                _finalize_budget_seconds = _finalize_lock_wait_budget()
+                summary["finalize_lock_wait_budget_ms"] = (
+                    None if _finalize_budget_seconds is None
+                    else int(_finalize_budget_seconds * 1000)
+                )
                 _finalize_t0 = time.perf_counter()
                 ok, attempts = self._commit_with_retry(
-                    session, _prepare_finalize, max_lock_attempts,
+                    session, _prepare_finalize, RECONCILE_FINALIZE_MAX_LOCK_ATTEMPTS,
                     lock_retry_seconds, sleeper,
                     budget_provider=_finalize_lock_wait_budget,
                     accounting=lock_accounting if lock_budget_active else None,
@@ -4558,7 +4812,7 @@ def run_scheduled_reconciliation(
         # longest shipped value, `invalid_lock_wait_budget_seconds`, is
         # exactly 32 — zero headroom, pinned by
         # test_every_refused_status_fits_the_run_row_status_column.
-        return {
+        refused = {
             "status": status,
             "note": TAPE_NOTE,
             "mode": "scheduled_reconciliation",
@@ -4569,7 +4823,20 @@ def run_scheduled_reconciliation(
             "error": error,
             **_lock_wait_evidence(exc),
             "duration_ms": max(0, int((_now() - started).total_seconds() * 1000)),
+            # A5 — a refusal ran no pass, so there is no modelled wall time to
+            # compare against. None, never 0: a zero would be summed as
+            # "modelled at zero and met it", which is the same class of
+            # mistake A3 is about.
+            "wall_time_model_ms": None,
+            "wall_time_model_exceeded": None,
         }
+        # A3 — whether this row may be summed into the wait distribution, or
+        # belongs in the separately-counted prelude-blocked tally. See
+        # `lock_wait_distribution_eligible`.
+        refused["lock_wait_distribution_eligible"] = lock_wait_distribution_eligible(
+            refused
+        )
+        return refused
 
     if cap < 1:
         # SQLite treats LIMIT -1 as "no limit", so an unvalidated cap is an
@@ -4857,6 +5124,31 @@ def run_scheduled_reconciliation(
         "gate_bypassed": bypass,
         "duration_ms": max(0, int((_now() - started).total_seconds() * 1000)),
     })
+    # A5 — record the pass's MODELLED worst-case wall time next to the wall
+    # time it actually took, on every pass, so "observed non-exceedance across
+    # the counted passes" is a thing an operator can read off the rows rather
+    # than re-derive by hand. `modelled_pass_wall_seconds` explains why the
+    # model is recorded rather than relied on.
+    _model_seconds = modelled_pass_wall_seconds(
+        deadline_seconds=deadline_seconds,
+        lock_wait_budget_seconds=derive_lock_wait_budget_seconds(
+            resolved_lock_wait_budget, deadline_seconds
+        ),
+        finalize_lock_wait_budget_seconds=(
+            summary["finalize_lock_wait_budget_ms"] / 1000.0
+            if summary.get("finalize_lock_wait_budget_ms") else None
+        ),
+    )
+    summary["wall_time_model_ms"] = int(_model_seconds * 1000)
+    summary["wall_time_model_exceeded"] = (
+        summary["duration_ms"] > summary["wall_time_model_ms"]
+    )
+    # A3 — a completed pass measured its own write phase, so it is eligible by
+    # construction; computed rather than asserted so the classification has
+    # exactly one implementation.
+    summary["lock_wait_distribution_eligible"] = lock_wait_distribution_eligible(
+        summary
+    )
     if summary.get("truncated"):
         # Loud, not silent: this is the exact failure this milestone exists to
         # remove, so it must be visible in the result AND in the log. A

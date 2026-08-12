@@ -40,15 +40,36 @@ IOWeight=20
 # MEDIUM fix (third re-review, M2): `run_scheduled_reconciliation` never
 # overrides `max_lock_attempts`/`lock_retry_seconds`, so DB_LOCKED_MAX_ATTEMPTS
 # (3) / DB_LOCKED_RETRY_SECONDS (3.0s) apply, and the deadline is only
-# checked BETWEEN batches, not during one — a single in-flight batch's own
-# retry ladder can consume up to 3 x sqlite_busy_timeout_ms (30s) + 2 x 3s =
-# ~96s before giving up, and the SEPARATE finalize-commit retry ladder can
-# add another ~96s worst case on top of the 20s deadline. Honest worst-case
-# bound: ~20s (deadline) + ~96s (one in-flight batch) + ~96s (finalize) =
-# ~212s (~3.5min), not the "10 minutes" this value previously stated with no
-# derivation. TimeoutStartSec is tightened to comfortably (not tightly)
-# exceed that computed bound, rather than SIGKILLing a legitimate in-flight
-# retry ladder mid-write.
+# checked BETWEEN batches, not during one.
+#
+# RE-DERIVED, CRYPTO-RECONCILER-LOCK-WAIT-BUDGET-001 B1 (independent review).
+# The previous derivation here — "~20s (deadline) + ~96s (one in-flight batch)
+# + ~96s (finalize) = ~212s" — was the OVERSHOOT-1.0 figure. It is accurate for
+# an IDLE host and was never reconciled with the load-dependent overshoot
+# (measured 1.01x on EVO idle, 5.80x on a dev Mac at load average 5-6), and it
+# also predated the lock-wait budget, which replaced the batch loop's
+# 30s-per-acquisition wait with a deadline-derived share (5s at the shipped
+# 20s deadline). Current derivation, at the shipped
+# RECONCILE_LOCK_WAIT_STATEMENT_OVERSHOOT of 2.0:
+#
+#   deadline                                                        20s
+#   one in-flight batch's ladder  3 x (2 blocking pts x 2.0) x 5s
+#                                 + 2 x 3.0s retry sleeps          = 66s
+#   finalize  1 attempt (RECONCILE_FINALIZE_MAX_LOCK_ATTEMPTS) at
+#             the inherited 30s busy timeout x 2.0                 = 60s
+#   ------------------------------------------------------------------
+#   honest worst-case bound at overshoot 2.0                       ~146s
+#
+# The finalize is ONE attempt precisely because of this line: a 3-attempt
+# ladder at the inherited 30s timeout costs ~186s at overshoot 2.0 and ~528s at
+# the measured 5.80x, and at 5.80x the whole-unit figure above becomes ~374s —
+# i.e. IT EXCEEDS THIS TimeoutStartSec. No constant bounds an overshoot that
+# tracks host load, so the value below is NOT claimed as a guarantee. The
+# failure mode when it is exceeded is non-corrupting: a SIGKILL mid-finalize
+# leaves committed batches durable and the run row at status='running'. See
+# "Recurring-timer preconditions" and "TimeoutStartSec vs the finalize ladder"
+# in docs/EVO_X2_RUNBOOK.md — the recurring timer's precondition is OBSERVED
+# non-exceedance of the per-pass `wall_time_model_ms`, not this constant.
 TimeoutStartSec=5min
 
 [Install]

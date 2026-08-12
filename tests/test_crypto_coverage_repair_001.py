@@ -2453,10 +2453,18 @@ def test_systemd_unit_timeout_start_sec_matches_the_computed_worst_case():
     """MEDIUM fix (third re-review, M2). `TimeoutStartSec` on the reconcile
     unit must be a value derived from the ACTUAL worst-case retry-ladder
     math (deadline + one in-flight batch's retry ladder + the finalize
-    retry ladder, all at the real 30s busy_timeout — see the unit file's own
-    comment), not an arbitrary round number. Pinned so a future edit cannot
+    commit), not an arbitrary round number. Pinned so a future edit cannot
     silently drift the timeout below its own justification without touching
-    this test."""
+    this test.
+
+    RE-DERIVED, CRYPTO-RECONCILER-LOCK-WAIT-BUDGET-001 B1: the old "~212s"
+    figure was the overshoot-1.0 case, computed before the lock-wait budget
+    replaced the batch loop's 30s-per-acquisition wait with a
+    deadline-derived share, and it never accounted for the load-dependent
+    overshoot at all. The current derivation is ~146s at the shipped 2.0
+    overshoot; the unit must also state that the SAME derivation exceeds this
+    timeout at the measured 5.80x, because a bound that is only true on an
+    idle host must not be read as a guarantee."""
     unit_path = (
         REPO / "infra" / "systemd" / "user"
         / "probability-arena-crypto-reconcile.service"
@@ -2464,4 +2472,9 @@ def test_systemd_unit_timeout_start_sec_matches_the_computed_worst_case():
     text = unit_path.read_text()
     assert "TimeoutStartSec=5min" in text
     # the derivation itself must still be documented, not just the number
-    assert "~212s" in text or "212s" in text
+    assert "~146s" in text
+    # ...including the load case in which the derivation EXCEEDS the timeout,
+    # and the non-corrupting failure mode that follows from it.
+    assert "5.80x" in text
+    assert "~374s" in text
+    assert "non-corrupting" in text

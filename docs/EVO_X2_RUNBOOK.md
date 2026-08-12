@@ -1525,13 +1525,95 @@ across 100 passes).
 
 The bias lands almost entirely in the `1-10` bucket, so:
 
-* **Derive thresholds from the `>=100` buckets of `lock_wait_histogram_ms`,
+* **Derive thresholds from `lock_wait_decision_tail(lock_wait_histogram_ms)`,
   never from pass-total `lock_wait_ms`.** The histogram's edges are fixed, so
   per-pass rows add up across passes into a real distribution.
 * `lock_wait_ms_baseline_per_attempt` is the pass's own in-band estimate of the
-  bias (its smallest observed attempt) and `lock_wait_ms_net` is the total with
-  `baseline x measurements` removed. Use the net if you must use a scalar; on a
-  zero-contention pass it goes to ~0, which is the correct answer.
+  per-attempt bias and `lock_wait_ms_net` is the total with
+  `baseline x measurements` removed. Use the net if you must use a scalar —
+  but read the next two subsections first, because both the estimator and the
+  bucket this section originally nominated were wrong.
+
+#### The decision bucket is `>=1000 ms`, not `>=100 ms`
+
+An earlier version of this section named the `>=100 ms` buckets as the
+threshold source. **They are contaminated by the pass's own fsync.** Measured
+on two genuinely uncontended passes:
+
+```
+lock_wait_ms_max 485   write_hold_ms_max 484
+lock_wait_ms_max 480   write_hold_ms_max 479
+```
+
+One fsync stall, counted once as a **hold** and once again as a "lock wait",
+puts a phantom sample in `100-1000` on a pass whose true wait is exactly zero.
+Over ~100 counted passes that is ~100 phantom samples in the bucket the
+threshold would come from.
+
+**Chosen fix: move the discriminator to `>=1000 ms`** — i.e. the
+`1000-5000`, `5000-15000`, `15000-30000` and `>=30000` buckets, which
+`lock_wait_decision_tail()` sums for you. Why this rather than subtracting an
+uncontended reference pass's `>=100` count:
+
+* it needs no reference pass to be captured, stored, kept current per host, or
+  remembered by whoever reads the histogram months from now;
+* `>=1000` was **0 on both** measured uncontended passes;
+* the contamination is bounded by `write_hold_ms_max` (484 / 479 ms), an order
+  of magnitude below 1000 ms — so the separation is a property of the
+  mechanism, not a coincidence of two samples. **If a host's
+  `write_hold_ms_max` ever approaches 1000 ms, this edge has to move with it.**
+
+Reading a single pass: a `100-1000` sample within a few ms of that pass's
+`write_hold_ms_max` is that pass's own fsync, not a wait.
+
+#### The bias baseline is the MEDIAN attempt, and the net does not go to zero
+
+This section used to say the corrected scalar "goes to ~0 on a zero-contention
+pass, which is the correct answer". **Measured, it did not.** On a genuine
+zero-contention pass (true wait exactly 0) the min-estimated baseline left
+`lock_wait_ms_net = 2250 ms`:
+
+```
+lock_wait_ms 3810   measurements 390   mean bias 9.77 ms/attempt
+min-estimated baseline 4 ms  ->  net = 3810 - 4*390 = 2250 ms   (41 % recovered)
+```
+
+Reproduced across two independent runs (3810/390 and 3809/392 attempts). The
+cause is that the per-attempt bias is **right-skewed**, and a min-estimator
+under-corrects a right-skewed distribution.
+
+`lock_wait_ms_baseline_per_attempt` is therefore now the **median** retained
+attempt, not the minimum. Measured on this repo's dev Mac, four zero-contention
+passes (`batch_size=5`, no competing writer anywhere, so the correct net is 0):
+
+| attempts | total ms | mean ms/att | min | median | net via min | net via median |
+|---------:|---------:|------------:|----:|-------:|------------:|---------------:|
+| 56       | 132      | 2.36        | 1   | 2      | 76 (42 % recovered) | 20 (85 %) |
+| 146      | 823      | 5.64        | 2   | 3      | 531 (36 %)  | 385 (53 %)     |
+| 146      | 537      | 3.68        | 2   | 3      | 246 (54 %)  | 100 (81 %)     |
+| 146      | 460      | 3.15        | 2   | 2      | 168 (64 %)  | 168 (64 %)     |
+
+The median is never worse than the min and is materially better in three of
+four; the dev Mac's own per-attempt bias is only 2-6 ms, so millisecond
+quantisation flattens the difference there far more than it would on EVO.
+
+**What the corrected scalar converges to, stated as measured rather than
+asserted: not zero.** It converges to `(mean − median) × attempts`, the
+residual right-skew of the bias distribution — 15-47 % of the raw scalar on the
+dev Mac. It is an **upper bound** on the true wait (a median sits below a
+right-skewed mean, so the subtraction is deliberately conservative), never an
+estimate of it. **The residual on EVO is unknown until a counted pass measures
+it there, and capturing it is a job for the first counted `--force` pass: run
+one with no competing writer and record `lock_wait_ms`, `measurements`,
+`lock_wait_ms_min`, `lock_wait_ms_baseline_per_attempt` and `lock_wait_ms_net`.
+That row is the host's zero-contention reference.**
+
+One further limit, stated rather than discovered later: the median is taken
+over the first `RECONCILE_LOCK_WAIT_SAMPLE_CAP` (256) attempts, a
+bounded-memory choice; and on a pass where more than half the retained attempts
+are genuinely contended, the median contains real waiting and the net
+**under**-reports. That direction is exactly why the decision basis is the
+histogram tail and not the scalar.
 
 ### Fields, and where to find them
 
@@ -1572,8 +1654,114 @@ that fix a 30 s-deadline pass was measured at 60.11 s with
 30 s process timeout. But the accounting object lives inside the write phase,
 so **prelude waits do not appear in `lock_wait_ms` or the histogram**. The
 histogram describes the WRITE path's wait distribution, which is the quantity
-the gate is about; a pass whose wall time exceeds the model with an empty
-`>=100` tail was most likely blocked in the prelude.
+the gate is about.
+
+`prelude_ms` is the wall time of the **whole** budgeted prelude block;
+`classify_ms` is only its `classify_backlog` step. `prelude_ms - classify_ms`
+is the part that used to be unattributable — the other five queries sat outside
+`classify_ms` but inside the budget, so a block in any of them inflated
+`duration_ms` alone. Both print on every pass.
+
+### Prelude-blocked passes: excluded from the distribution, counted separately
+
+A pass abandoned **before** it reached the write phase reports a full contract
+of real zeros (that is deliberate — the alternative was a row of `None`s). Real
+zeros are honest per pass and **wrong to aggregate**: summed into a histogram
+they are indistinguishable from a healthy pass. A zero row averaged in as
+benign is worse for the distribution than a missing row was.
+
+**The diagnostic this runbook used to give does not fire.** It said "a pass
+whose wall time exceeds the model with an empty tail was most likely blocked in
+the prelude" — but both measured prelude-blocked passes came in at **15.04 s
+against a 42 s model and a 30 s deadline**, i.e. comfortably *under* the model.
+
+The signature that IS unambiguous, observed on both:
+
+```
+status == "db_locked"  AND  lock_wait_measurements == 0  AND  duration_ms > 0
+```
+
+`db_locked` says contention ended the pass; `measurements == 0` says the write
+phase — the only place the accounting object lives — was never reached;
+`duration_ms > 0` says the process nevertheless ran. Nothing else produces that
+combination: a pass abandoned *inside* the write phase carries
+`measurements >= 1`, and a validation refusal is not `db_locked`.
+
+Every governed result carries the verdict as **`lock_wait_distribution_eligible`**
+(computed by `lock_wait_distribution_eligible()`; the CLI prints it, including
+on the refusal path). **Rule for the counted passes:**
+
+* `lock_wait_distribution_eligible=false` rows are **excluded** from the wait
+  distribution, and
+* **counted separately** as a running "blocked before it started" tally.
+  How often the reconciler cannot even begin is itself a result the gate wants
+  — it is not a censored sample and must not be silently dropped either.
+
+### Recurring-timer preconditions
+
+There is still **no recurring reconciler timer**, and none may be installed
+until *all* of the following hold. "Model, not guarantee" is sufficient for the
+attended `--force` phase — a longer-than-modelled pass still terminates and
+rolls back cleanly with a human watching — but it is **not** sufficient
+unattended, and the answer is not a better constant (there isn't one: the
+overshoot term tracks host load, 1.01x on idle EVO and 5.80x on a dev Mac at
+load 5-6).
+
+1. **Observed wall-time non-exceedance.** Every pass now records
+   `wall_time_model_ms` (`modelled_pass_wall_seconds`: data deadline + one
+   in-flight batch's whole retry ladder + the finalize's single attempt) and
+   `wall_time_model_exceeded` next to its own `duration_ms`. The precondition
+   is `wall_time_model_exceeded=false` on **every** counted pass — observed,
+   not derived. One exceedance resets the count and is a finding, not noise.
+2. **A bounded decision tail.** `lock_wait_decision_tail()` (`>=1000 ms`) must
+   stay bounded across the counted passes, per the two subsections above.
+   `lock_wait_distribution_eligible=false` rows are excluded and tallied
+   separately.
+3. **A calibrated `initial_per_token_cost_seconds`, with adaptive batching
+   enabled.** It has no default by design, and until a measured EVO value is
+   set the write-hold SLO is *recorded but not enforced* — a fixed token count
+   is not a safety invariant. A recurring timer without adaptive batching is a
+   fixed-batch writer on a shared host.
+4. **A `TimeoutStartSec` that covers the derivation below**, or an explicit
+   accepted decision to live with the documented SIGKILL outcome.
+
+### `TimeoutStartSec` vs the finalize ladder
+
+The run row's finalize inherits the **connection's** busy timeout (30 s in
+production), not the batch loop's tight derived budget — that is deliberate
+(it is what persists `write_coordination`, i.e. the gate's evidence, on
+contended passes). Against a holder that never releases, a *3-attempt* finalize
+ladder would cost `3 x 30 s x overshoot + 2 x 3 s`:
+
+| overshoot | source | finalize ladder |
+|-----------|--------|-----------------|
+| 1.01x | EVO, idle, measured | ~97 s |
+| 2.0x  | the shipped constant | ~186 s |
+| 5.80x | dev Mac at load 5-6, measured | **~528 s** |
+
+`TimeoutStartSec=5min` (300 s) is exceeded at the upper end, and a real blocked
+pass has been measured at `lock_wait_ms=206284` (~206 s). **The finalize
+therefore runs a single attempt** (`RECONCILE_FINALIZE_MAX_LOCK_ATTEMPTS = 1`):
+it is bookkeeping, a second attempt 3 s later against the same 20-45 s holder
+rarely helps, and the accounting still reaches the operator through the
+returned summary even when the commit is lost. Whole-unit derivation with that
+change, at the shipped 2.0 overshoot:
+
+```
+20 s (deadline) + 66 s (one in-flight batch ladder, 3 x 4 x 5 s + 2 x 3 s)
+                + 60 s (finalize, 1 x 2.0 x 30 s)          = ~146 s   < 300 s
+```
+
+At the dev-Mac-measured 5.80x the same derivation gives **~374 s, which exceeds
+`TimeoutStartSec`.** No constant fixes that, which is precisely why
+precondition 1 is *observed* non-exceedance. **The failure mode is
+non-corrupting**: a SIGKILL mid-finalize leaves committed batches durable and
+the run row at `status='running'` — the same orphaned row a lost finalize
+produces, plus a failed unit. If a future measurement makes that outcome
+frequent, the fix is to re-derive `TimeoutStartSec` against
+`3 x busy_timeout x overshoot` on the *observed* host overshoot — a unit-file
+change, and therefore a deliberate deployment step recorded here, never a
+silent edit.
 
 ### Operator knob
 

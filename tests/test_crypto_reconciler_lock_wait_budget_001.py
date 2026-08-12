@@ -380,7 +380,21 @@ def test_a_dry_run_neither_budgets_nor_meters(filedb):
 def test_a_blocked_batch_rolls_back_only_itself_and_prior_batches_stay_durable(filedb):
     """The core contract. A competing writer takes RESERVED partway through
     the pass; the in-flight batch is rolled back and the pass returns a typed
-    `partial`, while every batch committed BEFORE the block stays durable."""
+    `partial`, while every batch committed BEFORE the block stays durable.
+
+    B2 (independent review of this branch): this test used to take **141.3 s**,
+    88 % of it spent in the FINALIZE. Its holder is released only in the
+    `finally` below — i.e. after `run_once` has already returned — so the
+    finalize sat out the connection's whole 30 s busy timeout, times this
+    host's load-driven overshoot, for every attempt. That cost is not part of
+    the property under test: the contract here is about BATCH rollback and
+    prior-batch durability, and the finalize's wait budget has two dedicated
+    tests of its own (`test_a_contended_finalize_still_persists_the_run_row_
+    and_the_histogram`, `test_the_finalize_budget_is_not_the_data_deadline_
+    share`). Bounding the finalize's wait explicitly — the same override those
+    tests exercise — scopes the holder's cost to the block actually under
+    measurement and leaves every assertion below unchanged.
+    """
     session = filedb.Factory()
     holder: list[_Holder] = []
 
@@ -400,6 +414,9 @@ def test_a_blocked_batch_rolls_back_only_itself_and_prior_batches_stay_durable(f
             # blocked window. The behaviour under test is unchanged by it.
             max_duration_seconds=6.0,
             max_lock_attempts=2, lock_retry_seconds=0.0,
+            # B2: the finalize's wait is not what this test measures. Left at
+            # the connection's inherited 30s it dominated the whole suite.
+            finalize_lock_wait_budget_seconds=0.5,
             sleeper=_sleeper,
         )
     finally:
@@ -455,12 +472,18 @@ def test_an_expired_budget_stops_the_ladder_instead_of_sleeping_and_retrying(fil
       call 1 — the post-batch yield after batch 1 COMMITTED: introduce the
                competing writer. Batch 2 then blocks for its derived budget
                and, by the time it fails, the 1s deadline is gone.
-      call 2 — with the fix, this can only be the run row's FINALIZE retry
-               (the batch ladder stopped without sleeping); release the
-               holder so the run row can be written. WITHOUT the fix, call 2
-               would instead be the batch ladder's own retry sleep, the
-               holder would be released, and the retried batch would
-               SUCCEED — producing a completely different stop_reason.
+      any further call — with the fix there is none: the batch ladder stops
+               without sleeping, and the finalize now runs a single attempt
+               (`RECONCILE_FINALIZE_MAX_LOCK_ATTEMPTS`), so it never sleeps
+               either. WITHOUT the fix, call 2 is the batch ladder's own retry
+               sleep; the holder is released there and the retried batch
+               SUCCEEDS, producing a completely different stop_reason. The
+               release is kept for exactly that reverted case.
+
+    B2 (independent review of this branch): this test used to take **69.5 s**,
+    almost all of it the finalize waiting out the connection's inherited 30 s
+    busy timeout behind the still-held lock. Nothing the test pins requires
+    that; the finalize's budget is bounded explicitly below.
     """
     session = filedb.Factory()
     holder: list[_Holder] = []
@@ -481,6 +504,9 @@ def test_an_expired_budget_stops_the_ladder_instead_of_sleeping_and_retrying(fil
             session, limit=20, hours=48, batch_size=5,
             max_duration_seconds=1.0,
             max_lock_attempts=3, lock_retry_seconds=retry_interval,
+            # B2: see the docstring — the finalize's inherited 30s wait is not
+            # the property under test and was 88% of this test's wall time.
+            finalize_lock_wait_budget_seconds=0.5,
             sleeper=_sleeper,
         )
     finally:
@@ -494,7 +520,8 @@ def test_an_expired_budget_stops_the_ladder_instead_of_sleeping_and_retrying(fil
     assert r["lock_wait_ms"] > 0
     assert "lock-wait budget exhausted" in r["error"]
     # The batch ladder contributed NO retry sleep: at most one full retry
-    # interval was ever slept, and that one belongs to the finalize commit.
+    # interval was ever slept, and that one could only belong to the finalize
+    # commit (which, since B1, does not retry at all — so in practice zero).
     assert retry_sleeps.count(retry_interval) <= 1, retry_sleeps
 
 
@@ -1084,8 +1111,11 @@ def test_the_per_attempt_measurement_bias_is_estimated_and_subtracted():
     unquantified. 35% of `blocked_ms` under no contention, and it scales with
     batch count (~340s of phantom wait over 100 passes).
 
-    The bias is per-attempt and near-constant, so the pass's own MINIMUM
-    observed attempt estimates it in band. Asserted here on synthetic meters
+    The bias is per-attempt, so the pass's own attempts estimate it in band.
+    A1 (independent review of this branch) changed WHICH statistic: the
+    estimator is the MEDIAN retained attempt, not the minimum — see
+    `test_the_bias_baseline_is_the_median_because_the_minimum_under_corrects`
+    for the measurement that forced it. Asserted here on synthetic meters
     because the arithmetic, not the host's fsync speed, is the contract."""
     accounting = ct.LockWaitAccounting()
     for wait in (0.008, 0.009, 0.011, 0.512):
@@ -1094,9 +1124,10 @@ def test_the_per_attempt_measurement_bias_is_estimated_and_subtracted():
         accounting.record(meter)
     s = accounting.as_summary()
     assert s["lock_wait_ms"] == 540
-    assert s["lock_wait_ms_baseline_per_attempt"] == 8
-    # 540 - 8*4 = 508: the real waiting, with the fixed per-attempt floor gone.
-    assert s["lock_wait_ms_net"] == 508
+    # median of (8, 9, 11, 512) = (9+11)//2 = 10, NOT the minimum's 8.
+    assert s["lock_wait_ms_baseline_per_attempt"] == 10
+    # 540 - 10*4 = 500: the real waiting, with the per-attempt floor gone.
+    assert s["lock_wait_ms_net"] == 500
     assert s["lock_wait_ms_min"] == 8
 
     # A single measurement cannot distinguish bias from signal, and must not
@@ -1141,12 +1172,12 @@ def test_a_zero_contention_pass_reports_a_non_zero_scalar_and_names_it_bias(file
     # ...and, with zero contention, the corrected net is a small fraction of
     # the raw scalar: the raw number is mostly this host's fsync.
     assert r["lock_wait_ms_net"] <= r["lock_wait_ms"]
-    # The >=100ms tail — where a threshold may legitimately be read — is empty
-    # under zero contention, which is the property that makes it usable while
-    # the scalar is not.
-    histogram = r["lock_wait_histogram_ms"]
-    tail = {k: v for k, v in histogram.items() if k not in ("<1", "1-10", "10-100")}
-    assert sum(tail.values()) == 0, histogram
+    # The DECISION tail — where a threshold may legitimately be read — is
+    # empty under zero contention, which is the property that makes it usable
+    # while the scalar is not. Read through the helper, not by hand: A2
+    # measured that reading the `>=100` tail by hand counts the pass's own
+    # fsync as contention (485ms of "wait" against a 484ms hold).
+    assert ct.lock_wait_decision_tail(r["lock_wait_histogram_ms"]) == 0, r
 
     # ...and the corrected fields are persisted with the rest, not summary-only.
     verify = filedb.Factory()
@@ -1162,10 +1193,11 @@ def test_a_zero_contention_pass_reports_a_non_zero_scalar_and_names_it_bias(file
 def test_the_threshold_source_is_documented_as_the_histogram_tail_not_the_scalar():
     """The operational half of BLOCKER 4, and the one that actually protects
     the gate: whoever sets the eventual `lock_wait_ms` threshold must read it
-    from the `>=100` histogram buckets, where the per-attempt bias does not
-    land, and never from the pass-total scalar, which is ~35% phantom under
-    zero contention and grows with batch count. Stated in the code AND in the
-    runbook, because the person setting the threshold is reading the runbook."""
+    from the histogram's DECISION tail, where neither the per-attempt bias nor
+    the pass's own fsync lands, and never from the pass-total scalar, which is
+    ~35% phantom under zero contention and grows with batch count. Stated in
+    the code AND in the runbook, because the person setting the threshold is
+    reading the runbook."""
     source = (REPO / "app" / "services" / "crypto_tape.py").read_text()
     assert "never from pass-total `lock_wait_ms`" in source
     runbook = (REPO / "docs" / "EVO_X2_RUNBOOK.md").read_text()
@@ -1176,6 +1208,416 @@ def test_the_threshold_source_is_documented_as_the_histogram_tail_not_the_scalar
     # have to reconstruct from the source.
     assert "stop_reason" in runbook
     assert "prelude" in runbook.lower()
+    # A2 — the decision bucket, and the measurement that moved it.
+    assert "lock_wait_decision_tail" in runbook
+    assert ">=1000 ms" in runbook
+    assert "write_hold_ms_max 484" in runbook
+    # A1 — the corrected estimator, and the fact that the corrected scalar
+    # does NOT converge to zero. The old sentence must be gone, not merely
+    # contradicted somewhere further down.
+    assert "goes to ~0, which is the correct answer" not in runbook
+    assert "MEDIAN attempt" in runbook
+    assert "not zero" in runbook
+    # A3 — the prelude-blocked signature and what to do with those rows.
+    assert "lock_wait_distribution_eligible" in runbook
+    assert "counted separately" in runbook
+    # A5 — the timer preconditions the telemetry now supports.
+    assert "Recurring-timer preconditions" in runbook
+    assert "wall_time_model_exceeded" in runbook
+    assert "initial_per_token_cost_seconds" in runbook
+
+
+# --- A1: the bias baseline is the median, not the minimum -----------------
+
+def test_the_bias_baseline_is_the_median_because_the_minimum_under_corrects():
+    """A1 (independent review of this branch). The runbook claimed
+    `lock_wait_ms_net` "goes to ~0 on a zero-contention pass, which is the
+    correct answer". Measured on a genuine zero-contention pass — no competing
+    writer at all, so the true wait is exactly 0 — it did not:
+
+        lock_wait_ms=3810  measurements=390  -> mean bias 9.77 ms/attempt
+        min-estimated baseline = 4 ms
+        lock_wait_ms_net = 3810 - 4*390 = 2250 ms      (41% recovered)
+
+    Reproduced across two independent runs (3810/390 and 3809/392). The
+    per-attempt bias is RIGHT-SKEWED, and a min-estimator under-corrects a
+    right-skewed distribution.
+
+    Fails on revert in both directions: restore the minimum and the baseline
+    below drops to the smallest sample, and the recovery assertion — the
+    property that actually motivated the change — is violated."""
+    # A deliberately right-skewed pass: a tight bulk plus a long tail, which
+    # is the shape the reviewer measured.
+    waits_ms = [4, 5, 6, 7, 8, 9, 9, 10, 11, 12, 14, 18, 40, 95, 210]
+    accounting = ct.LockWaitAccounting()
+    for ms in waits_ms:
+        meter = ct.LockWaitMeter()
+        meter.lock_acquire_seconds = ms / 1000.0
+        accounting.record(meter)
+    s = accounting.as_summary()
+
+    ordered = sorted(waits_ms)
+    median = ordered[len(ordered) // 2]
+    assert s["lock_wait_ms_baseline_per_attempt"] == median
+    assert s["lock_wait_ms_min"] == min(waits_ms)
+    # The minimum is still REPORTED — it just no longer drives the correction.
+    assert s["lock_wait_ms_baseline_per_attempt"] > s["lock_wait_ms_min"]
+
+    # Read the totals off the summary, not off the nominal list: seconds
+    # round-trip through `int(seconds * 1000)` and can land a millisecond
+    # low. The PROPERTY under test is the estimator, not float arithmetic.
+    total = s["lock_wait_ms"]
+    n = s["lock_wait_measurements"]
+    net_median = max(0, total - median * n)
+    net_min = max(0, total - s["lock_wait_ms_min"] * n)
+    assert s["lock_wait_ms_net"] == net_median
+    # THE PROPERTY: the median recovers materially more of the bias than the
+    # minimum did. On this fixture the min recovers ~40%, the median ~90%.
+    assert (total - net_median) > 2 * (total - net_min), (total, net_min, net_median)
+
+    # ...and the conservative direction is preserved: a median sits below a
+    # right-skewed mean, so the net stays an UPPER bound on the true wait.
+    assert median < total / n
+    assert s["lock_wait_ms_net"] > 0
+
+    # A single measurement still cannot distinguish bias from signal.
+    lone = ct.LockWaitAccounting()
+    meter = ct.LockWaitMeter()
+    meter.lock_acquire_seconds = 0.400
+    lone.record(meter)
+    assert lone.as_summary()["lock_wait_ms_baseline_per_attempt"] == 0
+
+
+# --- A2: the decision bucket is >=1000ms, not >=100ms ---------------------
+
+def test_the_decision_tail_excludes_the_fsync_contaminated_100ms_bucket():
+    """A2 (independent review of this branch). The `>=100 ms` bucket the
+    runbook nominated as the decision basis is contaminated: on two genuinely
+    uncontended passes the reviewer measured
+
+        lock_wait_ms_max=485  write_hold_ms_max=484
+        lock_wait_ms_max=480  write_hold_ms_max=479
+
+    — ONE fsync stall counted once as a hold and once again as a "lock wait",
+    landing a phantom sample in `100-1000` on a pass whose true wait is zero.
+    Over ~100 counted passes that is ~100 phantom samples in the very bucket a
+    threshold would be read from.
+
+    Fails on revert: move the edge back to 100 and the 485 ms self-stall below
+    counts toward the decision."""
+    assert ct.RECONCILE_LOCK_WAIT_DECISION_EDGE_MS == 1000
+    assert ct.RECONCILE_LOCK_WAIT_DECISION_LABELS == (
+        "1000-5000", "5000-15000", "15000-30000", ">=30000",
+    )
+
+    # The measured contaminated pass: one 485ms sample against a 484ms hold.
+    accounting = ct.LockWaitAccounting()
+    for wait, hold in ((0.005, 0.004), (0.007, 0.006), (0.485, 0.484)):
+        meter = ct.LockWaitMeter()
+        meter.lock_acquire_seconds = wait
+        meter.hold_seconds = hold
+        accounting.record(meter)
+    s = accounting.as_summary()
+    assert s["lock_wait_histogram_ms"]["100-1000"] == 1, s["lock_wait_histogram_ms"]
+    # The old protocol would have counted that phantom; the new one does not.
+    assert ct.lock_wait_decision_tail(s["lock_wait_histogram_ms"]) == 0
+    # And the cross-check the runbook gives a reader holds on this pass: the
+    # largest "wait" is within a few ms of the pass's own largest HOLD.
+    assert abs(s["lock_wait_ms_max"] - s["write_hold_ms_max"]) <= 2, s
+
+    # Real, unambiguous contention still counts.
+    contended = ct.LockWaitAccounting()
+    for wait in (0.005, 1.2, 20.0):
+        meter = ct.LockWaitMeter()
+        meter.lock_acquire_seconds = wait
+        contended.record(meter)
+    assert ct.lock_wait_decision_tail(
+        contended.as_summary()["lock_wait_histogram_ms"]
+    ) == 2
+    assert ct.lock_wait_decision_tail(None) == 0
+    assert ct.lock_wait_decision_tail({}) == 0
+
+
+# --- A3: prelude-blocked passes leave the distribution --------------------
+
+def test_a_prelude_blocked_pass_is_flagged_ineligible_for_the_distribution():
+    """A3 (independent review of this branch). H3's fix made the abandon path
+    emit a full contract of real zeros instead of `None`s — honest per pass,
+    and WRONG to aggregate: summed into a histogram those zeros are
+    indistinguishable from a healthy pass. "A zero row averaged in as benign
+    is worse for the distribution than a missing row was."
+
+    The documented diagnostic did not fire either: both measured
+    prelude-blocked passes came in at 15.04s against a 42s model and a 30s
+    deadline, i.e. UNDER the model. The signature that IS unambiguous, and the
+    one implemented, is asserted here."""
+    prelude_blocked = {
+        "status": "db_locked", "lock_wait_measurements": 0, "duration_ms": 15040,
+    }
+    assert ct.lock_wait_distribution_eligible(prelude_blocked) is False
+
+    # A pass abandoned INSIDE the write phase measured something, and is the
+    # most informative sample the distribution has. It must stay in.
+    abandoned_mid_write = {
+        "status": "db_locked", "lock_wait_measurements": 7, "duration_ms": 30000,
+    }
+    assert ct.lock_wait_distribution_eligible(abandoned_mid_write) is True
+
+    # A validation refusal is not db_locked, so it is not prelude-blocked...
+    assert ct.lock_wait_distribution_eligible(
+        {"status": "invalid_limit", "lock_wait_measurements": 0, "duration_ms": 1}
+    ) is True
+    # ...and a healthy pass is obviously eligible.
+    assert ct.lock_wait_distribution_eligible(
+        {"status": "ok", "lock_wait_measurements": 120, "duration_ms": 4000}
+    ) is True
+
+
+def test_a_real_blocked_prelude_reports_the_signature_end_to_end(tmp_path):
+    """The same classification, driven through a REAL blocked prelude rather
+    than asserted on a dict: an EXCLUSIVE holder blocks the governed path's
+    reads, and the resulting refusal must carry the whole signature AND the
+    verdict computed from it.
+
+    Fails on revert: drop the field and the assertion below raises."""
+    d = tmp_path / "eligible"
+    d.mkdir()
+    db = _FileDb(d, tokens=5, busy_timeout_seconds=6.0)
+    holder = _Holder(db.path, exclusive=True)
+    session = db.Factory()
+    try:
+        r = run_scheduled_reconciliation(
+            session,
+            settings=Settings(
+                enable_crypto_tape_reconciler=True,
+                crypto_tape_reconciler_window_hours=48,
+                crypto_tape_reconciler_limit=1000,
+                crypto_tape_reconciler_batch_size=5,
+                crypto_tape_reconciler_max_duration_seconds=2.0,
+            ),
+            recorder=CryptoLifecycleTapeRecorder(
+                CryptoTapeConfig(chain=CHAIN, lock_dir=d)
+            ),
+            sleeper=lambda _s: None,
+        )
+    finally:
+        session.close()
+        holder.release()
+        db.close()
+
+    # The signature, field by field...
+    assert r["status"] == "db_locked", r
+    assert r["lock_wait_measurements"] == 0, r
+    assert r["duration_ms"] > 0, r
+    # ...and the verdict derived from it, on the result itself.
+    assert r["lock_wait_distribution_eligible"] is False, r
+    assert r["external_calls"] == 0
+
+
+def test_the_cli_prints_the_lock_wait_contract_on_a_refusal(filedb):
+    """A refusal carries the whole lock-wait contract (BLOCKER-1(a)) but the
+    CLI's refusal branch printed only `status` and `error` — so the
+    `db_locked` passes that carry the most information for the gate were
+    invisible to the operator running the counted `--force` passes, and the
+    prelude-blocked tally could not be kept at all.
+
+    Fails on revert: remove the print and the refusal branch stops naming
+    these fields."""
+    source = (REPO / "app" / "cli.py").read_text()
+    marker = "a unit that reconciles nothing must never look healthy"
+    assert marker in source
+    # The refusal branch is everything from that marker to its `return -1`.
+    branch = source.split(marker, 1)[1].split("return -1", 1)[0]
+    for field in (
+        "lock_wait_ms", "lock_wait_measurements", "duration_ms",
+        "lock_wait_distribution_eligible", "lock_wait_histogram_ms",
+    ):
+        assert field in branch, f"the CLI refusal branch never prints {field}"
+
+    # ...and every field it names is actually present on a real refusal, so
+    # the branch cannot print a row of `None`s.
+    session = filedb.Factory()
+    r = run_scheduled_reconciliation(
+        session,
+        settings=Settings(
+            enable_crypto_tape_reconciler=True,
+            crypto_tape_reconciler_window_hours=48,
+            crypto_tape_reconciler_limit=0,
+        ),
+    )
+    session.close()
+    assert r["status"] == "invalid_limit", r
+    for field in (
+        "lock_wait_ms", "lock_wait_measurements", "duration_ms",
+        "lock_wait_distribution_eligible", "lock_wait_histogram_ms",
+    ):
+        assert r.get(field) is not None, f"{field} missing from a refusal"
+
+
+# --- A4: the whole prelude is timed, not only its classify step -----------
+
+def test_the_whole_budgeted_prelude_is_timed_not_only_classify_backlog(filedb):
+    """A4 (independent review of this branch). `classify_ms` wraps ONLY
+    `classify_backlog`, while `backlog_size`, `_universe`, `universe_size`,
+    `unreconciled_backlog` and both frontier queries sit outside that timer and
+    INSIDE the budgeted block — so a block in any of those five inflated
+    `duration_ms` alone and pointed at nothing. That is why the runbook's
+    prelude diagnostic never fired.
+
+    Fails on revert: drop `prelude_ms` and both the summary key and the
+    persisted run-row key disappear."""
+    session = filedb.Factory()
+    rec = CryptoLifecycleTapeRecorder(CryptoTapeConfig(chain=CHAIN, lock_dir=filedb.path.parent))
+    r = rec.run_once(
+        session, limit=20, hours=48, batch_size=5, include_backlog=True,
+        max_duration_seconds=20.0, sleeper=lambda _s: None,
+    )
+    session.close()
+
+    assert "prelude_ms" in r, r
+    assert isinstance(r["prelude_ms"], float)
+    assert r["prelude_ms"] >= 0.0
+    # The whole block is at least its own classify step — the containment
+    # relationship is the point of the field.
+    assert r["classify_ms"] is not None
+    assert r["prelude_ms"] >= r["classify_ms"], r
+    # ...and it is persisted next to `classify_ms`, not summary-only.
+    verify = filedb.Factory()
+    run = verify.execute(
+        select(CryptoTokenLifecycleRun).order_by(CryptoTokenLifecycleRun.id.desc())
+    ).scalars().first()
+    frontier = (run.config or {})["frontier"]
+    verify.close()
+    assert "prelude_ms" in frontier, frontier
+    assert frontier["prelude_ms"] >= frontier["classify_ms"]
+
+
+def test_the_prelude_is_timed_even_when_the_backlog_lane_is_off(filedb):
+    """`classify_ms` is None with `include_backlog=False`, but the other
+    prelude queries still run and can still block — so `prelude_ms` must be
+    reported on EVERY pass, not only backlog ones."""
+    session = filedb.Factory()
+    rec = CryptoLifecycleTapeRecorder(CryptoTapeConfig(chain=CHAIN, lock_dir=filedb.path.parent))
+    r = rec.run_once(
+        session, limit=20, hours=48, batch_size=5,
+        max_duration_seconds=20.0, sleeper=lambda _s: None,
+    )
+    session.close()
+    assert r["classify_ms"] is None
+    assert isinstance(r["prelude_ms"], float)
+    assert r["prelude_ms"] >= 0.0
+
+
+# --- A5 / B1: the model, recorded per pass; the finalize, sized -----------
+
+def test_the_pass_records_its_wall_time_against_the_model(filedb):
+    """A5 (independent review of this branch). "Model, not guarantee" is
+    enough for the attended `--force` phase but not for an unattended timer,
+    and no better constant exists — the overshoot term tracks HOST LOAD (1.01x
+    idle EVO, 5.80x dev Mac at load 5-6). What can be required instead is
+    OBSERVED non-exceedance, which needs the model recorded next to the wall
+    time on every counted pass.
+
+    Fails on revert: drop the fields and the operator is back to re-deriving
+    the model by hand from constants."""
+    session = filedb.Factory()
+    r = run_scheduled_reconciliation(
+        session,
+        settings=Settings(
+            enable_crypto_tape_reconciler=True,
+            crypto_tape_reconciler_window_hours=48,
+            crypto_tape_reconciler_limit=1000,
+            crypto_tape_reconciler_batch_size=5,
+            crypto_tape_reconciler_max_duration_seconds=20.0,
+        ),
+        recorder=CryptoLifecycleTapeRecorder(
+            CryptoTapeConfig(chain=CHAIN, lock_dir=filedb.path.parent)
+        ),
+        sleeper=lambda _s: None,
+    )
+    session.close()
+
+    assert r["status"] in ("ok", "truncated", "partial"), r
+    assert r["wall_time_model_ms"] > 0, r
+    # The model is strictly larger than the data deadline it contains...
+    assert r["wall_time_model_ms"] > 20_000, r
+    # ...and an uncontended pass must not exceed it. This is precondition 1
+    # for the recurring timer, asserted on the one host we can assert it on.
+    assert r["wall_time_model_exceeded"] is False, (
+        r["duration_ms"], r["wall_time_model_ms"]
+    )
+    assert r["duration_ms"] <= r["wall_time_model_ms"]
+    assert r["lock_wait_distribution_eligible"] is True, r
+
+
+def test_the_modelled_wall_time_is_the_documented_derivation():
+    """The arithmetic, pinned separately from the plumbing — this is the
+    number the unit file's `TimeoutStartSec` derivation and the runbook's
+    timer precondition both quote."""
+    model = ct.modelled_pass_wall_seconds(
+        deadline_seconds=20.0,
+        lock_wait_budget_seconds=5.0,
+        finalize_lock_wait_budget_seconds=30.0,
+    )
+    # 20 (deadline) + 3*4*5 + 2*3 (one in-flight batch ladder) + 1*2.0*30
+    # (the single-attempt finalize at the inherited busy timeout) = 146s.
+    assert model == pytest.approx(146.0)
+    # A dry run / legacy pass has no budget to model; the deadline is all
+    # there is, and the missing terms are omitted rather than guessed at 0.
+    assert ct.modelled_pass_wall_seconds(
+        deadline_seconds=20.0,
+        lock_wait_budget_seconds=None,
+        finalize_lock_wait_budget_seconds=None,
+    ) == pytest.approx(20.0)
+
+
+def test_the_finalize_commit_gets_exactly_one_attempt(filedb):
+    """B1 (independent review of this branch). The restored finalize inherits
+    the connection's busy timeout (30s in production), so a 3-attempt ladder
+    against a holder that never releases costs `3 x 30s x overshoot + 2 x 3s`:
+    ~97s at EVO's measured 1.01x, ~186s at the shipped 2.0 constant, ~528s at
+    the 5.80x measured on this dev Mac at load 5-6 — against
+    `TimeoutStartSec=5min`. A real blocked pass measured lock_wait_ms=206284.
+
+    One attempt, because the finalize is BOOKKEEPING: a second attempt 3s
+    later against the same 20-45s holder rarely helps while tripling the
+    ceiling, the failure mode is non-corrupting (batches durable, run row left
+    at `running`), and the accounting still reaches the operator through the
+    returned summary.
+
+    Asserted on the ladder itself, with no contention needed: the BATCH
+    commits get the caller's `max_lock_attempts`, the FINALIZE gets 1."""
+    session = filedb.Factory()
+    rec = CryptoLifecycleTapeRecorder(CryptoTapeConfig(chain=CHAIN, lock_dir=filedb.path.parent))
+    seen: list[int] = []
+    original = rec._commit_with_retry
+
+    def _recording(sess, prepare, max_attempts, retry_seconds, sleeper=time.sleep, **kw):
+        seen.append(max_attempts)
+        return original(sess, prepare, max_attempts, retry_seconds, sleeper, **kw)
+
+    rec._commit_with_retry = _recording
+    try:
+        r = rec.run_once(
+            session, limit=20, hours=48, batch_size=5,
+            max_duration_seconds=20.0, max_lock_attempts=3,
+            lock_retry_seconds=0.0, sleeper=lambda _s: None,
+        )
+    finally:
+        rec._commit_with_retry = original
+        session.close()
+
+    assert r["status"] == "ok", r
+    assert ct.RECONCILE_FINALIZE_MAX_LOCK_ATTEMPTS == 1
+    # Two ladders go through this helper: the run row's CREATION commit and
+    # its FINALIZE commit (batch commits run their own inline loop). The
+    # creation commit keeps the caller's ladder; the finalize does not.
+    assert len(seen) == 2, seen
+    assert seen[0] == 3, seen            # run-row creation, caller's ladder
+    assert seen[-1] == 1, seen           # the finalize, bounded
+    # The finalize's own budget is reported, so the model above can be
+    # computed from the pass rather than from assumed constants.
+    assert r["finalize_lock_wait_budget_ms"] == 30000, r
 
 
 def test_the_budget_adds_no_network_surface():
