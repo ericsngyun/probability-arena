@@ -327,8 +327,11 @@ def assert_live_tree_clean(stage: str) -> None:
     if hints:
         detail = ("\n  these look like STILL-APPLIED catalogue mutations "
                   f"from an interrupted run: {hints}"
-                  "\n  restore them (`git checkout -- <path>`) before "
-                  "re-running; the campaign will not proceed over them.")
+                  "\n  inspect the diff and undo just the mutation before "
+                  "re-running -- deliberately, by hand. Do NOT reach for "
+                  "`git checkout --`/`git restore` on the whole file: a "
+                  "prior agent lost uncommitted work in this repository "
+                  "exactly that way.")
     raise LiveTreeDirty(
         f"[{stage}] `git diff --quiet -- tests/` failed: the live working "
         f"tree has uncommitted modifications under tests/: {dirty}{detail}"
