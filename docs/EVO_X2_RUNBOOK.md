@@ -1492,3 +1492,92 @@ timer firing during a manual run) records a graceful `skipped`
 older than `MARKETOPS_LOCK_STALE_AFTER_MINUTES` is treated as crashed. SQLite
 connections also carry a `SQLITE_BUSY_TIMEOUT_MS` wait. Manual cycles no
 longer need to dodge timer firings.
+
+## Reconciler lock-wait telemetry (CRYPTO-RECONCILER-LOCK-WAIT-BUDGET-001)
+
+The crypto reconciler carries an explicit **lock-wait budget** — how long ONE
+SQLite lock acquisition may WAIT — distinct from the write-**hold** SLO. This
+section is for whoever eventually sets a threshold from the telemetry, because
+several of these numbers do not mean what their names suggest.
+
+**Gate context.** There is no recurring reconciler timer, and there must not be
+one until a real `lock_wait_ms` distribution has been shown to stay bounded
+across several `--force` passes. The instrument below IS the gate; read it
+before running counted passes, not after.
+
+### Read the threshold off the histogram tail, never off the scalar
+
+`lock_wait_ms` (the pass total) is **biased high**. `LockWaitMeter` cannot split
+a *succeeding* statement's duration into "slept in SQLite's busy handler" and
+"did work" — Python's `sqlite3` exposes no busy-handler callback — so every
+attempt's reported wait also contains that attempt's own DML and its commit
+fsync. Measured on a pass with **zero contention** (no competing writer at all,
+so every millisecond is bias):
+
+```
+lock_wait_ms 3380   lock_wait_measurements 402   lock_wait_ms_max 21
+blocked_ms   9578   histogram {'1-10': 372, '10-100': 30, '>=100': 0}
+```
+
+~8.4 ms per attempt against a true wait of exactly zero: 35 % of `blocked_ms`
+under no contention, and it scales with batch count (~340 s of phantom wait
+across 100 passes).
+
+The bias lands almost entirely in the `1-10` bucket, so:
+
+* **Derive thresholds from the `>=100` buckets of `lock_wait_histogram_ms`,
+  never from pass-total `lock_wait_ms`.** The histogram's edges are fixed, so
+  per-pass rows add up across passes into a real distribution.
+* `lock_wait_ms_baseline_per_attempt` is the pass's own in-band estimate of the
+  bias (its smallest observed attempt) and `lock_wait_ms_net` is the total with
+  `baseline x measurements` removed. Use the net if you must use a scalar; on a
+  zero-contention pass it goes to ~0, which is the correct answer.
+
+### Fields, and where to find them
+
+Every pass reports the whole contract, including refusals — a `db_locked`
+abandon reports what it had measured before giving up rather than a row of
+`None`s. Per-pass scalars plus the histogram are persisted on the run row under
+`config.write_coordination` (suffixed `_before_finalize` where the value is
+staged before the finalize commit).
+
+**Key on `stop_reason`, not `status`.** On lock-wait-budget expiry the returned
+`status` can be `backlog_expiring` rather than `partial`, because the frontier
+override runs after the lock-wait status assignment. `stop_reason` is
+`lock_wait_budget` in that case, and it is the discoverable field.
+
+### What the residual bound is, and is not
+
+The advertised residual (`deadline + ATTEMPT_MULTIPLIER x budget`) is a **model
+of the idle host, not a guarantee**:
+
+* `RECONCILE_LOCK_WAIT_STATEMENT_OVERSHOOT = 2.0` is a **chosen safety factor**,
+  not a measurement. Re-derived on EVO (SQLite 3.45.1, idle) the true
+  per-acquisition overshoot is ~**1.01x**; re-measured on the dev Mac at load
+  average ~5-6, same SQLite version, it reaches **5.80x**. The factor tracks
+  host load, not SQLite, so no constant can bound it.
+* If the EVO histogram shows passes failing into `partial` /
+  `stop_reason=lock_wait_budget` on contention they had deadline left to
+  absorb, **lower** the constant toward the measured ~1.0x — do not raise the
+  deadline.
+
+### The prelude is bounded but not metered
+
+The selection **prelude** (`backlog_size`, `classify_backlog`, `_universe`,
+`universe_size`, `unreconciled_backlog`, the frontier queries) and the governed
+path's MarketOps-health read are reads, and reads block behind an EXCLUSIVE
+holder. They now run inside the same derived budget as the write loop — before
+that fix a 30 s-deadline pass was measured at 60.11 s with
+`lock_retry_events=0`, two successive read acquisitions each burning the full
+30 s process timeout. But the accounting object lives inside the write phase,
+so **prelude waits do not appear in `lock_wait_ms` or the histogram**. The
+histogram describes the WRITE path's wait distribution, which is the quantity
+the gate is about; a pass whose wall time exceeds the model with an empty
+`>=100` tail was most likely blocked in the prelude.
+
+### Operator knob
+
+`CRYPTO_TAPE_RECONCILER_LOCK_WAIT_BUDGET_SECONDS` (unset by default) is a
+tighter **cap**, never a floor. Set it from the histogram above once a real
+distribution exists; never guess it. CLI override:
+`--lock-wait-budget-seconds`.

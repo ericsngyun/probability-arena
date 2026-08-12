@@ -374,37 +374,64 @@ RECONCILE_LOCK_FILENAME = ".crypto-tape-reconcile-{chain}.lock"
 #     (BEGIN IMMEDIATE, i.e. a single nominal acquisition, behaves the same:
 #      500 ms -> 1.131 s, 1000 ms -> 1.991 s, 2000 ms -> 3.300 s)
 #
-# THAT TABLE IS THE WRONG HOST, AND THE CORRECTION MATTERS (independent
-# review of this branch). Re-derived ON EVO — SQLite 3.45.1, raw `sqlite3`,
-# 2 reps per budget at 250/500/1000/2000/4000 ms, across `BEGIN IMMEDIATE`,
-# autocommit INSERT, COMMIT-behind-SHARED and SELECT/temp-INSERT behind an
-# EXCLUSIVE holder — the MAXIMUM ratio observed anywhere was **1.01x**. The
-# dev-Mac asymptote above does not describe the target host; this repo has
-# made exactly this mistake before (a per-token cost measured on the Mac and
-# generalised to EVO), so the numbers are kept here as what they are: a
-# dev-Mac measurement, not the deployment host's behaviour.
+# THAT TABLE IS THE WRONG HOST, AND IT IS ALSO THE WRONG QUANTITY
+# (independent review of this branch, plus a re-measurement taken while
+# closing it). Two measurements, both on SQLite 3.45.1, both raw `sqlite3`,
+# 2-3 reps per budget at 250/500/1000/2000/4000 ms:
 #
-# The production figure does NOT require the 2x hypothesis either:
-# 45.744 s / 30 s = 1.52x is fully explained by ~1.00x across TWO successive
-# acquisitions.
+#   * ON EVO (the deployment host), idle, across `BEGIN IMMEDIATE`,
+#     autocommit INSERT, COMMIT-behind-SHARED and SELECT/temp-INSERT behind
+#     an EXCLUSIVE holder: the MAXIMUM ratio observed anywhere was **1.01x**.
+#   * ON THIS DEV MAC, under a 1-minute load average of ~5-6:
+#         250 ms  -> 1.310 / 1.451 / 1.358 s   (5.24x / 5.80x / 5.43x)
+#         500 ms  -> 1.911 / 1.712 / 1.717 s   (3.82x / 3.42x / 3.43x)
+#        1000 ms  -> 2.952 / 2.771 / 2.702 s   (2.95x / 2.77x / 2.70x)
+#        2000 ms  -> 5.098 / 5.164 / 5.426 s   (2.55x / 2.58x / 2.71x)
+#        4000 ms  -> 9.612 / 9.107 / 9.695 s   (2.40x / 2.28x / 2.42x)
 #
-# So 2.0 is NOT "the measured asymptote". It is a DELIBERATE SAFETY FACTOR,
-# chosen and labelled as such:
-#   * on the only host where it has been measured properly (EVO) the true
-#     overshoot is ~1.0x, so this factor makes the derived budget up to 2x
-#     TIGHTER than the pass's deadline could actually afford;
-#   * that direction is the safe one for a gate whose whole purpose is a
-#     BOUNDED wait distribution — the reconciler is the interruptible party;
-#   * the cost is real and must be stated: a pass can fail into `partial`
-#     (stop_reason=lock_wait_budget) on contention it had deadline left to
-#     absorb. If the EVO lock-wait histogram this milestone persists shows
-#     that happening, lowering this constant toward the measured ~1.0x is
-#     the correct response — not raising the deadline.
-# `test_one_blocked_statement_stays_within_the_assumed_overshoot_factor`
-# defends the direction the DESIGN depends on (the factor is an UPPER bound
-# on one acquisition's overshoot); it deliberately no longer asserts a
-# lower bound, because at 1.01x on EVO any such assertion is satisfied by a
-# millisecond of scheduler noise and therefore defends nothing.
+# THE RATIO IS A FUNCTION OF HOST LOAD, NOT OF SQLITE. Same SQLite version,
+# same probe, same repo: 1.01x on an idle host and up to 5.80x on a loaded
+# one — and on the loaded host it converges toward ~2.4x, not toward the
+# ~1.7x the idle-Mac table at the top of this comment reported. So:
+#
+#   * "the measured asymptote" was never true — there is no host-independent
+#     asymptote to measure;
+#   * 2.0 is NOT an upper bound either. It is exceeded on this very repo's
+#     dev Mac whenever the machine is busy, at every budget probed.
+#
+# So 2.0 is a DELIBERATE, CHOSEN SAFETY FACTOR, and the residual bound
+# derived from it (`deadline + ATTEMPT_MULTIPLIER x budget`) is a MODEL OF
+# THE IDLE-HOST CASE, NOT A GUARANTEE. What is stated must be exactly that:
+#   * on the deployment host at rest the true overshoot is ~1.0x, so this
+#     factor makes the derived budget ~2x TIGHTER than the pass's deadline
+#     could actually afford — the safe direction for a gate whose whole
+#     purpose is a BOUNDED wait distribution, since the reconciler is the
+#     interruptible party;
+#   * under real load the factor UNDERSTATES the overshoot, so the advertised
+#     residual can be exceeded. That is not hypothetical: a reviewer measured
+#     60.11 s against a claimed 42.0 s bound. The unbudgeted prelude (fixed
+#     on this branch, see `_lock_wait_budgeted_reads`) explains that
+#     particular number, but load-driven overshoot is a second, independent
+#     way for the residual to be exceeded and it cannot be constant-fixed;
+#   * the actionable consequence: the residual bound is an expectation to
+#     MONITOR against the persisted histogram, never a contract to rely on.
+#     If the EVO histogram shows passes failing into `partial`
+#     (stop_reason=lock_wait_budget) on contention they had deadline left to
+#     absorb, lowering this constant toward the measured ~1.0x is the correct
+#     response — not raising the deadline.
+#
+# WHAT THE GUARD TEST CAN AND CANNOT DEFEND. It cannot assert a ceiling: the
+# measurement above shows a healthy host violating any fixed one. It cannot
+# assert the old `elapsed > budget` lower bound either — on EVO that is
+# satisfied by `0.251 > 0.250`, one millisecond of scheduler noise, and would
+# pass unchanged whether the true factor were 1x, 2x or 20x. What IS stable
+# across both hosts is that the WAIT SCALES WITH THE BUDGET, which is the
+# only property the derivation actually uses:
+# `test_the_blocked_wait_scales_with_the_budget_which_is_all_the_derivation_uses`
+# asserts that, and
+# `test_the_overshoot_constant_is_labelled_a_chosen_factor_not_a_measurement`
+# pins the labelling above so a later edit cannot quietly re-promote 2.0 to
+# a measurement.
 RECONCILE_LOCK_WAIT_STATEMENT_OVERSHOOT = 2.0
 # WRITE-lock acquisition points inside ONE batch attempt, in this database's
 # rollback-journal mode (no `journal_mode=WAL` is set anywhere in this repo —
@@ -419,9 +446,13 @@ RECONCILE_LOCK_WAIT_STATEMENT_OVERSHOOT = 2.0
 # behind an EXCLUSIVE holder — measured on EVO at 1.00x its configured
 # busy_timeout, same as every write shape. They are not added to this
 # constant because the shipped ATTEMPT_MULTIPLIER of 4 already covers three
-# blocking points at the measured ~1.0x overshoot with margin to spare
-# (3 x 1.01 = 3.03 < 4); that headroom is now the stated reason the read
-# class is safe, rather than an accident of an unexamined constant.
+# blocking points at EVO's idle ~1.0x overshoot with margin to spare
+# (3 x 1.01 = 3.03 < 4); that headroom is the stated reason the read class is
+# safe, rather than an accident of an unexamined constant. Under load that
+# headroom is gone (see the overshoot comment's dev-Mac table) — which is
+# why the residual is called a model rather than a bound. What the reads DO
+# now get, and did not before, is the budget itself: see
+# `_lock_wait_budgeted_reads`.
 RECONCILE_LOCK_WAIT_BLOCKING_POINTS = 2
 # Worst-case multiple of the CONFIGURED per-acquisition budget that ONE batch
 # attempt can spend blocked, under the safety factor above: 2 write-lock
@@ -701,6 +732,58 @@ def _read_busy_timeout_ms(session: Session) -> int | None:
         return int(conn.exec_driver_sql("PRAGMA busy_timeout").scalar())
     except Exception:  # pragma: no cover - defensive
         return None
+
+
+@contextmanager
+def _lock_wait_budgeted_reads(session: Session, budget_seconds: float | None):
+    """Apply the lock-wait budget to a stretch of READ work, then put the
+    connection's busy timeout back exactly as it was found.
+
+    BLOCKER-2 (independent review of this branch). The budget shipped on this
+    branch was applied ONLY inside the chunked write loop and the finalize
+    (`lock_budget_active = chunked and not dry_run`). Everything BEFORE that —
+    `run_scheduled_reconciliation`'s MarketOps-health read, and `run_once`'s
+    whole selection prelude (`backlog_size`, `classify_backlog`, `_universe`,
+    `universe_size`, `unreconciled_backlog`, the frontier and recoverable
+    queries) — ran at the process-wide `sqlite_busy_timeout_ms`. Measured by a
+    reviewer against a real `run_scheduled_reconciliation` on a production
+    copy, `--max-duration-seconds 30`, claimed residual bound 42.0s:
+
+        competing EXCLUSIVE held 45s -> wall 60.11s, stop_reason=deadline,
+                                        lock_retry_events=0
+        competing EXCLUSIVE held 90s -> wall 60.09s, status=db_locked
+
+    `lock_retry_events=0` is the tell: the budget machinery never engaged at
+    all. 60.09s is two successive READ acquisitions each burning the full
+    30s process timeout. Reads are a real blocking class — a SELECT blocks
+    behind an EXCLUSIVE holder, measured on EVO at 1.00x its configured
+    busy_timeout — and `RECONCILE_LOCK_WAIT_BLOCKING_POINTS` enumerates only
+    the two WRITE-lock points, so they were never in the bound.
+
+    Restoring on exit is not optional bookkeeping: `_assemble_pass_locked`
+    reads the connection's busy timeout at its own start and restores to
+    THAT value at its end, so a caller that left its prelude budget applied
+    would silently redefine "the connection's original timeout" as the
+    budget, and the pass would never hand the connection back to the rest of
+    the process intact.
+
+    WHAT THIS DOES NOT DO: the prelude is BOUNDED but not METERED. The
+    `LockWaitAccounting` instance lives inside `_assemble_pass_locked`, so
+    prelude waits do not appear in `lock_wait_ms` or the histogram. That is
+    stated rather than hidden — see docs/EVO_X2_RUNBOOK.md's lock-wait
+    section — and it is the honest reading of the numbers: the histogram
+    describes the WRITE path's wait distribution, which is the quantity the
+    recurring-timer gate is about."""
+    if budget_seconds is None:
+        yield None
+        return
+    original_ms = _read_busy_timeout_ms(session)
+    applied_ms = _apply_lock_wait_budget(session, budget_seconds)
+    try:
+        yield applied_ms
+    finally:
+        if original_ms is not None:
+            _apply_lock_wait_budget(session, original_ms / 1000.0)
 
 
 class LockWaitAccounting:
@@ -2391,112 +2474,136 @@ class CryptoLifecycleTapeRecorder:
         # reviewer: with this reserve, `--limit 500` and `--limit 850` both
         # reproduce the default run's convergence exactly
         # (`backlog_processed=175` every pass, frontier 157.8h -> 59.8h).
-        backlog_total = 0
-        reserved_backlog_budget = 0
-        # CRYPTO-BACKLOG-SELECTION-AND-OPERATOR-PATH-001 R1 — classify the
-        # backlog ONCE per pass. `unreconciled_backlog` and
-        # `recoverable_backlog_summary` are both called below with the same
-        # `session`, `cutoff` and `now=started`, and each used to run its
-        # own full-backlog `classify_backlog`: two identical scans, measured
-        # at 1.92 s + 1.94 s cold and 4.02 s + 3.21 s warm on a fast Mac
-        # (10-33 % of a 20 s pass budget; the code's own ~62x per-token EVO
-        # slowdown note means the prelude alone can consume a whole EVO
-        # deadline before one token is reconciled). Nothing writes between
-        # the two call sites, so one partition is exactly what both used to
-        # derive separately.
+        # BLOCKER-2 fix (independent review of this branch): the SELECTION
+        # PRELUDE below is all reads, and reads block behind an EXCLUSIVE
+        # holder just as writes do. Before this it ran at the process-wide
+        # `sqlite_busy_timeout_ms` while the pass advertised a
+        # deadline-derived residual bound, which is how a 30s-deadline pass
+        # was measured at 60.11s with `lock_retry_events=0`. Budget it on the
+        # same terms as the write loop, and hand the connection back
+        # unchanged — see `_lock_wait_budgeted_reads`.
         #
-        # This does NOT bound the residual: see `classify_ms` below.
-        backlog_classes: dict[str, list[str]] | None = None
-        classify_ms: float | None = None
-        if include_backlog:
-            backlog_total = self.backlog_size(session, cutoff)
-            reserved_backlog_budget = min(backlog_total, limit // 2)
-            _classify_started = time.monotonic()
-            backlog_classes = self.classify_backlog(session, cutoff, now=started)
-            classify_ms = (time.monotonic() - _classify_started) * 1000.0
-        in_window_limit = max(0, limit - reserved_backlog_budget)
-        tokens = self._universe(
-            session, in_window_limit, cutoff, oldest_first=oldest_first,
-            exclude_final=exclude_final, max_first_seen_at=max_first_seen_at,
-        )
-        total = self.universe_size(
-            session, cutoff, exclude_final=exclude_final,
-            max_first_seen_at=max_first_seen_at,
-        )
-        backlog_selected = 0
-        extra: list = []
-        if include_backlog:
-            # State-driven top-up: still-open outcomes that have aged out of the
-            # window. Without this a missed pass loses a cohort permanently.
-            # `room` is now guaranteed >= `reserved_backlog_budget` (the
-            # in-window query above was capped at `in_window_limit = limit -
-            # reserved_backlog_budget`, so it can consume at most that many
-            # slots) — and can be even larger if the in-window head came back
-            # short of its own budget, so a genuinely quiet in-window period
-            # still lets backlog use the full remaining limit, exactly as
-            # before this fix.
-            room = max(0, limit - len(tokens))
-            if room:
-                seen = {t.token_address for t in tokens}
-                extra = [
-                    t for t in self.unreconciled_backlog(
-                        session, cutoff, limit=room, now=started,
-                        classes=backlog_classes,
-                    )
-                    if t.token_address not in seen
-                ]
-                backlog_selected = len(extra)
-                # NEW-H1 fix: backlog tokens are the OLDEST evidence, closest
-                # to `crypto_retention_days` pruning (see `unreconciled_backlog`
-                # above) — that is the whole reason they exist as a top-up.
-                # Appending them AFTER the in-window head meant a
-                # deadline-stopped, chunked pass (the scheduled path always
-                # is one) processed batches in list order and could NEVER
-                # reach them: the in-window head alone (~615 non-final
-                # tokens at steady state) already exceeds one pass's
-                # throughput, so the backlog queued behind it forever — a
-                # one-way trapdoor where aged-out tokens accumulate and their
-                # ticks get pruned before a pass ever revisits them.
-                # Processing backlog FIRST guarantees forward progress on the
-                # evidence that is actually expiring, at the cost of the
-                # in-window head (which is not yet at risk of pruning and
-                # will still be picked up, oldest-first, by a future pass).
-                tokens = extra + tokens
-        # NEW-HIGH-2 fix (second re-review, convergence lens): tell
-        # `_assemble_pass` which selected tokens are backlog, so it can
-        # ground `backlog_processed` in outcome rows ACTUALLY WRITTEN
-        # rather than in a prefix-length calc over two selection counts —
-        # see the rationale on `_process_batch`'s local of the same name.
-        backlog_addresses = (
-            frozenset(t.token_address for t in extra) if include_backlog else None
-        )
-        # NEW-HIGH-2 fix: the FRONTIER metric — see
-        # `oldest_unreconciled_first_seen_at`'s docstring. Computed here
-        # (not persisted-only inside `_assemble_pass`) so it lands in
-        # `config` below and is therefore carried into `run.config` by the
-        # existing BLOCKING-1-fixed finalize path, without a second DB
-        # round trip inside the write-lock-sensitive part of the pass.
-        oldest_unreconciled_first_seen_at = None
-        oldest_unreconciled_age_hours = None
-        # CRYPTO-BACKLOG-SELECTION-AND-OPERATOR-PATH-001 B3 — computed
-        # PRE-PASS, same as the raw frontier above and for the same reason:
-        # this pass is about to reconcile (and finalise) some of these exact
-        # tokens, so measuring the recoverable frontier AFTER `_assemble_pass`
-        # would report "how good things look now that we just fixed it"
-        # instead of "how far behind was the reconciler when this pass
-        # started" — the actual health signal `backlog_expiring` needs.
-        recoverable_backlog = None
-        if include_backlog:
-            oldest_unreconciled_first_seen_at = self.oldest_unreconciled_first_seen_at(
-                session, cutoff
+        # `_prelude_lock_budget` mirrors `_assemble_pass_locked`'s
+        # `lock_budget_active` predicate exactly (chunked AND not dry-run), so
+        # a legacy single-transaction pass and a dry run keep their
+        # pre-milestone connection behaviour byte-for-byte.
+        _prelude_lock_budget = (
+            derive_lock_wait_budget_seconds(
+                lock_wait_budget_seconds, max_duration_seconds
             )
-            if oldest_unreconciled_first_seen_at is not None:
-                oldest_unreconciled_age_hours = (
-                    started - _aware(oldest_unreconciled_first_seen_at)
-                ).total_seconds() / 3600.0
-            recoverable_backlog = self.recoverable_backlog_summary(
-                session, cutoff, now=started, classes=backlog_classes,
+            if (
+                (batch_size is not None or initial_per_token_cost_seconds is not None)
+                and not dry_run
             )
+            else None
+        )
+        with _lock_wait_budgeted_reads(session, _prelude_lock_budget):
+            backlog_total = 0
+            reserved_backlog_budget = 0
+            # CRYPTO-BACKLOG-SELECTION-AND-OPERATOR-PATH-001 R1 — classify the
+            # backlog ONCE per pass. `unreconciled_backlog` and
+            # `recoverable_backlog_summary` are both called below with the same
+            # `session`, `cutoff` and `now=started`, and each used to run its
+            # own full-backlog `classify_backlog`: two identical scans, measured
+            # at 1.92 s + 1.94 s cold and 4.02 s + 3.21 s warm on a fast Mac
+            # (10-33 % of a 20 s pass budget; the code's own ~62x per-token EVO
+            # slowdown note means the prelude alone can consume a whole EVO
+            # deadline before one token is reconciled). Nothing writes between
+            # the two call sites, so one partition is exactly what both used to
+            # derive separately.
+            #
+            # This does NOT bound the residual: see `classify_ms` below.
+            backlog_classes: dict[str, list[str]] | None = None
+            classify_ms: float | None = None
+            if include_backlog:
+                backlog_total = self.backlog_size(session, cutoff)
+                reserved_backlog_budget = min(backlog_total, limit // 2)
+                _classify_started = time.monotonic()
+                backlog_classes = self.classify_backlog(session, cutoff, now=started)
+                classify_ms = (time.monotonic() - _classify_started) * 1000.0
+            in_window_limit = max(0, limit - reserved_backlog_budget)
+            tokens = self._universe(
+                session, in_window_limit, cutoff, oldest_first=oldest_first,
+                exclude_final=exclude_final, max_first_seen_at=max_first_seen_at,
+            )
+            total = self.universe_size(
+                session, cutoff, exclude_final=exclude_final,
+                max_first_seen_at=max_first_seen_at,
+            )
+            backlog_selected = 0
+            extra: list = []
+            if include_backlog:
+                # State-driven top-up: still-open outcomes that have aged out of the
+                # window. Without this a missed pass loses a cohort permanently.
+                # `room` is now guaranteed >= `reserved_backlog_budget` (the
+                # in-window query above was capped at `in_window_limit = limit -
+                # reserved_backlog_budget`, so it can consume at most that many
+                # slots) — and can be even larger if the in-window head came back
+                # short of its own budget, so a genuinely quiet in-window period
+                # still lets backlog use the full remaining limit, exactly as
+                # before this fix.
+                room = max(0, limit - len(tokens))
+                if room:
+                    seen = {t.token_address for t in tokens}
+                    extra = [
+                        t for t in self.unreconciled_backlog(
+                            session, cutoff, limit=room, now=started,
+                            classes=backlog_classes,
+                        )
+                        if t.token_address not in seen
+                    ]
+                    backlog_selected = len(extra)
+                    # NEW-H1 fix: backlog tokens are the OLDEST evidence, closest
+                    # to `crypto_retention_days` pruning (see `unreconciled_backlog`
+                    # above) — that is the whole reason they exist as a top-up.
+                    # Appending them AFTER the in-window head meant a
+                    # deadline-stopped, chunked pass (the scheduled path always
+                    # is one) processed batches in list order and could NEVER
+                    # reach them: the in-window head alone (~615 non-final
+                    # tokens at steady state) already exceeds one pass's
+                    # throughput, so the backlog queued behind it forever — a
+                    # one-way trapdoor where aged-out tokens accumulate and their
+                    # ticks get pruned before a pass ever revisits them.
+                    # Processing backlog FIRST guarantees forward progress on the
+                    # evidence that is actually expiring, at the cost of the
+                    # in-window head (which is not yet at risk of pruning and
+                    # will still be picked up, oldest-first, by a future pass).
+                    tokens = extra + tokens
+            # NEW-HIGH-2 fix (second re-review, convergence lens): tell
+            # `_assemble_pass` which selected tokens are backlog, so it can
+            # ground `backlog_processed` in outcome rows ACTUALLY WRITTEN
+            # rather than in a prefix-length calc over two selection counts —
+            # see the rationale on `_process_batch`'s local of the same name.
+            backlog_addresses = (
+                frozenset(t.token_address for t in extra) if include_backlog else None
+            )
+            # NEW-HIGH-2 fix: the FRONTIER metric — see
+            # `oldest_unreconciled_first_seen_at`'s docstring. Computed here
+            # (not persisted-only inside `_assemble_pass`) so it lands in
+            # `config` below and is therefore carried into `run.config` by the
+            # existing BLOCKING-1-fixed finalize path, without a second DB
+            # round trip inside the write-lock-sensitive part of the pass.
+            oldest_unreconciled_first_seen_at = None
+            oldest_unreconciled_age_hours = None
+            # CRYPTO-BACKLOG-SELECTION-AND-OPERATOR-PATH-001 B3 — computed
+            # PRE-PASS, same as the raw frontier above and for the same reason:
+            # this pass is about to reconcile (and finalise) some of these exact
+            # tokens, so measuring the recoverable frontier AFTER `_assemble_pass`
+            # would report "how good things look now that we just fixed it"
+            # instead of "how far behind was the reconciler when this pass
+            # started" — the actual health signal `backlog_expiring` needs.
+            recoverable_backlog = None
+            if include_backlog:
+                oldest_unreconciled_first_seen_at = self.oldest_unreconciled_first_seen_at(
+                    session, cutoff
+                )
+                if oldest_unreconciled_first_seen_at is not None:
+                    oldest_unreconciled_age_hours = (
+                        started - _aware(oldest_unreconciled_first_seen_at)
+                    ).total_seconds() / 3600.0
+                recoverable_backlog = self.recoverable_backlog_summary(
+                    session, cutoff, now=started, classes=backlog_classes,
+                )
         config = {"limit": limit, "hours": hours, "chain": self.config.chain}
         config.update(run_config_extra or {})
         if include_backlog:
@@ -3342,7 +3449,8 @@ class CryptoLifecycleTapeRecorder:
             # The read phase sits OUTSIDE the pass's main try/finally, so a
             # blocked read that now fails fast (it previously waited the full
             # process busy timeout) must still put the connection back and
-            # must still carry its accounting out — see `_lock_wait_carrier`.
+            # must still carry its accounting out — see
+            # `_attach_lock_wait_evidence`.
             _attach_lock_wait_evidence(exc, lock_accounting, 0.0, 0)
             _restore_busy_timeout()
             raise
@@ -4481,14 +4589,6 @@ def run_scheduled_reconciliation(
             f"scheduling interval; matured outcomes would be missed",
         )
 
-    # BLOCKER-2 fix (independent review of this branch): the MarketOps-health
-    # check is a READ, and reads block behind an EXCLUSIVE holder. It used to
-    # run here, ahead of every bound this function resolves, at the
-    # process-wide `sqlite_busy_timeout_ms`. It now runs below, after the
-    # bounds are known, INSIDE the lock-wait budget that covers the whole
-    # prelude. Moving it also means a misconfigured pass is refused for the
-    # misconfiguration (which is always actionable) rather than for host
-    # state that will have changed by the next tick.
     rec = recorder or CryptoLifecycleTapeRecorder(CryptoTapeConfig.from_settings(s))
     batch = batch_size if batch_size is not None else int(
         getattr(s, "crypto_tape_reconciler_batch_size", RECONCILE_BATCH_SIZE)
@@ -4585,6 +4685,53 @@ def run_scheduled_reconciliation(
             "> 0 — a zero/negative wait budget makes every contended batch "
             "fail before it has waited at all",
         )
+    # BLOCKER-2 fix (independent review of this branch): the MarketOps-health
+    # check is a READ, and reads block behind an EXCLUSIVE holder exactly as
+    # writes do. It used to run ABOVE, ahead of every bound this function
+    # resolves, at the process-wide `sqlite_busy_timeout_ms` — one more
+    # unbudgeted acquisition in the prelude that the advertised residual bound
+    # never accounted for. It now runs here, after the bounds are known, so it
+    # can run INSIDE the same lock-wait budget the pass itself will use.
+    #
+    # (The interrupted WIP this branch inherited had DELETED this check and
+    # never re-added it, which `test_pass_aborts_when_marketops_is_degraded`
+    # caught: a degraded host stopped being a reason not to add write
+    # pressure. It is restored here, budgeted.)
+    #
+    # Two deliberate consequences of the move, neither hidden:
+    #   * a misconfigured pass is now refused for the misconfiguration (always
+    #     actionable) rather than for host state that will have changed by the
+    #     next tick;
+    #   * a blocked health read now fails fast into `db_locked` instead of
+    #     burning 30s of the pass's wall clock before it starts — which is the
+    #     whole point of budgeting it.
+    if not dry_run:
+        try:
+            with _lock_wait_budgeted_reads(
+                session,
+                derive_lock_wait_budget_seconds(
+                    resolved_lock_wait_budget, deadline_seconds
+                ) if batch is not None else None,
+            ):
+                degraded = _reconciliation_should_abort(session)
+        except Exception as exc:
+            try:
+                session.rollback()
+            except Exception:  # pragma: no cover - defensive
+                pass
+            if _is_db_locked(exc):
+                return _refused(
+                    "db_locked",
+                    "database is locked; pass abandoned (MarketOps health "
+                    "read, before any reconciliation work)",
+                    exc,
+                )
+            raise
+        if degraded:
+            return _refused(
+                "marketops_degraded",
+                "latest MarketOps run errored; not adding write pressure",
+            )
     try:
         summary = rec.run_once(
             session, limit=cap, hours=hours, dry_run=dry_run,
@@ -4634,13 +4781,18 @@ def run_scheduled_reconciliation(
         except Exception:  # pragma: no cover - defensive
             pass
         if _is_db_locked(exc):
-            return _refused("db_locked", "database is locked; pass abandoned")
+            # BLOCKER-1(a) fix: `exc` is what makes this path REPORT its
+            # lock-wait accounting instead of censoring it. Without it the
+            # abandon path returned every lock-wait field `None` — the exact
+            # tail of the distribution the recurring-timer gate exists to
+            # measure, dropped on the passes that carry the most information.
+            return _refused("db_locked", "database is locked; pass abandoned", exc)
         if isinstance(exc, LockUnavailableError):
             # MEDIUM fix: an unwritable/missing lock directory previously
             # produced an uncaught traceback here; report a typed refused
             # status instead (the CLI turns this into a non-zero exit, same
             # as db_locked/skipped_overlap/skipped_contention).
-            return _refused(STATUS_LOCK_UNAVAILABLE, str(exc))
+            return _refused(STATUS_LOCK_UNAVAILABLE, str(exc), exc)
         if isinstance(exc, IntegrityError):
             # NEW-H3 fix: the exact-cycle anchor feed (`record_discovery_run`)
             # deliberately opts out of the overlap lock, so a residual race
@@ -4654,6 +4806,7 @@ def run_scheduled_reconciliation(
                 f"unique-constraint conflict during reconciliation, most "
                 f"likely a race with a concurrent tape writer outside the "
                 f"overlap lock (e.g. the exact-cycle anchor feed): {exc}",
+                exc,
             )
         if isinstance(exc, OperationalError):
             # NEW-MEDIUM-1 fix (third Lane-B review, SQLite coexistence).
@@ -4674,6 +4827,7 @@ def run_scheduled_reconciliation(
                 "db_error",
                 f"unrecognized SQLite OperationalError during reconciliation "
                 f"(batches already committed, if any, are durable): {exc}",
+                exc,
             )
         raise
 
