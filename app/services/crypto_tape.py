@@ -507,13 +507,26 @@ RECONCILE_LOCK_WAIT_SAMPLE_CAP = 256
 # to subtract an uncontended reference pass's `>=100` count. Reasons, in order:
 #   * it needs no reference pass to be captured, stored, kept current per host,
 #     or remembered by whoever reads the histogram in three months;
-#   * `>=1000` was 0 on BOTH measured uncontended passes, so it is clean on the
-#     deployment host today;
-#   * the contaminating mechanism is bounded by `write_hold_ms_max`, which was
-#     484/479 ms — an order of magnitude below 1000 ms — so the separation is
-#     not a coincidence of two samples but a property of what the contamination
-#     IS. If a future host's `write_hold_ms_max` ever approaches 1000 ms, this
-#     edge has to move with it, and that is the trigger to watch.
+#   * `>=1000` was 0 on ALL FOUR measured uncontended passes, so it is clean on
+#     the deployment host today;
+#   * the contaminating mechanism is bounded by `write_hold_ms_max` — but the
+#     margin is ~1.8x, MEASURED, not the "order of magnitude" an earlier
+#     version of this comment claimed off the two samples above. Four
+#     uncontended passes on EVO copies read:
+#
+#         write_hold_ms_max : 479, 544, 92, 532
+#         lock_wait_ms_max  : 480, 530, 20, 521
+#
+#     Peak 544 ms is 54% of the 1000 ms edge. The edge is still right and
+#     verified clean (decision tail 0 on all four, with `100-1000` collecting
+#     1/2/0/1 — exactly the contamination it was moved to avoid), but the
+#     separation is a measured margin on this host, not a comfortable property
+#     of the mechanism: EVO shares 61 GB with unrelated co-tenants and 4 GB of
+#     swap in use, so a host with ~2x slower fsync puts UNCONTENDED stalls
+#     straight into the decision bucket.
+# REVISIT TRIGGER, numeric rather than qualitative: re-examine this edge if any
+# counted pass reports `write_hold_ms_max > 700`.
+
 # CROSS-CHECK for anyone reading a single pass: a `100-1000` sample whose value
 # is within a few ms of that pass's `write_hold_ms_max` is the pass's own fsync,
 # not a wait.
@@ -613,6 +626,43 @@ def lock_wait_distribution_eligible(result: dict) -> bool:
         and int(result.get("lock_wait_measurements") or 0) == 0
         and int(result.get("duration_ms") or 0) > 0
     )
+
+
+def lock_wait_run_row_orphaned(status: str | None, config: dict | None) -> bool:
+    """Whether a PERSISTED run row is an orphan — a pass whose finalize never
+    landed, so the row was never reconciled by anything.
+
+    Carry-forward from the final review of this branch. The in-process
+    predicate above classifies a RESULT DICT, which by construction only
+    exists when the process survived to return one. A SIGKILL mid-finalize
+    (the `TimeoutStartSec` outcome derived below) produces no result dict at
+    all: the committed token batches stay durable, and the run row stays at
+    `status="running"` forever. Nothing jams — the overlap guard is a flock
+    released on process death — but nothing RECONCILES those rows either, and
+    the counted-passes analysis reads run rows, so it would otherwise count an
+    orphan as a pass that finished.
+
+    The signature is exact, not heuristic: `status` and the
+    `config.write_coordination` blob are written by the SAME finalize commit
+    (`_prepare_finalize`), so a row can carry one only if it carries the
+    other. A row still at `"running"` with no `write_coordination` therefore
+    never finalized.
+
+        status == "running"  AND  no `config.write_coordination`
+
+    CAVEAT the caller owns: a pass that is CURRENTLY IN FLIGHT matches this
+    too, because it has not finalized yet either. Run the analysis when no
+    reconciler pass is running — which is the shape authorised today anyway
+    (attended `--force`, no recurring timer).
+
+    Orphans are EXCLUDED from the `lock_wait_ms` distribution — they carry no
+    `write_coordination` to sum, and counting them among the completed passes
+    would inflate the denominator — and COUNTED SEPARATELY, for the same
+    reason `lock_wait_distribution_eligible` counts prelude-blocked passes:
+    how often a SIGKILLed finalize leaves an orphan is itself a result the
+    recurring-timer gate wants, and a silently dropped row is worse than a
+    tallied one."""
+    return status == "running" and not (config or {}).get("write_coordination")
 
 
 def modelled_pass_wall_seconds(
@@ -1070,14 +1120,23 @@ class LockWaitAccounting:
         it under-corrects rather than over-corrects, and `lock_wait_ms_net`
         remains an upper bound on the true wait.
 
-        TWO HONEST LIMITS, stated rather than discovered later:
+        TWO HONEST LIMITS, stated rather than discovered later, each WITH ITS
+        SIGN — "under-reports" without a direction is unactionable:
           * the estimator is over the samples actually retained, i.e. the
             first `RECONCILE_LOCK_WAIT_SAMPLE_CAP` attempts of the pass. That
-            is a bounded-memory choice, not a statistical one.
+            is a bounded-memory choice, not a statistical one, and on a longer
+            pass it makes this a PREFIX median (measured: passes at 250-262
+            attempts sit right at the cap; earlier 30 s passes at 390-392 took
+            the median from the first ~65%). Early attempts are the CHEAPEST
+            (smaller journal, warm-up), so a prefix median sits BELOW the
+            pass's true median, the subtracted baseline is too small, and the
+            correction UNDER-corrects. Direction: `lock_wait_ms_net` errs
+            HIGH, never low, and this effect can never drive it negative.
           * on a pass where MORE THAN HALF the retained attempts are genuinely
-            contended, the median contains real waiting and the net
-            UNDER-reports. That direction is why the scalar is not the
-            decision basis at all: use `lock_wait_decision_tail`.
+            contended, the median contains real waiting, the baseline is too
+            LARGE and the net UNDER-reports the true wait. That direction —
+            the dangerous one — is why the scalar is not the decision basis at
+            all: use `lock_wait_decision_tail`.
 
         A pass with a single measurement has no way to distinguish bias from
         signal, so it reports no baseline rather than declaring its only

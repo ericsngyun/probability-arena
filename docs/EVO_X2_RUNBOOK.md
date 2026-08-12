@@ -1557,11 +1557,30 @@ uncontended reference pass's `>=100` count:
 
 * it needs no reference pass to be captured, stored, kept current per host, or
   remembered by whoever reads the histogram months from now;
-* `>=1000` was **0 on both** measured uncontended passes;
-* the contamination is bounded by `write_hold_ms_max` (484 / 479 ms), an order
-  of magnitude below 1000 ms — so the separation is a property of the
-  mechanism, not a coincidence of two samples. **If a host's
-  `write_hold_ms_max` ever approaches 1000 ms, this edge has to move with it.**
+* `>=1000` was **0 on all four** measured uncontended passes;
+* the contamination is bounded by `write_hold_ms_max` — but the margin is
+  **~1.8x, measured, not the "order of magnitude" an earlier version of this
+  section claimed.** That claim rested on the two samples above (484/479 ms).
+  Four uncontended passes on EVO copies moved the peak up 12 %:
+
+  ```
+  write_hold_ms_max : 479, 544, 92, 532
+  lock_wait_ms_max  : 480, 530, 20, 521
+  ```
+
+  **Peak 544 ms is 54 % of the 1000 ms edge — a margin of ~1.8x.** The edge is
+  still the right choice and it is verified clean: the decision tail was 0 on
+  all four passes, while `100-1000` collected 1/2/0/1 samples, which is exactly
+  the fsync contamination the edge was moved to avoid. But the separation is a
+  measured margin on this host, not a comfortable property of the mechanism,
+  and EVO is not a permanently quiet host: 61 GB is held by unrelated
+  co-tenants with 4 GB of swap in use, so its fsync tail is not fixed. A host
+  with roughly **2x slower fsync puts *uncontended* stalls straight into the
+  decision bucket.**
+
+  **Revisit trigger, numeric rather than qualitative: re-examine this edge if
+  any counted pass reports `write_hold_ms_max > 700`.** ("Approaches 1000 ms",
+  the wording this replaces, is already half-true at 544.)
 
 Reading a single pass: a `100-1000` sample within a few ms of that pass's
 `write_hold_ms_max` is that pass's own fsync, not a wait.
@@ -1608,12 +1627,28 @@ one with no competing writer and record `lock_wait_ms`, `measurements`,
 `lock_wait_ms_min`, `lock_wait_ms_baseline_per_attempt` and `lock_wait_ms_net`.
 That row is the host's zero-contention reference.**
 
-One further limit, stated rather than discovered later: the median is taken
-over the first `RECONCILE_LOCK_WAIT_SAMPLE_CAP` (256) attempts, a
-bounded-memory choice; and on a pass where more than half the retained attempts
-are genuinely contended, the median contains real waiting and the net
-**under**-reports. That direction is exactly why the decision basis is the
-histogram tail and not the scalar.
+Two further limits, stated rather than discovered later, and **each with its
+sign spelled out** — "under-reports" without a sign is the one thing a reader
+cannot act on.
+
+**1. The sample cap makes the median a PREFIX median, and that errs
+conservative.** The baseline is the median of the first
+`RECONCILE_LOCK_WAIT_SAMPLE_CAP` (256) *retained* attempts — a bounded-memory
+choice, not a statistical one. Measured passes sit at 250-262 attempts (right
+at the cap) and earlier 30 s passes at 390-392 (so the median came from the
+first ~65 %). Early attempts in a pass are the **cheapest** (smaller journal,
+warm-up), so a prefix median sits **below** the pass's true median, the
+subtracted baseline is **too small**, and the correction therefore
+**under-corrects**. Direction, explicitly: **`lock_wait_ms_net` errs HIGH, never
+low, and this effect can never drive it negative** (the reported net is also
+clamped at 0). An over-reported net is a false alarm an operator can
+investigate; an under-reported one would be a missed one.
+
+**2. A majority-contended pass errs the other way.** If more than half the
+retained attempts are genuinely contended, the median contains real waiting,
+the subtracted baseline is **too large**, and the net **under**-reports the
+true wait. That direction — the dangerous one — is exactly why the decision
+basis is the histogram tail and not the scalar.
 
 ### Fields, and where to find them
 
@@ -1697,6 +1732,42 @@ on the refusal path). **Rule for the counted passes:**
   How often the reconciler cannot even begin is itself a result the gate wants
   — it is not a censored sample and must not be silently dropped either.
 
+### Orphaned `status='running'` rows: excluded, and counted separately
+
+Same rule, one layer down. A SIGKILL mid-finalize (the `TimeoutStartSec`
+outcome derived below) leaves the committed token batches durable and the run
+row at **`status='running'` forever**. Nothing jams — the overlap guard is a
+flock released on process death — but **nothing reconciles those rows either**,
+and the counted-passes analysis reads run rows, so an orphan would otherwise be
+counted as a pass that finished.
+
+`lock_wait_run_row_orphaned(status, config)` is the executable classifier. The
+signature is exact rather than heuristic, because `status` and
+`config.write_coordination` are written by the **same** finalize commit:
+
+```
+status == "running"  AND  no `config.write_coordination`
+```
+
+A row that finalized carries both; a row that did not carries neither. Caveat
+the caller owns: a pass **currently in flight** matches this too, so run the
+analysis when no reconciler pass is running — which is the only authorised
+shape today anyway (attended `--force`, no recurring timer).
+
+**Rule for the counted passes:** orphaned rows are **excluded** from the
+`lock_wait_ms` distribution (they carry no `write_coordination` to sum, and
+counting them among completed passes inflates the denominator) and **counted
+separately**. The rate at which a SIGKILLed finalize leaves an orphan is itself
+a result the gate wants — identical reasoning to the prelude-blocked tally
+above, and a zero row averaged in as healthy is worse than a missing row.
+
+Note the in-process cousin: a finalize that merely **loses the lock race**
+(rather than being SIGKILLed) also leaves `status='running'`, but it *does*
+return a full summary with the whole lock-wait accounting, reported as
+`partial` / `skipped_contention`. That pass is a normal, eligible sample; only
+the row on disk looks orphaned. This is why the tally is a property of the run
+rows and not a substitute for reading the pass output.
+
 ### Recurring-timer preconditions
 
 There is still **no recurring reconciler timer**, and none may be installed
@@ -1714,9 +1785,11 @@ load 5-6).
    is `wall_time_model_exceeded=false` on **every** counted pass — observed,
    not derived. One exceedance resets the count and is a finding, not noise.
 2. **A bounded decision tail.** `lock_wait_decision_tail()` (`>=1000 ms`) must
-   stay bounded across the counted passes, per the two subsections above.
-   `lock_wait_distribution_eligible=false` rows are excluded and tallied
-   separately.
+   stay bounded across the counted passes, per the subsections above.
+   `lock_wait_distribution_eligible=false` rows and
+   `lock_wait_run_row_orphaned()` rows are both excluded and tallied
+   separately. Re-examine the `>=1000 ms` edge itself if any counted pass
+   reports `write_hold_ms_max > 700`.
 3. **A calibrated `initial_per_token_cost_seconds`, with adaptive batching
    enabled.** It has no default by design, and until a measured EVO value is
    set the write-hold SLO is *recorded but not enforced* — a fixed token count
@@ -1757,7 +1830,10 @@ At the dev-Mac-measured 5.80x the same derivation gives **~374 s, which exceeds
 precondition 1 is *observed* non-exceedance. **The failure mode is
 non-corrupting**: a SIGKILL mid-finalize leaves committed batches durable and
 the run row at `status='running'` — the same orphaned row a lost finalize
-produces, plus a failed unit. If a future measurement makes that outcome
+produces, plus a failed unit. Nothing reconciles those rows, so the
+counted-passes analysis excludes and tallies them via
+`lock_wait_run_row_orphaned()` (see the subsection above). If a future
+measurement makes that outcome
 frequent, the fix is to re-derive `TimeoutStartSec` against
 `3 x busy_timeout x overshoot` on the *observed* host overshoot — a unit-file
 change, and therefore a deliberate deployment step recorded here, never a

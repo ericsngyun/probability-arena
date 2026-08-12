@@ -1227,6 +1227,73 @@ def test_the_threshold_source_is_documented_as_the_histogram_tail_not_the_scalar
     assert "initial_per_token_cost_seconds" in runbook
 
 
+def test_the_decision_edge_margin_is_stated_as_measured_with_a_numeric_trigger():
+    """Carry-forward from the final review: the runbook justified the
+    `>=1000 ms` edge by saying the contamination sits "an order of magnitude"
+    below it. That was wrong by ~5x. The claim rested on two samples
+    (484/479); four uncontended passes on EVO copies read
+
+        write_hold_ms_max : 479, 544, 92, 532
+        lock_wait_ms_max  : 480, 530, 20, 521
+
+    so the peak is 544 ms — 54% of the edge, a margin of ~1.8x. The edge
+    STAYS (decision tail 0 on all four, `100-1000` collecting 1/2/0/1), but
+    the margin must read as measured, and the revisit trigger must be a
+    NUMBER: "approaches 1000 ms" is already half-true at 544.
+
+    Doc-only change; this test is the guard that the over-claim cannot come
+    back and that the trigger stays numeric."""
+    runbook = (REPO / "docs" / "EVO_X2_RUNBOOK.md").read_text()
+    source = (REPO / "app" / "services" / "crypto_tape.py").read_text()
+    for text in (runbook, source):
+        # Whitespace-normalised: these claims are prose and get re-wrapped.
+        flat = " ".join(text.split())
+        # The over-claim is GONE, not merely contradicted further down.
+        assert "an order of magnitude below 1000 ms" not in flat
+        assert "484/479 ms — an order of magnitude" not in flat
+        # The measured margin, and the sample that sets it.
+        assert "544" in flat
+        assert "1.8x" in flat
+        # The numeric revisit trigger.
+        assert "write_hold_ms_max > 700" in flat
+    # ...and the edge itself is unchanged: the finding was the JUSTIFICATION,
+    # not the choice.
+    assert ct.RECONCILE_LOCK_WAIT_DECISION_EDGE_MS == 1000
+
+
+def test_the_sample_cap_prefix_effect_is_documented_with_its_DIRECTION():
+    """Carry-forward from the final review. The runbook said the estimator
+    "under-reports its net", which is ambiguous about SIGN — and a reader
+    cannot act on an unsigned error.
+
+    Measured: passes run 250-262 attempts (right at the 256 cap) and earlier
+    30s passes 390-392, so the median comes from an early PREFIX. Early
+    attempts are the cheapest (smaller journal, warm-up), so the prefix median
+    sits BELOW the true median, the subtracted baseline is too small, and the
+    correction UNDER-corrects. That is the conservative direction:
+    `lock_wait_ms_net` errs HIGH and can never go negative from this effect.
+
+    Doc-only change, plus the arithmetic guard below that the net is clamped
+    at zero regardless."""
+    runbook = (REPO / "docs" / "EVO_X2_RUNBOOK.md").read_text()
+    source = (REPO / "app" / "services" / "crypto_tape.py").read_text()
+    for text in (runbook, source):
+        # Whitespace-normalised: these claims are prose and get re-wrapped.
+        flat = " ".join(text.split())
+        assert "RECONCILE_LOCK_WAIT_SAMPLE_CAP" in flat
+        assert "PREFIX median" in flat or "prefix median" in flat
+        assert "errs HIGH, never low" in flat
+        assert "can never drive it negative" in flat
+    # The clamp the direction claim leans on, asserted rather than trusted.
+    accounting = ct.LockWaitAccounting()
+    for wait in (0.002, 0.002, 0.002, 0.002):
+        meter = ct.LockWaitMeter()
+        meter.lock_acquire_seconds = wait
+        accounting.record(meter)
+    s = accounting.as_summary()
+    assert s["lock_wait_ms_net"] >= 0, s
+
+
 # --- A1: the bias baseline is the median, not the minimum -----------------
 
 def test_the_bias_baseline_is_the_median_because_the_minimum_under_corrects():
@@ -1412,6 +1479,83 @@ def test_a_real_blocked_prelude_reports_the_signature_end_to_end(tmp_path):
     # ...and the verdict derived from it, on the result itself.
     assert r["lock_wait_distribution_eligible"] is False, r
     assert r["external_calls"] == 0
+
+
+# --- orphaned `status='running'` rows leave the distribution too -----------
+
+def test_an_orphaned_running_run_row_is_excluded_and_counted_separately(filedb):
+    """Carry-forward from the final review of this branch. A SIGKILL
+    mid-finalize (the `TimeoutStartSec` outcome) leaves the committed token
+    batches durable and the run row at `status='running'` forever. Nothing
+    jams — the overlap guard is a flock released on process death — but
+    NOTHING RECONCILES those rows, and the counted-passes analysis reads run
+    rows, so an orphan would otherwise be counted as a pass that finished.
+
+    Driven through the real code path rather than asserted on a dict: the
+    finalize commit is failed, which leaves EXACTLY the on-disk state a
+    SIGKILL leaves (row created, never finalized).
+
+    Fails on revert: without `lock_wait_run_row_orphaned` there is nothing to
+    call, and the orphan is indistinguishable from a completed pass."""
+    # A pass that finalizes is NOT an orphan.
+    session = filedb.Factory()
+    rec = CryptoLifecycleTapeRecorder(CryptoTapeConfig(chain=CHAIN, lock_dir=filedb.path.parent))
+    healthy = rec.run_once(
+        session, limit=20, hours=48, batch_size=5,
+        max_duration_seconds=20.0, sleeper=lambda _s: None,
+    )
+    session.close()
+    assert healthy["status"] == "ok", healthy
+
+    verify = filedb.Factory()
+    finalized = verify.execute(
+        select(CryptoTokenLifecycleRun).order_by(CryptoTokenLifecycleRun.id.desc())
+    ).scalars().first()
+    verify.close()
+    assert finalized.status != "running", finalized.status
+    assert ct.lock_wait_run_row_orphaned(finalized.status, finalized.config) is False
+
+    # A pass whose finalize never lands leaves the row at `running` with no
+    # `write_coordination` — the two are written by the SAME commit.
+    session = filedb.Factory()
+    rec2 = CryptoLifecycleTapeRecorder(CryptoTapeConfig(chain=CHAIN, lock_dir=filedb.path.parent))
+    original = rec2._commit_with_retry
+
+    def _lose_the_finalize(sess, prepare, max_attempts, retry_seconds,
+                           sleeper=time.sleep, **kw):
+        if max_attempts == ct.RECONCILE_FINALIZE_MAX_LOCK_ATTEMPTS:
+            return (False, 1)          # the finalize, lost — nothing staged
+        return original(sess, prepare, max_attempts, retry_seconds, sleeper, **kw)
+
+    rec2._commit_with_retry = _lose_the_finalize
+    try:
+        lost = rec2.run_once(
+            session, limit=20, hours=48, batch_size=5,
+            max_duration_seconds=20.0, max_lock_attempts=3,
+            lock_retry_seconds=0.0, sleeper=lambda _s: None,
+        )
+    finally:
+        rec2._commit_with_retry = original
+        session.close()
+    assert "status=running" in (lost.get("error") or ""), lost
+
+    verify = filedb.Factory()
+    orphan = verify.get(CryptoTokenLifecycleRun, lost["tape_run_id"])
+    verify.close()
+    assert orphan.status == "running", orphan.status
+    assert "write_coordination" not in (orphan.config or {})
+    assert ct.lock_wait_run_row_orphaned(orphan.status, orphan.config) is True
+
+    # The classifier is exact, not a guess at `status` alone: a row carrying
+    # `write_coordination` finalized by definition, and a `None` config is the
+    # created-but-never-finalized shape too.
+    assert ct.lock_wait_run_row_orphaned("running", None) is True
+    assert ct.lock_wait_run_row_orphaned("running", {}) is True
+    assert ct.lock_wait_run_row_orphaned(
+        "running", {"write_coordination": {"lock_retry_events": 0}}
+    ) is False
+    assert ct.lock_wait_run_row_orphaned("ok", None) is False
+    assert ct.lock_wait_run_row_orphaned(None, None) is False
 
 
 def test_the_cli_prints_the_lock_wait_contract_on_a_refusal(filedb):
