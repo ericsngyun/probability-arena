@@ -165,10 +165,42 @@ class _RotationCloser:
         already been shut down, in which case NOTHING was queued and the
         caller must close inline -- silently accepting work onto a stopped
         thread would leave `outstanding` permanently non-zero and hang the
-        next `drain()`."""
+        next `drain()`.
+
+        KNOWN-OPEN RACE, DOCUMENTED RATHER THAN FIXED
+        (KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A8 ROUND 3; two reviewers
+        reconstructed it independently, and it was recorded nowhere in the
+        code -- unlike every other accepted risk in this module.)
+
+        The `_stopped` check and the `_outstanding` increment are TWO
+        separate critical sections under TWO different locks. Between them a
+        concurrent `shutdown()` can observe `outstanding == 0`, complete
+        `drain()`, set `_stopped` and stop the thread -- after which this
+        method returns True having put a writer onto a queue nobody will ever
+        read again, and `_outstanding` is permanently stuck at 1. The
+        consequence is NOT lost durability: `EventArchive.close()` drains
+        first and then closes whatever is still in `_retiring` INLINE, which
+        catches exactly this writer (verified 4/4 trials: `acked ==
+        records_read`, `verdict VALID`, zero uncommitted directories). What
+        it does cost is a false negative on the way out -- any later
+        `wait_for_rotations()` blocks its full timeout and returns False, and
+        the `<closer>` rotation-failure line is appended, for a rotation that
+        actually succeeded.
+
+        THE FIX, when it is taken: fold the `_stopped` check and the
+        `_outstanding` increment into ONE `_start_lock` critical section, so
+        no `shutdown()` can interleave between them. It is deliberately NOT
+        applied here -- no test can be made to FAIL on revert without an
+        injection point (a seam between the two blocks) that the fixed
+        version never executes, so the "fix" would ship with a pin that
+        proves nothing. See the round-2 pass that declined it for the same
+        reason.
+        """
         with self._start_lock:
             if self._stopped:
                 return False
+        # <-- the window: `_stopped` was False a moment ago, and nothing holds
+        #     it False until the increment below lands. See the docstring.
         with self._cv:
             self._outstanding += 1
         with self._start_lock:

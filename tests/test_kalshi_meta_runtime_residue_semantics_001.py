@@ -207,6 +207,98 @@ def write_deleted_record_residue(root, segment_id: str, n: int) -> None:
     (seg_dir / "events.jsonl.gz").write_bytes(gzip.compress(b"".join(lines)))
 
 
+def write_zero_byte_residue(root, segment_id: str) -> None:
+    """A brand-new OPEN segment: the events file exists and is empty."""
+    seg_dir = root / f"env={ENV}" / f"segment={segment_id}"
+    seg_dir.mkdir(parents=True, exist_ok=True)
+    (seg_dir / "events.jsonl.gz").write_bytes(b"")
+
+
+def write_two_byte_magic_residue(root, segment_id: str) -> None:
+    """The two gzip magic bytes and nothing else -- a file that ANNOUNCES a
+    gzip member and then stops before its header is even complete."""
+    seg_dir = root / f"env={ENV}" / f"segment={segment_id}"
+    seg_dir.mkdir(parents=True, exist_ok=True)
+    (seg_dir / "events.jsonl.gz").write_bytes(b"\x1f\x8b")
+
+
+def write_truncated_header_residue(root, segment_id: str, n: int = 5) -> None:
+    """A REAL segment cut inside its 10-byte gzip header (the first 6 bytes of
+    a complete stream). Distinct from the 2-byte magic shape in that these
+    bytes genuinely are the head of real evidence."""
+    seg_dir = root / f"env={ENV}" / f"segment={segment_id}"
+    seg_dir.mkdir(parents=True, exist_ok=True)
+    prev = sg.genesis_digest(segment_id=segment_id, environment=ENV)
+    lines = []
+    for i in range(n):
+        line, prev = _record_bytes(fields(i), i, prev, segment_id)
+        lines.append(line)
+    (seg_dir / "events.jsonl.gz").write_bytes(
+        gzip.compress(b"".join(lines))[:6])
+
+
+def write_mid_line_truncated_residue(root, segment_id: str, n: int,
+                                     keep_records: int,
+                                     shave_bytes: int = 40) -> None:
+    """`write_crash_truncated_residue`, cut a few bytes SHORT of the flush
+    boundary so the readable prefix ends INSIDE a record. This is what a live
+    collector at the shipped `flush_every=256` produces routinely -- a
+    readable prefix plus exactly ONE abandoned trailing line -- and it is
+    byte-for-byte what a truncation that destroyed the tail record leaves."""
+    import io
+
+    seg_dir = root / f"env={ENV}" / f"segment={segment_id}"
+    seg_dir.mkdir(parents=True, exist_ok=True)
+    prev = sg.genesis_digest(segment_id=segment_id, environment=ENV)
+    raw = io.BytesIO()
+    gz = gzip.GzipFile(fileobj=raw, mode="wb")
+    cut = None
+    for i in range(n):
+        line, prev = _record_bytes(fields(i), i, prev, segment_id)
+        gz.write(line)
+        gz.flush()
+        if i + 1 == keep_records:
+            cut = raw.tell()
+    gz.close()
+    assert cut is not None, "keep_records must be <= n"
+    (seg_dir / "events.jsonl.gz").write_bytes(
+        raw.getvalue()[:cut - shave_bytes])
+
+
+def write_only_unparseable_line_residue(root, segment_id: str) -> None:
+    """A stream whose ONLY content is a single unparseable line, flushed but
+    never terminated: `records_read == 0` and ONE abandoned line. Nothing at
+    all was read from this file -- which is precisely why `UNTERMINATED`'s
+    reason text may not open by claiming the prefix read is readable."""
+    import io
+
+    seg_dir = root / f"env={ENV}" / f"segment={segment_id}"
+    seg_dir.mkdir(parents=True, exist_ok=True)
+    raw = io.BytesIO()
+    gz = gzip.GzipFile(fileobj=raw, mode="wb")
+    gz.write(b"{not canonical json at all\n")
+    gz.flush()
+    (seg_dir / "events.jsonl.gz").write_bytes(raw.getvalue())
+
+
+def write_mid_stream_garbage_residue(root, segment_id: str, n: int = 20,
+                                     at: int = 10) -> None:
+    """A complete stream with its trailer removed AND one unparseable line
+    spliced into the middle, so the reader abandons every line from there on:
+    MORE than one abandoned line, which stays TORN_PARTIAL."""
+    seg_dir = root / f"env={ENV}" / f"segment={segment_id}"
+    seg_dir.mkdir(parents=True, exist_ok=True)
+    prev = sg.genesis_digest(segment_id=segment_id, environment=ENV)
+    lines = []
+    for i in range(n):
+        line, prev = _record_bytes(fields(i), i, prev, segment_id)
+        if i == at:
+            lines.append(b"{not canonical json at all\n")
+        lines.append(line)
+    (seg_dir / "events.jsonl.gz").write_bytes(
+        gzip.compress(b"".join(lines))[:-8])
+
+
 class TestChainValidIsNowReallyComputedForResidue:
     """KALSHI-ARCHIVE-CORE-REMEDIATION-003B A6 REPAIRED: `chain_valid` used
     to be hardcoded `False` for EVERY residue -- an actually intact,
@@ -844,3 +936,304 @@ class TestArchiveAdoptStructurallyRefusesTheResidueItsOwnWarningNames:
         assert rc == 0, (
             f"archive-adopt should ACCEPT (dry-run rc=0) the exact state "
             f"({'ORPHANED_COMMITTED_SEGMENT'!r}) it exists for: {rc}")
+
+
+def _residue_corpus(root, monkeypatch):
+    """Yield `(shape_name, SegmentVerdict)` for every residue SHAPE this
+    module knows how to put on disk.
+
+    Every verdict comes from a REAL `verify_segment` call over REAL bytes;
+    `_classify_residue` is never called directly, because its contract is
+    over `read_segment_records`' process-global diagnostics and calling it
+    out of band would exercise a different function than production does.
+    """
+    import os
+
+    ah.initialize_archive(root, ENV, archive_identity="kalshi-realtime")
+
+    def verdict(seg_id):
+        return sg.verify_segment(root / f"env={ENV}" / f"segment={seg_id}",
+                                 environment=ENV, allow_open=True, root=root)
+
+    write_intact_residue(root, "c-complete", 10)
+    yield "a complete, trailer-terminated stream", verdict("c-complete")
+
+    write_crash_truncated_residue(root, "c-flushcut", 30, keep_records=6)
+    yield "truncated at a flush boundary", verdict("c-flushcut")
+
+    write_mid_line_truncated_residue(root, "c-midline", 30, keep_records=6)
+    yield "truncated inside a record", verdict("c-midline")
+
+    write_zero_byte_residue(root, "c-zero")
+    yield "a 0-byte events file", verdict("c-zero")
+
+    write_two_byte_magic_residue(root, "c-magic")
+    yield "2 bytes of gzip magic and nothing else", verdict("c-magic")
+
+    write_truncated_header_residue(root, "c-header")
+    yield "truncated inside the gzip header", verdict("c-header")
+
+    write_only_unparseable_line_residue(root, "c-oneline")
+    yield "one unparseable line and nothing else", verdict("c-oneline")
+
+    write_deleted_record_residue(root, "c-chain", 10)
+    yield "chain broken by a deleted middle record", verdict("c-chain")
+
+    write_mid_stream_garbage_residue(root, "c-garbage")
+    yield "unparseable line spliced mid-stream", verdict("c-garbage")
+
+    write_torn_residue(root, "c-torn", 30)
+    yield "compressed payload corrupted mid-stream", verdict("c-torn")
+
+    write_malformed_residue(root, "c-malformed")
+    yield "not a gzip stream at all", verdict("c-malformed")
+
+    write_intact_residue(root, "c-unreadable", 5)
+    events = root / f"env={ENV}" / "segment=c-unreadable" / "events.jsonl.gz"
+    os.chmod(events, 0o000)
+    try:
+        yield "unreadable (chmod 000)", verdict("c-unreadable")
+    finally:
+        os.chmod(events, 0o600)
+
+    write_intact_residue(root, "c-overlimit", 10)
+    # The record-count ceiling, lowered rather than a 500,000-record fixture
+    # built: `_classify_residue` reads `capped`, which this sets identically.
+    monkeypatch.setattr(sg, "_MAX_RESIDUE_DECODED_LINES", 3)
+    try:
+        yield "over the record-count safety ceiling", verdict("c-overlimit")
+    finally:
+        monkeypatch.undo()
+
+
+class TestTheResidueClassificationSetIsClosedAndEnforced:
+    """KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A8 ROUND 3 -- THE MISSING CONSUMER.
+
+    `segment.RESIDUE_CLASSIFICATIONS` was added in the A8 round-2 commit with
+    a docstring saying it exists "so nothing has to hand-enumerate" the
+    labels -- and then had ZERO readers repo-wide: its own definition, and a
+    comment telling the next reader not to re-enumerate the labels BECAUSE
+    the constant exists. A closed set that nothing enforces is the exact
+    anti-pattern this module names for itself ("a constructor argument
+    written into the commit record and checked by nothing is a trap"), and it
+    is how `SegmentVerdict.residue_classification`'s comment came to omit
+    `RESIDUE_UNTERMINATED` in the very commit that added it.
+
+    These tests are that consumer. Together they close the loop in both
+    directions: no residue shape can produce a label outside the registry,
+    and no label can enter the module without joining it.
+    """
+
+    def test_every_residue_shape_classifies_inside_the_closed_set(
+            self, tmp_path, monkeypatch):
+        """The behavioural half, over REAL bytes: complete, flush-boundary
+        truncated, mid-record truncated, 0-byte, 2-byte magic, truncated
+        header, one-unparseable-line, chain-broken, mid-stream garbage,
+        payload-corrupted, non-gzip, chmod-000, and over the safety
+        ceiling."""
+        root = tmp_path / "closed-set"
+        root.mkdir()
+        checked = 0
+        for shape, v in _residue_corpus(root, monkeypatch):
+            assert v.residue_classification in sg.RESIDUE_CLASSIFICATIONS, (
+                f"{shape!r} classified "
+                f"{v.residue_classification!r}, which is not a member of "
+                f"RESIDUE_CLASSIFICATIONS {sg.RESIDUE_CLASSIFICATIONS!r} -- "
+                "the closed set the verifier's own documentation promises")
+            checked += 1
+        assert checked >= 13, (
+            f"the corpus shrank to {checked} shapes; it is the only thing "
+            "making this assertion non-vacuous")
+
+    def test_the_corpus_reaches_every_registered_classification(
+            self, tmp_path, monkeypatch):
+        """Totality in the other direction: every REGISTERED label is
+        produced by at least one real residue on disk. A label that no shape
+        can reach is either unreachable code or a missing fixture, and both
+        are findings -- this is what stopped `RESIDUE_UNSAFE_OVER_LIMIT` from
+        having no end-to-end coverage at all."""
+        root = tmp_path / "totality"
+        root.mkdir()
+        registered = set(sg.RESIDUE_CLASSIFICATIONS)
+        seen = {v.residue_classification
+                for _, v in _residue_corpus(root, monkeypatch)}
+        assert seen == registered, (
+            "the corpus and the registry disagree; unreached labels="
+            f"{sorted(registered - seen)}, "
+            f"unregistered labels={sorted(seen - registered)}")
+
+    def test_classify_residue_can_only_return_a_registered_constant(self):
+        """The structural half. Every `return` in `_classify_residue` must be
+        a bare NAME that resolves to a registered label -- never a string
+        literal, which is how a seventh classification would slip in without
+        anything noticing."""
+        import ast
+        from pathlib import Path
+
+        module = ast.parse(Path(sg.__file__).read_text())
+        fn = next(n for n in module.body
+                  if isinstance(n, ast.FunctionDef)
+                  and n.name == "_classify_residue")
+        returned = []
+        for node in ast.walk(fn):
+            if not isinstance(node, ast.Return):
+                continue
+            assert isinstance(node.value, ast.Name), (
+                f"_classify_residue returns a non-Name expression at line "
+                f"{node.lineno} ({ast.dump(node.value)[:120]}) -- every "
+                "classification must be one of the named RESIDUE_* "
+                "constants, or RESIDUE_CLASSIFICATIONS cannot enumerate the "
+                "closed set and no consumer can check it")
+            returned.append(node.value.id)
+        assert len(returned) >= 6, (
+            f"expected one return per classification, found {returned}")
+        missing = object()
+        for name in returned:
+            value = getattr(sg, name, missing)
+            assert value is not missing, (
+                f"_classify_residue returns {name!r}, which is not a "
+                "module-level constant")
+            assert value in sg.RESIDUE_CLASSIFICATIONS, (
+                f"_classify_residue can return {name!r} = {value!r}, which is "
+                "NOT in RESIDUE_CLASSIFICATIONS -- a new label was added "
+                "without registering it, and every consumer that trusts the "
+                "closed set (starting with this module's own docstring) is "
+                "now wrong")
+
+    def test_every_residue_label_in_the_module_is_registered(self):
+        """THE PIN THAT FAILS WHEN A LABEL IS ADDED AND NOT REGISTERED:
+        every module-level `RESIDUE_*` string constant must be a member."""
+        labels = {n: v for n, v in vars(sg).items()
+                  if n.startswith("RESIDUE_") and isinstance(v, str)}
+        assert labels, "no RESIDUE_* labels found -- this test is misaimed"
+        defined = set(labels.values())
+        registered = set(sg.RESIDUE_CLASSIFICATIONS)
+        assert defined == registered, (
+            "a residue label exists in the module but is not registered in "
+            "RESIDUE_CLASSIFICATIONS (or vice versa): unregistered="
+            f"{sorted(defined - registered)}, "
+            f"registered-but-absent={sorted(registered - defined)}")
+        assert len(sg.RESIDUE_CLASSIFICATIONS) == len(
+            set(sg.RESIDUE_CLASSIFICATIONS)), (
+            f"duplicate members: {sg.RESIDUE_CLASSIFICATIONS}")
+
+
+class TestRecordsAbandonedIsAuditableInTheField:
+    """KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A8 ROUND 3.
+
+    A healthy live segment and one whose tail record was destroyed or spliced
+    both report `residue_classification: "unterminated"` -- deliberately, and
+    documented: from the bytes they are identical. The only thing separating
+    them is HOW MANY lines the reader had to abandon, which
+    `_classify_residue`'s `== 1` rule turns on and which was computed on
+    every read and then thrown away. An operator saw only `records_read`, for
+    which there is no baseline. It is now on the verdict and in
+    `verify_archive`'s `uncommitted_segment_detail`.
+    """
+
+    def test_a_flush_boundary_truncation_abandons_nothing(self, tmp_path):
+        root = tmp_path / "abandoned-none"
+        root.mkdir()
+        ah.initialize_archive(root, ENV, archive_identity="kalshi-realtime")
+        write_crash_truncated_residue(root, "seg-fb", 30, keep_records=6)
+        v = sg.verify_segment(root / f"env={ENV}" / "segment=seg-fb",
+                              environment=ENV, allow_open=True, root=root)
+        assert v.residue_classification == sg.RESIDUE_UNTERMINATED
+        assert v.records_read == 6
+        assert v.records_abandoned == 0
+
+    def test_a_mid_record_truncation_reports_exactly_one_abandoned(
+            self, tmp_path):
+        """The production flush cadence's ordinary shape, and equally the
+        shape of a tail record destroyed on purpose. Same label, same
+        `chain_valid` -- `records_abandoned` is the field that says which
+        rule `_classify_residue` actually applied."""
+        root = tmp_path / "abandoned-one"
+        root.mkdir()
+        ah.initialize_archive(root, ENV, archive_identity="kalshi-realtime")
+        write_mid_line_truncated_residue(root, "seg-ml", 30, keep_records=6)
+        v = sg.verify_segment(root / f"env={ENV}" / "segment=seg-ml",
+                              environment=ENV, allow_open=True, root=root)
+        assert v.residue_classification == sg.RESIDUE_UNTERMINATED
+        assert v.records_abandoned == 1, (
+            "the `== 1` rule that keeps a healthy live segment out of "
+            "TORN_PARTIAL is invisible to an operator unless the count is "
+            f"reported: got {v.records_abandoned}")
+        assert v.records_read == 5
+
+    def test_more_than_one_abandoned_line_is_reported_as_more(self, tmp_path):
+        """The other side of the `== 1` rule: TORN_PARTIAL, and a count an
+        operator can see rather than infer."""
+        root = tmp_path / "abandoned-many"
+        root.mkdir()
+        ah.initialize_archive(root, ENV, archive_identity="kalshi-realtime")
+        write_mid_stream_garbage_residue(root, "seg-mg")
+        v = sg.verify_segment(root / f"env={ENV}" / "segment=seg-mg",
+                              environment=ENV, allow_open=True, root=root)
+        assert v.residue_classification == sg.RESIDUE_TORN_PARTIAL
+        assert v.records_abandoned > 1, v.records_abandoned
+
+    def test_an_ordinary_committed_verdict_reports_zero(self, tmp_path):
+        """Negative control: the field is residue-only and must not carry a
+        stale process-global value into a committed verdict."""
+        root = tmp_path / "committed"
+        root.mkdir()
+        ah.initialize_archive(root, ENV, archive_identity="kalshi-realtime")
+        w = sg.SegmentWriter(root, environment=ENV, segment_id="seg-done",
+                             partition_identity="p", commit_to_head=False,
+                             flush_every=1)
+        for i in range(3):
+            assert w.submit(fields(i)) is None
+        w.close()
+        v = sg.verify_segment(w.dir, environment=ENV, root=root)
+        assert v.valid is True, v.reasons
+        assert v.records_abandoned == 0
+        assert v.residue_classification is None
+
+    def test_verify_archive_surfaces_it_per_uncommitted_segment(
+            self, tmp_path):
+        """The whole point: auditable IN THE FIELD, from the structured
+        archive summary an operator actually reads, not only in tests."""
+        root = tmp_path / "archive-detail"
+        root.mkdir()
+        ah.initialize_archive(root, ENV, archive_identity="kalshi-realtime")
+        write_mid_line_truncated_residue(root, "seg-a1", 30, keep_records=6)
+        write_crash_truncated_residue(root, "seg-a2", 30, keep_records=6)
+        result = sg.verify_archive(root, environment=ENV)
+        detail = {d["segment_id"]: d
+                  for d in result["uncommitted_segment_detail"]}
+        assert detail["seg-a1"]["records_abandoned"] == 1, detail["seg-a1"]
+        assert detail["seg-a2"]["records_abandoned"] == 0, detail["seg-a2"]
+        # ...and the two are otherwise indistinguishable, which is why the
+        # field had to be added.
+        assert (detail["seg-a1"]["residue_classification"]
+                == detail["seg-a2"]["residue_classification"]
+                == sg.RESIDUE_UNTERMINATED)
+        assert detail["seg-a1"]["chain_valid"] is True
+        assert detail["seg-a2"]["chain_valid"] is True
+
+    def test_the_unterminated_reason_does_not_overstate_a_zero_record_read(
+            self, tmp_path):
+        """`UNTERMINATED`'s reason opened "the prefix read is readable and
+        chain-valid". For a stream whose ONLY content is one unparseable line
+        that is false in both halves: nothing was read, and `chain_valid` is
+        `verify_chain([])` -- trivially true over zero records."""
+        root = tmp_path / "overstated"
+        root.mkdir()
+        ah.initialize_archive(root, ENV, archive_identity="kalshi-realtime")
+        write_only_unparseable_line_residue(root, "seg-ov")
+        v = sg.verify_segment(root / f"env={ENV}" / "segment=seg-ov",
+                              environment=ENV, allow_open=True, root=root)
+        assert v.residue_classification == sg.RESIDUE_UNTERMINATED
+        assert v.records_read == 0
+        assert v.records_abandoned == 1
+        text = json.dumps(v.reasons)
+        assert "the prefix read is readable and chain-valid" not in text, (
+            "the reason text asserts the prefix WAS read and IS readable for "
+            f"a residue from which nothing was read at all: {v.reasons}")
+        assert "records_abandoned" in text, (
+            "the reason must point an operator at the counts that carry the "
+            f"real information: {v.reasons}")
+        # The properties the existing pins depend on are unchanged.
+        assert "END IS UNKNOWN" in text, v.reasons
+        assert "UNTERMINATED_RESIDUE" in text, v.reasons

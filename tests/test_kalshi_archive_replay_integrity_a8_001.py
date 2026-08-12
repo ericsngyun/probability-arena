@@ -423,6 +423,114 @@ class TestTheDeferralCannotDeafenTheProcessPermanently:
         finally:
             signal.signal(signal.SIGINT, signal.default_int_handler)
 
+    def test_an_ordinary_restore_failure_is_actually_retried(
+            self, default_sigint):
+        """A8 ROUND 3 -- THE RETRY WAS BLIND TO THE FAILURE ITS OWN NAME
+        IMPLIES.
+
+        `_restore`'s inner `signal.signal` call sits in
+        `contextlib.suppress(Exception)`, so an ORDINARY restore failure (an
+        `OSError` from `signal.signal`) never escaped the pass -- and the
+        loop `break`ed unconditionally at the end of it. The `except
+        BaseException` retry therefore only ever fired for signal-class
+        exceptions, and `len(saved) + 2` bounded a loop that could run
+        exactly once.
+
+        Proven by injection at ad5d540, the same technique the `__exit__`
+        half uses: `_restore()` returned NORMALLY with BOTH handlers still
+        bound to `_defer`, no exception raised and `installed` False -- the
+        permanent-deafness state this method exists to prevent. Here the
+        injected failure is TRANSIENT (the whole first pass refuses, every
+        later attempt succeeds), which is exactly what a retry is for: with
+        the loop breaking after one pass the handlers stay deaf; retrying on
+        the OBSERVED handler state restores them.
+
+        Not reachable on darwin or Linux today -- `signal.signal` raises
+        `ValueError` off the main thread and `__enter__` returns early there,
+        so `saved` is empty -- so this pins a latent structural hole.
+        """
+        real_signal = sg.signal
+        deferred = sg._COMMIT_DEFERRED_SIGNALS
+        previous = {s: signal.getsignal(s) for s in deferred}
+        calls = []
+
+        class _Shim:
+            @staticmethod
+            def getsignal(sig):
+                return real_signal.getsignal(sig)
+
+            @staticmethod
+            def signal(sig, handler):
+                calls.append(sig)
+                if len(calls) <= len(deferred):
+                    # The whole FIRST pass refuses; everything after it works.
+                    raise OSError("injected restore refusal")
+                return real_signal.signal(sig, handler)
+
+        d = sg._DeferCommitSignals()
+        try:
+            d.__enter__()
+            assert d.installed is True, (
+                "the deferral did not install, so this test never had a "
+                "handler to restore")
+            assert all(signal.getsignal(s) == d._defer for s in deferred)
+            sg.signal = _Shim
+            try:
+                d._restore()
+            finally:
+                sg.signal = real_signal
+            still_deaf = [s for s in deferred
+                          if signal.getsignal(s) == d._defer]
+            assert not still_deaf, (
+                f"`_restore()` returned normally with {still_deaf} STILL "
+                "bound to the deferring handler: an ordinary restore failure "
+                "is suppressed inside the pass, so the unconditional `break` "
+                "ended the loop after one attempt and the process is now "
+                "permanently deaf to those signals")
+            assert len(calls) > len(deferred), (
+                "the restore was attempted exactly once per signal, so no "
+                f"retry happened at all: {calls}")
+            assert len(calls) <= (len(deferred) + 2) * len(deferred), (
+                f"the retry is no longer bounded by `len(saved) + 2`: {calls}")
+        finally:
+            for sig, handler in previous.items():
+                real_signal.signal(sig, handler)
+
+    def test_a_permanent_restore_failure_stays_bounded(self, default_sigint):
+        """The other half of the same bound: when the restore can NEVER
+        succeed, `_restore()` must still terminate -- `len(saved) + 2`
+        passes, never `while True` -- rather than livelock a collector."""
+        real_signal = sg.signal
+        deferred = sg._COMMIT_DEFERRED_SIGNALS
+        previous = {s: signal.getsignal(s) for s in deferred}
+        calls = []
+
+        class _Shim:
+            @staticmethod
+            def getsignal(sig):
+                return real_signal.getsignal(sig)
+
+            @staticmethod
+            def signal(sig, handler):
+                calls.append(sig)
+                raise OSError("injected permanent restore refusal")
+
+        d = sg._DeferCommitSignals()
+        try:
+            d.__enter__()
+            assert d.installed is True
+            sg.signal = _Shim
+            try:
+                d._restore()          # must RETURN, not hang
+            finally:
+                sg.signal = real_signal
+            assert len(calls) == (len(deferred) + 2) * len(deferred), (
+                "the bounded retry did not run exactly `len(saved) + 2` "
+                f"passes over `saved`: {len(calls)} calls")
+        finally:
+            for sig, handler in previous.items():
+                real_signal.signal(sig, handler)
+
     def test_the_region_is_documented_as_uninterruptible_while_it_stalls(self):
         """S4. The deferral region has NO timeout and covers `pre_write_hook`
         and `flush()` as well as `write()`. Measured: a 3 s blocking op inside

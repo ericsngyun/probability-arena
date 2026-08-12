@@ -978,6 +978,16 @@ def build_manifest(*, environment, segment_id, partition_identity, opened_at,
 # reserve exists to prevent (a value certified legal at construction that
 # destroys the segment at close). Defined below `build_manifest` because it
 # calls it.
+#
+# CALLING `build_manifest` AT IMPORT TIME IS THE DELIBERATE PART, and the
+# trade is accepted knowingly: the reserve is then drift-proof BY
+# CONSTRUCTION rather than by anyone remembering to re-count, which the
+# hand-written `+ 2` was not. The cost is that a future REQUIRED keyword on
+# `build_manifest` breaks this import -- loudly, at startup, for every caller
+# of the module -- instead of leaving a silently stale integer behind. A
+# TypeError nobody can miss is the better failure of the two, because the
+# thing this reserve gets wrong is not noticed until a segment is destroyed
+# at close.
 _MANIFEST_METADATA_WORK_RESERVE = len(build_manifest(
     environment="", segment_id="", partition_identity="",
     opened_at="", closed_at="", record_count=0,
@@ -1240,9 +1250,12 @@ class WriterAccounting:
 # `PyThreadState_SetAsyncExc` (the harness's `asyncexc` mode), which is a
 # ctypes-only mechanism no signal discipline can intercept -- that class is
 # handled structurally instead, by A8's second half: the state delta is
-# precomputed before the write and applied in a `finally`, so an
-# interruption anywhere in the region cannot leave `_ordinal`/`_prev_digest`
-# behind the bytes on disk.
+# precomputed before the write and applied in a `finally` as ONE immutable
+# `_ChainState` store, so an interruption anywhere in the region cannot leave
+# the writer's chain state behind the bytes on disk. (The separate `_ordinal`
+# and `_prev_digest` attributes this sentence used to name are gone -- they
+# were collapsed into `_ChainState`; see its docstring, and `submit()`'s own
+# comment, for the history.)
 _COMMIT_DEFERRED_SIGNALS = tuple(
     s for s in (getattr(signal, "SIGINT", None), getattr(signal, "SIGTERM", None))
     if s is not None)
@@ -1319,10 +1332,28 @@ class _DeferCommitSignals:
           `self._defer`, so re-running the loop can never clobber a handler
           the application installed in the meantime, and a partially-applied
           pass simply finishes on the next one.
-        * BOUNDED RETRY. A signal-derived `BaseException` landing mid-pass is
-          caught, held, and the pass retried -- but at most `len + 2` times,
-          never `while True`, so a process under continuous signal pressure
-          cannot turn a restore into a livelock.
+        * BOUNDED RETRY. A pass that did not finish the job is retried -- but
+          at most `len + 2` times, never `while True`, so a process under
+          continuous signal pressure cannot turn a restore into a livelock.
+
+          KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A8 ROUND 3. "Did not finish the
+          job" is now decided by LOOKING AT THE HANDLERS, not by whether an
+          exception escaped the pass. The loop used to `break`
+          unconditionally at the end of one pass, and the only thing that
+          could stop it doing so was the `except BaseException` -- but the
+          `signal.signal` call inside is wrapped in
+          `contextlib.suppress(Exception)`, so an ORDINARY restore failure
+          (an `OSError` from `signal.signal`) never reached it. Injecting one
+          made `_restore()` return normally with BOTH handlers still bound to
+          `_defer`, no exception and `installed` False: the exact
+          permanent-deafness state this method exists to prevent, reached
+          through the one failure its own name implies. The retry was
+          structurally blind to it and `len(saved) + 2` bounded a loop that
+          could only ever run once. NOT reachable on darwin or Linux today
+          (`signal.signal` raises `ValueError` off the main thread, and
+          `__enter__` returns early there, so `saved` is empty and the
+          condition below is trivially true) -- a latent structural hole,
+          closed structurally.
         * THE FIRST `BaseException` IS RE-RAISED, not swallowed. Eating an
           application's `SystemExit` here would be the same class of defect
           in the opposite direction: the process would be told to stop and
@@ -1341,7 +1372,9 @@ class _DeferCommitSignals:
                         pass
                     with contextlib.suppress(Exception):
                         signal.signal(sig, prev)
-                break
+                if all(signal.getsignal(sig) != self._defer
+                       for sig, _ in saved):
+                    break
             except BaseException as exc:      # noqa: BLE001 - held, re-raised
                 if held is None:
                     held = exc
@@ -2973,6 +3006,19 @@ class SegmentVerdict:
     reasons: list = field(default_factory=list)
     records_expected: int | None = None
     records_read: int = 0
+    # KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A8 ROUND 3: decodable lines the
+    # reader had to ABANDON (`read_segment_records.last_unreadable`), only
+    # meaningful for a residue verdict. It is what makes the `== 1` rule
+    # `_classify_residue` applies -- exactly one abandoned trailing line in an
+    # unterminated stream is the ORDINARY shape of a healthy live segment at
+    # the shipped flush cadence, two or more is TORN_PARTIAL -- auditable in
+    # the FIELD and not only in this module's tests. A healthy live segment
+    # and one whose tail record was destroyed or spliced both report
+    # `residue_classification: "unterminated"`; without this the only
+    # difference visible to an operator is `records_read`, for which there is
+    # no baseline to compare against. The value was already computed on every
+    # read and thrown away here.
+    records_abandoned: int = 0
     chain_valid: bool = False
     # KALSHI-ARCHIVE-CORE-REMEDIATION-003B A6 / A4 / A8: only set for a
     # residue verdict (`allow_open=True`, no manifest). Exactly one member of
@@ -3169,6 +3215,11 @@ def verify_segment(directory, *, environment: str, allow_open: bool = False,
             residue_chain = verify_chain(
                 residue_records, segment_id=seg_id, environment=environment)
             classification = _classify_residue(chain_ok=residue_chain.ok)
+            # Read from the SAME process-global diagnostics `_classify_residue`
+            # just consumed, immediately after it and before anything else can
+            # call `read_segment_records` -- the constraint that function's own
+            # docstring states.
+            residue_abandoned = read_segment_records.last_unreadable
             residue_reasons = [
                 "segment has no manifest and is therefore not committed"]
             if classification == RESIDUE_UNREADABLE:
@@ -3202,8 +3253,17 @@ def verify_segment(directory, *, environment: str, allow_open: bool = False,
                     "deletion, insertion, reorder, or a copied record)")
             elif classification == RESIDUE_UNTERMINATED:
                 residue_reasons.append(
-                    "UNTERMINATED_RESIDUE: the prefix read is readable and "
-                    "chain-valid, but the compressed stream never reached a "
+                    # A8 ROUND 3: this used to open `the prefix read is
+                    # readable and chain-valid`, which OVERSTATES the
+                    # `records_read=0, records_abandoned=1` case -- a stream
+                    # whose only content is one unparseable line reaches here,
+                    # and nothing at all was read from it. `chain_valid` over
+                    # zero records is `verify_chain([])`, trivially true. The
+                    # counts are what an operator must actually read.
+                    "UNTERMINATED_RESIDUE: whatever prefix could be parsed is "
+                    "chain-valid -- which may be NO records at all, so read "
+                    "records_read/records_abandoned rather than this "
+                    "sentence -- and the compressed stream never reached a "
                     "gzip trailer, so its END IS UNKNOWN. This is the NORMAL "
                     "shape of a live collector's currently-open segment "
                     "(GzipFile.flush() emits Z_SYNC_FLUSH, never a trailer) "
@@ -3229,7 +3289,7 @@ def verify_segment(directory, *, environment: str, allow_open: bool = False,
                     "manifest -- but its content is complete as written")
             v = SegmentVerdict(
                 seg_id, SegmentState.OPEN, False, residue_reasons,
-                None, len(residue_records))
+                None, len(residue_records), residue_abandoned)
             # KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A8 -- `chain_valid` MUST
             # NOT BE True FOR A RESIDUE NOBODY COULD READ. `verify_chain([])`
             # returns `ok=True` (an empty chain is trivially consistent) and
@@ -3837,7 +3897,14 @@ def _verify_archive_inner(root, *, environment: str, expected_archive_id,
                             allow_open=True, root=root)
         uncommitted_detail.append({
             "segment_id": seg_id, "state": rv.state.value,
-            "records_read": rv.records_read, "chain_valid": rv.chain_valid,
+            "records_read": rv.records_read,
+            # KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A8 ROUND 3: `records_read`
+            # alone cannot separate a healthy live segment from one whose tail
+            # record was destroyed or spliced -- both classify `unterminated`,
+            # and an operator has no baseline for the count. See
+            # `SegmentVerdict.records_abandoned`.
+            "records_abandoned": rv.records_abandoned,
+            "chain_valid": rv.chain_valid,
             "reasons": rv.reasons,
             # KALSHI-ARCHIVE-CORE-REMEDIATION-003B A6: exposed here too, not
             # only inside `reasons`' free text, so a caller reading this
