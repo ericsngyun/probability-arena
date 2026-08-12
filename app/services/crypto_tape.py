@@ -360,9 +360,9 @@ RECONCILE_LOCK_FILENAME = ".crypto-tape-reconcile-{chain}.lock"
 #
 # WHY `sqlite_busy_timeout_ms=30000` did not bound it at 30s. SQLite's busy
 # timeout is PER LOCK-ACQUISITION ATTEMPT, not per statement and not per
-# transaction, and one blocked write statement performs more than one such
-# attempt. Measured directly on this repo's dev Mac with raw `sqlite3` (no
-# SQLAlchemy in the path), a single competing connection holding RESERVED:
+# transaction, and one blocked write statement can perform more than one such
+# attempt. Measured on this repo's dev Mac with raw `sqlite3` (no SQLAlchemy
+# in the path), a single competing connection holding RESERVED:
 #
 #     configured busy_timeout   observed wall time before "database is
 #                               locked"        ratio
@@ -374,38 +374,77 @@ RECONCILE_LOCK_FILENAME = ".crypto-tape-reconcile-{chain}.lock"
 #     (BEGIN IMMEDIATE, i.e. a single nominal acquisition, behaves the same:
 #      500 ms -> 1.131 s, 1000 ms -> 1.991 s, 2000 ms -> 3.300 s)
 #
-# The ratio converges toward ~2x as the budget grows (the excess above 2x at
-# small budgets is the busy handler's fixed sleep-schedule granularity). The
-# production number is consistent with this and NOT with a 1x bound:
-# 45.744 s / 30 s = 1.52x. `test_one_blocked_statement_exceeds_its_configured
-# _busy_timeout` in tests/test_crypto_reconciler_lock_wait_budget_001.py
-# re-derives the >1x property on demand; the exact ratios above are a
-# dev-Mac measurement and must be re-measured on any host before being
-# quoted as that host's number.
+# THAT TABLE IS THE WRONG HOST, AND THE CORRECTION MATTERS (independent
+# review of this branch). Re-derived ON EVO — SQLite 3.45.1, raw `sqlite3`,
+# 2 reps per budget at 250/500/1000/2000/4000 ms, across `BEGIN IMMEDIATE`,
+# autocommit INSERT, COMMIT-behind-SHARED and SELECT/temp-INSERT behind an
+# EXCLUSIVE holder — the MAXIMUM ratio observed anywhere was **1.01x**. The
+# dev-Mac asymptote above does not describe the target host; this repo has
+# made exactly this mistake before (a per-token cost measured on the Mac and
+# generalised to EVO), so the numbers are kept here as what they are: a
+# dev-Mac measurement, not the deployment host's behaviour.
 #
-# STATEMENT_OVERSHOOT is therefore 2.0 — the measured asymptote, not a guess.
+# The production figure does NOT require the 2x hypothesis either:
+# 45.744 s / 30 s = 1.52x is fully explained by ~1.00x across TWO successive
+# acquisitions.
+#
+# So 2.0 is NOT "the measured asymptote". It is a DELIBERATE SAFETY FACTOR,
+# chosen and labelled as such:
+#   * on the only host where it has been measured properly (EVO) the true
+#     overshoot is ~1.0x, so this factor makes the derived budget up to 2x
+#     TIGHTER than the pass's deadline could actually afford;
+#   * that direction is the safe one for a gate whose whole purpose is a
+#     BOUNDED wait distribution — the reconciler is the interruptible party;
+#   * the cost is real and must be stated: a pass can fail into `partial`
+#     (stop_reason=lock_wait_budget) on contention it had deadline left to
+#     absorb. If the EVO lock-wait histogram this milestone persists shows
+#     that happening, lowering this constant toward the measured ~1.0x is
+#     the correct response — not raising the deadline.
+# `test_one_blocked_statement_stays_within_the_assumed_overshoot_factor`
+# defends the direction the DESIGN depends on (the factor is an UPPER bound
+# on one acquisition's overshoot); it deliberately no longer asserts a
+# lower bound, because at 1.01x on EVO any such assertion is satisfied by a
+# millisecond of scheduler noise and therefore defends nothing.
 RECONCILE_LOCK_WAIT_STATEMENT_OVERSHOOT = 2.0
-# Points inside ONE batch attempt at which SQLite can block, in this
-# database's rollback-journal mode (no `journal_mode=WAL` is set anywhere in
-# this repo — see app/db.py): (1) the transaction's first write statement,
-# acquiring RESERVED, and (2) COMMIT, acquiring PENDING/EXCLUSIVE behind any
-# live reader. A cache spill would add a third, which a 5-token batch does
-# not produce; if `crypto_tape_reconciler_batch_size` is ever raised far
-# enough to spill the page cache mid-batch, this constant is the thing to
-# revisit.
+# WRITE-lock acquisition points inside ONE batch attempt, in this database's
+# rollback-journal mode (no `journal_mode=WAL` is set anywhere in this repo —
+# see app/db.py): (1) the transaction's first write statement, acquiring
+# RESERVED, and (2) COMMIT, acquiring PENDING/EXCLUSIVE behind any live
+# reader. A cache spill would add a third, which a 5-token batch does not
+# produce; if `crypto_tape_reconciler_batch_size` is ever raised far enough
+# to spill the page cache mid-batch, this constant is the thing to revisit.
+#
+# READS ARE AN UNLISTED THIRD CLASS, and this comment used to omit them.
+# `_process_batch` issues SELECTs inside the attempt, and a SELECT blocks
+# behind an EXCLUSIVE holder — measured on EVO at 1.00x its configured
+# busy_timeout, same as every write shape. They are not added to this
+# constant because the shipped ATTEMPT_MULTIPLIER of 4 already covers three
+# blocking points at the measured ~1.0x overshoot with margin to spare
+# (3 x 1.01 = 3.03 < 4); that headroom is now the stated reason the read
+# class is safe, rather than an accident of an unexamined constant.
 RECONCILE_LOCK_WAIT_BLOCKING_POINTS = 2
 # Worst-case multiple of the CONFIGURED per-acquisition budget that ONE batch
-# attempt can actually spend blocked: 2 blocking points x ~2x each.
+# attempt can spend blocked, under the safety factor above: 2 write-lock
+# blocking points x 2.0. See the read-class note: at EVO's measured ~1.0x
+# this value also covers the batch's reads.
 RECONCILE_LOCK_WAIT_ATTEMPT_MULTIPLIER = (
     RECONCILE_LOCK_WAIT_BLOCKING_POINTS * RECONCILE_LOCK_WAIT_STATEMENT_OVERSHOOT
 )
 # The floor under the derived budget, so a pass that is already at (or past)
 # its deadline still gets a real chance to take the lock rather than failing
-# on contention it never actually waited for. DERIVED, not chosen: at the
-# floor, one attempt's worst-case WAIT is
-# `floor x RECONCILE_LOCK_WAIT_ATTEMPT_MULTIPLIER` = exactly
-# RECONCILE_WRITE_TIME_SLO_SECONDS — i.e. the reconciler may never wait
-# longer, in the worst case, than it is itself allowed to hold.
+# on contention it never actually waited for. It is fixed by the identity
+# `floor x RECONCILE_LOCK_WAIT_ATTEMPT_MULTIPLIER ==
+# RECONCILE_WRITE_TIME_SLO_SECONDS` — the reconciler may never wait longer,
+# in the modelled worst case, than it is itself allowed to hold.
+#
+# HONESTY CORRECTION (same review as the overshoot constant): that identity
+# is EXACT only if one attempt really can overshoot its budget by
+# ATTEMPT_MULTIPLIER. At EVO's measured ~1.0x per acquisition the true
+# worst-case wait at the floor is ~2 x 0.5 = 1.0 s, i.e. the identity is
+# CONSERVATIVE BY ~2x rather than tight. It remains a defensible derivation
+# of the floor (it can only make the reconciler wait less than its own hold
+# SLO), but it must not be quoted as an exact equality of measured
+# quantities.
 RECONCILE_LOCK_WAIT_FLOOR_SECONDS = (
     RECONCILE_WRITE_TIME_SLO_SECONDS / RECONCILE_LOCK_WAIT_ATTEMPT_MULTIPLIER
 )
@@ -423,8 +462,23 @@ _WRITE_STATEMENT_PREFIXES = ("INSERT", "UPDATE", "DELETE", "REPLACE")
 
 
 def _is_write_statement(statement: str) -> bool:
-    """True for the statement kinds that take SQLite's RESERVED write lock."""
-    return statement.lstrip()[:7].upper().startswith(_WRITE_STATEMENT_PREFIXES)
+    """True for the statement kinds that take SQLite's RESERVED write lock.
+
+    LOW fix (independent review): the original classified on the first seven
+    characters alone, so a CTE-wrapped write (`WITH x AS (...) INSERT ...`)
+    read as a plain SELECT and its RESERVED acquisition would never have been
+    timed. No such statement exists in this module today — SQLAlchemy emits
+    plain INSERT/UPDATE/DELETE for these mappings — so this is a trap closed
+    before it is stepped in, not a measured defect. A `WITH` prefix defers to
+    a bounded keyword scan rather than widening the fast path for every
+    statement."""
+    head = statement.lstrip()[:7].upper()
+    if head.startswith(_WRITE_STATEMENT_PREFIXES):
+        return True
+    if head.startswith("WITH"):
+        upper = statement.upper()
+        return any(f" {kw} " in upper for kw in _WRITE_STATEMENT_PREFIXES)
+    return False
 
 
 class LockWaitMeter:
@@ -652,11 +706,44 @@ def _read_busy_timeout_ms(session: Session) -> int | None:
 class LockWaitAccounting:
     """Per-pass aggregation of `LockWaitMeter` samples. Bounded by
     construction: a fixed histogram plus scalars, never an unbounded list of
-    raw samples on the run row."""
+    raw samples on the run row.
+
+    THE SCALAR IS BIASED HIGH, AND BY HOW MUCH IS NOW REPORTED, NOT GUESSED
+    (independent review of this branch). `LockWaitMeter` cannot split a
+    SUCCEEDING statement's duration into "slept in SQLite's busy handler" and
+    "did work" — Python's `sqlite3` exposes no busy-handler callback — so
+    every attempt's reported wait carries that attempt's own DML plus its
+    commit fsync. Measured on a pass with ZERO contention (no competing
+    writer at all, so every millisecond is bias):
+
+        lock_wait_ms=3380  lock_wait_measurements=402  lock_wait_ms_max=21
+        blocked_ms=9578    histogram: {'1-10': 372, '10-100': 30, rest 0}
+
+    i.e. ~8.4 ms per attempt against a TRUE wait of exactly zero — ~6x the
+    "~1.3 ms DML" the meter's docstring used to imply, because the commit
+    FSYNC dominates and was never quantified. That is 35% of `blocked_ms`
+    under no contention, and it scales with batch count.
+
+    Two consequences, both now handled here rather than in a reader's head:
+
+      * the bias is per-ATTEMPT and near-constant, so the pass's own MINIMUM
+        observed attempt is a direct, in-band estimate of it. It is reported
+        as `lock_wait_ms_baseline_per_attempt`, and `lock_wait_ms_net`
+        subtracts `baseline x measurements` from the total. On a
+        zero-contention pass that drives the net to ~0, which is the correct
+        answer; under contention it removes the fixed per-attempt floor and
+        leaves the real waiting.
+      * the HISTOGRAM survives the bias far better than any scalar, because
+        the bias lands almost entirely in the `1-10` bucket. **The
+        eventual gate threshold must be derived from the `>=100` buckets of
+        `lock_wait_histogram_ms`, never from pass-total `lock_wait_ms`** —
+        see docs/EVO_X2_RUNBOOK.md's lock-wait section.
+    """
 
     def __init__(self):
         self.total_seconds = 0.0
         self.max_seconds = 0.0
+        self.min_seconds: float | None = None
         self.measurements = 0
         self.samples_ms: list[int] = []
         self.buckets = [0] * (len(RECONCILE_LOCK_WAIT_BUCKET_EDGES_MS) + 1)
@@ -679,6 +766,9 @@ class LockWaitAccounting:
         wait = meter.lock_wait_seconds
         self.total_seconds += wait
         self.max_seconds = max(self.max_seconds, wait)
+        self.min_seconds = (
+            wait if self.min_seconds is None else min(self.min_seconds, wait)
+        )
         self.measurements += 1
         ms = int(wait * 1000)
         if len(self.samples_ms) < RECONCILE_LOCK_WAIT_SAMPLE_CAP:
@@ -701,13 +791,39 @@ class LockWaitAccounting:
         labels.append(f">={edges[-1]}")
         return {label: count for label, count in zip(labels, self.buckets)}
 
+    @property
+    def baseline_seconds(self) -> float:
+        """The pass's own per-attempt measurement bias, estimated in band as
+        the SMALLEST wait it observed. See the class docstring: the meter
+        cannot separate a successful statement's wait from its work, and the
+        residue (DML + commit fsync) is near-constant per attempt, so the
+        cheapest attempt in a pass is that residue. A pass with a single
+        measurement has no way to distinguish bias from signal, so it reports
+        no baseline rather than declaring its only sample to be pure bias."""
+        if self.min_seconds is None or self.measurements < 2:
+            return 0.0
+        return self.min_seconds
+
     def as_summary(self) -> dict:
-        """The telemetry contract. `lock_wait_ms` is the pass total; the
-        histogram is what aggregates across passes into the distribution this
-        milestone exists to make possible."""
+        """The telemetry contract. `lock_wait_ms` is the pass total (biased
+        HIGH — see the class docstring), `lock_wait_ms_net` is that total with
+        the measured per-attempt baseline removed, and the histogram is what
+        aggregates across passes into the distribution this milestone exists
+        to make possible. Thresholds come from the histogram's `>=100`
+        buckets, never from the scalar."""
+        baseline_ms = int(self.baseline_seconds * 1000)
+        total_ms = int(self.total_seconds * 1000)
         return {
-            "lock_wait_ms": int(self.total_seconds * 1000),
+            "lock_wait_ms": total_ms,
             "lock_wait_ms_max": int(self.max_seconds * 1000),
+            "lock_wait_ms_min": (
+                None if self.min_seconds is None else int(self.min_seconds * 1000)
+            ),
+            # The measured per-attempt bias floor, and the total with it
+            # removed. Both are None-free zeros on a pass that measured
+            # nothing, exactly like every other field here.
+            "lock_wait_ms_baseline_per_attempt": baseline_ms,
+            "lock_wait_ms_net": max(0, total_ms - baseline_ms * self.measurements),
             "lock_wait_measurements": self.measurements,
             "lock_wait_histogram_ms": self.histogram(),
             "lock_wait_budget_ms": self.budget_ms_applied,
@@ -716,6 +832,57 @@ class LockWaitAccounting:
             "write_hold_slo_seconds": RECONCILE_WRITE_TIME_SLO_SECONDS,
             "write_hold_slo_violations": self.hold_slo_violations,
         }
+
+
+LOCK_WAIT_EVIDENCE_ATTR = "_crypto_tape_lock_wait_evidence"
+
+
+def _attach_lock_wait_evidence(
+    exc: BaseException,
+    accounting: "LockWaitAccounting",
+    blocked_seconds: float,
+    lock_retry_events: int,
+) -> None:
+    """BLOCKER-1(a) fix (independent review of this branch): carry the pass's
+    lock-wait accounting OUT along the exception, so the abandon path can
+    report it.
+
+    The failure this closes: a pass that hit severe contention raised out of
+    `_assemble_pass_locked`, was caught by `run_scheduled_reconciliation` and
+    returned as `status="db_locked"`, `error="database is locked; pass
+    abandoned"` — with EVERY lock-wait field absent, therefore printed as
+    `None` by the CLI. That is precisely the tail of the distribution the
+    lock-wait gate exists to measure, censored at exactly the passes that
+    carry the most information. The overlap and run-row-contention branches
+    already report a real (zero) accounting; this makes the abandon path
+    report a real (non-zero) one instead of nothing.
+
+    Best-effort by construction: some exception types forbid attribute
+    assignment, and losing telemetry must never turn into losing the error."""
+    try:
+        setattr(exc, LOCK_WAIT_EVIDENCE_ATTR, {
+            **accounting.as_summary(),
+            "blocked_ms": int(blocked_seconds * 1000),
+            "lock_retry_events": lock_retry_events,
+        })
+    except Exception:  # pragma: no cover - defensive
+        pass
+
+
+def _lock_wait_evidence(exc: BaseException | None) -> dict:
+    """The accounting `_attach_lock_wait_evidence` carried out, or an
+    all-zero accounting when the exception never reached instrumented code
+    (e.g. a blocked read in the caller's own prelude). Zeros with
+    `lock_wait_measurements=0` say "nothing was measured", which is a
+    different and honest statement from a missing key printed as None."""
+    evidence = getattr(exc, LOCK_WAIT_EVIDENCE_ATTR, None) if exc is not None else None
+    if isinstance(evidence, dict):
+        return dict(evidence)
+    return {
+        **LockWaitAccounting().as_summary(),
+        "blocked_ms": 0,
+        "lock_retry_events": 0,
+    }
 
 
 class AdaptiveBatchCostEstimate:
@@ -2132,6 +2299,7 @@ class CryptoLifecycleTapeRecorder:
         time_budget_seconds: float | None = None,
         initial_per_token_cost_seconds: float | None = None,
         lock_wait_budget_seconds: float | None = None,
+        finalize_lock_wait_budget_seconds: float | None = None,
     ) -> dict:
         """One bounded reconciliation pass.
 
@@ -2379,6 +2547,7 @@ class CryptoLifecycleTapeRecorder:
             time_budget_seconds=time_budget_seconds,
             initial_per_token_cost_seconds=initial_per_token_cost_seconds,
             lock_wait_budget_seconds=lock_wait_budget_seconds,
+            finalize_lock_wait_budget_seconds=finalize_lock_wait_budget_seconds,
         )
         # A cap that silently drops work reads as "complete" to every caller.
         summary["universe_size"] = total
@@ -2873,6 +3042,7 @@ class CryptoLifecycleTapeRecorder:
         time_budget_seconds: float | None = None,
         initial_per_token_cost_seconds: float | None = None,
         lock_wait_budget_seconds: float | None = None,
+        finalize_lock_wait_budget_seconds: float | None = None,
     ) -> dict:
         """B4 overlap guard entry point. A non-blocking, per-chain flock (see
         `_reconcile_overlap_lock`) wraps the ENTIRE pass — from the
@@ -2894,6 +3064,7 @@ class CryptoLifecycleTapeRecorder:
                 time_budget_seconds=time_budget_seconds,
                 initial_per_token_cost_seconds=initial_per_token_cost_seconds,
                 lock_wait_budget_seconds=lock_wait_budget_seconds,
+                finalize_lock_wait_budget_seconds=finalize_lock_wait_budget_seconds,
             )
         lock_dir = self.config.lock_dir or _resolve_lock_dir(None)
         with _reconcile_overlap_lock(lock_dir, self.config.chain) as acquired:
@@ -2940,6 +3111,7 @@ class CryptoLifecycleTapeRecorder:
                 time_budget_seconds=time_budget_seconds,
                 initial_per_token_cost_seconds=initial_per_token_cost_seconds,
                 lock_wait_budget_seconds=lock_wait_budget_seconds,
+                finalize_lock_wait_budget_seconds=finalize_lock_wait_budget_seconds,
             )
 
     def _assemble_pass_locked(
@@ -2961,6 +3133,7 @@ class CryptoLifecycleTapeRecorder:
         time_budget_seconds: float | None = None,
         initial_per_token_cost_seconds: float | None = None,
         lock_wait_budget_seconds: float | None = None,
+        finalize_lock_wait_budget_seconds: float | None = None,
     ) -> dict:
         """The actual assembly work, run with the overlap lock already held
         (or dry-run, which needs none).
@@ -3048,14 +3221,64 @@ class CryptoLifecycleTapeRecorder:
             )
 
         def _finalize_lock_wait_budget() -> float | None:
-            """The run row's own finalize commit runs AFTER the deadline has
-            normally been consumed, so a deadline-derived budget would be the
-            bare floor anyway. Give it the floor explicitly (capped by an
-            operator-set budget if one exists) rather than letting it inherit
-            an already-expired deadline."""
+            """The run row's finalize commit gets its OWN budget, not the
+            pass's data-work budget.
+
+            CORRECTED REASONING (independent review of this branch). The
+            original justification here was that the finalize "runs AFTER the
+            deadline has normally been consumed, so a deadline-derived budget
+            would be the bare floor anyway" — which conflates two different
+            quantities. `max_duration_seconds` bounds the pass's DATA WORK;
+            the finalize is BOOKKEEPING, one small row written once, and it is
+            not data work. Nothing about a spent data deadline says anything
+            about what this commit may wait.
+
+            What the 0.5s floor actually cost, measured on the same fixture
+            and the same 20s competing holder, floor being the only variable:
+
+                floor=0.5s   wall= 5.6s  status=partial/lock_wait_budget
+                             run_row=running  histogram_persisted=False
+                floor=30s    wall=20.2s  status=ok
+                             run_row=ok       histogram_persisted=True
+
+            `write_coordination` — the persisted lock-wait scalars AND the
+            whole histogram — is staged inside `_prepare_finalize` and written
+            by this one commit. Cutting its budget 60x therefore threw away
+            the evidence on exactly the contended passes the lock-wait gate
+            exists to measure. The 5.6s-vs-20.2s improvement is real and is
+            the milestone's point, but it belongs to the BATCH LOOP, which is
+            unbounded in how much work it can attempt; this commit writes one
+            small row and holds the lock for microseconds, so it is bounded by
+            construction and does not need the batch loop's protection.
+
+            So: the finalize keeps the connection's ORIGINAL busy timeout —
+            i.e. exactly what it had before this milestone existed
+            (`sqlite_busy_timeout_ms`, 30s in production) — capped by an
+            operator-set budget if one exists, and floored so a host with a
+            pathologically small busy timeout still gets a real attempt. The
+            residual this adds to the pass's wall time is stated, not hidden:
+            see RESIDUAL OVERSHOOT in the milestone commit message and the
+            runbook."""
             if not lock_budget_active:
                 return None
-            return derive_lock_wait_budget_seconds(lock_wait_budget_seconds, 0.0)
+            base = (
+                finalize_lock_wait_budget_seconds
+                if finalize_lock_wait_budget_seconds is not None
+                else (
+                    original_busy_timeout_ms / 1000.0
+                    if original_busy_timeout_ms else None
+                )
+            )
+            if base is None:
+                # No connection-level timeout to inherit (non-SQLite backend,
+                # or the PRAGMA read failed): fall back to the floor rather
+                # than to an unbounded wait.
+                base = RECONCILE_LOCK_WAIT_FLOOR_SECONDS
+            base = max(base, RECONCILE_LOCK_WAIT_FLOOR_SECONDS)
+            if lock_wait_budget_seconds is None:
+                return base
+            # An operator budget is a CAP everywhere it applies, here too.
+            return min(lock_wait_budget_seconds, base)
 
         def _restore_busy_timeout() -> None:
             """Put the connection's busy timeout back where the pass found
@@ -3072,27 +3295,57 @@ class CryptoLifecycleTapeRecorder:
                 _apply_lock_wait_budget(session, original_busy_timeout_ms / 1000.0)
 
         # --- read phase: no write transaction is open for any of this -------
-        existing_births = {
-            b.token_address: b
-            for b in session.execute(
-                select(CryptoTokenBirthEvent).where(
-                    CryptoTokenBirthEvent.chain == self.config.chain,
-                    CryptoTokenBirthEvent.token_address.in_(
-                        [t.token_address for t in tokens]
-                    ),
+        # BLOCKER-2 fix (independent review of this branch): READS ARE A
+        # BLOCKING POINT TOO, and before this the budget was applied ONLY
+        # inside the chunked write loop and the finalize. Everything before
+        # that ran at the process-wide `sqlite_busy_timeout_ms` (30s), so a
+        # real `run_scheduled_reconciliation` with `--max-duration-seconds 30`
+        # and a claimed 42.0s bound was measured at **60.11s** behind a 45s
+        # competing EXCLUSIVE holder, with `lock_retry_events=0` — the budget
+        # machinery never engaged at all; 60.09s is simply two successive read
+        # acquisitions each burning the full process timeout. A SELECT blocks
+        # behind an EXCLUSIVE holder (measured on EVO at 1.00x its configured
+        # busy_timeout), so the reads must be budgeted like everything else.
+        # The governed caller budgets its own prelude the same way — see
+        # `run_scheduled_reconciliation`.
+        _read_phase_budget_ms = _apply_lock_wait_budget(
+            session, _next_lock_wait_budget()
+        )
+        lock_accounting.record_budget(_read_phase_budget_ms)
+        try:
+            existing_births = {
+                b.token_address: b
+                for b in session.execute(
+                    select(CryptoTokenBirthEvent).where(
+                        CryptoTokenBirthEvent.chain == self.config.chain,
+                        CryptoTokenBirthEvent.token_address.in_(
+                            [t.token_address for t in tokens]
+                        ),
+                    )
+                ).scalars().all()
+            } if tokens else {}
+            existing_birth_ids = [
+                b.id for b in existing_births.values() if b.id is not None
+            ]
+            final_by_birth_id: dict[int, bool] = {
+                row[0]: bool(row[1])
+                for row in session.execute(
+                    select(
+                        CryptoTokenSurvivalOutcome.birth_event_id,
+                        CryptoTokenSurvivalOutcome.final,
+                    ).where(
+                        CryptoTokenSurvivalOutcome.birth_event_id.in_(existing_birth_ids)
+                    )
                 )
-            ).scalars().all()
-        } if tokens else {}
-        existing_birth_ids = [b.id for b in existing_births.values() if b.id is not None]
-        final_by_birth_id: dict[int, bool] = {
-            row[0]: bool(row[1])
-            for row in session.execute(
-                select(
-                    CryptoTokenSurvivalOutcome.birth_event_id,
-                    CryptoTokenSurvivalOutcome.final,
-                ).where(CryptoTokenSurvivalOutcome.birth_event_id.in_(existing_birth_ids))
-            )
-        } if existing_birth_ids else {}
+            } if existing_birth_ids else {}
+        except Exception as exc:
+            # The read phase sits OUTSIDE the pass's main try/finally, so a
+            # blocked read that now fails fast (it previously waited the full
+            # process busy timeout) must still put the connection back and
+            # must still carry its accounting out — see `_lock_wait_carrier`.
+            _attach_lock_wait_evidence(exc, lock_accounting, 0.0, 0)
+            _restore_busy_timeout()
+            raise
 
         new_births = snapshots = actors = outcomes = 0
         snapshots_skipped = actors_skipped = 0
@@ -3722,6 +3975,12 @@ class CryptoLifecycleTapeRecorder:
             summary["tape_run_id"] = run_id
             return summary
         except Exception as exc:
+            # BLOCKER-1(a): the accounting dies with this frame unless it
+            # rides out on the exception — see `_attach_lock_wait_evidence`.
+            # Attached BEFORE the dry-run re-raise so both paths carry it.
+            _attach_lock_wait_evidence(
+                exc, lock_accounting, blocked_seconds, lock_retry_events
+            )
             if dry_run:
                 raise
             session.rollback()
@@ -4177,7 +4436,20 @@ def run_scheduled_reconciliation(
         getattr(s, "crypto_tape_reconciler_limit", 2000)
     )
 
-    def _refused(status: str, error: str) -> dict:
+    def _refused(status: str, error: str, exc: BaseException | None = None) -> dict:
+        # BLOCKER-1(a) fix: every refusal carries the lock-wait telemetry
+        # contract, never a set of missing keys the CLI prints as `None`.
+        # For a validation refusal the zeros are literally true (nothing was
+        # read or written); for `db_locked` — the one refusal that IS a
+        # contention outcome, and therefore the one the lock-wait gate most
+        # needs — `_lock_wait_evidence` returns what the abandoned pass had
+        # actually measured before it gave up.
+        #
+        # `status` must fit `CryptoTokenLifecycleRun.status` (VARCHAR(32)) in
+        # case a future refusal ever reaches a run row; today none does. The
+        # longest shipped value, `invalid_lock_wait_budget_seconds`, is
+        # exactly 32 — zero headroom, pinned by
+        # test_every_refused_status_fits_the_run_row_status_column.
         return {
             "status": status,
             "note": TAPE_NOTE,
@@ -4187,6 +4459,7 @@ def run_scheduled_reconciliation(
             "outcomes_updated": 0,
             "gate_bypassed": bypass,
             "error": error,
+            **_lock_wait_evidence(exc),
             "duration_ms": max(0, int((_now() - started).total_seconds() * 1000)),
         }
 
@@ -4208,12 +4481,14 @@ def run_scheduled_reconciliation(
             f"scheduling interval; matured outcomes would be missed",
         )
 
-    if not dry_run and _reconciliation_should_abort(session):
-        return _refused(
-            "marketops_degraded",
-            "latest MarketOps run errored; not adding write pressure",
-        )
-
+    # BLOCKER-2 fix (independent review of this branch): the MarketOps-health
+    # check is a READ, and reads block behind an EXCLUSIVE holder. It used to
+    # run here, ahead of every bound this function resolves, at the
+    # process-wide `sqlite_busy_timeout_ms`. It now runs below, after the
+    # bounds are known, INSIDE the lock-wait budget that covers the whole
+    # prelude. Moving it also means a misconfigured pass is refused for the
+    # misconfiguration (which is always actionable) rather than for host
+    # state that will have changed by the next tick.
     rec = recorder or CryptoLifecycleTapeRecorder(CryptoTapeConfig.from_settings(s))
     batch = batch_size if batch_size is not None else int(
         getattr(s, "crypto_tape_reconciler_batch_size", RECONCILE_BATCH_SIZE)
