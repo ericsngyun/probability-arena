@@ -368,9 +368,38 @@ class TestLiveTreeTripwire:
         monkeypatch.setattr(camp, "REPO_ROOT", throwaway_git_repo)
         camp.assert_live_tree_clean("unit")
 
-    def test_a_dirty_tests_tree_fails_loudly_naming_the_paths(
-            self, throwaway_git_repo, monkeypatch):
+    def test_an_ordinary_dirty_tests_file_is_only_a_warning_not_a_hard_fail(
+            self, throwaway_git_repo, monkeypatch, capsys):
+        """A9 SOFTENING. `tests/y.py` is not one of the ten catalogue
+        `target` files (the real, module-global `MUTATIONS` is in effect
+        here, unmodified), so a dirty copy of it must WARN and let the
+        caller proceed -- not hard-fail. This is the exact shape that used
+        to fail all 16 campaign-module tests whenever a concurrent agent's
+        unrelated edit was sitting under `tests/`."""
         monkeypatch.setattr(camp, "REPO_ROOT", throwaway_git_repo)
+        assert "tests/y.py" not in {m.target for m in camp.MUTATIONS}, (
+            "tests/y.py must not accidentally be a real catalogue target, "
+            "or this test is not exercising the softened (non-target) path")
+        (throwaway_git_repo / "tests" / "y.py").write_text("y = 2\n")
+        camp.assert_live_tree_clean("preflight")     # must NOT raise
+        err = capsys.readouterr().err
+        assert "WARNING" in err and "tests/y.py" in err and "preflight" in err
+
+    def test_a_dirty_catalogue_target_file_still_hard_fails(
+            self, throwaway_git_repo, monkeypatch):
+        """The other half of the same softening: a dirty file that IS one
+        of the ten catalogue `target`s must still hard-fail, unchanged --
+        because `_leftover_mutation_hints`' text-equality heuristic cannot
+        be trusted to recognise every way such a file could be dirty (an
+        interrupted mutation, a stray hand-edit, a formatting artifact), and
+        a false negative there would copy a poisoned baseline into every
+        sandbox for exactly the files whose byte-identical precondition the
+        apply/restore machinery assumes."""
+        monkeypatch.setattr(camp, "REPO_ROOT", throwaway_git_repo)
+        fake = dataclasses.replace(
+            camp.MUTATIONS[0], id="FAKE_target", target="tests/y.py",
+            old="definitely not present", new="")
+        monkeypatch.setattr(camp, "MUTATIONS", (fake,))
         (throwaway_git_repo / "tests" / "y.py").write_text("y = 2\n")
         with pytest.raises(camp.LiveTreeDirty) as exc:
             camp.assert_live_tree_clean("preflight")
@@ -405,12 +434,27 @@ class TestLiveTreeTripwire:
             camp.assert_live_tree_unchanged(before, "postflight")
         assert "tests/untracked.py" in str(exc.value)
 
-    def test_run_campaign_refuses_to_start_over_a_dirty_tests_tree(
+    def test_run_campaign_refuses_to_start_over_a_dirty_catalogue_target(
             self, throwaway_git_repo, monkeypatch):
         monkeypatch.setattr(camp, "REPO_ROOT", throwaway_git_repo)
+        fake = dataclasses.replace(
+            camp.MUTATIONS[0], id="FAKE_target", target="tests/y.py",
+            old="definitely not present", new="")
+        monkeypatch.setattr(camp, "MUTATIONS", (fake,))
         (throwaway_git_repo / "tests" / "y.py").write_text("y = 3\n")
         with pytest.raises(camp.LiveTreeDirty):
             camp.run_campaign((), verbose=False)
+
+    def test_run_campaign_proceeds_over_an_ordinary_dirty_non_target_file(
+            self, throwaway_git_repo, monkeypatch):
+        """A9 SOFTENING, at the `run_campaign` level. `tests/y.py` dirty is
+        no longer enough to refuse a run when it is not a catalogue target
+        -- this is the exact case that used to fail every campaign-module
+        test whenever an unrelated file under `tests/` was uncommitted."""
+        monkeypatch.setattr(camp, "REPO_ROOT", throwaway_git_repo)
+        assert "tests/y.py" not in {m.target for m in camp.MUTATIONS}
+        (throwaway_git_repo / "tests" / "y.py").write_text("y = 3\n")
+        assert camp.run_campaign((), verbose=False) == []
 
 
 # =====================================================================

@@ -311,10 +311,30 @@ def _leftover_mutation_hints(dirty: list) -> list:
 
 
 def assert_live_tree_clean(stage: str) -> None:
-    """`git diff --quiet -- tests/` pre/postflight. Fails loudly, with the
-    offending paths, rather than proceeding: during a mutation campaign a
-    modified file under `tests/` is indistinguishable from a leftover
-    mutation, and guessing wrong is how the tree got corrupted."""
+    """`git diff --quiet -- tests/` pre/postflight.
+
+    KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 (post-A9 softening, per a reviewer's
+    counterexample). This used to hard-fail on ANY dirty path under
+    `tests/`, with no escape hatch -- it fired on a concurrent agent's
+    uncommitted, unrelated edit and would have failed all 16 campaign-module
+    tests on a full-suite run. An ORDINARY dirty path under `tests/` -- one
+    that is not one of the ten catalogue `target` files -- is now downgraded
+    to a WARNING (printed, not raised) and the campaign proceeds.
+
+    Dirtiness in any of the TEN catalogue `target` files still HARD-FAILS,
+    unchanged. The reason is load-bearing, not cosmetic:
+    `_leftover_mutation_hints` recognises a leftover mutation only when
+    `m.old` is ABSENT and `m.new` is present EXACTLY -- a mutation
+    interrupted mid-`write_text`, a stray hand-edit near the mutated region,
+    or a formatting artifact in the same file is invisible to that
+    heuristic. Such a file would fall into the softened warning path and
+    get copied, dirty, into every sandbox -- so the campaign would validate
+    against a POISONED baseline for exactly the ten files whose byte-
+    identical, `old`-appears-exactly-once precondition the whole
+    apply/restore machinery already assumes clean. Isolation (nothing here
+    ever WRITES to the live tree) is unaffected either way; what changes is
+    only what baseline gets copied INTO the sandbox in the first place.
+    """
     if not _git_usable():
         return
     quiet = _git("diff", "--quiet", "--", "tests/")
@@ -322,6 +342,17 @@ def assert_live_tree_clean(stage: str) -> None:
         return
     names = _git("diff", "--name-only", "--", "tests/")
     dirty = [n for n in names.stdout.splitlines() if n.strip()]
+    targets = {m.target for m in MUTATIONS}
+    hard = [d for d in dirty if d in targets]
+    soft = [d for d in dirty if d not in targets]
+    if soft:
+        print(f"meta-mutation: WARNING [{stage}] the live working tree has "
+              f"uncommitted, non-catalogue-target modifications under "
+              f"tests/: {soft} -- proceeding, because none of these paths "
+              "is one of the ten catalogue `target` files.",
+              file=sys.stderr, flush=True)
+    if not hard:
+        return
     hints = _leftover_mutation_hints(dirty)
     detail = ""
     if hints:
@@ -334,7 +365,8 @@ def assert_live_tree_clean(stage: str) -> None:
                   "exactly that way.")
     raise LiveTreeDirty(
         f"[{stage}] `git diff --quiet -- tests/` failed: the live working "
-        f"tree has uncommitted modifications under tests/: {dirty}{detail}"
+        f"tree has uncommitted modifications to catalogue TARGET files: "
+        f"{hard}{detail}"
         f"\n  (stderr: {quiet.stderr.strip()!r})")
 
 
