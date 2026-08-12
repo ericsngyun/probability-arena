@@ -228,6 +228,27 @@ def _run(args) -> int:
     except BaseException as e:
         late_fault = late_fault or f"{type(e).__name__} joining bomber: {e}"
 
+    # KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A8: STRUCTURED OUTCOME FIELDS.
+    # The parent test used to have nothing to assert on except `close_ok`
+    # (which it did not assert) and a substring search of `close_error`
+    # (which could not match anything `app/` actually emits). These four
+    # fields are what the properties are actually ABOUT: how many records
+    # the writer BOOKED, how many are physically READABLE, and what state
+    # the writer ended in. `on_disk_records > written` is the identity
+    # violation -- durable evidence the writer does not know it has, which
+    # means `_ordinal`/`_prev_digest` did not advance and the chain is
+    # broken from that point on.
+    on_disk_records = None
+    state = None
+    post_close = None
+    try:
+        if args.target == "segment":
+            post_close = accounting.to_dict()
+            state = obj.state.value
+            on_disk_records = len(sg.read_segment_records(obj.events_path))
+    except BaseException as e:                 # noqa: BLE001 - diagnostic only
+        late_fault = late_fault or f"{type(e).__name__} reading back: {e}"
+
     result = {
         "target": args.target,
         "mode": args.mode,
@@ -238,9 +259,12 @@ def _run(args) -> int:
         "caught_in_loop": caught_holder.get("caught"),
         "late_fault": late_fault,
         "pre_close_accounting": pre_close,
+        "post_close_accounting": post_close,
         "close_ok": close_ok,
         "close_error": close_error,
         "record_count": record_count,
+        "on_disk_records": on_disk_records,
+        "state": state,
     }
     print(json.dumps(result))
     return 0

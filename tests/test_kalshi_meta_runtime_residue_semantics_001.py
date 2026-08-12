@@ -96,6 +96,72 @@ def write_torn_residue(root, segment_id: str, n: int) -> None:
     (seg_dir / "events.jsonl.gz").write_bytes(bytes(compressed))
 
 
+def write_truncated_residue(root, segment_id: str, n: int, keep: int) -> None:
+    """KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A8 -- RESTORED FIXTURE. A CLEAN
+    BYTE TRUNCATION of a complete gzip stream: the first `keep` compressed
+    bytes of an `n`-record segment, nothing altered, nothing appended.
+
+    This fixture existed before A4 and was rewritten into `write_torn_
+    residue`'s mid-payload bit-flip, on the argument that "a real crash does
+    not usually leave a byte-perfect prefix". That argument is wrong, and
+    rewriting it deleted the only coverage of the exact case A4's own change
+    made fail OPEN. Page-granular writeback, a short `write()` and
+    filesystem crash-truncation all leave a byte-perfect prefix; so does
+    anyone deliberately removing the tail. It is the ordinary shape of a
+    truncated file, not an exotic one.
+
+    A clean truncation produces NO zlib fault -- `decompressobj` merely
+    reports it has not reached `eof` -- so it is byte-for-byte
+    indistinguishable from a live, still-open segment. That is precisely why
+    the honest classification for BOTH is `RESIDUE_UNTERMINATED` and not
+    `RESIDUE_RECOVERABLE_INTACT`.
+    """
+    seg_dir = root / f"env={ENV}" / f"segment={segment_id}"
+    seg_dir.mkdir(parents=True, exist_ok=True)
+    prev = sg.genesis_digest(segment_id=segment_id, environment=ENV)
+    lines = []
+    for i in range(n):
+        line, prev = _record_bytes(fields(i), i, prev, segment_id)
+        lines.append(line)
+    compressed = gzip.compress(b"".join(lines))
+    (seg_dir / "events.jsonl.gz").write_bytes(compressed[:keep])
+
+
+def write_crash_truncated_residue(root, segment_id: str, n: int,
+                                  keep_records: int) -> None:
+    """The FAITHFUL crash truncation: `n` records written through a real
+    `gzip.GzipFile` with a `flush()` after each one (what `SegmentWriter`
+    does on its flush cadence), then the file cut at the byte offset that
+    existed immediately after record `keep_records`.
+
+    Truncating at a FLUSH BOUNDARY is what a crashed collector actually
+    leaves, and it is the case the classification gets wrong: the surviving
+    prefix decodes with zero faults into exactly `keep_records` complete,
+    parseable, correctly-chained lines. There is no partial line to notice
+    and no zlib fault to observe -- only the missing trailer. Truncating at
+    an arbitrary byte offset instead usually cuts mid-line, which
+    `last_unreadable` catches as TORN_PARTIAL and which therefore does NOT
+    exercise this defect.
+    """
+    import io
+
+    seg_dir = root / f"env={ENV}" / f"segment={segment_id}"
+    seg_dir.mkdir(parents=True, exist_ok=True)
+    prev = sg.genesis_digest(segment_id=segment_id, environment=ENV)
+    raw = io.BytesIO()
+    gz = gzip.GzipFile(fileobj=raw, mode="wb")
+    cut = None
+    for i in range(n):
+        line, prev = _record_bytes(fields(i), i, prev, segment_id)
+        gz.write(line)
+        gz.flush()
+        if i + 1 == keep_records:
+            cut = raw.tell()
+    gz.close()
+    assert cut is not None, "keep_records must be <= n"
+    (seg_dir / "events.jsonl.gz").write_bytes(raw.getvalue()[:cut])
+
+
 def write_malformed_residue(root, segment_id: str) -> None:
     """MALFORMED: not gzip at all -- a stray/corrupted file, not a torn
     write of a real one."""
@@ -275,8 +341,13 @@ class TestA4LiveSegmentAndUnreadableResidue:
        FIRST.
     """
 
-    def test_a_genuinely_live_open_segment_classifies_recoverable_intact(
+    def test_a_genuinely_live_open_segment_is_not_reported_as_corruption(
             self, tmp_path):
+        """A4's property, PRESERVED under A8's sixth label: a live segment
+        must not be reported as torn/corrupt. A8 narrows the answer from
+        `RECOVERABLE_INTACT` to `UNTERMINATED` -- see
+        `TestA8UnterminatedResidue` for why "intact" was an assertion A4
+        never established."""
         root = tmp_path / "live"
         root.mkdir()
         ah.initialize_archive(root, ENV, archive_identity="kalshi-realtime")
@@ -294,9 +365,12 @@ class TestA4LiveSegmentAndUnreadableResidue:
                                   root=root)
             assert v.records_read == 5
             assert v.chain_valid is True
-            assert v.residue_classification == sg.RESIDUE_RECOVERABLE_INTACT, (
+            assert v.residue_classification not in (
+                sg.RESIDUE_TORN_PARTIAL, sg.RESIDUE_MALFORMED), (
                 "a live, still-open segment with zero decode faults must "
-                f"classify RECOVERABLE_INTACT, not {v.residue_classification!r}")
+                f"not be reported as corruption -- got "
+                f"{v.residue_classification!r}")
+            assert v.residue_classification == sg.RESIDUE_UNTERMINATED
         finally:
             w._release_lock()
 
@@ -323,6 +397,191 @@ class TestA4LiveSegmentAndUnreadableResidue:
             assert "unreadable" in reasons_text
         finally:
             os.chmod(events_path, 0o600)
+
+
+class TestA8UnterminatedResidue:
+    """KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A8 BLOCKER 4.
+
+    A4 required `decode_had_error` before calling a stream torn, so that a
+    live segment would stop being reported as corruption. It is true that a
+    live segment produces no fault -- and it is equally true that a CLEAN
+    TAIL TRUNCATION produces no fault either. A4 therefore did not only
+    reclassify live segments: it made a segment with records physically
+    removed report `recoverable_intact, chain_valid=True`, with no reason
+    string of its own, so an operator saw the bare "segment has no
+    manifest" boilerplate over a file truncated to hide evidence.
+
+    Every test below FAILS if `RESIDUE_UNTERMINATED` is removed and the
+    no-fault/no-trailer case falls back to `RESIDUE_RECOVERABLE_INTACT`.
+    """
+
+    def test_a_clean_truncation_is_not_certified_intact(self, tmp_path):
+        """THE BLOCKER, directly: 30 records written, the stream truncated
+        so only a prefix survives. Nothing about the surviving bytes is
+        faulty -- which is exactly why "intact" is the wrong word for
+        them."""
+        root = tmp_path / "trunc"
+        root.mkdir()
+        ah.initialize_archive(root, ENV, archive_identity="kalshi-realtime")
+        write_crash_truncated_residue(root, "seg-trunc", 30, keep_records=6)
+        seg_dir = root / f"env={ENV}" / "segment=seg-trunc"
+        v = sg.verify_segment(seg_dir, environment=ENV, allow_open=True,
+                              root=root)
+        assert v.records_read == 6, (
+            "fixture mis-tuned: expected exactly the 6-record prefix, got "
+            f"{v.records_read} of 30")
+        assert v.chain_valid is True, (
+            "the surviving prefix genuinely IS chain-valid -- that is the "
+            "whole difficulty: nothing about these bytes is faulty, and 24 "
+            "records are still gone")
+        assert v.residue_classification != sg.RESIDUE_RECOVERABLE_INTACT, (
+            "a residue with records physically removed must never be "
+            "certified RECOVERABLE_INTACT -- that word asserts the stream "
+            "reached a real gzip trailer, which this one did not")
+        assert v.residue_classification == sg.RESIDUE_UNTERMINATED
+
+    @pytest.mark.parametrize("keep", [2, 8])
+    def test_tiny_truncations_are_never_certified_intact(self, tmp_path, keep):
+        """2-byte and 8-byte prefixes of a 30-record segment: no fault, no
+        trailer, essentially nothing recovered. Reported `recoverable_
+        intact, chain_valid=True` before A8."""
+        root = tmp_path / f"tiny-{keep}"
+        root.mkdir()
+        ah.initialize_archive(root, ENV, archive_identity="kalshi-realtime")
+        write_truncated_residue(root, f"seg-tiny-{keep}", 30, keep=keep)
+        seg_dir = root / f"env={ENV}" / f"segment=seg-tiny-{keep}"
+        v = sg.verify_segment(seg_dir, environment=ENV, allow_open=True,
+                              root=root)
+        assert v.residue_classification != sg.RESIDUE_RECOVERABLE_INTACT
+        assert v.residue_classification == sg.RESIDUE_UNTERMINATED
+
+    def test_a_truncated_residue_now_carries_an_explanatory_reason(
+            self, tmp_path):
+        """`verify_segment` appended a reason for UNREADABLE /
+        UNSAFE_OVER_LIMIT / MALFORMED / TORN_PARTIAL but NOT for
+        RECOVERABLE_INTACT, so this state presented as boilerplate."""
+        root = tmp_path / "trunc-reason"
+        root.mkdir()
+        ah.initialize_archive(root, ENV, archive_identity="kalshi-realtime")
+        write_crash_truncated_residue(root, "seg-trunc-reason", 30,
+                                      keep_records=6)
+        seg_dir = root / f"env={ENV}" / "segment=seg-trunc-reason"
+        v = sg.verify_segment(seg_dir, environment=ENV, allow_open=True,
+                              root=root)
+        text = json.dumps(v.reasons).lower()
+        assert "unterminated" in text, v.reasons
+        assert "end is unknown" in text, v.reasons
+        assert v.reasons != [
+            "segment has no manifest and is therefore not committed"]
+
+    def test_a_genuinely_terminated_residue_still_reports_intact(self, tmp_path):
+        """The positive control, so `RECOVERABLE_INTACT` is not merely made
+        unreachable: a complete `gzip.compress` stream DOES reach a
+        trailer, and still classifies intact."""
+        root = tmp_path / "terminated"
+        root.mkdir()
+        ah.initialize_archive(root, ENV, archive_identity="kalshi-realtime")
+        write_intact_residue(root, "seg-terminated", 10)
+        seg_dir = root / f"env={ENV}" / "segment=seg-terminated"
+        v = sg.verify_segment(seg_dir, environment=ENV, allow_open=True,
+                              root=root)
+        assert v.records_read == 10
+        assert v.residue_classification == sg.RESIDUE_RECOVERABLE_INTACT
+        text = json.dumps(v.reasons).lower()
+        assert "gzip trailer" in text, v.reasons
+
+    def test_truncation_and_a_live_segment_are_reported_with_the_same_label(
+            self, tmp_path):
+        """Deliberate, and stated: from the BYTES they are identical, so a
+        verifier that claimed to tell them apart would be lying. What A8
+        fixes is that neither is called `intact`."""
+        root = tmp_path / "same-label"
+        root.mkdir()
+        ah.initialize_archive(root, ENV, archive_identity="kalshi-realtime")
+        write_crash_truncated_residue(root, "seg-t", 30, keep_records=6)
+        w = sg.SegmentWriter(root, environment=ENV, segment_id="seg-l",
+                             partition_identity="p", commit_to_head=False,
+                             flush_every=1)
+        try:
+            for i in range(5):
+                assert w.submit(fields(i)) is None
+            a = sg.verify_segment(root / f"env={ENV}" / "segment=seg-t",
+                                  environment=ENV, allow_open=True, root=root)
+            b = sg.verify_segment(w.dir, environment=ENV, allow_open=True,
+                                  root=root)
+            assert a.residue_classification == b.residue_classification
+            assert a.residue_classification == sg.RESIDUE_UNTERMINATED
+        finally:
+            w._release_lock()
+
+
+class TestA8UnreadableResidueChainValidity:
+    """KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A8 BLOCKER 5.
+
+    `verify_chain([])` returns `ok=True` -- an empty chain is trivially
+    consistent -- and `verify_segment` copied that into `chain_valid`
+    unconditionally. Against a live segment holding four durable records,
+    `chmod 000` produced `records_read: 0, chain_valid: true,
+    uncommitted_records_present: 0, verdict: VALID, warnings: []`. The
+    free-text reason said "unreadable"; the FIELD said the chain was valid,
+    and the archive summary said nothing at all.
+    """
+
+    def test_chain_valid_is_false_for_an_unreadable_residue(self, tmp_path):
+        import os
+        root = tmp_path / "unreadable-field"
+        root.mkdir()
+        ah.initialize_archive(root, ENV, archive_identity="kalshi-realtime")
+        write_intact_residue(root, "seg-cv", 4)
+        seg_dir = root / f"env={ENV}" / "segment=seg-cv"
+        events_path = seg_dir / "events.jsonl.gz"
+        os.chmod(events_path, 0o000)
+        try:
+            v = sg.verify_segment(seg_dir, environment=ENV, allow_open=True,
+                                  root=root)
+            assert v.residue_classification == sg.RESIDUE_UNREADABLE
+            assert v.chain_valid is False, (
+                "a consumer branching on the FIELD -- which is the entire "
+                "reason the field exists -- must not read `true` for a "
+                "chain nobody was able to verify")
+        finally:
+            os.chmod(events_path, 0o600)
+
+    def test_the_archive_summary_cannot_report_valid_with_no_warnings(
+            self, tmp_path):
+        import os
+        root = tmp_path / "unreadable-archive"
+        root.mkdir()
+        ah.initialize_archive(root, ENV, archive_identity="kalshi-realtime")
+        write_intact_residue(root, "seg-cv2", 4)
+        events_path = (root / f"env={ENV}" / "segment=seg-cv2"
+                       / "events.jsonl.gz")
+        os.chmod(events_path, 0o000)
+        try:
+            result = sg.verify_archive(root, environment=ENV)
+            # Residue still never GATES the verdict -- that is A6's design
+            # decision and A8 does not change it. What it may no longer do
+            # is be invisible.
+            assert any("UNPROVEN_RESIDUE_CONTENT" in w
+                       for w in result["warnings"]), result["warnings"]
+            detail = next(d for d in result["uncommitted_segment_detail"]
+                          if d["segment_id"] == "seg-cv2")
+            assert detail["chain_valid"] is False
+            assert detail["residue_classification"] == sg.RESIDUE_UNREADABLE
+        finally:
+            os.chmod(events_path, 0o600)
+
+    def test_a_readable_residue_does_not_raise_the_unproven_warning(
+            self, tmp_path):
+        """Negative control: the warning must fire for unproven content,
+        not for every residue."""
+        root = tmp_path / "readable-archive"
+        root.mkdir()
+        ah.initialize_archive(root, ENV, archive_identity="kalshi-realtime")
+        write_intact_residue(root, "seg-ok", 4)
+        result = sg.verify_archive(root, environment=ENV)
+        assert not any("UNPROVEN_RESIDUE_CONTENT" in w
+                       for w in result["warnings"]), result["warnings"]
 
 
 class TestArchiveAdoptStructurallyRefusesTheResidueItsOwnWarningNames:

@@ -94,48 +94,112 @@ class TestRealSignalReproducesTheSameClass:
     """Real `SIGINT`, delivered by a genuine bomber thread to a genuine
     subprocess, against the real, synchronous `SegmentWriter.submit()`."""
 
-    def test_a_single_sigint_lands_inside_submit_and_is_caught_cleanly(self, tmp_path):
-        """One interrupt, by itself, should not usually destroy a segment --
-        `submit()`'s single lock-held call frame is correct for a fault
-        landing almost anywhere inside it. Sanity check on the trial
-        mechanism itself before the multi-interrupt campaign below."""
-        found_a_catch = False
+    def test_a_single_sigint_does_not_destroy_the_segment(self, tmp_path):
+        """KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A8 -- THE REGRESSION FLOOR,
+        PINNED TO THE MEASURED 321c719 NUMBERS.
+
+        This test previously docstringed "one interrupt should not usually
+        destroy a segment" and then asserted only not-hang / not-crash /
+        found-a-catch -- never `close_ok`. The property it named was
+        REFUTED 6/6 while the test passed. Measured A/B, seeds 0-5,
+        `--n-interrupts 1 --n-submits 20000`:
+
+            321c719  6/6 close_ok True,  19,999-20,000 records published
+            d004c01  6/6 close_ok False, record_count null (segment lost)
+
+        CPython delivers signal handlers only on the MAIN thread, so under
+        the queue design Ctrl-C could never reach the gzip write; A1 moved
+        the write onto the caller's thread and exposed it, and `submit()`'s
+        (correct) fail-closed `except BaseException` then turned one
+        interrupt into "every already-durable record in this segment is
+        unpublishable".
+
+        The assertion is therefore the measured 321c719 floor itself: every
+        trial must publish, and must publish essentially everything it
+        submitted. A substantive claim about behaviour, not about the
+        harness.
+        """
+        published = 0
+        results = []
         for seed in range(REAL_FAULT_TRIALS):
             r = _run_fault_trial(target_="segment", seed=seed, n_interrupts=1,
                                  mode="sigint", window_s=0.3, tmp_path=tmp_path)
             assert not r.get("hang"), r
             assert not r.get("crash"), r
             assert not r.get("top_level_fault"), r
-            if r["caught_in_loop"]:
-                found_a_catch = True
-        assert found_a_catch, (
-            "no trial's single SIGINT landed inside the submit loop across "
-            f"{REAL_FAULT_TRIALS} trials; the bombardment window is "
-            "mis-calibrated for this machine, not a finding about the code")
+            results.append(r)
+            if r["close_ok"]:
+                published += 1
+        assert published == REAL_FAULT_TRIALS, (
+            f"THE 321c719 REGRESSION FLOOR: only {published}/"
+            f"{REAL_FAULT_TRIALS} trials published a manifest. The pre-A1 "
+            "queue-based writer measured 6/6 for exactly this campaign; "
+            "anything less means a single Ctrl-C can again turn an open "
+            "segment's already-durable records into unpublishable residue: "
+            f"{[{k: r[k] for k in ('seed', 'close_ok', 'close_error')} for r in results]}")
+        for r in results:
+            assert r["record_count"] is not None, r
+            assert r["record_count"] >= r["n_submits"] - 1, (
+                "321c719 published 19,999-20,000 of 20,000 records under a "
+                f"single interrupt; this trial published {r['record_count']}"
+                f": {r}")
+            # THE IDENTITY, asserted on numbers rather than on error text:
+            # never more records readable on disk than the writer BOOKED.
+            # More on disk than `written` means the state delta did not
+            # advance past a record whose bytes are already committed, so
+            # every later record carries a duplicate `receive_ordinal` and a
+            # stale `previous_record_digest`.
+            assert r["on_disk_records"] <= r["post_close_accounting"]["written"], r
 
     @pytest.mark.parametrize("mode", ["sigint", "asyncexc"])
     def test_ctrl_c_causes_zero_identity_violations(self, tmp_path, mode):
         """THE required deliverable: real interrupts during a 20,000-event
-        submission burst must never destroy an otherwise-valid segment. An
-        IDENTITY VIOLATION here means `close()` failed with the accounting
-        identity itself as the reason (`"does not reconcile"`/`"not
-        clean"`), as opposed to a genuine, freshly-arriving interrupt
-        landing inside `close()`'s own machinery (an ordinary "caller
-        aborted the shutdown" outcome, recorded as `close_ok: False` but not
-        counted as a violation).
+        submission burst must never destroy an otherwise-valid segment.
 
-        A HANG is recorded, not asserted against: `PyThreadState_
-        SetAsyncExc` can interrupt literally anywhere, including inside
-        CPython's own internal lock machinery, and CPython's own
-        documentation calls this mechanism unsafe for exactly that reason.
-        A wedged subprocess, caught by this file's external subprocess
-        timeout, is a property of the injection mechanism, not evidence
-        about `segment.py`'s correctness.
+        KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A8 -- THIS TEST COULD NOT FAIL.
+        It defined an IDENTITY VIOLATION as `close_error` containing the
+        substring `"does not reconcile"` or `"not clean"`. NEITHER STRING
+        EXISTS ANYWHERE IN `app/` (grep-verified). `identity_violations` was
+        therefore always empty and the only real assertion in "THE required
+        deliverable" was unreachable -- while the property it claimed to
+        guard was being violated 6/6 by a single Ctrl-C.
+
+        It now asserts on STRUCTURED FIELDS, never on error-message text:
+
+          close_ok / record_count       did the evidence publish at all
+          on_disk_records vs written    is the writer's own bookkeeping
+                                        consistent with the bytes
+          state                         did it end somewhere coherent
+
+        The `sigint` and `asyncexc` arms are deliberately held to DIFFERENT
+        standards, because the two mechanisms are not comparable and saying
+        so is more honest than pretending one bar fits both.
+
+        `sigint` is a production event. A8 defers SIGINT/SIGTERM across both
+        commitment regions, so this arm must PUBLISH every trial AND satisfy
+        the consistency identity.
+
+        `asyncexc` is `PyThreadState_SetAsyncExc`, a ctypes-only injection
+        CPython's own documentation calls unsafe. It can land inside
+        CPython's internal machinery, and nothing in `segment.py` can
+        intercept it -- including inside `GzipFile`'s own
+        `BufferedWriter.flush()`, where a MEASURED consequence is that the
+        buffer is emitted twice: 43 records with duplicate
+        `receive_ordinal`s appended after record 2,411, chain broken. That
+        is a defect of the interrupted C-level buffered write, it is
+        PRE-EXISTING (reproduced identically at d004c01: on-disk minus
+        written of +48 and +37 on seeds 1 and 2), and no signal discipline
+        closes it because no signal is involved. What this arm therefore
+        requires is FAIL-CLOSED behaviour: if the bytes and the bookkeeping
+        disagree, the segment must be INVALID and must NOT have published.
+        Corrupt evidence must never be committed; that is the property
+        `segment.py` is actually responsible for here.
         """
         n_trials = 0
         n_close_failed = 0
         n_hang = 0
-        identity_violations = []
+        violations = []
+        published = 0
         for seed in range(REAL_FAULT_TRIALS):
             r = _run_fault_trial(target_="segment", seed=seed, n_interrupts=2,
                                  mode=mode, window_s=0.6, tmp_path=tmp_path)
@@ -146,26 +210,59 @@ class TestRealSignalReproducesTheSameClass:
             if r.get("top_level_fault"):
                 continue
             n_trials += 1
-            if not r["close_ok"]:
+            if r["close_ok"]:
+                published += 1
+            else:
                 n_close_failed += 1
-                err = r.get("close_error") or ""
-                if "does not reconcile" in err or "not clean" in err:
-                    identity_violations.append(r)
-        print(f"\n[A1] Ctrl-C ({mode}): {n_hang}/{REAL_FAULT_TRIALS} hung "
+            # THE IDENTITY, on numbers. `on_disk_records > written` means
+            # bytes are durably in the segment that the writer never booked
+            # -- so `_ordinal`/`_prev_digest` did not advance past them and
+            # every subsequent record duplicates an ordinal and chains off a
+            # stale digest. That is the on-disk chain permanently broken,
+            # and it is what the substring search was supposed to catch.
+            written = (r.get("post_close_accounting") or {}).get("written")
+            on_disk = r.get("on_disk_records")
+            if written is not None and on_disk is not None and on_disk > written:
+                violations.append(r)
+        print(f"\n[A8] Ctrl-C ({mode}): {n_hang}/{REAL_FAULT_TRIALS} hung "
               "(caught by the external subprocess timeout, not asserted "
               "against -- see this test's docstring)")
         assert n_trials >= REAL_FAULT_TRIALS // 2, (
             f"too many trials were unusable ({REAL_FAULT_TRIALS - n_trials}/"
             f"{REAL_FAULT_TRIALS}) -- timing mis-calibration, not a finding")
-        print(f"\n[A1] Ctrl-C ({mode}): {n_close_failed}/{n_trials} close() "
-              f"failures, {len(identity_violations)} IDENTITY VIOLATIONS, over "
-              f"{n_trials} trials of a 20,000-event burst with 2 interrupts.")
-        for ex in identity_violations[:3]:
-            print(f"  VIOLATION: pre_close={ex['pre_close_accounting']} "
-                  f"close_error={ex['close_error']!r}")
-        assert not identity_violations, (
-            f"{len(identity_violations)}/{n_trials} trials show a diagnostic "
-            f"accounting mismatch destroying a segment. {identity_violations}")
+        print(f"\n[A8] Ctrl-C ({mode}): {published}/{n_trials} published, "
+              f"{n_close_failed}/{n_trials} close() failures, "
+              f"{len(violations)} IDENTITY VIOLATIONS, over {n_trials} "
+              "trials of a 20,000-event burst with 2 interrupts.")
+        for ex in violations[:3]:
+            print(f"  VIOLATION: on_disk={ex['on_disk_records']} "
+                  f"post_close={ex['post_close_accounting']} "
+                  f"state={ex['state']!r}")
+        if mode == "sigint":
+            assert not violations, (
+                f"{len(violations)}/{n_trials} trials left MORE records "
+                "readable on disk than the writer booked as written -- the "
+                "on-disk chain is broken from that record on. A8 defers "
+                "SIGINT across both commitment regions precisely so a real "
+                f"signal cannot reach a partial buffered write: {violations}")
+            assert published == n_trials, (
+                f"{n_trials - published}/{n_trials} trials failed to "
+                "publish. A8 defers SIGINT/SIGTERM across the commitment "
+                "region precisely so a real interrupt cannot make an open "
+                "segment's already-durable records unpublishable; the "
+                "pre-A1 queue-based writer measured 6/6 publication for "
+                "this campaign's one-interrupt form")
+        else:
+            # FAIL-CLOSED, asserted rather than assumed: a ctypes injection
+            # CAN corrupt the byte stream below `segment.py` (see the
+            # docstring). What must never happen is that corruption being
+            # PUBLISHED as committed evidence.
+            for ex in violations:
+                assert ex["close_ok"] is False, (
+                    "a segment whose on-disk records outnumber its booked "
+                    f"writes was PUBLISHED: {ex}")
+                assert ex["record_count"] is None, ex
+                assert ex["state"] == "INVALID", ex
 
 
 @pytest.mark.skipif(not CAMPAIGN, reason="KALSHI_ASYNC_ACCOUNTING_CAMPAIGN=1 "
@@ -194,11 +291,15 @@ class TestFullCampaign:
             if r.get("top_level_fault"):
                 continue
             n_trials += 1
-            if not r["close_ok"]:
-                err = r.get("close_error") or ""
-                if "does not reconcile" in err or "not clean" in err:
-                    identity_violations.append(r)
-        print(f"\n[A1] 3-interrupt SIGINT campaign: "
+            # A8: the same structured identity as the six-trial campaign
+            # above -- never the unreachable substring search this used to
+            # perform (`"does not reconcile"`/`"not clean"` appear nowhere
+            # in `app/`).
+            written = (r.get("post_close_accounting") or {}).get("written")
+            on_disk = r.get("on_disk_records")
+            if written is not None and on_disk is not None and on_disk > written:
+                identity_violations.append(r)
+        print(f"\n[A8] 3-interrupt SIGINT campaign: "
               f"{len(identity_violations)} IDENTITY VIOLATIONS / {n_trials} "
               f"usable trials, {n_hang}/{REAL_FAULT_TRIALS} hung (each caught "
               "by the external subprocess timeout, not a suite hang)")

@@ -407,17 +407,39 @@ class TestSingleWriter:
         assert acc.written == len(records_of(w))
         assert sg.verify_segment(w.dir, environment=ENV).valid
 
-    def test_queue_overflow_is_rejected_not_dropped(self, tmp_path):
+    def test_retired_queue_knobs_are_accepted_and_have_no_effect(self, tmp_path):
+        """KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A8 -- REPLACES
+        `test_queue_overflow_is_rejected_not_dropped`.
+
+        That test submitted 400 events to a writer built with
+        `queue_maxsize=1, enqueue_timeout_s=0.01` and asserted `all(r is
+        RejectReason.ENQUEUE_TIMEOUT for r in rejected)` -- guarded by `if
+        rejected:`. A1 deleted the queue, so nothing can ever be rejected
+        for enqueue timeout and `rejected` is now ALWAYS empty: the only
+        assertion about the behaviour it was named for had become
+        unreachable, and the test passed by doing nothing.
+
+        What is genuinely worth pinning is the compatibility decision A1
+        actually made: the two retired keyword arguments are still ACCEPTED
+        (so no existing caller raises `TypeError`) and have NO effect (every
+        event is written, none rejected). This test fails if either half of
+        that changes."""
         _init_archive(tmp_path)
         w = sg.SegmentWriter(tmp_path, environment=ENV, segment_id=SEG,
                              partition_identity="p", queue_maxsize=1,
                              enqueue_timeout_s=0.01)
         reasons = [w.submit(fields(i)) for i in range(400)]
-        w.close()
-        rejected = [r for r in reasons if r is not None]
+        manifest = w.close()
+        assert [r for r in reasons if r is not None] == [], (
+            "the retired queue knobs must not reject anything -- there is no "
+            "queue left for them to bound")
         assert w.accounting.reconciles(), w.accounting.to_dict()
-        if rejected:
-            assert all(r is sg.RejectReason.ENQUEUE_TIMEOUT for r in rejected)
+        assert w.accounting.written == 400
+        assert manifest["record_count"] == 400
+        # `RejectReason.ENQUEUE_TIMEOUT` is still DEFINED (retired, not
+        # deleted, like the two keyword arguments). What must be true is
+        # that nothing can ever PRODUCE it.
+        assert sg.RejectReason.ENQUEUE_TIMEOUT.value not in w.accounting.rejections
 
     def test_a_failed_writer_stops_accepting_evidence(self, tmp_path):
         _init_archive(tmp_path)
@@ -478,17 +500,27 @@ class TestSingleWriter:
 
         # THE LOCK-CONTAINMENT ASSERTION: walk the function body; every
         # `with` statement whose context expression is `self._lock` opens a
-        # region, and every `self._fh` / `.write(` / `.flush(` reference must
-        # be lexically inside at least one such region.
+        # region, and every guarded reference must be lexically inside at
+        # least one such region.
+        #
+        # KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A8: the guarded set now also
+        # covers `self.state` and `self.accounting`, not only the file
+        # handle. Without them, the single most plausible "optimisation"
+        # anyone would propose against this function -- read `self.state`
+        # BEFORE taking the lock so a closed/invalid writer can reject
+        # without contending -- reintroduces the exact TOCTOU race the
+        # synchronous design exists to eliminate (`close()` moves `state` to
+        # CLOSING between the unlocked read and the locked write, and the
+        # producer is told ACCEPTED for a segment that is already sealing),
+        # and NO test in this suite would catch it. `accounting` is included
+        # for the same reason from the other direction: a counter mutated
+        # outside the lock can be lost or double-applied under concurrent
+        # producers, which is how the identity used to drift.
+        GUARDED_ATTRS = ("_fh", "write", "flush", "state", "accounting")
+
         def _is_self_lock(expr) -> bool:
             return (isinstance(expr, ast.Attribute) and expr.attr == "_lock"
                     and isinstance(expr.value, ast.Name) and expr.value.id == "self")
-
-        def _references_fh_or_write(node) -> bool:
-            for n in ast.walk(node):
-                if isinstance(n, ast.Attribute) and n.attr in ("_fh", "write", "flush"):
-                    return True
-            return False
 
         def _walk(node, inside_lock: bool):
             if isinstance(node, ast.With):
@@ -497,16 +529,37 @@ class TestSingleWriter:
                 for child in node.body:
                     _walk(child, inside_lock or lock_here)
                 return
-            if isinstance(node, ast.Attribute) and node.attr in ("_fh", "write", "flush"):
-                assert inside_lock, (
-                    f"submit() references .{node.attr} at line {node.lineno} "
-                    "outside any `with self._lock:` block -- the write path "
-                    "must be fully contained by the serialization lock")
+            if isinstance(node, ast.Attribute) and node.attr in GUARDED_ATTRS:
+                # Only `self.<attr>` -- a local `record.state` or some other
+                # object's `.write` is not this function's business.
+                is_self = (isinstance(node.value, ast.Name)
+                           and node.value.id == "self")
+                if node.attr in ("write", "flush"):
+                    # These are method NAMES, reached as `<something>.write`;
+                    # requiring `self.` would miss `self._fh.write(...)`.
+                    is_self = True
+                if is_self:
+                    assert inside_lock, (
+                        f"submit() references .{node.attr} at line "
+                        f"{node.lineno} outside any `with self._lock:` block "
+                        "-- the write path, the state check and the "
+                        "accounting must ALL be fully contained by the "
+                        "serialization lock, or the check-then-act race the "
+                        "synchronous design removes comes straight back")
             for child in ast.iter_child_nodes(node):
                 _walk(child, inside_lock)
 
         for stmt in tree.body:
             _walk(stmt, inside_lock=False)
+
+        # And the guard must not be vacuous: submit() really does read
+        # `self.state` and mutate `self.accounting`, so if either name stops
+        # appearing the assertion above has quietly stopped protecting
+        # anything.
+        for expected in ("state", "accounting"):
+            assert expected in names, (
+                f"submit() no longer references self.{expected} -- the "
+                "lock-containment guard above is now vacuous for it")
 
 
 # --- verification surface ----------------------------------------------------------

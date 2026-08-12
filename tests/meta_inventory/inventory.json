@@ -6777,10 +6777,12 @@
       "functions_visited": [
         "app/realtime/archive.py::EventArchive._candidate_segment_ids",
         "app/realtime/archive.py::EventArchive._check_partition_writable",
+        "app/realtime/archive.py::EventArchive._on_rotation_closed",
         "app/realtime/archive.py::EventArchive._segment_id",
         "app/realtime/archive.py::EventArchive._writer_for",
         "app/realtime/archive.py::EventArchive.append",
         "app/realtime/archive.py::EventArchive.partition",
+        "app/realtime/archive.py::_swallow",
         "app/realtime/evidence_fs.py::assert_contained",
         "app/realtime/evidence_fs.py::containment_reason",
         "app/realtime/evidence_fs.py::presence"
@@ -6952,6 +6954,11 @@
         [
           "EventArchive.append",
           "EventArchive._writer_for",
+          "<expr>.submit(...) [chained call]"
+        ],
+        [
+          "EventArchive.append",
+          "EventArchive._writer_for",
           "ArchiveError(...) [unbound name]"
         ],
         [
@@ -7072,6 +7079,24 @@
         [
           "EventArchive.append",
           "EventArchive._writer_for",
+          "EventArchive._on_rotation_closed",
+          "<expr>.append(...) [chained call]"
+        ],
+        [
+          "EventArchive.append",
+          "EventArchive._writer_for",
+          "EventArchive._on_rotation_closed",
+          "<expr>.pop(...) [chained call]"
+        ],
+        [
+          "EventArchive.append",
+          "EventArchive._writer_for",
+          "EventArchive._on_rotation_closed",
+          "repr(...) [unbound name]"
+        ],
+        [
+          "EventArchive.append",
+          "EventArchive._writer_for",
           "EventArchive._segment_id",
           "when.astimezone(...) [receiver type unknown]"
         ],
@@ -7096,17 +7121,18 @@
         [
           "EventArchive.append",
           "EventArchive._writer_for",
+          "_swallow",
+          "fn(...) [unbound name]"
+        ],
+        [
+          "EventArchive.append",
+          "EventArchive._writer_for",
           "app.realtime.segment.SegmentWriter(...) [imported name, not traversable further]"
         ],
         [
           "EventArchive.append",
           "EventArchive._writer_for",
           "repr(...) [unbound name]"
-        ],
-        [
-          "EventArchive.append",
-          "EventArchive._writer_for",
-          "retiring.close(...) [receiver type unknown]"
         ],
         [
           "EventArchive.append",
@@ -7559,7 +7585,15 @@
       "unresolved_calls": [
         [
           "EventArchive.close",
+          "<expr>.append(...) [chained call]"
+        ],
+        [
+          "EventArchive.close",
           "<expr>.items(...) [chained call]"
+        ],
+        [
+          "EventArchive.close",
+          "<expr>.shutdown(...) [chained call]"
         ],
         [
           "EventArchive.close",

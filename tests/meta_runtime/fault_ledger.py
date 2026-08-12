@@ -80,11 +80,17 @@ LEDGER: tuple[FaultTestEntry, ...] = (
     FaultTestEntry(
         "tests/test_kalshi_async_accounting_harness_001.py",
         "TestRealSignalReproducesTheSameClass."
-        "test_a_single_sigint_lands_inside_submit_and_is_caught_cleanly",
+        "test_a_single_sigint_does_not_destroy_the_segment",
         REALISTIC_SIGNAL_FAULT, "real SIGINT via os.kill, subprocess",
         "producer/main-thread only (Python only delivers a real signal "
         "handler on the main thread) -- a genuine, empirically-landing "
-        "measurement, not a chosen line"),
+        "measurement, not a chosen line. KALSHI-ARCHIVE-REPLAY-INTEGRITY-"
+        "001 A8 RENAMED IT from `test_a_single_sigint_lands_inside_submit_"
+        "and_is_caught_cleanly`: the old name described the harness, and "
+        "the old body asserted only not-hang/not-crash/found-a-catch, "
+        "never `close_ok` -- so it passed while the property its own "
+        "docstring named was refuted 6/6. It now pins the measured "
+        "321c719 publication floor"),
     FaultTestEntry(
         "tests/test_kalshi_async_accounting_harness_001.py",
         "TestRealSignalReproducesTheSameClass."

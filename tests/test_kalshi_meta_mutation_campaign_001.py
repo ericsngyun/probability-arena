@@ -25,6 +25,16 @@ same:
 Mutations run ONE AT A TIME (never two mutated files live simultaneously),
 serially, so a failure in one case's restore cannot cascade into a false
 catch/hole verdict for the next.
+
+SCOPE, STATED PLAINLY (KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A8). Every
+mutation here targets `tests/`; none targets `app/`. A full-green run means
+"the verification layer's guard vocabulary is intact", and nothing more. It
+is NOT evidence that any production behaviour is correct and must never be
+cited as such -- three reviewers found real `segment.py` defects while this
+campaign was green. See `tests/meta_mutation/campaign.py`'s module
+docstring for the full statement, and
+`tests/test_kalshi_archive_replay_integrity_a8_001.py` for the tests that
+DO pin production behaviour (each verified to fail with its fix reverted).
 """
 
 from __future__ import annotations

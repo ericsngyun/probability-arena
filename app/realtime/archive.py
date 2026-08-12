@@ -19,9 +19,11 @@ import gzip
 import hashlib
 import json
 import math
+import queue
 import re
 import statistics
 import threading
+import time
 import zlib
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -98,6 +100,131 @@ MANIFEST_FILENAME = "manifest.json"
 
 class ArchiveError(RuntimeError):
     """A write or read that would compromise the evidence."""
+
+
+_CLOSER_STOP = object()
+
+
+def _swallow(fn):
+    """Run `fn()` and return the exception it raised, or None. Used where a
+    failure must be RECORDED against one segment rather than propagated and
+    allowed to wedge every other partition."""
+    try:
+        fn()
+    except BaseException as exc:            # noqa: BLE001 - returned, not lost
+        return exc
+    return None
+
+
+class _RotationCloser:
+    """KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A8 -- ONE dedicated thread that
+    runs `SegmentWriter.close()` for RETIRING segments, so a rotation never
+    runs on the producer's thread.
+
+    THE STALL THIS REMOVES. `close()` is not a tail operation: it flushes and
+    fsyncs the event file, reads every record back for reconciliation, runs a
+    full independent `verify_segment` (a third complete read), publishes the
+    manifest, and -- with `commit_to_head` True, which is `SegmentWriter`'s
+    default and which `_writer_for` has never overridden -- fsyncs a
+    generation record and the current-head pointer under the archive lock.
+    Measured on the committed benchmark (`tests/benchmarks/
+    segment_close_cost.py`) at the old 20,000-record bound with
+    `commit_to_head=True`: ~2.3-2.9 s of CPU and 3.4-4.7 s of wall on an idle
+    machine, and 14.8 s of wall under contention. `_writer_for` ran that
+    inline, on whichever thread called `append()` -- for the Kalshi collector,
+    the websocket reader. A 3-15 s stall there is a missed ping, a
+    server-side disconnect, and a hole in the tape: the archive's own commit
+    step destroying the ingestion it exists to record.
+
+    WHY THIS IS SMALL AND SAFE. The successor writer is ALREADY constructed
+    and installed under `_writers_lock` before the predecessor is handed
+    here, so nothing about admission depends on when this finishes. The
+    retiring writer stays in `_retiring` (so its segment id is never reissued)
+    until this thread has closed it and the sink has popped it. Exactly one
+    thread runs closes, so two rotations of two partitions still serialise
+    against each other rather than contending on the archive head lock.
+    """
+
+    def __init__(self, sink, *, name="kalshi-segment-closer"):
+        self._sink = sink                  # callable(writer, exc_or_None)
+        self._name = name
+        self._q: queue.SimpleQueue = queue.SimpleQueue()
+        self._cv = threading.Condition()
+        self._outstanding = 0
+        self._thread: threading.Thread | None = None
+        self._stopped = False
+        self._start_lock = threading.Lock()
+
+    @property
+    def outstanding(self) -> int:
+        with self._cv:
+            return self._outstanding
+
+    def submit(self, writer) -> bool:
+        """Queue one retiring writer for closing. False if the closer has
+        already been shut down, in which case NOTHING was queued and the
+        caller must close inline -- silently accepting work onto a stopped
+        thread would leave `outstanding` permanently non-zero and hang the
+        next `drain()`."""
+        with self._start_lock:
+            if self._stopped:
+                return False
+        with self._cv:
+            self._outstanding += 1
+        with self._start_lock:
+            if self._thread is None:
+                # Daemon: a wedged close must never keep the interpreter
+                # alive. `EventArchive.close()` drains explicitly, which is
+                # the path that actually needs the work to finish.
+                self._thread = threading.Thread(
+                    target=self._run, name=self._name, daemon=True)
+                self._thread.start()
+        self._q.put(writer)
+        return True
+
+    def _run(self) -> None:
+        while True:
+            item = self._q.get()
+            if item is _CLOSER_STOP:
+                return
+            exc = None
+            try:
+                item.close()
+            except BaseException as e:      # noqa: BLE001 - reported via sink
+                exc = e
+            try:
+                self._sink(item, exc)
+            except BaseException:           # noqa: BLE001 - never wedge
+                pass
+            finally:
+                with self._cv:
+                    self._outstanding -= 1
+                    self._cv.notify_all()
+
+    def drain(self, timeout_s: float | None = None) -> bool:
+        """Block until every submitted close has finished. False on timeout."""
+        deadline = None if timeout_s is None else time.monotonic() + timeout_s
+        with self._cv:
+            while self._outstanding:
+                if deadline is None:
+                    self._cv.wait(timeout=0.25)
+                    continue
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self._cv.wait(timeout=remaining)
+        return True
+
+    def shutdown(self, timeout_s: float | None = None) -> bool:
+        drained = self.drain(timeout_s)
+        with self._start_lock:
+            self._stopped = True
+            thread = self._thread
+            if thread is not None:
+                self._q.put(_CLOSER_STOP)
+        if thread is not None:
+            thread.join(timeout=5.0)
+        return drained
 
 
 def _canon(obj) -> str:
@@ -205,6 +332,12 @@ class EventArchive:
         self.expected_archive_id = expected_archive_id
         self.rotations = 0
         self.rotation_failures: list = []
+        # A8: rotations close OFF the producer thread. See `_RotationCloser`.
+        self._closer = _RotationCloser(self._on_rotation_closed)
+        # How long `close()` waits for in-flight rotations before giving up
+        # and closing whatever is left inline. Generous by design: `close()`
+        # is the commit point, and an unclosed segment is not evidence.
+        self.rotation_close_timeout_s: float | None = 300.0
         self.missing_committed_segments: list = []
         self.diagnostic_order_unauthenticated = False
         self._retiring: dict = {}
@@ -311,19 +444,45 @@ class EventArchive:
                     f"every candidate segment id for partition {base!r} is "
                     f"held by a live writer: {last_error!r}")
         if retiring is not None:
-            # Outside the lock: this drains and commits, and it must not stall
-            # appends for every other partition.
-            try:
-                retiring.close()
-                self.rotations += 1
-            except Exception as exc:            # noqa: BLE001 - recorded
-                # One partition's failed rotation must not wedge the archive:
-                # the successor is already installed and admitting.
-                self.rotation_failures.append((retiring.segment_id, repr(exc)))
-            finally:
-                with self._writers_lock:
-                    self._retiring.pop(retiring.segment_id, None)
+            # A8: HANDED OFF, not run here. This used to be `retiring.close()`
+            # inline -- outside the lock, but still on the PRODUCER's thread,
+            # which for the Kalshi collector is the websocket reader. See
+            # `_RotationCloser` for the measured stall that produced (~3-5 s
+            # at the old bound on an idle machine, 14.8 s under contention)
+            # and why handing it to one dedicated thread is a small change:
+            # the successor above is already constructed and installed, so
+            # nothing waiting on this call was ever waiting for anything a
+            # producer needs.
+            if not self._closer.submit(retiring):
+                # The closer is already shut down (an append racing close()).
+                # Do it here rather than lose the commit.
+                self._on_rotation_closed(
+                    retiring,
+                    _swallow(retiring.close))
         return writer
+
+    def _on_rotation_closed(self, writer, exc) -> None:
+        """Called on the closer thread when one retiring segment finishes."""
+        if exc is None:
+            with self._writers_lock:
+                self.rotations += 1
+        else:
+            # One partition's failed rotation must not wedge the archive:
+            # the successor is already installed and admitting.
+            self.rotation_failures.append((writer.segment_id, repr(exc)))
+        with self._writers_lock:
+            self._retiring.pop(writer.segment_id, None)
+
+    def wait_for_rotations(self, timeout_s: float | None = 60.0) -> bool:
+        """Block until every rotation handed to the closer has committed.
+
+        Public because rotation is now ASYNCHRONOUS: an operator (or a test)
+        that needs to observe `rotations`/`rotation_failures`, or to read the
+        archive head, has to be able to say "after the rotations that have
+        already been triggered". Returns False on timeout rather than raising
+        -- the caller decides what a slow commit means.
+        """
+        return self._closer.drain(timeout_s)
 
     def _check_partition_writable(self, env_dir: Path, base: str) -> None:
         """Refuse a PERMANENTLY invalid partition location once, up front.
@@ -460,6 +619,23 @@ class EventArchive:
         # success, the archive verified VALID, and the event was gone.
         with self._writers_lock:
             self._closed = True
+        # A8: `_closed` is set FIRST, then in-flight rotations are drained,
+        # and only THEN is `pending` snapshotted. Order matters in both
+        # directions. Setting `_closed` first means `_writer_for` refuses
+        # from here on, so nothing new can be created or handed to the
+        # closer; draining before the snapshot means a segment the closer is
+        # already committing is finished by the closer (and popped from
+        # `_retiring`) rather than being closed a second time, concurrently,
+        # from here. If the drain times out, whatever is still in `_retiring`
+        # is closed inline below -- `SegmentWriter.close()` is idempotent
+        # under its own `_close_lock`, so the worst case is a redundant
+        # `read_manifest()`, never a double publish.
+        if not self._closer.shutdown(self.rotation_close_timeout_s):
+            self.rotation_failures.append(
+                ("<closer>", f"rotation closer did not drain within "
+                             f"{self.rotation_close_timeout_s}s; closing the "
+                             f"remainder inline"))
+        with self._writers_lock:
             pending = list(self._writers.items()) + list(self._retiring.items())
         manifests, failures = {}, {}
         for seg_id, writer in pending:

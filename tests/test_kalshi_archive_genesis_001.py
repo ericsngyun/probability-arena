@@ -532,6 +532,16 @@ class TestSegmentRollover:
                 normalize_monotonic_ns=1_100 + i, data_age_us=100,
                 implementation_version="test",
                 raw={"p": "0.51"}, normalized={"u": 5100}))
+        # KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A8: rotation now commits on a
+        # DEDICATED CLOSER THREAD rather than on the producer's, so the
+        # property under test ("committed before any shutdown") is unchanged
+        # but is no longer observable at the instant `append()` returns --
+        # which is the entire point of the change. Wait for the rotations
+        # already triggered; deliberately do NOT call `store.close()`, which
+        # would make the assertions below trivially true.
+        assert store.wait_for_rotations(60.0), (
+            f"triggered rotations did not commit within 60s: "
+            f"{store.rotation_failures}")
         # Committed BEFORE any shutdown: this is the whole point.
         assert store.rotations >= 2, store.rotations
         assert not store.rotation_failures, store.rotation_failures
@@ -557,6 +567,10 @@ class TestSegmentRollover:
                 normalize_monotonic_ns=1_100 + i, data_age_us=100,
                 implementation_version="test",
                 raw={"p": "0.51"}, normalized={"u": 5100}))
+        # A8: the rotations are committed by the closer thread; wait for the
+        # ones already triggered before reading the head (see
+        # `test_rotation_commits_without_waiting_for_shutdown`).
+        assert store.wait_for_rotations(60.0), store.rotation_failures
         committed = verdict(tmp_path)["records_read"]
         assert committed >= 20, "rotation committed nothing"
         # Simulate the crash: abandon the process without closing.

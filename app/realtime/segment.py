@@ -47,6 +47,7 @@ import os
 import contextlib
 import fcntl
 import re
+import signal
 import threading
 import time
 from collections.abc import Mapping, Sequence
@@ -137,8 +138,31 @@ _ENVELOPE_SOURCED_RECORD_FIELDS = frozenset({
 # than two independently-fresh budgets that happen to agree on production's
 # own envelope shape by accident (see `tests/meta_runtime/
 # budget_consistency.py` for the measured margin this closes).
-_RECORD_ENVELOPE_OVERHEAD_UNITS = (
-    len(RECORD_FIELDS) - len(_ENVELOPE_SOURCED_RECORD_FIELDS))
+#
+# KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A8 -- THE RESERVE IS 17, NOT 6.
+# `len(RECORD_FIELDS) - len(_ENVELOPE_SOURCED_RECORD_FIELDS)` = 16 - 10 = 6
+# is only sound when the envelope actually SUPPLIES all ten sourced keys.
+# `build_record` reads them with `.get()`, so an ABSENT key costs zero units
+# at admission (there is no node to walk) and one unit at commit (`_encode`
+# still charges for the `None` node `build_record` inserts). Measured worst
+# case on an EMPTY envelope: +17 units, matching the analytic
+# `6 (new scalars) + 1 (record_digest) + 10 (absent-key None placeholders)`
+# -- exactly `len(REQUIRED_RECORD_FIELDS)`, which is what the reserve is now
+# derived from. The 6-unit form failed CLOSED (commit refused a value
+# admission had accepted, rather than the reverse), so this was never a
+# durability bug -- but the comment above states the relation as a
+# GUARANTEE, and a constant that is 11 units short of the worst case does
+# not guarantee it. Frozen into the contract at 6 it would have been wrong
+# for every envelope that omits an optional key.
+#
+# The three components, named:
+#   len(RECORD_FIELDS) - len(_ENVELOPE_SOURCED_RECORD_FIELDS) =  6  new scalars
+#   record_digest (in REQUIRED_RECORD_FIELDS, not RECORD_FIELDS) =  1
+#   len(_ENVELOPE_SOURCED_RECORD_FIELDS)                        = 10  absent-key
+#                                                                     None nodes
+#                                                              -----
+#   len(REQUIRED_RECORD_FIELDS)                                 = 17
+_RECORD_ENVELOPE_OVERHEAD_UNITS = len(REQUIRED_RECORD_FIELDS)
 
 # KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A3 -- BOUNDED ROTATION DEFAULTS.
 #
@@ -146,33 +170,43 @@ _RECORD_ENVELOPE_OVERHEAD_UNITS = (
 # every record back with `read_segment_records`, then `verify_segment` reads
 # it AGAIN independently before it is committed to the head) -- it is not a
 # cheap tail operation, and its cost grows with the segment, not with the
-# marginal record. Measured on the real, synchronous `SegmentWriter` (an ad hoc
-# benchmark against real records through `submit()`/`close()`, not
-# committed as a script -- reproducible by submitting N records to a fresh
-# `SegmentWriter` and timing `close()`):
+# marginal record.
 #
-#   records   append throughput   close latency   close/1000 records
-#      1,000       ~14,700 ev/s         ~0.07 s               ~75 ms
-#      5,000       ~15,800 ev/s         ~0.36 s               ~71 ms
-#     15,000       ~15,900 ev/s         ~1.17 s               ~78 ms
+# KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A8 -- RE-DERIVED, AND THE BENCHMARK IS
+# NOW A COMMITTED SCRIPT (`tests/benchmarks/segment_close_cost.py`) so this
+# number can be REGRESSED instead of re-invented. The previous derivation
+# (~70-80 ms of close per 1,000 records) was measured with
+# `commit_to_head=False` -- but `SegmentWriter` DEFAULTS that flag True, and
+# `EventArchive._writer_for` has never overridden it, so production's close
+# additionally runs a full independent `verify_segment` (a THIRD complete
+# read of the segment) and `commit_segment`'s generation-record and
+# current-head fsyncs under the archive lock. The bound was therefore
+# derived from a cheaper operation than the one that actually runs.
 #
-# roughly linear at ~70-80 ms of close latency per 1,000 records in this
-# range -- consistent with the review's own ~110-150 ms/1,000 estimate,
-# with the difference explained by A2 (one fewer canonical encode per
-# record) and A1 (no queue-drain/thread-join overhead at close). A
-# 30,000-record trial measured a disproportionate 11.9 s close on this
-# machine, but that run shared the CPU with an unrelated, concurrently
-# running test suite in a sibling working tree -- exactly the kind of
-# resource contention a live host can also experience -- so the bound below
-# is set with real headroom under the CLEAN numbers rather than trusting
-# the contended one.
+# Re-measured through the committed benchmark, on the shape production uses:
 #
-# `DEFAULT_MAX_SEGMENT_RECORDS` targets a close latency of roughly two
-# seconds under measured, uncontended throughput -- comfortably above the
-# ~500 events/s assumed peak this milestone's own performance gate used (a
-# two-second close every ~40 seconds of continuous peak traffic), and
-# effectively unreachable at the one real measured Kalshi rate (4 records
-# over ~2 minutes, DEMO). `DEFAULT_MAX_SEGMENT_AGE_S` bounds staleness
+#   records   commit_to_head   close CPU   close wall   CPU ms/1,000
+#     1,000        False          0.036 s     0.039 s        36
+#     1,000        True           0.099 s     0.129 s        99
+#    13,000        True           2.134 s     2.497 s       164
+#    20,000        True           2.332 s     4.721 s       117
+#
+# plus an independently measured 2.908 s CPU / 3.402 s wall at 20,000
+# records, and 14.8 s of WALL at the same size under CPU contention. Call it
+# ~145 ms of CPU per 1,000 records for the shape that actually ships, i.e.
+# roughly double what the old comment claimed.
+#
+# `DEFAULT_MAX_SEGMENT_RECORDS` targets a close of roughly two seconds --
+# `2000 / 145 ~= 13,800`, taken down to 13,000 for headroom. It is a bound on
+# a COMMIT, not on ingestion: A8 also moved `retiring.close()` off the
+# producer's thread onto `EventArchive`'s dedicated closer, so this number no
+# longer decides how long a websocket reader stalls; it decides how much
+# evidence one un-committed segment can be holding when the process dies, and
+# how long the closer thread is busy. Both argue for the smaller bound. At the
+# ~500 events/s assumed peak this milestone's performance gate used that is a
+# rotation every ~26 s; at the one real measured Kalshi rate (4 records over
+# ~2 minutes, DEMO) it is unreachable and `DEFAULT_MAX_SEGMENT_AGE_S` is what
+# rotates. `DEFAULT_MAX_SEGMENT_AGE_S` bounds staleness
 # independently of volume, so a slow trickle still rotates and commits
 # periodically instead of holding one segment open indefinitely.
 # `DEFAULT_MAX_SEGMENT_BYTES` is a THIRD, independent bound on the
@@ -187,7 +221,7 @@ _RECORD_ENVELOPE_OVERHEAD_UNITS = (
 # leave unbounded. What A3 forbids is SHIPPING synchronous archival with no
 # bound; it does not require every constructor at every layer to refuse to
 # be unbounded when a caller explicitly asks for that.
-DEFAULT_MAX_SEGMENT_RECORDS = 20_000
+DEFAULT_MAX_SEGMENT_RECORDS = 13_000
 DEFAULT_MAX_SEGMENT_AGE_S = 900.0                     # 15 minutes
 DEFAULT_MAX_SEGMENT_BYTES = 32 * 1024 * 1024          # 32 MiB, compressed
 
@@ -200,6 +234,32 @@ DEFAULT_MAX_SEGMENT_BYTES = 32 * 1024 * 1024          # 32 MiB, compressed
 # guarantees a value admitted at exactly `CapabilityLimits.MAX_DEPTH` cannot
 # encode at `MAX_DEPTH + 1` once wrapped.
 _MANIFEST_METADATA_DEPTH_RESERVE = 1
+
+# KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A8 -- THE METADATA PATH NEEDED A WORK
+# RESERVE TOO, NOT ONLY A DEPTH RESERVE.
+#
+# A4 gave `subscription_metadata` a DEPTH reserve and stopped there.
+# `non_canonical_reason(metadata, _depth_reserve=1)` still charged a FULL,
+# fresh `MAX_CANONICAL_WORK_UNITS` budget at metadata's OWN root -- but
+# `publish_manifest` later runs `canonical_bytes(manifest)` over a body in
+# which that same value is one entry among twenty (`MANIFEST_FIELDS`, plus
+# `subscription_metadata` itself, plus `manifest_digest`), so commit spends
+# metadata's own encode cost PLUS the wrapper's. Reproduced: a metadata
+# value tuned to exactly the admission ceiling is ACCEPTED at construction,
+# three records are written durably, and then `close()` raises
+# `CanonicalError` and the segment goes INVALID -- three chain-valid records
+# turned into uncommitted residue over a value the writer's own admission
+# gate certified as legal.
+#
+# This is the IDENTICAL class `_RECORD_ENVELOPE_OVERHEAD_UNITS` exists to
+# close on the record path, and strictly worse, because it strikes at close
+# rather than at admission: there is no producer left to tell. Fixed the
+# same way and derived from the same schema, so it cannot drift if
+# `MANIFEST_FIELDS` changes: one unit for each of the manifest's own keys,
+# plus the two keys `build_manifest` adds outside `MANIFEST_FIELDS`
+# (`subscription_metadata`, `manifest_digest`). The constant itself is
+# defined immediately below `MANIFEST_FIELDS`, which does not exist yet at
+# this point in the module.
 
 
 def write_all(fd: int, payload: bytes) -> int:
@@ -871,6 +931,15 @@ MANIFEST_FIELDS = (
     "close_status",
 )
 
+# KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A8. See the block above
+# `_MANIFEST_METADATA_DEPTH_RESERVE` for why this exists; it is defined here
+# because it is derived from `MANIFEST_FIELDS`, which is declared above.
+# `build_manifest` emits `MANIFEST_FIELDS` plus exactly two more keys
+# (`subscription_metadata` and `manifest_digest`), and `publish_manifest`
+# encodes that whole body -- so `canonical_bytes(manifest)` costs metadata's
+# own encode plus one `_encode` unit per wrapper key.
+_MANIFEST_METADATA_WORK_RESERVE = len(MANIFEST_FIELDS) + 2
+
 
 def build_manifest(*, environment, segment_id, partition_identity, opened_at,
                    closed_at, record_count, first_record_digest,
@@ -1052,6 +1121,144 @@ class WriterAccounting:
                 "clean": self.clean()}
 
 
+# KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A8 -- SIGNAL DEFERRAL ACROSS THE
+# COMMITMENT REGION.
+#
+# THE MEASURED REGRESSION A8 EXISTS TO CLOSE. A1 moved the actual `write()`
+# from a background writer thread onto the CALLING thread. CPython raises a
+# signal-derived exception (`KeyboardInterrupt` from `SIGINT`) ONLY on the
+# main thread, so under the queue design an operator's Ctrl-C could never
+# reach the gzip write at all -- the queue was providing signal isolation
+# nobody had written down. With the write on the caller's (in any real
+# collector, the MAIN) thread it reaches it constantly: an A/B of
+# `tests/harness_async_accounting/fault_trial.py --n-interrupts 1
+# --n-submits 20000` over seeds 0-5 measured 6/6 `close_ok: True` at
+# 321c719 against 6/6 `close_ok: False, record_count: null` after A1 --
+# `submit()`'s `except BaseException` correctly marks the segment INVALID
+# and re-raises, and fail-closed here means every ALREADY-DURABLE record in
+# the open segment becomes unpublishable residue.
+#
+# WHY NOT `signal.pthread_sigmask`. That was the reviewer's recommendation
+# and it does not work, measured rather than argued (`SIG_BLOCK` on
+# `{SIGINT, SIGTERM}` around the region, 300 rounds, darwin 25.2):
+#
+#   bomber thread started AFTER the mask   ->   0/300 raised inside
+#   bomber thread started BEFORE the mask  -> 300/300 raised inside
+#
+# The first number is the trap: `threading` gives a new thread the creating
+# thread's mask AT `start()`, so a bomber started inside the masked window
+# inherits the block and the measurement flatters the fix. In the real
+# shape -- any thread that was already running when the writer masks (a
+# websocket reader, an asyncio loop, the harness's own bomber) -- the
+# kernel delivers the process-directed signal to THAT unmasked thread,
+# CPython's C handler trips the flag from there, and the main thread raises
+# inside the "masked" region anyway. Masking the writer thread cannot stop
+# a signal the kernel is free to hand to any other thread in the process.
+#
+# WHAT IS USED INSTEAD. The mechanism that IS authoritative in CPython is
+# the Python-level handler, because it is the only thing that decides
+# whether a tripped flag becomes an exception -- and it always runs on the
+# main thread, whichever thread the kernel picked. For the duration of the
+# commitment region the writer installs a handler that RECORDS the signal
+# instead of raising, then restores the previous handlers and re-delivers
+# via `os.kill(os.getpid(), signum)` -- so the original disposition
+# (`default_int_handler`, `SIG_DFL`, `SIG_IGN`, or an application's own
+# handler) is reproduced exactly, by the OS, rather than reinterpreted
+# here, and the interrupt lands at a boundary the writer chose. Re-delivery
+# never RAISES from `__exit__`, so it cannot mask an exception already
+# propagating out of the region.
+#
+# BOUNDS. This is not a general "ignore Ctrl-C" switch: the region is one
+# record's write plus its state delta (measured ~3.2 us of handler
+# install/restore per record against a ~66 us submit, ~5%), and it is a
+# no-op off the main thread, where a Python-level signal handler can never
+# run in the first place. It does not defend against
+# `PyThreadState_SetAsyncExc` (the harness's `asyncexc` mode), which is a
+# ctypes-only mechanism no signal discipline can intercept -- that class is
+# handled structurally instead, by A8's second half: the state delta is
+# precomputed before the write and applied in a `finally`, so an
+# interruption anywhere in the region cannot leave `_ordinal`/`_prev_digest`
+# behind the bytes on disk.
+_COMMIT_DEFERRED_SIGNALS = tuple(
+    s for s in (getattr(signal, "SIGINT", None), getattr(signal, "SIGTERM", None))
+    if s is not None)
+
+
+class _DeferCommitSignals:
+    """Defer `SIGINT`/`SIGTERM` for the duration of a `with` block.
+
+    Reusable and reused (one instance per `SegmentWriter`); every entry is
+    made under the writer's own `_lock`, so it is never re-entered
+    concurrently. `installed` is exposed for tests, which must be able to
+    assert the deferral actually took effect rather than silently no-opping.
+    """
+
+    __slots__ = ("_pending", "_saved", "installed")
+
+    def __init__(self):
+        self._pending: list = []
+        self._saved: tuple = ()
+        self.installed = False
+
+    def _defer(self, signum, frame):        # runs on the main thread only
+        self._pending.append(signum)
+
+    def __enter__(self):
+        self._pending = []
+        self._saved = ()
+        self.installed = False
+        if threading.current_thread() is not threading.main_thread():
+            # A Python-level signal handler NEVER runs on a non-main thread,
+            # so a non-main writer cannot be interrupted by one and there is
+            # nothing to defer. Installing from here would raise ValueError.
+            return self
+        saved = []
+        try:
+            for sig in _COMMIT_DEFERRED_SIGNALS:
+                prev = signal.getsignal(sig)
+                if prev is None:
+                    # The handler was installed from C and cannot be restored
+                    # through `signal.signal`. Leave it entirely alone rather
+                    # than replace something we could not put back.
+                    continue
+                if prev == self._defer:
+                    # Already active. Nesting should be impossible -- every
+                    # entry happens under `self._lock`, which is not
+                    # reentrant -- but recording OUR OWN handler as the
+                    # "previous" one would make the restore a no-op and leave
+                    # the process permanently deaf to this signal. Refuse
+                    # rather than trust the reasoning.
+                    continue
+                signal.signal(sig, self._defer)
+                saved.append((sig, prev))
+        except (ValueError, OSError, RuntimeError):
+            # Not the main interpreter, or a platform/runtime that refuses
+            # the install. Undo whatever took and proceed undeferred: this is
+            # a durability HARDENING, and failing to obtain it must never
+            # fail the write itself.
+            for s, p in reversed(saved):
+                with contextlib.suppress(Exception):
+                    signal.signal(s, p)
+            return self
+        self._saved = tuple(saved)
+        self.installed = bool(saved)
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        for sig, prev in reversed(self._saved):
+            with contextlib.suppress(Exception):
+                signal.signal(sig, prev)
+        self._saved = ()
+        self.installed = False
+        pending, self._pending = self._pending, []
+        # RESTORE FIRST, THEN re-deliver -- otherwise our own deferring
+        # handler would catch the re-delivery and the signal would be lost.
+        for signum in pending:
+            with contextlib.suppress(OSError):
+                os.kill(os.getpid(), signum)
+        return False
+
+
 class SegmentWriter:
     """The single owner of one segment's file descriptor.
 
@@ -1131,8 +1338,12 @@ class SegmentWriter:
         # encodes at `MAX_DEPTH + 1` when wrapped -- destroying every
         # already-durable record in the segment at close, over a value
         # admission itself certified as legal.
+        # A8 adds `_work_reserve` alongside A4's `_depth_reserve`: the depth
+        # reserve alone left the identical hole one bound over. See
+        # `_MANIFEST_METADATA_WORK_RESERVE`.
         bad = non_canonical_reason(
-            metadata, _depth_reserve=_MANIFEST_METADATA_DEPTH_RESERVE)
+            metadata, _depth_reserve=_MANIFEST_METADATA_DEPTH_RESERVE,
+            _work_reserve=_MANIFEST_METADATA_WORK_RESERVE)
         if bad is not None:
             raise SegmentError(
                 f"subscription_metadata is not canonically representable: "
@@ -1210,6 +1421,11 @@ class SegmentWriter:
         # separately-proven protocols (`_seal_admissions` + a queue join)
         # that eleven rounds of hardening never fully closed.
         self._lock = threading.Lock()
+        # A8: reused rather than constructed per record. Every entry happens
+        # under `self._lock`, so one instance can never be re-entered
+        # concurrently. See `_DeferCommitSignals`' module comment for the
+        # measured regression it closes and why `pthread_sigmask` does not.
+        self._defer_commit_signals = _DeferCommitSignals()
         self._prev_digest = genesis_digest(segment_id=self.segment_id,
                                            environment=environment)
         self._ordinal = 0
@@ -1369,11 +1585,32 @@ class SegmentWriter:
         because there is no interval during which this call could be
         preempted by a `close()` racing it to a DIFFERENT lock.
 
-        Returns `None` on acceptance -- which now means the record is
-        DURABLY part of this segment's gzip stream, not merely queued -- or
-        a typed reason on rejection. There is no path that drops an event
-        without returning a reason, and no path that returns `None` before
-        the write has actually happened.
+        Returns `None` on acceptance -- or a typed reason on rejection.
+        There is no path that drops an event without returning a reason, and
+        no path that returns `None` before the write has actually happened.
+
+        WHAT `None` DOES AND DOES NOT PROMISE. It means the record's bytes
+        have been handed to this segment's gzip stream and the chain state
+        has advanced to include it -- NOT that they have reached the
+        platter. `flush_every` defaults to 256 and `EventArchive` never
+        overrides it, so between flush boundaries an acknowledged record
+        lives in `GzipFile`'s zlib buffer and the kernel page cache.
+        Measured against a real writer with `SIGKILL` (which, unlike a
+        clean process exit, runs no `atexit`/`__del__` flush and is the
+        actual crash this claim has to survive): 100 records acked -> 0
+        recoverable; 600 acked -> 512 recoverable, i.e. exactly the last
+        `600 % 256 == 88` were lost. The durability boundary is therefore
+        THE NEXT FLUSH OR `close()`, and this is deliberate -- fsyncing per
+        record would cost an fsync per event for a tape whose commit record
+        is the manifest, not the individual line. What A8 guarantees at the
+        per-record level is CONSISTENCY, not durability: the accepted
+        prefix of the stream is always chain-valid and always matches
+        `written`, whatever the process is interrupted by.
+
+        A8 also defers `SIGINT`/`SIGTERM` across the commitment region and
+        applies the whole state delta from a `finally` -- see
+        `_DeferCommitSignals` for the measured regression that closes and
+        why `signal.pthread_sigmask` does not close it.
         """
         with self._lock:
             self.accounting.attempted += 1
@@ -1480,70 +1717,115 @@ class SegmentWriter:
                 self.last_rejection_detail = f"{type(exc).__name__}: {exc}"
                 self.accounting.reject_before_accept(RejectReason.NOT_CANONICAL)
                 return RejectReason.NOT_CANONICAL
-            try:
-                # `pre_write_hook` runs INSIDE this try, not before it: tests
-                # use it to inject exactly the class of failure this block
-                # exists to contain (a durability/OS-level fault at the
-                # write boundary), and it must be treated identically to a
-                # real `self._fh.write()` failure -- invalidate the segment,
-                # never let it escape as a bare, unbooked exception.
-                if self.pre_write_hook is not None:
-                    self.pre_write_hook(self)
-                # THE commitment point. Nothing before this line is durable;
-                # nothing after it may fail without invalidating the segment
-                # -- a caller must never be told ACCEPTED for an event whose
-                # bytes did not reach the file.
-                self._fh.write(line + b"\n")
-                self._since_flush += 1
-                if self._since_flush >= self._flush_every:
-                    self._fh.flush()
-                    self._since_flush = 0
-            except BaseException as exc:          # noqa: BLE001 - recorded
-                # An OS-level write failure AFTER a value was proven canonical
-                # is the one outcome that must invalidate the whole segment --
-                # continuing would append the NEXT record after a possibly
-                # half-written one and amplify the corruption, exactly as the
-                # old writer thread's terminal `except` did.
-                self._writer_error = exc
-                self.state = SegmentState.INVALID
-                self.accounting.fail_after_accept(RejectReason.WRITER_FAILED)
-                if isinstance(exc, (KeyboardInterrupt, SystemExit, GeneratorExit)):
-                    # A1's OWN new risk, absent from the old design: the
-                    # actual disk write now runs on the PRODUCER's thread,
-                    # not an isolated background writer thread a real signal
-                    # could never reach. `submit()`'s docstring promises "no
-                    # path drops an event without returning a reason" for
-                    # ORDINARY outcomes (a canonical-but-unwritable value, a
-                    # genuine OS write failure) -- it does NOT promise to
-                    # swallow a signal-class exception into an ordinary
-                    # return value. Doing so would mean an operator's Ctrl-C
-                    # (or a `SystemExit` from elsewhere in the process)
-                    # landing on exactly this line silently turns into
-                    # "the writer rejected one event" and the caller's loop
-                    # keeps calling `submit()` -- which now IMMEDIATELY
-                    # rejects every further call as `WRITER_FAILED` (the
-                    # segment is correctly INVALID either way), but the
-                    # process itself never learns it was asked to stop. The
-                    # segment is still marked INVALID above, exactly as for
-                    # any other write fault -- fail-closed evidence handling
-                    # does not change -- but the exception itself is
-                    # RE-RAISED rather than absorbed, matching ordinary
-                    # Python signal semantics -- consistent with the encode
-                    # step just above, which catches only `Exception` (not
-                    # `BaseException`), so a signal-class exception landing
-                    # during canonicalisation was ALREADY never caught there
-                    # in the first place; this branch gives the write step
-                    # the same property explicitly, since it has to catch
-                    # `BaseException` broadly for the OS-failure case.
-                    raise
-                return RejectReason.WRITER_FAILED
+            # A8 -- THE STATE DELTA IS COMPUTED BEFORE THE WRITE, NOT AFTER
+            # IT. Every one of these is a pure function of `record` and the
+            # current state; computing them here means the post-write tail is
+            # a sequence of plain assignments that can be applied from a
+            # `finally`, with no work left in it that could itself fail. The
+            # previous shape ran seven statements (`_first_digest`,
+            # `_last_digest`, `_stream_digest`, `_prev_digest`, `_ordinal`,
+            # `accounting.written`, `return None`) AFTER the commitment point
+            # and OUTSIDE every `try`: an interrupt landing among them left
+            # the writer OPEN, `healthy`, `accepting`, `accounting.clean()`
+            # -- nothing signalling a fault at all -- with `_ordinal` and
+            # `_prev_digest` NOT advanced, so every subsequent record carried
+            # a duplicate `receive_ordinal` and a stale
+            # `previous_record_digest` and the on-disk chain was permanently
+            # broken. Reproduced with a real SIGINT 6/6 (`written 194,
+            # on_disk 200, state OPEN, clean true`). That is the SAME
+            # ownership window A1 set out to eliminate, relocated rather
+            # than closed.
             digest = record["record_digest"]
-            self._first_digest = self._first_digest or digest
-            self._last_digest = digest
-            self._stream_digest = fold_stream_digest(self._stream_digest, digest)
-            self._prev_digest = digest
-            self._ordinal += 1
-            self.accounting.written += 1
+            new_first_digest = self._first_digest or digest
+            new_stream_digest = fold_stream_digest(self._stream_digest, digest)
+            new_ordinal = self._ordinal + 1
+            new_written = self.accounting.written + 1
+            committed = False
+            booked_failure = False
+            with self._defer_commit_signals:
+                try:
+                    # `pre_write_hook` runs INSIDE this try, not before it: tests
+                    # use it to inject exactly the class of failure this block
+                    # exists to contain (a durability/OS-level fault at the
+                    # write boundary), and it must be treated identically to a
+                    # real `self._fh.write()` failure -- invalidate the segment,
+                    # never let it escape as a bare, unbooked exception.
+                    if self.pre_write_hook is not None:
+                        self.pre_write_hook(self)
+                    # THE commitment point. Nothing before this line is durable;
+                    # nothing after it may fail without invalidating the segment
+                    # -- a caller must never be told ACCEPTED for an event whose
+                    # bytes did not reach the file.
+                    self._fh.write(line + b"\n")
+                    # Set the INSTANT the bytes enter the stream, so the `finally`
+                    # below applies the delta for every interruption after this
+                    # point. `_since_flush`/`flush()` follow, deliberately, inside
+                    # the try: a flush failure is an ordinary write fault and must
+                    # invalidate the segment, but it must not un-book a record
+                    # whose bytes are already in the stream.
+                    committed = True
+                    self._since_flush += 1
+                    if self._since_flush >= self._flush_every:
+                        self._fh.flush()
+                        self._since_flush = 0
+                except BaseException as exc:        # noqa: BLE001 - recorded
+                    # An OS-level write failure AFTER a value was proven canonical
+                    # is the one outcome that must invalidate the whole segment --
+                    # continuing would append the NEXT record after a possibly
+                    # half-written one and amplify the corruption, exactly as the
+                    # old writer thread's terminal `except` did.
+                    self._writer_error = exc
+                    self.state = SegmentState.INVALID
+                    self.accounting.fail_after_accept(RejectReason.WRITER_FAILED)
+                    # The tail below must not ALSO book this event as written: it
+                    # has been booked as `failed_after_accept`, the segment is
+                    # INVALID, and nothing further will ever be appended to it.
+                    booked_failure = True
+                    if isinstance(exc, (KeyboardInterrupt, SystemExit, GeneratorExit)):
+                        # A1's OWN new risk, absent from the old design: the
+                        # actual disk write now runs on the PRODUCER's thread,
+                        # not an isolated background writer thread a real signal
+                        # could never reach. `submit()`'s docstring promises "no
+                        # path drops an event without returning a reason" for
+                        # ORDINARY outcomes (a canonical-but-unwritable value, a
+                        # genuine OS write failure) -- it does NOT promise to
+                        # swallow a signal-class exception into an ordinary
+                        # return value. Doing so would mean an operator's Ctrl-C
+                        # (or a `SystemExit` from elsewhere in the process)
+                        # landing on exactly this line silently turns into
+                        # "the writer rejected one event" and the caller's loop
+                        # keeps calling `submit()` -- which now IMMEDIATELY
+                        # rejects every further call as `WRITER_FAILED` (the
+                        # segment is correctly INVALID either way), but the
+                        # process itself never learns it was asked to stop. The
+                        # segment is still marked INVALID above, exactly as for
+                        # any other write fault -- fail-closed evidence handling
+                        # does not change -- but the exception itself is
+                        # RE-RAISED rather than absorbed, matching ordinary
+                        # Python signal semantics -- consistent with the encode
+                        # step just above, which catches only `Exception` (not
+                        # `BaseException`), so a signal-class exception landing
+                        # during canonicalisation was ALREADY never caught there
+                        # in the first place; this branch gives the write step
+                        # the same property explicitly, since it has to catch
+                        # `BaseException` broadly for the OS-failure case.
+                        raise
+                    return RejectReason.WRITER_FAILED
+                finally:
+                    # A8 -- THE TAIL, APPLIED FROM A `finally` ON THE SAME `try`
+                    # AS THE WRITE. Six plain assignments of values computed
+                    # before the write; nothing here can raise, and nothing here
+                    # can be skipped by an exception (signal-class or otherwise)
+                    # arriving after the bytes entered the stream. The invariant
+                    # is exactly: `_ordinal`/`_prev_digest`/`written` advance if
+                    # and only if `write()` returned, whatever happens next.
+                    if committed and not booked_failure:
+                        self._first_digest = new_first_digest
+                        self._last_digest = digest
+                        self._stream_digest = new_stream_digest
+                        self._prev_digest = digest
+                        self._ordinal = new_ordinal
+                        self.accounting.written = new_written
             return None
 
     @property
@@ -1668,15 +1950,32 @@ class SegmentWriter:
         # failure can be attributed to the exact stage rather than collapsed
         # into one generic error.
         try:
-            self._stage("flush")
-            self._fh.flush()
-            self._stage("fsync")
-            self._fh.close()
-            fd = os.open(self.events_path, os.O_RDONLY)
-            try:
-                os.fsync(fd)
-            finally:
-                os.close(fd)
+            # KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A8: the SAME deferral
+            # `submit()` puts around its commitment region, applied to
+            # close()'s -- once per segment, so the cost is irrelevant.
+            # Measured mechanism: an asynchronous exception delivered inside
+            # `GzipFile`'s internal `BufferedWriter.flush()` can leave
+            # `write_pos` un-advanced after the underlying
+            # `_WriteBufferStream.write` has ALREADY compressed and emitted
+            # those bytes; the next flush (here, or in `_close_fh`) emits
+            # them a second time. Observed on the real writer under the
+            # `asyncexc` harness: 43 records with duplicate
+            # `receive_ordinal`s appended after record 2,411, and
+            # `verify_chain` reporting "chain break". Reconciliation catches
+            # it and the segment fails CLOSED -- but "fails closed" here
+            # again means every durable record becomes unpublishable, which
+            # is precisely the outcome BLOCKER 1 exists to stop. An
+            # operator's Ctrl-C during shutdown lands exactly here.
+            with self._defer_commit_signals:
+                self._stage("flush")
+                self._fh.flush()
+                self._stage("fsync")
+                self._fh.close()
+                fd = os.open(self.events_path, os.O_RDONLY)
+                try:
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
         except BaseException as exc:
             self.state = SegmentState.INVALID
             self._writer_error = exc
@@ -1900,6 +2199,16 @@ def publish_manifest(directory: Path, manifest: dict, *, stage=None) -> Path:
         if stage is not None:
             stage(name)
 
+    # KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A8: the encode gets its OWN stage
+    # marker. It can raise (`CanonicalError`, over a `subscription_metadata`
+    # value that fits at its own root but not nested inside a 20-key manifest
+    # body -- see `_MANIFEST_METADATA_WORK_RESERVE`), and with no marker of
+    # its own `self.failed_stage` still held whatever the LAST successful
+    # stage was: `close()` reported the failure as stage `'fsync'`, an
+    # event-file stage that had already succeeded several steps earlier. An
+    # operator was sent to look at event-file durability for a manifest
+    # serialisation refusal.
+    _s("manifest_encode")
     payload = canonical_bytes(manifest)
     _s("manifest_temp_create")
     # O_EXCL|O_NOFOLLOW: a pre-planted symlink at the temp path would otherwise
@@ -2303,6 +2612,37 @@ RESIDUE_TORN_PARTIAL = "torn_partial"
 RESIDUE_MALFORMED = "malformed"
 RESIDUE_UNSAFE_OVER_LIMIT = "unsafe_over_limit"
 # KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A4: a FIFTH, FAIL-CLOSED classification
+# KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A8 -- A SIXTH LABEL: "the prefix is
+# readable, the END IS UNKNOWN".
+#
+# A4 was right that a LIVE segment must stop being reported as corruption
+# (`GzipFile.flush()` emits `Z_SYNC_FLUSH`, never a trailer, so a healthy
+# open segment never reaches `dec.eof`), and it fixed that by requiring
+# `decode_had_error` before calling a stream torn. But a CLEAN BYTE
+# TRUNCATION produces no zlib fault either: measured `(eof=False,
+# errored=False)` on 696 of 6,000 randomly corrupted streams, and
+# `errored=False` for EVERY pure tail truncation. So A4 did not merely
+# reclassify live segments -- it made truncation report
+# `RESIDUE_RECOVERABLE_INTACT, chain_valid=True`. A 30-record segment
+# truncated after record 6 (24 records physically removed) reported
+# `recoverable_intact, chain_valid=True, records_read=6`; so did 2-byte,
+# 8-byte and 0-byte files. Every one of those was `torn_partial` at
+# 321c719. And because `verify_segment` appended an explanatory reason for
+# UNREADABLE/UNSAFE_OVER_LIMIT/MALFORMED/TORN_PARTIAL but NOT for
+# RECOVERABLE_INTACT, an operator looking at a residue truncated to HIDE
+# records saw only "segment has no manifest".
+#
+# Truncation is not exotic. Page-granular writeback, a partial `write()`
+# and filesystem crash-truncation all leave a byte-perfect prefix; so does
+# anyone deleting the tail on purpose. It is genuinely indistinguishable
+# from a live segment from the bytes alone -- which is exactly why the
+# honest label is neither "intact" nor "torn" but "unterminated": the
+# prefix decoded with zero faults and every line parsed and the chain held,
+# AND the stream never reached a gzip trailer, so nothing establishes that
+# what was read is all there was. `RESIDUE_RECOVERABLE_INTACT` now means
+# what its name claims: a real trailer was reached.
+RESIDUE_UNTERMINATED = "unterminated"
+# A4's FIFTH, FAIL-CLOSED classification
 # for a residue that VISIBLY EXISTS (`verify_segment`'s `presence()` check
 # already confirmed that before this is ever reached) but could not be READ
 # at all -- permission denied, or any other `evidence_fs.bounded_read`
@@ -2357,7 +2697,13 @@ def _classify_residue(*, chain_ok: bool) -> str:
                 return RESIDUE_MALFORMED
             return RESIDUE_TORN_PARTIAL
         # No fault occurred; this read merely ran out of bytes. Fall through
-        # to the SAME content-level checks a fully-decoded stream gets.
+        # to the SAME content-level checks a fully-decoded stream gets --
+        # but A8 does NOT let it reach `RESIDUE_RECOVERABLE_INTACT`, because
+        # nothing here established that the prefix read is the whole prefix
+        # written. See `RESIDUE_UNTERMINATED`.
+        unterminated = True
+    else:
+        unterminated = False
     if read_segment_records.last_unreadable > 0:
         # The compressed bytes decoded to completion, but at least one
         # decoded LINE was not parseable canonical JSON -- content-level
@@ -2370,6 +2716,12 @@ def _classify_residue(*, chain_ok: bool) -> str:
         # this is not a fifth category, it is the SAME finding reached
         # through a different mechanism than a truncated write.
         return RESIDUE_TORN_PARTIAL
+    # A8: the two remaining outcomes differ ONLY in whether the compressed
+    # stream reached a real gzip trailer. Everything else about them is
+    # identical -- zero decode faults, every line parsed, the chain held --
+    # which is precisely why they must not share a label.
+    if unterminated:
+        return RESIDUE_UNTERMINATED
     return RESIDUE_RECOVERABLE_INTACT
 
 
@@ -2610,10 +2962,49 @@ def verify_segment(directory, *, environment: str, allow_open: bool = False,
                     "own EOF, a decoded line was not parseable canonical "
                     "JSON, or the recovered records do not chain (a "
                     "deletion, insertion, reorder, or a copied record)")
+            elif classification == RESIDUE_UNTERMINATED:
+                residue_reasons.append(
+                    "UNTERMINATED_RESIDUE: the prefix read is readable and "
+                    "chain-valid, but the compressed stream never reached a "
+                    "gzip trailer, so its END IS UNKNOWN. This is the NORMAL "
+                    "shape of a live collector's currently-open segment "
+                    "(GzipFile.flush() emits Z_SYNC_FLUSH, never a trailer) "
+                    "-- and it is also, byte for byte, the shape of a "
+                    "segment whose tail was TRUNCATED, by a crash or "
+                    "deliberately. Nothing in the bytes distinguishes them, "
+                    "so this is NOT reported as RECOVERABLE_INTACT: how many "
+                    "records were written and lost cannot be established "
+                    "from this file alone")
+            elif classification == RESIDUE_RECOVERABLE_INTACT:
+                # A8: RECOVERABLE_INTACT had NO reason line of its own, so a
+                # residue truncated to hide records presented to an operator
+                # as the bare "segment has no manifest" boilerplate. Now
+                # every classification says what it means.
+                residue_reasons.append(
+                    "RECOVERABLE_INTACT_RESIDUE: the compressed stream "
+                    "reached a real gzip trailer, every decoded line parsed "
+                    "as canonical JSON, and the recovered records chain. "
+                    "The segment is still UNCOMMITTED -- there is no "
+                    "manifest -- but its content is complete as written")
             v = SegmentVerdict(
                 seg_id, SegmentState.OPEN, False, residue_reasons,
                 None, len(residue_records))
-            v.chain_valid = residue_chain.ok
+            # KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A8 -- `chain_valid` MUST
+            # NOT BE True FOR A RESIDUE NOBODY COULD READ. `verify_chain([])`
+            # returns `ok=True` (an empty chain is trivially consistent) and
+            # that value was copied here unconditionally, so a live segment
+            # holding 4 durable records, `chmod 000`, verified as
+            # `records_read: 0, chain_valid: true, verdict: VALID,
+            # warnings: []`. The free-text reason above said "unreadable",
+            # but a consumer branching on the FIELD -- the entire reason the
+            # field exists -- read `true` for evidence nobody opened. The
+            # same argument applies to a residue only PARTIALLY read because
+            # it blew the safety ceiling: the chain held over the capped
+            # prefix, which says nothing about the rest.
+            if classification in (RESIDUE_UNREADABLE, RESIDUE_UNSAFE_OVER_LIMIT):
+                v.chain_valid = False
+            else:
+                v.chain_valid = residue_chain.ok
             v.residue_classification = classification
             return v
         return SegmentVerdict(
@@ -3238,6 +3629,33 @@ def _verify_archive_inner(root, *, environment: str, expected_archive_id,
             "that means letting the writer reopen and continue the "
             "segment, or discarding it -- requires direct, reviewed "
             f"operator access, not a scripted command: {uncommitted_detail}")
+    # KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A8 -- AN UNREADABLE OR ONLY
+    # PARTIALLY-READ RESIDUE MUST CROSS THE ARCHIVE LEVEL. The warning above
+    # is gated on `uncommitted_records_present`, i.e. on records the verifier
+    # SUCCEEDED in reading -- which is exactly zero for a residue it could
+    # not open. A `chmod 000` events file holding four durable records
+    # therefore produced `verdict: VALID, warnings: []`: the whole finding
+    # lived in a per-segment `reasons` string an archive-level consumer never
+    # looks at. "Nothing could be read" is not the same shape of fact as
+    # "nothing was there", and the archive summary has to be able to say so.
+    # It stays a WARNING, not a `reason` -- residue never gates the verdict,
+    # by the same design decision A6 documented -- but it can no longer be
+    # invisible.
+    unproven_residue = [
+        d for d in uncommitted_detail
+        if d["residue_classification"] in (RESIDUE_UNREADABLE,
+                                           RESIDUE_UNSAFE_OVER_LIMIT)]
+    if unproven_residue:
+        warnings.append(
+            f"UNPROVEN_RESIDUE_CONTENT: {len(unproven_residue)} uncommitted "
+            "segment(s) hold residue whose content could NOT be established "
+            "-- unreadable (permission or another filesystem refusal), or "
+            "only partially decoded because it exceeded the safety ceiling. "
+            "`records_read` is a floor, not a count, and `chain_valid` is "
+            "reported False for these because no chain was ever verified "
+            "over the whole file. Do not read a low record count here as "
+            "evidence that little was written: "
+            f"{[(d['segment_id'], d['residue_classification']) for d in unproven_residue]}")
     if orphaned:
         reasons.append(
             f"ORPHANED_COMMITTED_SEGMENT: {orphaned} are committed evidence on "

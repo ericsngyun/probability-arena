@@ -21,6 +21,27 @@ Each `Mutation` names:
 is applied -- `apply_mutation` asserts this rather than silently patching
 the wrong (or every) occurrence, since a `.replace()` with `count=1` on
 non-unique text is a silent correctness bug in the harness itself.
+
+WHAT A "10/10 CAUGHT" RESULT DOES AND DOES NOT MEAN
+(KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A8 -- stated here, at the source of
+the figure, because it was being read as more than it is.)
+
+EVERY mutation in this catalogue targets a file under `tests/`. NOT ONE
+touches `app/`. A clean sweep therefore proves exactly one thing: the
+verification layer's own guard vocabulary is intact -- weaken a harness and
+a named test goes red. That is worth having, and it is ALL it is.
+
+It proves NOTHING about `app/realtime/segment.py`: nothing about
+`submit()`'s or `close()`'s logic, nothing about signal handling at the
+commitment point, nothing about the work-budget reserves, nothing about
+residue classification. Three independent reviewers found real defects in
+exactly those places while this campaign was reporting a clean sweep --
+which is the demonstration rather than the argument.
+
+Do not cite this number as evidence that a production fix is correct.
+Production behaviour is pinned by tests that assert against `app/`
+directly and were each verified to FAIL with their fix reverted -- see
+`tests/test_kalshi_archive_replay_integrity_a8_001.py`.
 """
 
 from __future__ import annotations

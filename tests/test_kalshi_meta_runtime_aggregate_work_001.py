@@ -184,6 +184,31 @@ class TestAdmissionWalkHangsAtReviewerDepth:
         exceeds `CapabilityLimits.MAX_CANONICAL_WORK_UNITS` long before the
         walk would otherwise still be running, so this now returns quickly
         with a typed refusal instead of hanging.
+
+        KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A8 -- REFORMULATED
+        LOAD-INDEPENDENTLY. This test ran the walk in a subprocess under a
+        FIXED 4.0 s parent deadline and asserted `COMPLETED`. The algorithm
+        itself takes ~1.8-2.0 s; the remaining ~2 s of that budget went to
+        `subprocess.Popen` cold start plus re-importing the dependency tree,
+        both machine- and load-dependent. So the assertion was in practice
+        "this machine is not busy right now": measured 6 FAILURES OUT OF 9
+        isolated runs on an UNLOADED machine, and again inside a full-suite
+        run.
+
+        The property this test is FOR -- the walk is bounded by AGGREGATE
+        WORK, so it refuses rather than running to exhaustion -- is
+        witnessed by the refusal itself. `canonical.WorkBudget.consume`
+        raises when its own visited-node COUNTER crosses
+        `MAX_CANONICAL_WORK_UNITS`; there is no clock anywhere in that
+        decision, so no amount of machine load can change whether it fires
+        or what it says. That counter is what is asserted on now.
+
+        The subprocess is KEPT -- a genuine non-return must never hang the
+        suite -- but its deadline is now a backstop, not the property, and
+        is generous enough that reaching it means the walk really did not
+        terminate. Raising the deadline alone would have been the wrong fix
+        on its own; it is only acceptable because the deadline is no longer
+        carrying the claim.
         """
         script = """
 from app.realtime import segment as sg
@@ -193,16 +218,26 @@ for _ in range(61):
 r = sg.non_canonical_reason(x)
 print("RESULT:" + repr(r))
 """
-        v = run_with_parent_timeout(script, timeout_s=4.0, repo_root=REPO_ROOT)
+        v = run_with_parent_timeout(script, timeout_s=60.0, repo_root=REPO_ROOT)
         assert v.classification == "COMPLETED", (
-            f"expected the admission walk at depth 61 to return quickly "
-            f"with a bounded refusal now that defect B is fixed; got "
-            f"{v.classification} instead (stdout={v.stdout!r} "
+            "the depth-61 admission walk did not TERMINATE within 60s -- at "
+            "that budget this is a genuine non-return (the algorithm alone "
+            f"measures ~1.8-2.0s), not a loaded machine; got "
+            f"{v.classification} (stdout={v.stdout!r} "
             f"stderr={v.stderr[-300:]!r})")
         assert "RESULT:None" not in v.stdout, (
             "depth 61 must be REFUSED (aggregate work over budget), not "
             f"silently admitted: {v.stdout!r}")
+        # THE LOAD-INDEPENDENT ASSERTION: the algorithm's OWN work-unit
+        # counter reports that it exceeded its budget, and names the budget.
+        # Before defect B there was no aggregate counter at all and only a
+        # wall-clock deadline could stop this walk; the presence of this
+        # text IS the fix, and it cannot be produced by a fast machine or
+        # suppressed by a slow one.
         assert "exceeded the total aggregate work bound" in v.stdout, v.stdout
+        assert str(cn.CapabilityLimits.MAX_CANONICAL_WORK_UNITS) in v.stdout, (
+            "the refusal must name the aggregate bound it hit, so this "
+            f"cannot pass on some unrelated refusal: {v.stdout!r}")
 
     def test_a_moderate_depth_the_walk_can_still_finish_at_is_a_true_negative(self):
         """Calibration control: depth 15 must NOT time out, or the assertion
