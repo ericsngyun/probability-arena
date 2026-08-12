@@ -4285,6 +4285,12 @@
           "archive_migrate_legacy",
           "migrate_legacy_archive",
           "SegmentWriter.submit",
+          "_ChainState(...) [unbound name]"
+        ],
+        [
+          "archive_migrate_legacy",
+          "migrate_legacy_archive",
+          "SegmentWriter.submit",
           "build_record",
           "envelope_fields.get(...) [receiver type unknown]"
         ],
@@ -19098,6 +19104,11 @@
         [
           "migrate_legacy_archive",
           "SegmentWriter.submit",
+          "_ChainState(...) [unbound name]"
+        ],
+        [
+          "migrate_legacy_archive",
+          "SegmentWriter.submit",
           "build_record",
           "envelope_fields.get(...) [receiver type unknown]"
         ],
@@ -22165,6 +22176,10 @@
         [
           "SegmentWriter.submit",
           "<expr>.write(...) [chained call]"
+        ],
+        [
+          "SegmentWriter.submit",
+          "_ChainState(...) [unbound name]"
         ],
         [
           "SegmentWriter.submit",

@@ -27,6 +27,7 @@ import gzip
 import io
 import json
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -249,6 +250,220 @@ class TestSignalDeferralAcrossTheCommitmentRegion:
         assert w.close()["record_count"] == 1
 
 
+class _TerminateHandler:
+    """The single most common shutdown idiom -- `raise SystemExit(0)` from a
+    `SIGTERM` handler -- as an OBJECT rather than a function.
+
+    Being an object is what makes the regression below deterministic instead
+    of a soak. `_DeferCommitSignals.__enter__` evaluates `prev ==
+    self._defer` for each signal it is about to replace; when `prev` is an
+    object, that comparison is a PYTHON-level call, and a Python-level call
+    is a point at which CPython delivers a pending signal. Releasing a
+    kernel-pending `SIGTERM` from inside `__eq__` therefore lands a REAL
+    signal, running the application's REAL handler, at exactly the boundary
+    the reviewer reproduced by brute force (525 SIGTERMs across a
+    20,000-record submit loop). Nothing about the writer is stubbed.
+    """
+
+    def __init__(self):
+        self.release_on_compare = False
+        self.calls = 0
+
+    def __call__(self, signum, frame):
+        self.calls += 1
+        raise SystemExit(0)
+
+    def __eq__(self, other):
+        if self.release_on_compare:
+            self.release_on_compare = False
+            signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGTERM})
+        return NotImplemented
+
+    __hash__ = object.__hash__
+
+
+class TestTheDeferralCannotDeafenTheProcessPermanently:
+    """A8 ROUND 2 -- BLOCKER 1.
+
+    `__enter__` installed `_defer` for SIGINT, appended to a LOCAL list, then
+    looped to SIGTERM -- where the application's still-live SIGTERM handler
+    could raise. `SystemExit` is a `BaseException`, outside the
+    `except (ValueError, OSError, RuntimeError)` tuple, so the rollback never
+    ran and `self._saved` was never assigned: SIGINT stayed bound to `_defer`
+    PERMANENTLY, every later Ctrl-C landed in `self._pending` (reset to `[]`
+    on the next entry, never drained), and `installed` read False so the
+    existing tests could not see it. The operator could no longer interrupt
+    the collector at all -- a NEW permanent-controllability failure inside
+    the mechanism added to make signals safe.
+    """
+
+    def test_a_raising_sigterm_handler_cannot_leave_sigint_deaf(
+            self, tmp_path, default_sigint):
+        """THE PIN, with a real signal and a real `raise SystemExit(0)`.
+
+        Only the DELIVERY MOMENT is controlled (a kernel-pending SIGTERM
+        released from inside the handler object's `__eq__`); the writer, the
+        handler and the signal are all genuine.
+
+        `pthread_kill(main_thread)`, not `os.kill(pid)`: a PROCESS-directed
+        signal may be handed to any thread whose mask allows it, and in a
+        full-suite run other threads left over from earlier tests are exactly
+        the condition under which a main-thread `pthread_sigmask` block stops
+        holding -- which is the very fact `_DeferCommitSignals`' module
+        comment uses to REFUSE `pthread_sigmask` as a PRODUCTION mechanism.
+        A thread-directed signal stays pending for THIS thread regardless of
+        what else is running, so the instrument works in isolation and inside
+        the suite alike.
+        """
+        w, _ = make_writer(tmp_path, "seg-deaf")
+        handler = _TerminateHandler()
+        previous_term = signal.getsignal(signal.SIGTERM)
+        signal.signal(signal.SIGTERM, handler)
+        signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM})
+        try:
+            signal.pthread_kill(threading.get_ident(), signal.SIGTERM)
+            handler.release_on_compare = True
+            with pytest.raises(SystemExit):
+                w.submit(fields(0))
+            assert handler.calls == 1, (
+                "the SIGTERM was never actually delivered, so this test did "
+                "not exercise the window it exists for")
+            assert signal.getsignal(signal.SIGINT) is signal.default_int_handler, (
+                "SIGINT is still bound to the writer's deferring handler "
+                "after a SystemExit escaped `__enter__`: the process is now "
+                "PERMANENTLY deaf to Ctrl-C and every interrupt an operator "
+                "sends disappears into `_pending`")
+            assert w._defer_commit_signals._saved == ()
+            assert w._defer_commit_signals.installed is False
+            # ...and the writer is still usable: failing to obtain the
+            # deferral must never break the write path.
+            assert w.submit(fields(1)) is None
+        finally:
+            signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGTERM})
+            signal.signal(signal.SIGTERM, previous_term)
+
+    def test_a_baseexception_between_the_two_restores_cannot_leak_sigint(
+            self, tmp_path, default_sigint):
+        """The IDENTICAL hazard in `__exit__`.
+
+        `contextlib.suppress(Exception)` does not catch `BaseException`, and
+        `reversed(self._saved)` restored SIGTERM BEFORE SIGINT -- so a
+        just-restored SIGTERM handler firing between the two leaked SIGINT
+        exactly the same way. There is no Python-level call inside
+        `__exit__`'s restore loop to hang a deterministic real-signal release
+        on, so the delivery is injected at the mechanism instead: a shim over
+        the `signal` module `segment.py` itself uses, which raises
+        `SystemExit` from the FIRST restore. That is the same event a real
+        SIGTERM produces, at the same place.
+        """
+        w, _ = make_writer(tmp_path, "seg-exit-leak")
+        real_signal = sg.signal
+        state = {"restores": 0, "installs": 0}
+
+        class _Shim:
+            SIGINT = real_signal.SIGINT
+            SIGTERM = real_signal.SIGTERM
+
+            @staticmethod
+            def getsignal(sig):
+                return real_signal.getsignal(sig)
+
+            @staticmethod
+            def signal(sig, handler):
+                # Only the RESTORE direction detonates; installing `_defer`
+                # must still work or the region is never entered. `==`, not
+                # `is`: every attribute access on `_defer` builds a FRESH
+                # bound-method object, so an identity test here matches
+                # nothing and detonates on the very first INSTALL instead --
+                # which silently turns this into a second `__enter__` test.
+                deferring = handler == w._defer_commit_signals._defer
+                state["installs"] += int(deferring)
+                if not deferring and state["restores"] == 0:
+                    state["restores"] += 1
+                    real_signal.signal(sig, handler)
+                    raise SystemExit("a restored SIGTERM handler fired")
+                return real_signal.signal(sig, handler)
+
+        try:
+            sg.signal = _Shim
+            with pytest.raises(SystemExit):
+                w.submit(fields(0))
+        finally:
+            sg.signal = real_signal
+        assert state["installs"] == 2, (
+            "the deferral was not fully installed, so `__exit__` never had "
+            f"two handlers to restore: {state}")
+        assert state["restores"] == 1, "the injected restore never fired"
+        assert signal.getsignal(signal.SIGINT) is signal.default_int_handler, (
+            "a BaseException raised while restoring the FIRST handler left "
+            "SIGINT bound to the writer's deferring handler -- the same "
+            "permanent deafness, reached through `__exit__` instead of "
+            "`__enter__`")
+        assert w._defer_commit_signals._saved == ()
+        assert w._defer_commit_signals.installed is False
+
+    def test_the_restore_is_idempotent_and_never_clobbers_a_new_handler(
+            self, tmp_path, default_sigint):
+        """The retry loop must not undo a handler the application installed
+        while the region was open -- restoring is conditional on the signal
+        still being bound to `_defer`, not unconditional."""
+        w, _ = make_writer(tmp_path, "seg-idem")
+        replacement = lambda signum, frame: None      # noqa: E731
+
+        def swap(writer):
+            # Whatever the application does inside the region wins.
+            signal.signal(signal.SIGINT, replacement)
+
+        w.pre_write_hook = swap
+        try:
+            assert w.submit(fields(0)) is None
+            assert signal.getsignal(signal.SIGINT) is replacement, (
+                "the restore clobbered a handler installed AFTER the "
+                "deferral went in")
+        finally:
+            signal.signal(signal.SIGINT, signal.default_int_handler)
+
+    def test_the_region_is_documented_as_uninterruptible_while_it_stalls(self):
+        """S4. The deferral region has NO timeout and covers `pre_write_hook`
+        and `flush()` as well as `write()`. Measured: a 3 s blocking op inside
+        it withheld a real Ctrl-C for 2.5 s, and the known `pre_write_hook`
+        reentrancy deadlock is now un-interruptible (two real Ctrl-Cs did not
+        break it; an external watchdog had to). That is a real loss of
+        operator control and the module must SAY so rather than let an
+        operator discover it during an incident."""
+        text = Path(sg.__file__).read_text()
+        head = text.split("class _DeferCommitSignals", 1)[0]
+        assert "NO TIMEOUT" in head.upper(), (
+            "nothing in the deferral's own documentation says the region is "
+            "unbounded in time")
+        assert "Ctrl-C-proof" in head or "un-interruptible" in head.lower(), (
+            "the docs do not state plainly that a stalled filesystem makes "
+            "the collector uninterruptible for the duration of the stall")
+
+    def test_the_pthread_sigmask_refutation_is_a_committed_harness(self):
+        """S5. The measurement that justifies rejecting `pthread_sigmask`
+        existed ONLY as prose in a code comment -- the exact pattern this
+        milestone has been eliminating -- and its magnitude was wrong
+        (`300/300` claimed; 14-37/300 measured). The harness is now committed
+        next to `segment_close_cost.py` and the comment cites it."""
+        harness = REPO_ROOT / "tests" / "benchmarks" / "pthread_sigmask_refutation.py"
+        assert harness.is_file(), (
+            "the pthread_sigmask refutation is still prose-only; `grep -rn "
+            "pthread_sigmask tests/` must find a runnable harness")
+        text = Path(sg.__file__).read_text()
+        assert "tests/benchmarks/pthread_sigmask_refutation.py" in text, (
+            "segment.py's design comment does not cite the harness that "
+            "produced its numbers")
+        # The refuted magnitude must no longer be STATED AS A RESULT. It may
+        # still be named as the thing that was corrected, which is why this
+        # matches the result-row form rather than the bare number.
+        assert "-> 300/300" not in text, (
+            "the refuted magnitude is still asserted as a measurement")
+        assert "That magnitude was wrong" in text, (
+            "the correction is not recorded, so the next reader has no way "
+            "to know the old number was measured wrong rather than lost")
+
+
 # =====================================================================
 # 2. BLOCKER 2 -- THE OWNERSHIP WINDOW WAS RELOCATED, NOT ELIMINATED.
 #
@@ -323,14 +538,53 @@ class TestTheStateDeltaIsComputedBeforeTheWrite:
         because reproducing the residual window requires landing an
         asynchronous exception on one exact bytecode boundary.
 
-        The rule: inside `submit()`, once a statement writes to `_fh`,
-        every subsequent assignment to a chain-state attribute
-        (`_first_digest`, `_last_digest`, `_stream_digest`, `_prev_digest`,
-        `_ordinal`) must be lexically inside a `finally:` handler.
+        The rule: inside `submit()`, once a statement writes to `_fh`, every
+        subsequent assignment to a piece of commit state -- `self._chain`
+        (the whole chain, in one immutable value) and `self.accounting.
+        written` -- must be lexically inside a `finally:` handler.
+
+        A8 ROUND 2, TWO CHANGES:
+
+        * `accounting.written` IS NOW PINNED. It was missing from the guard's
+          attribute set entirely, AND the visitor required the assignment
+          target's `.value` to be an `ast.Name` called `"self"`, so
+          `self.accounting.written = ...` -- an `ast.Attribute` value -- was
+          invisible to it twice over. Moving that one statement back above
+          the `finally` would have passed the pin while reopening the exact
+          defect it exists to prevent.
+        * The five separate chain attributes are ONE `self._chain`, so a
+          single `STORE_ATTR` applies them. `finally` guarantees the body is
+          ENTERED, not that it COMPLETES, so five stores were five chances to
+          stop halfway; one store cannot be half-applied.
         """
         tree = _submit_ast()
-        STATE_ATTRS = {"_first_digest", "_last_digest", "_stream_digest",
-                       "_prev_digest", "_ordinal"}
+        # (attribute name, required owner path) -- the owner path is matched
+        # structurally, so `self.accounting.written` is as visible as
+        # `self._chain`.
+        STATE_ATTRS = {"_chain": ("self",),
+                       "written": ("self", "accounting")}
+        RETIRED = {"_first_digest", "_last_digest", "_stream_digest",
+                   "_prev_digest", "_ordinal"}
+
+        def _owner_path(node):
+            """('self',) for `self.x`, ('self', 'accounting') for
+            `self.accounting.x`; None for anything else."""
+            parts = []
+            while isinstance(node, ast.Attribute):
+                parts.append(node.attr)
+                node = node.value
+            if not isinstance(node, ast.Name):
+                return None
+            parts.append(node.id)
+            return tuple(reversed(parts))
+
+        def _match(target):
+            if not isinstance(target, ast.Attribute):
+                return None
+            want = STATE_ATTRS.get(target.attr)
+            if want is None:
+                return None
+            return target.attr if _owner_path(target.value) == want else None
 
         def _writes_fh(node) -> bool:
             for n in ast.walk(node):
@@ -357,21 +611,16 @@ class TestTheStateDeltaIsComputedBeforeTheWrite:
                 return
             if isinstance(node, ast.Assign):
                 for target in node.targets:
-                    if (isinstance(target, ast.Attribute)
-                            and target.attr in STATE_ATTRS
-                            and isinstance(target.value, ast.Name)
-                            and target.value.id == "self"):
+                    hit = _match(target)
+                    if hit is not None:
                         if in_finally:
-                            found_in_finally.add(target.attr)
+                            found_in_finally.add(hit)
                         else:
-                            offenders.append((target.attr, target.lineno))
+                            offenders.append((hit, target.lineno))
             if isinstance(node, ast.AugAssign):
-                target = node.target
-                if (isinstance(target, ast.Attribute)
-                        and target.attr in STATE_ATTRS
-                        and isinstance(target.value, ast.Name)
-                        and target.value.id == "self"):
-                    offenders.append((target.attr, target.lineno))
+                hit = _match(node.target)
+                if hit is not None:
+                    offenders.append((hit, node.target.lineno))
             for child in ast.iter_child_nodes(node):
                 _walk(child, in_finally)
 
@@ -382,14 +631,82 @@ class TestTheStateDeltaIsComputedBeforeTheWrite:
             _walk(stmt, in_finally=False)
 
         assert not offenders, (
-            "submit() assigns chain state outside any `finally:` handler at "
+            "submit() assigns commit state outside any `finally:` handler at "
             f"{offenders} -- an asynchronous exception landing there leaves "
-            "the writer OPEN, healthy and `clean()` with `_ordinal`/"
-            "`_prev_digest` behind the bytes already on disk, which breaks "
-            "the on-disk chain for every subsequent record")
-        assert found_in_finally == STATE_ATTRS, (
-            "these chain-state attributes are no longer applied from a "
-            f"`finally`: {sorted(STATE_ATTRS - found_in_finally)}")
+            "the writer OPEN, healthy and `clean()` with the chain or "
+            "`written` behind the bytes already on disk, which breaks the "
+            "on-disk chain for every subsequent record")
+        assert found_in_finally == set(STATE_ATTRS), (
+            "this commit state is no longer applied from a `finally`: "
+            f"{sorted(set(STATE_ATTRS) - found_in_finally)}")
+
+        # And the five retired attributes must not quietly come back as
+        # separate stores: that is what re-opens the partial-apply window
+        # the single `_chain` store closes.
+        source = Path(sg.__file__).read_text()
+        cls = next(n for n in ast.parse(source).body
+                   if isinstance(n, ast.ClassDef) and n.name == "SegmentWriter")
+        resurrected = {
+            n.attr for n in ast.walk(cls)
+            if isinstance(n, ast.Attribute) and n.attr in RETIRED
+            and isinstance(n.value, ast.Name) and n.value.id == "self"}
+        assert not resurrected, (
+            f"the collapsed chain fields are separate attributes again: "
+            f"{sorted(resurrected)} -- `finally` guarantees ENTRY, not "
+            "completion, so N stores are N chances to stop halfway")
+
+    def test_a_failure_booking_written_is_loud_not_silently_poisoning(
+            self, tmp_path):
+        """S2 -- THE BEHAVIOURAL PIN for the one field that cannot join
+        `_ChainState`.
+
+        `accounting.written` lives on another object, so it is a second
+        `STORE_ATTR` and an asynchronous exception can still land between it
+        and the chain store. The round-1 shape left the writer in exactly the
+        state the reviewer reproduced -- `written` behind `on_disk`, `state
+        OPEN`, `healthy true`, `clean true` -- and `append()` went on
+        returning SUCCESS for up to 13,000 further records that `close()` was
+        already guaranteed to discard hours later. Fail-closed-eventually is
+        not fail-closed.
+
+        The interruption is injected AT the store rather than raced onto it
+        (the same amplification this milestone already accepts): a
+        `WriterAccounting` whose `written` setter raises once. What is under
+        test is the writer's REACTION, and that is production code.
+        """
+
+        class _WrittenBomb(sg.WriterAccounting):
+            armed = False
+
+            def __setattr__(self, name, value):
+                if name == "written" and self.__dict__.get("armed"):
+                    self.__dict__["armed"] = False
+                    raise SystemExit("async exception between the two stores")
+                object.__setattr__(self, name, value)
+
+        w, root = make_writer(tmp_path, "seg-written-guard")
+        for i in range(3):
+            assert w.submit(fields(i)) is None
+        bomb = _WrittenBomb()
+        bomb.__dict__.update(w.accounting.__dict__)
+        w.accounting = bomb
+        assert w.accounting.written == 3
+        bomb.__dict__["armed"] = True
+
+        with pytest.raises(SystemExit):
+            w.submit(fields(3))
+
+        assert w.state is sg.SegmentState.INVALID, (
+            "the writer is still OPEN after a partially-applied commit "
+            f"delta (state={w.state!r}) -- `written` is "
+            f"{w.accounting.written} with {w._chain.ordinal} records on the "
+            "chain, and `append()` will keep returning success for records "
+            "that close() is already guaranteed to discard")
+        assert isinstance(w._writer_error, SystemExit)
+        assert w.healthy is False
+        # The decisive consequence: the NEXT submit is refused immediately,
+        # rather than accepted and silently discarded much later.
+        assert w.submit(fields(4)) is sg.RejectReason.WRITER_FAILED
 
 
 # =====================================================================
@@ -427,7 +744,24 @@ def _value_at_encode_units(key: str, target: int) -> dict:
 class TestManifestMetadataWorkReserve:
 
     def test_the_reserve_is_derived_from_the_manifest_schema(self):
-        assert sg._MANIFEST_METADATA_WORK_RESERVE == len(sg.MANIFEST_FIELDS) + 2
+        """DERIVED, not hand-counted. The constant used to be
+        `len(MANIFEST_FIELDS) + 2`, where the `+ 2` was a tally of the two
+        body keys that are not in `MANIFEST_FIELDS`; a third such key would
+        have left the reserve one unit short in silence -- exactly the
+        failure this reserve exists to prevent. It is now the measured key
+        count of a real `build_manifest` body, and this test measures it the
+        same way rather than restating the arithmetic."""
+        body = sg.build_manifest(
+            environment=ENV, segment_id="seg", partition_identity="p",
+            opened_at=cn.canonical_datetime(NOW),
+            closed_at=cn.canonical_datetime(NOW), record_count=0,
+            first_record_digest=None, last_record_digest=None,
+            ordered_stream_digest=None, event_file_size_bytes=0,
+            event_file_sha256=None, subscription_metadata={})
+        assert sg._MANIFEST_METADATA_WORK_RESERVE == len(body)
+        assert set(sg.MANIFEST_FIELDS) < set(body), (
+            "MANIFEST_FIELDS is no longer a strict subset of the manifest "
+            "body; the reserve's derivation needs re-deriving")
 
     def test_the_reserve_matches_the_measured_wrapper_cost_exactly(self):
         """Derived, then MEASURED against the real `build_manifest`: the
@@ -445,7 +779,13 @@ class TestManifestMetadataWorkReserve:
                 ordered_stream_digest=gen, event_file_size_bytes=1,
                 event_file_sha256="a" * 64, subscription_metadata=meta)
             worst = max(worst, encode_units(man) - encode_units(meta))
-        assert worst == 20
+        # Was `assert worst == 20` -- a literal sitting beside a derived
+        # constant, so a schema change would have failed HERE rather than
+        # where the derivation broke.
+        assert worst == sg._MANIFEST_METADATA_WORK_RESERVE, (
+            f"the wrapper costs {worst} units but the reserve is "
+            f"{sg._MANIFEST_METADATA_WORK_RESERVE}: the reserve is no longer "
+            "exactly one `_encode` unit per manifest body key")
         assert sg._MANIFEST_METADATA_WORK_RESERVE >= worst, (
             f"the reserve is {sg._MANIFEST_METADATA_WORK_RESERVE} but the "
             f"measured wrapper overhead is {worst} units")

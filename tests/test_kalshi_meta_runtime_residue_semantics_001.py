@@ -36,6 +36,24 @@ def fields(i):
     }
 
 
+def _padded_fields(i, blob_chars: int = 1024):
+    """`fields(i)` with a realistically-sized, POORLY COMPRESSIBLE payload
+    blob. Deterministic (a SHA-256 keystream, not `os.urandom`) so a failure
+    reproduces. Needed because the toy records elsewhere in this module are
+    ~200 bytes and compress so well that 160 of them never fill zlib's
+    internal output buffer -- so nothing partial ever reaches the disk and a
+    test of the production flush cadence would measure nothing."""
+    import hashlib
+
+    blob = ""
+    while len(blob) < blob_chars:
+        blob += hashlib.sha256(f"{i}:{len(blob)}".encode()).hexdigest()
+    f = fields(i)
+    f["raw_event"] = {"price_dollars": "0.5100", "side": "no",
+                      "blob": blob[:blob_chars]}
+    return f
+
+
 def _record_bytes(env_field, ordinal, previous_digest, segment_id):
     record = sg.build_record(
         envelope_fields=env_field, segment_id=segment_id, environment=ENV,
@@ -311,8 +329,20 @@ class TestResidueIsNowClassifiedDistinctly:
         v = sg.verify_segment(seg_dir, environment=ENV, allow_open=True,
                               root=root)
         assert v.records_read == 0
-        assert v.residue_classification == sg.RESIDUE_RECOVERABLE_INTACT
         assert v.chain_valid is True
+        # RELAXED to the property this control's own docstring states. It
+        # previously asserted equality to `RESIDUE_RECOVERABLE_INTACT`, which
+        # made it circular as an argument for keeping that label: A8
+        # redefined RECOVERABLE_INTACT to mean "the compressed stream reached
+        # a real gzip trailer", and a zero-byte file contains no trailer, so
+        # it was the one input that falsified the label's own definition. The
+        # SAME relaxation was already made to the live-segment control in
+        # this milestone, for the same reason. See
+        # `TestA8ZeroByteResidueIsUnterminated` for the positive assertion.
+        assert v.residue_classification not in (
+            sg.RESIDUE_MALFORMED, sg.RESIDUE_TORN_PARTIAL), (
+            "a genuinely empty, brand-new OPEN segment must not be reported "
+            f"as corruption -- got {v.residue_classification!r}")
 
 
 class TestA4LiveSegmentAndUnreadableResidue:
@@ -513,6 +543,156 @@ class TestA8UnterminatedResidue:
             assert a.residue_classification == sg.RESIDUE_UNTERMINATED
         finally:
             w._release_lock()
+
+
+class TestA8ZeroByteResidueIsUnterminated:
+    """KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A8 ROUND 2 -- BLOCKER 2.
+
+    A8 redefined `RESIDUE_RECOVERABLE_INTACT` to mean "the compressed stream
+    reached a real gzip trailer" and `verify_segment` prints that sentence
+    verbatim. A zero-byte file contains no trailer, so it was the ONE input
+    that falsified the label's own new definition -- an internal
+    inconsistency this milestone introduced, not a pre-existing ambiguity.
+    And "it is genuinely ambiguous, leave it" is precisely the argument A8
+    rejects everywhere else: `RESIDUE_UNTERMINATED` exists BECAUSE live and
+    truncated are indistinguishable from the bytes, and its reason text
+    describes an empty file exactly.
+    """
+
+    def test_a_zero_byte_events_file_is_unterminated_not_intact(self, tmp_path):
+        root = tmp_path / "zero-byte"
+        root.mkdir()
+        ah.initialize_archive(root, ENV, archive_identity="kalshi-realtime")
+        seg_dir = root / f"env={ENV}" / "segment=seg-zero"
+        seg_dir.mkdir(parents=True)
+        (seg_dir / "events.jsonl.gz").write_bytes(b"")
+
+        v = sg.verify_segment(seg_dir, environment=ENV, allow_open=True,
+                              root=root)
+        assert v.records_read == 0
+        assert v.residue_classification != sg.RESIDUE_RECOVERABLE_INTACT, (
+            "a zero-byte events file was certified 'the compressed stream "
+            "reached a real gzip trailer' -- the single input for which that "
+            "sentence is provably false")
+        assert v.residue_classification == sg.RESIDUE_UNTERMINATED
+        text = json.dumps(v.reasons).lower()
+        assert "end is unknown" in text, v.reasons
+
+    def test_it_is_still_not_reported_as_corruption(self, tmp_path):
+        """The property the old negative control actually cared about, kept:
+        an ordinary brand-new OPEN segment must not be called malformed or
+        torn."""
+        root = tmp_path / "zero-byte-negctl"
+        root.mkdir()
+        ah.initialize_archive(root, ENV, archive_identity="kalshi-realtime")
+        seg_dir = root / f"env={ENV}" / "segment=seg-zero-neg"
+        seg_dir.mkdir(parents=True)
+        (seg_dir / "events.jsonl.gz").write_bytes(b"")
+        v = sg.verify_segment(seg_dir, environment=ENV, allow_open=True,
+                              root=root)
+        assert v.residue_classification not in (
+            sg.RESIDUE_MALFORMED, sg.RESIDUE_TORN_PARTIAL)
+        assert v.chain_valid is True
+        assert sg.verify_archive(root, environment=ENV)["verdict"] == "VALID"
+
+
+class TestA8LiveSegmentAtTheProductionFlushCadence:
+    """KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A8 ROUND 2 -- S1.
+
+    Every live-segment residue test in this milestone used `flush_every=1`,
+    where the file can only ever end on a record boundary and a partial line
+    cannot exist. The SHIPPED DEFAULT is `flush_every=256` and `EventArchive`
+    never overrides it, so in production zlib spills its buffer wherever it
+    likes and the readable prefix legitimately ends INSIDE a record.
+    `_classify_residue` checked `last_unreadable > 0 -> TORN_PARTIAL` BEFORE
+    the unterminated check, so a perfectly healthy, uncorrupted live segment
+    reported `torn_partial` -- measured 39/39 inspections of a healthy
+    4,000-record segment, identical at d004c01. Pre-existing and fail-closed,
+    but it defeated A4's stated goal on the only configuration that ships.
+    """
+
+    def test_a_healthy_live_segment_at_the_default_cadence_is_not_torn(
+            self, tmp_path):
+        """Inspected REPEATEDLY while it is still being written, which is
+        what an operator actually does to a running collector. Record bodies
+        are realistically sized (a payload blob, deterministic so the run
+        reproduces): with the 200-byte toy records the rest of this module
+        uses, 160 records between flushes compress to less than zlib's
+        internal output buffer and nothing partial ever reaches the disk, so
+        a small-record fixture would pass this test vacuously. Measured over
+        40 inspections of a 4,000-record segment: 0 partial with toy records,
+        12/40 with a 128-char blob, 34/40 with a 1024-char blob.
+        """
+        root = tmp_path / "live-default-cadence"
+        root.mkdir()
+        ah.initialize_archive(root, ENV, archive_identity="kalshi-realtime")
+        w = sg.SegmentWriter(root, environment=ENV, segment_id="seg-live-256",
+                             partition_identity="p", commit_to_head=False)
+        assert w._flush_every == 256, (
+            "this test exists to exercise the SHIPPED default; it is no "
+            f"longer 256 but {w._flush_every}")
+        seen = {}
+        try:
+            for i in range(2000):
+                assert w.submit(_padded_fields(i)) is None
+                if i % 100 != 99:
+                    continue
+                v = sg.verify_segment(w.dir, environment=ENV, allow_open=True,
+                                      root=root)
+                partial = sg.read_segment_records.last_unreadable
+                seen[partial] = seen.get(partial, 0) + 1
+                assert partial <= 1, (
+                    "fixture assumption broken: a single interrupted zlib "
+                    f"spill can leave at most ONE unreadable line, got "
+                    f"{partial}")
+                assert v.residue_classification != sg.RESIDUE_TORN_PARTIAL, (
+                    "a HEALTHY, uncorrupted live segment at the SHIPPED "
+                    "flush cadence is reported as torn -- A4's stated goal "
+                    "holds only for flush_every=1, which nothing in "
+                    f"production uses (records={v.records_read}, "
+                    f"unreadable={partial})")
+                assert v.residue_classification == sg.RESIDUE_UNTERMINATED
+                assert v.chain_valid is True
+        finally:
+            w._release_lock()
+        assert seen.get(1, 0) > 0, (
+            "NOT ONE inspection ended inside a record, so this test never "
+            f"exercised the production shape at all: {seen}. Re-tune the "
+            "record size before trusting it.")
+
+    def test_two_or_more_unreadable_lines_are_still_torn(self, tmp_path):
+        """The relaxation is EXACTLY one trailing line -- all a single
+        interrupted zlib spill can produce -- and no more. An unterminated
+        stream with content-level corruption INSIDE it (so the reader
+        abandons more than one line) still reports TORN_PARTIAL."""
+        root = tmp_path / "still-torn"
+        root.mkdir()
+        ah.initialize_archive(root, ENV, archive_identity="kalshi-realtime")
+        seg_id = "seg-mid-garbage"
+        seg_dir = root / f"env={ENV}" / f"segment={seg_id}"
+        seg_dir.mkdir(parents=True)
+        prev = sg.genesis_digest(segment_id=seg_id, environment=ENV)
+        lines = []
+        for i in range(20):
+            line, prev = _record_bytes(fields(i), i, prev, seg_id)
+            if i == 10:
+                lines.append(b"{not canonical json at all\n")
+            lines.append(line)
+        # A complete gzip stream with the trailer removed: no decode fault
+        # (so `unterminated` is True, the branch under test), but the reader
+        # abandons every line from the garbage one onwards.
+        compressed = gzip.compress(b"".join(lines))
+        (seg_dir / "events.jsonl.gz").write_bytes(compressed[:-8])
+
+        v = sg.verify_segment(seg_dir, environment=ENV, allow_open=True,
+                              root=root)
+        assert sg.read_segment_records.decode_had_error is False, (
+            "fixture mis-tuned: this must reach the no-fault (unterminated) "
+            "branch, not the decode-error branch")
+        assert sg.read_segment_records.last_unreadable > 1, (
+            "fixture mis-tuned: expected more than one abandoned line, got "
+            f"{sg.read_segment_records.last_unreadable}")
+        assert v.residue_classification == sg.RESIDUE_TORN_PARTIAL
 
 
 class TestA8UnreadableResidueChainValidity:

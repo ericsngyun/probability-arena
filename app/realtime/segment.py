@@ -56,6 +56,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from enum import Enum
 from pathlib import Path
+from typing import NamedTuple
 
 from app.realtime.canonical import (
     CANONICAL_SCHEMA_VERSION,
@@ -931,15 +932,6 @@ MANIFEST_FIELDS = (
     "close_status",
 )
 
-# KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A8. See the block above
-# `_MANIFEST_METADATA_DEPTH_RESERVE` for why this exists; it is defined here
-# because it is derived from `MANIFEST_FIELDS`, which is declared above.
-# `build_manifest` emits `MANIFEST_FIELDS` plus exactly two more keys
-# (`subscription_metadata` and `manifest_digest`), and `publish_manifest`
-# encodes that whole body -- so `canonical_bytes(manifest)` costs metadata's
-# own encode plus one `_encode` unit per wrapper key.
-_MANIFEST_METADATA_WORK_RESERVE = len(MANIFEST_FIELDS) + 2
-
 
 def build_manifest(*, environment, segment_id, partition_identity, opened_at,
                    closed_at, record_count, first_record_digest,
@@ -970,6 +962,28 @@ def build_manifest(*, environment, segment_id, partition_identity, opened_at,
     body["subscription_metadata"] = subscription_metadata or {}
     body["manifest_digest"] = digest_hex({k: body[k] for k in MANIFEST_FIELDS})
     return body
+
+
+# KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A8. See the block above
+# `_MANIFEST_METADATA_DEPTH_RESERVE` for why this exists. `publish_manifest`
+# encodes the WHOLE manifest body, and `canonical_bytes` charges exactly one
+# `_encode` unit per key of that body on top of the metadata's own encode --
+# so the reserve is precisely the number of keys `build_manifest` emits.
+#
+# ROUND 2: that number is now MEASURED from `build_manifest` itself rather
+# than hand-counted as `len(MANIFEST_FIELDS) + 2`. The `+ 2` was a tally of
+# the two body keys that are NOT in `MANIFEST_FIELDS` (`subscription_metadata`
+# and `manifest_digest`); a third such key added later would have left the
+# reserve silently one unit short, which is the exact failure mode this
+# reserve exists to prevent (a value certified legal at construction that
+# destroys the segment at close). Defined below `build_manifest` because it
+# calls it.
+_MANIFEST_METADATA_WORK_RESERVE = len(build_manifest(
+    environment="", segment_id="", partition_identity="",
+    opened_at="", closed_at="", record_count=0,
+    first_record_digest=None, last_record_digest=None,
+    ordered_stream_digest=None, event_file_size_bytes=0,
+    event_file_sha256=None, subscription_metadata={}))
 
 
 def verify_manifest_self_digest(manifest: dict) -> bool:
@@ -1139,11 +1153,26 @@ class WriterAccounting:
 # the open segment becomes unpublishable residue.
 #
 # WHY NOT `signal.pthread_sigmask`. That was the reviewer's recommendation
-# and it does not work, measured rather than argued (`SIG_BLOCK` on
-# `{SIGINT, SIGTERM}` around the region, 300 rounds, darwin 25.2):
+# and it does not work, measured rather than argued. The measurement is a
+# COMMITTED, RE-RUNNABLE HARNESS, not a number in a comment:
 #
-#   bomber thread started AFTER the mask   ->   0/300 raised inside
-#   bomber thread started BEFORE the mask  -> 300/300 raised inside
+#   python tests/benchmarks/pthread_sigmask_refutation.py --rounds 300
+#
+# (`SIG_BLOCK` on `{SIGINT, SIGTERM}` around a spin region; darwin 25.2.0,
+# CPython 3.12.3; four consecutive runs):
+#
+#   bomber thread started AFTER the mask   ->  0, 0, 0, 0   / 300 raised inside
+#   bomber thread started BEFORE the mask  -> 25, 19, 37, 14 / 300 raised inside
+#
+# A8 ROUND 2 CORRECTION: this comment previously claimed `300/300` for the
+# second arm. That magnitude was wrong -- an independent reviewer measured
+# 14/300 on the same platform, which reproduces here (5-12%, rate-dependent:
+# it is the fraction of masked windows a process-directed signal happens to
+# land in, not a certainty). The DIRECTION is what the design rests on and it
+# is unaffected: a non-zero rate is already fatal to the mask as a
+# durability mechanism, because ONE delivery inside the commitment region is
+# what destroys an open segment. The number is now cited from reproducible
+# output so it cannot drift into folklore again.
 #
 # The first number is the trap: `threading` gives a new thread the creating
 # thread's mask AT `start()`, so a bomber started inside the masked window
@@ -1164,15 +1193,50 @@ class WriterAccounting:
 # via `os.kill(os.getpid(), signum)` -- so the original disposition
 # (`default_int_handler`, `SIG_DFL`, `SIG_IGN`, or an application's own
 # handler) is reproduced exactly, by the OS, rather than reinterpreted
-# here, and the interrupt lands at a boundary the writer chose. Re-delivery
-# never RAISES from `__exit__`, so it cannot mask an exception already
-# propagating out of the region.
+# here, and the interrupt lands at a boundary the writer chose.
 #
-# BOUNDS. This is not a general "ignore Ctrl-C" switch: the region is one
-# record's write plus its state delta (measured ~3.2 us of handler
-# install/restore per record against a ~66 us submit, ~5%), and it is a
-# no-op off the main thread, where a Python-level signal handler can never
-# run in the first place. It does not defend against
+# A8 ROUND 2 CORRECTION: this comment used to claim "re-delivery never
+# RAISES from `__exit__`, so it cannot mask an exception already propagating
+# out of the region". That was never true -- `os.kill(pid, SIGINT)` with
+# `default_int_handler` in place raises `KeyboardInterrupt` on the spot, and
+# `contextlib.suppress(OSError)` around it does not catch that. It is also
+# not the property that matters: what `__exit__` must never do is DROP a
+# deferred signal or leave a handler unrestored, and both of those are now
+# structural (`_restore` is idempotent, retried, and runs in a `try` whose
+# `finally` still re-delivers). An exception CAN leave `__exit__` -- it is
+# either the application's own `SystemExit`/`KeyboardInterrupt` arriving at
+# the boundary the writer chose, which is the entire point, or a restore
+# failure the caller must see. The record's bytes and its state delta are
+# both already applied by then, so nothing propagating from here can leave
+# the segment inconsistent.
+#
+# BOUNDS -- AND THE ONE HONEST CAVEAT. This is not a general "ignore Ctrl-C"
+# switch: the region is one record's write plus its state delta (measured
+# ~3.2 us of handler install/restore per record against a ~66 us submit,
+# ~5%), and it is a no-op off the main thread, where a Python-level signal
+# handler can never run in the first place.
+#
+# BUT THE REGION HAS NO TIMEOUT, AND IT IS NOT ONLY THE WRITE. It also spans
+# `pre_write_hook` (a test seam; `None` in production) and `flush()`. Nothing
+# bounds how long any of those take, and for exactly as long as they run the
+# process CANNOT BE INTERRUPTED. Measured here, not argued, and stated in
+# the module rather than left for an operator to discover during an
+# incident: a 3-second blocking operation inside the region withheld a real
+# `SIGINT` for 2.775 s (sent at +0.238 s, `KeyboardInterrupt` raised at
+# +3.012 s); and the known `pre_write_hook` reentrancy deadlock (a hook that
+# calls back into `submit()` and blocks on the non-reentrant `self._lock`)
+# is now UN-interruptible -- two real Ctrl-Cs did not break it and an
+# external watchdog had to `os._exit` the process at 4 s. That second one is
+# structural, not incidental: the blocked `lock.acquire()` DOES run Python
+# signal handlers, but the handler it runs is `_defer`, which records the
+# signal and returns, and the acquire resumes. So: a stalled
+# filesystem, an NFS mount that stops answering, or a wedged hook makes the
+# collector Ctrl-C-proof for the duration of the stall. That is a deliberate
+# trade -- an operator's interrupt is deferred, never dropped, so no
+# already-durable record becomes unpublishable residue -- but it is a real
+# loss of controllability and it is not bounded by anything in this module.
+#
+# It does not defend against
 # `PyThreadState_SetAsyncExc` (the harness's `asyncexc` mode), which is a
 # ctypes-only mechanism no signal discipline can intercept -- that class is
 # handled structurally instead, by A8's second half: the state delta is
@@ -1182,6 +1246,36 @@ class WriterAccounting:
 _COMMIT_DEFERRED_SIGNALS = tuple(
     s for s in (getattr(signal, "SIGINT", None), getattr(signal, "SIGTERM", None))
     if s is not None)
+
+
+class _ChainState(NamedTuple):
+    """The whole of a `SegmentWriter`'s per-record chain state, in ONE value.
+
+    KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A8 ROUND 2. These used to be five
+    separate attributes applied by five separate `STORE_ATTR`s in
+    `submit()`'s `finally`. `finally` guarantees the body is ENTERED, not
+    that it COMPLETES: an asynchronous exception (a signal-derived one, or
+    `PyThreadState_SetAsyncExc`) landing BETWEEN two of those stores left the
+    writer with some of the delta applied and some not -- reproduced
+    byte-for-byte as the round-1 wrong state (`written 194 / on_disk 200`,
+    `state OPEN`, `healthy true`, `clean true`, `close()` refusing hours
+    later). That is not fail-closed; it is silently poisoned now and
+    fail-closed much later, with `append()` returning success for every
+    record in between.
+
+    Collapsing them into one immutable tuple makes the invariant TOTAL for
+    the chain rather than dependent on nothing interrupting a five-statement
+    run: there is exactly one store, so the chain either advances completely
+    or not at all. `accounting.written` is the one field that cannot join
+    them (it lives on a different object), and it is guarded explicitly
+    instead -- see `submit()`'s `finally`.
+    """
+
+    first_digest: str | None
+    last_digest: str | None
+    stream_digest: str
+    prev_digest: str
+    ordinal: int
 
 
 class _DeferCommitSignals:
@@ -1203,6 +1297,57 @@ class _DeferCommitSignals:
     def _defer(self, signum, frame):        # runs on the main thread only
         self._pending.append(signum)
 
+    def _restore(self) -> None:
+        """Put every handler this instance replaced back, whatever happens.
+
+        KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A8 ROUND 2 -- THE PERMANENT-
+        DEAFNESS DEFECT. The previous shape restored inside
+        `contextlib.suppress(Exception)`, which does NOT catch
+        `BaseException`, and restored SIGTERM before SIGINT. The single most
+        common shutdown idiom is `def term(...): raise SystemExit(0)`, so the
+        instant SIGTERM's own handler was back in place it could raise
+        BETWEEN the two restores and SIGINT was left bound to `_defer`
+        FOREVER: every later Ctrl-C landed in `self._pending` (reset to `[]`
+        on the next entry, never drained) and the operator could no longer
+        interrupt the collector at all. Measured deterministically -- a real
+        SIGTERM, a real `raise SystemExit(0)` handler -- in
+        `TestTheDeferralCannotDeafenTheProcessPermanently`.
+
+        Three properties make this total rather than merely narrower:
+
+        * IDEMPOTENT. A signal is restored only if it is still bound to
+          `self._defer`, so re-running the loop can never clobber a handler
+          the application installed in the meantime, and a partially-applied
+          pass simply finishes on the next one.
+        * BOUNDED RETRY. A signal-derived `BaseException` landing mid-pass is
+          caught, held, and the pass retried -- but at most `len + 2` times,
+          never `while True`, so a process under continuous signal pressure
+          cannot turn a restore into a livelock.
+        * THE FIRST `BaseException` IS RE-RAISED, not swallowed. Eating an
+          application's `SystemExit` here would be the same class of defect
+          in the opposite direction: the process would be told to stop and
+          never learn it.
+        """
+        saved, self._saved = self._saved, ()
+        self.installed = False
+        held: BaseException | None = None
+        for _ in range(len(saved) + 2):
+            try:
+                for sig, prev in reversed(saved):
+                    try:
+                        if signal.getsignal(sig) != self._defer:
+                            continue          # already restored, or replaced
+                    except Exception:         # noqa: BLE001 - best effort
+                        pass
+                    with contextlib.suppress(Exception):
+                        signal.signal(sig, prev)
+                break
+            except BaseException as exc:      # noqa: BLE001 - held, re-raised
+                if held is None:
+                    held = exc
+        if held is not None:
+            raise held
+
     def __enter__(self):
         self._pending = []
         self._saved = ()
@@ -1212,7 +1357,6 @@ class _DeferCommitSignals:
             # so a non-main writer cannot be interrupted by one and there is
             # nothing to defer. Installing from here would raise ValueError.
             return self
-        saved = []
         try:
             for sig in _COMMIT_DEFERRED_SIGNALS:
                 prev = signal.getsignal(sig)
@@ -1229,33 +1373,51 @@ class _DeferCommitSignals:
                     # the process permanently deaf to this signal. Refuse
                     # rather than trust the reasoning.
                     continue
+                # THE RESTORE INTENT IS PUBLISHED *BEFORE* THE INSTALL, not
+                # after it and not into a local list. `prev == self._defer`
+                # above is a Python-level call whenever the application's
+                # handler is an object with `__eq__`, and `signal.signal`
+                # below is followed by an ordinary bytecode boundary -- both
+                # are points at which a signal-derived `BaseException` can
+                # land. Recording the intent first makes `_restore()` correct
+                # for BOTH outcomes: if the install never happened the entry
+                # is a no-op (the signal is not bound to `_defer`), and if it
+                # did the entry is already durable in `self._saved`. Appending
+                # to a LOCAL list -- and assigning `self._saved` only after
+                # the loop -- is what let one escaping `SystemExit` throw the
+                # restore information away.
+                self._saved += ((sig, prev),)
                 signal.signal(sig, self._defer)
-                saved.append((sig, prev))
+                self.installed = True
         except (ValueError, OSError, RuntimeError):
             # Not the main interpreter, or a platform/runtime that refuses
             # the install. Undo whatever took and proceed undeferred: this is
             # a durability HARDENING, and failing to obtain it must never
             # fail the write itself.
-            for s, p in reversed(saved):
-                with contextlib.suppress(Exception):
-                    signal.signal(s, p)
+            self._restore()
             return self
-        self._saved = tuple(saved)
-        self.installed = bool(saved)
+        except BaseException:
+            # `SystemExit`/`KeyboardInterrupt` -- from the application's own
+            # still-live handler for a signal we have not replaced yet, or
+            # from `PyThreadState_SetAsyncExc`. NOT an ordinary install
+            # refusal: it must propagate. What must NOT propagate with it is
+            # a half-installed deferral.
+            self._restore()
+            raise
         return self
 
     def __exit__(self, exc_type, exc, tb):
-        for sig, prev in reversed(self._saved):
-            with contextlib.suppress(Exception):
-                signal.signal(sig, prev)
-        self._saved = ()
-        self.installed = False
-        pending, self._pending = self._pending, []
-        # RESTORE FIRST, THEN re-deliver -- otherwise our own deferring
-        # handler would catch the re-delivery and the signal would be lost.
-        for signum in pending:
-            with contextlib.suppress(OSError):
-                os.kill(os.getpid(), signum)
+        try:
+            self._restore()
+        finally:
+            # RESTORE FIRST, THEN re-deliver -- otherwise our own deferring
+            # handler would catch the re-delivery and the signal would be
+            # lost. In a `finally` so that a `BaseException` escaping the
+            # restore cannot silently discard signals already deferred.
+            pending, self._pending = self._pending, []
+            for signum in pending:
+                with contextlib.suppress(OSError):
+                    os.kill(os.getpid(), signum)
         return False
 
 
@@ -1426,12 +1588,12 @@ class SegmentWriter:
         # concurrently. See `_DeferCommitSignals`' module comment for the
         # measured regression it closes and why `pthread_sigmask` does not.
         self._defer_commit_signals = _DeferCommitSignals()
-        self._prev_digest = genesis_digest(segment_id=self.segment_id,
-                                           environment=environment)
-        self._ordinal = 0
-        self._stream_digest = self._prev_digest
-        self._first_digest: str | None = None
-        self._last_digest: str | None = None
+        genesis = genesis_digest(segment_id=self.segment_id,
+                                 environment=environment)
+        # ONE attribute, not five -- see `_ChainState`.
+        self._chain = _ChainState(first_digest=None, last_digest=None,
+                                  stream_digest=genesis, prev_digest=genesis,
+                                  ordinal=0)
         self._writer_error: BaseException | None = None
         # close() is reachable from several threads (a shutdown handler and an
         # application path, say). Without this the second caller finalises an
@@ -1698,8 +1860,8 @@ class SegmentWriter:
                 record = build_record(
                     envelope_fields=accepted_fields, segment_id=self.segment_id,
                     environment=self.environment,
-                    previous_record_digest=self._prev_digest,
-                    receive_ordinal=self._ordinal)
+                    previous_record_digest=self._chain.prev_digest,
+                    receive_ordinal=self._chain.ordinal)
                 line = canonical_bytes(record)
             except Exception as exc:              # noqa: BLE001 - a refusal
                 # Nothing has been written yet: `build_record`/`canonical_
@@ -1736,9 +1898,13 @@ class SegmentWriter:
             # ownership window A1 set out to eliminate, relocated rather
             # than closed.
             digest = record["record_digest"]
-            new_first_digest = self._first_digest or digest
-            new_stream_digest = fold_stream_digest(self._stream_digest, digest)
-            new_ordinal = self._ordinal + 1
+            new_chain = _ChainState(
+                first_digest=self._chain.first_digest or digest,
+                last_digest=digest,
+                stream_digest=fold_stream_digest(
+                    self._chain.stream_digest, digest),
+                prev_digest=digest,
+                ordinal=self._chain.ordinal + 1)
             new_written = self.accounting.written + 1
             committed = False
             booked_failure = False
@@ -1813,19 +1979,42 @@ class SegmentWriter:
                     return RejectReason.WRITER_FAILED
                 finally:
                     # A8 -- THE TAIL, APPLIED FROM A `finally` ON THE SAME `try`
-                    # AS THE WRITE. Six plain assignments of values computed
-                    # before the write; nothing here can raise, and nothing here
-                    # can be skipped by an exception (signal-class or otherwise)
-                    # arriving after the bytes entered the stream. The invariant
-                    # is exactly: `_ordinal`/`_prev_digest`/`written` advance if
-                    # and only if `write()` returned, whatever happens next.
-                    if committed and not booked_failure:
-                        self._first_digest = new_first_digest
-                        self._last_digest = digest
-                        self._stream_digest = new_stream_digest
-                        self._prev_digest = digest
-                        self._ordinal = new_ordinal
-                        self.accounting.written = new_written
+                    # AS THE WRITE. Two plain assignments of values computed
+                    # before the write; nothing here can raise on its own, and
+                    # nothing here can be skipped by an exception (signal-class
+                    # or otherwise) arriving after the bytes entered the stream.
+                    # The invariant is exactly: the chain and `written` advance
+                    # if and only if `write()` returned, whatever happens next.
+                    #
+                    # ROUND 2 -- `finally` GUARANTEES ENTRY, NOT COMPLETION.
+                    # The five chain stores that used to live here were
+                    # individually interruptible: an async exception between
+                    # two of them left the writer OPEN / healthy / clean with
+                    # a partly-applied delta, and `append()` kept returning
+                    # success for every subsequent record even though close()
+                    # would refuse the whole segment hours later. Two changes
+                    # make that state unreachable rather than merely unlikely:
+                    #   1. the five chain fields are ONE immutable
+                    #      `_ChainState`, so a single `STORE_ATTR` applies them
+                    #      -- the chain cannot be half-advanced at all;
+                    #   2. `accounting.written` -- the one field that lives on
+                    #      another object and so cannot join them -- is guarded
+                    #      by an `except BaseException` that marks the segment
+                    #      INVALID and RE-RAISES. The residual window is one
+                    #      bytecode boundary wide and it is now LOUD: the
+                    #      writer refuses the very next `submit()` instead of
+                    #      accepting thousands of records already guaranteed to
+                    #      be discarded.
+                    # The `try` is OUTSIDE the `if`, deliberately: the
+                    # condition test is itself an interruptible boundary.
+                    try:
+                        if committed and not booked_failure:
+                            self._chain = new_chain
+                            self.accounting.written = new_written
+                    except BaseException as exc:    # noqa: BLE001 - recorded
+                        self._writer_error = exc
+                        self.state = SegmentState.INVALID
+                        raise
             return None
 
     @property
@@ -2513,6 +2702,21 @@ def read_segment_records(events_path: Path) -> list:
     # `stream_fully_decoded`, to decide whether a prefix that did not reach
     # a formal end-of-stream is corruption or merely "not finalised yet".
     decode_had_error = False
+    if original_size == 0:
+        # KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A8 ROUND 2 -- THE ONE INPUT
+        # THAT VIOLATED `RESIDUE_RECOVERABLE_INTACT`'S OWN NEW DEFINITION.
+        # A8 redefined that label to mean "the compressed stream reached a
+        # real gzip trailer" and `verify_segment` prints that sentence
+        # verbatim. A zero-byte file contains no trailer -- the loop below
+        # simply never runs, so `stream_fully_decoded` stayed at its `True`
+        # default and a 0-byte events file was certified `recoverable_intact,
+        # chain_valid=True`, the single input for which the label was a
+        # provable falsehood. It is not "ambiguous, so leave it": ambiguity
+        # is exactly what `RESIDUE_UNTERMINATED` was added for. Its reason
+        # text -- "never reached a gzip trailer, so its END IS UNKNOWN. This
+        # is the NORMAL shape of a live collector's currently-open segment"
+        # -- describes a brand-new open segment's empty file precisely.
+        stream_fully_decoded = False
     while data:
         # KALSHI-ARCHIVE-CORE-REMEDIATION-003B A5: the budget is CUMULATIVE
         # across every gzip member in this one events file (see
@@ -2654,6 +2858,18 @@ RESIDUE_UNTERMINATED = "unterminated"
 # operator must never read "intact" for content that was never examined.
 RESIDUE_UNREADABLE = "unreadable"
 
+# The closed set `_classify_residue` can return. Declared once so nothing has
+# to hand-enumerate it (`SegmentVerdict.residue_classification`'s comment did,
+# and silently omitted `RESIDUE_UNTERMINATED` in the commit that added it).
+RESIDUE_CLASSIFICATIONS = (
+    RESIDUE_RECOVERABLE_INTACT,
+    RESIDUE_UNTERMINATED,
+    RESIDUE_TORN_PARTIAL,
+    RESIDUE_MALFORMED,
+    RESIDUE_UNSAFE_OVER_LIMIT,
+    RESIDUE_UNREADABLE,
+)
+
 
 def _classify_residue(*, chain_ok: bool) -> str:
     """The residue classification for the file `read_segment_records` JUST
@@ -2705,10 +2921,32 @@ def _classify_residue(*, chain_ok: bool) -> str:
     else:
         unterminated = False
     if read_segment_records.last_unreadable > 0:
-        # The compressed bytes decoded to completion, but at least one
-        # decoded LINE was not parseable canonical JSON -- content-level
-        # corruption inside an otherwise-complete gzip stream.
-        return RESIDUE_TORN_PARTIAL
+        if not (unterminated and read_segment_records.last_unreadable == 1):
+            # The compressed bytes decoded to completion, but at least one
+            # decoded LINE was not parseable canonical JSON -- content-level
+            # corruption inside an otherwise-complete gzip stream.
+            return RESIDUE_TORN_PARTIAL
+        # KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A8 ROUND 2 -- THE PRODUCTION
+        # FLUSH CADENCE. Exactly ONE unreadable line at the very end of a
+        # stream that never reached a trailer is the ORDINARY shape of a
+        # healthy live segment at the shipped default (`flush_every=256`,
+        # which `EventArchive` never overrides): zlib spills its buffer on
+        # whatever byte boundary it likes, so the readable prefix genuinely
+        # ends inside a record. Measured over 40 inspections of a healthy,
+        # uncorrupted 4,000-record open segment: 12/40 with 128-char record
+        # bodies, 34/40 with 1024-char bodies -- and every one of them was
+        # reported `torn_partial`, identically at d004c01. So A4's stated
+        # goal ("a live segment must not be reported as corruption") was
+        # defeated on every real collector, and only held in the tests
+        # because every one of them used `flush_every=1`, where a partial
+        # line cannot exist.
+        #
+        # This is NOT a downgrade of a corruption finding: a truncated file
+        # whose tail happens to cut one record is byte-for-byte identical to
+        # this, which is the entire reason `RESIDUE_UNTERMINATED` exists --
+        # the end is unknown either way, and claiming "torn" asserts more
+        # than the bytes support. TWO or more unreadable lines cannot come
+        # from a single interrupted spill and stay `TORN_PARTIAL`.
     if not chain_ok:
         # The bytes decoded fully AND every line parsed -- but the records
         # do not chain (a deletion, insertion, reorder, or a copied
@@ -2736,12 +2974,12 @@ class SegmentVerdict:
     records_expected: int | None = None
     records_read: int = 0
     chain_valid: bool = False
-    # KALSHI-ARCHIVE-CORE-REMEDIATION-003B A6 / A4: only set for a residue
-    # verdict (`allow_open=True`, no manifest). One of
-    # `RESIDUE_RECOVERABLE_INTACT` / `RESIDUE_TORN_PARTIAL` /
-    # `RESIDUE_MALFORMED` / `RESIDUE_UNSAFE_OVER_LIMIT` / `RESIDUE_UNREADABLE`,
-    # or `None` for an ordinary (committed, manifest-bearing) verdict where
-    # the concept does not apply.
+    # KALSHI-ARCHIVE-CORE-REMEDIATION-003B A6 / A4 / A8: only set for a
+    # residue verdict (`allow_open=True`, no manifest). Exactly one member of
+    # `RESIDUE_CLASSIFICATIONS` -- do not re-enumerate them here, which is
+    # how this comment came to omit `RESIDUE_UNTERMINATED` in the very commit
+    # that added it -- or `None` for an ordinary (committed,
+    # manifest-bearing) verdict where the concept does not apply.
     residue_classification: str | None = None
     first_digest_match: bool = False
     last_digest_match: bool = False
@@ -2974,7 +3212,10 @@ def verify_segment(directory, *, environment: str, allow_open: bool = False,
                     "deliberately. Nothing in the bytes distinguishes them, "
                     "so this is NOT reported as RECOVERABLE_INTACT: how many "
                     "records were written and lost cannot be established "
-                    "from this file alone")
+                    "from this file alone. At the shipped flush cadence "
+                    "(flush_every=256) the readable prefix routinely ends "
+                    "INSIDE a record, so one trailing unparseable line is "
+                    "expected here and is not itself evidence of corruption")
             elif classification == RESIDUE_RECOVERABLE_INTACT:
                 # A8: RECOVERABLE_INTACT had NO reason line of its own, so a
                 # residue truncated to hide records presented to an operator
