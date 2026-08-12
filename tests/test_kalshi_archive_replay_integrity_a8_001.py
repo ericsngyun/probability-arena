@@ -496,10 +496,27 @@ class TestTheDeferralCannotDeafenTheProcessPermanently:
             for sig, handler in previous.items():
                 real_signal.signal(sig, handler)
 
-    def test_a_permanent_restore_failure_stays_bounded(self, default_sigint):
+    def test_a_permanent_restore_failure_stays_bounded_and_is_loud(
+            self, default_sigint):
         """The other half of the same bound: when the restore can NEVER
         succeed, `_restore()` must still terminate -- `len(saved) + 2`
-        passes, never `while True` -- rather than livelock a collector."""
+        passes, never `while True` -- rather than livelock a collector.
+
+        A8 ROUND 3, SECOND PASS -- THIS PIN USED TO MEASURE THE WRONG THING.
+        It asserted `len(calls) == 8` and nothing else, so it passed happily
+        in the state it exists to rule out: at the shape it was written
+        against, `_restore()` returned NORMALLY with both handlers still
+        bound to `_defer`, no exception and no flag -- byte-identical to the
+        pre-fix permanent-deafness defect, just reached after four passes
+        instead of one. Its own `finally` put the handlers back, which is the
+        tell that the code under test had not.
+
+        The retry cannot make `signal.signal` succeed, so the honest contract
+        is not "the handlers end up restored" but "exhaustion is never
+        reported as success". Both halves are asserted below: the bound is
+        still `len(saved) + 2` passes, AND the terminal handler state is
+        inspected BEFORE this test repairs anything.
+        """
         real_signal = sg.signal
         deferred = sg._COMMIT_DEFERRED_SIGNALS
         previous = {s: signal.getsignal(s) for s in deferred}
@@ -521,15 +538,112 @@ class TestTheDeferralCannotDeafenTheProcessPermanently:
             assert d.installed is True
             sg.signal = _Shim
             try:
-                d._restore()          # must RETURN, not hang
+                with pytest.raises(RuntimeError) as excinfo:
+                    d._restore()      # must RETURN (not hang), and be LOUD
             finally:
                 sg.signal = real_signal
+            # Terminal state, read before this test's own `finally` repairs
+            # anything: the process really is deaf, and that is exactly what
+            # the raise above has to be reporting.
+            still_deaf = [s for s in deferred
+                          if real_signal.getsignal(s) == d._defer]
+            assert still_deaf, (
+                "the injection did not actually leave any handler bound to "
+                "`_defer`, so this test is not measuring permanent deafness "
+                "at all")
+            for sig in still_deaf:
+                assert str(sig) in str(excinfo.value), (
+                    f"the exhaustion error does not name {sig}, which is "
+                    f"still deaf: {excinfo.value!r} -- an operator reading "
+                    "this cannot tell which signals the process stopped "
+                    "responding to")
             assert len(calls) == (len(deferred) + 2) * len(deferred), (
                 "the bounded retry did not run exactly `len(saved) + 2` "
                 f"passes over `saved`: {len(calls)} calls")
         finally:
             for sig, handler in previous.items():
                 real_signal.signal(sig, handler)
+
+    def test_a_hostile_handler_comparison_does_not_escape_the_restore(
+            self, default_sigint):
+        """A8 ROUND 3, SECOND PASS -- THE UNGUARDED COMPARISON.
+
+        `_restore`'s per-signal check wrapped `getsignal(sig) != self._defer`
+        in `try/except`; the loop's EXIT CONDITION ran the same comparison
+        unguarded three lines below it. `getsignal` returns whatever the
+        application installed, so a handler whose `__eq__`/`__ne__` raises
+        made the exit condition raise, that escaped into the `except
+        BaseException`, and `_restore()` re-raised a comparison error out of
+        a best-effort cleanup path.
+
+        REACHING IT NEEDS THE RESTORE TO FAIL, not just a hostile handler:
+        the inner loop cannot compare such a handler either, so it falls
+        through and REPLACES it, and the exit condition then sees an ordinary
+        one. Only a signal whose `signal.signal` also refuses survives to be
+        compared -- so the shim below refuses, and the hostile handler is
+        still installed when the exit condition runs.
+
+        WHAT DISTINGUISHES THE TWO SHAPES is therefore not "raises or not"
+        (both raise) but WHAT the operator is told. Guarded, the comparison
+        fails closed and `_restore` reports the thing it actually knows -- a
+        `RuntimeError` naming the signals this process has stopped responding
+        to. Unguarded, it reports the application handler's own comparison
+        error, which names no signal and describes no consequence.
+
+        Not reachable through `__enter__` today (it refuses to install over a
+        handler it cannot compare), so this drives `_restore` directly with a
+        hand-built `_saved`: the asymmetry is what is under test, not a live
+        defect.
+        """
+        class _Hostile:
+            MESSAGE = "hostile handler comparison"
+
+            def __eq__(self, other):
+                raise RuntimeError(self.MESSAGE)
+
+            def __ne__(self, other):
+                raise RuntimeError(self.MESSAGE)
+
+            __hash__ = None
+
+            def __call__(self, signum, frame):
+                pass
+
+        real_signal = sg.signal
+        sig = signal.SIGINT
+        previous = signal.getsignal(sig)
+
+        class _Shim:
+            @staticmethod
+            def getsignal(s):
+                return real_signal.getsignal(s)
+
+            @staticmethod
+            def signal(s, handler):
+                raise OSError("injected restore refusal")
+
+        try:
+            signal.signal(sig, _Hostile())
+            d = sg._DeferCommitSignals()
+            d._saved = ((sig, signal.default_int_handler),)
+            d.installed = True
+            sg.signal = _Shim
+            try:
+                with pytest.raises(RuntimeError) as excinfo:
+                    d._restore()
+            finally:
+                sg.signal = real_signal
+            assert _Hostile.MESSAGE not in str(excinfo.value), (
+                "`_restore()` re-raised the APPLICATION HANDLER's own "
+                f"comparison error ({excinfo.value!r}): the loop's exit "
+                "condition compares `getsignal(sig)` against `_defer` "
+                "unguarded, three lines below the identical comparison that "
+                "IS guarded")
+            assert str(sig) in str(excinfo.value), (
+                "the failure does not name the signal the process can no "
+                f"longer respond to: {excinfo.value!r}")
+        finally:
+            real_signal.signal(sig, previous)
 
     def test_the_region_is_documented_as_uninterruptible_while_it_stalls(self):
         """S4. The deferral region has NO timeout and covers `pre_write_hook`

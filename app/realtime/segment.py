@@ -1310,6 +1310,27 @@ class _DeferCommitSignals:
     def _defer(self, signum, frame):        # runs on the main thread only
         self._pending.append(signum)
 
+    def _still_deferring(self, sig) -> bool:
+        """`True` when `sig` is still bound to THIS instance's `_defer`.
+
+        Every comparison here is against whatever handler object the
+        application installed, so `__eq__`/`__ne__` is foreign code that may
+        raise. `__enter__` already refuses to install over such a handler (its
+        `ValueError` arm), so this is not reachable on any supported platform
+        today -- but `_restore`'s inner loop guarded the comparison and the
+        loop's exit condition did not, and an unguarded copy of a comparison
+        that is guarded three lines above is a defect waiting for either side
+        to move.
+
+        FAILS CLOSED: a comparison that raises reports "still deferring", so
+        the caller retries and, if it never resolves, reports exhaustion --
+        rather than declaring a restore it could not verify.
+        """
+        try:
+            return signal.getsignal(sig) == self._defer
+        except Exception:                     # noqa: BLE001 - best effort
+            return True
+
     def _restore(self) -> None:
         """Put every handler this instance replaced back, whatever happens.
 
@@ -1352,12 +1373,27 @@ class _DeferCommitSignals:
           could only ever run once. NOT reachable on darwin or Linux today
           (`signal.signal` raises `ValueError` off the main thread, and
           `__enter__` returns early there, so `saved` is empty and the
-          condition below is trivially true) -- a latent structural hole,
-          closed structurally.
+          condition below is trivially true) -- a latent structural hole.
+
+          THE RETRY NARROWS THAT HOLE; IT DOES NOT CLOSE IT. Nothing here can
+          make `signal.signal` succeed. Under PERSISTENT injection the loop
+          runs `len(saved) + 2` passes and the handlers are still bound to
+          `_defer` at the end of them -- which an earlier draft of this
+          docstring described as "closed structurally". It is not; it is one
+          pass widened to four.
+        * EXHAUSTION IS LOUD (A8 ROUND 3, SECOND PASS). What the retry CAN do
+          is refuse to return successfully from a state it knows is wrong. If
+          every pass is spent and any signal is still bound to `_defer`, that
+          is raised as a `RuntimeError` naming the signals, so a permanently
+          deaf process is a reported failure rather than a silent one. This
+          is the same silent-to-loud rule this module already applies to
+          `accounting.written`: fail-closed-eventually is not fail-closed.
         * THE FIRST `BaseException` IS RE-RAISED, not swallowed. Eating an
           application's `SystemExit` here would be the same class of defect
           in the opposite direction: the process would be told to stop and
-          never learn it.
+          never learn it. A real `BaseException` always wins over the
+          synthesised exhaustion error above -- it is the more specific
+          report, and the caller's own control flow.
         """
         saved, self._saved = self._saved, ()
         self.installed = False
@@ -1365,19 +1401,22 @@ class _DeferCommitSignals:
         for _ in range(len(saved) + 2):
             try:
                 for sig, prev in reversed(saved):
-                    try:
-                        if signal.getsignal(sig) != self._defer:
-                            continue          # already restored, or replaced
-                    except Exception:         # noqa: BLE001 - best effort
-                        pass
+                    if not self._still_deferring(sig):
+                        continue              # already restored, or replaced
                     with contextlib.suppress(Exception):
                         signal.signal(sig, prev)
-                if all(signal.getsignal(sig) != self._defer
-                       for sig, _ in saved):
+                if not any(self._still_deferring(sig) for sig, _ in saved):
                     break
             except BaseException as exc:      # noqa: BLE001 - held, re-raised
                 if held is None:
                     held = exc
+        else:                                 # exhausted without break
+            if held is None:
+                still = [s for s, _ in saved if self._still_deferring(s)]
+                if still:
+                    held = RuntimeError(
+                        f"could not restore handlers for {still}; this "
+                        "process may no longer respond to them")
         if held is not None:
             raise held
 
@@ -3012,12 +3051,26 @@ class SegmentVerdict:
     # `_classify_residue` applies -- exactly one abandoned trailing line in an
     # unterminated stream is the ORDINARY shape of a healthy live segment at
     # the shipped flush cadence, two or more is TORN_PARTIAL -- auditable in
-    # the FIELD and not only in this module's tests. A healthy live segment
-    # and one whose tail record was destroyed or spliced both report
-    # `residue_classification: "unterminated"`; without this the only
-    # difference visible to an operator is `records_read`, for which there is
-    # no baseline to compare against. The value was already computed on every
-    # read and thrown away here.
+    # the FIELD and not only in this module's tests.
+    #
+    # WHAT IT DOES *NOT* DO. It does not separate a healthy live segment from
+    # one whose tail record was destroyed or spliced. NOTHING CAN: those are
+    # the same bytes-level phenomenon -- a readable prefix ending inside a
+    # record, no decode fault, no trailer -- which is the entire reason the
+    # `== 1` rule collapses them onto one label. MEASURED: two such segments
+    # built independently produce `verify_archive` detail dicts differing in
+    # `segment_id` and in NOTHING else -- same `unterminated`, same
+    # `records_read`, same `records_abandoned` of 1, same `chain_valid`, same
+    # `reasons`. An earlier draft of this comment said that "without this the
+    # only difference visible to an operator is `records_read`", which implies
+    # that WITH it there is another one; there is not, and there cannot be.
+    #
+    # WHAT IT DOES DELIVER is `abandoned=0` versus `abandoned=1`: whether the
+    # readable prefix ended ON a record boundary or INSIDE a record. That is
+    # what tells an operator whether the `== 1` rule was involved in reaching
+    # this verdict at all, and whether `records_read` is the whole decodable
+    # content of the file. The value was already computed on every read and
+    # thrown away here.
     records_abandoned: int = 0
     chain_valid: bool = False
     # KALSHI-ARCHIVE-CORE-REMEDIATION-003B A6 / A4 / A8: only set for a

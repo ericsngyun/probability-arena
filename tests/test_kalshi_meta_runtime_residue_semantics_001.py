@@ -299,6 +299,69 @@ def write_mid_stream_garbage_residue(root, segment_id: str, n: int = 20,
         gzip.compress(b"".join(lines))[:-8])
 
 
+def write_terminated_with_bad_tail_residue(root, segment_id: str,
+                                           n: int) -> None:
+    """A stream that DID reach a real gzip trailer, whose final line is not
+    parseable canonical JSON: `n - 1` good records plus one bad tail, then
+    `gzip.compress` in full.
+
+    KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A8 ROUND 3 -- THE GUARD'S
+    `unterminated` HALF. `_classify_residue`'s one-abandoned-line rule is
+    `not (unterminated and last_unreadable == 1)`. The `unterminated`
+    conjunct is what confines the rule to streams whose end is genuinely
+    unknowable. THIS shape is the one input where completeness IS
+    establishable -- the trailer proves the writer finished -- so exactly one
+    corrupt trailing line here is real content-level corruption and nothing
+    else, and must stay `TORN_PARTIAL`.
+
+    Dropping the `unterminated` conjunct is a single-token edit that the rest
+    of the suite does not notice: measured, it makes this shape report
+    `recoverable_intact`, `records_read=9`, `records_abandoned=1`, and print
+    that "its content is complete as written" -- the fall-open class this
+    milestone spent three rounds eliminating, asserted on the one input where
+    the claim is unambiguously false.
+    """
+    seg_dir = root / f"env={ENV}" / f"segment={segment_id}"
+    seg_dir.mkdir(parents=True, exist_ok=True)
+    prev = sg.genesis_digest(segment_id=segment_id, environment=ENV)
+    lines = []
+    for i in range(n):
+        line, prev = _record_bytes(fields(i), i, prev, segment_id)
+        lines.append(line)
+    (seg_dir / "events.jsonl.gz").write_bytes(
+        gzip.compress(b"".join(lines[:n - 1]) + b"{not json\n"))
+
+
+def write_chain_broken_with_bad_tail_residue(root, segment_id: str,
+                                             n: int) -> None:
+    """An UNTERMINATED stream (trailer removed) whose records do not chain (a
+    deleted middle record) AND whose final line is unparseable: exactly ONE
+    abandoned line, so the `== 1` rule applies -- and the chain check below
+    it is what must still catch this.
+
+    KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A8 ROUND 3 -- THE FALL-THROUGH. The
+    `== 1` branch deliberately does NOT return; it falls through to the chain
+    check, so structural brokenness paired with an ordinary spill boundary is
+    still reported. Making that branch `return RESIDUE_UNTERMINATED` instead
+    is invisible to the rest of the suite: measured, deletion, reorder and
+    duplicate residues each paired with a bad trailing line all then report
+    `unterminated` -- the label a HEALTHY live collector gets -- where the
+    real code correctly returns `torn_partial`.
+    """
+    seg_dir = root / f"env={ENV}" / f"segment={segment_id}"
+    seg_dir.mkdir(parents=True, exist_ok=True)
+    prev = sg.genesis_digest(segment_id=segment_id, environment=ENV)
+    lines = []
+    for i in range(n):
+        line, prev = _record_bytes(fields(i), i, prev, segment_id)
+        lines.append(line)
+    spliced = b"".join(lines[:4] + lines[5:9]) + b"{bad\n"
+    # `[:-8]` removes the 8-byte gzip trailer (CRC32 + ISIZE), which is what
+    # makes the member unterminated without introducing any decode FAULT --
+    # the same technique `write_mid_stream_garbage_residue` uses.
+    (seg_dir / "events.jsonl.gz").write_bytes(gzip.compress(spliced)[:-8])
+
+
 class TestChainValidIsNowReallyComputedForResidue:
     """KALSHI-ARCHIVE-CORE-REMEDIATION-003B A6 REPAIRED: `chain_valid` used
     to be hardcoded `False` for EVERY residue -- an actually intact,
@@ -982,6 +1045,19 @@ def _residue_corpus(root, monkeypatch):
     write_mid_stream_garbage_residue(root, "c-garbage")
     yield "unparseable line spliced mid-stream", verdict("c-garbage")
 
+    # The two shapes that gate `_classify_residue`'s one-abandoned-line rule
+    # from both sides. See `TestTheOneAbandonedLineRuleIsGatedOnBothSides`,
+    # which is what actually pins their labels; they live HERE so the closed-
+    # set and totality assertions cover them too and so the corpus stays the
+    # single place a residue shape is put on disk.
+    write_terminated_with_bad_tail_residue(root, "c-term-badtail", 10)
+    yield "trailer-terminated, one unparseable TAIL line", \
+        verdict("c-term-badtail")
+
+    write_chain_broken_with_bad_tail_residue(root, "c-chain-badtail", 10)
+    yield "chain broken AND one unparseable tail line, unterminated", \
+        verdict("c-chain-badtail")
+
     write_torn_residue(root, "c-torn", 30)
     yield "compressed payload corrupted mid-stream", verdict("c-torn")
 
@@ -1029,8 +1105,9 @@ class TestTheResidueClassificationSetIsClosedAndEnforced:
         """The behavioural half, over REAL bytes: complete, flush-boundary
         truncated, mid-record truncated, 0-byte, 2-byte magic, truncated
         header, one-unparseable-line, chain-broken, mid-stream garbage,
-        payload-corrupted, non-gzip, chmod-000, and over the safety
-        ceiling."""
+        payload-corrupted, non-gzip, chmod-000, over the safety ceiling,
+        trailer-terminated-with-a-bad-tail, and
+        chain-broken-with-a-bad-tail."""
         root = tmp_path / "closed-set"
         root.mkdir()
         checked = 0
@@ -1041,7 +1118,7 @@ class TestTheResidueClassificationSetIsClosedAndEnforced:
                 f"RESIDUE_CLASSIFICATIONS {sg.RESIDUE_CLASSIFICATIONS!r} -- "
                 "the closed set the verifier's own documentation promises")
             checked += 1
-        assert checked >= 13, (
+        assert checked >= 15, (
             f"the corpus shrank to {checked} shapes; it is the only thing "
             "making this assertion non-vacuous")
 
@@ -1116,6 +1193,82 @@ class TestTheResidueClassificationSetIsClosedAndEnforced:
         assert len(sg.RESIDUE_CLASSIFICATIONS) == len(
             set(sg.RESIDUE_CLASSIFICATIONS)), (
             f"duplicate members: {sg.RESIDUE_CLASSIFICATIONS}")
+
+
+class TestTheOneAbandonedLineRuleIsGatedOnBothSides:
+    """KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A8 ROUND 3 -- THE RULE THIS COMMIT
+    EXISTS TO MAKE AUDITABLE, PINNED.
+
+    `_classify_residue` softens exactly one shape: `unterminated and
+    last_unreadable == 1` does NOT return `TORN_PARTIAL`. Both halves of that
+    guard, and the deliberate FALL-THROUGH after it, were provably
+    unpinned -- the two most dangerous single-token edits to the rule each
+    passed the entire suite:
+
+    * dropping the `unterminated` conjunct
+      (`if not (read_segment_records.last_unreadable == 1)`), and
+    * turning the fall-through into `return RESIDUE_UNTERMINATED`.
+
+    The closed-set and totality assertions above cannot catch either: both
+    mutants still return REGISTERED labels, and both labels are still reached
+    by some other shape, so `seen == registered` holds either way. Membership
+    is not a behavioural pin. These two are.
+
+    The shapes come from `_residue_corpus`, so they are the same REAL bytes
+    and the same REAL `verify_segment` call the rest of the corpus uses; this
+    class only adds the per-shape expectation the corpus has no place to
+    carry.
+    """
+
+    @staticmethod
+    def _by_shape(root, monkeypatch):
+        return {shape: v for shape, v in _residue_corpus(root, monkeypatch)}
+
+    def test_a_terminated_stream_with_one_bad_tail_line_stays_torn(
+            self, tmp_path, monkeypatch):
+        """The `unterminated` half. A REAL gzip trailer proves the writer
+        finished, so one corrupt trailing line is content-level corruption
+        and nothing else. Without the conjunct this is the one input where
+        completeness IS establishable and `recoverable_intact` -- "its
+        content is complete as written" -- is unambiguously false."""
+        root = tmp_path / "term-badtail"
+        root.mkdir()
+        by_shape = self._by_shape(root, monkeypatch)
+        v = by_shape["trailer-terminated, one unparseable TAIL line"]
+        assert v.residue_classification == sg.RESIDUE_TORN_PARTIAL, (
+            "a stream that reached a real gzip trailer with one unparseable "
+            f"trailing line classified {v.residue_classification!r}: the "
+            "`unterminated` conjunct of the one-abandoned-line guard is gone, "
+            "so a completed write with a corrupt tail is now certified as "
+            "complete")
+        assert v.records_read == 9 and v.records_abandoned == 1, (
+            f"the fixture no longer produces the shape it exists for: "
+            f"records_read={v.records_read}, "
+            f"records_abandoned={v.records_abandoned}")
+
+    def test_one_bad_tail_line_still_falls_through_to_the_chain_check(
+            self, tmp_path, monkeypatch):
+        """The fall-through half. An ordinary spill boundary does not excuse
+        a BROKEN CHAIN underneath it: the `== 1` branch must not return, or
+        deletion/reorder/duplicate residues that happen to end mid-record all
+        report `unterminated` -- the label a healthy live collector gets."""
+        root = tmp_path / "chain-badtail"
+        root.mkdir()
+        by_shape = self._by_shape(root, monkeypatch)
+        v = by_shape[
+            "chain broken AND one unparseable tail line, unterminated"]
+        assert v.records_abandoned == 1, (
+            "the fixture must land on the `== 1` branch, or it does not "
+            f"exercise the fall-through at all: {v.records_abandoned}")
+        assert v.chain_valid is False, (
+            "the fixture must have a genuinely broken chain, or the check it "
+            "is falling through TO has nothing to find")
+        assert v.residue_classification == sg.RESIDUE_TORN_PARTIAL, (
+            f"a chain-broken residue classified {v.residue_classification!r} "
+            "because its readable prefix happened to end inside a record: the "
+            "`== 1` branch returned instead of falling through to the chain "
+            "check, so a splice is now reported with the same label a healthy "
+            "live segment gets")
 
 
 class TestRecordsAbandonedIsAuditableInTheField:

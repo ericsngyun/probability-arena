@@ -184,17 +184,35 @@ class _RotationCloser:
         records_read`, `verdict VALID`, zero uncommitted directories). What
         it does cost is a false negative on the way out -- any later
         `wait_for_rotations()` blocks its full timeout and returns False, and
-        the `<closer>` rotation-failure line is appended, for a rotation that
-        actually succeeded.
+        the `<closer>` rotation-failure line is appended ON A SUBSEQUENT
+        `close()`, for a rotation that actually succeeded. Not on the close
+        that lost the race: THAT one's `drain()` runs BEFORE `_stopped = True`
+        and observes `outstanding == 0`, so `shutdown()` returns True and
+        appends nothing. The line becomes reachable only once a LATER
+        `EventArchive.close()` calls `shutdown()` again -- and that one first
+        blocks the full `rotation_close_timeout_s` (300 s).
 
         THE FIX, when it is taken: fold the `_stopped` check and the
         `_outstanding` increment into ONE `_start_lock` critical section, so
         no `shutdown()` can interleave between them. It is deliberately NOT
-        applied here -- no test can be made to FAIL on revert without an
-        injection point (a seam between the two blocks) that the fixed
-        version never executes, so the "fix" would ship with a pin that
-        proves nothing. See the round-2 pass that declined it for the same
-        reason.
+        applied here -- but NOT for the reason the round-2 and round-3 passes
+        recorded. They said no test could be made to FAIL on revert without
+        an injection point the fixed version never executes. That is untrue,
+        and a counter-example ships in the same commit:
+        `test_a_permanent_restore_failure_stays_bounded_and_is_loud`
+        monkeypatches `segment.signal` with a shim for the express purpose of
+        reaching a path the fixed `_restore` never takes. An AST pin
+        asserting that the `_stopped` check and the `_outstanding` increment
+        occur inside ONE `with self._start_lock` block would revert-fail with
+        no injection at all, and this codebase already pins structure that
+        way.
+
+        The reason to defer is cost against consequence, which is a
+        scheduling judgement and should be recorded as one: the window is
+        narrow, durability is NOT at stake (the inline close above catches
+        the writer, 4/4), and the whole symptom is one misleading log line
+        plus one 300 s wait on a subsequent close -- not enough to justify
+        widening a lock's scope in the rotation path during a freeze.
         """
         with self._start_lock:
             if self._stopped:
