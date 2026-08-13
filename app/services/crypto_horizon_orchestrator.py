@@ -27,13 +27,14 @@ from typing import Awaitable, Callable
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import CryptoHorizonObservation, MarketOpsRun
+from app.models import CryptoHorizonCohort, CryptoHorizonObservation, MarketOpsRun
 from app.services.crypto_horizon import (
     OBS_REQUEST_FAILED,
     STATUS_ALREADY_OBSERVED,
     STATUS_DUE_NOW,
     STATUS_OVERDUE_UNOBSERVED,
     CryptoHorizonService,
+    is_rolling_cohort,
 )
 from app.services.crypto_horizon_schedule import (
     build_schedule_report,
@@ -351,6 +352,37 @@ def build_arm_plan(
     cohort_id = _validate_positive_int(cohort_id, "cohort_id")
     now = _parse_time(now or _now())
     store = store or OrchestratorStore()
+    # CRYPTO-COVERAGE-REPAIR-002: this orchestrator arms ONE-SHOT jobs against
+    # a cohort whose membership is FROZEN at creation — every window it plans,
+    # every intersection it computes and every `already_armed` check it makes
+    # assumes the member set cannot change under it. The prospective sparse
+    # lane's standing cohort has ROLLING admission (hundreds of new members per
+    # day), so arming it would install a plan that is stale the moment it is
+    # written, and would re-enter canary governance the sparse lane exists to
+    # stay out of. Refuse it here — the single choke point every arming path
+    # (`HorizonOrchestrator.arm`, the CLI, the reminder plan) goes through —
+    # BEFORE building a several-thousand-row schedule report for it.
+    cohort = session.get(CryptoHorizonCohort, cohort_id)
+    if is_rolling_cohort(cohort):
+        return {
+            "status": "rolling_cohort_not_armable",
+            "cohort_id": cohort_id,
+            "cohort_size": 0,
+            "generated_at": now.isoformat(),
+            "jobs": [],
+            "expected_jobs": 0,
+            "warnings": [
+                "cohort has ROLLING membership (CRYPTO-COVERAGE-REPAIR-002 "
+                "prospective sparse observation) and is driven by its own "
+                "governed scheduled pass; one-shot arming does not apply"
+            ],
+            "activation_grace_seconds": ACTIVATION_GRACE.total_seconds(),
+            "rejected": {"reason": "rolling_membership"},
+            "external_calls": 0,
+            "persisted": False,
+            "installed": False,
+            "disclaimer": BOUNDARY_DISCLAIMER,
+        }
     schedule = build_schedule_report(session, cohort_id, now=now)
     jobs = []
     rejected: dict | None = None

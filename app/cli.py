@@ -4824,6 +4824,190 @@ async def crypto_horizon_outcome_reconciliation_report(
             session.close()
 
 
+async def crypto_sparse_observe(
+    dry_run: bool = False, force: bool = False,
+    enrol_limit: int | None = None, observe_limit: int | None = None,
+    write_batch_size: int | None = None,
+    max_duration_seconds: float | None = None,
+    session=None,
+) -> int:
+    """CRYPTO-COVERAGE-REPAIR-002 prospective sparse observation: one bounded,
+    governed pass that enrols eligible NEW births into the standing rolling
+    cohort and buys exactly one 6h and one 24h market/liquidity observation per
+    birth via the existing DexScreener adapter. Gated by
+    enable_crypto_sparse_observation (default OFF = clean no-op). No
+    SolanaTracker (structurally denied), no cohort arming, no retries, no
+    interpolation, no backfill. Idempotent and restart-safe. Returns
+    observations recorded, or -1 on any non-healthy status."""
+    from app.services.crypto_sparse_observation import (
+        HEALTHY_STATUSES,
+        STATUS_DISABLED,
+        SparseObservationConfig,
+        run_scheduled_sparse_observation,
+    )
+
+    owns_session = session is None
+    if owns_session:
+        # Deliberately NO migration application here, same precedent as
+        # crypto-tape-reconcile: a dark, default-OFF timer must never apply
+        # Alembic unattended, outside the deploy runbook.
+        from app.db import get_sessionmaker
+
+        session = get_sessionmaker()()
+    try:
+        base = SparseObservationConfig.from_settings()
+        cfg = SparseObservationConfig(
+            chain=base.chain,
+            enrol_limit=base.enrol_limit if enrol_limit is None else enrol_limit,
+            observe_limit=(
+                base.observe_limit if observe_limit is None else observe_limit
+            ),
+            write_batch_size=(
+                base.write_batch_size if write_batch_size is None else write_batch_size
+            ),
+            max_duration_seconds=(
+                base.max_duration_seconds if max_duration_seconds is None
+                else max_duration_seconds
+            ),
+        )
+        r = await run_scheduled_sparse_observation(
+            session, dry_run=dry_run, force=force, config=cfg,
+        )
+        print(
+            "crypto sparse observation — prospective OBSERVATION only, "
+            "never advice"
+        )
+        if r["status"] == STATUS_DISABLED:
+            print(
+                "status=disabled  external_calls=0  no-op "
+                f"(flag {r['flag']} is off)"
+            )
+            return 0
+        if r["status"] not in HEALTHY_STATUSES:
+            print(
+                f"status={r['status']}  external_calls={r['external_calls']}  "
+                f"error={r.get('error')}"
+            )
+            return -1
+        print(
+            f"status={r['status']}  external_calls={r['external_calls']}  "
+            f"provider={r['provider']}  solana_tracker_calls="
+            f"{r['solana_tracker_calls']}  "
+            f"gate_bypassed={r.get('gate_bypassed')}  "
+            f"duration_ms={r['duration_ms']}"
+        )
+        print(
+            f"cohort_id={r.get('cohort_id')}  "
+            f"cohort_created={r.get('cohort_created')}  "
+            f"births_considered={r['births_considered']}  "
+            f"enrolment_rejections={r['enrolment_rejections']}"
+        )
+        if r["status"] == "dry_run":
+            print(
+                f"would_create_cohort={r.get('would_create_cohort')}  "
+                f"would_enrol={r.get('would_enrol')}  "
+                f"due_observations={r['due_observations']}  "
+                f"would_fetch_tokens={r.get('would_fetch_tokens')}"
+            )
+            print(f"plan_status_counts={r.get('plan_status_counts')}")
+            print("nothing was enrolled, fetched, or written")
+            return 0
+        print(
+            f"enrolled={r['enrolled']}  due_observations={r['due_observations']}  "
+            f"observations_recorded={r['observations_recorded']}  "
+            f"ticks_written={r['ticks_written']}"
+        )
+        print(
+            f"outcome_counts={r['outcome_counts']}  "
+            f"batches_committed={r['batches_committed']}  "
+            f"deferred={r['deferred_observations']}  "
+            f"stop_reason={r['stop_reason']}"
+        )
+        print(f"provider_ledger={r.get('provider_ledger')}")
+        return r["observations_recorded"]
+    finally:
+        if owns_session:
+            session.close()
+
+
+async def crypto_observation_coverage_report(
+    hours: int | None = None, top: int = 5, session=None
+) -> int:
+    """CRYPTO-COVERAGE-REPAIR-002 OBSERVATION-coverage report: of the
+    member-horizons whose observation band has CLOSED, how many did the sparse
+    lane actually look at? This is NOT reconciliation coverage (whether a
+    survival label could be computed) — that lives in
+    crypto-tape-coverage-report against a different denominator. Reads no
+    survival label, persists nothing, makes no external call. Returns enrolled
+    members analyzed."""
+    from app.services.crypto_sparse_observation import (
+        build_observation_coverage_report,
+    )
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import ensure_schema_current, get_sessionmaker
+
+        ensure_schema_current()
+        session = get_sessionmaker()()
+    try:
+        r = build_observation_coverage_report(session, hours=hours, top=top)
+        print(
+            "crypto OBSERVATION coverage — did a scheduled look happen; "
+            "never advice"
+        )
+        print(f"MEASURES:     {r['this_report_measures']}")
+        print(f"DOES NOT:     {r['this_report_does_not_measure']}")
+        print(
+            f"\nstatus={r['status']}  chain={r['chain']}  "
+            f"generated_at={r['generated_at']}"
+        )
+        if r["status"] != "ok":
+            print(f"  {r.get('cohort_ids') or 'no standing rolling cohort'}")
+            return 0
+        print(
+            f"cohort_id={r['cohort_id']}  enrolled_members={r['enrolled_members']}  "
+            f"window_hours={r['window_hours']}  band=+/-{r['band_minutes']}min  "
+            f"cadence={r['cadence_minutes']}min"
+        )
+        for label in r["horizons"]:
+            h = r["by_horizon"][label]
+            print(
+                f"\n  {label}: bands_closed={h['bands_closed']} "
+                f"(denominator={h['attempt_denominator']})"
+            )
+            print(
+                f"    observed={h['observed']}  attempted_missed="
+                f"{h['attempted_missed']}  scheduling_miss={h['scheduling_miss']}  "
+                f"band_open={h['band_open']}  band_not_open_yet="
+                f"{h['band_not_open_yet']}"
+            )
+            print(
+                f"    observation_attempt_rate={h['observation_attempt_rate']}  "
+                f"observation_success_rate={h['observation_success_rate']} "
+                f"(denominator={h['success_denominator']})"
+            )
+            print(
+                f"    look_completion_rate={h['look_completion_rate']}  "
+                f"scheduling_miss_rate={h['scheduling_miss_rate']}"
+            )
+            if h["miss_causes"]:
+                print(f"    miss_causes={h['miss_causes']}")
+        print(f"\ntarget_distance_seconds={r['target_distance_seconds']}")
+        if r["scheduling_miss_examples"]:
+            print("scheduling misses (never backfilled):")
+            for e in r["scheduling_miss_examples"]:
+                print(
+                    f"  {e['token']} {e['horizon']} band_closed_at="
+                    f"{e['band_closed_at']}"
+                )
+        print(f"\n{r['disclaimer']}")
+        return r["enrolled_members"]
+    finally:
+        if owns_session:
+            session.close()
+
+
 async def crypto_tape_coverage_report(
     hours: int = 168, top: int = 5, limit: int = 25, session=None
 ) -> int:
@@ -8912,6 +9096,59 @@ def build_parser() -> argparse.ArgumentParser:
         "--limit", type=int, default=25,
         help="the recorder's per-run token cap to model in the shadow analysis",
     )
+    sparse_parser = subparsers.add_parser(
+        "crypto-sparse-observe",
+        help="CRYPTO-COVERAGE-REPAIR-002: one bounded prospective "
+             "sparse-observation pass — enrol eligible new births and buy "
+             "exactly one 6h and one 24h DexScreener observation each "
+             "(default OFF via enable_crypto_sparse_observation; no "
+             "SolanaTracker; never advice)",
+    )
+    sparse_parser.add_argument(
+        "--dry-run", action="store_true",
+        help="report exactly what would be enrolled and observed; ZERO "
+             "external calls, nothing enrolled, nothing written",
+    )
+    sparse_parser.add_argument(
+        "--force", action="store_true",
+        help="run a single pass even when the scheduling flag is off "
+             "(manual operator use; does not enable the timer)",
+    )
+    sparse_parser.add_argument(
+        "--enrol-limit", type=_positive_int_arg, default=None,
+        help="override crypto_sparse_observation_enrol_limit for this "
+             "invocation (births admitted to the standing cohort per pass)",
+    )
+    sparse_parser.add_argument(
+        "--observe-limit", type=_positive_int_arg, default=None,
+        help="override crypto_sparse_observation_observe_limit for this "
+             "invocation. This IS the per-pass DexScreener request cap and "
+             "may never exceed the horizon lane's hard OBSERVE_MAX_CALLS=100",
+    )
+    sparse_parser.add_argument(
+        "--write-batch-size", type=_positive_int_arg, default=None,
+        help="tokens committed per write transaction in the write phase "
+             "(the fetch phase holds no transaction at all)",
+    )
+    sparse_parser.add_argument(
+        "--max-duration-seconds", type=_non_negative_float_arg, default=None,
+        help="wall-clock deadline on the FETCH phase; a pass that stops here "
+             "reports status=partial/stop_reason=deadline and the remaining "
+             "member-horizons stay selectable while their band is open",
+    )
+    obscov_parser = subparsers.add_parser(
+        "crypto-observation-coverage-report",
+        help="CRYPTO-COVERAGE-REPAIR-002: OBSERVATION coverage — did a "
+             "scheduled look happen inside its band. NOT reconciliation "
+             "coverage (see crypto-tape-coverage-report); reads no survival "
+             "label, persists nothing, zero external calls",
+    )
+    obscov_parser.add_argument(
+        "--hours", type=int, default=None,
+        help="restrict to members enrolled within the last N hours "
+             "(default: every enrolled member)",
+    )
+    obscov_parser.add_argument("--top", type=int, default=5)
     retro_parser = subparsers.add_parser(
         "crypto-retrospect-report",
         help="Retrospective feature/outcome separation analysis "
@@ -9675,6 +9912,22 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "crypto-tape-coverage-report":
         n = asyncio.run(
             crypto_tape_coverage_report(hours=args.hours, top=args.top, limit=args.limit)
+        )
+        return 0 if n >= 0 else 1
+    if args.command == "crypto-sparse-observe":
+        n = asyncio.run(
+            crypto_sparse_observe(
+                dry_run=args.dry_run, force=args.force,
+                enrol_limit=args.enrol_limit,
+                observe_limit=args.observe_limit,
+                write_batch_size=args.write_batch_size,
+                max_duration_seconds=args.max_duration_seconds,
+            )
+        )
+        return 0 if n >= 0 else 1
+    if args.command == "crypto-observation-coverage-report":
+        n = asyncio.run(
+            crypto_observation_coverage_report(hours=args.hours, top=args.top)
         )
         return 0 if n >= 0 else 1
     if args.command == "crypto-retrospect-report":

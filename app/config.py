@@ -495,6 +495,46 @@ class Settings(BaseSettings):
     # derived from later.
     crypto_tape_reconciler_lock_wait_budget_seconds: float | None = None
 
+    # CRYPTO-COVERAGE-REPAIR-002 — PROSPECTIVE SPARSE OBSERVATION.
+    # Reconciliation is finished and its own numbers say so: of 1,182 finalized
+    # outcomes on production only 54 (4.57%) carry a real 24h observation and
+    # 1,026 (86.8%) are `permanently_missing_evidence`. The cause is not
+    # pruning and not reconciliation capacity — the median token's last tick is
+    # ~83 minutes after birth, so 6h/24h evidence was never COLLECTED. This
+    # lane collects it going forward: exactly one governed 6h observation and
+    # one governed 24h observation per eligible new birth, via the existing
+    # read-only DexScreener adapter (no SolanaTracker — structurally denied by
+    # a run-scoped provider policy, not by convention).
+    #
+    # DEFAULT OFF, exactly like `enable_crypto_tape_reconciler`. Off is a clean
+    # no-op: no read, no write, no external call. Activation is an operator
+    # action (deploy dark -> `--dry-run` -> one `--force` pass -> inspect the
+    # observation-coverage report -> flip the flag -> install the timer).
+    enable_crypto_sparse_observation: bool = False
+    # Per-pass ENROLMENT cap. CHOSEN with a stated margin, not measured:
+    # measured EVO births/day (CRYPTO-COVERAGE-REPAIR-001 B7, 2026-08-11) are
+    # 392.6 (14d) / 417.3 (7d) / 441.3 (3d) / 517.0 (24h), planning rate ~530,
+    # i.e. ~22 births per hourly pass. 200 leaves ~9x headroom and drains a
+    # 25h cold-start backlog in ~4 passes.
+    crypto_sparse_observation_enrol_limit: int = 200
+    # Per-pass OBSERVATION cap == per-pass DexScreener request cap. Each birth
+    # is observed exactly twice and the 6h/24h bands never overlap, so steady
+    # state is ~44 requests per hourly pass; 100 leaves ~2.3x headroom and is
+    # also the horizon lane's own hard adapter cap (OBSERVE_MAX_CALLS), which
+    # this value may never exceed.
+    crypto_sparse_observation_observe_limit: int = 100
+    # Tokens committed per write transaction in the WRITE phase. The fetch
+    # phase holds NO transaction at all (network and writes are separate
+    # phases, pinned by test), so this bounds only the small, network-free
+    # INSERT batches: at most write_batch_size x 2 rows per commit.
+    crypto_sparse_observation_write_batch_size: int = 25
+    # Wall-clock deadline on the FETCH phase. CHOSEN, not measured on the
+    # target host: at the 100-request cap this budgets ~0.9s per request
+    # against DexScreener's documented 300 rpm token endpoint. A pass that
+    # stops here reports status=partial/stop_reason=deadline and the remaining
+    # member-horizons stay selectable while their band is still open.
+    crypto_sparse_observation_max_duration_seconds: float = 90.0
+
     # Crypto risk engine (CRYPTO-002) — read-only risk INTELLIGENCE only.
     # A risk score flags danger for avoidance/review; it is never a trade
     # recommendation, and no execution capability exists anywhere. Provider

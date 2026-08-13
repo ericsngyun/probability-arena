@@ -81,6 +81,29 @@ OBS_TOLERANCE = HORIZON_TOLERANCE
 INACTIVE_AGE_HOURS = 24
 
 TICK_SOURCE = "crypto-horizon-obs"
+# how many per-candidate diagnostics one observation's audit payload may keep
+AUDIT_CANDIDATE_LIMIT = 12
+
+# --- CRYPTO-COVERAGE-REPAIR-002: cohort MEMBERSHIP kinds ------------------------
+# Every cohort this module creates is FROZEN at creation — that invariant is
+# load-bearing for the canary/orchestrator governance built on top of it, and
+# nothing here changes it. The prospective sparse-observation lane needs the
+# opposite (rolling admission of new births), so it marks its ONE standing
+# cohort with `provenance["membership"] = MEMBERSHIP_ROLLING` and every
+# frozen-cohort consumer refuses to act on it. The marker is the structural
+# separation between the two kinds; `is_rolling_cohort` is its single reader.
+MEMBERSHIP_FROZEN = "frozen"
+MEMBERSHIP_ROLLING = "rolling_prospective_sparse"
+
+
+def is_rolling_cohort(cohort) -> bool:
+    """True for the CRYPTO-COVERAGE-REPAIR-002 standing sparse-observation
+    cohort (rolling admission). False for every frozen research cohort, and
+    for None. Consumers that assume frozen membership — the one-shot
+    orchestrator's arming plan above all — must refuse a rolling cohort
+    rather than treat it as a canary."""
+    provenance = getattr(cohort, "provenance", None) or {}
+    return provenance.get("membership") == MEMBERSHIP_ROLLING
 
 # plan statuses
 STATUS_NOT_DUE = "not_due"
@@ -225,9 +248,27 @@ class HorizonPlanEntry:
 
 def plan_observations(
     members: list, existing: dict, inactive_tokens: set, now: datetime,
+    *,
+    horizons: tuple[tuple[str, int], ...] | None = None,
+    window_minutes: float | None = None,
 ) -> list[HorizonPlanEntry]:
     """Pure planner. `existing` maps (token, horizon) -> observation status;
-    `inactive_tokens` is the set already found dead. Never does I/O."""
+    `inactive_tokens` is the set already found dead. Never does I/O.
+
+    CRYPTO-COVERAGE-REPAIR-002 added two optional, default-inert parameters so
+    the prospective sparse lane can reuse this planner as its single source of
+    window truth instead of writing a second one. Both default to the OBS-001
+    behaviour byte-for-byte:
+
+    * `horizons` — the (label, minutes) pairs to plan. Defaults to the tape's
+      full `HORIZONS`; the sparse lane passes only the 6h/24h subset.
+    * `window_minutes` — an ABSOLUTE half-width (minutes) applied to every
+      planned horizon, replacing the fractional `OBS_TOLERANCE`. Defaults to
+      None (fractional tolerance, unchanged). The sparse lane passes a fixed
+      band that is deliberately much TIGHTER than the tape tolerance, so an
+      observation inside it is always inside the survival window too.
+    """
+    horizons = horizons if horizons is not None else HORIZONS
     entries: list[HorizonPlanEntry] = []
     for m in members:
         anchor = _aware(getattr(m, "first_evidence_at", None)) or _aware(
@@ -235,9 +276,12 @@ def plan_observations(
         )
         token = m.token_address
         token_inactive = token in inactive_tokens
-        for label, minutes in HORIZONS:
+        for label, minutes in horizons:
             target = (anchor + timedelta(minutes=minutes)) if anchor else None
-            tol = timedelta(minutes=minutes * OBS_TOLERANCE)
+            tol = (
+                timedelta(minutes=window_minutes) if window_minutes is not None
+                else timedelta(minutes=minutes * OBS_TOLERANCE)
+            )
             ws = (target - tol) if target else None
             we = (target + tol) if target else None
             prior = existing.get((token, label))
@@ -587,6 +631,7 @@ class CryptoHorizonService:
             note="recent-first birth cohort for horizon observation",
             provenance={
                 "source": "crypto_token_birth_events",
+                "membership": MEMBERSHIP_FROZEN,
                 "order": "coalesce(first_evidence_at, observed_at) desc",
                 "window_filter": "coalesce(first_evidence_at, observed_at) >= now - window_hours",
                 "window_hours": hours,
@@ -723,6 +768,7 @@ class CryptoHorizonService:
             note="explicit-token cohort for horizon observation",
             provenance={
                 "source": "explicit_token_selection",
+                "membership": MEMBERSHIP_FROZEN,
                 "tokens": ordered,
                 "order": "requested_input_order",
                 "require_complete": require_complete,
@@ -870,12 +916,23 @@ class CryptoHorizonService:
     def _record_observation(
         self, session, cohort_id, member, entry, selected, basis, candidates,
         request_failed, now, existing=None,
+        *,
+        audit_candidate_limit: int = AUDIT_CANDIDATE_LIMIT,
+        tick_source: str = TICK_SOURCE,
     ):
         """Upsert one observation row (+ an ordinary price tick ONLY when an
         eligible pair with liquidity was selected — never a null-liquidity
         tick, never liquidity fabricated from FDV/mcap/volume). A previously
         FAILED (non-observed) row is retried in place; an OBSERVED row is never
-        overwritten. Returns (status, missing_cause, tick_or_None)."""
+        overwritten. Returns (status, missing_cause, tick_or_None).
+
+        CRYPTO-COVERAGE-REPAIR-002 added two default-inert keyword arguments:
+        `audit_candidate_limit` bounds how many per-candidate diagnostics are
+        stored in `raw_payload` (RAW-PAYLOAD-STORAGE-001: raw payloads were
+        27% of the production DB with zero readers, so a lane that writes
+        ~1,000 rows/day must not inherit the 12-candidate manual default), and
+        `tick_source` stamps the written tick so the lane that bought it is
+        attributable. Both default to the OBS-001 values."""
         if existing is not None and existing.status == OBS_OBSERVED:
             return OBS_OBSERVED, None, None  # frozen; never re-observe
         birth_at = entry.birth_at
@@ -914,7 +971,7 @@ class CryptoHorizonService:
                 chain=self.chain, token_address=entry.token_address,
                 pair_address=pair_addr, observed_at=now, price_usd=price,
                 liquidity_usd=liq, volume_24h_usd=vol, market_cap=mcap, fdv=fdv,
-                raw_payload={"source": TICK_SOURCE, "cohort_id": cohort_id,
+                raw_payload={"source": tick_source, "cohort_id": cohort_id,
                              "horizon": entry.horizon, "dex_id": dex},
                 created_at=now,
             )
@@ -925,7 +982,8 @@ class CryptoHorizonService:
         audit = {
             "selected_pair_basis": basis,
             "candidate_count": len(candidates),
-            "candidates": candidates[:12],  # bounded; never the full raw payload
+            # bounded; never the full raw payload
+            "candidates": candidates[:audit_candidate_limit],
         }
         if existing is not None:
             # retry-in-place: update the failed row
