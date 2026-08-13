@@ -3516,8 +3516,9 @@ async def crypto_reconciler_health(
         f"{history_skips['distribution_excluded_total']}  "
         f"distribution_excluded_by_status="
         f"{history_skips['distribution_excluded_by_status']}  "
-        f"(pre-flight skips PLUS prelude-blocked db_locked passes; excluded "
-        f"from the lock-wait distribution, counted here)"
+        f"(over retained_history; pre-flight skips PLUS prelude-blocked "
+        f"db_locked passes, excluded from the lock-wait distribution and "
+        f"counted here)"
     )
     print(
         f"last_{guard.HEALTH_WINDOW_RUNS} runs_evaluated={verdict['window_runs']}  "

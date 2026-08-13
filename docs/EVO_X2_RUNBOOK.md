@@ -1983,7 +1983,10 @@ Four things a reader must not misread:
 #### The escape boundary: what this gate deliberately does NOT catch
 
 Stated as policy so it is never mistaken for an oversight. A sweep of sustained
-contention patterns, evaluating after every run:
+contention **frequency** — every run's worst batch wait held at 1,037 ms, the
+worst healthy maximum ever measured — evaluating after every run. (The
+orthogonal **severity** sweep is the next subsection; do not read one table for
+the other.)
 
 | sustained contention rate | latches? |
 |---|---|
