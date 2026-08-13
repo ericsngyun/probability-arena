@@ -518,8 +518,21 @@ async def test_a_band_that_closes_unobserved_is_never_backfilled(session):
         session, settings=settings(), now=NOW + timedelta(minutes=61),
     )
     six = report["by_horizon"]["6h"]
-    assert six["scheduling_miss"] == 1 and six["observed"] == 0
-    assert six["scheduling_miss_rate"] == 1.0
+    assert six["observed"] == 0
+    # this member was enrolled AFTER its 6h band closed, so it is
+    # `enrolled_after_band_closed`, not a scheduling failure — and either way
+    # it is never observed and never backfilled, which is what this test is
+    # about. (The scheduling_miss/enrolled_too_late split has its own two
+    # tests below.)
+    assert six[sparse.OBS_STATE_ENROLLED_TOO_LATE] == 1
+    assert six["scheduling_miss"] == 0
+
+    # and a LATER pass still refuses to fill it in
+    adapter2 = FakeAdapter({token_id(1): [pair(token_id(1))]})
+    r2 = await run_pass(session, adapter=adapter2, now=NOW + timedelta(minutes=120))
+    assert r2["due_observations"] == 0
+    assert adapter2.calls == 0
+    assert session.query(CryptoHorizonObservation).count() == 0
 
 
 @pytest.mark.asyncio
@@ -1034,6 +1047,60 @@ async def test_attempted_misses_are_separated_from_scheduling_misses(session):
     assert six["observation_attempt_rate"] == 0.5
     assert six["observation_success_rate"] == 0.0
     assert six["miss_causes"] == {OBS_PROVIDER_NO_PAIR: 1}
+
+
+@pytest.mark.asyncio
+async def test_a_band_that_closed_before_enrolment_is_not_a_scheduling_miss(session):
+    """Found by a real CLI smoke run, not by review. Eligibility deliberately
+    admits a birth past its 6h band so its 24h band can still be caught — so
+    that member's 6h band closed before the lane ever saw it. Counting it as a
+    `scheduling_miss` would inflate the one number that is supposed to mean
+    "the mechanism failed to look when it could have" with tokens that predate
+    enrolment: exactly the denominator conflation this milestone exists to
+    stop."""
+    add_birth(session, 1, anchor=NOW - timedelta(hours=24))  # 6h band closed 17h ago
+    add_birth(session, 2, anchor=NOW - timedelta(hours=6))   # 6h band open now
+    session.commit()
+    # enrol both, observe only token 2 (token 1's 6h band is long closed)
+    r = await run_pass(
+        session, adapter=FakeAdapter({token_id(2): [pair(token_id(2))]}), now=NOW,
+    )
+    assert r["enrolled"] == 2
+    later = NOW + timedelta(minutes=61)  # token 2's 6h band has now closed too
+    rep = sparse.build_observation_coverage_report(
+        session, settings=settings(), now=later,
+    )
+    six = rep["by_horizon"]["6h"]
+    assert six[sparse.OBS_STATE_ENROLLED_TOO_LATE] == 1
+    assert six["scheduling_miss"] == 0
+    assert six["observed"] == 1
+    # the never-had-a-chance member is OUT of the denominator entirely
+    assert six["bands_closed"] == 1
+    assert six["scheduling_miss_rate"] == 0.0
+    assert six["look_completion_rate"] == 1.0
+
+
+@pytest.mark.asyncio
+async def test_a_band_that_closed_after_enrolment_IS_a_scheduling_miss(session):
+    """The compensating half: the exclusion above must not swallow a real
+    failure. Same member, enrolled while its band was open, never observed."""
+    add_birth(session, 1, anchor=NOW - timedelta(hours=6))
+    session.commit()
+    # enrol, but the provider pass observes nothing (limit 0 is refused, so use
+    # a cohort-only enrolment by making the token not yet due at enrol time)
+    r = await run_pass(session, adapter=FakeAdapter({}), now=NOW)
+    assert r["enrolled"] == 1
+    session.query(CryptoHorizonObservation).delete()
+    session.commit()
+    rep = sparse.build_observation_coverage_report(
+        session, settings=settings(), now=NOW + timedelta(minutes=61),
+    )
+    six = rep["by_horizon"]["6h"]
+    assert six["scheduling_miss"] == 1
+    assert six[sparse.OBS_STATE_ENROLLED_TOO_LATE] == 0
+    assert six["bands_closed"] == 1
+    assert six["scheduling_miss_rate"] == 1.0
+    assert rep["scheduling_miss_examples"][0]["enrolled_at"] is not None
 
 
 def test_the_report_is_compute_on_demand(session):

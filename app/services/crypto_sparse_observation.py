@@ -1112,6 +1112,7 @@ OBSERVATION_DENOMINATOR = "member_horizons_whose_band_has_closed"
 OBS_STATE_OBSERVED = "observed"
 OBS_STATE_ATTEMPTED_MISSED = "attempted_missed"
 OBS_STATE_SCHEDULING_MISS = "scheduling_miss"
+OBS_STATE_ENROLLED_TOO_LATE = "enrolled_after_band_closed"
 OBS_STATE_BAND_OPEN = "band_open"
 OBS_STATE_BAND_NOT_OPEN = "band_not_open_yet"
 
@@ -1141,9 +1142,15 @@ def build_observation_coverage_report(
       * `attempted_missed`  — we looked; the provider had nothing usable
                               (token_inactive / provider_no_pair /
                               no_liquidity_state / request_failed)
-      * `scheduling_miss`   — the band closed and this lane never looked. THIS
-                              is the number that proves the mechanism ran; it
-                              is not recoverable and is never backfilled.
+      * `scheduling_miss`   — the band closed while this member was enrolled
+                              and this lane never looked. THIS is the number
+                              that proves the mechanism ran; it is not
+                              recoverable and is never backfilled.
+      * `enrolled_after_band_closed` — the band had already closed when the
+                              member was enrolled, so the lane never had a
+                              chance. Structural (eligibility admits a birth
+                              past its 6h band to catch its 24h band), counted
+                              separately, EXCLUDED from every rate.
       * `band_open` / `band_not_open_yet` — pending, excluded from every rate.
 
     Compute-on-demand: persists nothing, makes zero external calls, reads no
@@ -1208,8 +1215,8 @@ def build_observation_coverage_report(
     for label, minutes in SPARSE_HORIZONS:
         states = {
             OBS_STATE_OBSERVED: 0, OBS_STATE_ATTEMPTED_MISSED: 0,
-            OBS_STATE_SCHEDULING_MISS: 0, OBS_STATE_BAND_OPEN: 0,
-            OBS_STATE_BAND_NOT_OPEN: 0,
+            OBS_STATE_SCHEDULING_MISS: 0, OBS_STATE_ENROLLED_TOO_LATE: 0,
+            OBS_STATE_BAND_OPEN: 0, OBS_STATE_BAND_NOT_OPEN: 0,
         }
         causes: dict[str, int] = {}
         for member in members:
@@ -1237,12 +1244,27 @@ def build_observation_coverage_report(
                     )
                 continue
             if now > band_end:
+                # A band that closed BEFORE this member was even enrolled is
+                # not a scheduling failure — the lane never had the chance to
+                # look. Eligibility deliberately admits a birth past its 6h
+                # band so its 24h band can still be caught (see
+                # `enrolment_rejection_reason`), so this state is structural,
+                # not exceptional. Conflating it with a real miss would
+                # inflate `scheduling_miss_rate` with tokens that predate
+                # enrolment — the same denominator conflation this whole
+                # milestone exists to stop. Counted separately and excluded
+                # from every rate.
+                added_at = _aware(member.added_at)
+                if added_at is not None and added_at > band_end:
+                    states[OBS_STATE_ENROLLED_TOO_LATE] += 1
+                    continue
                 states[OBS_STATE_SCHEDULING_MISS] += 1
                 if len(misses) < top:
                     misses.append({
                         "token": member.token_address[:16],
                         "horizon": label,
                         "band_closed_at": band_end.isoformat(),
+                        "enrolled_at": added_at.isoformat() if added_at else None,
                     })
             elif now >= band_start:
                 states[OBS_STATE_BAND_OPEN] += 1
