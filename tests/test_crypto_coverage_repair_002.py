@@ -523,12 +523,25 @@ async def test_a_band_that_closes_unobserved_is_never_backfilled(session):
 
 
 @pytest.mark.asyncio
-async def test_no_tick_is_written_for_a_miss(session):
+@pytest.mark.parametrize("shape", ["no_pair_at_all", "pairs_but_none_eligible"])
+async def test_no_tick_is_written_for_a_miss(session, shape):
+    """Both miss shapes, because they take different branches: no pair from
+    the provider at all, and pairs that exist but carry no usable liquidity.
+    Neither may produce a tick — never a null-liquidity tick, never liquidity
+    fabricated from FDV/market cap/volume."""
     add_birth(session, 1, anchor=NOW - timedelta(hours=6))
     session.commit()
-    r = await run_pass(session, adapter=FakeAdapter({}), now=NOW)
+    pairs = (
+        {} if shape == "no_pair_at_all"
+        else {token_id(1): [pair(token_id(1), liq=0.0)]}
+    )
+    r = await run_pass(session, adapter=FakeAdapter(pairs), now=NOW)
     assert r["ticks_written"] == 0
     assert session.query(CryptoPriceTick).count() == 0
+    obs = session.query(CryptoHorizonObservation).one()
+    assert obs.status != OBS_OBSERVED
+    assert obs.tick_id is None
+    assert obs.liquidity_usd is None
 
 
 @pytest.mark.asyncio
@@ -565,8 +578,16 @@ async def test_rerunning_the_pass_double_enrols_and_double_observes_nothing(sess
     first = await run_pass(session, adapter=adapter, now=NOW)
     after_first = row_counts(session)
     second = await run_pass(session, adapter=adapter, now=NOW)
+    assert first["status"] == sparse.STATUS_OK
+    # The second pass must be HEALTHY, not merely harmless. Without this the
+    # test cannot tell correct idempotency apart from an IntegrityError caught
+    # and rolled back into `concurrent_write_conflict` — which also leaves the
+    # row counts unchanged and `enrolled` at 0. (Proven: mutating away the
+    # already-enrolled exclusion left the weaker version of this test green.)
+    assert second["status"] == sparse.STATUS_OK, second.get("error")
     assert first["enrolled"] == 3 and second["enrolled"] == 0
     assert second["observations_recorded"] == 0
+    assert second["due_observations"] == 0
     assert row_counts(session) == after_first
     assert adapter.calls == 3
 
