@@ -831,6 +831,80 @@ def _module_identifiers(path: str) -> set[str]:
     return names
 
 
+@pytest.mark.asyncio
+async def test_the_real_adapter_reaches_only_dexscreener_urls(session):
+    """End-to-end network-surface proof, with the REAL `DexScreenerAdapter`
+    (not a fake) and `httpx` intercepted: every URL this pass requests must be
+    a DexScreener token-pairs URL, and the pass must succeed — which also
+    proves the deny-all-but-DexScreener policy still AUTHORIZES the one
+    provider it needs (a policy that denied everything would be trivially
+    "safe" and useless)."""
+    import httpx
+
+    from app.adapters.dexscreener import DexScreenerAdapter
+
+    requested: list[str] = []
+
+    class FakeResponse:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return [{
+                "chainId": CHAIN,
+                "pairAddress": "PairReal",
+                "baseToken": {"address": token_id(1), "symbol": "T1"},
+                "quoteToken": {"address": "So11111111111111111111111111111111111111112"},
+                "dexId": "raydium",
+                "priceUsd": "0.001",
+                "liquidity": {"usd": 12345.0},
+                "volume": {"h24": 100.0},
+                "txns": {"m5": {"buys": 2, "sells": 1}},
+            }]
+
+    class FakeClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, url):
+            requested.append(url)
+            return FakeResponse()
+
+    add_birth(session, 1, anchor=NOW - timedelta(hours=6))
+    session.commit()
+    original = httpx.AsyncClient
+    httpx.AsyncClient = FakeClient
+    try:
+        s = settings()
+        service = CryptoHorizonService(
+            adapter=DexScreenerAdapter(settings=s), settings=s,
+        )
+        r = await sparse.run_scheduled_sparse_observation(
+            session, settings=s, service=service, config=config(), now=NOW,
+            sleeper=lambda _x: None,
+        )
+    finally:
+        httpx.AsyncClient = original
+
+    assert r["status"] == sparse.STATUS_OK, r.get("error")
+    assert r["observations_recorded"] == 1
+    assert requested, "the real adapter issued no request at all"
+    for url in requested:
+        assert url.startswith("https://api.dexscreener.com/token-pairs/"), url
+    # the DexScreener guard really ran: the ledger accounts a real request
+    assert r["provider_ledger"]["dexscreener"]["succeeded"] == len(requested)
+    assert r["solana_tracker_calls"] == 0
+    assert r["denied_provider_attempts"] == {}
+
+
 def test_the_module_references_no_paid_provider_identifier():
     names = {n.lower() for n in _module_identifiers(
         "app/services/crypto_sparse_observation.py"
