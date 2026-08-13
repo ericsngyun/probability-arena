@@ -33,7 +33,27 @@ from app.services.tick_aggregation import (
 )
 
 REPO = Path(__file__).resolve().parents[1]
-NOW = datetime.now(timezone.utc)
+
+
+def now():
+    """The clock, read when a test RUNS — not when the module is imported.
+
+    This was `NOW = datetime.now(timezone.utc)` at import scope. The tests seed
+    data relative to it while the service computes its window from the real
+    clock at call time, so an hour boundary falling anywhere inside a suite run
+    made the seeded "last full hours" stop being the hours the service
+    considers complete. The whole ~4-minute suite was the window: eight tests
+    failed at once — `TestPerSubwindowCommits`, all four `TestBoundedRetry`,
+    both `TestScheduledGate`, and `TestCLI::test_cli_exit_nonzero_on_failed_window`
+    — while the file passed in 1.4s on its own, which reads exactly like a
+    flake. It is not one; setting the captured value to just before a rollover
+    reproduces all eight deterministically.
+
+    Reading the clock per call narrows the window from the length of the suite
+    to the length of one test. This is the third instance of this exact
+    import-time-clock pattern found in this repository.
+    """
+    return datetime.now(timezone.utc)
 
 
 @pytest.fixture
@@ -56,7 +76,7 @@ def seed_hours(session, n_hours, per_hour=3, ticker="KXMLBGAME-1"):
     """`per_hour` ticks spaced WITHIN each of the last n_hours full hours."""
     step = 60 // per_hour
     for h in range(1, n_hours + 1):
-        start = bucket_start_for(NOW - timedelta(hours=h), 3600)
+        start = bucket_start_for(now() - timedelta(hours=h), 3600)
         for i in range(per_hour):
             tick(session, ticker, at=start + timedelta(minutes=step * i, seconds=30))
     session.commit()
@@ -309,7 +329,7 @@ def report(session):
 
 
 def clean_scheduled_run(session, *, hours_ago=1):
-    at = NOW - timedelta(hours=hours_ago)
+    at = now() - timedelta(hours=hours_ago)
     session.add(TickAggregationRun(
         status="ok", scheduled=True, started_at=at, finished_at=at,
         window_hours=12, rows_read=100, buckets_written=10, created_at=at,
@@ -332,7 +352,7 @@ class TestReadinessReport:
         """Rows written before the null() fix hold the JSON-null form; the
         counter must accept both."""
         session.add(TickAggregationRun(
-            status="ok", scheduled=True, started_at=NOW, created_at=NOW,
+            status="ok", scheduled=True, started_at=now(), created_at=now(),
             failed_windows=None,  # ORM assign-None => JSON 'null' (legacy form)
         ))
         session.commit()
@@ -341,7 +361,7 @@ class TestReadinessReport:
 
     def test_scheduled_run_with_failed_windows_not_counted_clean(self, session):
         session.add(TickAggregationRun(
-            status="ok", scheduled=True, started_at=NOW, created_at=NOW,
+            status="ok", scheduled=True, started_at=now(), created_at=now(),
             failed_windows=["2026-07-09T00:00:00+00:00"],
         ))
         session.commit()
@@ -357,7 +377,7 @@ class TestReadinessReport:
     def test_ready_when_all_gates_pass(self, session):
         # full coverage: aggregate everything, fresh raw feed, clean cycles
         seed_hours(session, 5)
-        tick(session, at=NOW - timedelta(minutes=2))  # fresh raw feed
+        tick(session, at=now() - timedelta(minutes=2))  # fresh raw feed
         session.commit()
         svc().aggregate(session, hours=6)
         for i in range(READINESS_CLEAN_CYCLES):
@@ -376,14 +396,14 @@ class TestReadinessReport:
 
     def test_recent_error_run_blocks_readiness(self, session):
         seed_hours(session, 3)
-        tick(session, at=NOW - timedelta(minutes=2))
+        tick(session, at=now() - timedelta(minutes=2))
         session.commit()
         svc().aggregate(session, hours=4)
         for i in range(READINESS_CLEAN_CYCLES):
             clean_scheduled_run(session, hours_ago=i + 1)
         session.add(TickAggregationRun(
-            status="error", scheduled=True, started_at=NOW, error_type="SubwindowCommitFailed",
-            created_at=NOW,
+            status="error", scheduled=True, started_at=now(), error_type="SubwindowCommitFailed",
+            created_at=now(),
         ))
         session.commit()
 
@@ -424,10 +444,10 @@ class TestReadinessReport:
 
 class TestRunRetention:
     def test_old_finished_runs_pruned_running_kept(self, session):
-        old = NOW - timedelta(days=60)
+        old = now() - timedelta(days=60)
         session.add(TickAggregationRun(status="ok", started_at=old, created_at=old))
         session.add(TickAggregationRun(status="running", started_at=old, created_at=old))
-        session.add(TickAggregationRun(status="ok", started_at=NOW, created_at=NOW))
+        session.add(TickAggregationRun(status="ok", started_at=now(), created_at=now()))
         session.commit()
 
         counts = RetentionService(RetentionConfig(watcher_run_days=30)).prune(session)

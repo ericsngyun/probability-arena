@@ -723,6 +723,300 @@ def kalshi_realtime_replay(
     return 0 if integrity["intact"] and not out["faults"] else 1
 
 
+def archive_init(
+    root: str, environment: str = "demo",
+    archive_identity: str = "kalshi-realtime",
+    confirm: bool = False, fmt: str = "text",
+) -> int:
+    """KALSHI-ARCHIVE-CORE-REMEDIATION-002 A7 — explicitly initialize an
+    archive root. The ONLY way a genesis is minted.
+
+    An uninitialized root is a HALT, never an invitation to bootstrap
+    silently: the collector consumes an initialized archive and can never
+    create one on its own. This command is the one place that gap is closed,
+    and only under `--confirm`. Re-running against an already-initialized
+    root refuses (fails closed) rather than minting a second root of trust
+    or silently no-opping over real history.
+    """
+    import json as _json
+
+    from app.realtime.archive_head import ArchiveHeadError, head_state
+
+    root_path = _Path(root)
+    state = head_state(root_path, environment=environment)
+    if not confirm:
+        payload = {"mode": "dry_run", "root": str(root_path),
+                  "environment": environment,
+                  "archive_identity": archive_identity,
+                  "current_state": state.get("state")}
+        if fmt == "json":
+            print(_json.dumps(payload, indent=2, sort_keys=True, default=str))
+        else:
+            print(f"DRY RUN archive-init {root_path} [{environment}]")
+            print(f"  current head_state: {state.get('state')}")
+            if state.get("state") == "NOT_INITIALIZED":
+                print(f"  would mint a new genesis (archive_identity="
+                      f"{archive_identity!r})")
+            else:
+                print("  refuses: this root is already initialized")
+            print("  nothing written — re-run with --confirm to apply")
+        return 0
+    try:
+        genesis = initialize_archive_(root_path, environment,
+                                      archive_identity=archive_identity)
+    except ArchiveHeadError as exc:
+        print(f"refused: {exc}")
+        return 1
+    payload = {"mode": "confirmed", "root": str(root_path),
+              "environment": environment, "archive_id": genesis["archive_id"],
+              "archive_identity": genesis["archive_identity"],
+              "created_at": genesis["created_at"]}
+    if fmt == "json":
+        print(_json.dumps(payload, indent=2, sort_keys=True, default=str))
+        return 0
+    print(f"CONFIRMED archive-init {root_path} [{environment}]")
+    print(f"  archive_id     {genesis['archive_id']}")
+    print(f"  archive_identity {genesis['archive_identity']}")
+    print(f"  created_at     {genesis['created_at']}")
+    return 0
+
+
+def initialize_archive_(root, environment, *, archive_identity):
+    """Thin import seam so tests can monkeypatch this without touching the
+    heavier `app.realtime.archive_head` module import graph."""
+    from app.realtime.archive_head import initialize_archive
+
+    return initialize_archive(root, environment, archive_identity=archive_identity)
+
+
+def archive_recover_head(
+    root: str, environment: str = "demo",
+    confirm: bool = False, fmt: str = "text",
+) -> int:
+    """KALSHI-ARCHIVE-CORE-REMEDIATION-002 A7 — finish an interrupted head
+    transition. Deterministic, and safe to run when nothing is wrong.
+
+    Wraps `recover_current_head` exactly, adding nothing: it advances the
+    current-head pointer to a generation N only when N's record is already
+    durably on disk, chains from the current generation, and its committed
+    segment verifies. It never reads segment directories to invent a
+    history. If no transition is outstanding it is a no-op — this command
+    is idempotent by construction, not by a special case here.
+    """
+    import json as _json
+
+    from app.realtime.archive_head import ArchiveHeadError, head_state
+
+    root_path = _Path(root)
+    before = head_state(root_path, environment=environment)
+    if not confirm:
+        payload = {"mode": "dry_run", "root": str(root_path),
+                  "environment": environment,
+                  "head_state": before.get("state"),
+                  "reason": before.get("reason")}
+        if fmt == "json":
+            print(_json.dumps(payload, indent=2, sort_keys=True, default=str))
+        else:
+            print(f"DRY RUN archive-recover-head {root_path} [{environment}]")
+            print(f"  head_state: {before.get('state')}")
+            if before.get("state") == "STALE_HEAD":
+                print("  would advance the pointer to the durable generation "
+                      "already on disk")
+            elif before.get("state") == "RECOVERY_REQUIRED":
+                print("  would re-point at the newest immutable generation "
+                      "record (the current-head pointer is missing)")
+            else:
+                print("  no recovery action applies to this state")
+            print("  nothing written — re-run with --confirm to apply")
+        return 0
+    try:
+        record = recover_current_head_(root_path, environment)
+    except ArchiveHeadError as exc:
+        print(f"refused: {exc}")
+        return 1
+    after = head_state(root_path, environment=environment)
+    payload = {"mode": "confirmed", "root": str(root_path),
+              "environment": environment,
+              "generation_before": before.get("head", {}).generation
+              if before.get("head") else None,
+              "generation_after": record["generation"],
+              "head_state_after": after.get("state")}
+    if fmt == "json":
+        print(_json.dumps(payload, indent=2, sort_keys=True, default=str))
+        return 0 if after.get("state") == "CURRENT" else 1
+    print(f"CONFIRMED archive-recover-head {root_path} [{environment}]")
+    print(f"  generation now  {record['generation']}")
+    print(f"  head_state      {after.get('state')}")
+    return 0 if after.get("state") == "CURRENT" else 1
+
+
+def recover_current_head_(root, environment):
+    """Import seam, matching `initialize_archive_` above."""
+    from app.realtime.archive_head import recover_current_head
+
+    return recover_current_head(root, environment)
+
+
+def archive_adopt(
+    root: str, segment_id: str, environment: str = "demo",
+    confirm: bool = False, fmt: str = "text",
+) -> int:
+    """KALSHI-ARCHIVE-CORE-REMEDIATION-002 A7 — adopt ONE orphaned committed
+    segment into the archive's authoritative history.
+
+    An ORPHANED_COMMITTED_SEGMENT is a segment whose manifest is durable
+    evidence on disk that no generation record commits (a crash between the
+    manifest publish and the head commit, or a graft). Adopting it commits
+    that segment's own already-published, already-verified manifest through
+    the ordinary `commit_segment` path -- the same path every live write
+    uses; nothing here grants the segment a guarantee an ordinary commit
+    would not, and nothing here reads its bytes differently.
+
+    Bounded to exactly the state it exists for: this refuses unless
+    `verify_archive` currently reports `segment_id` in
+    `orphaned_committed_segments`. It cannot adopt an arbitrary segment id,
+    and re-running it after a successful adopt finds the segment no longer
+    orphaned and refuses cleanly (idempotent: a second commit is never
+    attempted).
+
+    Never discards evidence. There is a deliberate asymmetry here: adopting
+    is committing evidence that already exists, which this codebase already
+    knows how to verify safely. Discarding is deleting evidence, which has
+    no reviewed primitive anywhere in this codebase, and is not one this
+    command invents -- a graft, as opposed to crash residue, is resolved by
+    an operator with direct, reviewed filesystem access, not a scripted
+    one-line delete.
+    """
+    import json as _json
+
+    from app.realtime.archive_head import ArchiveHeadError
+    from app.realtime.canonical import parse_canonical
+    from app.realtime.segment import MANIFEST_FILENAME, verify_archive, verify_segment
+    from app.realtime import evidence_fs
+
+    root_path = _Path(root)
+    report = verify_archive(root_path, environment=environment)
+    orphaned = report.get("orphaned_committed_segments", [])
+    if segment_id not in orphaned:
+        payload = {"mode": "refused", "root": str(root_path),
+                  "environment": environment, "segment_id": segment_id,
+                  "orphaned_committed_segments": orphaned,
+                  "reason": (
+                      f"segment {segment_id!r} is not currently reported as an "
+                      "orphaned committed segment; refusing to adopt a segment "
+                      "this operation was not asked to repair")}
+        if fmt == "json":
+            print(_json.dumps(payload, indent=2, sort_keys=True, default=str))
+        else:
+            print(f"refused: {payload['reason']}")
+            print(f"  currently orphaned: {orphaned}")
+        return 1
+
+    seg_dir = root_path / f"env={environment}" / f"segment={segment_id}"
+    manifest_bytes, why = evidence_fs.bounded_read(seg_dir / MANIFEST_FILENAME)
+    if why is not None:
+        print(f"refused: manifest for {segment_id!r} is unreadable: {why}")
+        return 1
+    manifest = parse_canonical(manifest_bytes)
+
+    verdict = verify_segment(seg_dir, environment=environment, root=root_path)
+    if not verdict.valid:
+        print(f"refused: segment {segment_id!r} does not verify independently "
+              f"of the archive head; refusing to adopt it: {verdict.reasons}")
+        return 1
+
+    if not confirm:
+        payload = {"mode": "dry_run", "root": str(root_path),
+                  "environment": environment, "segment_id": segment_id,
+                  "record_count": manifest.get("record_count"),
+                  "partition_identity": manifest.get("partition_identity"),
+                  "manifest_digest": manifest.get("manifest_digest")}
+        if fmt == "json":
+            print(_json.dumps(payload, indent=2, sort_keys=True, default=str))
+        else:
+            print(f"DRY RUN archive-adopt {segment_id!r} [{environment}]")
+            print(f"  record_count       {manifest.get('record_count')}")
+            print(f"  partition_identity {manifest.get('partition_identity')}")
+            print(f"  manifest_digest    {manifest.get('manifest_digest')}")
+            print("  nothing written — re-run with --confirm to commit this "
+                  "segment into history")
+        return 0
+
+    try:
+        head = commit_segment_(root_path, environment, manifest=manifest)
+    except ArchiveHeadError as exc:
+        print(f"refused: {exc}")
+        return 1
+    payload = {"mode": "confirmed", "root": str(root_path),
+              "environment": environment, "segment_id": segment_id,
+              "generation": head["generation"]}
+    if fmt == "json":
+        print(_json.dumps(payload, indent=2, sort_keys=True, default=str))
+        return 0
+    print(f"CONFIRMED archive-adopt {segment_id!r} [{environment}]")
+    print(f"  generation now {head['generation']}")
+    return 0
+
+
+def commit_segment_(root, environment, *, manifest):
+    """Import seam, matching `initialize_archive_`/`recover_current_head_`."""
+    from app.realtime.archive_head import commit_segment
+
+    return commit_segment(root, environment, manifest=manifest)
+
+
+def archive_migrate_legacy(
+    source: str, dest: str, environment: str = "demo",
+    archive_identity: str = "kalshi-realtime",
+    confirm: bool = False, fmt: str = "text",
+) -> int:
+    """KALSHI-ARCHIVE-CORE-REMEDIATION-002 A7 — explicit offline import of a
+    pre-genesis legacy archive into a NEW governed archive.
+
+    Thin wrapper over `migrate_legacy_archive`: the legacy source is opened
+    read-only and never written, moved or deleted; the destination is always
+    a brand-new archive with its own genesis (never an extension of an
+    existing one); and the provenance record states exactly what the
+    pre-genesis format could not prove, rather than implying the imported
+    evidence carries guarantees it never had.
+    """
+    import json as _json
+
+    from app.realtime.legacy_import import LegacyImportError, migrate_legacy_archive
+
+    try:
+        result = migrate_legacy_archive(
+            source, dest, environment=environment,
+            archive_identity=archive_identity, confirm=confirm)
+    except LegacyImportError as exc:
+        print(f"refused: {exc}")
+        return 1
+    if fmt == "json":
+        print(_json.dumps(result, indent=2, sort_keys=True, default=str))
+        return 0
+    print(f"{'CONFIRMED' if confirm else 'DRY RUN'} archive-migrate-legacy "
+          f"{source} -> {dest} [{environment}]")
+    print(f"  files                 {len(result.get('files', []))}")
+    print(f"  records_readable      {result.get('records_readable')}")
+    print(f"  records_rejected      {result.get('records_rejected')}")
+    print(f"  torn_files            {result.get('torn_files')}")
+    print(f"  undecodable_files     {result.get('undecodable_files')}")
+    print(f"  first_timestamp       {result.get('first_timestamp')}")
+    print(f"  last_timestamp        {result.get('last_timestamp')}")
+    if confirm:
+        print(f"  archive_id            {result.get('archive_id')}")
+        print(f"  records_imported      {result.get('records_imported')}")
+        print(f"  records_refused       {result.get('records_refused_at_import')}")
+        print(f"  migration_timestamp   {result.get('migration_timestamp')}")
+    else:
+        print(f"  would_import          {result.get('would_import')}")
+        print("  nothing written — re-run with --confirm to create the new "
+              "archive and import")
+    for limitation in result.get("source_limitations", []):
+        print(f"  LIMITATION: {limitation}")
+    return 0
+
+
 def experiment_registry_record_result(
     experiment_id: str, confirm: bool = False, base: str | None = None,
     notes: str | None = None, reevaluation_reason: str | None = None,
@@ -7796,6 +8090,67 @@ def build_parser() -> argparse.ArgumentParser:
     krr.add_argument("--format", choices=("text", "json"), default="text",
                      dest="fmt")
 
+    ai = subparsers.add_parser(
+        "archive-init",
+        help="Explicitly initialize an archive root -- the ONLY way a "
+             "genesis is minted (KALSHI-ARCHIVE-CORE-REMEDIATION-002 A7). "
+             "Dry run unless --confirm.")
+    ai.add_argument("--root", type=str, required=True)
+    ai.add_argument("--environment", choices=("demo", "production"),
+                    default="demo")
+    ai.add_argument("--archive-identity", type=str, default="kalshi-realtime",
+                    dest="archive_identity")
+    ai.add_argument("--confirm", action="store_true")
+    ai.add_argument("--dry-run", action="store_true")
+    ai.add_argument("--format", choices=("text", "json"), default="text",
+                    dest="fmt")
+
+    arh = subparsers.add_parser(
+        "archive-recover-head",
+        help="Finish an interrupted archive-head transition "
+             "(KALSHI-ARCHIVE-CORE-REMEDIATION-002 A7); deterministic, "
+             "idempotent, safe to run when nothing is wrong. Dry run "
+             "unless --confirm.")
+    arh.add_argument("--root", type=str, required=True)
+    arh.add_argument("--environment", choices=("demo", "production"),
+                     default="demo")
+    arh.add_argument("--confirm", action="store_true")
+    arh.add_argument("--dry-run", action="store_true")
+    arh.add_argument("--format", choices=("text", "json"), default="text",
+                     dest="fmt")
+
+    aad = subparsers.add_parser(
+        "archive-adopt",
+        help="Commit ONE orphaned committed segment into the archive's "
+             "authoritative history (KALSHI-ARCHIVE-CORE-REMEDIATION-002 "
+             "A7); bounded to segments verify_archive itself reports as "
+             "orphaned. Never discards evidence. Dry run unless --confirm.")
+    aad.add_argument("--root", type=str, required=True)
+    aad.add_argument("--segment-id", type=str, required=True, dest="segment_id")
+    aad.add_argument("--environment", choices=("demo", "production"),
+                     default="demo")
+    aad.add_argument("--confirm", action="store_true")
+    aad.add_argument("--dry-run", action="store_true")
+    aad.add_argument("--format", choices=("text", "json"), default="text",
+                     dest="fmt")
+
+    aml = subparsers.add_parser(
+        "archive-migrate-legacy",
+        help="Explicit offline import of a pre-genesis legacy archive into "
+             "a NEW governed archive (KALSHI-ARCHIVE-CORE-REMEDIATION-002 "
+             "A7); the legacy source is never written, moved or deleted. "
+             "Dry run unless --confirm.")
+    aml.add_argument("--source", type=str, required=True)
+    aml.add_argument("--dest", type=str, required=True)
+    aml.add_argument("--environment", choices=("demo", "production"),
+                     default="demo")
+    aml.add_argument("--archive-identity", type=str, default="kalshi-realtime",
+                     dest="archive_identity")
+    aml.add_argument("--confirm", action="store_true")
+    aml.add_argument("--dry-run", action="store_true")
+    aml.add_argument("--format", choices=("text", "json"), default="text",
+                     dest="fmt")
+
     errr = subparsers.add_parser(
         "experiment-registry-record-result",
         help="Registry-owned evaluation of a registered experiment "
@@ -8767,6 +9122,25 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "kalshi-realtime-replay":
         return kalshi_realtime_replay(
             archive=args.archive, environment=args.environment, fmt=args.fmt)
+    if args.command == "archive-init":
+        return archive_init(
+            root=args.root, environment=args.environment,
+            archive_identity=args.archive_identity,
+            confirm=args.confirm and not args.dry_run, fmt=args.fmt)
+    if args.command == "archive-recover-head":
+        return archive_recover_head(
+            root=args.root, environment=args.environment,
+            confirm=args.confirm and not args.dry_run, fmt=args.fmt)
+    if args.command == "archive-adopt":
+        return archive_adopt(
+            root=args.root, segment_id=args.segment_id,
+            environment=args.environment,
+            confirm=args.confirm and not args.dry_run, fmt=args.fmt)
+    if args.command == "archive-migrate-legacy":
+        return archive_migrate_legacy(
+            source=args.source, dest=args.dest, environment=args.environment,
+            archive_identity=args.archive_identity,
+            confirm=args.confirm and not args.dry_run, fmt=args.fmt)
     if args.command == "experiment-registry-record-result":
         return experiment_registry_record_result(
             experiment_id=args.experiment_id,

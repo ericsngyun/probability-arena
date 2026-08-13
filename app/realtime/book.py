@@ -22,6 +22,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 
+from app.realtime.canonical import canonical_datetime
 from app.realtime.fixedpoint import (
     ONE_DOLLAR_UNITS,
     FixedPointError,
@@ -72,7 +73,11 @@ class EventEnvelope:
     normalization_time: str            # wall clock after normalization
     receive_monotonic_ns: int          # for exact durations
     normalize_monotonic_ns: int
-    data_age_ms: float | None          # venue_time -> receive, when derivable
+    # INTEGER microseconds, not float milliseconds. A float is not
+    # canonically representable — writing one bare and re-reading it as
+    # Decimal re-serialises differently, which is what made every record
+    # carrying a venue timestamp fail its own digest and vanish on read.
+    data_age_us: int | None            # venue_time -> receive, when derivable
     implementation_version: str
     raw: dict = field(default_factory=dict)
     normalized: dict = field(default_factory=dict)
@@ -100,7 +105,6 @@ def make_envelope(*, venue: str, environment: str, channel: str, message: dict,
     # 1000x-inflated age for the seconds form. `ts_ms` is unambiguous wherever
     # it appears; the ISO fields are the documented fallback.
     venue_iso = None
-    age_ms = None
     dt = None
     ts_ms = msg.get("ts_ms")
     if isinstance(ts_ms, int) and not isinstance(ts_ms, bool):
@@ -126,9 +130,13 @@ def make_envelope(*, venue: str, environment: str, channel: str, message: dict,
                     break
                 except (ValueError, OSError, OverflowError):
                     dt = None
+    age_us = None
     if dt is not None:
-        venue_iso = dt.isoformat()
-        age_ms = round((receive_time - dt).total_seconds() * 1000, 3)
+        venue_iso = canonical_datetime(dt)
+        # Integer microseconds throughout. Negative values are retained: they
+        # are clock-offset evidence, and truncating them at zero would bias the
+        # distribution optimistically.
+        age_us = round((receive_time - dt).total_seconds() * 1_000_000)
     now = utcnow()
     return EventEnvelope(
         schema_version=ENVELOPE_SCHEMA_VERSION, venue=venue,
@@ -137,11 +145,11 @@ def make_envelope(*, venue: str, environment: str, channel: str, message: dict,
         market_ticker=msg.get("market_ticker"), market_id=msg.get("market_id"),
         sid=message.get("sid"), seq=message.get("seq"),
         venue_time=venue_iso,
-        collector_receive_time=receive_time.isoformat(),
-        normalization_time=now.isoformat(),
+        collector_receive_time=canonical_datetime(receive_time),
+        normalization_time=canonical_datetime(now),
         receive_monotonic_ns=receive_mono,
         normalize_monotonic_ns=monotonic_ns(),
-        data_age_ms=age_ms,
+        data_age_us=age_us,
         implementation_version=IMPLEMENTATION_VERSION,
         raw=message, normalized=normalized or {},
     )

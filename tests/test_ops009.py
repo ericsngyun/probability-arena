@@ -211,7 +211,34 @@ class TestPriorityScoring:
 
 
 class TestRunSummaryStats:
-    async def test_summary_includes_promotion_metrics(self, session):
+    async def test_summary_includes_promotion_metrics(self, session, monkeypatch):
+        # run_once's promotion stage reads the wall clock internally
+        # (`marketops._now()`) rather than accepting an injected `now` the
+        # way `select_signals_for_promotion` does in this file's own
+        # `select()` helper. Left unpatched, the promoted-signal age is
+        # `age_minutes=10` PLUS however much real wall-clock time elapsed
+        # between module import (`NOW`, above) and whenever pytest actually
+        # reaches this test -- which grows with suite position/duration and
+        # is unbounded, not "a couple of minutes". A loose window is exactly
+        # the widened-tolerance anti-pattern this repo has hit five times
+        # before; the real fix is to make the clock deterministic.
+        #
+        # Pin `_now()` to `tests.test_marketops.NOW` specifically -- NOT this
+        # file's own module-level `NOW` above. `seed_signal` (imported from
+        # `tests.test_marketops`) computes `observed_at` against THAT
+        # module's `NOW`, and the two are set independently at each module's
+        # import time. Under the full suite those imports can land whole
+        # seconds apart (collection order/duration), so patching to the
+        # wrong constant reintroduces exactly the wall-clock nondeterminism
+        # this fix removes, just shrunk from "minutes" to "under a second" --
+        # small enough to pass in isolation and still fail intermittently
+        # under the full suite, which is the same class of defect again.
+        import app.services.marketops as marketops_module
+        import tests.test_marketops as marketops_test_module
+
+        monkeypatch.setattr(marketops_module, "_now",
+                            lambda: marketops_test_module.NOW)
+
         seed_market(session, "KXMLB-A")
         seed_signal(session, ticker="KXMLB-A", age_minutes=10)
         seed_signal(session, ticker="KXMLB-STALE", age_minutes=45)  # stale for baseball
@@ -221,10 +248,8 @@ class TestRunSummaryStats:
         assert promo["skipped_stale_count"] == 1
         assert promo["promoted_by_domain"] == {"sports_baseball": 1}
         assert promo["promoted_by_signal_type"] == {"price_move_threshold": 1}
-        # run_once uses real wall-clock; the suite may run this test a
-        # couple of minutes after module import, so bound loosely
-        assert 595 <= promo["promoted_signal_age_s_mean"] <= 900
-        assert 595 <= promo["promoted_signal_age_s_max"] <= 900
+        assert promo["promoted_signal_age_s_mean"] == 600.0
+        assert promo["promoted_signal_age_s_max"] == 600.0
         assert len(promo["readiness_scores"]) == 1
         assert promo["readiness_scores"][0] > 0
 

@@ -592,8 +592,11 @@ class TestLiveWebSocketEvidence:
                 venue="kalshi", environment="demo", channel="c",
                 message=frame, receive_time=recv, receive_mono=1)
             assert env.venue_time is not None, frame["type"]
-            # 1786150148065 ms -> 2026-08-08T00:49:08.065Z; receive is ~935 ms later
-            assert 0 < env.data_age_ms < 2000, (frame["type"], env.data_age_ms)
+            # 1786150148065 ms -> 2026-08-08T00:49:08.065Z; receive ~935 ms later.
+            # Microseconds now, and an integer — a float is not canonically
+            # representable and was what made archived records unreadable.
+            assert isinstance(env.data_age_us, int)
+            assert 0 < env.data_age_us < 2_000_000, (frame["type"], env.data_age_us)
 
     def test_get_snapshot_requires_market_tickers(self):
         """The sids-only form was rejected with code 14, and that error consumed
