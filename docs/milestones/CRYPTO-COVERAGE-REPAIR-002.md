@@ -665,8 +665,16 @@ No migration. No systemd unit. No provider adapter change.
 5. Only then flip the flag and install an hourly user timer. The cadence in the
    unit **must** match `SPARSE_CADENCE_MINUTES`; invariant (2) is stated against
    that number, and nothing in the code can enforce a systemd `OnCalendar` it
-   cannot see. That coupling is the weakest joint in this design and is called
-   out here deliberately.
+   cannot see. **This coupling is the weakest joint in the design.** It is not
+   unmitigated, though: a timer that is slower than `SPARSE_CADENCE_MINUTES`,
+   or that stops, shows up directly as a rising `scheduling_miss_rate` in the
+   observation-coverage report — that metric exists precisely to detect "the
+   mechanism failed to look when it could have", and after the
+   `enrolled_after_band_closed` split (§6) it means nothing else. Watch it; a
+   sustained non-zero value at 6h is a cadence problem, not a provider problem.
+   What is *not* mitigated is the first pass after a misconfiguration: nothing
+   fails loudly at install time, and the signal only appears one band later
+   (≥7h at 6h, ≥25h at 24h).
 6. Re-measure DB growth against the §3 projection after 7 days.
 
 Free denominator first (the reconciler), purchased observations second — but the
