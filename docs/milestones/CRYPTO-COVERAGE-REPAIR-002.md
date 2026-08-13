@@ -628,6 +628,59 @@ This run is also what surfaced the `scheduling_miss` denominator defect in §6.
 
 ---
 
+## 10.2 Full-suite validation
+
+```
+4,320 collected
+5 failed, 4,305 passed, 6 skipped, 4 xfailed, 3 warnings in 700.75s (11:40)
+load average at start 5.64 / 8.55 / 11.79   at end 3.31 / 4.44 / 7.52
+```
+
+All 5 failures are in the **known wall-clock-sensitive cluster** named in this
+project's own testing notes, and none is a regression from this branch:
+
+| failing test | file touched by this branch? |
+|---|---|
+| `test_crypto_horizon_obs_001::TestCohort::test_window_filters_on_first_evidence_not_observed_at` | no |
+| `test_crypto_horizon_obs_001::TestCohort::test_hours_1_never_returns_token_older_than_60_minutes` | no |
+| `test_crypto_horizon_obs_001::TestCohort::test_timezone_naive_first_evidence_handled` | no |
+| `test_live_market_001::TestEndToEnd::test_market_freshness_measured` | no |
+| `test_live_market_001::TestEndToEnd::test_volatile_market_surfaces_in_examples` | no |
+
+Re-run in isolation: `test_crypto_horizon_obs_001.py` **27 passed**,
+`test_live_market_001.py` **28 passed**, and the 5 named tests together
+**5 passed**.
+
+**The mechanism was reproduced deterministically rather than assumed.** These
+tests bind `NOW = datetime.now(timezone.utc)` at module import and then seed a
+row at `NOW - 59 minutes` against a live `--hours 1` filter that uses the real
+clock. Importing the module, sleeping 90 seconds, and then running the single
+test reproduces the exact failure (`members_selected == 2`, not 3) with no code
+change at all — the 59-minute token is simply 60.5 minutes old by the time the
+assertion runs. In a 700-second suite the module is imported minutes before the
+test executes, so the boundary row falls out. `git diff main..HEAD` touches
+neither test file, and the only change this branch makes anywhere near
+`create_cohort` is one extra `provenance["membership"]` key plus the
+`audit_candidate_limit` default — neither can move `members_selected`.
+
+This is a pre-existing fixture-drift defect worth its own fix (bind the clock
+per test, not per module), but fixing it is not in this milestone's scope and
+would be a change to two unrelated lanes.
+
+### One invalidated run, recorded
+
+A first full-suite attempt on this tree was **discarded, not reported**: the
+host filled to 0 bytes free mid-run (a 228 GiB volume already at 192 GiB used
+before this session, plus 2.4 GiB of accumulated `pytest-of-*` tmp directories),
+and from ~17% onward essentially every test errored on `ENOSPC`. Those errors
+were an artefact of the host, not of the tree, and a run in that state cannot
+distinguish the two — so it was thrown away, the tmp directories were cleared
+(freeing 4.9 GiB), and the suite was re-run clean from the start. The numbers
+above are from that clean run, with disk headroom monitored throughout
+(4.9 GiB at start, 4.3 GiB at the low point).
+
+---
+
 ## 11. Surface added
 
 * `app/services/crypto_sparse_observation.py` — the mechanism and the
