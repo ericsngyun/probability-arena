@@ -1881,7 +1881,11 @@ Do these in order; each step's check must pass before the next.
 1. **The pre-existing preconditions still apply** — see "Recurring-timer
    preconditions" below. In particular precondition 3: a **measured**
    `CRYPTO_TAPE_RECONCILER_INITIAL_PER_TOKEN_COST_SECONDS` for this host, with
-   adaptive batching on. It has no default by design; never guess it.
+   adaptive batching on. It has no default by design; never guess it. This one
+   is deliberately **not** enforced as a per-run pre-flight skip: it is a
+   settings value that cannot change between two runs six hours apart, so it
+   is an enable-time check, and making it a per-run skip would turn the flag
+   into a silent no-op for every caller that does not set it.
 2. **Confirm the guard has somewhere to keep state.** The health gate is inert
    without a file-backed SQLite database:
    ```bash

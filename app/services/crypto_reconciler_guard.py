@@ -48,6 +48,17 @@ THE THREE LAYERS
      durable). Routed through the EXISTING `stop_reason="lock_wait_budget"`
      path in `crypto_tape._assemble_pass_locked` — this milestone adds a new
      REASON to stop, never a second mechanism for stopping.
+     WHAT IS DELIBERATELY *NOT* A PRE-FLIGHT SKIP, and why. The runbook's
+     precondition 3 — "a calibrated `initial_per_token_cost_seconds`, with
+     adaptive batching enabled" — is a real, known-unsafe condition for an
+     unattended writer, and it is still enforced as an ENABLE-TIME operator
+     check rather than a per-run skip. A pre-flight skip is for conditions
+     that can CHANGE between two runs six hours apart; a settings value
+     cannot, so re-deciding it every tick buys nothing a single enable-time
+     check does not already give, while converting the flag into a silent
+     no-op for every caller that does not set it (including ~150 existing
+     tests and every manual pass). Stated here so the omission is a decision
+     on the record, not an oversight.
   3. ROLLING HEALTH GATE — stateful across runs. One bad run is noise; a trend
      is a signal. When the trend appears, the gate TRIPS A LATCH that blocks
      further UNATTENDED runs until a human clears it. It never clears itself.

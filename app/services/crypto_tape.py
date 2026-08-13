@@ -5235,10 +5235,12 @@ def run_scheduled_reconciliation(
     # keep a safety latch" (in-memory/non-SQLite), in which case the gate is
     # INERT and every result says so; it is never silently skipped, and there
     # is deliberately no shared-temp-directory fallback (see the guard module).
-    _chain = (
-        recorder.config.chain if recorder is not None
-        else CryptoTapeConfig.from_settings(s).chain
-    )
+    # `getattr` chain, not `recorder.config.chain`: several existing tests pass
+    # a duck-typed stand-in recorder with no `config` at all, and resolving the
+    # health-state location must never be the thing that fails a pass.
+    _chain = getattr(
+        getattr(recorder, "config", None), "chain", None
+    ) or CryptoTapeConfig.from_settings(s).chain
     _health_path = guard.health_state_path(getattr(s, "database_url", None), _chain)
 
     def _record_health(result: dict) -> dict:
