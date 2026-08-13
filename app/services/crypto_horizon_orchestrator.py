@@ -359,9 +359,14 @@ def build_arm_plan(
     # lane's standing cohort has ROLLING admission (hundreds of new members per
     # day), so arming it would install a plan that is stale the moment it is
     # written, and would re-enter canary governance the sparse lane exists to
-    # stay out of. Refuse it here — the single choke point every arming path
-    # (`HorizonOrchestrator.arm`, the CLI, the reminder plan) goes through —
-    # BEFORE building a several-thousand-row schedule report for it.
+    # stay out of. Refuse it here: this is the single choke point for ARMING
+    # specifically — `HorizonOrchestrator.arm` and, through it, the
+    # `crypto-horizon-arm-cohort` CLI. It is NOT reached by
+    # `build_schedule_report` / `build_reminder_plan`, which do not go through
+    # this function; those are read-only and install nothing, so they need no
+    # refusal (they would merely produce a very large report for a rolling
+    # cohort). The check runs BEFORE the schedule report is built so the
+    # refusal costs one row read, not a several-thousand-row plan.
     cohort = session.get(CryptoHorizonCohort, cohort_id)
     if is_rolling_cohort(cohort):
         return {
