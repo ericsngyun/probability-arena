@@ -2058,22 +2058,29 @@ precisely so it can be checked *here* — against this budget and against
 summary and the CLI output only; the run row cannot carry it (see the phase
 subsection).
 
-`TimeoutStartSec=5min` (300 s) is exceeded at the upper end, and a real blocked
-pass has been measured at `lock_wait_ms=206284` (~206 s). **The finalize
-therefore runs a single attempt** (`RECONCILE_FINALIZE_MAX_LOCK_ATTEMPTS = 1`):
-it is bookkeeping, a second attempt 3 s later against the same 20-45 s holder
-rarely helps, and the accounting still reaches the operator through the
-returned summary even when the commit is lost. Whole-unit derivation with that
-change, at the shipped 2.0 overshoot:
+A real blocked pass has been measured at `lock_wait_ms=206284` (~206 s). **The
+finalize therefore runs a single attempt**
+(`RECONCILE_FINALIZE_MAX_LOCK_ATTEMPTS = 1`): it is bookkeeping, a second
+attempt 3 s later against the same 20-45 s holder rarely helps, and the
+accounting still reaches the operator through the returned summary even when
+the commit is lost. Whole-unit derivation with that change, as a function of
+the load-dependent overshoot L (`26 s + 60L`):
 
 ```
 20 s (deadline) + 66 s (one in-flight batch ladder, 3 x 4 x 5 s + 2 x 3 s)
-                + 60 s (finalize, 1 x 2.0 x 30 s)          = ~146 s   < 300 s
+                + 60 s (finalize, 1 x 2.0 x 30 s)          = ~146 s   at L=2.0
+                                                              ~87 s   at L=1.01
+                                                             ~374 s   at L=5.80
 ```
 
-At the dev-Mac-measured 5.80x the same derivation gives **~374 s, which exceeds
-`TimeoutStartSec`.** No constant fixes that, which is precisely why
-precondition 1 is *observed* non-exceedance. **The failure mode is
+**`TimeoutStartSec` was raised from 5min to 7min (420 s) by
+CRYPTO-RECONCILER-GUARDED-TIMER-001**, because the ~374 s ceiling at the
+measured 5.80x exceeded the old 300 s value and the timer is no longer
+attended-only. 420 s covers the worst overshoot ever measured in this repo,
+with ~12% headroom — **not a guarantee**: L tracks host load and is unbounded
+above, so no constant fixes it, which is precisely why precondition 1 is
+*observed* non-exceedance and why `wall_time_model_exceeded=true` is one of the
+post-run review triggers feeding the auto-disable gate. **The failure mode is
 non-corrupting**: a SIGKILL mid-finalize leaves committed batches durable and
 the run row at `status='running'` — the same orphaned row a lost finalize
 produces, plus a failed unit. Nothing reconciles those rows, so the
