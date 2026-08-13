@@ -89,6 +89,7 @@ from app.services.crypto_horizon import (
     plan_observations,
     select_pair,
 )
+from app.services import crypto_tape as _tape
 from app.services.crypto_tape import (
     DB_LOCKED_MAX_ATTEMPTS,
     DB_LOCKED_RETRY_SECONDS,
@@ -100,7 +101,6 @@ from app.services.crypto_tape import (
     _is_db_locked,
     _now,
     _reconciliation_should_abort,
-    _resolve_lock_dir,
 )
 
 logger = logging.getLogger(__name__)
@@ -451,6 +451,7 @@ async def _fetch_phase(
     service: CryptoHorizonService,
     due_tokens: list[str],
     deadline: datetime | None,
+    clock,
 ) -> tuple[list[_Fetched], int, str, dict]:
     """Fetch every due token's pairs. **Opens no transaction and writes
     nothing.**
@@ -469,6 +470,7 @@ async def _fetch_phase(
     Returns (fetched, calls, stop_reason, provider_ledger)."""
     from app.services.crypto_provider_policy import (
         Provider,
+        ProviderPolicyError,
         new_run_id,
         provider_run,
     )
@@ -485,6 +487,13 @@ async def _fetch_phase(
             try:
                 pairs = await service.adapter.fetch_pairs_for_token(token)
                 request_failed = False
+            except ProviderPolicyError:
+                # NEVER degrade an authorization failure into an ordinary
+                # provider miss. The policy module says so explicitly, and the
+                # whole "no SolanaTracker spend" guarantee depends on it: a
+                # swallowed denial is indistinguishable from a token that
+                # simply has no pairs.
+                raise
             except Exception as exc:  # adapter degrades to [], but be safe
                 logger.warning(
                     "sparse observation fetch failed for %s: %s", token, exc
@@ -499,18 +508,25 @@ async def _fetch_phase(
                 basis=basis,
                 candidates=[describe_pair(p, token) for p in pairs],
                 request_failed=request_failed,
-                fetched_at=_now(),
+                # the LOGICAL observation time (see `_logical_clock`): real
+                # wall clock in production, the injected clock under test, so
+                # the tick lands where the caller's clock says it did
+                fetched_at=clock(),
             ))
         ledger = ctx.ledger.snapshot()
-    # Nothing but DexScreener can appear in this ledger: every other provider is
-    # DENIED by the policy above and a denial is a hard raise out of
-    # `guard_provider_request`, not a quietly-counted ledger row. The assertion
-    # is kept as a runtime invariant rather than a comment.
-    unexpected = sorted(set(ledger) - {Provider.DEXSCREENER.value})
-    if unexpected:  # pragma: no cover - structurally unreachable
+    # A non-DexScreener provider may legitimately APPEAR in this ledger — with
+    # `blocked_policy` incremented, which is the denial working and is exactly
+    # the evidence worth keeping. What it may never have is a REQUEST: an
+    # authorized, started, succeeded or failed count. That would mean the deny
+    # set was bypassed, and it is fatal rather than reported.
+    spent = {
+        name: entry for name, entry in ledger.items()
+        if name != Provider.DEXSCREENER.value
+        and any(entry.get(k) for k in ("authorized", "started", "succeeded", "failed"))
+    }
+    if spent:  # pragma: no cover - structurally unreachable
         raise RuntimeError(
-            "sparse observation ledger names a non-DexScreener provider: "
-            f"{unexpected}"
+            f"sparse observation issued a non-DexScreener provider request: {spent}"
         )
     return fetched, calls, stop_reason, ledger
 
@@ -582,7 +598,12 @@ async def run_scheduled_sparse_observation(
     if invalid is not None:
         return _refused(*invalid)
 
-    lock_dir = _resolve_lock_dir(s)
+    # Module-attribute lookup, deliberately not a from-import: the test
+    # suite's session-scoped `_isolate_crypto_tape_overlap_lock` fixture
+    # monkeypatches `crypto_tape._resolve_lock_dir`, and a from-import bound
+    # at module load would silently bypass it and take a lock inside whatever
+    # DATABASE_URL the host's .env points at.
+    lock_dir = _tape._resolve_lock_dir(s)
     try:
         with _sparse_overlap_lock(lock_dir, cfg.chain) as acquired:
             if not acquired:
@@ -661,6 +682,8 @@ async def _run_locked(
         result["error"] = error
         return _finish(result, started)
 
+    clock = _logical_clock(now, started)
+
     # --- MarketOps health -------------------------------------------------
     # Reuses the reconciler's predicate rather than reimplementing it: do not
     # add write pressure to a host whose latest MarketOps run errored. A
@@ -723,7 +746,10 @@ async def _run_locked(
             {"token": b.token_address[:16], "symbol": b.symbol}
             for b in candidates[:10]
         ]
-        plan = _sparse_plan(session, cfg, cohort, now, include=[])
+        plan = _sparse_plan(
+            session, cfg, cohort, now,
+            extra_members=_transient_members(cfg, candidates),
+        )
         due = [e for e in plan if e.status == STATUS_DUE_NOW]
         result["due_observations"] = len(due)
         result["would_fetch_tokens"] = len({e.token_address for e in due})
@@ -760,7 +786,7 @@ async def _run_locked(
     result["persisted"] = enrolled > 0 or result["cohort_created"]
 
     # --- plan (pure) ------------------------------------------------------
-    plan = _sparse_plan(session, cfg, cohort, now, include=None)
+    plan = _sparse_plan(session, cfg, cohort, now)
     due = [e for e in plan if e.status == STATUS_DUE_NOW]
     result["plan_status_counts"] = _plan_counts(plan)
     result["due_observations"] = len(due)
@@ -776,13 +802,17 @@ async def _run_locked(
     )
 
     # --- fetch (network, no DB write) -------------------------------------
+    # 0.0 is the deliberate "already past due" sentinel (same convention as
+    # the tape reconciler's `max_duration_seconds`): the fetch loop then stops
+    # after exactly one token, never before the first, so a pass can never
+    # report `ok` having fetched nothing.
     deadline = (
         started + timedelta(seconds=cfg.max_duration_seconds)
-        if cfg.max_duration_seconds else None
+        if cfg.max_duration_seconds is not None else None
     )
     try:
         fetched, calls, stop_reason, ledger = await _fetch_phase(
-            service, selected_tokens, deadline,
+            service, selected_tokens, deadline, clock,
         )
     except Exception as exc:
         from app.services.crypto_provider_policy import ProviderPolicyError
@@ -798,6 +828,18 @@ async def _run_locked(
         raise
     result["external_calls"] = calls
     result["provider_ledger"] = ledger
+    # Derived from the ledger, never hardcoded: the number a reader wants is
+    # "did this lane spend paid-provider budget", and it must come from the
+    # same accounting the guard itself keeps.
+    result["solana_tracker_calls"] = sum(
+        ledger.get("solana-tracker", {}).get(k, 0)
+        for k in ("authorized", "started", "succeeded", "failed")
+    )
+    result["denied_provider_attempts"] = {
+        name: entry["blocked_policy"]
+        for name, entry in ledger.items()
+        if name != "dexscreener" and entry.get("blocked_policy")
+    }
     result["provider"] = getattr(service.adapter, "source_name", "dexscreener")
 
     if stop_reason == STOP_DEADLINE:
@@ -823,7 +865,7 @@ async def _run_locked(
                 status, _cause, tick = service._record_observation(
                     session, cohort.id, member, entry, item.selected, item.basis,
                     item.candidates, item.request_failed,
-                    item.fetched_at or now, existing=None,
+                    item.fetched_at or clock(), existing=None,
                     audit_candidate_limit=AUDIT_CANDIDATE_LIMIT,
                     tick_source=TICK_SOURCE,
                 )
@@ -869,6 +911,21 @@ async def _run_locked(
     if stop_reason != STOP_COMPLETE:
         result["status"] = STATUS_PARTIAL
     return _finish(result, started)
+
+
+def _logical_clock(now: datetime, started: datetime):
+    """The pass's clock, advanced by REAL elapsed time from an explicit base.
+
+    In production `now` defaults to the pass start, so this returns exactly
+    `_now()` — an observation is stamped with the instant it actually happened,
+    which is what `compute_survival`'s nearest-tick-in-tolerance search and the
+    report's target-distance both read. Under test an injected `now` becomes
+    the base instead, so a fixture can place a pass at a chosen point in a
+    token's life without the wall clock overwriting it."""
+    def _clock() -> datetime:
+        return now + (_now() - started)
+
+    return _clock
 
 
 def _commit_with_retry(session: Session, sleeper=None) -> None:
@@ -970,9 +1027,23 @@ def _enrol(
 # --- planning -------------------------------------------------------------------
 
 
+def _transient_members(cfg: SparseObservationConfig, births: list) -> list:
+    """Un-persisted members standing in for births a dry run WOULD enrol, so
+    the dry run plans over exactly the member set the real pass would have."""
+    return [
+        CryptoHorizonCohortMember(
+            cohort_id=None, chain=cfg.chain, token_address=b.token_address,
+            symbol=b.symbol, birth_event_id=b.id,
+            birth_observed_at=_aware(b.observed_at),
+            first_evidence_at=_aware(b.first_evidence_at),
+        )
+        for b in births
+    ]
+
+
 def _sparse_plan(
     session: Session, cfg: SparseObservationConfig, cohort, now: datetime,
-    include=None,
+    extra_members: list | None = None,
 ) -> list[HorizonPlanEntry]:
     """The sparse plan: the SHARED pure planner restricted to this lane's
     horizons and band, with this lane's ONE-SHOT rule applied on top.
@@ -984,22 +1055,25 @@ def _sparse_plan(
     hour, where it would become a retry storm. Here ANY existing row for a
     (token, horizon) is terminal, so each pair is attempted exactly once and
     the provider spend per birth is bounded at exactly two requests."""
-    if cohort is None:
+    members = list(extra_members or [])
+    attempted: set = set()
+    if cohort is not None:
+        members = list(session.execute(
+            select(CryptoHorizonCohortMember)
+            .where(CryptoHorizonCohortMember.cohort_id == cohort.id)
+            .order_by(CryptoHorizonCohortMember.id)
+        ).scalars().all()) + members
+        attempted = {
+            (row.token_address, row.horizon)
+            for row in session.execute(
+                select(
+                    CryptoHorizonObservation.token_address,
+                    CryptoHorizonObservation.horizon,
+                ).where(CryptoHorizonObservation.cohort_id == cohort.id)
+            ).all()
+        }
+    if not members:
         return []
-    members = list(session.execute(
-        select(CryptoHorizonCohortMember)
-        .where(CryptoHorizonCohortMember.cohort_id == cohort.id)
-        .order_by(CryptoHorizonCohortMember.id)
-    ).scalars().all()) if include is None else list(include)
-    attempted = {
-        (row.token_address, row.horizon)
-        for row in session.execute(
-            select(
-                CryptoHorizonObservation.token_address,
-                CryptoHorizonObservation.horizon,
-            ).where(CryptoHorizonObservation.cohort_id == cohort.id)
-        ).all()
-    }
     plan = plan_observations(
         members, {}, set(), now,
         horizons=SPARSE_HORIZONS, window_minutes=SPARSE_BAND_MINUTES,
