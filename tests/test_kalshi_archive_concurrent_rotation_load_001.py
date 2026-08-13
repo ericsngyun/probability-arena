@@ -290,6 +290,52 @@ class TestProducerLatencyUnderConcurrentMultiPartitionRotation:
 
 
 # =====================================================================
+# `run_multi_instance_load` monkeypatches `SegmentWriter.close` at module
+# scope for the duration of the run. `run_single_instance_load` restores it
+# in a `finally`; this proves its twin does too -- an exception raised in
+# the unguarded window (a real `Thread.start()` failure under thread/fd
+# pressure, per the reviewer's reproduction) must not leave every
+# subsequent `SegmentWriter.close()` in the pytest session sleeping.
+# =====================================================================
+
+class TestSegmentWriterCloseIsRestoredEvenWhenTheRunRaises:
+
+    def test_a_mid_run_exception_still_restores_the_monkeypatch(
+            self, scratch_root, monkeypatch):
+        real_close = sg.SegmentWriter.close
+        real_thread_start = threading.Thread.start
+        starts = {"n": 0}
+
+        def flaky_start(self):
+            # Call 1 is the sampler thread `run_multi_instance_load`
+            # starts internally before any producer thread; let it (and
+            # nothing else) through, then fail on the first PRODUCER
+            # thread's start() -- reproducing an exception raised inside
+            # the window between `SegmentWriter.close` being monkeypatched
+            # and the (pre-fix: missing) `finally` that restores it.
+            starts["n"] += 1
+            if starts["n"] == 2:
+                raise RuntimeError("can't start new thread")
+            return real_thread_start(self)
+
+        monkeypatch.setattr(threading.Thread, "start", flaky_start)
+        with pytest.raises(RuntimeError, match="can't start new thread"):
+            load.run_multi_instance_load(
+                root=scratch_root, n_instances=4, records_per=5,
+                max_segment_records=3, inject_close_delay=True)
+        # Restore Thread.start before inspecting SegmentWriter.close --
+        # otherwise a later real thread this test itself spins up would
+        # also be victim to the injected flakiness.
+        monkeypatch.undo()
+
+        assert sg.SegmentWriter.close is real_close, (
+            f"SegmentWriter.close was left monkeypatched to "
+            f"{sg.SegmentWriter.close!r} after run_multi_instance_load "
+            "raised mid-run -- every subsequent SegmentWriter.close() in "
+            "this pytest session would sleep the injected delay")
+
+
+# =====================================================================
 # Informational: the submit()/shutdown() race under concurrent rotation.
 # Safety-only assertion (never assert a reachability rate here -- see the
 # module docstring).

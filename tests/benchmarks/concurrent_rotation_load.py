@@ -312,19 +312,20 @@ def run_multi_instance_load(*, root: Path, n_instances: int, records_per: int,
         except BaseException as exc:      # noqa: BLE001 - reported, not lost
             errors.append((idx, repr(exc)))
 
-    t_start = time.perf_counter()
-    threads = [threading.Thread(target=producer, args=(n, stores[n]))
-               for n in range(n_instances)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join(timeout=600)
-    wall_s = time.perf_counter() - t_start
-
-    stop_sampler.set()
-    sampler_thread.join(timeout=5.0)
-    if real_close is not None:
-        sg.SegmentWriter.close = real_close
+    try:
+        t_start = time.perf_counter()
+        threads = [threading.Thread(target=producer, args=(n, stores[n]))
+                   for n in range(n_instances)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=600)
+        wall_s = time.perf_counter() - t_start
+    finally:
+        stop_sampler.set()
+        sampler_thread.join(timeout=5.0)
+        if real_close is not None:
+            sg.SegmentWriter.close = real_close
 
     per_store = []
     all_latencies = []

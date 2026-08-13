@@ -54,6 +54,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+import subprocess
 import textwrap
 
 import pytest
@@ -171,6 +172,102 @@ def test_a_directory_without_the_sandbox_marker_is_not_a_sandbox(tmp_path):
     (tmp_path / "tests").mkdir()
     with pytest.raises(camp.LiveTreeWriteBlocked):
         camp._sandbox_root(tmp_path)
+
+
+# =====================================================================
+# `assert_live_tree_clean`'s cleanliness preflight: staged and untracked
+# changes under tests/ must not be invisible to it. Runs against a
+# THROWAWAY git repository (never this repo's own live tree, and never a
+# `git checkout --`/`git restore` against it) with `camp.REPO_ROOT`
+# monkeypatched to point there, so these tests can stage and leave
+# untracked files freely without any risk to uncommitted work in the
+# actual working tree `assert_live_tree_clean` otherwise inspects.
+# =====================================================================
+
+def _run_git(args, *, cwd):
+    subprocess.run(["git", *args], cwd=cwd, check=True,
+                   capture_output=True, text=True)
+
+
+def _make_fake_repo(tmp_path):
+    """A throwaway git repository standing in for `camp.REPO_ROOT`, with one
+    file at a real catalogue `target` path already committed. Returns
+    `(root, target)`; the caller owns patching/restoring `camp.REPO_ROOT`.
+    """
+    root = tmp_path / "fake_repo"
+    root.mkdir()
+    target = camp.MUTATIONS[0].target
+    target_path = root / target
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    target_path.write_text("original contents\n")
+    (root / "tests").mkdir(exist_ok=True)
+    _run_git(["init", "-q"], cwd=root)
+    _run_git(["config", "user.email", "test@example.invalid"], cwd=root)
+    _run_git(["config", "user.name", "test"], cwd=root)
+    _run_git(["add", "-A"], cwd=root)
+    _run_git(["commit", "-q", "-m", "init"], cwd=root)
+    return root, target
+
+
+def test_a_staged_modification_to_a_catalogue_target_still_hard_fails(
+        tmp_path):
+    """`git diff --quiet -- tests/` (the pre-fix check) diffs the working
+    tree against the INDEX, so a change that has already been `git add`ed
+    reads as clean -- the hard-fail never fired. `assert_live_tree_clean`
+    must catch this by diffing against `HEAD` instead.
+
+    `camp.REPO_ROOT` is patched to point at a throwaway repo (never at this
+    repo's own live tree) and restored, by hand, in a `finally` -- NOT via
+    the pytest `monkeypatch` fixture, because this module's autouse
+    `_live_tree_tripwire` fixture also runs a postflight census against
+    `camp.REPO_ROOT` at teardown, and its ordering relative to
+    `monkeypatch`'s own teardown is not guaranteed to restore `REPO_ROOT`
+    first. Restoring synchronously, inside the test body, removes that
+    ordering dependency entirely.
+
+    This test FAILS ON REVERT: with the old bare `git diff --quiet --
+    tests/` check restored, `assert_live_tree_clean` returns silently here
+    and `pytest.raises` reports 'DID NOT RAISE'.
+    """
+    root, target = _make_fake_repo(tmp_path)
+    original_repo_root = camp.REPO_ROOT
+    camp.REPO_ROOT = root
+    try:
+        (root / target).write_text("staged modification\n")
+        _run_git(["add", target], cwd=root)
+        with pytest.raises(camp.LiveTreeDirty):
+            camp.assert_live_tree_clean("test")
+    finally:
+        camp.REPO_ROOT = original_repo_root
+
+
+def test_an_untracked_file_under_tests_is_visible_to_the_preflight(
+        tmp_path, capsys):
+    """`git diff` (bare or against `HEAD`) is blind to untracked paths --
+    there is no committed or staged blob to diff against, so a new
+    untracked file under `tests/` was previously invisible to this check in
+    ANY form, not even as a warning. It is not a catalogue `target` (no
+    mutation names a file that does not yet exist), so it must not
+    hard-fail -- but it must now be SEEN and reported.
+
+    See the test above for why `camp.REPO_ROOT` is restored by hand rather
+    than via `monkeypatch`.
+
+    This test FAILS ON REVERT: with the old check, `assert_live_tree_clean`
+    returns silently with no warning printed, and the `in captured.err`
+    assertion fails.
+    """
+    root, _target = _make_fake_repo(tmp_path)
+    original_repo_root = camp.REPO_ROOT
+    camp.REPO_ROOT = root
+    try:
+        stray = root / "tests" / "stray_untracked.py"
+        stray.write_text("y = 2\n")
+        camp.assert_live_tree_clean("test")   # must not raise
+        captured = capsys.readouterr()
+        assert "tests/stray_untracked.py" in captured.err, captured.err
+    finally:
+        camp.REPO_ROOT = original_repo_root
 
 
 # =====================================================================

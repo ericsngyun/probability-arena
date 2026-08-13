@@ -56,9 +56,11 @@ git repository, on purpose.
 `_write` refuses, structurally, to write anywhere under `REPO_ROOT`
 (`LiveTreeWriteBlocked`): if the isolation ever regresses, the harness
 fails instead of corrupting the tree. As defence in depth on top of that,
-`run_campaign` and the pytest module run a `git diff --quiet -- tests/`
-cleanliness check plus a sha256 census of `tests/` and `app/` both BEFORE
-and AFTER, and fail loudly with the offending paths.
+`run_campaign` and the pytest module run a cleanliness check against
+`tests/` -- staged AND unstaged tracked modifications (`git diff HEAD`, not
+bare `git diff`, which is blind to what is staged) plus untracked paths
+(`git status --porcelain`) -- plus a sha256 census of `tests/` and `app/`
+both BEFORE and AFTER, and fail loudly with the offending paths.
 
 Each `Mutation` names:
   * WHERE     a single, EXACT, byte-for-byte substring replacement in one
@@ -310,46 +312,105 @@ def _leftover_mutation_hints(dirty: list) -> list:
     return hints
 
 
+def _tracked_dirty_paths_under_tests() -> list:
+    """Repo-relative paths of TRACKED files under `tests/` that differ from
+    `HEAD` -- staged, unstaged, or both.
+
+    `git diff --quiet -- tests/` (the original check) only compares the
+    working tree against the INDEX, so a change that has been `git add`ed
+    reads as clean: `git diff` sees nothing to show, because the diff
+    against the index is empty. Diffing against `HEAD` instead catches
+    staged and unstaged modifications alike.
+
+    Uses `-z` (NUL-delimited, unquoted paths) rather than the default
+    quoted/escaped output, so a path with non-ASCII bytes under the default
+    `core.quotePath=true` cannot slip through as a wrongly-quoted string
+    that fails a raw equality check against `m.target`. Every path in this
+    repository's `tests/` tree is plain ASCII today, so this has not been
+    observed to matter in practice -- `-z` removes the dependency on that
+    staying true rather than relying on it.
+    """
+    proc = _git("diff", "--name-only", "-z", "HEAD", "--", "tests/")
+    return [p for p in proc.stdout.split("\0") if p]
+
+
+def _untracked_paths_under_tests() -> list:
+    """Repo-relative paths of UNTRACKED files under `tests/`.
+
+    `git diff` (against the index OR against `HEAD`) is blind to untracked
+    paths by design -- there is no committed or staged blob to diff
+    against. `git status --porcelain` is the only one of the two commands
+    that can see them at all, hence running both rather than one.
+    `--untracked-files=all` expands untracked directories to their
+    individual files (matching what `git diff --name-only` would list for
+    a tracked file, rather than collapsing a whole new directory to its
+    dirname). `-z` again avoids `core.quotePath` re-quoting.
+    """
+    proc = _git("status", "--porcelain", "--untracked-files=all", "-z",
+               "--", "tests/")
+    paths = []
+    for tok in proc.stdout.split("\0"):
+        if tok.startswith("?? "):
+            paths.append(tok[3:])
+    return paths
+
+
 def assert_live_tree_clean(stage: str) -> None:
-    """`git diff --quiet -- tests/` pre/postflight.
+    """Pre/postflight cleanliness check against `tests/`: tracked
+    modifications (staged and/or unstaged, diffed against `HEAD`) plus
+    untracked paths.
 
     KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 (post-A9 softening, per a reviewer's
-    counterexample). This used to hard-fail on ANY dirty path under
-    `tests/`, with no escape hatch -- it fired on a concurrent agent's
-    uncommitted, unrelated edit and would have failed all 16 campaign-module
-    tests on a full-suite run. An ORDINARY dirty path under `tests/` -- one
-    that is not one of the ten catalogue `target` files -- is now downgraded
-    to a WARNING (printed, not raised) and the campaign proceeds.
+    counterexample; later hardened again, per a second reviewer's
+    counterexample, to see staged and untracked changes at all). The
+    original form of this check -- `git diff --quiet -- tests/` -- used to
+    hard-fail on ANY dirty path under `tests/`, with no escape hatch, and
+    fired on a concurrent agent's uncommitted, unrelated edit; that was
+    softened so an ORDINARY dirty path under `tests/` -- one that is not
+    one of the ten catalogue `target` files -- is only a WARNING (printed,
+    not raised) and the campaign proceeds. Separately, and independently of
+    that softening, `git diff --quiet -- tests/` was proven to miss a
+    STAGED modification entirely (it diffs the working tree against the
+    INDEX, and a staged change is, by definition, already in the index) and
+    was always blind to untracked paths (nothing for `git diff` to compare
+    against). Both gaps meant `git add`ing an edited catalogue target file,
+    or leaving a new untracked file under `tests/`, defeated the hard-fail
+    outright. This now diffs against `HEAD` (catching staged AND unstaged)
+    and separately runs `git status --porcelain` for untracked paths.
 
     Dirtiness in any of the TEN catalogue `target` files still HARD-FAILS,
-    unchanged. The reason is load-bearing, not cosmetic:
-    `_leftover_mutation_hints` recognises a leftover mutation only when
-    `m.old` is ABSENT and `m.new` is present EXACTLY -- a mutation
-    interrupted mid-`write_text`, a stray hand-edit near the mutated region,
-    or a formatting artifact in the same file is invisible to that
-    heuristic. Such a file would fall into the softened warning path and
-    get copied, dirty, into every sandbox -- so the campaign would validate
-    against a POISONED baseline for exactly the ten files whose byte-
-    identical, `old`-appears-exactly-once precondition the whole
-    apply/restore machinery already assumes clean. Isolation (nothing here
-    ever WRITES to the live tree) is unaffected either way; what changes is
-    only what baseline gets copied INTO the sandbox in the first place.
+    unchanged; everything else under `tests/` is still only a WARNING. The
+    hard/soft split is unchanged -- what changed is only what dirtiness
+    this function can SEE in the first place. The reason the split itself
+    is load-bearing, not cosmetic: `_leftover_mutation_hints` recognises a
+    leftover mutation only when `m.old` is ABSENT and `m.new` is present
+    EXACTLY -- a mutation interrupted mid-`write_text`, a stray hand-edit
+    near the mutated region, or a formatting artifact in the same file is
+    invisible to that heuristic. Such a file would fall into the softened
+    warning path and get copied, dirty, into every sandbox -- so the
+    campaign would validate against a POISONED baseline for exactly the ten
+    files whose byte-identical, `old`-appears-exactly-once precondition the
+    whole apply/restore machinery already assumes clean. Isolation (nothing
+    here ever WRITES to the live tree) is unaffected either way; what
+    changes is only what baseline gets copied INTO the sandbox in the first
+    place.
     """
     if not _git_usable():
         return
-    quiet = _git("diff", "--quiet", "--", "tests/")
-    if quiet.returncode == 0:
+    tracked_dirty = _tracked_dirty_paths_under_tests()
+    untracked = _untracked_paths_under_tests()
+    dirty = tracked_dirty + [p for p in untracked if p not in tracked_dirty]
+    if not dirty:
         return
-    names = _git("diff", "--name-only", "--", "tests/")
-    dirty = [n for n in names.stdout.splitlines() if n.strip()]
     targets = {m.target for m in MUTATIONS}
     hard = [d for d in dirty if d in targets]
     soft = [d for d in dirty if d not in targets]
     if soft:
         print(f"meta-mutation: WARNING [{stage}] the live working tree has "
-              f"uncommitted, non-catalogue-target modifications under "
-              f"tests/: {soft} -- proceeding, because none of these paths "
-              "is one of the ten catalogue `target` files.",
+              f"uncommitted (staged, unstaged, or untracked), non-catalogue-"
+              f"target modifications under tests/: {soft} -- proceeding, "
+              "because none of these paths is one of the ten catalogue "
+              "`target` files.",
               file=sys.stderr, flush=True)
     if not hard:
         return
@@ -364,10 +425,9 @@ def assert_live_tree_clean(stage: str) -> None:
                   "prior agent lost uncommitted work in this repository "
                   "exactly that way.")
     raise LiveTreeDirty(
-        f"[{stage}] `git diff --quiet -- tests/` failed: the live working "
-        f"tree has uncommitted modifications to catalogue TARGET files: "
-        f"{hard}{detail}"
-        f"\n  (stderr: {quiet.stderr.strip()!r})")
+        f"[{stage}] the live working tree has uncommitted (staged, "
+        f"unstaged, or untracked) modifications to catalogue TARGET files: "
+        f"{hard}{detail}")
 
 
 def live_tree_census() -> dict:
