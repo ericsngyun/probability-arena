@@ -852,7 +852,20 @@ async def _run_locked(
     result["deferred_observations"] = deferred
 
     # --- write (batched commits, no network) ------------------------------
-    members = {m.token_address: m for m in service._members(session, cohort.id)}
+    # Only the members this pass actually fetched — never the whole cohort (see
+    # `_sparse_plan`'s bounding note; the same unbounded-growth hazard applies
+    # here, and `service._members` deliberately has no filter because the
+    # frozen lane it was written for has at most 100 members).
+    fetched_tokens = [item.token_address for item in fetched]
+    members = {
+        m.token_address: m
+        for m in session.execute(
+            select(CryptoHorizonCohortMember).where(
+                CryptoHorizonCohortMember.cohort_id == cohort.id,
+                CryptoHorizonCohortMember.token_address.in_(fetched_tokens),
+            )
+        ).scalars().all()
+    } if fetched_tokens else {}
     outcomes: dict[str, int] = {}
     ticks = 0
     recorded = 0
@@ -1058,18 +1071,47 @@ def _sparse_plan(
     members = list(extra_members or [])
     attempted: set = set()
     if cohort is not None:
-        members = list(session.execute(
+        # BOUNDED BY THE ENROLMENT WINDOW, not by cohort size.
+        #
+        # This cohort is standing and rolling: at ~530 births/day it accrues
+        # ~193k members and ~387k observation rows per year. Loading all of
+        # them every pass would make an hourly job slower every single day,
+        # forever — the unbounded-growth failure this project has already paid
+        # for once (`_universe`'s recency starvation) and the reason
+        # CRYPTO-COVERAGE-REPAIR-001 insists a scheduled pass state its
+        # capacity against its arrival rate.
+        #
+        # A member's LAST band closes at `anchor + 24h + BAND`. Anything older
+        # than that has nothing due and never will, so it is excluded in SQL —
+        # the working set is bounded at roughly (arrival rate x 25h), i.e.
+        # ~550 members, whatever the cohort's lifetime size.
+        member_cutoff = now - timedelta(minutes=ENROL_WINDOW_MINUTES)
+        anchor_col = func.coalesce(
+            CryptoHorizonCohortMember.first_evidence_at,
+            CryptoHorizonCohortMember.birth_observed_at,
+        )
+        persisted = list(session.execute(
             select(CryptoHorizonCohortMember)
-            .where(CryptoHorizonCohortMember.cohort_id == cohort.id)
+            .where(
+                CryptoHorizonCohortMember.cohort_id == cohort.id,
+                anchor_col >= member_cutoff,
+            )
             .order_by(CryptoHorizonCohortMember.id)
-        ).scalars().all()) + members
+        ).scalars().all())
+        members = persisted + members
+        if not members:
+            return []
+        tokens = [m.token_address for m in members]
         attempted = {
             (row.token_address, row.horizon)
             for row in session.execute(
                 select(
                     CryptoHorizonObservation.token_address,
                     CryptoHorizonObservation.horizon,
-                ).where(CryptoHorizonObservation.cohort_id == cohort.id)
+                ).where(
+                    CryptoHorizonObservation.cohort_id == cohort.id,
+                    CryptoHorizonObservation.token_address.in_(tokens),
+                )
             ).all()
         }
     if not members:

@@ -684,6 +684,62 @@ async def test_the_fetch_deadline_reports_partial_and_defers_the_rest(session):
     assert session.query(CryptoHorizonObservation).count() == 1
 
 
+@pytest.mark.asyncio
+async def test_the_pass_working_set_is_bounded_by_the_enrolment_window(session):
+    """The standing cohort is ROLLING: at ~530 births/day it accrues ~193k
+    members and ~387k observation rows per year. A pass that loaded all of them
+    would get slower every day, forever — the unbounded-growth failure this
+    project has already paid for once. A member's last band closes at
+    anchor + 24h + BAND, so anything older must be excluded IN SQL, not
+    filtered in Python after loading it."""
+    from sqlalchemy import event as sa_event
+
+    # one live member, plus a large aged-out tail that must never be loaded
+    add_birth(session, 1, anchor=NOW - timedelta(hours=6))
+    session.commit()
+    await run_pass(session, adapter=FakeAdapter({}), now=NOW)
+    cohort = session.query(CryptoHorizonCohort).one()
+    for n in range(100, 200):
+        old_anchor = NOW - timedelta(days=30 + n % 7)
+        session.add(CryptoHorizonCohortMember(
+            cohort_id=cohort.id, chain=CHAIN, token_address=token_id(n),
+            symbol=f"T{n}", first_evidence_at=old_anchor,
+            birth_observed_at=old_anchor, added_at=old_anchor,
+        ))
+    session.commit()
+    assert session.query(CryptoHorizonCohortMember).count() == 101
+
+    loaded: list[int] = []
+
+    @sa_event.listens_for(CryptoHorizonCohortMember, "load")
+    def _seen(target, ctx):
+        loaded.append(target.id)
+
+    try:
+        plan = sparse._sparse_plan(session, config(), cohort, NOW + timedelta(hours=1))
+    finally:
+        sa_event.remove(CryptoHorizonCohortMember, "load", _seen)
+
+    assert len(loaded) == 1, f"loaded {len(loaded)} members; the query is unbounded"
+    # the aged-out tail contributes nothing to the plan either
+    assert {e.token_address for e in plan} == {token_id(1)}
+
+
+@pytest.mark.asyncio
+async def test_a_member_whose_bands_have_all_closed_is_never_replanned(session):
+    """Convergence: once both bands are behind it, a member drops out of the
+    working set permanently rather than being re-walked at every pass."""
+    add_birth(session, 1, anchor=NOW - timedelta(hours=6))
+    session.commit()
+    await run_pass(session, adapter=FakeAdapter({token_id(1): [pair(token_id(1))]}), now=NOW)
+    cohort = session.query(CryptoHorizonCohort).one()
+    long_after = NOW + timedelta(days=3)
+    assert sparse._sparse_plan(session, config(), cohort, long_after) == []
+    adapter = FakeAdapter({token_id(1): [pair(token_id(1))]})
+    r = await run_pass(session, adapter=adapter, now=long_after)
+    assert r["due_observations"] == 0 and adapter.calls == 0
+
+
 # --- 6. transaction shape -------------------------------------------------------
 
 
