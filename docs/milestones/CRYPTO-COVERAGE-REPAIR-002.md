@@ -304,6 +304,25 @@ log:
 Mutations M5 (batching collapsed) and M5b (a write injected into the fetch
 phase) both fail it.
 
+### The working set is bounded by the enrolment window, not by cohort size
+
+The standing cohort is rolling: at the measured ~530 births/day it accrues
+~193k members and ~387k observation rows per year. The first implementation
+loaded the **entire** cohort in both the plan query and the write phase, so an
+hourly job would have got measurably slower every day, forever — the same
+unbounded-growth failure class as `_universe`'s recency starvation, and exactly
+what CRYPTO-COVERAGE-REPAIR-001's capacity-vs-arrival discipline exists to
+catch. It was found on re-read, before it shipped.
+
+A member's last band closes at `anchor + 24h + BAND`. Anything older has nothing
+due and never will, so both queries now exclude it **in SQL**, not in Python
+after loading it. The working set is bounded at roughly
+`arrival_rate × 25h ≈ 550` rows whatever the cohort's lifetime size.
+
+Pinned by a SQLAlchemy `load` listener asserting exactly **1 of 101** members is
+materialised (mutation M27), plus a convergence test that a member past both
+bands drops out of the plan permanently rather than being re-walked every pass.
+
 ### Idempotency and restart survival — proven, not argued
 
 Enforced by the database, not by bookkeeping:
@@ -461,6 +480,24 @@ review.
 
 ---
 
+## 8.1 Three defects found after the first green suite
+
+Recorded because the *way* each was found matters more than the fix.
+
+1. **Two tests that could not fail for the reason they existed** (§10, M14/M21)
+   — found by the mutation loop, not by review.
+2. **A denominator conflation inside this milestone's own report** (§6) — found
+   by actually running the CLI over local fixtures, not by reading the code.
+   Reviewing the report's *logic* would never have surfaced it; only a run with
+   a token born before the lane started watching did.
+3. **An unbounded working-set query** (§5) — found by re-reading the finished
+   module against the project's own capacity-vs-arrival discipline.
+
+None of the three would have been caught by "the tests pass". That is the
+argument for keeping all three habits, not just the first.
+
+---
+
 ## 9. Evidence discipline — what is measured vs. chosen
 
 | value | status |
@@ -513,6 +550,7 @@ re-confirmed green (`__pycache__` cleared between reverts).
 | M24 | provider policy widened to allow everything | 3 provider tests FAIL |
 | M25 | `enrolled_after_band_closed` merged back into `scheduling_miss` | `test_a_band_that_closed_before_enrolment_is_not_a_scheduling_miss` FAILS |
 | M26 | the exclusion widened so it swallows real misses too | `test_a_band_that_closed_after_enrolment_IS_a_scheduling_miss` FAILS |
+| M27 | member query no longer bounded by the enrolment window | `test_the_pass_working_set_is_bounded_by_the_enrolment_window` FAILS |
 
 ### Two tests that could not fail for the reason they existed
 
@@ -604,7 +642,7 @@ This run is also what surfaced the `scheduling_miss` denominator defect in §6.
 * `app/cli.py` — `crypto-sparse-observe` (`--dry-run`, `--force`,
   `--enrol-limit`, `--observe-limit`, `--write-batch-size`,
   `--max-duration-seconds`) and `crypto-observation-coverage-report`.
-* `tests/test_crypto_coverage_repair_002.py` — 55 tests.
+* `tests/test_crypto_coverage_repair_002.py` — 57 tests.
 
 No migration. No systemd unit. No provider adapter change.
 
