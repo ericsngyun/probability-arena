@@ -3388,6 +3388,133 @@ async def crypto_tape_run_once(
             session.close()
 
 
+def _print_reconciler_guard_block(r: dict) -> None:
+    """CRYPTO-RECONCILER-GUARDED-TIMER-001 — the guard rails' own output, on
+    EVERY governed outcome including the skipped and refused ones.
+
+    Three questions an unattended operator has, answered in three lines:
+    did this run cross a chosen policy line, is this run marked for review,
+    and is the SCHEDULE still allowed to run at all."""
+    print(
+        f"batch_lock_wait_ms_max={r.get('batch_lock_wait_ms_max')}  "
+        f"batch_lock_wait_warnings={r.get('batch_lock_wait_warnings')}  "
+        f"batch_lock_wait_aborts={r.get('batch_lock_wait_aborts')}  "
+        f"(chosen policy: warn>={r.get('batch_lock_wait_warn_ms')}ms, "
+        f"abort>={r.get('batch_lock_wait_abort_threshold_ms')}ms)"
+    )
+    print(
+        f"review_required={r.get('review_required')}  "
+        f"review_reasons={r.get('review_reasons')}"
+    )
+    print(
+        f"health_gate_state={r.get('health_gate_state')}  "
+        f"health_gate_tripped={r.get('health_gate_tripped')}  "
+        f"health_latched={r.get('health_latched')}  "
+        f"health_gate={r.get('health_gate')}"
+    )
+    if r.get("health_gate_tripped"):
+        print(
+            "!! HEALTH GATE TRIPPED — further SCHEDULED runs are blocked "
+            "until a human clears the latch:"
+        )
+        for reason in r.get("health_gate_reasons") or []:
+            print(f"   - {reason}")
+        print(
+            "   clear with: crypto-reconciler-health --clear --operator <name> "
+            "--note '<what you checked>'   (nothing clears it automatically)"
+        )
+    elif r.get("health_latched"):
+        print(
+            "!! the health latch is TRIPPED (this invocation is an attended "
+            "bypass or a recorded skip) — see crypto-reconciler-health"
+        )
+
+
+async def crypto_reconciler_health(
+    clear: bool = False, operator: str | None = None, note: str | None = None,
+    settings=None,
+) -> int:
+    """CRYPTO-RECONCILER-GUARDED-TIMER-001 — read (and only deliberately
+    clear) the reconciler's unattended health latch.
+
+    THE DISABLE PATH IS NOT HERE. To stop the reconciler, set
+    `ENABLE_CRYPTO_TAPE_RECONCILER=false` (or stop the timer unit); this
+    command manages the AUTOMATIC latch, which blocks scheduled runs after the
+    rolling gate detects a trend. Clearing requires a named operator on
+    purpose: the latch exists to force a human decision, and an unnamed clear
+    is not one. Returns 0 when nothing is latched, -1 when a latch is (still)
+    in force."""
+    from app.config import get_settings
+    from app.services import crypto_reconciler_guard as guard
+    from app.services.crypto_tape import CryptoTapeConfig
+
+    s = settings if settings is not None else get_settings()
+    chain = CryptoTapeConfig.from_settings(s).chain
+    path = guard.health_state_path(getattr(s, "database_url", None), chain)
+    print(
+        "crypto reconciler health — unattended guard state "
+        "(research infrastructure only, never advice)"
+    )
+    if path is None:
+        print(
+            f"state=inert  chain={chain}  reason=no durable file-backed SQLite "
+            "database; the rolling gate keeps no state and blocks nothing"
+        )
+        return 0
+    state = guard.load_state(path, chain)
+    window = guard.gate_window(state)
+    verdict = guard.evaluate_health(window)
+    latch = guard.latch_summary(state)
+    print(f"state_path={path}  runs_recorded={len(state.get('runs', []))}")
+    print(
+        f"gate_window_runs={verdict['window_runs']}  "
+        f"severe_wait_runs={verdict['severe_wait_runs']}  "
+        f"consecutive_contention_runs={verdict['consecutive_contention_runs']}  "
+        f"consecutive_marketops_skips={verdict['consecutive_marketops_skips']}  "
+        f"review_runs={verdict['review_runs']}"
+    )
+    print(
+        f"policy: severe>={guard.HEALTH_SEVERE_WAIT_RUNS} in "
+        f"{guard.HEALTH_WINDOW_RUNS}, contention>="
+        f"{guard.HEALTH_CONSECUTIVE_CONTENTION_RUNS} consecutive, "
+        f"marketops>={guard.HEALTH_CONSECUTIVE_MARKETOPS_SKIP_RUNS} "
+        f"consecutive, review>={guard.HEALTH_REVIEW_RUNS} in "
+        f"{guard.HEALTH_WINDOW_RUNS} — all CHOSEN operational policy, not "
+        "measured constants"
+    )
+    for record in window[-guard.HEALTH_WINDOW_RUNS:]:
+        print(
+            f"  run seq={record.get('seq')} at={record.get('at')} "
+            f"status={record.get('status')} stop_reason={record.get('stop_reason')} "
+            f"batch_lock_wait_ms_max={record.get('batch_lock_wait_ms_max')} "
+            f"review={record.get('review')} {record.get('review_reasons')}"
+        )
+    if latch is None:
+        print("latch=CLEAR  scheduled runs are allowed")
+        return 0
+    print(f"latch=TRIPPED  tripped_at={latch.get('tripped_at')}")
+    for reason in latch.get("reasons") or []:
+        print(f"   - {reason}")
+    if not clear:
+        print(
+            "scheduled runs are BLOCKED (status=skipped_health_latch). An "
+            "attended `crypto-tape-reconcile --force` still runs. Clear with "
+            "--clear --operator <name> --note '<what you checked>'."
+        )
+        return -1
+    if not operator:
+        print("refusing to clear: --clear requires --operator <name>")
+        return -1
+    cleared = guard.clear_latch(state, operator=operator, note=note)
+    guard.save_state(path, state)
+    print(
+        f"latch CLEARED by {operator} at {cleared.get('cleared_at')}  "
+        f"note={note!r}  (the trip is retained in latch_history; the rolling "
+        f"window restarts at seq>{state.get('gate_window_start_seq')})"
+    )
+    return 0
+
+
 async def crypto_tape_reconcile(
     dry_run: bool = False, force: bool = False, hours: int | None = None,
     limit: int | None = None, batch_size: int | None = None,
@@ -3504,6 +3631,10 @@ async def crypto_tape_reconcile(
                 f"{r.get('lock_wait_decision_tail_finalize')}  "
                 f"lock_wait_phases={r.get('lock_wait_phases')}"
             )
+            # CRYPTO-RECONCILER-GUARDED-TIMER-001: a SKIP is an outcome, and
+            # the operator's first question about one is always "why, and is
+            # the schedule still running?". Both answers print here.
+            _print_reconciler_guard_block(r)
             return -1
         print(
             f"status={r['status']}  external_calls={r['external_calls']}  "
@@ -3634,6 +3765,13 @@ async def crypto_tape_reconcile(
                 "survival labels (true counts): "
                 + ", ".join(f"{k}={v}" for k, v in r["survival_label_mix"].items())
             )
+        _print_reconciler_guard_block(r)
+        # CRYPTO-RECONCILER-GUARDED-TIMER-001: a tripped gate must make the
+        # UNIT go red even when the pass itself completed `ok`. A recurring
+        # timer's loudest available channel is its own exit status, and a
+        # gate that trips silently into a green unit is decoration.
+        if r.get("health_gate_tripped"):
+            return -1
         # LOW fix: ALLOW-list here too — only "ok"/"dry_run" are genuinely
         # healthy-complete. Everything else reaching this point (truncated /
         # partial / dry_run_partial today, plus whatever a future status
@@ -8515,6 +8653,27 @@ def build_parser() -> argparse.ArgumentParser:
              "--max-duration-seconds, so a blocked statement can never push "
              "the pass past its deadline. Must be > 0.",
     )
+    reconciler_health_parser = subparsers.add_parser(
+        "crypto-reconciler-health",
+        help="CRYPTO-RECONCILER-GUARDED-TIMER-001: show the recurring "
+             "reconciler's unattended health gate and its auto-disable latch "
+             "(read-only unless --clear; never advice)",
+    )
+    reconciler_health_parser.add_argument(
+        "--clear", action="store_true",
+        help="clear a TRIPPED latch so scheduled runs may resume. Requires "
+             "--operator. Nothing clears the latch automatically — that is "
+             "the point of it.",
+    )
+    reconciler_health_parser.add_argument(
+        "--operator", type=str, default=None,
+        help="the human accountable for the clear (recorded in the latch "
+             "history); required with --clear",
+    )
+    reconciler_health_parser.add_argument(
+        "--note", type=str, default=None,
+        help="what was checked before clearing (recorded in the latch history)",
+    )
     tape_report_parser = subparsers.add_parser(
         "crypto-tape-report",
         help="Lifecycle tape report: coverage, survival labels, actor patterns "
@@ -9339,6 +9498,13 @@ def main(argv: list[str] | None = None) -> int:
                 time_budget_seconds=args.time_budget_seconds,
                 initial_per_token_cost_seconds=args.initial_per_token_cost_seconds,
                 lock_wait_budget_seconds=args.lock_wait_budget_seconds,
+            )
+        )
+        return 0 if n >= 0 else 1
+    if args.command == "crypto-reconciler-health":
+        n = asyncio.run(
+            crypto_reconciler_health(
+                clear=args.clear, operator=args.operator, note=args.note,
             )
         )
         return 0 if n >= 0 else 1

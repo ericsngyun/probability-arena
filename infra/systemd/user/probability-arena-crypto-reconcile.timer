@@ -16,6 +16,20 @@
 # far less frequent than the 5-minute MarketOps cycle it must not crowd.
 # The pass is a clean no-op while enable_crypto_tape_reconciler is off, so the
 # timer is safe to install dark and enable later.
+#
+# CRYPTO-RECONCILER-GUARDED-TIMER-001 — this 6h cadence is now the APPROVED
+# recurring cadence, and it is deliberately conservative for a second,
+# independent reason: the historical backlog is nearly exhausted (~106
+# recoverable tokens against an ~11,516-row backlog that is overwhelmingly
+# permanent write-offs), so there is no economic case for running more often.
+# Four provider-free passes a day is a maintenance cadence, not a catch-up one.
+# `RECONCILER_CADENCE_HOURS = 6` in app/services/crypto_tape.py must change
+# with this line — the backlog-expiring frontier threshold is computed from it.
+#
+# THIS FILE IS A REPO TEMPLATE. Nothing here is installed on EVO-X2 by this
+# milestone; installation and activation are operator actions, in the order
+# documented under "Guarded recurring reconciler timer" in
+# docs/EVO_X2_RUNBOOK.md (which leads with the DISABLE procedure, on purpose).
 
 [Unit]
 Description=Run Probability Arena crypto survival reconciliation every 6 hours

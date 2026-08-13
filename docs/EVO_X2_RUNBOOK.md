@@ -1833,10 +1833,162 @@ return a full summary with the whole lock-wait accounting, reported as
 the row on disk looks orphaned. This is why the tally is a property of the run
 rows and not a substitute for reading the pass output.
 
+### Guarded recurring reconciler timer (CRYPTO-RECONCILER-GUARDED-TIMER-001)
+
+Eric **approved a guarded recurring 6-hourly timer** on 2026-08-12. Nothing in
+this milestone is installed on EVO-X2: the unit files are repo templates and
+activation is an operator action, in the order below. **The disable procedure
+comes first on purpose** — an operator reaching for this section is usually
+reaching for the brake.
+
+#### Disable the guarded reconciler timer
+
+Three levels, cheapest first. Each is complete on its own; you do not need the
+next one.
+
+```bash
+# 1. STOP FUTURE PASSES (keeps the unit installed, keeps all state).
+#    The pass becomes a clean no-op that writes nothing and exits 0.
+sed -i 's/^ENABLE_CRYPTO_TAPE_RECONCILER=.*/ENABLE_CRYPTO_TAPE_RECONCILER=false/' \
+  ~/projects/probability-arena/.env
+grep ENABLE_CRYPTO_TAPE_RECONCILER ~/projects/probability-arena/.env   # verify
+
+# 2. STOP THE SCHEDULE ITSELF (also stops the dark no-op firing at all).
+systemctl --user disable --now probability-arena-crypto-reconcile.timer
+systemctl --user list-timers | grep crypto-reconcile      # expect: nothing
+
+# 3. STOP A PASS THAT IS RUNNING RIGHT NOW.
+systemctl --user stop probability-arena-crypto-reconcile.service
+```
+
+Level 3 is safe by construction and needs no cleanup: batches committed before
+the stop are durable, the interrupted batch is rolled back and neither
+duplicated nor lost, and the unworked tokens return to the backlog. If the stop
+lands mid-finalize the run row is left at `status='running'` with no
+`config.write_coordination` — the already-classified orphan signature
+(`lock_wait_run_row_orphaned()`); it is excluded from the lock-wait
+distribution and tallied separately. **Nothing is corrupted and nothing needs
+repairing by hand.**
+
+There is also an AUTOMATIC disable: the rolling health gate (below) can latch
+the timer off without a human. `crypto-reconciler-health` shows whether that
+has happened.
+
+#### Enable the guarded reconciler timer
+
+Do these in order; each step's check must pass before the next.
+
+1. **The pre-existing preconditions still apply** — see "Recurring-timer
+   preconditions" below. In particular precondition 3: a **measured**
+   `CRYPTO_TAPE_RECONCILER_INITIAL_PER_TOKEN_COST_SECONDS` for this host, with
+   adaptive batching on. It has no default by design; never guess it.
+2. **Confirm the guard has somewhere to keep state.** The health gate is inert
+   without a file-backed SQLite database:
+   ```bash
+   .venv/bin/python -m app.cli crypto-reconciler-health
+   # REQUIRED: a line starting `state_path=` and `latch=CLEAR`.
+   # `state=inert` means the gate would watch NOTHING — do not enable.
+   ```
+3. **Install the units dark** (flag still false):
+   ```bash
+   cp infra/systemd/user/probability-arena-crypto-reconcile.{service,timer} \
+      ~/.config/systemd/user/
+   systemctl --user daemon-reload
+   systemctl --user enable --now probability-arena-crypto-reconcile.timer
+   journalctl --user -u probability-arena-crypto-reconcile.service -n 20 --no-pager
+   # expect: status=disabled  external_calls=0  no-op
+   ```
+4. **Flip the flag** and let exactly one natural tick run:
+   ```bash
+   sed -i 's/^ENABLE_CRYPTO_TAPE_RECONCILER=.*/ENABLE_CRYPTO_TAPE_RECONCILER=true/' \
+     ~/projects/probability-arena/.env
+   systemctl --user list-timers | grep crypto-reconcile     # next tick
+   ```
+5. **Read the first unattended pass** before trusting the second:
+   ```bash
+   journalctl --user -u probability-arena-crypto-reconcile.service -n 60 --no-pager
+   .venv/bin/python -m app.cli crypto-reconciler-health
+   ```
+   Expected on a healthy pass: `batch_lock_wait_aborts=0`,
+   `batch_lock_wait_warnings=0`, `review_required=False`,
+   `health_gate_state=active`, `health_gate_tripped=False`, `latch=CLEAR`.
+   `status=partial (stop_reason=deadline)` plus `truncated` is **normal** at
+   production density and exits non-zero by design — that is the pass telling
+   you work remains, not a fault.
+
+#### The guard rails, and the fact that every threshold is a CHOICE
+
+None of these numbers is derived or measured. They are **operational policy**,
+chosen against measured evidence, and they should be re-chosen if the evidence
+moves. The evidence they were chosen against: six counted production passes
+(`tape_run_id` 3813-3815 plus three phase-attributed) with duration
+29,730-30,164 ms against a 30 s deadline, `lock_wait_ms` 3,238-4,615, **batch**
+maxima 16/514/1037 ms, finalize 8-12 ms, `run_row` 9-191 ms,
+`write_hold_ms_max` 84-194 ms, 0-1 retries, **zero** lock failures and **zero**
+write-hold SLO violations. Eric's framing, which the whole design follows:
+*"occasional 1-1.3s waits are acceptable, escalating/repeated waits are not."*
+
+| Layer | Trigger | Chosen value | Effect |
+|---|---|---|---|
+| Pre-flight skip | MarketOps unhealthy (`_reconciliation_should_abort`, reused) | — | `status=marketops_degraded`, nothing read or written, recorded |
+| Pre-flight skip | health latch tripped | — | `status=skipped_health_latch`, nothing read or written, recorded |
+| Per-run | **batch-phase** lock wait | `>= 5000 ms` | warning: recorded and logged, run continues |
+| Per-run | **batch-phase** lock wait | `>= 7000 ms` | abort: ladder stops via the existing `stop_reason=lock_wait_budget` path; committed batches durable |
+| Post-run review | `write_hold_ms_max` | `> 700 ms` | run marked for review; feeds the gate |
+| Post-run review | `wall_time_model_exceeded` | `true` | run marked for review; feeds the gate |
+| Post-run review | any lock failure / write-hold SLO violation | — | run marked for review; feeds the gate |
+| Rolling gate | severe waits (`>=5000 ms`) | 2 of the last 4 runs | **latch: auto-disable** |
+| Rolling gate | contention stops (`contention`/`lock_wait_budget`) | 3 consecutive | **latch: auto-disable** |
+| Rolling gate | `marketops_degraded` skips | 2 consecutive | **latch: auto-disable** |
+| Rolling gate | runs marked for review | 3 of the last 4 runs | **latch: auto-disable** |
+
+Two things a reader must not misread:
+
+* **The lock-wait figure is the PHASE-ATTRIBUTED `batch` one**, never the pass
+  total. The total carries a ~1-sample-per-pass systematic floor from the
+  `run_row` and `finalize` bookkeeping commits; a threshold read off it would
+  be measuring the instrument. See "Reading the decision tail: per phase, never
+  the total".
+* **A bare `partial` is NOT a contention signal.** At production density every
+  pass ends `partial`/`deadline`/`truncated`; the gate's contention rule
+  deliberately requires `stop_reason in {contention, lock_wait_budget}` or a
+  lock-failure status. A rule that counted plain `partial` would trip on the
+  first three healthy runs.
+
+#### The auto-disable latch, and how a human clears it
+
+State lives in `.crypto-tape-reconciler-health-solana.json` **next to the
+SQLite file** — not in the database, because the outcomes the gate most needs
+to count (`marketops_degraded`, prelude `db_locked`, `skipped_contention`) are
+exactly the ones that never write a run row.
+
+```bash
+# read it (read-only, safe any time)
+.venv/bin/python -m app.cli crypto-reconciler-health
+
+# clear a tripped latch — only after actually looking at why it tripped
+.venv/bin/python -m app.cli crypto-reconciler-health \
+  --clear --operator eric --note "co-tenant backup ran long; MarketOps green"
+```
+
+* Tripping is **loud**: `logger.error`, a `!! HEALTH GATE TRIPPED` block in the
+  pass output, and a **non-zero exit even when the pass itself was `ok`**, so
+  the unit goes red in `systemctl --user list-units`.
+* Nothing clears it automatically. Healthy runs do not clear it; time does not
+  clear it; only `--clear --operator <name>` does. Clearing keeps the trip in
+  `latch_history` and restarts the rolling window past the records that tripped
+  it (otherwise the same history would re-trip on the next run).
+* The latch blocks the **timer**, not the operator: `--force` and `--dry-run`
+  still run and report `health_latched=True`, because a human running a pass by
+  hand is already the human the latch was trying to summon.
+* An unreadable or corrupt state file **fails closed** (scheduled runs are
+  blocked) and is never overwritten — it is evidence.
+
 ### Recurring-timer preconditions
 
-There is still **no recurring reconciler timer**, and none may be installed
-until *all* of the following hold. "Model, not guarantee" is sufficient for the
+These are the conditions the *guarded* timer above is enabled under; they were
+written when there was no recurring timer at all and remain the enable
+checklist. "Model, not guarantee" is sufficient for the
 attended `--force` phase — a longer-than-modelled pass still terminates and
 rolls back cleanly with a human watching — but it is **not** sufficient
 unattended, and the answer is not a better constant (there isn't one: the

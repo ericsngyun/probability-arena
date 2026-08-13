@@ -62,15 +62,61 @@ IOWeight=20
 #
 # The finalize is ONE attempt precisely because of this line: a 3-attempt
 # ladder at the inherited 30s timeout costs ~186s at overshoot 2.0 and ~528s at
-# the measured 5.80x, and at 5.80x the whole-unit figure above becomes ~374s —
-# i.e. IT EXCEEDS THIS TimeoutStartSec. No constant bounds an overshoot that
-# tracks host load, so the value below is NOT claimed as a guarantee. The
-# failure mode when it is exceeded is non-corrupting: a SIGKILL mid-finalize
-# leaves committed batches durable and the run row at status='running'. See
-# "Recurring-timer preconditions" and "TimeoutStartSec vs the finalize ladder"
-# in docs/EVO_X2_RUNBOOK.md — the recurring timer's precondition is OBSERVED
-# non-exceedance of the per-pass `wall_time_model_ms`, not this constant.
-TimeoutStartSec=5min
+# the measured 5.80x. At 5.80x the whole-unit figure above becomes ~374s.
+#
+# CRYPTO-RECONCILER-GUARDED-TIMER-001 — RECONCILED, NOT LEFT DANGLING. The
+# previous value (300s) was EXCEEDED by that ~374s ceiling, and the milestone
+# that noticed it left the discrepancy documented rather than closed, on the
+# grounds that the timer was attended-only. It is not attended-only any more:
+# Eric approved a RECURRING, unattended, 6-hourly timer. Same model, load
+# factor L applied to every lock-dependent term:
+#
+#   deadline (wall clock, no lock involved)                     20s
+#   one in-flight batch ladder  3 attempts x (2 blocking points
+#     x L) x 5s derived budget  + 2 x 3.0s retry sleeps     = 30L + 6
+#   finalize  1 attempt (RECONCILE_FINALIZE_MAX_LOCK_ATTEMPTS)
+#     at the inherited 30s busy timeout x L                 = 30L
+#   ---------------------------------------------------------------
+#   whole-unit ceiling                                      = 26 + 60L
+#
+#     L = 1.01x  (EVO, idle, measured)                          ~87s
+#     L = 2.0x   (the shipped chosen overshoot constant)       ~146s
+#     L = 5.80x  (dev Mac at load average 5-6, measured)       ~374s
+#
+# 7min (420s) covers the worst L this repo has ever MEASURED, with ~12%
+# headroom. That headroom is NOT a guarantee and must not be quoted as one: L
+# tracks host load and is unbounded above, so no constant can bound it — which
+# is exactly why the recurring timer's precondition is OBSERVED non-exceedance
+# of the per-pass `wall_time_model_ms`, and why `wall_time_model_exceeded=true`
+# is one of the post-run REVIEW triggers that feeds the auto-disable gate.
+#
+# WHAT HAPPENS WHEN IT IS HIT ANYWAY (unchanged, and non-corrupting): systemd
+# SIGKILLs the pass. Batches committed before that moment stay durable; if the
+# kill lands mid-finalize the run row is left at status='running' with no
+# `config.write_coordination`. That orphan is already CLASSIFIED, not
+# mysterious: `lock_wait_run_row_orphaned()` names exactly that signature, and
+# the counted-passes analysis excludes and separately tallies it. Nothing
+# reconciles those rows; the tokens themselves return to the backlog.
+#
+# See "Guarded recurring reconciler timer", "Recurring-timer preconditions"
+# and "TimeoutStartSec vs the finalize ladder" in docs/EVO_X2_RUNBOOK.md.
+TimeoutStartSec=7min
+
+# CRYPTO-RECONCILER-GUARDED-TIMER-001 — WHAT GUARDS THIS UNIT, since a
+# recurring unattended writer needs more than a deadline:
+#   * PRE-FLIGHT SKIP — the pass refuses to start when MarketOps is unhealthy
+#     (`_reconciliation_should_abort`, reused) or when the health latch is
+#     tripped. Both are typed, recorded, non-zero-exit outcomes; a skipped run
+#     is data, never silence.
+#   * PER-RUN ABORT — a batch-phase lock wait >=5000ms is recorded as a
+#     warning and the run continues; >=7000ms stops the ladder through the
+#     existing `stop_reason=lock_wait_budget` path (prior batches stay
+#     durable). Both numbers are CHOSEN operational policy, not measurements.
+#   * ROLLING AUTO-DISABLE — repeated severe waits, sustained contention, a
+#     MarketOps regression, or sustained review pressure trip a LATCH that
+#     blocks further scheduled runs until a human clears it with
+#     `crypto-reconciler-health --clear --operator <name>`. Nothing clears it
+#     automatically. A tripped gate also exits non-zero, so this unit goes red.
 
 [Install]
 WantedBy=default.target
