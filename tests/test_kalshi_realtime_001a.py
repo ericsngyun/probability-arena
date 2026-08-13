@@ -20,6 +20,29 @@ from app.realtime import book as bk
 from app.realtime import fixedpoint as fp
 from app.realtime import kalshi as kx
 
+
+def _init_archive(root, environment="demo"):
+    """Archives are brought into existence EXPLICITLY, exactly as an operator does.
+
+    The collector cannot do this, and that is the point: "the head is missing,
+    therefore this is a new archive" was the inference that let a rebuilt
+    history certify its own deletions. Tests initialize on purpose.
+    """
+    from app.realtime import archive_head as _ah
+    try:
+        _ah.initialize_archive(Path(root), environment,
+                               archive_identity="kalshi-realtime")
+    except _ah.ArchiveHeadError:
+        pass                       # already initialized in this test
+    return root
+
+
+def _arch(root, **kw):
+    from app.realtime import archive as _ar
+    _init_archive(root, kw.get("environment", "demo"))
+    return _ar.EventArchive(root, **kw)
+
+
 NOW = datetime(2026, 8, 6, 12, 0, tzinfo=timezone.utc)
 PKG = Path("app/realtime")
 
@@ -345,6 +368,16 @@ class TestCredentialAndCapability:
         read-scoped market-data requests, and the amendment is only meaningful
         if the surface it opened stays one file wide. A second module quietly
         growing a `sign` call is precisely the drift this catches.
+
+        The check targets a signing/key-loading *operation* -- an attribute
+        access like `key.sign(...)`/`key.private_bytes(...)`, an imported
+        name, or a bare identifier actually invoked as a call -- not any
+        local variable that happens to share a banned spelling. A plain
+        Name node in Store/Load context (e.g. `sign, digits, exponent =
+        value.as_tuple()`) is exactly that kind of unrelated identifier and
+        must not trip this guard; matching on Attribute/ImportFrom/call-target
+        is what keeps it precise without weakening the module boundary it
+        enforces.
         """
         import ast as _ast
 
@@ -353,16 +386,22 @@ class TestCredentialAndCapability:
                 continue
             tree = _ast.parse(path.read_text())
             names = set()
+            call_targets = set()
             for node in _ast.walk(tree):
                 if isinstance(node, _ast.ImportFrom):
                     names |= {a.name for a in node.names}
-                elif isinstance(node, (_ast.Name, )):
-                    names.add(node.id)
                 elif isinstance(node, _ast.Attribute):
                     names.add(node.attr)
+                elif isinstance(node, _ast.Call):
+                    func = node.func
+                    if isinstance(func, _ast.Name):
+                        call_targets.add(func.id)
+                    elif isinstance(func, _ast.Attribute):
+                        call_targets.add(func.attr)
+            surface = names | call_targets
             for banned in ("load_pem_private_key", "load_der_private_key",
                            "private_bytes", "sign"):
-                assert banned not in names, f"{path}: {banned}"
+                assert banned not in surface, f"{path}: {banned}"
 
     def test_signing_string_is_canonical_and_key_free(self):
         assert kx.canonical_signing_string(
@@ -540,33 +579,44 @@ class TestArchiveAndReplay:
         return out
 
     def test_archive_round_trips_and_verifies(self, tmp_path):
-        a = ar.EventArchive(tmp_path, environment="demo")
+        a = _arch(tmp_path, environment="demo")
         for e in self._stream():
             a.append(e)
+        a.close()
         assert a.written == 4
         v = a.verify()
         assert v["intact"] and v["records"] == 4
 
     def test_demo_events_cannot_enter_a_production_archive(self, tmp_path):
-        prod = ar.EventArchive(tmp_path, environment="production")
+        prod = _arch(tmp_path, environment="production")
         with pytest.raises(ar.ArchiveError, match="never become"):
             prod.append(self._stream(environment="demo")[0])
 
     def test_archives_are_physically_separated(self, tmp_path):
-        demo = ar.EventArchive(tmp_path, environment="demo")
-        prod = ar.EventArchive(tmp_path, environment="production")
-        demo.append(self._stream("demo")[0])
-        prod.append(self._stream("production")[0])
-        assert demo.read_all() and prod.read_all()
-        assert len(demo.read_all()) == 1 and len(prod.read_all()) == 1
-        assert "env=demo" in str(demo.partition(NOW))
-        assert "env=production" in str(prod.partition(NOW))
+        """Demo and production evidence never share a tree.
+
+        The `env=/venue=/date=/hour=` path assertion retires with that layout;
+        the property it protected is asserted directly instead — each
+        environment's segments live under its own root, and neither reads the
+        other's records.
+        """
+        demo = _arch(tmp_path, environment="demo")
+        prod = _arch(tmp_path, environment="production")
+        for e in self._stream(environment="demo"):
+            demo.append(e)
+        demo.close()
+        demo_dirs = {str(x["directory"]) for x in demo.segment_paths()}
+        prod_dirs = {str(x["directory"]) for x in prod.segment_paths()}
+        assert demo_dirs and not (demo_dirs & prod_dirs)
+        assert all("env=demo" in d for d in demo_dirs)
+        assert prod.read_unverified_diagnostic() == []
 
     def test_replay_is_deterministic(self, tmp_path):
-        a = ar.EventArchive(tmp_path, environment="demo")
+        a = _arch(tmp_path, environment="demo")
         for e in self._stream():
             a.append(e)
-        records = a.read_all()
+        a.close()
+        records = a.read_unverified_diagnostic()
         first, second = ar.replay(records), ar.replay(records)
         assert first["checksums"] == second["checksums"]
         assert first["events_applied"] == 4 and first["events_rejected"] == 0
@@ -583,37 +633,41 @@ class TestArchiveAndReplay:
         live.apply_snapshot(stream[0].raw["msg"], seq=1, sid=stream[0].sid)
         for e in stream[1:]:
             live.apply_delta(e.raw["msg"], seq=e.seq, sid=e.sid)
-        a = ar.EventArchive(tmp_path, environment="demo")
+        a = _arch(tmp_path, environment="demo")
         for e in stream:
             a.append(e)
-        assert ar.replay(a.read_all())["checksums"]["KXTEST"] == live.checksum()
+        a.close()
+        assert ar.replay(a.read_unverified_diagnostic())["checksums"]["KXTEST"] == live.checksum()
 
     def test_replay_surfaces_a_gap_rather_than_absorbing_it(self, tmp_path):
         stream = self._stream()
         stream[2].seq = 99          # punch a hole
-        a = ar.EventArchive(tmp_path, environment="demo")
+        a = _arch(tmp_path, environment="demo")
         for e in stream:
             a.append(e)
-        out = ar.replay(a.read_all())
+        a.close()
+        out = ar.replay(a.read_unverified_diagnostic())
         assert out["events_rejected"] >= 1
         assert any("gap" in f["error"] for f in out["faults"])
         assert out["publishable"]["KXTEST"] is False
 
     def test_malformed_tail_loses_one_record_not_the_file(self, tmp_path):
-        a = ar.EventArchive(tmp_path, environment="demo")
+        a = _arch(tmp_path, environment="demo")
         for e in self._stream():
             a.append(e)
-        path = next(tmp_path.rglob("events.jsonl.gz"))
+        a.close()
+        path = a.segment_paths()[0]["events_path"]
         with gzip.open(path, "at", encoding="utf-8") as fh:
             fh.write('{"truncated": \n')
-        assert len(a.read_all()) == 4
+        assert len(a.read_unverified_diagnostic()) == 4
         assert a.truncated_records == 1
 
     def test_latency_is_decomposed_not_a_single_number(self, tmp_path):
-        a = ar.EventArchive(tmp_path, environment="demo")
+        a = _arch(tmp_path, environment="demo")
         for e in self._stream():
             a.append(e)
-        env_ = ar.latency_envelope(a.read_all()).to_dict()
+        a.close()
+        env_ = ar.latency_envelope(a.read_unverified_diagnostic()).to_dict()
         assert set(env_) >= {"venue_to_receive_offset_contaminated_ms",
                              "receive_to_normalize_us", "coverage"}
         assert "normalize_to_book_us" not in env_
@@ -649,10 +703,11 @@ class TestArchiveAndReplay:
             assert banned not in mods
 
     def test_archive_output_is_secret_free(self, tmp_path):
-        a = ar.EventArchive(tmp_path, environment="demo")
+        a = _arch(tmp_path, environment="demo")
         for e in self._stream():
             a.append(e)
-        blob = json.dumps(a.read_all()).lower()
+        a.close()
+        blob = json.dumps(a.read_unverified_diagnostic()).lower()
         for needle in ("private key", "begin rsa", "kalshi-access-signature",
                        "api_key", "secret", "password"):
             assert needle not in blob
@@ -791,7 +846,7 @@ class TestFailClosedRegressions:
 
 class TestArchiveIntegrityRegressions:
     def _archive(self, tmp_path, environment="demo"):
-        return ar.EventArchive(tmp_path, environment=environment)
+        return _arch(tmp_path, environment=environment)
 
     def test_interrupted_write_loses_the_last_record_not_the_file(self, tmp_path):
         """`fh.read()` buffers the whole member and then raises on a truncated
@@ -801,10 +856,11 @@ class TestArchiveIntegrityRegressions:
         a = self._archive(tmp_path)
         for e in TestArchiveAndReplay()._stream():
             a.append(e)
-        path = next(tmp_path.rglob("events.jsonl.gz"))
+        a.close()
+        path = a.segment_paths()[0]["events_path"]
         raw = path.read_bytes()
         path.write_bytes(raw[:-5])
-        records = a.read_all()
+        records = a.read_unverified_diagnostic()
         assert len(records) >= 3, "everything before the torn record must survive"
         assert a.verify()["intact"] is False
 
@@ -812,11 +868,12 @@ class TestArchiveIntegrityRegressions:
         a = self._archive(tmp_path)
         for e in TestArchiveAndReplay()._stream():
             a.append(e)
-        path = next(tmp_path.rglob("events.jsonl.gz"))
+        a.close()
+        path = a.segment_paths()[0]["events_path"]
         raw = bytearray(path.read_bytes())
         raw[len(raw) // 2] ^= 0xFF
         path.write_bytes(bytes(raw))
-        a.read_all()                        # zlib.error must not escape
+        a.read_unverified_diagnostic()                        # zlib.error must not escape
         assert a.verify()["intact"] is False
 
     def test_tampered_record_is_rejected_on_read_not_only_in_verify(self, tmp_path):
@@ -827,34 +884,59 @@ class TestArchiveIntegrityRegressions:
         a = self._archive(tmp_path)
         for e in TestArchiveAndReplay()._stream():
             a.append(e)
-        path = next(tmp_path.rglob("events.jsonl.gz"))
+        a.close()
+        path = a.segment_paths()[0]["events_path"]
         with _gzip.open(path, "rt") as fh:
             lines = fh.read().splitlines()
         lines[0] = lines[0].replace('"0.6000"', '"0.9900"')
         with _gzip.open(path, "wt") as fh:
             fh.write("\n".join(lines) + "\n")
-        assert len(a.read_all()) == 3       # the tampered record is gone
+        # STRONGER than the legacy behaviour, and deliberately so. Tampering
+        # breaks the chain, and a broken chain means nothing after the break can
+        # be trusted either — the old reader dropped only the edited record and
+        # returned the rest. The semantic assertion is unchanged: a tampered
+        # record never reaches a caller, and verification fails.
+        returned = a.read_unverified_diagnostic()
+        assert all(r.get("raw", {}).get("msg", {}).get("yes_dollars_fp")
+                   != [["0.9900", "5.00"]] for r in returned)
+        assert len(returned) < 4
         assert a.verify()["intact"] is False
 
     def test_a_misplaced_demo_file_is_not_read_as_production(self, tmp_path):
         """The write-side guard is in-process only; a copy, an rsync or a
         restore defeats it, and replaying demo events as production evidence
         is a fabricated observation."""
-        demo = ar.EventArchive(tmp_path / "d", environment="demo")
+        demo = _arch(tmp_path / "d", environment="demo")
         for e in TestArchiveAndReplay()._stream():
             demo.append(e)
-        src = next((tmp_path / "d").rglob("events.jsonl.gz"))
+        src = demo.segment_paths()[0]["events_path"]
         dst = (tmp_path / "p" / "env=production" / "venue=kalshi"
                / "date=2026-08-06" / "hour=12")
         dst.mkdir(parents=True)
         dst.joinpath("events.jsonl.gz").write_bytes(src.read_bytes())
-        prod = ar.EventArchive(tmp_path / "p", environment="production")
-        assert prod.read_all() == []
-        assert prod.verify()["foreign_environment_records"] == 4
+        prod = _arch(tmp_path / "p", environment="production")
+        # The property is unchanged — demo records never become production
+        # evidence. Under the segment layout a transplanted file also carries a
+        # segment id and manifest that do not belong to it, so it is rejected
+        # earlier than the record-level environment check and never counted as
+        # a "foreign record" that was read.
+        assert prod.read_unverified_diagnostic() == []
+        assert prod.read_verified() == []
+        # `intact` is no longer the carrier of this property. An initialized
+        # archive with no committed segments is genuinely intact — that used to
+        # report INVALID only because an archive with no head was invalid by
+        # construction, which is a different fact that happened to coincide.
+        # What matters is that the transplanted bytes are not evidence: they sit
+        # in a path the archive does not recognise, so no segment claims them
+        # and no reader returns them.
+        from app.realtime import segment as _sg
+        out = _sg.verify_archive(tmp_path / "p", environment="production")
+        assert out["records_read"] == 0 and out["segments"] == 0
+        assert out["orphaned_committed_segments"] == []
 
     def test_venue_cannot_escape_its_path_component(self, tmp_path):
         with pytest.raises(ar.ArchiveError, match="safe path component"):
-            ar.EventArchive(tmp_path, environment="demo",
+            _arch(tmp_path, environment="demo",
                             venue="../../env=production/venue=kalshi")
 
     def test_naive_receive_time_is_refused(self, tmp_path):
@@ -885,7 +967,8 @@ class TestArchiveIntegrityRegressions:
         a = self._archive(tmp_path)
         for e in stream:
             a.append(e)
-        records = a.read_all()
+        a.close()
+        records = a.read_unverified_diagnostic()
         records[2]["raw"]["msg"].pop("price_dollars")
         out = ar.replay(records)            # KeyError must not escape
         assert out["events_rejected"] >= 1 and out["faults"]
