@@ -1585,6 +1585,71 @@ uncontended reference pass's `>=100` count:
 Reading a single pass: a `100-1000` sample within a few ms of that pass's
 `write_hold_ms_max` is that pass's own fsync, not a wait.
 
+#### Reading the decision tail: per phase, never the total
+
+**(CRYPTO-RECONCILER-LOCK-WAIT-PHASE-ATTRIBUTION-001.)** Three production
+`--force` passes on EVO at load 0.4-0.8, after the deadline fix:
+
+| tape_run_id | duration_ms | lock_wait_ms | max | measurements | `>=1000` tail | batches |
+|---|---|---|---|---|---|---|
+| 3813 | 30,126 | 4,615 | 1,191 | 326 | **1** | 323 |
+| 3814 | 30,148 | 4,461 | 1,334 | 389 | **1** | 387 |
+| 3815 | 30,117 | 4,502 | 1,337 | 383 | **1** | 381 |
+
+The decision bucket holds **exactly one sample on every pass** — never zero,
+never two — with maxima clustered just above the 1000 ms edge. Random
+co-tenant contention does not produce that shape. A once-per-pass *systematic*
+event does, and a pass has **two** of them:
+
+* **`run_row`** — the run row's CREATION commit, the pass's first write (cold
+  page cache, first journal creation);
+* **`finalize`** — the run row's FINALIZE commit, bounded differently from the
+  batch ladder (`RECONCILE_FINALIZE_MAX_LOCK_ATTEMPTS = 1`, inheriting the
+  connection's 30 s busy timeout rather than the tight derived budget).
+
+The census confirms it exactly on all three passes:
+`measurements = batches + 1 (run row) + 1 (finalize) + retries`
+(326 = 323+1+1+1, 389 = 387+1+1+0, 383 = 381+1+1+0).
+
+So the **pass-total tail has a systematic floor of ~1 that is not contention at
+all**, and a threshold derived from it would be measuring the instrument rather
+than the host. Same defect class as the fsync counted once as a hold and once
+as a lock wait (subsection above), one layer further out.
+
+**The fix is attribution, not subtraction.** Every recorded attempt now carries
+its phase, and the tail is reported per phase:
+
+```
+lock_wait_decision_tail            whole pass  (kept for reconciliation only)
+lock_wait_decision_tail_batch      THE TIMER'S BASIS
+lock_wait_decision_tail_finalize   tracked against TimeoutStartSec, not this
+finalize_lock_wait_ms              the finalize's own wait, kept in its own right
+lock_wait_phases                   {phase: {lock_wait_ms, lock_wait_ms_max,
+                                            measurements, decision_tail}}
+```
+
+`lock_wait_phase_decision_tail(source, phase)` is the executable predicate —
+give it either a pass summary or a run row's `config.write_coordination` blob.
+The CLI prints all of the above on every pass, and on the `db_locked` refusal
+path too.
+
+**On the run row**, the container is persisted as
+`lock_wait_phases_before_finalize` (staged inside the finalize commit, same
+caveat as `blocked_ms_before_finalize`). Two consequences:
+
+* its `batch` entry is **complete** and is what the timer decision reads;
+* its `finalize` entry is **structurally zero** — the closure runs inside the
+  very commit it would be measuring. The flat `*_finalize` mirrors are
+  therefore *omitted* from the run row rather than persisted as misleading
+  zeros. **Read the finalize's wait off the pass summary / CLI output, never
+  off the run row.**
+
+The **prelude** is bounded but not metered and is therefore *not* a bucket here
+— see "The prelude is bounded but not metered" below. Phase attribution does
+not fix the fsync-shaped bias either (`lock_wait_ms` remains a tight upper
+bound, median-corrected via `lock_wait_ms_baseline_per_attempt`, erring high
+and never negative); it only makes the residual **attributable**.
+
 #### The bias baseline is the MEDIAN attempt, and the net does not go to zero
 
 This section used to say the corrected scalar "goes to ~0 on a zero-contention
@@ -1784,12 +1849,29 @@ load 5-6).
    `wall_time_model_exceeded` next to its own `duration_ms`. The precondition
    is `wall_time_model_exceeded=false` on **every** counted pass — observed,
    not derived. One exceedance resets the count and is a finding, not noise.
-2. **A bounded decision tail.** `lock_wait_decision_tail()` (`>=1000 ms`) must
-   stay bounded across the counted passes, per the subsections above.
+2. **A bounded decision tail — on the BATCH phase.** The threshold is derived
+   from `lock_wait_decision_tail_batch` (equivalently
+   `lock_wait_phase_decision_tail(row, "batch")`), i.e. from **batch/read-path
+   contention**, and **explicitly not** from the pass total. The total carries a
+   known systematic floor of ~1 sample per pass produced by the two
+   once-per-pass bookkeeping commits (`run_row`, `finalize`) — measured on
+   tape_run_id 3813/3814/3815 — and a threshold read off it would be measuring
+   the instrument rather than the host. See "Reading the decision tail: per
+   phase, never the total".
+
+   The **finalize tail is tracked separately, against `TimeoutStartSec`** (next
+   section), not against the contention threshold. It is reported, not
+   discarded: `finalize_lock_wait_ms` and `lock_wait_decision_tail_finalize` are
+   on every pass summary and in the CLI print block. A `run_row` sample in the
+   decision bucket is likewise not contention and does not count toward this
+   precondition — but a *rising* `run_row` or `finalize` tail is a real finding
+   about the host and must be reported, never quietly dropped.
+
    `lock_wait_distribution_eligible=false` rows and
    `lock_wait_run_row_orphaned()` rows are both excluded and tallied
    separately. Re-examine the `>=1000 ms` edge itself if any counted pass
-   reports `write_hold_ms_max > 700`.
+   reports `write_hold_ms_max > 700` — **this numeric revisit trigger is
+   unchanged.**
 3. **A calibrated `initial_per_token_cost_seconds`, with adaptive batching
    enabled.** It has no default by design, and until a measured EVO value is
    set the write-hold SLO is *recorded but not enforced* — a fixed token count
@@ -1811,6 +1893,14 @@ ladder would cost `3 x 30 s x overshoot + 2 x 3 s`:
 | 1.01x | EVO, idle, measured | ~97 s |
 | 2.0x  | the shipped constant | ~186 s |
 | 5.80x | dev Mac at load 5-6, measured | **~528 s** |
+
+**The finalize's measured wait now has its own number**, per pass:
+`finalize_lock_wait_ms` (with `lock_wait_decision_tail_finalize` and
+`lock_wait_phases["finalize"]`). It is separated from the contention signal
+precisely so it can be checked *here* — against this budget and against
+`TimeoutStartSec` — instead of being subtracted out and lost. It is on the pass
+summary and the CLI output only; the run row cannot carry it (see the phase
+subsection).
 
 `TimeoutStartSec=5min` (300 s) is exceeded at the upper end, and a real blocked
 pass has been measured at `lock_wait_ms=206284` (~206 s). **The finalize

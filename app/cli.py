@@ -3198,6 +3198,18 @@ async def crypto_tape_reconcile(
                 f"{r.get('lock_wait_distribution_eligible')}"
             )
             print(f"lock_wait_histogram_ms={r.get('lock_wait_histogram_ms')}")
+            # CRYPTO-RECONCILER-LOCK-WAIT-PHASE-ATTRIBUTION-001 — an abandoned
+            # pass carries the most contention information of any pass, so the
+            # phase split has to reach the operator here too: the total tail
+            # alone cannot say whether the wait was batch contention or the
+            # pass's own once-per-pass bookkeeping commits.
+            print(
+                f"lock_wait_decision_tail_batch="
+                f"{r.get('lock_wait_decision_tail_batch')}  "
+                f"lock_wait_decision_tail_finalize="
+                f"{r.get('lock_wait_decision_tail_finalize')}  "
+                f"lock_wait_phases={r.get('lock_wait_phases')}"
+            )
             return -1
         print(
             f"status={r['status']}  external_calls={r['external_calls']}  "
@@ -3287,6 +3299,24 @@ async def crypto_tape_reconcile(
             f"write_hold_slo_violations={r.get('write_hold_slo_violations')}  "
             f"lock_wait_histogram_ms={r.get('lock_wait_histogram_ms')}"
         )
+        # CRYPTO-RECONCILER-LOCK-WAIT-PHASE-ATTRIBUTION-001 — the `>=1000 ms`
+        # decision tail SPLIT BY PHASE. Three production passes each reported
+        # EXACTLY ONE sample in that bucket (never zero, never two), which is
+        # the signature of a once-per-pass systematic event rather than of
+        # co-tenant contention; the pass has two such events (the run row's
+        # creation commit and its finalize commit). `..._batch` is the only one
+        # a recurring-timer threshold may be read from; the finalize's wait is
+        # printed next to it because it is what `TimeoutStartSec` has to cover,
+        # not because it belongs in the contention number.
+        print(
+            f"lock_wait_decision_tail={r.get('lock_wait_decision_tail')}  "
+            f"lock_wait_decision_tail_batch="
+            f"{r.get('lock_wait_decision_tail_batch')}  "
+            f"lock_wait_decision_tail_finalize="
+            f"{r.get('lock_wait_decision_tail_finalize')}  "
+            f"finalize_lock_wait_ms={r.get('finalize_lock_wait_ms')}"
+        )
+        print(f"lock_wait_phases={r.get('lock_wait_phases')}")
         print(
             f"batches_committed={r.get('batches_committed')}  "
             f"lock_retry_events={r.get('lock_retry_events')}  "

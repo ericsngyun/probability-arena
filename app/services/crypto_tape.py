@@ -582,15 +582,148 @@ RECONCILE_LOCK_WAIT_DECISION_LABELS = tuple(
 
 def lock_wait_decision_tail(histogram: dict | None) -> int:
     """How many samples in this pass's histogram are at or above the decision
-    edge — the ONE number a recurring-timer threshold may be derived from.
+    edge — the whole-pass tail.
 
     Executable rather than prose on purpose: the previous protocol lived in a
     runbook sentence saying "read the `>=100` buckets", and a reviewer measured
     that reading it as written counts the pass's own fsync as contention. A
-    reader who calls this cannot make that mistake."""
+    reader who calls this cannot make that mistake.
+
+    THIS IS NO LONGER THE NUMBER A TIMER THRESHOLD IS DERIVED FROM. See
+    `lock_wait_phase_decision_tail` and CRYPTO-RECONCILER-LOCK-WAIT-PHASE-
+    ATTRIBUTION-001's block comment on `LOCK_WAIT_PHASES`: this total mixes
+    contention with two SYSTEMATIC once-per-pass events, and the measured floor
+    of exactly 1 sample per pass came from one of them, not from a co-tenant."""
     if not histogram:
         return 0
     return sum(int(histogram.get(label, 0) or 0) for label in RECONCILE_LOCK_WAIT_DECISION_LABELS)
+
+
+# CRYPTO-RECONCILER-LOCK-WAIT-PHASE-ATTRIBUTION-001 — WHICH PHASE A LOCK-WAIT
+# SAMPLE BELONGS TO.
+#
+# THE MEASUREMENT THAT FORCED THIS. Three production `--force` passes on EVO
+# (tape_run_id 3813/3814/3815) at load 0.4-0.8, after the deadline fix:
+#
+#   pass  duration_ms  lock_wait_ms  max   measurements  >=1000 tail  batches
+#   1     30,126       4,615         1,191  326          1            323
+#   2     30,148       4,461         1,334  389          1            387
+#   3     30,117       4,502         1,337  383          1            381
+#
+# The decision bucket holds EXACTLY ONE sample on every pass — not zero, not a
+# varying small number — with maxima clustered just above the 1000 ms edge.
+# Random co-tenant contention does not produce that shape. A once-per-pass
+# SYSTEMATIC event does, and the pass has TWO of them, not one:
+#
+#   * `run_row`  — the run row's CREATION commit, the pass's FIRST write. Cold
+#     page cache, first journal creation.
+#   * `finalize` — the run row's FINALIZE commit, bounded differently from the
+#     batch ladder (`RECONCILE_FINALIZE_MAX_LOCK_ATTEMPTS = 1`, inheriting the
+#     connection's 30 s busy timeout rather than the tight derived budget).
+#
+# The arithmetic on those three passes confirms the census exactly:
+# `measurements = batches + 1 (run row) + 1 (finalize) + retries`
+# (326=323+1+1+1, 389=387+1+1+0, 383=381+1+1+0). So the pass-total decision
+# tail CANNOT be read as contention: it contains an instrument-shaped floor.
+# This is the same defect class as the fsync being counted once as a hold and
+# once again as a lock wait (see RECONCILE_LOCK_WAIT_DECISION_EDGE_MS), one
+# layer further out — a threshold derived from the total would be measuring the
+# instrument, not the host.
+#
+# THE FIX IS ATTRIBUTION, NOT SUBTRACTION. Every recorded attempt now carries
+# the phase it was taken in, and the tail is reported per phase. The finalize's
+# wait is kept as a first-class number in its own right (`finalize_lock_wait_ms`)
+# because it is what `TimeoutStartSec` has to cover — it is separated from the
+# contention signal, never discarded.
+LOCK_WAIT_PHASE_RUN_ROW = "run_row"
+LOCK_WAIT_PHASE_BATCH = "batch"
+LOCK_WAIT_PHASE_FINALIZE = "finalize"
+# The metered phases, in the order they occur within a pass. `prelude` is
+# deliberately NOT here — see below.
+LOCK_WAIT_PHASES = (
+    LOCK_WAIT_PHASE_RUN_ROW,
+    LOCK_WAIT_PHASE_BATCH,
+    LOCK_WAIT_PHASE_FINALIZE,
+)
+# The selection PRELUDE is a named phase of the pass (`prelude_ms`) and it is
+# BUDGETED (`_lock_wait_budgeted_reads`), but it is NOT and cannot be METERED by
+# this instrument: `LockWaitMeter` times the transaction's first WRITE
+# statement, and the prelude is pure reads, so a blocked SELECT there produces
+# no sample at all — not a zero one. Naming the constant makes the gap
+# referable and testable instead of implicit; emitting a permanently-zero
+# `prelude` bucket next to the real ones would have read as "the prelude never
+# waits", which is a stronger claim than this instrument can make. See the
+# runbook's "the prelude is bounded but not metered".
+LOCK_WAIT_PHASE_PRELUDE = "prelude"
+# The phase a directly-constructed `LockWaitMeter` carries when no call site
+# named one. Deliberately NOT `batch`: an unlabelled sample silently folded into
+# the batch tail is exactly the contamination this milestone removes, so it gets
+# its own visible name and shows up in `lock_wait_phases` only if it ever occurs.
+LOCK_WAIT_PHASE_UNATTRIBUTED = "unattributed"
+
+
+# Keys of `LockWaitAccounting.as_summary()` that the run row renames with a
+# `_before_finalize` suffix. They are staged INSIDE `_prepare_finalize`, i.e.
+# before the commit they would otherwise include, so the persisted copy is a
+# strict prefix of the pass total. (`lock_wait_ms_max`, the histogram and the
+# hold scalars carry the same caveat and are persisted unsuffixed — that is
+# pre-existing shipped schema and is documented in the runbook rather than
+# renamed here, which would break every existing reader.)
+_WRITE_COORDINATION_BEFORE_FINALIZE = (
+    "lock_wait_ms",
+    "lock_wait_measurements",
+    "lock_wait_decision_tail",
+    "lock_wait_phases",
+)
+# Keys deliberately NOT persisted on the run row. Each is a flat mirror of
+# something inside `lock_wait_phases_before_finalize`, and the finalize ones
+# would be structurally zero at the moment this blob is staged — a persisted
+# zero reads as "the finalize did not wait", which is a claim the run row
+# cannot make about the commit that is writing it.
+_WRITE_COORDINATION_OMITTED = (
+    "lock_wait_decision_tail_batch",
+    "lock_wait_decision_tail_finalize",
+    "finalize_lock_wait_ms",
+    "finalize_lock_wait_measurements",
+)
+
+
+def _in_decision_tail(ms: int) -> bool:
+    """Whether one sample belongs to the decision tail.
+
+    Identical by construction to "lands in one of `RECONCILE_LOCK_WAIT_DECISION_
+    LABELS`": the labels are exactly the buckets whose lower edge is at or above
+    the decision edge, and `LockWaitAccounting.record` bucket-indexes on the same
+    `ms`. `test_the_per_phase_tails_sum_to_the_histogram_tail` pins that the two
+    routes can never disagree."""
+    return ms >= RECONCILE_LOCK_WAIT_DECISION_EDGE_MS
+
+
+def lock_wait_phase_decision_tail(source: dict | None, phase: str) -> int:
+    """The `>=1000 ms` tail of ONE phase — the operator-facing predicate the
+    recurring-timer threshold is actually derived from.
+
+    Extends `lock_wait_decision_tail`'s pattern rather than replacing it:
+    executable, so the protocol cannot be misread. Accepts either a pass
+    SUMMARY dict or a run row's `config.write_coordination` blob, because the
+    persisted copy carries the same structure under a `_before_finalize` name
+    (that blob is staged INSIDE the finalize commit, so the finalize's own wait
+    is structurally absent from it — read the finalize tail off the pass
+    summary, never off the run row).
+
+    THE TIMER DECISION USES `phase="batch"`. The `run_row` and `finalize`
+    phases are once-per-pass systematic events, not host contention; the
+    finalize is tracked against `TimeoutStartSec` instead. See the runbook's
+    "Reading the decision tail: per phase, never the total"."""
+    if not source:
+        return 0
+    phases = (
+        source.get("lock_wait_phases")
+        or source.get("lock_wait_phases_before_finalize")
+        or {}
+    )
+    entry = phases.get(phase) or {}
+    return int(entry.get("decision_tail", 0) or 0)
 
 
 def lock_wait_distribution_eligible(result: dict) -> bool:
@@ -769,7 +902,14 @@ class LockWaitMeter:
     # entries from that script would change what those tests measure. This
     # meter must observe the clock without perturbing anyone else's
     # measurement of it.
-    def __init__(self):
+    def __init__(self, phase: str = LOCK_WAIT_PHASE_UNATTRIBUTED):
+        # CRYPTO-RECONCILER-LOCK-WAIT-PHASE-ATTRIBUTION-001: which structurally
+        # distinct part of the pass this attempt belongs to. Carried on the
+        # meter (not inferred later from counts or ordering) because the
+        # attribution has to survive retries, rollbacks and the abandon path,
+        # none of which preserve ordering. Defaults to `unattributed` rather
+        # than `batch` — see that constant.
+        self.phase = phase
         self.lock_acquire_seconds = 0.0
         self.commit_seconds = 0.0
         self.hold_seconds = 0.0
@@ -837,17 +977,22 @@ class LockWaitMeter:
 
 
 @contextmanager
-def _lock_wait_meter(session: Session, enabled: bool = True):
+def _lock_wait_meter(session: Session, enabled: bool = True, *, phase: str):
     """Attach a `LockWaitMeter` to THIS session's current connection for the
-    duration of one batch attempt. Scoped to the Connection instance (not the
+    duration of one attempt. Scoped to the Connection instance (not the
     Engine) so it can never observe, or slow down, any other session sharing
     the same engine. Degrades to an inert meter if the session cannot produce
     a connection — instrumentation must never be able to fail a pass.
 
     `enabled=False` yields an inert meter and never touches the session at
     all, so a caller that did not opt into lock-wait accounting keeps its
-    exact pre-milestone connection behaviour."""
-    meter = LockWaitMeter()
+    exact pre-milestone connection behaviour.
+
+    `phase` is KEYWORD-REQUIRED (CRYPTO-RECONCILER-LOCK-WAIT-PHASE-
+    ATTRIBUTION-001): a call site that forgets to name its phase fails at the
+    call, rather than quietly contributing an unlabelled sample to the tail the
+    timer decision is read from."""
+    meter = LockWaitMeter(phase)
     conn = None
     if not enabled:
         yield meter
@@ -1053,6 +1198,20 @@ class LockWaitAccounting:
         self.budget_ms_min: int | None = None
         self.hold_seconds_max = 0.0
         self.hold_slo_violations = 0
+        # CRYPTO-RECONCILER-LOCK-WAIT-PHASE-ATTRIBUTION-001 — the same samples,
+        # split by the phase that produced them. Bounded exactly like the
+        # histogram is: four scalars per phase, no raw samples. Pre-seeded with
+        # the metered phases so a pass that never reached one still reports a
+        # real 0 for it rather than a missing key; `record` auto-creates any
+        # other phase name it is handed, so an unlabelled sample can never be
+        # folded into `batch`.
+        self.phase_stats: dict[str, dict] = {
+            phase: self._new_phase_stats() for phase in LOCK_WAIT_PHASES
+        }
+
+    @staticmethod
+    def _new_phase_stats() -> dict:
+        return {"seconds": 0.0, "max_seconds": 0.0, "measurements": 0, "decision_tail": 0}
 
     def record_budget(self, budget_ms: int | None) -> None:
         if budget_ms is None:
@@ -1081,6 +1240,22 @@ class LockWaitAccounting:
                 index = i
                 break
         self.buckets[index] += 1
+        # Phase attribution. The sample is counted into the TOTAL exactly as
+        # before (nothing above this line changed), and additionally into its
+        # own phase — the split is a decomposition of the same samples, never a
+        # second, differently-collected series.
+        # `getattr` rather than `meter.phase`: instrumentation must never be
+        # able to fail a pass, and a duck-typed meter from a caller outside
+        # this module would otherwise raise here.
+        phase = getattr(meter, "phase", None) or LOCK_WAIT_PHASE_UNATTRIBUTED
+        stats = self.phase_stats.get(phase)
+        if stats is None:
+            stats = self.phase_stats[phase] = self._new_phase_stats()
+        stats["seconds"] += wait
+        stats["max_seconds"] = max(stats["max_seconds"], wait)
+        stats["measurements"] += 1
+        if _in_decision_tail(ms):
+            stats["decision_tail"] += 1
         if meter.hold_seconds > 0:
             self.hold_seconds_max = max(self.hold_seconds_max, meter.hold_seconds)
             if meter.hold_seconds > RECONCILE_WRITE_TIME_SLO_SECONDS:
@@ -1090,6 +1265,23 @@ class LockWaitAccounting:
         return {
             label: count
             for label, count in zip(_lock_wait_histogram_labels(), self.buckets)
+        }
+
+    def phases(self) -> dict:
+        """The per-phase decomposition, as a plain JSON-safe blob.
+
+        One nested key rather than a spray of flat ones: it is what gets
+        PERSISTED, and a container carries the `_before_finalize` caveat once
+        (on itself) instead of once per field with a name like
+        `lock_wait_decision_tail_finalize_before_finalize`."""
+        return {
+            phase: {
+                "lock_wait_ms": int(stats["seconds"] * 1000),
+                "lock_wait_ms_max": int(stats["max_seconds"] * 1000),
+                "measurements": stats["measurements"],
+                "decision_tail": stats["decision_tail"],
+            }
+            for phase, stats in self.phase_stats.items()
         }
 
     @property
@@ -1165,6 +1357,8 @@ class LockWaitAccounting:
         the histogram, never from the scalar."""
         baseline_ms = self.baseline_ms
         total_ms = int(self.total_seconds * 1000)
+        phases = self.phases()
+        finalize = phases.get(LOCK_WAIT_PHASE_FINALIZE, {})
         return {
             "lock_wait_ms": total_ms,
             "lock_wait_ms_max": int(self.max_seconds * 1000),
@@ -1183,6 +1377,23 @@ class LockWaitAccounting:
             "write_hold_ms_max": int(self.hold_seconds_max * 1000),
             "write_hold_slo_seconds": RECONCILE_WRITE_TIME_SLO_SECONDS,
             "write_hold_slo_violations": self.hold_slo_violations,
+            # CRYPTO-RECONCILER-LOCK-WAIT-PHASE-ATTRIBUTION-001.
+            # `lock_wait_decision_tail` is the whole-pass tail, kept so the
+            # split can always be reconciled against the number the previous
+            # protocol used — it is NOT the timer's basis any more.
+            "lock_wait_decision_tail": lock_wait_decision_tail(self.histogram()),
+            # THE TIMER'S BASIS. Batch/read-path contention only: the two
+            # once-per-pass systematic events are attributed away from it.
+            "lock_wait_decision_tail_batch": (
+                phases.get(LOCK_WAIT_PHASE_BATCH, {}).get("decision_tail", 0)
+            ),
+            # Kept visible in its own right, NOT merely subtracted: the
+            # finalize's wait is what `TimeoutStartSec` has to cover, so it is
+            # reported separately rather than removed and discarded.
+            "lock_wait_decision_tail_finalize": finalize.get("decision_tail", 0),
+            "finalize_lock_wait_ms": finalize.get("lock_wait_ms", 0),
+            "finalize_lock_wait_measurements": finalize.get("measurements", 0),
+            "lock_wait_phases": phases,
         }
 
 
@@ -3179,6 +3390,7 @@ class CryptoLifecycleTapeRecorder:
         *,
         budget_provider=None,
         accounting: "LockWaitAccounting | None" = None,
+        phase: str = LOCK_WAIT_PHASE_UNATTRIBUTED,
     ) -> tuple[bool, int]:
         """CRYPTO-COVERAGE-REPAIR-001 B5 — bounded retry ladder for one commit,
         reusing the DB_LOCKED_* constants `run_tape_session` already uses.
@@ -3219,13 +3431,22 @@ class CryptoLifecycleTapeRecorder:
         survive to the next attempt, and the derived budget shrinks as the
         pass's deadline is consumed. `accounting`, when given, receives the
         measured lock wait of each attempt. Both default to None, which keeps
-        this method byte-identical to its pre-milestone behaviour."""
+        this method byte-identical to its pre-milestone behaviour.
+
+        CRYPTO-RECONCILER-LOCK-WAIT-PHASE-ATTRIBUTION-001: `phase` labels every
+        sample this ladder records. TWO different once-per-pass commits come
+        through this one helper — the run row's CREATION and its FINALIZE — and
+        telling them apart is the whole point of the milestone, so the caller
+        names which one it is rather than this method guessing from
+        `max_attempts`."""
         for attempt in range(1, max(1, max_attempts) + 1):
             if budget_provider is not None:
                 budget_ms = _apply_lock_wait_budget(session, budget_provider())
                 if accounting is not None:
                     accounting.record_budget(budget_ms)
-            with _lock_wait_meter(session, accounting is not None) as meter:
+            with _lock_wait_meter(
+                session, accounting is not None, phase=phase
+            ) as meter:
                 try:
                     prepare()
                     meter.mark_commit_start()
@@ -3823,6 +4044,10 @@ class CryptoLifecycleTapeRecorder:
                     lock_retry_seconds, sleeper,
                     budget_provider=_next_lock_wait_budget,
                     accounting=lock_accounting if lock_budget_active else None,
+                    # The pass's FIRST write, exactly once per pass — cold page
+                    # cache, first journal creation. A once-per-pass systematic
+                    # event, and therefore not batch contention.
+                    phase=LOCK_WAIT_PHASE_RUN_ROW,
                 )
                 blocked_seconds += time.perf_counter() - _t0
                 lock_retry_events += max(0, attempts - 1)
@@ -3931,7 +4156,13 @@ class CryptoLifecycleTapeRecorder:
                         # SQLite's busy handler before winning the lock —
                         # not just attempts that were caught and retried.
                         _attempt_t0 = time.perf_counter()
-                        with _lock_wait_meter(session, lock_budget_active) as _meter:
+                        with _lock_wait_meter(
+                            session, lock_budget_active,
+                            # The only phase whose samples are HOST CONTENTION
+                            # rather than a once-per-pass instrument event —
+                            # i.e. the only one a timer threshold may read.
+                            phase=LOCK_WAIT_PHASE_BATCH,
+                        ) as _meter:
                             try:
                                 result = self._process_batch(
                                     session, chunk, run=run, started=started,
@@ -4285,6 +4516,26 @@ class CryptoLifecycleTapeRecorder:
                             # finalize`: this closure runs BEFORE the
                             # finalize commit, so the finalize's own wait is
                             # on the returned summary, not in this column.
+                            #
+                            # CRYPTO-RECONCILER-LOCK-WAIT-PHASE-ATTRIBUTION-001:
+                            # the PER-PHASE split rides along under the same
+                            # caveat, as ONE container key
+                            # (`lock_wait_phases_before_finalize`) so the
+                            # "staged before the finalize commits" qualifier is
+                            # stated once instead of once per field. Two
+                            # consequences a reader of the run row must know:
+                            #   * `lock_wait_phases_before_finalize["batch"]`
+                            #     is complete and is the timer's basis —
+                            #     `lock_wait_phase_decision_tail(blob, "batch")`
+                            #     reads it;
+                            #   * the `finalize` entry is STRUCTURALLY ZERO
+                            #     here, because this closure runs inside the
+                            #     very commit it would be measuring. The
+                            #     finalize's wait is on the returned summary
+                            #     (`finalize_lock_wait_ms`), and the flat
+                            #     `*_finalize` mirrors are therefore omitted
+                            #     from this blob rather than persisted as
+                            #     misleading zeros.
                             "write_coordination": {
                                 "lock_retry_events": lock_retry_events,
                                 "batches_committed": batches_committed,
@@ -4292,10 +4543,11 @@ class CryptoLifecycleTapeRecorder:
                                     blocked_seconds * 1000
                                 ),
                                 **{
-                                    f"{k}_before_finalize" if k in (
-                                        "lock_wait_ms", "lock_wait_measurements"
-                                    ) else k: v
+                                    f"{k}_before_finalize"
+                                    if k in _WRITE_COORDINATION_BEFORE_FINALIZE
+                                    else k: v
                                     for k, v in lock_accounting.as_summary().items()
+                                    if k not in _WRITE_COORDINATION_OMITTED
                                 },
                             },
                         }
@@ -4318,6 +4570,11 @@ class CryptoLifecycleTapeRecorder:
                     lock_retry_seconds, sleeper,
                     budget_provider=_finalize_lock_wait_budget,
                     accounting=lock_accounting if lock_budget_active else None,
+                    # The other once-per-pass systematic event, and the leading
+                    # hypothesis for the `>=1000` floor of exactly 1 sample per
+                    # production pass. Its wait is what `TimeoutStartSec` has to
+                    # cover, so it is reported separately, never discarded.
+                    phase=LOCK_WAIT_PHASE_FINALIZE,
                 )
                 blocked_seconds += time.perf_counter() - _finalize_t0
                 lock_retry_events += max(0, attempts - 1)

@@ -1769,3 +1769,313 @@ def test_the_budget_adds_no_network_surface():
     source = (REPO / "app" / "services" / "crypto_tape.py").read_text()
     for forbidden in ("httpx", "requests", "aiohttp", "urllib", "socket"):
         assert forbidden not in source, f"crypto_tape.py gained a {forbidden} import"
+
+
+# --- CRYPTO-RECONCILER-LOCK-WAIT-PHASE-ATTRIBUTION-001 ---------------------
+#
+# THE MEASUREMENT THAT FORCED THE SPLIT. Three production `--force` passes on
+# EVO (tape_run_id 3813/3814/3815) at load 0.4-0.8:
+#
+#   pass  duration_ms  lock_wait_ms  max    measurements  >=1000 tail  batches
+#   1     30,126       4,615         1,191  326           1            323
+#   2     30,148       4,461         1,334  389           1            387
+#   3     30,117       4,502         1,337  383           1            381
+#
+# EXACTLY ONE sample in the decision bucket on every pass — never zero, never
+# two — with maxima clustered just above the 1000 ms edge. Random co-tenant
+# contention does not produce that; a once-per-pass systematic event does, and
+# the pass has TWO of them (the run row's CREATION commit and its FINALIZE
+# commit; `measurements = batches + 2 + retries` on all three passes). A timer
+# threshold read off the pass TOTAL would therefore be measuring the instrument,
+# not the host.
+#
+# The three end-to-end tests below drive one real, phase-scoped competing
+# RESERVED holder each and assert the wait lands in that phase AND NOT in the
+# others. They are the pin that makes the split trustworthy: swap any two phase
+# labels at the call sites and each of them fails.
+#
+# The holder is deliberately short. It only has to clear the 1000 ms decision
+# edge with margin; on this dev Mac a blocked acquisition overshoots its budget
+# (measured up to 5.80x under load), so a longer hold buys no discrimination and
+# costs the whole suite. The 49 s this file was cut to must not regress.
+_PHASE_HOLD_SECONDS = 1.6
+
+
+def test_the_per_phase_tails_sum_to_the_histogram_tail():
+    """The split must be a DECOMPOSITION of the same samples, not a second,
+    differently-collected series — otherwise "batch tail 0, total tail 1" could
+    mean either good news or a lost sample.
+
+    Pinned as an identity over both routes: `_in_decision_tail` (used per
+    sample, per phase) and `lock_wait_decision_tail` (used over the whole
+    histogram) must agree on every sample, including the ones exactly ON the
+    edge, which is where an off-by-one would live."""
+    accounting = ct.LockWaitAccounting()
+    scripted = [
+        (ct.LOCK_WAIT_PHASE_RUN_ROW, 1.191),      # the production signature
+        (ct.LOCK_WAIT_PHASE_BATCH, 0.004),
+        (ct.LOCK_WAIT_PHASE_BATCH, 0.485),        # fsync self-stall, not a wait
+        (ct.LOCK_WAIT_PHASE_BATCH, 0.999),        # one ms BELOW the edge
+        (ct.LOCK_WAIT_PHASE_BATCH, 1.000),        # exactly ON the edge
+        (ct.LOCK_WAIT_PHASE_FINALIZE, 20.0),
+    ]
+    for phase, wait in scripted:
+        meter = ct.LockWaitMeter(phase)
+        meter.lock_acquire_seconds = wait
+        accounting.record(meter)
+    s = accounting.as_summary()
+
+    total_tail = ct.lock_wait_decision_tail(s["lock_wait_histogram_ms"])
+    assert total_tail == s["lock_wait_decision_tail"] == 3, s
+    assert sum(p["decision_tail"] for p in s["lock_wait_phases"].values()) == total_tail
+    assert s["lock_wait_decision_tail_batch"] == 1, s          # the 1.000, only
+    assert s["lock_wait_decision_tail_finalize"] == 1, s
+    assert s["lock_wait_phases"][ct.LOCK_WAIT_PHASE_RUN_ROW]["decision_tail"] == 1
+    # Measurements decompose too — no sample is dropped or double-counted.
+    assert sum(
+        p["measurements"] for p in s["lock_wait_phases"].values()
+    ) == s["lock_wait_measurements"] == len(scripted)
+    # The finalize stays visible in its own right, not merely subtracted away.
+    assert s["finalize_lock_wait_ms"] == 20000, s
+    assert s["finalize_lock_wait_measurements"] == 1, s
+    # The operator-facing predicate reads the same numbers off the blob.
+    assert ct.lock_wait_phase_decision_tail(s, ct.LOCK_WAIT_PHASE_BATCH) == 1
+    assert ct.lock_wait_phase_decision_tail(s, ct.LOCK_WAIT_PHASE_FINALIZE) == 1
+    assert ct.lock_wait_phase_decision_tail(None, ct.LOCK_WAIT_PHASE_BATCH) == 0
+    assert ct.lock_wait_phase_decision_tail({}, ct.LOCK_WAIT_PHASE_BATCH) == 0
+
+    # An UNLABELLED sample never lands in `batch`. A meter built without a
+    # phase gets its own visible bucket instead, because silently folding it
+    # into the timer's basis is the exact contamination this milestone removes.
+    stray = ct.LockWaitAccounting()
+    m = ct.LockWaitMeter()
+    m.lock_acquire_seconds = 9.0
+    stray.record(m)
+    t = stray.as_summary()
+    assert t["lock_wait_decision_tail_batch"] == 0, t
+    assert t["lock_wait_decision_tail"] == 1, t
+    assert t["lock_wait_phases"][ct.LOCK_WAIT_PHASE_UNATTRIBUTED]["decision_tail"] == 1
+
+
+def test_a_holder_scoped_to_a_mid_pass_batch_lands_in_the_batch_phase(filedb):
+    """A real RESERVED holder taken AFTER the first batch commits and released
+    while the second batch is blocked. Its wait is host contention, and it is
+    the ONLY class a recurring-timer threshold may be derived from — so it must
+    land in `batch` and nowhere else.
+
+    Fails if the attribution were wrong in either direction: label the batch
+    ladder `finalize` and `lock_wait_decision_tail_batch` goes to 0; label the
+    bookkeeping commits `batch` and the finalize/run-row assertions below stop
+    discriminating."""
+    session = filedb.Factory()
+    holders: list[_TimedHolder] = []
+
+    def _sleeper(seconds: float) -> None:
+        # The post-batch yield fires only after a REAL commit — the first call
+        # is the moment batch 1 is durable and batch 2 has not started.
+        if not holders:
+            holders.append(_TimedHolder(filedb.path, _PHASE_HOLD_SECONDS))
+
+    rec = CryptoLifecycleTapeRecorder(CryptoTapeConfig(chain=CHAIN, lock_dir=filedb.path.parent))
+    try:
+        r = rec.run_once(
+            session, limit=20, hours=48, batch_size=5,
+            # The derived budget is a quarter of what remains, i.e. ~5s here —
+            # comfortably longer than the hold, so batch 2 BLOCKS AND THEN
+            # SUCCEEDS rather than failing, which is the common production
+            # shape and the one that produces a recorded sample.
+            max_duration_seconds=20.0,
+            max_lock_attempts=1, lock_retry_seconds=0.0,
+            # Not the phase under test, and left at the connection's inherited
+            # 30s it has dominated this file's wall time before.
+            finalize_lock_wait_budget_seconds=0.5,
+            sleeper=_sleeper,
+        )
+    finally:
+        session.close()
+        for h in holders:
+            h.join()
+
+    assert holders, "the post-batch yield never fired, so nothing was contended"
+    assert r["external_calls"] == 0
+    phases = r["lock_wait_phases"]
+    assert phases[ct.LOCK_WAIT_PHASE_BATCH]["lock_wait_ms_max"] >= 1000, r
+    assert r["lock_wait_decision_tail_batch"] >= 1, r
+    # ...and neither once-per-pass bookkeeping commit absorbed it.
+    assert r["lock_wait_decision_tail_finalize"] == 0, r
+    assert phases[ct.LOCK_WAIT_PHASE_RUN_ROW]["decision_tail"] == 0, r
+    assert r["finalize_lock_wait_ms"] < 1000, r
+
+
+def test_a_holder_released_only_after_the_pass_returns_lands_in_the_finalize_phase(
+    filedb,
+):
+    """The hypothesis this milestone exists to test, driven directly: a holder
+    introduced once every batch is durable, and released only after `run_once`
+    has returned, can be waited on by NOTHING except the run row's finalize
+    commit. Its wait must therefore appear in `finalize` and must NOT move
+    `lock_wait_decision_tail_batch`.
+
+    `limit=5, batch_size=5` makes the single batch the whole data pass, so the
+    sleeper's one call is unambiguously "all batches are committed"."""
+    session = filedb.Factory()
+    holder: list[_Holder] = []
+
+    def _sleeper(seconds: float) -> None:
+        if not holder:
+            holder.append(_Holder(filedb.path))
+
+    rec = CryptoLifecycleTapeRecorder(CryptoTapeConfig(chain=CHAIN, lock_dir=filedb.path.parent))
+    try:
+        r = rec.run_once(
+            session, limit=5, hours=48, batch_size=5,
+            max_duration_seconds=20.0,
+            max_lock_attempts=1, lock_retry_seconds=0.0,
+            # The finalize gets ONE attempt (RECONCILE_FINALIZE_MAX_LOCK_
+            # ATTEMPTS) at this budget, then gives up — so the pass returns in
+            # ~1.6s instead of waiting out the connection's inherited 30s.
+            finalize_lock_wait_budget_seconds=_PHASE_HOLD_SECONDS,
+            sleeper=_sleeper,
+        )
+    finally:
+        session.close()
+        if holder:
+            holder[0].release()
+
+    assert holder, "the post-batch yield never fired, so the finalize was not contended"
+    assert r["external_calls"] == 0
+    assert r["batches_committed"] == 1, r
+    # The finalize lost its single attempt against the still-held lock; the
+    # committed batch stays durable and the run row stays at `running`.
+    assert "status=running" in (r.get("error") or ""), r
+    # THE ATTRIBUTION. The whole-pass tail carries the production signature of
+    # exactly one sample — and it is NOT contention.
+    assert r["lock_wait_decision_tail"] >= 1, r
+    assert r["lock_wait_decision_tail_finalize"] == 1, r
+    assert r["finalize_lock_wait_ms"] >= 1000, r
+    assert r["finalize_lock_wait_measurements"] == 1, r
+    assert r["lock_wait_decision_tail_batch"] == 0, r
+    assert r["lock_wait_phases"][ct.LOCK_WAIT_PHASE_RUN_ROW]["decision_tail"] == 0, r
+
+
+def test_a_holder_taken_before_the_pass_starts_lands_in_the_run_row_phase(filedb):
+    """The SECOND once-per-pass systematic event, and the reason the split has
+    four names rather than the three the milestone was scoped with.
+
+    A RESERVED holder taken before `run_once` does not block the selection
+    prelude (RESERVED admits readers) — the first thing it blocks is the run
+    row's CREATION commit, the pass's first write, on a cold page cache. That
+    is a second source of a once-per-pass `>=1000` sample, and folding it into
+    `batch` would leave the timer's basis contaminated by exactly the defect
+    class this milestone removes."""
+    session = filedb.Factory()
+    holder = _TimedHolder(filedb.path, _PHASE_HOLD_SECONDS)
+    rec = CryptoLifecycleTapeRecorder(CryptoTapeConfig(chain=CHAIN, lock_dir=filedb.path.parent))
+    try:
+        r = rec.run_once(
+            session, limit=5, hours=48, batch_size=5,
+            max_duration_seconds=20.0,
+            max_lock_attempts=1, lock_retry_seconds=0.0,
+            finalize_lock_wait_budget_seconds=0.5,
+            sleeper=lambda _s: None,
+        )
+    finally:
+        session.close()
+        holder.join()
+
+    assert r["external_calls"] == 0
+    phases = r["lock_wait_phases"]
+    assert phases[ct.LOCK_WAIT_PHASE_RUN_ROW]["measurements"] == 1, r
+    assert phases[ct.LOCK_WAIT_PHASE_RUN_ROW]["decision_tail"] == 1, r
+    # The pass-total tail reads exactly like the three production passes —
+    # and this one demonstrably contains no contention at all.
+    assert r["lock_wait_decision_tail"] >= 1, r
+    assert r["lock_wait_decision_tail_batch"] == 0, r
+    assert r["lock_wait_decision_tail_finalize"] == 0, r
+
+
+def test_the_run_row_persists_the_phase_split_without_the_finalize_mirrors(filedb):
+    """What a later reader of the run rows can and cannot conclude.
+
+    `write_coordination` is staged INSIDE the finalize commit, so the finalize's
+    own wait cannot be in it. The batch entry — the timer's basis — is complete
+    and persisted; the flat `*_finalize` mirrors are OMITTED rather than written
+    as zeros, because a persisted zero reads as "the finalize did not wait",
+    which is a claim the row cannot make about the commit writing it."""
+    session = filedb.Factory()
+    rec = CryptoLifecycleTapeRecorder(CryptoTapeConfig(chain=CHAIN, lock_dir=filedb.path.parent))
+    r = rec.run_once(
+        session, limit=20, hours=48, batch_size=5,
+        max_duration_seconds=20.0, sleeper=lambda _s: None,
+    )
+    session.close()
+    assert r["status"] == "ok", r
+
+    verify = filedb.Factory()
+    run = verify.execute(
+        select(CryptoTokenLifecycleRun).order_by(CryptoTokenLifecycleRun.id.desc())
+    ).scalars().first()
+    coordination = (run.config or {})["write_coordination"]
+    verify.close()
+
+    assert "lock_wait_phases_before_finalize" in coordination, coordination
+    assert "lock_wait_decision_tail_before_finalize" in coordination, coordination
+    persisted = coordination["lock_wait_phases_before_finalize"]
+    assert persisted[ct.LOCK_WAIT_PHASE_BATCH]["measurements"] == r["batches_committed"]
+    assert persisted[ct.LOCK_WAIT_PHASE_FINALIZE]["measurements"] == 0, persisted
+    for omitted in (
+        "finalize_lock_wait_ms", "finalize_lock_wait_measurements",
+        "lock_wait_decision_tail_finalize", "lock_wait_decision_tail_batch",
+        "lock_wait_phases", "lock_wait_decision_tail",
+    ):
+        assert omitted not in coordination, (
+            f"{omitted} is on the run row unqualified — either as a misleading "
+            "structural zero or as a duplicate of the phase container"
+        )
+    # The operator-facing predicate reads the persisted blob directly, so the
+    # protocol never depends on remembering the suffix.
+    assert ct.lock_wait_phase_decision_tail(
+        coordination, ct.LOCK_WAIT_PHASE_BATCH
+    ) == persisted[ct.LOCK_WAIT_PHASE_BATCH]["decision_tail"]
+
+
+def test_the_prelude_is_a_named_phase_this_instrument_cannot_meter():
+    """Stated rather than discovered later. The selection prelude IS budgeted
+    (`_lock_wait_budgeted_reads`) but it is not METERED: `LockWaitMeter` times
+    the transaction's first WRITE statement, and the prelude is pure reads, so a
+    blocked SELECT there produces no sample at all — not a zero one.
+
+    So `prelude` is a named constant but deliberately NOT a bucket in
+    `lock_wait_phases`: a permanently-zero entry alongside the real ones would
+    read as "the prelude never waits", which is a stronger claim than this
+    instrument can make. The end-to-end evidence that a blocked prelude reports
+    `lock_wait_measurements == 0` is
+    `test_a_real_blocked_prelude_reports_the_signature_end_to_end`; this test
+    pins that the phase vocabulary agrees with it."""
+    assert ct.LOCK_WAIT_PHASE_PRELUDE == "prelude"
+    assert ct.LOCK_WAIT_PHASE_PRELUDE not in ct.LOCK_WAIT_PHASES
+    assert ct.LOCK_WAIT_PHASES == ("run_row", "batch", "finalize")
+    assert ct.LOCK_WAIT_PHASE_PRELUDE not in ct.LockWaitAccounting().phases()
+    # A read statement is not a lock-acquisition point for this meter, which is
+    # the mechanical reason the prelude cannot be metered by it.
+    assert not ct._is_write_statement("SELECT 1")
+
+    runbook = (REPO / "docs" / "EVO_X2_RUNBOOK.md").read_text()
+    assert "the prelude is bounded but not metered" in runbook.lower()
+
+
+def test_the_runbook_bases_the_timer_decision_on_the_batch_phase_only():
+    """The protocol change, pinned where an editor will trip over it. The timer
+    decision is derived from BATCH/read-path contention, explicitly not from a
+    known systematic once-per-pass event, and the finalize tail is tracked
+    against `TimeoutStartSec` instead of against the contention threshold. The
+    pre-existing numeric revisit trigger stays."""
+    runbook = (REPO / "docs" / "EVO_X2_RUNBOOK.md").read_text()
+    assert "lock_wait_decision_tail_batch" in runbook
+    assert "lock_wait_phase_decision_tail" in runbook
+    assert "write_hold_ms_max > 700" in runbook       # the trigger is untouched
+    # The three production passes that motivated the split are recorded with
+    # their numbers, so the "exactly one sample every pass" observation cannot
+    # be softened into a vague claim later.
+    for token in ("3813", "1,191", "1,334", "1,337"):
+        assert token in runbook, f"the motivating measurement lost {token}"
