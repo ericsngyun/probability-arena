@@ -52,6 +52,13 @@ from app.models import (
     MemeAttentionSnapshot,
     MemeCatalystEvent,
 )
+# CRYPTO-RECONCILER-GUARDED-TIMER-001 — the recurring timer's circuit
+# breakers. Deliberately a separate module and a ONE-WAY import (the guard
+# imports nothing from here): its thresholds are operational policy about
+# WHEN to run, while this module's constants are about HOW the pass behaves,
+# and keeping the two apart is what stops a future edit from quietly
+# re-deriving a policy number from a measured one.
+from app.services import crypto_reconciler_guard as guard
 
 def _completeness_reason(birth, min_liquidity: float) -> str | None:
     """None when the birth is a COMPLETE lifecycle anchor; else the rejection
@@ -1208,6 +1215,16 @@ class LockWaitAccounting:
         self.phase_stats: dict[str, dict] = {
             phase: self._new_phase_stats() for phase in LOCK_WAIT_PHASES
         }
+        # CRYPTO-RECONCILER-GUARDED-TIMER-001 — the per-run circuit breaker's
+        # tally, counted HERE so there is exactly one place a batch-phase
+        # sample is classified (`guard.batch_lock_wait_escalation`) and so
+        # EVERY path that reports lock-wait accounting — including the
+        # abandon path's `_lock_wait_evidence` — carries it. Only `batch`
+        # samples are classified: `run_row` and `finalize` are once-per-pass
+        # instrument events, not contention (see LOCK_WAIT_PHASES).
+        self.batch_lock_wait_warnings = 0
+        self.batch_lock_wait_aborts = 0
+        self.batch_lock_wait_abort_ms: int | None = None
 
     @staticmethod
     def _new_phase_stats() -> dict:
@@ -1223,7 +1240,12 @@ class LockWaitAccounting:
             else min(self.budget_ms_min, budget_ms)
         )
 
-    def record(self, meter: LockWaitMeter) -> None:
+    def record(self, meter: LockWaitMeter) -> str | None:
+        """Record one attempt's sample. CRYPTO-RECONCILER-GUARDED-TIMER-001:
+        RETURNS this sample's escalation label (`None`/`"warning"`/`"abort"`)
+        for `batch`-phase samples, `None` for everything else, so the batch
+        ladder's stop decision and the recorded tally can never disagree about
+        how severe a wait was."""
         wait = meter.lock_wait_seconds
         self.total_seconds += wait
         self.max_seconds = max(self.max_seconds, wait)
@@ -1260,6 +1282,17 @@ class LockWaitAccounting:
             self.hold_seconds_max = max(self.hold_seconds_max, meter.hold_seconds)
             if meter.hold_seconds > RECONCILE_WRITE_TIME_SLO_SECONDS:
                 self.hold_slo_violations += 1
+        # CRYPTO-RECONCILER-GUARDED-TIMER-001 — classify, count, and hand the
+        # verdict back to the caller. Batch phase only, by construction.
+        if phase != LOCK_WAIT_PHASE_BATCH:
+            return None
+        escalation = guard.batch_lock_wait_escalation(ms)
+        if escalation == guard.ESCALATION_ABORT:
+            self.batch_lock_wait_aborts += 1
+            self.batch_lock_wait_abort_ms = max(self.batch_lock_wait_abort_ms or 0, ms)
+        elif escalation == guard.ESCALATION_WARNING:
+            self.batch_lock_wait_warnings += 1
+        return escalation
 
     def histogram(self) -> dict:
         return {
@@ -1394,6 +1427,19 @@ class LockWaitAccounting:
             "finalize_lock_wait_ms": finalize.get("lock_wait_ms", 0),
             "finalize_lock_wait_measurements": finalize.get("measurements", 0),
             "lock_wait_phases": phases,
+            # CRYPTO-RECONCILER-GUARDED-TIMER-001 — the guarded timer's own
+            # basis, flat next to the container so a threshold never has to be
+            # dug out of a nested blob: the worst SINGLE batch-phase wait, and
+            # how many samples crossed each chosen policy line. `batch` only —
+            # the same restriction `lock_wait_decision_tail_batch` carries.
+            "batch_lock_wait_ms_max": (
+                phases.get(LOCK_WAIT_PHASE_BATCH, {}).get("lock_wait_ms_max", 0)
+            ),
+            "batch_lock_wait_warnings": self.batch_lock_wait_warnings,
+            "batch_lock_wait_aborts": self.batch_lock_wait_aborts,
+            "batch_lock_wait_abort_ms": self.batch_lock_wait_abort_ms,
+            "batch_lock_wait_warn_ms": guard.BATCH_LOCK_WAIT_WARN_MS,
+            "batch_lock_wait_abort_threshold_ms": guard.BATCH_LOCK_WAIT_ABORT_MS,
         }
 
 
@@ -4126,6 +4172,12 @@ class CryptoLifecycleTapeRecorder:
                 yield "chunk", remaining[:size]
                 remaining = remaining[size:]
 
+        # CRYPTO-RECONCILER-GUARDED-TIMER-001: initialised here, not only in
+        # the chunked branch, so LEGACY single-transaction mode (which has no
+        # ladder, no meter and no budget — `record_discovery_run`'s
+        # one-bounded-transaction guarantee) reads a plain `False` and behaves
+        # byte-identically.
+        lock_wait_escalated = False
         try:
             for kind, chunk in _iter_chunks():
                 if kind == "unsafe":
@@ -4138,6 +4190,13 @@ class CryptoLifecycleTapeRecorder:
                 if chunked:
                     result = None
                     lock_budget_expired = False
+                    # CRYPTO-RECONCILER-GUARDED-TIMER-001 — set when a batch
+                    # that DID commit nevertheless waited past the chosen
+                    # abort line. There is nothing to roll back in that case
+                    # (the batch is durable, which is the desired outcome);
+                    # what must not happen is starting ANOTHER batch into a
+                    # host that just made this one wait that long.
+                    lock_wait_escalated = False
                     for attempt in range(1, max_lock_attempts + 1):
                         # CRYPTO-RECONCILER-LOCK-WAIT-BUDGET-001: re-derive
                         # and re-apply THIS attempt's lock-wait budget. Per
@@ -4176,7 +4235,29 @@ class CryptoLifecycleTapeRecorder:
                                     _meter.mark_commit_start()
                                     session.commit()
                                     _meter.mark_commit_end()
-                                    lock_accounting.record(_meter)
+                                    _escalation = lock_accounting.record(_meter)
+                                    if _escalation is not None:
+                                        # CRYPTO-RECONCILER-GUARDED-TIMER-001.
+                                        # A wait this long is recorded loudly
+                                        # whether or not it stops the pass —
+                                        # "occasional 1-1.3s waits are
+                                        # acceptable, escalating/repeated
+                                        # waits are not" (Eric), and a warning
+                                        # nobody can see is not a warning.
+                                        logger.warning(
+                                            "crypto reconciliation: batch "
+                                            "lock wait %dms crossed the "
+                                            "chosen %s line (warn>=%dms, "
+                                            "abort>=%dms) — this is "
+                                            "operational policy, not a "
+                                            "measured constant",
+                                            int(_meter.lock_wait_seconds * 1000),
+                                            _escalation,
+                                            guard.BATCH_LOCK_WAIT_WARN_MS,
+                                            guard.BATCH_LOCK_WAIT_ABORT_MS,
+                                        )
+                                    if _escalation == guard.ESCALATION_ABORT:
+                                        lock_wait_escalated = True
                                     _attempt_duration = time.perf_counter() - _attempt_t0
                                     blocked_seconds += _attempt_duration
                                     # B3: feed the ACTUAL measured commit wall time
@@ -4197,12 +4278,34 @@ class CryptoLifecycleTapeRecorder:
                                 break
                             except OperationalError as exc:
                                 _meter.mark_failed()
-                                lock_accounting.record(_meter)
+                                _escalation = lock_accounting.record(_meter)
                                 blocked_seconds += time.perf_counter() - _attempt_t0
                                 session.rollback()
                                 result = None
                                 if _is_db_locked(exc):
                                     lock_retry_events += 1
+                                    # CRYPTO-RECONCILER-GUARDED-TIMER-001 —
+                                    # a FAILED attempt that waited past the
+                                    # abort line stops the ladder here rather
+                                    # than sleeping and trying again into the
+                                    # same holder. Routed through the
+                                    # EXISTING budget-expiry decision below,
+                                    # not a second mechanism: the current
+                                    # batch is already rolled back, every
+                                    # earlier batch stays durable, and the
+                                    # typed `lock_wait_budget` status says so.
+                                    if _escalation == guard.ESCALATION_ABORT:
+                                        logger.error(
+                                            "crypto reconciliation: batch "
+                                            "lock wait %dms crossed the "
+                                            "chosen abort line (>=%dms) — "
+                                            "stopping the ladder; committed "
+                                            "batches stay durable",
+                                            int(_meter.lock_wait_seconds * 1000),
+                                            guard.BATCH_LOCK_WAIT_ABORT_MS,
+                                        )
+                                        lock_budget_expired = True
+                                        break
                                     # THE BUDGET-EXPIRY DECISION. Only the
                                     # CURRENT batch is discarded (the rollback
                                     # above); every batch committed earlier in
@@ -4274,6 +4377,16 @@ class CryptoLifecycleTapeRecorder:
                 # here for a non-dry-run pass reflects real, imminent work.
                 if not dry_run:
                     batches_committed += 1
+                # CRYPTO-RECONCILER-GUARDED-TIMER-001 — the committed-but-slow
+                # case. This batch is durable and stays durable (rolling it
+                # back would destroy work the pass already paid for); the pass
+                # simply does not start another one. Same typed status as the
+                # blocked-and-rolled-back case, because from the backlog's
+                # point of view they are the same event: the pass stopped
+                # early on contention and the unworked tokens return to it.
+                if lock_wait_escalated:
+                    stop_reason = "lock_wait_budget"
+                    break
 
             summary = {
                 "status": STATUS_DRY_RUN if dry_run else STATUS_OK,
@@ -4357,17 +4470,40 @@ class CryptoLifecycleTapeRecorder:
                         STATUS_PARTIAL if batches_committed > 0
                         else STATUS_SKIPPED_CONTENTION
                     )
-                    summary["error"] = (
-                        "lock-wait budget exhausted: the pass was blocked on "
-                        "the SQLite write lock with no wall-clock budget left "
-                        f"(lock_wait_ms={int(lock_accounting.total_seconds * 1000)}, "
-                        f"budget_ms={lock_accounting.budget_ms_min}). "
-                        f"{batches_committed} batch(es) / {tokens_processed} of "
-                        f"{len(tokens)} selected tokens were committed before "
-                        "this pass stopped; those batches are durable and the "
-                        "rolled-back batch is neither duplicated nor lost — it "
-                        "returns to the backlog for the next pass"
-                    )
+                    # CRYPTO-RECONCILER-GUARDED-TIMER-001 — the SAME typed
+                    # stop can now be reached for a second, named reason: a
+                    # batch-phase wait crossed the chosen abort line. Named in
+                    # the message rather than given its own status, because
+                    # the OUTCOME is identical (durable prior batches, one
+                    # rolled-back or committed-but-final batch, the rest back
+                    # to the backlog) and a second status would fragment every
+                    # downstream reader for no operational gain.
+                    if lock_accounting.batch_lock_wait_aborts:
+                        summary["error"] = (
+                            "batch lock-wait abort: a batch waited "
+                            f"{lock_accounting.batch_lock_wait_abort_ms}ms for "
+                            "the SQLite write lock, at or past the chosen "
+                            f"{guard.BATCH_LOCK_WAIT_ABORT_MS}ms abort line "
+                            "(operational policy, not a measured constant). "
+                            f"{batches_committed} batch(es) / {tokens_processed} of "
+                            f"{len(tokens)} selected tokens were committed before "
+                            "this pass stopped; those batches are durable and "
+                            "nothing is duplicated or lost — the unworked tokens "
+                            "return to the backlog for the next pass"
+                        )
+                    else:
+                        summary["error"] = (
+                            "lock-wait budget exhausted: the pass was blocked on "
+                            "the SQLite write lock with no wall-clock budget left "
+                            f"(lock_wait_ms="
+                            f"{int(lock_accounting.total_seconds * 1000)}, "
+                            f"budget_ms={lock_accounting.budget_ms_min}). "
+                            f"{batches_committed} batch(es) / {tokens_processed} of "
+                            f"{len(tokens)} selected tokens were committed before "
+                            "this pass stopped; those batches are durable and the "
+                            "rolled-back batch is neither duplicated nor lost — it "
+                            "returns to the backlog for the next pass"
+                        )
                 elif stop_reason == "contention" and batches_committed == 0:
                     # LOW-3 fix: the first token batch itself exhausted the
                     # retry ladder before committing anything. "partial" with
@@ -5094,6 +5230,89 @@ def run_scheduled_reconciliation(
     started = _now()
     enabled = bool(getattr(s, "enable_crypto_tape_reconciler", False))
     bypass = "force" if force else ("dry_run" if dry_run else None)
+    # CRYPTO-RECONCILER-GUARDED-TIMER-001 — the unattended health gate's state
+    # location, resolved once. `None` means "no durable host-scoped place to
+    # keep a safety latch" (in-memory/non-SQLite), in which case the gate is
+    # INERT and every result says so; it is never silently skipped, and there
+    # is deliberately no shared-temp-directory fallback (see the guard module).
+    _chain = (
+        recorder.config.chain if recorder is not None
+        else CryptoTapeConfig.from_settings(s).chain
+    )
+    _health_path = guard.health_state_path(getattr(s, "database_url", None), _chain)
+
+    def _record_health(result: dict) -> dict:
+        """Annotate EVERY governed outcome with its review verdict, append it
+        to the rolling history, and trip the latch when the trend appears.
+
+        Called from exactly two places — `_refused` and the normal return —
+        so no terminal outcome of this function can escape unrecorded. That
+        matters more than it looks: the outcomes the gate most needs to count
+        (`marketops_degraded`, `db_locked`, `skipped_contention`) are exactly
+        the ones that never reach a run row, so silence here is the same
+        failure `lock_wait_distribution_eligible` exists to prevent — "a zero
+        row averaged in as benign is worse than a missing row".
+
+        Best-effort by construction: a health-state IO failure must never turn
+        a completed reconciliation pass into a crash. It is reported as
+        `health_gate_state="error"`, never swallowed."""
+        reasons = guard.review_reasons(result)
+        result["review_required"] = bool(reasons)
+        result["review_reasons"] = reasons
+        result.setdefault("health_gate_tripped", False)
+        result.setdefault("health_gate_reasons", [])
+        result.setdefault("health_latched", False)
+        result["health_state_path"] = str(_health_path) if _health_path else None
+        status = result.get("status")
+        if dry_run:
+            result["health_gate_state"] = guard.GATE_STATE_NOT_RECORDED_DRY_RUN
+            return result
+        if not guard.records_feed_gate(status):
+            result["health_gate_state"] = guard.GATE_STATE_NOT_RECORDED_CONFIG
+            return result
+        if _health_path is None:
+            result["health_gate_state"] = guard.GATE_STATE_INERT
+            return result
+        try:
+            state = guard.load_state(_health_path, _chain)
+            if state.get("latch_read_failed"):
+                # An unreadable/corrupt state file must NOT be overwritten
+                # here. Rewriting it would destroy a latch that may well be
+                # tripped — the one thing a fail-closed gate cannot afford —
+                # so this path reports the error and leaves the file for the
+                # human the latch is already trying to summon.
+                result["health_gate_state"] = guard.GATE_STATE_ERROR
+                result["health_latched"] = True
+                result["health_latch"] = guard.latch_summary(state)
+                return result
+            guard.append_run(state, guard.run_record(result))
+            verdict = guard.evaluate_health(guard.gate_window(state))
+            if verdict["tripped"]:
+                guard.trip_latch(state, verdict)
+                logger.error(
+                    "crypto reconciliation HEALTH GATE TRIPPED — further "
+                    "scheduled runs are blocked until a human clears the "
+                    "latch at %s (`crypto-reconciler-health --clear`): %s",
+                    _health_path, "; ".join(verdict["reasons"]),
+                )
+            guard.save_state(_health_path, state)
+            result["health_gate_state"] = guard.GATE_STATE_ACTIVE
+            result["health_gate"] = {
+                k: v for k, v in verdict.items() if k != "reasons"
+            }
+            result["health_gate_tripped"] = bool(verdict["tripped"])
+            result["health_gate_reasons"] = list(verdict["reasons"])
+            result["health_latch"] = guard.latch_summary(state)
+            result["health_latched"] = bool(state.get("latch"))
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning(
+                "crypto reconciliation: health state at %s could not be "
+                "updated (%s); the pass itself is unaffected",
+                _health_path, exc, exc_info=True,
+            )
+            result["health_gate_state"] = guard.GATE_STATE_ERROR
+        return result
+
     if not (enabled or force or dry_run):
         return {
             "status": "disabled",
@@ -5152,7 +5371,10 @@ def run_scheduled_reconciliation(
         refused["lock_wait_distribution_eligible"] = lock_wait_distribution_eligible(
             refused
         )
-        return refused
+        # CRYPTO-RECONCILER-GUARDED-TIMER-001: a refusal is an OUTCOME, and a
+        # skipped run is data, not silence. Config refusals (`invalid_*`) are
+        # annotated but not counted — see `guard.records_feed_gate`.
+        return _record_health(refused)
 
     if cap < 1:
         # SQLite treats LIMIT -1 as "no limit", so an unvalidated cap is an
@@ -5267,6 +5489,42 @@ def run_scheduled_reconciliation(
             f"lock_wait_budget_seconds {resolved_lock_wait_budget} must be "
             "> 0 — a zero/negative wait budget makes every contended batch "
             "fail before it has waited at all",
+        )
+    # CRYPTO-RECONCILER-GUARDED-TIMER-001 — PRE-FLIGHT SKIP 1 of 2: the
+    # unattended health latch. Checked BEFORE the MarketOps health read
+    # because it needs no database at all: a latched host must not even take a
+    # read lock to find out it is latched.
+    #
+    # It stops the TIMER, not the operator: `--force`/`--dry-run` run anyway
+    # (a human is already looking, which is what the latch was trying to
+    # arrange) and their results carry `health_latched=True` so the bypass is
+    # never silent. Nothing in this process can clear it — see
+    # `guard.clear_latch`, which only the explicit operator CLI calls.
+    _health_state = guard.load_state(_health_path, _chain) if _health_path else None
+    if _health_state is not None and guard.latch_blocks_run(
+        _health_state, forced=force, dry_run=dry_run
+    ):
+        _latch = guard.latch_summary(_health_state) or {}
+        _skipped = _refused(
+            guard.STATUS_HEALTH_LATCH,
+            "the unattended health gate is TRIPPED and has not been cleared by "
+            f"a human (tripped_at={_latch.get('tripped_at')}): "
+            + "; ".join(_latch.get("reasons") or ["unknown"])
+            + f". Nothing was read or written. Clear it deliberately with "
+            f"`crypto-reconciler-health --clear --operator <name>` after "
+            f"reviewing {_health_path}; an operator-attended `--force` pass "
+            "runs regardless.",
+        )
+        _skipped["health_latched"] = True
+        _skipped["health_latch"] = _latch
+        return _skipped
+    if _health_state is not None and _health_state.get("latch"):
+        # Latched, but this invocation is an attended bypass. Loud, not silent.
+        logger.warning(
+            "crypto reconciliation: the unattended health latch is TRIPPED "
+            "(%s) — proceeding only because this pass is %s",
+            "; ".join((guard.latch_summary(_health_state) or {}).get("reasons") or []),
+            bypass,
         )
     # BLOCKER-2 fix (independent review of this branch): the MarketOps-health
     # check is a READ, and reads block behind an EXCLUSIVE holder exactly as
@@ -5601,7 +5859,12 @@ def run_scheduled_reconciliation(
                 if summary.get("error") else frontier_note
             )
             logger.warning("crypto reconciliation backlog_expiring: %s", frontier_note)
-    return summary
+    # CRYPTO-RECONCILER-GUARDED-TIMER-001 — the post-run review verdict and
+    # the rolling gate. Deliberately the LAST thing that happens: every status
+    # relabelling above (`truncated`, `backlog_expiring`) has already
+    # happened, so the recorded row is the status the operator will read, not
+    # an earlier draft of it.
+    return _record_health(summary)
 
 
 def _reconciliation_should_abort(session: Session) -> bool:
