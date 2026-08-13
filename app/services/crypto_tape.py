@@ -733,6 +733,15 @@ def lock_wait_phase_decision_tail(source: dict | None, phase: str) -> int:
     return int(entry.get("decision_tail", 0) or 0)
 
 
+# CRYPTO-RECONCILER-GUARDED-TIMER-001 — the outcomes where the pass REFUSED TO
+# START. Both are typed, recorded and counted; neither measured a write phase,
+# so neither may be summed into the lock-wait distribution (see
+# `lock_wait_distribution_eligible`).
+_PREFLIGHT_SKIP_STATUSES = frozenset({
+    guard.STATUS_MARKETOPS_DEGRADED, guard.STATUS_HEALTH_LATCH,
+})
+
+
 def lock_wait_distribution_eligible(result: dict) -> bool:
     """Whether this pass's lock-wait row may be SUMMED INTO the distribution.
 
@@ -760,7 +769,22 @@ def lock_wait_distribution_eligible(result: dict) -> bool:
 
     Such passes are EXCLUDED from the wait distribution and COUNTED SEPARATELY
     — how often the reconciler is blocked before it can start is itself a
-    result, not a censored sample."""
+    result, not a censored sample.
+
+    CRYPTO-RECONCILER-GUARDED-TIMER-001 adds the PRE-FLIGHT SKIPS to the same
+    exclusion, for exactly the same reason and no other. A skipped run
+    (`marketops_degraded`, `skipped_health_latch`) never entered the write
+    phase either, so it too emits a full contract of real zeros. In the
+    attended-only era those rows were rare enough to argue about; under a
+    recurring 6-hourly timer a degraded week would inject 28 benign-looking
+    zero rows into the very distribution the timer's thresholds are read from.
+    They are excluded and COUNTED — the skip rate is a result in its own right
+    (`crypto-reconciler-health` prints it), never a censored sample. The
+    `db_locked` signature above is untouched, deliberately: a pass abandoned
+    INSIDE the write phase still carries `measurements >= 1` and still
+    belongs in the distribution."""
+    if result.get("status") in _PREFLIGHT_SKIP_STATUSES:
+        return False
     return not (
         result.get("status") == "db_locked"
         and int(result.get("lock_wait_measurements") or 0) == 0

@@ -666,3 +666,24 @@ def test_the_guarded_paths_make_no_external_calls(filedb, monkeypatch):
     guard_source = (REPO / "app/services/crypto_reconciler_guard.py").read_text()
     for banned in ("requests", "httpx", "aiohttp", "urllib"):
         assert banned not in guard_source
+
+
+def test_a_preflight_skip_is_excluded_from_the_wait_distribution_but_counted(
+    filedb, monkeypatch
+):
+    """The `lock_wait_distribution_eligible` precedent, applied to the new
+    skips: a run that never entered the write phase emits a full contract of
+    real zeros, and under a 6-hourly timer a degraded week would inject 28
+    benign-looking zero rows into the distribution the thresholds are read
+    from. Excluded — and COUNTED, which is the other half of the precedent."""
+    first, _ = _trip_via_marketops(filedb, monkeypatch)
+    assert first["lock_wait_distribution_eligible"] is False
+    assert ct.lock_wait_distribution_eligible(
+        {"status": guard.STATUS_HEALTH_LATCH, "lock_wait_measurements": 0}
+    ) is False
+    # Counted, not censored: both skips are in the recorded history.
+    assert len(filedb.read_state()["runs"]) == 2
+    # The db_locked signature is untouched.
+    assert ct.lock_wait_distribution_eligible(
+        {"status": "db_locked", "lock_wait_measurements": 7, "duration_ms": 30000}
+    ) is True

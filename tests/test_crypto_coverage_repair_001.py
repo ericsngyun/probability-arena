@@ -2464,15 +2464,27 @@ def test_systemd_unit_timeout_start_sec_matches_the_computed_worst_case():
     overshoot at all. The current derivation is ~146s at the shipped 2.0
     overshoot; the unit must also state that the SAME derivation exceeds this
     timeout at the measured 5.80x, because a bound that is only true on an
-    idle host must not be read as a guarantee."""
+    idle host must not be read as a guarantee.
+
+    RAISED TO 7min, CRYPTO-RECONCILER-GUARDED-TIMER-001. The ~374s ceiling at
+    the measured 5.80x overshoot EXCEEDED the previous 300s value, and the
+    milestone that found that left the discrepancy documented rather than
+    closed on the grounds that the timer was attended-only. It is not
+    attended-only any more (Eric approved a recurring 6-hourly timer), so the
+    value now covers the worst overshoot this repo has ever measured. It is
+    still not a guarantee — the overshoot tracks host load and is unbounded
+    above — which is why the unit must keep stating both the exceeding case
+    and the non-corrupting failure mode."""
     unit_path = (
         REPO / "infra" / "systemd" / "user"
         / "probability-arena-crypto-reconcile.service"
     )
     text = unit_path.read_text()
-    assert "TimeoutStartSec=5min" in text
+    assert "TimeoutStartSec=7min" in text
     # the derivation itself must still be documented, not just the number
     assert "~146s" in text
+    # and the raise must be justified by the number that forced it
+    assert "420s" in text
     # ...including the load case in which the derivation EXCEEDS the timeout,
     # and the non-corrupting failure mode that follows from it.
     assert "5.80x" in text
