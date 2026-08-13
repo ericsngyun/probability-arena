@@ -334,12 +334,40 @@ months, so the separation is structural, not stylistic.
 | metric names | `observation_attempt_rate`, `observation_success_rate`, `look_completion_rate`, `scheduling_miss_rate` | `coverage_*`, `outcome_measurable`, … |
 | reads survival labels? | **never** | yes, that is its subject |
 
-States in the observation report are disjoint and exhaustive: `observed`,
-`attempted_missed` (we looked, the provider had nothing usable),
-`scheduling_miss` (the band closed and we never looked — the number that proves
-the mechanism ran), `band_open`, `band_not_open_yet`. **Pending bands are
-excluded from every rate** — counting a still-open band as a miss would be the
-same lie as counting an absent tick as an observation (mutation M18).
+States in the observation report are disjoint and exhaustive:
+
+| state | meaning | in the rate denominator? |
+|---|---|---|
+| `observed` | a fetch inside the band produced usable state | yes |
+| `attempted_missed` | we looked; the provider had nothing usable | yes |
+| `scheduling_miss` | the band closed **while the member was enrolled** and we never looked — the number that proves the mechanism ran | yes |
+| `enrolled_after_band_closed` | the band had already closed when the member was enrolled — the lane never had a chance | **no** |
+| `band_open`, `band_not_open_yet` | pending | **no** |
+
+**Pending bands are excluded from every rate** — counting a still-open band as a
+miss would be the same lie as counting an absent tick as an observation
+(mutation M18).
+
+### A denominator defect the smoke run caught, and review did not
+
+The first end-to-end CLI run over local fixtures (§10.1) reported
+`scheduling_miss_rate = 0.3333` at 6h. The miss was a token born 24h earlier:
+eligibility deliberately admits a birth past its 6h band so its **24h** band can
+still be caught (§3, Rule 2), so that member's 6h band had closed ~17h before
+the lane ever saw it.
+
+Counting it as a `scheduling_miss` inflates the one number that is supposed to
+mean *"the mechanism failed to look when it could have"* with tokens that
+predate enrolment — the same denominator conflation this entire milestone exists
+to stop, reintroduced inside the milestone's own report. `scheduling_miss` now
+requires `member.added_at <= band_end`; everything else becomes
+`enrolled_after_band_closed`, excluded from every rate and reported separately.
+`scheduling_miss_examples` now carries `enrolled_at` alongside `band_closed_at`
+so the distinction is auditable per row.
+
+Two tests, both mutation-proven, including the compensating half — an exclusion
+that also swallowed *real* misses would be worse than the original bug (M25,
+M26).
 
 Three tests keep them apart: no metric name is shared, no `coverage_*` name
 appears in the observation report, no `observation_*`/`look_*`/`scheduling_miss*`
@@ -483,6 +511,8 @@ re-confirmed green (`__pycache__` cleared between reverts).
 | M22 | unreachable-band births become eligible | `test_a_birth_whose_last_band_has_closed_...` FAILS |
 | M23 | `plan_observations` default no longer all four horizons | `test_shared_planner_default_behaviour_is_unchanged` FAILS |
 | M24 | provider policy widened to allow everything | 3 provider tests FAIL |
+| M25 | `enrolled_after_band_closed` merged back into `scheduling_miss` | `test_a_band_that_closed_before_enrolment_is_not_a_scheduling_miss` FAILS |
+| M26 | the exclusion widened so it swallows real misses too | `test_a_band_that_closed_after_enrolment_IS_a_scheduling_miss` FAILS |
 
 ### Two tests that could not fail for the reason they existed
 
@@ -506,6 +536,60 @@ classes this project's own evidence discipline names.
 
 ---
 
+## 10.1 Live smoke run (local fixtures, no network, no production data)
+
+Run against a throwaway SQLite file in the session scratchpad, with `httpx`
+intercepted so no packet leaves the machine. Six seeded births: two due at 6h,
+one due at 24h, one with an incomplete anchor, one past all bands, one too
+young.
+
+```
+$ crypto-sparse-observe                       # flag OFF (the shipped default)
+status=disabled  external_calls=0  no-op (flag enable_crypto_sparse_observation is off)
+exit=0
+
+$ crypto-sparse-observe --dry-run
+status=dry_run  external_calls=0  provider=dexscreener  solana_tracker_calls=0
+cohort_id=None  cohort_created=False  births_considered=5
+enrolment_rejections={'incomplete_lifecycle_anchor': 1}
+would_create_cohort=True  would_enrol=4  due_observations=3  would_fetch_tokens=3
+plan_status_counts={'6h': {'overdue_unobserved': 1, 'due_now': 2, 'not_due': 1},
+                    '24h': {'due_now': 1, 'not_due': 3}}
+nothing was enrolled, fetched, or written
+exit=0
+```
+
+Row counts after the disabled pass, the dry run **and** the coverage report:
+`crypto_horizon_cohorts=0, _cohort_members=0, _observations=0,
+crypto_price_ticks=0`. The 30h-old birth never even reaches the rejection
+histogram — the enrolment window excludes it in SQL, which is why
+`births_considered` is 5 and not 6.
+
+Then one attended `--force` pass with the **real** `DexScreenerAdapter`:
+
+```
+status=ok  external_calls=3  provider=dexscreener  solana_tracker_calls=0  gate_bypassed=force
+cohort_id=1  cohort_created=True  enrolled=4  due_observations=3
+observations_recorded=3  ticks_written=3  outcome_counts={'observed': 3}
+batches_committed=1  deferred=0  stop_reason=complete
+provider_ledger={'dexscreener': {'authorized': 3, 'started': 3, 'succeeded': 3,
+                                 'failed': 0, 'blocked_policy': 0, 'skipped_cap': 0}}
+
+URLs requested:
+  https://api.dexscreener.com/token-pairs/v1/solana/So0003TTTT...
+  https://api.dexscreener.com/token-pairs/v1/solana/So0001TTTT...
+  https://api.dexscreener.com/token-pairs/v1/solana/So0002TTTT...
+```
+
+Three requests, one host, one endpoint. `target_distance_seconds` came out
+`p50=64.7, max=784.7` against a `band_half_width_seconds=3600` — observations
+landing within ~13 minutes of target, comfortably inside both the sparse band
+and the tape's own tolerance.
+
+This run is also what surfaced the `scheduling_miss` denominator defect in §6.
+
+---
+
 ## 11. Surface added
 
 * `app/services/crypto_sparse_observation.py` — the mechanism and the
@@ -520,7 +604,7 @@ classes this project's own evidence discipline names.
 * `app/cli.py` — `crypto-sparse-observe` (`--dry-run`, `--force`,
   `--enrol-limit`, `--observe-limit`, `--write-batch-size`,
   `--max-duration-seconds`) and `crypto-observation-coverage-report`.
-* `tests/test_crypto_coverage_repair_002.py` — 53 tests.
+* `tests/test_crypto_coverage_repair_002.py` — 55 tests.
 
 No migration. No systemd unit. No provider adapter change.
 
