@@ -287,7 +287,7 @@ Consequences, all pinned by test:
 | **bounded** | `enrol_limit`, `observe_limit`, `write_batch_size`, `max_duration_seconds`; every invalid bound is a typed refusal, never a silently-coerced green pass that does no work (`test_every_invalid_bound_is_refused_loudly`) |
 | **typed failures** | `disabled`, `dry_run`, `ok`, `partial`, `skipped_overlap`, `lock_unavailable`, `marketops_degraded`, `db_locked`, `ambiguous_cohort`, `concurrent_write_conflict`, `provider_policy_violation`, `invalid_*`. Only `dry_run`/`ok`/`partial` exit 0 |
 | **lock retry** | the tape's bounded `DB_LOCKED_MAX_ATTEMPTS`/`DB_LOCKED_RETRY_SECONDS` ladder per batch commit; a persistent lock yields `db_locked` with the already-committed batches intact |
-| **no arming** | the standing cohort is refused by `build_arm_plan` — the single choke point every arming path goes through (mutation M8). The compensating half is tested too: a frozen cohort is still armable |
+| **no arming** | the standing cohort is refused by `build_arm_plan` — the choke point for ARMING specifically (`HorizonOrchestrator.arm` and the `crypto-horizon-arm-cohort` CLI that calls it), *not* for `build_schedule_report`/`build_reminder_plan`, which do not pass through it and are read-only anyway (mutation M8). The compensating half is tested too: a frozen cohort is still armable |
 
 ### Transaction shape
 
