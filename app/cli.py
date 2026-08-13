@@ -3395,12 +3395,16 @@ def _print_reconciler_guard_block(r: dict) -> None:
     Three questions an unattended operator has, answered in three lines:
     did this run cross a chosen policy line, is this run marked for review,
     and is the SCHEDULE still allowed to run at all."""
+    from app.services import crypto_reconciler_guard as guard
+
     print(
         f"batch_lock_wait_ms_max={r.get('batch_lock_wait_ms_max')}  "
         f"batch_lock_wait_warnings={r.get('batch_lock_wait_warnings')}  "
         f"batch_lock_wait_aborts={r.get('batch_lock_wait_aborts')}  "
-        f"(chosen policy: warn>={r.get('batch_lock_wait_warn_ms')}ms, "
-        f"abort>={r.get('batch_lock_wait_abort_threshold_ms')}ms)"
+        f"(chosen policy: review>={guard.BATCH_LOCK_WAIT_REVIEW_MS}ms, "
+        f"warn>={r.get('batch_lock_wait_warn_ms')}ms, "
+        f"abort>={r.get('batch_lock_wait_abort_threshold_ms')}ms — the lock-wait "
+        f"BUDGET caps the wait, these lines cap the LADDER)"
     )
     print(
         f"review_required={r.get('review_required')}  "
@@ -3466,6 +3470,43 @@ async def crypto_reconciler_health(
     verdict = guard.evaluate_health(window)
     latch = guard.latch_summary(state)
     print(f"state_path={path}  runs_recorded={len(state.get('runs', []))}")
+    # BEFORE-ENABLE (independent review): `lock_wait_distribution_eligible`
+    # justifies excluding pre-flight skips from the wait distribution by
+    # promising they are "excluded and COUNTED — the skip rate is a result in
+    # its own right (`crypto-reconciler-health` prints it)". It did not. A
+    # reviewer built a degraded week (9 `marketops_degraded` skips in 28
+    # recorded runs, a 32% skip rate) and read back `latch=CLEAR
+    # review_runs=0 consecutive_marketops_skips=0` — a clean bill of health
+    # while a third of the week's passes did no work, because
+    # `consecutive_marketops_skips` is a TRAILING count and the last run
+    # happened to be healthy. A RATE is what an operator judges; a trailing
+    # count is what the gate disables on. Both are printed, and neither
+    # pretends to be the other.
+    all_runs = list(state.get("runs", []))
+    history_skips = guard.skip_summary(all_runs)
+    window_skips = guard.skip_summary(window)
+    print(
+        f"skips_total={history_skips['skips_total']}  "
+        f"skip_rate={history_skips['skip_rate']}  "
+        f"runs_total={history_skips['runs_total']}  "
+        f"skips_by_status={history_skips['skips_by_status']}  "
+        f"(retained history, bounded at "
+        f"{guard.HEALTH_HISTORY_MAX_RECORDS} runs)"
+    )
+    print(
+        f"gate_window skips_total={window_skips['skips_total']}  "
+        f"skip_rate={window_skips['skip_rate']}  "
+        f"runs_total={window_skips['runs_total']}  "
+        f"skips_by_status={window_skips['skips_by_status']}"
+    )
+    print(
+        f"distribution_excluded_total="
+        f"{history_skips['distribution_excluded_total']}  "
+        f"distribution_excluded_by_status="
+        f"{history_skips['distribution_excluded_by_status']}  "
+        f"(pre-flight skips PLUS prelude-blocked db_locked passes; excluded "
+        f"from the lock-wait distribution, counted here)"
+    )
     print(
         f"gate_window_runs={verdict['window_runs']}  "
         f"severe_wait_runs={verdict['severe_wait_runs']}  "
@@ -3474,7 +3515,8 @@ async def crypto_reconciler_health(
         f"review_runs={verdict['review_runs']}"
     )
     print(
-        f"policy: severe>={guard.HEALTH_SEVERE_WAIT_RUNS} in "
+        f"policy: review-mark>={guard.BATCH_LOCK_WAIT_REVIEW_MS}ms batch wait, "
+        f"severe>={guard.HEALTH_SEVERE_WAIT_RUNS} in "
         f"{guard.HEALTH_WINDOW_RUNS}, contention>="
         f"{guard.HEALTH_CONSECUTIVE_CONTENTION_RUNS} consecutive, "
         f"marketops>={guard.HEALTH_CONSECUTIVE_MARKETOPS_SKIP_RUNS} "
@@ -3487,6 +3529,7 @@ async def crypto_reconciler_health(
             f"  run seq={record.get('seq')} at={record.get('at')} "
             f"status={record.get('status')} stop_reason={record.get('stop_reason')} "
             f"batch_lock_wait_ms_max={record.get('batch_lock_wait_ms_max')} "
+            f"adaptive_batching_active={record.get('adaptive_batching_active')} "
             f"review={record.get('review')} {record.get('review_reasons')}"
         )
     if latch is None:

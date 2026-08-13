@@ -83,6 +83,17 @@ IOWeight=20
 #     L = 2.0x   (the shipped chosen overshoot constant)       ~146s
 #     L = 5.80x  (dev Mac at load average 5-6, measured)       ~374s
 #
+# THE LOAD FACTOR AT WHICH THIS VALUE IS EXCEEDED IS L = 6.57, and it is
+# written down here so the next reader does not have to re-derive it:
+# 26 + 60L > 420  <=>  L > 394/60 = 6.566...; at L = 6.6 the ceiling is 422s,
+# i.e. 2s past the chosen 420s. The gap between the worst measured L (5.80) and
+# the crossing L (6.57) is ~13% of load headroom, NOT a safety margin — L is
+# unbounded above. THE SIGNATURE OF AN OVERRUN IS THE ORPHANED `running` ROW
+# TALLY (`lock_wait_run_row_orphaned()`, see below): a SIGKILL mid-finalize is
+# the ONLY thing that produces a run row at status='running' with no
+# `config.write_coordination`, so a rising orphan count IS an L>6.57 report
+# from the host, and it is how an exceedance is noticed rather than assumed.
+#
 # 7min (420s) covers the worst L this repo has ever MEASURED, with ~12%
 # headroom. That headroom is NOT a guarantee and must not be quoted as one: L
 # tracks host load and is unbounded above, so no constant can bound it — which
@@ -108,15 +119,24 @@ TimeoutStartSec=7min
 #     (`_reconciliation_should_abort`, reused) or when the health latch is
 #     tripped. Both are typed, recorded, non-zero-exit outcomes; a skipped run
 #     is data, never silence.
+#   * PER-RUN MARK — a batch-phase lock wait >=2000ms marks the run for
+#     review. It disables nothing on its own; it is what makes "escalating or
+#     repeated" mean anything BELOW the 5000ms cliff, by feeding the rolling
+#     3-of-4 review rule.
 #   * PER-RUN ABORT — a batch-phase lock wait >=5000ms is recorded as a
 #     warning and the run continues; >=7000ms stops the ladder through the
 #     existing `stop_reason=lock_wait_budget` path (prior batches stay
-#     durable). Both numbers are CHOSEN operational policy, not measurements.
+#     durable). All three numbers are CHOSEN operational policy, not
+#     measurements. THE LOCK-WAIT BUDGET CAPS THE WAIT; THESE LINES CAP THE
+#     LADDER — a wait is classified after it completes, so 7000ms is not a
+#     ceiling on any single wait and must never be read as one.
 #   * ROLLING AUTO-DISABLE — repeated severe waits, sustained contention, a
 #     MarketOps regression, or sustained review pressure trip a LATCH that
 #     blocks further scheduled runs until a human clears it with
 #     `crypto-reconciler-health --clear --operator <name>`. Nothing clears it
 #     automatically. A tripped gate also exits non-zero, so this unit goes red.
+#     NEVER `rm` the health state file — a deleted latch reads exactly like a
+#     host that never tripped. See the runbook.
 
 [Install]
 WantedBy=default.target

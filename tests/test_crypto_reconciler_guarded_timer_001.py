@@ -166,6 +166,7 @@ def test_the_shipped_policy_thresholds_are_exactly_these_numbers():
     """A pin, not a tautology: several tests below LOWER these thresholds to
     fire a breaker deterministically, and without this pin a lowered value
     could silently become the shipped one."""
+    assert guard.BATCH_LOCK_WAIT_REVIEW_MS == 2000
     assert guard.BATCH_LOCK_WAIT_WARN_MS == 5000
     assert guard.BATCH_LOCK_WAIT_ABORT_MS == 7000
     assert guard.WRITE_HOLD_REVIEW_MS == 700
@@ -394,6 +395,132 @@ def test_three_reviewed_runs_in_the_window_trip_the_gate():
     verdict = guard.evaluate_health(records)
     assert verdict["tripped"] is True
     assert any("sustained review pressure" in r for r in verdict["reasons"])
+
+
+# ---------------------------------------------------------------------------
+# 3b. THE BLOCKER: sustained SUB-THRESHOLD degradation.
+#
+# An independent reviewer exercised `evaluate_health` as a pure function and
+# found the gate blind below the 5000 ms cliff. The four sequences below are
+# verbatim the ones that returned `tripped=False`; three of them must now trip,
+# and the fourth is the STATED escape boundary (item C), asserted as policy so
+# it can never become an accident.
+# ---------------------------------------------------------------------------
+
+def _evaluate_after_every_run(records: list[dict]) -> int | None:
+    """The run index (1-based) at which the gate first trips, or None. An
+    unattended timer evaluates after EVERY run, so a test that evaluates only
+    the final history can miss a trip that already happened — and, worse, can
+    miss one that never does."""
+    for i in range(1, len(records) + 1):
+        if guard.evaluate_health(records[:i])["tripped"]:
+            return i
+    return None
+
+
+def _mid_band(ms: int, seq: int) -> dict:
+    """A run whose worst batch wait is `ms`, marked exactly as the live path
+    would mark it — via `guard.review_reasons`, never by hand, so the record
+    and the shipped rule cannot drift apart."""
+    summary = {
+        "status": "partial", "stop_reason": "deadline",
+        "batch_lock_wait_ms_max": ms, "write_hold_ms_max": 194,
+        "wall_time_model_exceeded": False,
+    }
+    return guard.run_record(summary) | {"seq": seq}
+
+
+def test_four_consecutive_runs_at_4999ms_now_trip_the_gate():
+    """4,999 ms is ~5x the worst healthy batch wait ever observed (1,037 ms)
+    and ~3,800x the healthy median. Before the fix this returned False."""
+    records = [_mid_band(4999, i) for i in range(1, 5)]
+    assert _evaluate_after_every_run(records) == 3
+    verdict = guard.evaluate_health(records)
+    assert verdict["tripped"] is True
+    assert any("sustained review pressure" in r for r in verdict["reasons"])
+
+
+def test_eight_consecutive_runs_at_4999ms_are_not_two_unattended_days_of_silence():
+    """Eight runs at the 6-hourly cadence is two full days. Before the fix:
+    False."""
+    records = [_mid_band(4999, i) for i in range(1, 9)]
+    assert _evaluate_after_every_run(records) == 3
+
+
+def test_a_monotonic_climb_from_1s_to_49s_is_escalation_and_trips():
+    """`1000 -> 2500 -> 3800 -> 4900` is escalation by any reading; before the
+    fix it returned False because no rule existed below 5000 ms. The first run
+    is inside the band Eric explicitly accepted and is NOT marked, so the trip
+    lands on the fourth run (the third MARKED one)."""
+    records = [
+        _mid_band(1000, 1), _mid_band(2500, 2),
+        _mid_band(3800, 3), _mid_band(4900, 4),
+    ]
+    assert records[0]["review"] is False, "1.0s is the accepted band, not a mark"
+    assert [r["review"] for r in records[1:]] == [True, True, True]
+    assert _evaluate_after_every_run(records) == 4
+
+
+def test_the_50_percent_contention_escape_boundary_is_policy_not_an_accident(
+):
+    """ITEM C, pinned. A host on which half of every pass stops on contention,
+    indefinitely, never latches on the contention rule — with waits inside the
+    accepted band. That is a STATED policy line: every contended pass still
+    commits durable batches and returns unworked tokens to the backlog, and
+    each is individually marked for review, so it is REPORTED without being
+    auto-disabled.
+
+    The second half of the test is the other half of the policy: the same
+    alternating pattern with waits past the review line DOES latch, which is
+    what makes the boundary a choice about severity rather than a blind spot."""
+    def _contended(seq, ms):
+        return guard.run_record({
+            "status": "partial", "stop_reason": "contention",
+            "batch_lock_wait_ms_max": ms,
+        }) | {"seq": seq}
+
+    benign = []
+    for i in range(1, 41):
+        benign.append(
+            _contended(i, 1037) if i % 2 else _mid_band(1037, i)
+        )
+    assert _evaluate_after_every_run(benign) is None, (
+        "the 50% escape boundary is documented policy; changing it is a "
+        "deliberate decision, not a silent one"
+    )
+    # ... and every one of those contended runs was still REPORTED.
+    assert all(r["review"] for r in benign[::2])
+
+    harmful = []
+    for i in range(1, 9):
+        harmful.append(
+            _contended(i, 2500) if i % 2 else _mid_band(2500, i)
+        )
+    assert _evaluate_after_every_run(harmful) == 3
+
+
+def test_the_review_line_does_not_fire_on_the_measured_healthy_band():
+    """The other half of every breaker in this file: it must stay quiet on the
+    shape a healthy production pass actually has. Measured healthy batch
+    maxima: 16 / 514 / 1037 ms, and Eric accepted 1.0-1.3 s explicitly."""
+    for ms in (0, 16, 514, 1037, 1300, 1999):
+        assert guard.review_reasons({"status": "ok", "batch_lock_wait_ms_max": ms}) == []
+    assert guard.review_reasons(
+        {"status": "ok", "batch_lock_wait_ms_max": 2000}
+    ) == ["batch_lock_wait_ms_max>=2000"]
+    # Sustained healthy waits never trip, however many of them there are.
+    assert _evaluate_after_every_run([_mid_band(1300, i) for i in range(1, 41)]) is None
+
+
+def test_a_severe_run_carries_one_wait_reason_not_two():
+    """The review line is the LAST arm of the chain: 5000 >= 2000, and one wait
+    deserves one reason. Otherwise every warning would read as two findings."""
+    assert guard.review_reasons(
+        {"status": "ok", "batch_lock_wait_ms_max": 5200, "batch_lock_wait_warnings": 1}
+    ) == ["batch_lock_wait_warning"]
+    assert guard.review_reasons(
+        {"status": "ok", "batch_lock_wait_ms_max": 8000, "batch_lock_wait_aborts": 1}
+    ) == ["batch_lock_wait_abort"]
 
 
 @pytest.mark.parametrize("summary,expected", [
@@ -666,6 +793,203 @@ def test_the_guarded_paths_make_no_external_calls(filedb, monkeypatch):
     guard_source = (REPO / "app/services/crypto_reconciler_guard.py").read_text()
     for banned in ("requests", "httpx", "aiohttp", "urllib"):
         assert banned not in guard_source
+
+
+def test_the_service_states_the_load_factor_at_which_the_timeout_is_exceeded():
+    """ITEM D. `26 + 60L` reaches 422 s at L = 6.6, past the chosen 420 s. The
+    crossing point is recorded so the next reader does not re-derive it, and
+    the orphaned-`running`-row tally is named as the signature of an overrun."""
+    service = (
+        REPO / "infra/systemd/user/probability-arena-crypto-reconcile.service"
+    ).read_text()
+    # The arithmetic, checked rather than trusted: 26 + 60L > 420 <=> L > 6.566
+    assert (420 - 26) / 60 == pytest.approx(6.566, abs=0.001)
+    assert 26 + 60 * 6.6 == pytest.approx(422.0)
+    assert "6.57" in service and "422" in service
+    assert "lock_wait_run_row_orphaned" in service
+    runbook = (REPO / "docs/EVO_X2_RUNBOOK.md").read_text()
+    assert "6.57" in runbook and "422 s" in runbook
+
+
+def test_the_budget_caps_the_wait_and_the_breaker_caps_the_ladder_is_stated():
+    """ITEM F. Both reviewers asked for this in as many words: the breaker
+    classifies a wait AFTER it completes (a measured `abort_ms=24517` against
+    the 7,000 ms line), so it prevents the next rung rather than capping any
+    single wait. Nobody may read 7000 ms as a wait ceiling."""
+    phrase = "BUDGET CAPS THE WAIT"
+    for path in (
+        "app/services/crypto_reconciler_guard.py",
+        "app/services/crypto_tape.py",
+        "infra/systemd/user/probability-arena-crypto-reconcile.service",
+    ):
+        assert phrase in (REPO / path).read_text().upper(), path
+    runbook = (REPO / "docs/EVO_X2_RUNBOOK.md").read_text()
+    assert "budget caps the wait; the breaker caps the ladder" in runbook.lower()
+    assert "24517" in runbook
+
+
+def test_the_runbook_forbids_deleting_the_state_file_as_an_instruction():
+    """ITEM A. `health_state_path`'s "no file, no gate" is DISCLOSURE; an
+    operator needs an INSTRUCTION, because deleting the file is the natural
+    response to the corruption warning and it silently clears the latch."""
+    runbook = (REPO / "docs/EVO_X2_RUNBOOK.md").read_text()
+    assert "NEVER DELETE THE HEALTH STATE FILE" in runbook
+    # And the cross-check that makes a deleted file detectable after the fact,
+    # on every trip path including the skips that write no run row.
+    assert "HEALTH GATE TRIPPED" in runbook and "journalctl" in runbook
+
+
+def test_a_deleted_state_file_does_not_block_but_a_corrupt_one_does(filedb, monkeypatch):
+    """The measured behaviour the runbook instruction exists for, pinned so a
+    later change to it is deliberate. Fail-closed on corrupt is CORRECT; the
+    deleted case is why the instruction is an instruction."""
+    _trip_via_marketops(filedb, monkeypatch)
+    monkeypatch.setattr(ct, "_marketops_degraded", lambda session: False)
+
+    def _run():
+        session = filedb.Factory()
+        try:
+            return run_scheduled_reconciliation(session, settings=filedb.settings())
+        finally:
+            session.close()
+
+    assert _run()["status"] == guard.STATUS_HEALTH_LATCH          # latched
+    filedb.state_path().write_text("{corrupt")
+    assert _run()["status"] == guard.STATUS_HEALTH_LATCH          # fails closed
+    filedb.state_path().unlink()
+    assert _run()["status"] != guard.STATUS_HEALTH_LATCH          # NOT blocked
+
+
+def test_the_runbook_names_the_50_percent_contention_escape_boundary():
+    """ITEM C. Defensible, but it must be a STATED policy line rather than an
+    emergent one — an operator must not discover it by being surprised."""
+    runbook = (REPO / "docs/EVO_X2_RUNBOOK.md").read_text()
+    assert "escape boundary" in runbook.lower()
+    assert "half of every pass stops on contention" in runbook
+    guard_source = (REPO / "app/services/crypto_reconciler_guard.py").read_text()
+    assert "ESCAPE BOUNDARY IS A STATED POLICY LINE" in guard_source
+
+
+def test_clear_latch_refuses_a_blank_operator(filedb, monkeypatch):
+    """ITEM B. `app/cli.py` already declined `--clear` without `--operator`, so
+    the shipped path was safe — but the invariant that makes the audit trail
+    mean anything lived in one caller instead of in the function."""
+    _trip_via_marketops(filedb, monkeypatch)
+    state = guard.load_state(filedb.state_path(), CHAIN)
+    for blank in ("", "   ", None):
+        with pytest.raises(ValueError, match="named operator"):
+            guard.clear_latch(state, operator=blank)
+    # Refused, not half-applied: the latch is untouched by a rejected clear.
+    assert state["latch"] is not None
+    assert state["latch_history"] == []
+    assert guard.clear_latch(state, operator="eric")["cleared_by"] == "eric"
+
+
+def test_every_run_records_whether_adaptive_batching_was_active(filedb, monkeypatch):
+    """ITEM E. Observation only — nothing branches on it. Precondition 3 stays
+    an enable-time human check, and human steps drift; recording what was
+    actually in force makes a drifted step visible in the gate history."""
+    monkeypatch.setattr(ct, "_marketops_degraded", lambda session: False)
+    session = filedb.Factory()
+    try:
+        off = run_scheduled_reconciliation(session, settings=filedb.settings())
+        on = run_scheduled_reconciliation(
+            session, settings=filedb.settings(),
+            initial_per_token_cost_seconds=0.05, time_budget_seconds=2.0,
+        )
+    finally:
+        session.close()
+    assert off["adaptive_batching_active"] is False
+    assert on["adaptive_batching_active"] is True
+    recorded = [r.get("adaptive_batching_active") for r in filedb.read_state()["runs"]]
+    assert recorded == [False, True]
+
+
+# ---------------------------------------------------------------------------
+# 6. The skip COUNT that justifies the skip EXCLUSION.
+# ---------------------------------------------------------------------------
+
+def test_a_degraded_week_reports_its_skip_rate_not_a_clean_bill_of_health():
+    """BEFORE-ENABLE. `lock_wait_distribution_eligible` excludes pre-flight
+    skips from the wait distribution and justifies it by promising they are
+    "excluded and COUNTED — the skip rate is a result in its own right". A
+    reviewer built the degraded week (9 `marketops_degraded` skips in 28
+    recorded runs, a 32% skip rate) and read back `latch=CLEAR review_runs=0
+    consecutive_marketops_skips=0`, because the gate's count is TRAILING and
+    the last run happened to be healthy."""
+    records = []
+    for i in range(1, 29):
+        if i % 3 == 0 and i < 28:
+            records.append(guard.run_record({
+                "status": guard.STATUS_MARKETOPS_DEGRADED,
+                "lock_wait_distribution_eligible": False,
+            }) | {"seq": i})
+        else:
+            records.append(_mid_band(1037, i))
+    skips = guard.skip_summary(records)
+    assert skips["runs_total"] == 28
+    assert skips["skips_total"] == 9
+    assert skips["skip_rate"] == 0.3214
+    assert skips["skips_by_status"] == {"marketops_degraded": 9}
+    assert skips["distribution_excluded_total"] == 9
+    # The trailing count really does read 0 — that is the failure, not a straw
+    # man, and it is why a RATE had to be added rather than reused.
+    verdict = guard.evaluate_health(records)
+    assert verdict["consecutive_marketops_skips"] == 0
+    assert verdict["tripped"] is False
+
+
+def test_the_skip_summary_separates_a_skip_from_a_prelude_blocked_pass():
+    """A pass blocked in the prelude DID try; a pre-flight skip did not. Both
+    are excluded from the distribution, and they are tallied alongside each
+    other rather than merged."""
+    records = [
+        guard.run_record({"status": guard.STATUS_HEALTH_LATCH,
+                          "lock_wait_distribution_eligible": False}),
+        guard.run_record({"status": "db_locked",
+                          "lock_wait_distribution_eligible": False}),
+        _mid_band(500, 3),
+    ]
+    skips = guard.skip_summary(records)
+    assert skips["skips_total"] == 1
+    assert skips["distribution_excluded_total"] == 2
+    assert skips["distribution_excluded_by_status"] == {
+        "db_locked": 1, "skipped_health_latch": 1,
+    }
+    assert guard.skip_summary([]) == {
+        "runs_total": 0, "skips_total": 0, "skip_rate": 0.0,
+        "skips_by_status": {}, "distribution_excluded_total": 0,
+        "distribution_excluded_by_status": {},
+    }
+
+
+def test_the_health_cli_actually_prints_the_skip_rate(filedb, monkeypatch, capsys):
+    """The comment in `crypto_tape.py` claims `crypto-reconciler-health` prints
+    the skip rate. Before this fix it did not — the code documented a surface
+    that was not there. This test is the surface."""
+    import asyncio
+
+    from app import cli
+
+    _trip_via_marketops(filedb, monkeypatch)
+    capsys.readouterr()
+    rc = asyncio.run(cli.crypto_reconciler_health(settings=filedb.settings()))
+    out = capsys.readouterr().out
+    assert rc == -1                                    # latched
+    assert "skips_total=2" in out
+    assert "skip_rate=1.0" in out
+    assert "marketops_degraded': 2" in out
+    assert "distribution_excluded_total=2" in out
+    assert "adaptive_batching_active=" in out
+
+
+def test_the_preflight_skip_statuses_have_exactly_one_definition():
+    """The exclusion and the count must never be able to disagree about which
+    statuses they are talking about."""
+    assert ct._PREFLIGHT_SKIP_STATUSES is guard.PREFLIGHT_SKIP_STATUSES
+    assert guard.PREFLIGHT_SKIP_STATUSES == {
+        "marketops_degraded", "skipped_health_latch",
+    }
 
 
 def test_a_preflight_skip_is_excluded_from_the_wait_distribution_but_counted(

@@ -1914,8 +1914,11 @@ Do these in order; each step's check must pass before the next.
    .venv/bin/python -m app.cli crypto-reconciler-health
    ```
    Expected on a healthy pass: `batch_lock_wait_aborts=0`,
-   `batch_lock_wait_warnings=0`, `review_required=False`,
-   `health_gate_state=active`, `health_gate_tripped=False`, `latch=CLEAR`.
+   `batch_lock_wait_warnings=0`, `batch_lock_wait_ms_max` inside the measured
+   1.0-1.3 s band (well under the 2,000 ms review line), `review_required=False`,
+   `health_gate_state=active`, `health_gate_tripped=False`, `latch=CLEAR`,
+   `skips_total=0`, and `adaptive_batching_active=True` (precondition 3 —
+   if this reads `False`, step 1 did not take effect).
    `status=partial (stop_reason=deadline)` plus `truncated` is **normal** at
    production density and exits non-zero by design — that is the pass telling
    you work remains, not a fault.
@@ -1936,6 +1939,7 @@ write-hold SLO violations. Eric's framing, which the whole design follows:
 |---|---|---|---|
 | Pre-flight skip | MarketOps unhealthy (`_reconciliation_should_abort`, reused) | — | `status=marketops_degraded`, nothing read or written, recorded |
 | Pre-flight skip | health latch tripped | — | `status=skipped_health_latch`, nothing read or written, recorded |
+| Per-run | **batch-phase** lock wait | `>= 2000 ms` | run marked for review; feeds the gate (this is the sub-threshold trend line) |
 | Per-run | **batch-phase** lock wait | `>= 5000 ms` | warning: recorded and logged, run continues |
 | Per-run | **batch-phase** lock wait | `>= 7000 ms` | abort: ladder stops via the existing `stop_reason=lock_wait_budget` path; committed batches durable |
 | Post-run review | `write_hold_ms_max` | `> 700 ms` | run marked for review; feeds the gate |
@@ -1946,7 +1950,7 @@ write-hold SLO violations. Eric's framing, which the whole design follows:
 | Rolling gate | `marketops_degraded` skips | 2 consecutive | **latch: auto-disable** |
 | Rolling gate | runs marked for review | 3 of the last 4 runs | **latch: auto-disable** |
 
-Two things a reader must not misread:
+Four things a reader must not misread:
 
 * **The lock-wait figure is the PHASE-ATTRIBUTED `batch` one**, never the pass
   total. The total carries a ~1-sample-per-pass systematic floor from the
@@ -1958,6 +1962,52 @@ Two things a reader must not misread:
   deliberately requires `stop_reason in {contention, lock_wait_budget}` or a
   lock-failure status. A rule that counted plain `partial` would trip on the
   first three healthy runs.
+* **The budget caps the wait; the breaker caps the ladder.** `7000 ms` is
+  **not** a ceiling on how long any single acquisition may block. A wait is
+  classified only *after* it completes and its duration is known — a measured
+  `abort_ms=24517` against the 7,000 ms line is a 24.5 s wait that already
+  happened and is now being judged. The only thing bounding one acquisition is
+  the **lock-wait budget** (`derive_lock_wait_budget_seconds`, ~5 s at the
+  shipped 20 s deadline, times the statement overshoot), which this milestone
+  does not touch. What the abort line prevents is the **next rung** — retrying
+  into the same holder.
+* **`>= 2000 ms` is a mark, not a brake.** One run at 2 s does nothing. It is
+  the *trend* line: without it the gate implemented only the first half of
+  *"occasional 1-1.3s waits are acceptable, escalating/repeated waits are
+  not"*, and a host sitting at 4,999 ms — ~5x the worst healthy batch wait ever
+  observed, ~3,800x the healthy median — could run **eight consecutive passes,
+  two full unattended days, with nothing firing**, as could a monotonic climb
+  from 1.0 s to 4.9 s. Marked runs feed the existing 3-of-4 review rule, so any
+  of those sequences now latches on the third marked run.
+
+#### The escape boundary: what this gate deliberately does NOT catch
+
+Stated as policy so it is never mistaken for an oversight. A sweep of sustained
+contention patterns, evaluating after every run:
+
+| sustained contention rate | latches? |
+|---|---|
+| 25%, 33% | never |
+| **50%** (`CH`, `CHCH`, `CCHH`) | **never, in 40 runs** |
+| 67% | at run 4 |
+| 75% | at run 3 |
+| 100% | at run 3 |
+
+**A host on which half of every pass stops on contention, indefinitely, never
+latches on the contention rule.** That is accepted, and these are the reasons —
+if any stops holding, the rule must be re-chosen:
+
+* every contended pass still commits its durable batches and returns unworked
+  tokens to the backlog: nothing is lost, nothing is corrupted;
+* each such run is individually marked `review=True` and is visible in
+  `crypto-reconciler-health`, so it is reported even when it is not disabled;
+* the severe-wait rule (2 in 4) and the `>= 2000 ms` review line (3 in 4)
+  independently catch the alternating cases whose waits are long enough to hurt
+  a co-tenant.
+
+A 50%-contended host that is not actually hurting anyone is a host to report,
+not a host to auto-disable. Read the skip/contention rates off
+`crypto-reconciler-health` (below) rather than waiting for the latch.
 
 #### The auto-disable latch, and how a human clears it
 
@@ -1987,6 +2037,79 @@ exactly the ones that never write a run row.
   hand is already the human the latch was trying to summon.
 * An unreadable or corrupt state file **fails closed** (scheduled runs are
   blocked) and is never overwritten — it is evidence.
+* **The raw records age out; the reasons do not.** Latched runs are admitted to
+  the history and are inert there (not contention, not a MarketOps skip,
+  `review=False`), so at 4 latched runs a day against
+  `HEALTH_HISTORY_MAX_RECORDS = 40` they overwrite the raw records that
+  produced the trip within ~10 days. The *reasons* survive in `latch` /
+  `latch_history` (`HEALTH_LATCH_HISTORY_MAX = 10`), which is what an operator
+  reads. Accepted, and noted so a reader is not surprised: if you need the raw
+  window that tripped a latch, read it within ~10 days.
+
+##### Read the SKIP RATE, not just the latch
+
+`crypto-reconciler-health` prints, over both the retained history (bounded at
+`HEALTH_HISTORY_MAX_RECORDS` = 40 runs) and the gate window:
+
+```
+skips_total=9  skip_rate=0.3214  runs_total=28  skips_by_status={'marketops_degraded': 9}
+distribution_excluded_total=9  distribution_excluded_by_status={'marketops_degraded': 9}
+```
+
+**A clean latch is not a clean week.** The gate's own
+`consecutive_marketops_skips` is a *trailing* count: a week in which 9 of 28
+passes were skipped for `marketops_degraded` — a 32% skip rate, a third of the
+week doing no work — reads `consecutive_marketops_skips=0` whenever the last
+pass happened to be healthy, and the whole reading is `latch=CLEAR
+review_runs=0 consecutive_marketops_skips=0`. That is why the rate exists. The
+rule that excludes skips from the lock-wait distribution is only defensible
+because they are **counted** somewhere, and this is where.
+
+`distribution_excluded_*` is the wider tally: pre-flight skips **plus** the
+prelude-blocked `db_locked` passes (see "Prelude-blocked passes"). A pass
+blocked in the prelude did try and a skip did not, so they are reported
+alongside each other rather than merged.
+
+Each run line also prints `adaptive_batching_active`, so a drifted
+precondition 3 (a measured `initial_per_token_cost_seconds`, adaptive batching
+on — an **enable-time** check, and enable-time checks are human steps that
+drift) is visible in the gate history instead of invisible. It is recorded
+only; nothing enforces it per run, deliberately.
+
+##### NEVER DELETE THE HEALTH STATE FILE — clear the latch with the CLI
+
+This is an instruction, not a description. Measured behaviour: a latch present
+**blocks**; a **corrupt** file **blocks** (fails closed — correct); a
+**deleted** file **does not block**. The realistic path to a deleted file is an
+operator "fixing" the corruption warning by removing the file — the natural
+response — or a cleanup/restore sweeping up a dotfile.
+
+```bash
+# WRONG — this silently clears the latch and erases the trip.
+rm ~/…/.crypto-tape-reconciler-health-solana.json
+
+# RIGHT — a named human decision, and the trip is retained in latch_history.
+.venv/bin/python -m app.cli crypto-reconciler-health \
+  --clear --operator eric --note "what you actually checked"
+```
+
+If the file is corrupt, **leave it and clear it with the CLI**; if the CLI
+cannot read it either, move it aside (`mv <file> <file>.corrupt-$(date +%s)`)
+so it stays as evidence, and record what you did here. Never `rm`.
+
+**Cross-check before trusting `latch=CLEAR`.** A deleted state file reads
+exactly like a host that never tripped, so the state file is not the only place
+to look: every trip also writes a `logger.error` line naming the state path and
+exits the unit non-zero.
+
+```bash
+journalctl --user -u probability-arena-crypto-reconcile.service \
+  --since "-14 days" | grep "HEALTH GATE TRIPPED"
+# A hit here beside `latch=CLEAR` = the state file went missing after a trip.
+```
+
+That check covers **every** trip path, including the pre-flight skips
+(`marketops_degraded`, `skipped_health_latch`) that write no run row at all.
 
 ### Recurring-timer preconditions
 
@@ -2033,6 +2156,15 @@ load 5-6).
    set the write-hold SLO is *recorded but not enforced* — a fixed token count
    is not a safety invariant. A recurring timer without adaptive batching is a
    fixed-batch writer on a shared host.
+
+   This stays an **enable-time** check, not a per-run pre-flight skip: a
+   settings value cannot change between two runs six hours apart, and a per-run
+   skip would silently no-op the flag for every caller that does not set it.
+   But enable-time checks are human steps and human steps drift, so **every run
+   records `adaptive_batching_active`** into the gate history
+   (`crypto-reconciler-health` prints it per run). Observation only — nothing
+   branches on it — but a drifted precondition is now visible instead of
+   invisible.
 4. **A `TimeoutStartSec` that covers the derivation below**, or an explicit
    accepted decision to live with the documented SIGKILL outcome.
 
@@ -2076,7 +2208,21 @@ the load-dependent overshoot L (`26 s + 60L`):
 **`TimeoutStartSec` was raised from 5min to 7min (420 s) by
 CRYPTO-RECONCILER-GUARDED-TIMER-001**, because the ~374 s ceiling at the
 measured 5.80x exceeded the old 300 s value and the timer is no longer
-attended-only. 420 s covers the worst overshoot ever measured in this repo,
+attended-only.
+
+**The load factor at which 420 s is exceeded is `L = 6.57`** — written down
+here so nobody re-derives it: `26 + 60L > 420` ⟺ `L > 394/60 = 6.566…`, and at
+`L = 6.6` the ceiling is **422 s**, 2 s past the chosen value. The gap between
+the worst measured L (5.80) and the crossing L (6.57) is ~13% of *load*
+headroom, not a safety margin.
+
+**The signature of an overrun is the orphaned `running`-row tally.** A SIGKILL
+mid-finalize is the only thing that leaves a run row at `status='running'` with
+no `config.write_coordination`, so a rising `lock_wait_run_row_orphaned()`
+count *is* the host reporting `L > 6.57`. That is how an exceedance gets
+noticed rather than assumed — check it whenever the unit shows a timeout.
+
+420 s covers the worst overshoot ever measured in this repo,
 with ~12% headroom — **not a guarantee**: L tracks host load and is unbounded
 above, so no constant fixes it, which is precisely why precondition 1 is
 *observed* non-exceedance and why `wall_time_model_exceeded=true` is one of the

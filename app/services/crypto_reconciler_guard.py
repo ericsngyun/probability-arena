@@ -43,11 +43,26 @@ THE THREE LAYERS
      pass excluded from a distribution must still be COUNTED, because "a zero
      row averaged in as benign is worse than a missing row".
   2. PER-RUN ABORT     — a single batch's phase-attributed lock wait crosses a
-     warning line (recorded, run continues) or an abort line (the ladder stops;
-     only the current batch is discarded, every earlier committed batch stays
-     durable). Routed through the EXISTING `stop_reason="lock_wait_budget"`
-     path in `crypto_tape._assemble_pass_locked` — this milestone adds a new
-     REASON to stop, never a second mechanism for stopping.
+     review line (recorded, run continues), a warning line (recorded, run
+     continues) or an abort line (the ladder stops; only the current batch is
+     discarded, every earlier committed batch stays durable). Routed through
+     the EXISTING `stop_reason="lock_wait_budget"` path in
+     `crypto_tape._assemble_pass_locked` — this milestone adds a new REASON to
+     stop, never a second mechanism for stopping.
+
+     THE BUDGET CAPS THE WAIT; THE BREAKER CAPS THE LADDER. Both reviewers
+     asked for this in as many words, because 7000 ms reads like a wait
+     ceiling and is not one. The only thing that bounds how long any SINGLE
+     acquisition may block is the lock-wait BUDGET
+     (`derive_lock_wait_budget_seconds`, ~5 s at the shipped 20 s deadline,
+     multiplied by the statement overshoot) — a number this milestone does not
+     touch. `batch_lock_wait_escalation` classifies a wait only AFTER it has
+     completed and its duration is known: a measured `abort_ms=24517` against
+     the 7000 ms line is not a 7 s wait, it is a 24.5 s wait that has already
+     happened and is now being judged. What the abort line therefore prevents
+     is the NEXT rung — retrying into the same holder — not the wait that was
+     just paid. Anyone who reads 7000 ms as "no wait can exceed 7 s" has
+     misread it.
      WHAT IS DELIBERATELY *NOT* A PRE-FLIGHT SKIP, and why. The runbook's
      precondition 3 — "a calibrated `initial_per_token_cost_seconds`, with
      adaptive batching enabled" — is a real, known-unsafe condition for an
@@ -161,6 +176,32 @@ def batch_lock_wait_escalation(batch_lock_wait_ms: int | float | None) -> str | 
 # marked for review and feeds the rolling gate. Marking is not disabling: one
 # run is noise (see `evaluate_health`).
 
+# Rule 0 — THE TREND LINE, and the finding that produced it.
+#
+# An independent reviewer exercised `evaluate_health` as a pure function and
+# found the gate BLIND to sustained SUB-THRESHOLD degradation. Four consecutive
+# runs at 4,999 ms did not trip. Eight consecutive runs at 4,999 ms — two full
+# days unattended — did not trip. A monotonic climb 1000 -> 2500 -> 3800 ->
+# 4900 ms did not trip. The diagnosis was exact: `review_reasons`' ONLY
+# wait-based trigger was `BATCH_LOCK_WAIT_WARN_MS`, so below that cliff there
+# was no trend rule at all, and of Eric's criterion — "occasional 1-1.3s waits
+# are acceptable, escalating/repeated waits are not" — only the first clause
+# was implemented.
+#
+# This line implements the second clause, and it adds NO NEW RULE: a run whose
+# worst batch wait reaches it is MARKED FOR REVIEW, which feeds the existing
+# Rule 4 (3 of the last 4 marked runs) automatically. Every failing sequence
+# above becomes a trip on the third marked run.
+#
+# CHOSEN OPERATIONAL POLICY, NOT A MEASUREMENT — same framing as every other
+# constant in this file. 2000 ms is ~2x the worst healthy batch wait ever
+# observed (1037 ms) and ~1500x the healthy median, so it sits well clear of
+# the 1.0-1.3 s band Eric explicitly accepted; and it is 2.5x below the warning
+# line, so "sustained mid-band" and "one severe spike" stay distinguishable
+# events rather than the same event with two names. Marking is not disabling:
+# ONE run at 2 s is still noise, and three in a day is the trend. Chosen.
+BATCH_LOCK_WAIT_REVIEW_MS = 2000
+
 # The pre-existing numeric revisit trigger from
 # RECONCILE_LOCK_WAIT_DECISION_EDGE_MS's comment, reused rather than
 # reinvented: re-examine the >=1000 ms decision edge if any counted pass
@@ -195,6 +236,13 @@ STATUS_MARKETOPS_DEGRADED = "marketops_degraded"
 # Must fit `CryptoTokenLifecycleRun.status` (VARCHAR(32)) by the same rule as
 # every other refused status, even though no skip reaches a run row today.
 STATUS_HEALTH_LATCH = "skipped_health_latch"
+# The outcomes where the pass REFUSED TO START. Defined here, once, and
+# imported by `crypto_tape.lock_wait_distribution_eligible` — the exclusion and
+# the COUNT (`skip_summary`) must never be able to disagree about which
+# statuses they are talking about.
+PREFLIGHT_SKIP_STATUSES = frozenset({
+    STATUS_MARKETOPS_DEGRADED, STATUS_HEALTH_LATCH,
+})
 
 # Statuses that are a MISCONFIGURATION rather than a health observation. They
 # are refused loudly and exit non-zero on their own; feeding them to a health
@@ -226,6 +274,14 @@ def review_reasons(summary: dict) -> list[str]:
         # A >=5 s batch wait is already far outside "occasional 1-1.3 s"; it is
         # marked even though the run was allowed to finish.
         reasons.append("batch_lock_wait_warning")
+    elif int(summary.get("batch_lock_wait_ms_max") or 0) >= BATCH_LOCK_WAIT_REVIEW_MS:
+        # Rule 0 — SUSTAINED SUB-THRESHOLD DEGRADATION. This is the one that
+        # makes "escalating/repeated" mean anything below the 5 s cliff. One
+        # such run disables nothing; three in a window do, through Rule 4.
+        # Deliberately the LAST arm of the chain: a run that already carries a
+        # warning or an abort is not additionally described as ">=2000ms",
+        # because 5000 >= 2000 and one wait deserves one reason.
+        reasons.append(f"batch_lock_wait_ms_max>={BATCH_LOCK_WAIT_REVIEW_MS}")
     return sorted(set(reasons))
 
 
@@ -267,6 +323,21 @@ HEALTH_SEVERE_WAIT_RUNS = 2
 # consecutive runs is 12-18 h of a host that cannot give this pass the write
 # lock; at that point the pass is not the right thing to keep retrying
 # unattended. Chosen.
+#
+# ITS ESCAPE BOUNDARY IS A STATED POLICY LINE, NOT AN EMERGENT ONE. A reviewer
+# swept sustained contention patterns, evaluating after every run: 25% and 33%
+# contention never trip; 50% (CH, CHCH, CCHH) never trips in 40 runs; 67% trips
+# at run 4; 75% at run 3; 100% at run 3. So A HOST ON WHICH HALF OF EVERY PASS
+# STOPS ON CONTENTION, INDEFINITELY, NEVER LATCHES ON THIS RULE. That is
+# accepted, for reasons that have to hold for it to stay accepted: every
+# contended pass still commits its durable batches and returns unworked tokens
+# to the backlog (nothing is lost or corrupted), each such run is individually
+# marked `review=True` and visible in `crypto-reconciler-health`, and the
+# severe-wait rule (2 in 4) plus Rule 0 (>=2000 ms -> review -> 3 in 4)
+# independently catch the alternating cases whose waits are long enough to hurt
+# a co-tenant. A 50%-contended host that is NOT hurting anyone is a host to
+# report, not a host to auto-disable. Restated in docs/EVO_X2_RUNBOOK.md so an
+# operator reads the same boundary the code implements.
 HEALTH_CONSECUTIVE_CONTENTION_RUNS = 3
 # Rule 3 — MARKETOPS REGRESSION. Two CONSECUTIVE pre-flight skips for
 # `marketops_degraded`. One skip is the pre-flight doing its job on a
@@ -279,7 +350,9 @@ HEALTH_CONSECUTIVE_MARKETOPS_SKIP_RUNS = 2
 # review by ANY post-run trigger (`review_reasons`). This is how the item-4
 # triggers "feed the gate" without any single one of them disabling anything:
 # three quarters of a day's runs needing a human is a trend by any reading.
-# Chosen.
+# It is also the rule Rule 0 (`BATCH_LOCK_WAIT_REVIEW_MS`) feeds, and therefore
+# the only thing standing between a host sitting at 4,999 ms forever and an
+# unattended timer that never notices. Chosen.
 HEALTH_REVIEW_RUNS = 3
 # How many run records the state file retains. Bounded so an unattended timer
 # cannot grow a file without limit; generous enough (10 days at the 6-hourly
@@ -317,7 +390,29 @@ def health_state_path(database_url: str | None, chain: str) -> Path | None:
     unattended SAFETY LATCH, and putting a safety latch in a shared temp
     namespace (where an unrelated process, or an unrelated test, could create,
     trip or delete it) would be worse than not having one. No file, no gate,
-    and the result says so."""
+    and the result says so.
+
+    NEVER DELETE THIS FILE — CLEAR THE LATCH WITH THE CLI. "No file, no gate"
+    is a disclosure of how the gate behaves, not permission. Verified: a latch
+    present BLOCKS, a CORRUPT file BLOCKS (fails closed, correct), and a
+    DELETED file does not block. The realistic path to that is an operator
+    "fixing" a corrupt state file by removing it — the natural response to the
+    corruption warning — or a cleanup/restore sweeping up a dotfile. The
+    supported clear is `crypto-reconciler-health --clear --operator <name>`,
+    which keeps the trip in `latch_history`; `rm` keeps nothing and is
+    indistinguishable from a host that has never run. Stated as an operator
+    INSTRUCTION in docs/EVO_X2_RUNBOOK.md.
+
+    IT IS ALSO DETECTABLE AFTER THE FACT, outside this file. Every trip emits
+    `logger.error("... HEALTH GATE TRIPPED ... latch at <this path>")` to the
+    journal and exits the unit non-zero, so `journalctl --user -u
+    probability-arena-crypto-reconcile.service | grep 'HEALTH GATE TRIPPED'`
+    beside a `latch=CLEAR` reading is exactly the signature of a state file
+    that went missing between the trip and the read. That evidence covers
+    EVERY trip path, including the pre-flight skips (`marketops_degraded`,
+    `skipped_health_latch`) which write no run row at all and therefore could
+    not have been stamped into one. The runbook makes the cross-check a step,
+    not a hope."""
     if not database_url:
         return None
     try:
@@ -427,8 +522,67 @@ def run_record(summary: dict, *, at: datetime | None = None) -> dict:
         "lock_retry_events": int(summary.get("lock_retry_events") or 0),
         "wall_time_model_exceeded": summary.get("wall_time_model_exceeded"),
         "lock_wait_distribution_eligible": summary.get("lock_wait_distribution_eligible"),
+        # OBSERVATION ONLY — no behaviour, no enforcement, no gate rule reads
+        # it. Precondition 3 ("a calibrated `initial_per_token_cost_seconds`,
+        # with adaptive batching enabled") is deliberately an ENABLE-TIME
+        # operator check rather than a per-run skip, and that reasoning is
+        # sound: a settings value cannot change between two runs six hours
+        # apart, and a per-run skip would silently no-op the flag for every
+        # caller that does not set it. But enable-time checks are HUMAN steps,
+        # and human steps drift. Recording what was actually in force on each
+        # pass makes a drifted step visible in the gate history instead of
+        # invisible — an operator reading `crypto-reconciler-health` after a
+        # trip can see whether the host was running the shape it was enabled
+        # under. `None` on a refusal (nothing was resolved).
+        "adaptive_batching_active": summary.get("adaptive_batching_active"),
         "review": bool(reasons),
         "review_reasons": reasons,
+    }
+
+
+def skip_summary(records: list[dict]) -> dict:
+    """How often the pass REFUSED TO START, over the supplied records.
+
+    THE OTHER HALF OF THE EXCLUSION, AND IT HAD TO BE BUILT. `crypto_tape.
+    lock_wait_distribution_eligible` excludes pre-flight skips from the
+    lock-wait distribution and states, correctly, that they are "excluded and
+    COUNTED — the skip rate is a result in its own right". It was not counted
+    anywhere. A reviewer built a degraded week — 9 `marketops_degraded` skips
+    in 28 recorded runs, a 32% skip rate — and `crypto-reconciler-health`
+    reported `latch=CLEAR  review_runs=0  consecutive_marketops_skips=0`,
+    because `consecutive_marketops_skips` is a TRAILING count and the last run
+    happened to be healthy. An operator read a clean bill of health while a
+    third of the week's passes did no work: the exact failure the exclusion
+    exists to prevent, displaced one level up.
+
+    A RATE, NOT A TRAILING COUNT — that is the whole point. The gate rules are
+    deliberately trailing/windowed (a trend is what disables); this is
+    deliberately cumulative over whatever history it is handed (a rate is what
+    an operator judges). Neither substitutes for the other.
+
+    `distribution_excluded_*` is the wider tally: every recorded run whose
+    `lock_wait_distribution_eligible` is False, which is the pre-flight skips
+    PLUS the prelude-blocked `db_locked` passes the same precedent already
+    counted separately. Reported alongside rather than merged, because a pass
+    blocked in the prelude did try and a skip did not."""
+    total = len(records)
+    skips_by_status: dict[str, int] = {}
+    excluded_by_status: dict[str, int] = {}
+    for record in records:
+        status = str(record.get("status") or "unknown")
+        if status in PREFLIGHT_SKIP_STATUSES:
+            skips_by_status[status] = skips_by_status.get(status, 0) + 1
+        if record.get("lock_wait_distribution_eligible") is False:
+            excluded_by_status[status] = excluded_by_status.get(status, 0) + 1
+    skips_total = sum(skips_by_status.values())
+    excluded_total = sum(excluded_by_status.values())
+    return {
+        "runs_total": total,
+        "skips_total": skips_total,
+        "skip_rate": round(skips_total / total, 4) if total else 0.0,
+        "skips_by_status": dict(sorted(skips_by_status.items())),
+        "distribution_excluded_total": excluded_total,
+        "distribution_excluded_by_status": dict(sorted(excluded_by_status.items())),
     }
 
 
@@ -566,7 +720,19 @@ def clear_latch(state: dict, *, operator: str, note: str | None = None,
     `latch_history` (the trip is never erased), and it advances
     `gate_window_start_seq` past every record that existed at clear time. That
     second part is not cosmetic — without it the same history would re-trip the
-    gate on the very next run, and the latch would be uncleanable."""
+    gate on the very next run, and the latch would be uncleanable.
+
+    A BLANK OPERATOR IS REFUSED HERE, not only at the CLI. `app/cli.py` already
+    declines `--clear` without `--operator`, so the shipped path was safe — but
+    the invariant that makes the audit trail mean anything ("a clear is a NAMED
+    human decision") lived in one caller instead of in the function, and a
+    second caller would have silently recorded `cleared_by: ""`. An unnamed
+    clear is not a decision; it raises."""
+    if not operator or not str(operator).strip():
+        raise ValueError(
+            "clear_latch requires a named operator — the latch exists to force "
+            "a human decision, and an unnamed clear is not one"
+        )
     latch = state.get("latch")
     if not latch:
         return None

@@ -736,10 +736,10 @@ def lock_wait_phase_decision_tail(source: dict | None, phase: str) -> int:
 # CRYPTO-RECONCILER-GUARDED-TIMER-001 — the outcomes where the pass REFUSED TO
 # START. Both are typed, recorded and counted; neither measured a write phase,
 # so neither may be summed into the lock-wait distribution (see
-# `lock_wait_distribution_eligible`).
-_PREFLIGHT_SKIP_STATUSES = frozenset({
-    guard.STATUS_MARKETOPS_DEGRADED, guard.STATUS_HEALTH_LATCH,
-})
+# `lock_wait_distribution_eligible`). ALIAS, not a second definition: the set
+# lives in the guard module so the EXCLUSION here and the COUNT there
+# (`guard.skip_summary`) can never disagree about which statuses they mean.
+_PREFLIGHT_SKIP_STATUSES = guard.PREFLIGHT_SKIP_STATUSES
 
 
 def lock_wait_distribution_eligible(result: dict) -> bool:
@@ -778,8 +778,14 @@ def lock_wait_distribution_eligible(result: dict) -> bool:
     attended-only era those rows were rare enough to argue about; under a
     recurring 6-hourly timer a degraded week would inject 28 benign-looking
     zero rows into the very distribution the timer's thresholds are read from.
-    They are excluded and COUNTED — the skip rate is a result in its own right
-    (`crypto-reconciler-health` prints it), never a censored sample. The
+    They are excluded and COUNTED — the skip rate is a result in its own right,
+    never a censored sample. `guard.skip_summary` computes it and
+    `crypto-reconciler-health` prints it (`skips_total`, `skip_rate`, and a
+    per-status breakdown, over BOTH the retained history and the gate window).
+    That count is a RATE over the whole history, deliberately not the gate's
+    trailing `consecutive_marketops_skips`: a trailing count reads 0 whenever
+    the last run happened to be healthy, so a week that skipped a third of its
+    passes would otherwise present as a clean bill of health. The
     `db_locked` signature above is untouched, deliberately: a pass abandoned
     INSIDE the write phase still carries `measurements >= 1` and still
     belongs in the distribution."""
@@ -4318,6 +4324,18 @@ class CryptoLifecycleTapeRecorder:
                                     # batch is already rolled back, every
                                     # earlier batch stays durable, and the
                                     # typed `lock_wait_budget` status says so.
+                                    #
+                                    # THE BUDGET CAPS THE WAIT; THE BREAKER
+                                    # CAPS THE LADDER. This classification
+                                    # happens AFTER the wait completed and its
+                                    # duration is known (a measured
+                                    # `abort_ms=24517` against the 7000 ms line
+                                    # is a 24.5 s wait already paid, not a 7 s
+                                    # ceiling). What bounds any SINGLE
+                                    # acquisition is the lock-wait budget
+                                    # (`derive_lock_wait_budget_seconds`),
+                                    # untouched by this milestone. 7000 ms must
+                                    # never be read as a wait ceiling.
                                     if _escalation == guard.ESCALATION_ABORT:
                                         logger.error(
                                             "crypto reconciliation: batch "
@@ -5723,6 +5741,15 @@ def run_scheduled_reconciliation(
         "lock_wait_budget_seconds": resolved_lock_wait_budget,
         "gate_bypassed": bypass,
         "duration_ms": max(0, int((_now() - started).total_seconds() * 1000)),
+        # CRYPTO-RECONCILER-GUARDED-TIMER-001 (E) — OBSERVATION ONLY. Nothing
+        # branches on this and no gate rule reads it. Precondition 3 (a
+        # measured `initial_per_token_cost_seconds`, adaptive batching on)
+        # stays an ENABLE-TIME operator check for the reasons stated at the top
+        # of `crypto_reconciler_guard` — but enable-time checks are human steps
+        # and human steps drift, so what was actually in force is recorded on
+        # every pass and carried into the gate history by `guard.run_record`.
+        # A drifted precondition becomes visible instead of invisible.
+        "adaptive_batching_active": resolved_initial_cost is not None,
     })
     # A5 — record the pass's MODELLED worst-case wall time next to the wall
     # time it actually took, on every pass, so "observed non-exceedance across
