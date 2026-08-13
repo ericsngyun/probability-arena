@@ -2001,15 +2001,61 @@ if any stops holding, the rule must be re-chosen:
   tokens to the backlog: nothing is lost, nothing is corrupted;
 * each such run is individually marked `review=True` and is visible in
   `crypto-reconciler-health`, so it is reported even when it is not disabled;
-* the severe-wait rule (2 in 4) and the `>= 2000 ms` review line (3 in 4)
-  independently catch the alternating cases whose waits are long enough to hurt
-  a co-tenant.
+* at 50% alternation **only the severe-wait rule (`>= 5000 ms`, 2 in 4) catches
+  anything** — see the severity sweep immediately below.
+
+##### The residual band, measured: 2.0-4.999 s at <= 50% frequency
+
+An earlier version of this section claimed the severe-wait rule *and* the
+`>= 2000 ms` review line "independently catch the alternating cases". **That
+was wrong**, and the correction matters because the accepted band is larger
+than the wrong claim implied. A second sweep — the contended run at each wait,
+genuinely *clean* interleaved runs (1,037 ms, inside the accepted band),
+evaluated after every run:
+
+| contended wait, alternating 50% | latches? |
+|---|---|
+| 1,200 / 2,000 / 2,500 / 3,800 / **4,999 ms** | **never, in 40 runs** |
+| 5,000 / 5,500 / 7,000 ms | at run 3 (severe-wait rule) |
+
+**At 50% the `>= 2000 ms` review line contributes nothing.** It marks the
+contended half only, so the window holds 2 marked runs of 4 and never reaches
+the 3-of-4 review rule; the alternation is caught only once the wait crosses
+the 5,000 ms severe line. The residual accepted region is therefore a bounded
+rectangle in (severity x frequency): **waits of 2.0-4.999 s occurring on at
+most half of passes**. Above 5,000 ms, or above 50% frequency, the gate latches.
+
+##### The lever that would close it — considered and DECLINED
+
+A reviewer verified the 50% escape **is** closable, just not by a threshold:
+tightening `HEALTH_REVIEW_RUNS` from 3 to 2 catches benign 50% alternation at
+run 3 at every wait in the table above (1,200 ms included), and it does **not**
+fire on the six measured healthy passes (sustained 0/16/514/1,037/1,300/1,999
+ms all stay clear, because a healthy pass is not a contention stop and is not
+marked at all). So no threshold can close this boundary; the **count** lever
+can. It is declined, on the record, for two reasons:
+
+* it would close far more than the residual band. It latches a 50%-contended
+  host at **1,037 ms** — squarely inside the 1.0-1.3 s band Eric explicitly
+  accepted — so it does not narrow the accepted rectangle, it deletes the whole
+  50% policy that this section exists to state;
+* 2-of-4 would also latch on **two 2.0 s runs in a day**, which is arguably
+  still "occasional", and it would make the severe-wait rule (2 in 4) largely
+  redundant.
+
+If the residual band ever needs closing, this is the lever — do not
+re-discover it as a gap, and do not reach for a lower threshold, which cannot
+work.
 
 A 50%-contended host that is not actually hurting anyone is a host to report,
 not a host to auto-disable — and a boundary an operator cannot see would be a
 blind spot rather than a policy, so `crypto-reconciler-health` prints
-`contention_total` / `contention_rate` beside the skip rate (below). **Read the
-rate; do not wait for a latch that is not coming.**
+`contention_total` / `contention_rate` beside the skip rate (below). Because
+**no latch will ever summon anyone for the 2.0-4.999 s at <= 50% band**,
+`contention_rate` is a HUMAN control on an automated system: reading it is a
+scheduled operator step, not merely an available field. See "Weekly: read
+`contention_rate`" below. **Read the rate; do not wait for a latch that is not
+coming.**
 
 #### The auto-disable latch, and how a human clears it
 
@@ -2050,14 +2096,34 @@ exactly the ones that never write a run row.
 
 ##### Read the SKIP RATE, not just the latch
 
-`crypto-reconciler-health` prints, over both the retained history (bounded at
-`HEALTH_HISTORY_MAX_RECORDS` = 40 runs) and the gate window:
+`crypto-reconciler-health` prints **three differently-scoped lines, each
+carrying its own denominator**:
 
 ```
-skips_total=9  skip_rate=0.3214  runs_total=28  skips_by_status={'marketops_degraded': 9}
-  contention_total=0  contention_rate=0.0
+retained_history skips_total=9  skip_rate=0.3214  runs_total=28  skips_by_status={'marketops_degraded': 9}  contention_total=0  contention_rate=0.0  (every retained run, bounded at 40 runs)
+since_clear      skips_total=9  skip_rate=0.3214  runs_total=28  skips_by_status={'marketops_degraded': 9}  (every run since the last --clear; the records the gate may evaluate)
+last_4 runs_evaluated=4  severe_wait_runs=0  consecutive_contention_runs=0  consecutive_marketops_skips=0  review_runs=1  (…)
 distribution_excluded_total=9  distribution_excluded_by_status={'marketops_degraded': 9}
 ```
+
+**Never read one line's rate against another line's denominator.** These are
+three different spans and they were once *two adjacent lines both labelled
+`gate_window`* — a reviewer could reasonably have read `skip_rate=0.3214` as
+"of the last 4 runs" and been wrong; on that state the last-4 skip rate was
+0.25. The spans are:
+
+| line | span | what it is for |
+|---|---|---|
+| `retained_history` | every retained record, bounded at `HEALTH_HISTORY_MAX_RECORDS` = 40 | the operator's rate — is this a healthy *week*? |
+| `since_clear` | every record after `gate_window_start_seq` | the records the gate is allowed to evaluate at all |
+| `last_4` | the last `HEALTH_WINDOW_RUNS` of those | the window the 2-in-4 / 3-in-4 rules actually read |
+
+On a host that has **never been cleared**, `retained_history` and `since_clear`
+are the same runs and the two lines are identical — expected, not a bug; they
+diverge the moment someone runs `--clear`. Two fields on the `last_4` line are
+a fourth span again and say so inline: `consecutive_contention_runs` and
+`consecutive_marketops_skips` are *trailing* counts that run back through
+`since_clear`, not only through the last 4.
 
 **A clean latch is not a clean week.** The gate's own
 `consecutive_marketops_skips` is a *trailing* count: a week in which 9 of 28
@@ -2078,6 +2144,40 @@ precondition 3 (a measured `initial_per_token_cost_seconds`, adaptive batching
 on — an **enable-time** check, and enable-time checks are human steps that
 drift) is visible in the gate history instead of invisible. It is recorded
 only; nothing enforces it per run, deliberately.
+
+##### Weekly: read `contention_rate` — the one control nothing automates
+
+**This is a recurring operator step, not an available field.** Everything else
+in this section eventually summons a human by latching. The residual accepted
+band — waits of **2.0-4.999 s on at most half of passes** (see "The residual
+band, measured") — never will: no rule fires there, by design. `contention_rate`
+is therefore a **human** control on an otherwise automated system, and a control
+nobody is scheduled to read is not a control.
+
+Once a week, on EVO:
+
+```bash
+.venv/bin/python -m app.cli crypto-reconciler-health
+```
+
+Read, in this order:
+
+1. `latch=` — `CLEAR` or `TRIPPED`. If `CLEAR`, the automation has nothing to
+   tell you and the remaining steps are the whole point of the read.
+2. `retained_history … contention_rate=` — the operator's number. `0.0` on a
+   healthy host. **`> 0.25` sustained across weeks is a finding to report**,
+   even with `latch=CLEAR`, because the 50% escape boundary is deliberate: a
+   rate that keeps climbing toward 0.5 is exactly the shape the gate has
+   agreed not to act on.
+3. `retained_history … skip_rate=` — a third of the week doing no work reads as
+   `latch=CLEAR` too (see above).
+4. The per-run lines' `batch_lock_wait_ms_max`. Values parked in the
+   **2,000-4,999 ms** band alongside a non-zero `contention_rate` are the
+   residual rectangle itself, observed. Nothing will latch; you are the alarm.
+
+Take it to a milestone decision rather than tightening a constant in place —
+the lever that would close this band is `HEALTH_REVIEW_RUNS`, and it is
+declined for stated reasons, not unnoticed.
 
 ##### NEVER DELETE THE HEALTH STATE FILE — clear the latch with the CLI
 

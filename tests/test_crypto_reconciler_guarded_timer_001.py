@@ -461,29 +461,62 @@ def test_a_monotonic_climb_from_1s_to_49s_is_escalation_and_trips():
     assert _evaluate_after_every_run(records) == 4
 
 
-def test_the_50_percent_contention_escape_boundary_is_policy_not_an_accident(
-):
+def _contended(seq: int, ms: int) -> dict:
+    """A run that STOPPED on contention with a worst batch wait of `ms`, marked
+    the way the live path marks it."""
+    return guard.run_record({
+        "status": "partial", "stop_reason": "contention",
+        "batch_lock_wait_ms_max": ms,
+    }) | {"seq": seq}
+
+
+# The wait a genuinely CLEAN interleaved run carries: the worst healthy batch
+# maximum ever measured, inside the 1.0-1.3 s band Eric explicitly accepted,
+# and below every rule in the file. A clean run must be CLEAN — see
+# `test_a_50_percent_alternation_fixture_must_actually_alternate`.
+_CLEAN_MS = 1037
+
+
+def _alternating(contended_ms: int, n: int = 40) -> list[dict]:
+    """50% alternation: a contended run at `contended_ms`, then a genuinely
+    clean one, repeating."""
+    return [
+        _contended(i, contended_ms) if i % 2 else _mid_band(_CLEAN_MS, i)
+        for i in range(1, n + 1)
+    ]
+
+
+def test_a_50_percent_alternation_fixture_must_actually_alternate():
+    """THE FIXTURE GUARD, and it is here because this fixture was wrong.
+
+    The previous version of the test below built its "harmful alternation" as
+    `_contended(i, 2500) if i % 2 else _mid_band(2500, i)` — BOTH halves at
+    2,500 ms. That is not alternation, it is uniform mid-band load: all 8 runs
+    were marked, so the 3-of-4 review rule tripped at run 3 and the test read as
+    proof that alternation past the review line latches. It does not. A test
+    that appears to exercise alternation while exercising uniform load is a
+    defect class this project has hit repeatedly, so the property is asserted
+    directly rather than left implicit in a comprehension."""
+    records = _alternating(4999)
+    contended, clean = records[::2], records[1::2]
+    assert [r["stop_reason"] for r in contended] == ["contention"] * 20
+    assert [r["stop_reason"] for r in clean] == ["deadline"] * 20
+    # The half that must be CLEAN carries no mark of any kind — not a wait
+    # mark, not a contention mark. If this ever reads True the sweep below is
+    # measuring uniform load again.
+    assert all(r["review"] is False for r in clean), [r for r in clean if r["review"]]
+    assert all(r["review_reasons"] == [] for r in clean)
+    assert all(r["review"] is True for r in contended)
+
+
+def test_the_50_percent_contention_escape_boundary_is_policy_not_an_accident():
     """ITEM C, pinned. A host on which half of every pass stops on contention,
     indefinitely, never latches on the contention rule — with waits inside the
     accepted band. That is a STATED policy line: every contended pass still
     commits durable batches and returns unworked tokens to the backlog, and
     each is individually marked for review, so it is REPORTED without being
-    auto-disabled.
-
-    The second half of the test is the other half of the policy: the same
-    alternating pattern with waits past the review line DOES latch, which is
-    what makes the boundary a choice about severity rather than a blind spot."""
-    def _contended(seq, ms):
-        return guard.run_record({
-            "status": "partial", "stop_reason": "contention",
-            "batch_lock_wait_ms_max": ms,
-        }) | {"seq": seq}
-
-    benign = []
-    for i in range(1, 41):
-        benign.append(
-            _contended(i, 1037) if i % 2 else _mid_band(1037, i)
-        )
+    auto-disabled."""
+    benign = _alternating(_CLEAN_MS)
     assert _evaluate_after_every_run(benign) is None, (
         "the 50% escape boundary is documented policy; changing it is a "
         "deliberate decision, not a silent one"
@@ -491,12 +524,75 @@ def test_the_50_percent_contention_escape_boundary_is_policy_not_an_accident(
     # ... and every one of those contended runs was still REPORTED.
     assert all(r["review"] for r in benign[::2])
 
-    harmful = []
-    for i in range(1, 9):
-        harmful.append(
-            _contended(i, 2500) if i % 2 else _mid_band(2500, i)
+
+def test_at_50_percent_only_the_severe_rule_catches_anything():
+    """THE CORRECTED CLAIM. The runbook used to say the severe-wait rule (2 in
+    4) and the `>=2000 ms` review line (3 in 4) "independently catch the
+    alternating cases". Measured, with genuinely clean interleaved runs: the
+    review line catches NOTHING at 50%. It marks the contended half only, so
+    the window holds 2 marked runs of 4 and never reaches the 3-of-4 rule; only
+    the >=5000 ms severe rule fires. The residual accepted region is a bounded
+    rectangle in (severity x frequency): 2.0-4.999 s at <=50% frequency."""
+    for ms in (1200, 2000, 2500, 3800, 4999):
+        assert _evaluate_after_every_run(_alternating(ms)) is None, (
+            f"benign 50% alternation at {ms}ms latched — the residual band is "
+            "documented as 2.0-4.999s at <=50%; narrowing it is a policy change"
         )
-    assert _evaluate_after_every_run(harmful) == 3
+    # The review line IS marking these runs. It simply cannot reach 3-of-4 at
+    # this frequency — the reason the claim was wrong, asserted rather than
+    # asserted-about.
+    marked = [r["review"] for r in _alternating(2500)]
+    assert marked[::2] == [True] * 20 and marked[1::2] == [False] * 20
+    assert guard.evaluate_health(_alternating(4999)[:4])["review_runs"] == 2
+
+    for ms in (5000, 5500, 7000):
+        assert _evaluate_after_every_run(_alternating(ms)) == 3, ms
+    reasons = guard.evaluate_health(_alternating(5000)[:3])["reasons"]
+    assert len(reasons) == 1 and "repeated severe batch lock waits" in reasons[0]
+    assert not any("review pressure" in r for r in reasons), (
+        "at 50% the trip must come from the SEVERE rule, not the review line"
+    )
+
+
+def test_the_declined_lever_that_would_close_the_50_percent_escape():
+    """ITEM 4, recorded as a test so the reasoning cannot be lost. The boundary
+    IS closable — just not by a threshold. `HEALTH_REVIEW_RUNS` 3 -> 2 catches
+    benign 50% alternation at run 3 at every wait in the residual band, and
+    still does not fire on the measured healthy passes.
+
+    It is DECLINED, and this test pins WHY: 2-of-4 does not narrow the
+    rectangle, it deletes the policy — it latches a 50%-contended host at
+    1,037 ms, squarely inside the 1.0-1.3 s band Eric explicitly accepted.
+    This test asserts the lever's real behaviour; it does not change the
+    shipped rule (which stays 3, pinned by
+    `test_the_shipped_policy_thresholds_are_exactly_these_numbers`)."""
+    assert guard.HEALTH_REVIEW_RUNS == 3, "the shipped rule is unchanged"
+
+    original = guard.HEALTH_REVIEW_RUNS
+    try:
+        guard.HEALTH_REVIEW_RUNS = 2
+        # It closes the residual band...
+        for ms in (2000, 2500, 3800, 4999):
+            assert _evaluate_after_every_run(_alternating(ms)) == 3, ms
+        # ...but it also latches the ACCEPTED band, which is why it is declined.
+        assert _evaluate_after_every_run(_alternating(_CLEAN_MS)) == 3, (
+            "the declined reason is exactly this: 2-of-4 latches a "
+            "50%-contended host at 1037 ms, inside the accepted band"
+        )
+        # ...and on two 2.0 s runs in a day, arguably still 'occasional'.
+        assert _evaluate_after_every_run(
+            [_mid_band(2000, 1), _mid_band(2000, 2)]
+        ) == 2
+        # It does NOT, however, fire on the six measured healthy passes — the
+        # reviewer's finding, reproduced, so the decline is not justified by a
+        # false claim that the lever is unsafe.
+        for ms in (0, 16, 514, 1037, 1300, 1999):
+            assert _evaluate_after_every_run(
+                [_mid_band(ms, i) for i in range(1, 41)]
+            ) is None, ms
+    finally:
+        guard.HEALTH_REVIEW_RUNS = original
+    assert guard.HEALTH_REVIEW_RUNS == 3
 
 
 def test_the_review_line_does_not_fire_on_the_measured_healthy_band():
@@ -870,6 +966,44 @@ def test_the_runbook_names_the_50_percent_contention_escape_boundary():
     assert "ESCAPE BOUNDARY IS A STATED POLICY LINE" in guard_source
 
 
+def test_the_runbook_states_the_residual_band_and_not_the_wrong_claim():
+    """ITEM 1. The runbook claimed the severe-wait rule and the `>=2000 ms`
+    review line "independently catch the alternating cases". They do not — at
+    50% only the severe rule catches anything (see
+    `test_at_50_percent_only_the_severe_rule_catches_anything`), and the
+    residual accepted region is 2.0-4.999 s at <=50% frequency. Both the
+    runbook and the guard's own comment carried the wrong claim."""
+    runbook = (REPO / "docs/EVO_X2_RUNBOOK.md").read_text()
+    guard_source = (REPO / "app/services/crypto_reconciler_guard.py").read_text()
+    wrong = "independently catch the alternating cases"
+    for name, text in (("runbook", runbook), ("guard", guard_source)):
+        # The phrase may survive only as a quotation of the corrected claim,
+        # never as an assertion. Both files quote it while correcting it.
+        assert "2.0-4.999" in text, name
+        assert "4,999" in text or "4999" in text, name
+    assert runbook.count(wrong) == 1 and "was wrong" in runbook
+    assert "contributes nothing" in runbook
+
+
+def test_the_runbook_records_the_declined_lever_and_the_weekly_read():
+    """ITEMS 4 and 5. A threshold cannot close the 50% escape; the COUNT lever
+    (`HEALTH_REVIEW_RUNS` 3 -> 2) can, and declining it is a decision that has
+    to be findable or the next reviewer rediscovers it as a gap. And because no
+    latch will ever fire in the residual band, `contention_rate` is a HUMAN
+    control — it needs a scheduled read, not merely a printed field."""
+    runbook = (REPO / "docs/EVO_X2_RUNBOOK.md").read_text()
+    guard_source = (REPO / "app/services/crypto_reconciler_guard.py").read_text()
+    assert "considered and DECLINED" in runbook or "CONSIDERED AND DECLINED" in runbook
+    assert "HEALTH_REVIEW_RUNS" in runbook
+    assert "CONSIDERED AND DECLINED" in guard_source.upper()
+    # The correction the reviewer asked for: it is not that NOTHING could close
+    # the boundary — a threshold cannot, the count lever can.
+    assert "not by a threshold" in runbook
+    # Item 5: a recurring step, with a cadence, in the operator's procedure.
+    assert "Weekly: read `contention_rate`" in runbook
+    assert "recurring operator step, not an available field" in runbook
+
+
 def test_clear_latch_refuses_a_blank_operator(filedb, monkeypatch):
     """ITEM B. `app/cli.py` already declined `--clear` without `--operator`, so
     the shipped path was safe — but the invariant that makes the audit trail
@@ -998,6 +1132,40 @@ def test_the_health_cli_actually_prints_the_skip_rate(filedb, monkeypatch, capsy
     assert "marketops_degraded': 2" in out
     assert "distribution_excluded_total=2" in out
     assert "adaptive_batching_active=" in out
+
+
+def test_no_two_reported_spans_share_a_label(filedb, monkeypatch, capsys):
+    """ITEM 3. Two ADJACENT lines were both labelled `gate_window` while
+    reporting different spans — everything since the last clear, and the last
+    `HEALTH_WINDOW_RUNS`. An operator could read `skip_rate=0.3214` as "of the
+    last 4 runs" and be wrong. Each span now has its own word AND its own
+    denominator."""
+    import asyncio
+
+    from app import cli
+
+    _trip_via_marketops(filedb, monkeypatch)
+    capsys.readouterr()
+    asyncio.run(cli.crypto_reconciler_health(settings=filedb.settings()))
+    lines = capsys.readouterr().out.splitlines()
+
+    labels = [ln.split()[0] for ln in lines if ln and not ln.startswith(" ")]
+    assert "gate_window" not in labels and "gate_window_runs" not in " ".join(lines)
+    for label in ("retained_history", "since_clear",
+                  f"last_{guard.HEALTH_WINDOW_RUNS}"):
+        assert labels.count(label) == 1, (label, labels)
+    # Every span carries its own denominator on its own line, so no rate can be
+    # read against another line's count.
+    (history,) = [ln for ln in lines if ln.startswith("retained_history ")]
+    (since_clear,) = [ln for ln in lines if ln.startswith("since_clear ")]
+    (window,) = [ln for ln in lines if ln.startswith(f"last_{guard.HEALTH_WINDOW_RUNS} ")]
+    assert "runs_total=" in history and "skip_rate=" in history
+    assert "runs_total=" in since_clear and "skip_rate=" in since_clear
+    assert "runs_evaluated=" in window and "skip_rate=" not in window
+    # The two TRAILING counts are a span of their own again, and say so rather
+    # than sitting silently on the last-4 line.
+    assert "consecutive_contention_runs=" in window
+    assert "trailing counts run back through `since_clear`" in window
 
 
 def test_the_preflight_skip_statuses_have_exactly_one_definition():

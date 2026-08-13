@@ -1024,6 +1024,29 @@ def test_the_governed_prelude_read_is_budgeted_and_refuses_with_full_telemetry(
     This also closes BLOCKER 1(a) end to end: the refusal that comes out of a
     genuinely blocked prelude carries the whole lock-wait contract rather
     than a set of `None`s.
+
+    THE ASSERTION IS THE PRAGMA WITNESS, NOT THE WALL CLOCK, and that is a
+    correction. This test used to assert `elapsed < 4.0`, reasoning from the
+    fixture (`busy_timeout=6.0`, deadline `2.0` -> derived budget
+    `max(0.5, 2.0/4) = 0.5 s`) that 0.5 s discriminates the budgeted path from
+    a 6.0 s unbudgeted regression. But the governed prelude makes MORE THAN ONE
+    acquisition — the MarketOps-health read here, then `run_once`'s own
+    selection prelude — and this branch's own documented overshoot is 1.01x on
+    idle EVO and **5.80x at load 5-6**. Two acquisitions at `0.5 s x 5.8` is
+    5.8 s: over the old 4.0 s line ON THE BUDGETED PATH, with no regression
+    present. A reviewer measured 3.60 s against it at load ~4 — a 0.4 s margin,
+    i.e. a coin flip. The threshold was chosen against an implicit ~1x
+    overshoot that the same repo documents as unbounded above.
+
+    `db.pragmas` is a DETERMINISTIC witness for the same contract at any load:
+    `500` proves each prelude budget engaged and `6000` proves each was
+    restored — both halves, twice, in order. (`lock_wait_budget_ms_min` is
+    `None` on this path and cannot serve: the prelude is bounded but NOT
+    metered.) Measured on this fixture: `[500, 6000, 500, 6000]` identically on
+    5/5 runs at load 15.75, `elapsed` 2.37-2.51 s. Mutation-checked — deleting
+    the governed prelude's budget yields `[500, 6000]` (only `run_once`'s pair)
+    and `elapsed` 10.73 s, so both the exact sequence and the coarse backstop
+    below fail on the regression this test exists to catch.
     """
     d = tmp_path / "governed"
     d.mkdir()
@@ -1054,9 +1077,20 @@ def test_the_governed_prelude_read_is_budgeted_and_refuses_with_full_telemetry(
 
     assert r["status"] == "db_locked", r
     assert r["external_calls"] == 0
-    assert elapsed < 4.0, (
-        f"the governed prelude blocked for {elapsed:.2f}s against a 0.5s "
-        "derived budget"
+    # The deterministic half of the contract: both prelude acquisitions took
+    # the 0.5 s derived budget (500) and both handed the connection back at its
+    # original 6.0 s timeout (6000), in that order. Load-independent.
+    assert db.pragmas == [500, 6000, 500, 6000], (
+        f"prelude budget/restore witness broken: {db.pragmas} — [500, 6000] "
+        "alone means the GOVERNED prelude read ran unbudgeted at the "
+        "connection timeout and only run_once's prelude was covered"
+    )
+    # A coarse backstop only, deliberately far from both measured populations
+    # (budgeted 2.37-2.51 s here / 3.60 s at load ~4; unbudgeted 10.73 s). It
+    # is NOT the load-bearing assertion — see the docstring.
+    assert elapsed < 6.0, (
+        f"the governed prelude blocked for {elapsed:.2f}s; the unbudgeted "
+        "shape measures ~10.7s on this fixture"
     )
     for key in ("lock_wait_ms", "lock_wait_histogram_ms", "lock_wait_measurements"):
         assert r[key] is not None, f"{key} censored on a db_locked refusal"

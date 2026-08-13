@@ -332,13 +332,38 @@ HEALTH_SEVERE_WAIT_RUNS = 2
 # STOPS ON CONTENTION, INDEFINITELY, NEVER LATCHES ON THIS RULE. That is
 # accepted, for reasons that have to hold for it to stay accepted: every
 # contended pass still commits its durable batches and returns unworked tokens
-# to the backlog (nothing is lost or corrupted), each such run is individually
-# marked `review=True` and visible in `crypto-reconciler-health`, and the
-# severe-wait rule (2 in 4) plus Rule 0 (>=2000 ms -> review -> 3 in 4)
-# independently catch the alternating cases whose waits are long enough to hurt
-# a co-tenant. A 50%-contended host that is NOT hurting anyone is a host to
-# report, not a host to auto-disable. Restated in docs/EVO_X2_RUNBOOK.md so an
-# operator reads the same boundary the code implements.
+# to the backlog (nothing is lost or corrupted), and each such run is
+# individually marked `review=True` and visible in `crypto-reconciler-health`.
+#
+# THE RESIDUAL BAND IS 2.0-4.999 s AT <=50% FREQUENCY, AND AN EARLIER VERSION
+# OF THIS COMMENT UNDERSTATED IT. It claimed the severe-wait rule (2 in 4)
+# "plus Rule 0 (>=2000 ms -> review -> 3 in 4) independently catch" the
+# alternating cases. Rule 0 does not: a second sweep — the contended run at
+# each wait, with GENUINELY CLEAN interleaved runs (1037 ms) — latches never in
+# 40 runs at 1200/2000/2500/3800/4999 ms, and at run 3 for 5000/5500/7000 ms.
+# At 50% alternation Rule 0 marks only the contended half, so the window holds
+# 2 marked runs of 4 and never reaches the 3-of-4 rule; ONLY the >=5000 ms
+# severe rule catches it. What is accepted is therefore a bounded rectangle in
+# (severity x frequency): waits of 2.0-4.999 s on at most half of passes.
+#
+# THE LEVER THAT WOULD CLOSE IT, CONSIDERED AND DECLINED. No THRESHOLD can
+# close this boundary; the COUNT can. `HEALTH_REVIEW_RUNS` 3 -> 2 catches
+# benign 50% alternation at run 3 at every wait in that table, and does not
+# fire on the six measured healthy passes (sustained 0/16/514/1037/1300/1999 ms
+# stay clear — a healthy pass is not a contention stop and is not marked at
+# all). Declined because it does not narrow the rectangle, it deletes the
+# policy: it latches a 50%-contended host at 1037 ms, squarely inside the
+# 1.0-1.3 s band Eric explicitly accepted, and 2-of-4 would also latch on two
+# 2.0 s runs in a day (arguably still "occasional") while making the severe-
+# wait rule largely redundant. Recorded so the next reviewer does not
+# rediscover it as a gap.
+#
+# A 50%-contended host that is NOT hurting anyone is a host to report, not a
+# host to auto-disable — but NOTHING WILL EVER SUMMON ANYONE for the residual
+# band, so `contention_rate` (see `skip_summary`) is a HUMAN control and
+# reading it is a scheduled weekly operator step. Restated in
+# docs/EVO_X2_RUNBOOK.md so an operator reads the same boundary the code
+# implements.
 HEALTH_CONSECUTIVE_CONTENTION_RUNS = 3
 # Rule 3 — MARKETOPS REGRESSION. Two CONSECUTIVE pre-flight skips for
 # `marketops_degraded`. One skip is the pre-flight doing its job on a
@@ -571,7 +596,12 @@ def skip_summary(records: list[dict]) -> dict:
     boundary the contention rule deliberately does not catch: a host at 50%
     sustained contention never latches (see
     `HEALTH_CONSECUTIVE_CONTENTION_RUNS`), so the operator has to be able to
-    READ that rate rather than wait for a latch that is never coming."""
+    READ that rate rather than wait for a latch that is never coming.
+
+    Because nothing automated will ever fire on the residual 2.0-4.999 s at
+    <=50% band, this field is a HUMAN control on an automated system, and
+    docs/EVO_X2_RUNBOOK.md schedules reading it WEEKLY. An unread control is
+    not a control."""
     total = len(records)
     skips_by_status: dict[str, int] = {}
     excluded_by_status: dict[str, int] = {}

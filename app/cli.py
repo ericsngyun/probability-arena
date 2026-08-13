@@ -3485,21 +3485,31 @@ async def crypto_reconciler_health(
     all_runs = list(state.get("runs", []))
     history_skips = guard.skip_summary(all_runs)
     window_skips = guard.skip_summary(window)
+    # THREE SPANS, THREE NAMES — never one word for two denominators. A
+    # reviewer read two ADJACENT lines both labelled `gate_window`, one
+    # reporting everything since the last clear and one reporting only the last
+    # HEALTH_WINDOW_RUNS, and could plausibly have read `skip_rate=0.3214` as
+    # "of the last 4 runs". Every line below names its span and carries its own
+    # denominator, so no two spans share a word. (On a host that has never been
+    # cleared `retained_history` and `since_clear` are the SAME runs and the two
+    # lines are identical; that is expected, and is why both are labelled rather
+    # than one being dropped.)
     print(
-        f"skips_total={history_skips['skips_total']}  "
+        f"retained_history skips_total={history_skips['skips_total']}  "
         f"skip_rate={history_skips['skip_rate']}  "
         f"runs_total={history_skips['runs_total']}  "
         f"skips_by_status={history_skips['skips_by_status']}  "
         f"contention_total={history_skips['contention_total']}  "
         f"contention_rate={history_skips['contention_rate']}  "
-        f"(retained history, bounded at "
+        f"(every retained run, bounded at "
         f"{guard.HEALTH_HISTORY_MAX_RECORDS} runs)"
     )
     print(
-        f"gate_window skips_total={window_skips['skips_total']}  "
+        f"since_clear skips_total={window_skips['skips_total']}  "
         f"skip_rate={window_skips['skip_rate']}  "
         f"runs_total={window_skips['runs_total']}  "
-        f"skips_by_status={window_skips['skips_by_status']}"
+        f"skips_by_status={window_skips['skips_by_status']}  "
+        f"(every run since the last --clear; the records the gate may evaluate)"
     )
     print(
         f"distribution_excluded_total="
@@ -3510,11 +3520,14 @@ async def crypto_reconciler_health(
         f"from the lock-wait distribution, counted here)"
     )
     print(
-        f"gate_window_runs={verdict['window_runs']}  "
+        f"last_{guard.HEALTH_WINDOW_RUNS} runs_evaluated={verdict['window_runs']}  "
         f"severe_wait_runs={verdict['severe_wait_runs']}  "
         f"consecutive_contention_runs={verdict['consecutive_contention_runs']}  "
         f"consecutive_marketops_skips={verdict['consecutive_marketops_skips']}  "
-        f"review_runs={verdict['review_runs']}"
+        f"review_runs={verdict['review_runs']}  "
+        f"(the rolling window the 2-in-4 / 3-in-4 rules read; the two trailing "
+        f"counts run back through `since_clear`, not only these "
+        f"{guard.HEALTH_WINDOW_RUNS})"
     )
     print(
         f"policy: review-mark>={guard.BATCH_LOCK_WAIT_REVIEW_MS}ms batch wait, "
