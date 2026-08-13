@@ -2006,8 +2006,10 @@ if any stops holding, the rule must be re-chosen:
   a co-tenant.
 
 A 50%-contended host that is not actually hurting anyone is a host to report,
-not a host to auto-disable. Read the skip/contention rates off
-`crypto-reconciler-health` (below) rather than waiting for the latch.
+not a host to auto-disable — and a boundary an operator cannot see would be a
+blind spot rather than a policy, so `crypto-reconciler-health` prints
+`contention_total` / `contention_rate` beside the skip rate (below). **Read the
+rate; do not wait for a latch that is not coming.**
 
 #### The auto-disable latch, and how a human clears it
 
@@ -2053,6 +2055,7 @@ exactly the ones that never write a run row.
 
 ```
 skips_total=9  skip_rate=0.3214  runs_total=28  skips_by_status={'marketops_degraded': 9}
+  contention_total=0  contention_rate=0.0
 distribution_excluded_total=9  distribution_excluded_by_status={'marketops_degraded': 9}
 ```
 

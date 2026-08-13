@@ -3490,6 +3490,8 @@ async def crypto_reconciler_health(
         f"skip_rate={history_skips['skip_rate']}  "
         f"runs_total={history_skips['runs_total']}  "
         f"skips_by_status={history_skips['skips_by_status']}  "
+        f"contention_total={history_skips['contention_total']}  "
+        f"contention_rate={history_skips['contention_rate']}  "
         f"(retained history, bounded at "
         f"{guard.HEALTH_HISTORY_MAX_RECORDS} runs)"
     )

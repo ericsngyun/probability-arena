@@ -63,6 +63,7 @@ THE THREE LAYERS
      is the NEXT rung — retrying into the same holder — not the wait that was
      just paid. Anyone who reads 7000 ms as "no wait can exceed 7 s" has
      misread it.
+
      WHAT IS DELIBERATELY *NOT* A PRE-FLIGHT SKIP, and why. The runbook's
      precondition 3 — "a calibrated `initial_per_token_cost_seconds`, with
      adaptive batching enabled" — is a real, known-unsafe condition for an
@@ -564,16 +565,25 @@ def skip_summary(records: list[dict]) -> dict:
     `lock_wait_distribution_eligible` is False, which is the pre-flight skips
     PLUS the prelude-blocked `db_locked` passes the same precedent already
     counted separately. Reported alongside rather than merged, because a pass
-    blocked in the prelude did try and a skip did not."""
+    blocked in the prelude did try and a skip did not.
+
+    `contention_rate` is here for the same reason and answers the escape
+    boundary the contention rule deliberately does not catch: a host at 50%
+    sustained contention never latches (see
+    `HEALTH_CONSECUTIVE_CONTENTION_RUNS`), so the operator has to be able to
+    READ that rate rather than wait for a latch that is never coming."""
     total = len(records)
     skips_by_status: dict[str, int] = {}
     excluded_by_status: dict[str, int] = {}
+    contention_total = 0
     for record in records:
         status = str(record.get("status") or "unknown")
         if status in PREFLIGHT_SKIP_STATUSES:
             skips_by_status[status] = skips_by_status.get(status, 0) + 1
         if record.get("lock_wait_distribution_eligible") is False:
             excluded_by_status[status] = excluded_by_status.get(status, 0) + 1
+        if is_contention_stop(record):
+            contention_total += 1
     skips_total = sum(skips_by_status.values())
     excluded_total = sum(excluded_by_status.values())
     return {
@@ -583,6 +593,8 @@ def skip_summary(records: list[dict]) -> dict:
         "skips_by_status": dict(sorted(skips_by_status.items())),
         "distribution_excluded_total": excluded_total,
         "distribution_excluded_by_status": dict(sorted(excluded_by_status.items())),
+        "contention_total": contention_total,
+        "contention_rate": round(contention_total / total, 4) if total else 0.0,
     }
 
 

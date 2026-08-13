@@ -960,7 +960,24 @@ def test_the_skip_summary_separates_a_skip_from_a_prelude_blocked_pass():
         "runs_total": 0, "skips_total": 0, "skip_rate": 0.0,
         "skips_by_status": {}, "distribution_excluded_total": 0,
         "distribution_excluded_by_status": {},
+        "contention_total": 0, "contention_rate": 0.0,
     }
+
+
+def test_the_50_percent_contention_that_never_latches_is_still_READABLE():
+    """The other half of item C: a boundary an operator cannot see is not a
+    policy, it is a blind spot. The rate the contention rule declines to act on
+    is printed, so the host is REPORTED even though it is not auto-disabled."""
+    records = []
+    for i in range(1, 41):
+        records.append(
+            guard.run_record({
+                "status": "partial", "stop_reason": "contention",
+                "batch_lock_wait_ms_max": 1037,
+            }) | {"seq": i} if i % 2 else _mid_band(1037, i)
+        )
+    assert _evaluate_after_every_run(records) is None
+    assert guard.skip_summary(records)["contention_rate"] == 0.5
 
 
 def test_the_health_cli_actually_prints_the_skip_rate(filedb, monkeypatch, capsys):
