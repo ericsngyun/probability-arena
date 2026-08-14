@@ -1311,6 +1311,17 @@ class TestTelemetryIsNotAContentionSource:
 # --- 12. both writers, one stream ------------------------------------------
 
 
+def _load_maintenance_module():
+    import importlib.util
+
+    path = (Path(__file__).resolve().parents[1] / "scripts"
+            / "sqlite_analyze_maintenance.py")
+    spec = importlib.util.spec_from_file_location("_gate7_maint", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 class TestOneEvaluationPlane:
     @pytest.mark.asyncio
     async def test_writer_b_lands_in_the_same_file_as_writer_a(self, session):
@@ -1333,21 +1344,73 @@ class TestOneEvaluationPlane:
         stop condition to `{tick_aggregation, backup}` because that is the
         population the `> 6` limit was calibrated on. Writer B's records must
         land OUTSIDE that scope — a new writer must not be able to move a
-        governed threshold by existing."""
-        import importlib.util
+        governed threshold by existing.
 
+        SCOPE OF THE ZERO BELOW (LOW-1). `out_of_scope_flat_predicate_hits == 0`
+        is a claim about THIS pass — a single UNCONTENDED one — and nothing
+        more. It is FALSE as a general statement about writer B, and the test
+        that follows measures the 1 a contended pass produces."""
         adapter = seed(session)
         await run_pass(session, adapter=adapter)
-        path = (Path(__file__).resolve().parents[1] / "scripts"
-                / "sqlite_analyze_maintenance.py")
-        spec = importlib.util.spec_from_file_location("_gate7_maint", path)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+        module = _load_maintenance_module()
         assert sparse.TELEMETRY_WRITER_NAME not in module.LOCK_EVENT_WRITERS
         tally = module._lock_tally(get_sink().path)
         assert tally["lock_events"] == 0
         assert tally["out_of_scope_events"] == 1
         assert tally["out_of_scope_flat_predicate_hits"] == 0
+
+    @pytest.mark.asyncio
+    async def test_a_contended_pass_is_visible_without_moving_lock_events(
+        self, session
+    ):
+        """THE BEHAVIOUR THE FIELD EXISTS FOR, and the one the test above does
+        not cover. `_lock_tally`'s flat predicate is
+        `lock_wait_ms > 0 or retry_count > 0`. Writer B emits no `lock_wait_ms`
+        at all, so its ONLY route into that predicate is `retry_count` — which
+        is exactly what a real retried batch produces.
+
+        Both halves matter and are asserted together: the contended pass IS
+        counted in `out_of_scope_flat_predicate_hits`, so the scoping stays
+        auditable rather than silent, and it is NOT counted in `lock_events`,
+        so a new writer still cannot move a threshold calibrated on
+        `{tick_aggregation, backup}`.
+
+        Two passes, so the two counters are distinguishable from each other:
+        one clean, one that drives the retry ladder for real."""
+        await run_pass(session, adapter=seed(session, count=2))
+
+        tripped = {"done": False}
+        real_commit = Session.commit
+
+        def flaky(self, *a, **k):
+            staging_observations = any(
+                isinstance(obj, CryptoHorizonObservation) for obj in self.new)
+            if staging_observations and not tripped["done"]:
+                tripped["done"] = True
+                raise sqlite3.OperationalError("database is locked")
+            return real_commit(self, *a, **k)
+
+        for n in (3, 4):
+            add_birth(session, n, anchor=NOW - timedelta(hours=6, minutes=n))
+        session.commit()
+        adapter = FakeAdapter(
+            {token_id(n): [pair(token_id(n))] for n in (3, 4)})
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(Session, "commit", flaky)
+            await run_pass(session, adapter=adapter)
+        assert tripped["done"], "the retry ladder was never exercised"
+
+        records = events()
+        assert [e["writer_name"] for e in records] == [
+            sparse.TELEMETRY_WRITER_NAME] * 2
+        assert [e["retry_count"] for e in records] == [0, 1]
+
+        tally = _load_maintenance_module()._lock_tally(get_sink().path)
+        assert tally["out_of_scope_events"] == 2
+        assert tally["out_of_scope_flat_predicate_hits"] == 1, (
+            "a contended writer-B pass must stay VISIBLE in the ANALYZE record")
+        assert tally["lock_events"] == 0, (
+            "a contended writer-B pass must not move the governed count")
 
 
 # --- 13. the gate text says only what is now true ---------------------------
