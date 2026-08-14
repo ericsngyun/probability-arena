@@ -59,6 +59,57 @@ WRITER_NAMES = frozenset({
     "tennis_tape", "test_writer",
 })
 
+# GATE2-WRITER-TELEMETRY-001 — the writer-pass label sets.
+#
+# WHY THESE ARE CLOSED SETS AND NOT A FREE SLUG. `run_status`/`stop_reason`
+# carry a writer's OWN vocabulary, which is low-cardinality by construction,
+# but "low cardinality by construction" is exactly the assumption the
+# high-cardinality guard exists to stop trusting. A closed set keeps the
+# guarantee structural.
+#
+# WHY THE NORMALIZATION LIVES IN THE BUILDER, NOT HERE. A closed set on its
+# own has a failure mode this milestone must not ship: a status added by some
+# future milestone would fail validation, and the sink's contract is to COUNT
+# AND DROP — so the whole pass's telemetry would vanish silently, which is the
+# precise failure this gate exists to end. `normalize_run_status`/
+# `normalize_stop_reason` in `app.telemetry.writer_pass` therefore map any
+# unrecognised value to "other" BEFORE the event reaches the sink. The
+# validator stays closed; the event never disappears.
+RUN_STATUSES = frozenset({
+    # CryptoTapeTapeRecorder / run_scheduled_reconciliation (writer A)
+    "ok", "dry_run", "error", "partial", "truncated", "dry_run_partial",
+    "skipped_overlap", "skipped_contention", "lock_unavailable",
+    "concurrent_write_conflict", "backlog_expiring", "unsafe_host_cost",
+    "marketops_degraded", "skipped_health_latch", "disabled",
+    # The `invalid_*` config-refusal FAMILY is collapsed to this single label
+    # by the builder. It is an open prefix (one member per validated setting),
+    # so enumerating it here would guarantee this set drifts behind the code.
+    # A refusal is a misconfiguration, not a host observation — `guard.
+    # records_feed_gate` already excludes the family from the rolling gate for
+    # that reason, so one label is the right resolution for it.
+    "invalid_config",
+    # crypto_sparse_observation (writer B)
+    "db_locked", "ambiguous_cohort", "provider_policy_violation",
+    "window_too_short", "no_cohort",
+    # the normalization sentinel — a status this set does not know
+    "other",
+})
+
+STOP_REASONS = frozenset({
+    # writer A
+    "overlap", "contention", "deadline", "lock_wait_budget",
+    "unsafe_host_cost",
+    # writer B
+    "observe_limit", "complete",
+    "other",
+})
+
+# DERIVED, NOT ASSERTED — see `app.telemetry.writer_pass.resolve_run_source`.
+# "scheduled" is claimed only on the strength of systemd's own
+# `INVOCATION_ID`, which systemd sets on every unit invocation and a shell
+# does not.
+RUN_SOURCES = frozenset({"scheduled", "manual", "unknown"})
+
 # ~12 fixed coarse table families — never a bare table name or row value.
 TABLE_GROUPS = frozenset({
     "market_ticks", "signals", "forecasts", "outcomes", "scores",
@@ -87,6 +138,27 @@ ALLOWED_FIELDS = frozenset({
     # unused by the 001A writers, pre-registered so event_version=1 keeps
     # ONE field set across 001A-001D and old readers never reject new lines:
     "marketops_cycle_id", "scanner_run_id", "cohort_id", "job_id",
+    # ---- GATE2-WRITER-TELEMETRY-001: the writer-PASS fields --------------
+    # All optional and nullable; REQUIRED_FIELDS is deliberately unchanged, so
+    # every event the 001A writers emit today still validates byte-identically.
+    # These are the quantities the two Solana writers already measure per pass
+    # and previously discarded.
+    #
+    # THE FOUR LOCK-WAIT FIELDS ARE NOT INTERCHANGEABLE AND MUST NOT BE MERGED.
+    # `lock_wait_ms` (above, pre-existing) is the PASS TOTAL, and it carries a
+    # known systematic floor: one `run_row` sample and one `finalize` sample
+    # per pass are once-per-pass bookkeeping commits, not contention. The
+    # reconciler's breakers read `batch_lock_wait_ms_max` and ONLY that. The
+    # other two phases are recorded in their own right — a rising `finalize`
+    # wait is what `TimeoutStartSec` has to cover, and a rising `run_row` wait
+    # is a real report about the host — but neither is contention and neither
+    # may be summed into the batch figure. Storing all four separately is what
+    # keeps that distinction from being re-flattened by a later reader.
+    "run_status", "stop_reason", "run_source", "gate_bypassed",
+    "batch_count", "batch_lock_wait_ms_max", "run_row_lock_wait_ms",
+    "finalize_lock_wait_ms", "write_hold_ms_max", "lock_failures",
+    "adaptive_batching_active", "adaptive_batch_size_max",
+    "adaptive_time_budget_ms", "adaptive_initial_per_token_cost_ms",
 })
 
 REQUIRED_FIELDS = frozenset({
@@ -99,7 +171,20 @@ REQUIRED_FIELDS = frozenset({
 _TIMESTAMP_FIELDS = ("started_at", "first_mutation_at", "commit_started_at",
                      "finished_at")
 _DURATION_FIELDS = ("duration_ms", "transaction_hold_ms", "lock_wait_ms",
-                    "commit_ms", "rollback_ms", "provider_io_ms_in_txn")
+                    "commit_ms", "rollback_ms", "provider_io_ms_in_txn",
+                    # GATE2-WRITER-TELEMETRY-001 — same impossible-timing rule
+                    # (non-negative int or absent) as every other duration.
+                    "batch_lock_wait_ms_max", "run_row_lock_wait_ms",
+                    "finalize_lock_wait_ms", "write_hold_ms_max",
+                    "adaptive_time_budget_ms",
+                    "adaptive_initial_per_token_cost_ms")
+# GATE2-WRITER-TELEMETRY-001 — non-negative integer counts. Separate from the
+# durations only so the rejection message names the right kind of impossible.
+_COUNT_FIELDS = ("batch_count", "lock_failures", "adaptive_batch_size_max")
+# GATE2-WRITER-TELEMETRY-001 — strict booleans. `1`/`0` are rejected rather
+# than coerced: a field that silently accepts both is a field two readers will
+# eventually disagree about.
+_BOOL_FIELDS = ("gate_bypassed", "adaptive_batching_active")
 # correlation ids are integers, never names/strings — keeps the "cohort
 # names never emitted" boundary structural, not regex-dependent
 _INT_ID_FIELDS = ("marketops_cycle_id", "scanner_run_id", "cohort_id", "job_id")
@@ -211,6 +296,19 @@ def validate_event(event: dict) -> dict:
         if value is not None and value not in QUALITY_TIERS:
             raise TelemetryValidationError(f"{field} outside quality tiers")
 
+    # GATE2-WRITER-TELEMETRY-001 — writer-pass label sets. Unrecognised values
+    # are normalized to "other" by `app.telemetry.writer_pass` BEFORE they get
+    # here, so reaching this raise means a caller bypassed the builder.
+    run_status = event.get("run_status")
+    if run_status is not None and run_status not in RUN_STATUSES:
+        raise TelemetryValidationError("run_status outside bounded label set")
+    stop_reason = event.get("stop_reason")
+    if stop_reason is not None and stop_reason not in STOP_REASONS:
+        raise TelemetryValidationError("stop_reason outside bounded label set")
+    run_source = event.get("run_source")
+    if run_source is not None and run_source not in RUN_SOURCES:
+        raise TelemetryValidationError("run_source outside enum")
+
     groups = event.get("table_groups")
     if groups is not None:
         if (not isinstance(groups, list)
@@ -236,6 +334,19 @@ def validate_event(event: dict) -> dict:
         value = event.get(field)
         if value is not None and not isinstance(value, int):
             raise TelemetryValidationError(f"{field} must be an integer id")
+    # GATE2-WRITER-TELEMETRY-001. `isinstance(True, int)` is True in Python, so
+    # the count check excludes bools explicitly — otherwise `batch_count=True`
+    # would validate as the integer 1.
+    for field in _COUNT_FIELDS:
+        value = event.get(field)
+        if value is not None and (
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+        ):
+            raise TelemetryValidationError(f"impossible count: {field}={value!r}")
+    for field in _BOOL_FIELDS:
+        value = event.get(field)
+        if value is not None and not isinstance(value, bool):
+            raise TelemetryValidationError(f"{field} must be a bool")
 
     # secret scan on every string value (schema-controlled fields only is the
     # first line of defense; this is the second)
