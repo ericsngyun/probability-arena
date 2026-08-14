@@ -1651,8 +1651,15 @@ async def test_the_pass_reports_write_lock_instrumentation(session):
     assert lock["retry_attempts"] == 0
     assert lock["write_hold_ms_max"] >= 0.0
     assert lock["commit_ms_max"] >= 0.0
-    # honest about what it is NOT
-    assert lock["persisted"] is False
+    # GATE7-SPARSE-TELEMETRY-001: these are now persisted per pass to the
+    # non-SQLite 001A JSONL sink, so the gate text this payload used to carry
+    # ("NOT persisted to a run table — install no timer until it is") is no
+    # longer true and no longer here. `persisted` is the ACTUAL outcome of this
+    # pass's append, not a claim — see
+    # test_a_failed_append_reports_persisted_false_rather_than_claiming_success.
+    assert lock["persisted"] is True
+    assert "run table" in lock["note"]
+    assert "no timer is installed" in lock["note"]
 
 
 @pytest.mark.asyncio
