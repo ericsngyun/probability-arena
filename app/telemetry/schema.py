@@ -10,6 +10,20 @@ it never raises into the writer.
 Never emitted: secrets, provider payloads, tokens/credentials, SQL bind
 parameters, raw stack traces, tickers, token IDs, cohort names, or any
 market-action field (see ``docs/SAFETY_BOUNDARIES.md``).
+
+HARD RULE (GATE7-SPARSE-TELEMETRY-001): ``commit_ms`` must be filtered by
+``writer_name`` before any cross-writer aggregation. Two writers put different
+REDUCTIONS in that one field and both are stamped ``commit_quality="exact"``:
+``tick_aggregation`` records the LAST sub-window commit of its pass, and
+``crypto_horizon_observe`` records the MAXIMUM over ``batch_count`` commits.
+Both labels are honest — ``QUALITY_TIERS`` describes how a sample was
+MEASURED, never how samples were REDUCED, so it cannot carry the distinction —
+and the reduction is recoverable only from ``writer_name`` /
+``operation_name``. No field is added to carry it: this envelope is the safety
+boundary for five writers and must not grow a label describing one lane's
+bookkeeping. A mean of ``commit_ms`` taken across writers is a mean of a
+last-value and a max, and is a number about nothing. The canonical accessor
+and the full rationale are in ``docs/SQLITE_LOCK_TELEMETRY_001A.md``.
 """
 
 from __future__ import annotations
@@ -133,6 +147,8 @@ ALLOWED_FIELDS = frozenset({
     "systemd_unit", "process_id", "host", "started_at", "first_mutation_at",
     "commit_started_at", "finished_at", "duration_ms", "transaction_hold_ms",
     "transaction_hold_quality", "lock_wait_ms", "lock_wait_quality",
+    # `commit_ms` CARRIES A PER-WRITER REDUCTION — filter by `writer_name`
+    # before aggregating it. See the HARD RULE in this module's docstring.
     "commit_ms", "commit_quality", "rollback_ms", "rollback_quality",
     "retry_count", "retry_limit", "attempt_number", "outcome",
     "exception_class", "exception_category", "sqlite_error_code",

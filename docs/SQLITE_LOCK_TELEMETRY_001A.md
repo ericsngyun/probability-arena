@@ -149,3 +149,54 @@ neither 001A writer emits parent/child events, and the GATE2 writer-pass
 records are all parents. Whoever adds the first nested unit in 001E must
 either promote `parent_event_id` to required for child events or accept that a
 degraded child loses its correlation.
+
+## Hard rule recorded by GATE7-SPARSE-TELEMETRY-001
+
+### `commit_ms` MUST be filtered by `writer_name` before any cross-writer aggregation
+
+**This is a hard rule, not a preference, and it is deliberately NOT fixed by a
+new field.** The schema is the safety boundary and it serves five writers;
+adding a `commit_ms_reduction` label to carry this would widen that boundary to
+describe one lane's bookkeeping.
+
+`commit_ms` is documented as "`after_commit` − `before_commit`", quality
+`exact`. Two writers now put genuinely different REDUCTIONS in it:
+
+| `writer_name` | what one record's `commit_ms` is | denominator on the record |
+|---|---|---|
+| `tick_aggregation` | the **last** sub-window commit of the pass | — |
+| `crypto_horizon_observe` | the **maximum** over `batch_count` commits | `batch_count` |
+
+Both are stamped `commit_quality="exact"` and both are honest: `QUALITY_TIERS`
+is a closed frozenset describing how a sample was **measured**, never how
+samples were **reduced**, so the label genuinely cannot carry the distinction.
+The mapping is defensible; the record is under-labelled. The reduction is
+recoverable **only** from `writer_name` (and `operation_name`), which is why
+the filter is mandatory rather than advisory: a mean of `commit_ms` taken
+across writers is a mean of a last-value and a max, and it is not a
+number about anything.
+
+No consumer reads `commit_ms` back today —
+`scripts/sqlite_analyze_maintenance.py::_lock_tally` reads only `started_at`,
+`lock_wait_ms`, `retry_count`, `writer_name`, `operation_name` and `outcome`;
+`read_events` is tests-only; `app/cli.py` aggregates in-memory stats, not the
+sink. **This note exists for the first consumer that does.** Take the samples
+this way and nothing else:
+
+```python
+def commit_ms_samples(events, writer_name):
+    """The ONLY supported way to read commit_ms out of the 001A sink.
+
+    Never aggregate this field across writer_name: the reduction differs per
+    writer (last commit vs max over batch_count) and is recoverable only from
+    writer_name/operation_name, not from commit_quality.
+    """
+    return [
+        e["commit_ms"] for e in events
+        if e.get("writer_name") == writer_name and e.get("commit_ms") is not None
+    ]
+```
+
+Pinned by `tests/test_gate7_sparse_telemetry_001.py::TestCommitMsReductionIsRecorded`,
+which extracts the fenced block above **by fence** and executes it, and which
+asserts the same rule is present in `app/telemetry/schema.py.__doc__`.

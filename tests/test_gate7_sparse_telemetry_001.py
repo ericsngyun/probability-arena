@@ -55,6 +55,7 @@ from app.services import crypto_sparse_observation as sparse
 from app.services.crypto_horizon import MEMBERSHIP_ROLLING, CryptoHorizonService
 from app.telemetry import writer_pass
 from app.telemetry.schema import (
+    ALLOWED_FIELDS,
     REQUIRED_FIELDS,
     RUN_STATUSES,
     STOP_REASONS,
@@ -1413,6 +1414,108 @@ class TestOneEvaluationPlane:
             "a contended writer-B pass must not move the governed count")
 
 
+# --- 12b. the commit_ms reduction collision, recorded rather than "fixed" ---
+
+
+DOC_001A = (Path(__file__).resolve().parents[1] / "docs"
+            / "SQLITE_LOCK_TELEMETRY_001A.md")
+COMMIT_MS_ANCHOR = (
+    "### `commit_ms` MUST be filtered by `writer_name` before any "
+    "cross-writer aggregation")
+
+
+def _fenced_python_after(text: str, anchor: str) -> str:
+    """The FIRST ```python fence after `anchor`, or an assertion failure.
+
+    Selecting by fence rather than by prose is the point: this project has had
+    five iterations of a pin landing on a paragraph or on a neighbouring block
+    and then quietly matching nothing."""
+    assert anchor in text, f"the anchor heading is gone: {anchor!r}"
+    after = text.split(anchor, 1)[1]
+    marker = "\n```python\n"
+    assert marker in after, "no ```python fence under the anchor"
+    body, _, rest = after.split(marker, 1)[1].partition("\n```")
+    assert rest is not None and body.strip(), "the fence under the anchor is empty"
+    return body
+
+
+class TestCommitMsReductionIsRecorded:
+    """MEDIUM-2, RECORDED — deliberately not "fixed".
+
+    `commit_ms` means "last sub-window commit" for `tick_aggregation` and
+    "max over `batch_count` commits" for writer B, both stamped
+    `commit_quality="exact"`. `QUALITY_TIERS` is a closed frozenset describing
+    how a sample was MEASURED, never how samples were REDUCED, so the label
+    cannot carry the distinction — and a new field is the wrong answer, because
+    the envelope is the safety boundary for five writers. The mapping is
+    defensible; the record is under-labelled. So the rule is written down and
+    pinned HERE, on the executable artifact, not on prose."""
+
+    def test_the_hard_rule_is_in_the_schemas_own_docstring(self):
+        """A runtime attribute, so this pin cannot land on a comment or on the
+        wrong block: `schema.__doc__` either says it or it does not."""
+        import app.telemetry.schema as schema_mod
+
+        doc = schema_mod.__doc__ or ""
+        assert "commit_ms" in doc and "writer_name" in doc
+        assert "cross-writer aggregation" in doc
+        # the two reductions, both named, so removing either is a failure
+        assert "tick_aggregation" in doc and "crypto_horizon_observe" in doc
+        assert "MEASURED" in doc and "REDUCED" in doc
+        # and the refusal to widen the boundary
+        assert "safety boundary" in doc
+        assert "commit_ms" in ALLOWED_FIELDS
+        assert "commit_ms_reduction" not in ALLOWED_FIELDS, (
+            "a field was added to carry the reduction; the note is the fix")
+
+    def test_the_canonical_accessor_in_the_doc_actually_filters_by_writer(self):
+        """SELECTED BY FENCE AND EXECUTED. The doc's snippet is run against a
+        two-writer event list; if it ever stops filtering by `writer_name` — or
+        is replaced by prose, or the fence is emptied — this fails."""
+        snippet = _fenced_python_after(DOC_001A.read_text(), COMMIT_MS_ANCHOR)
+        namespace: dict = {}
+        exec(compile(snippet, str(DOC_001A), "exec"), namespace)
+        commit_ms_samples = namespace["commit_ms_samples"]
+
+        corpus = [
+            {"writer_name": "tick_aggregation", "commit_ms": 40},
+            {"writer_name": "crypto_horizon_observe", "commit_ms": 9},
+            {"writer_name": "crypto_horizon_observe", "commit_ms": 11},
+            # a pass that measured nothing omits the field entirely
+            {"writer_name": "crypto_horizon_observe"},
+            {"writer_name": "backup", "commit_ms": 300},
+        ]
+        assert commit_ms_samples(corpus, "crypto_horizon_observe") == [9, 11]
+        assert commit_ms_samples(corpus, "tick_aggregation") == [40]
+        assert commit_ms_samples(corpus, "crypto_tape") == []
+        # the whole point: the unfiltered corpus is NOT what anyone should take
+        assert len([e for e in corpus if "commit_ms" in e]) == 4
+
+    @pytest.mark.asyncio
+    async def test_a_real_record_carries_the_reduction_this_rule_describes(
+        self, session
+    ):
+        """The rule has to describe the writer, not just itself: writer B's
+        `commit_ms` is the MAX over its batch commits, with `batch_count` as the
+        denominator on the same record, and `commit_quality` stays `exact`."""
+        adapter = seed(session, count=4)
+        await run_pass(
+            session, adapter=adapter, cfg=config(chain=CHAIN, write_batch_size=1))
+        event = only_event()
+        assert event["commit_quality"] == "exact"
+        assert event["batch_count"] > 1, (
+            "this pass must commit more than once for the max to be a reduction")
+        meter = sparse._WriteMeter()
+        for ms in (1.0, 5.0, 2.0):
+            meter.record(attempts=1, hold_ms=ms, commit_ms=ms)
+        assert meter.snapshot()["commit_ms_max"] == 5.0
+        assert sparse._pass_telemetry_fields(
+            _result(write_lock={"batches": 3, "retry_attempts": 0,
+                                "lock_failures": 0, "write_hold_ms_max": 7.0,
+                                "commit_ms_max": 5.0, "commit_ms_total": 8.0}),
+        )["commit_ms"] == 5
+
+
 # --- 13. the gate text says only what is now true ---------------------------
 
 
@@ -1461,3 +1564,25 @@ class TestTheGateTextIsTrue:
         assert "per-pass **maximum**" in section, (
             "the commit_ms aggregation caveat is gone — a reader would take a "
             "max for a single transaction's commit")
+
+    def test_the_runbooks_cost_claim_is_the_one_that_can_carry_weight(self):
+        """The branch's original cost argument cited a whole-PASS median delta.
+        A ~1,500 ms pass cannot resolve a 0.1 ms append: that number was
+        interleaving noise, and the same experiment returned a LOWER p90 with
+        telemetry on. The claim that survives is the append measured directly,
+        idle and under a real held RESERVED lock — so only that is recorded."""
+        runbook = (Path(__file__).resolve().parents[1] / "docs"
+                   / "EVO_X2_RUNBOOK.md").read_text()
+        section = runbook.split(
+            "### Where the per-pass record now lands "
+            "(GATE2-WRITER-TELEMETRY-001)")[1].split("### `TimeoutStartSec`")[0]
+        # markdown re-wrapping must not be able to break this pin
+        section = " ".join(section.split())
+        assert "RESERVED write lock" in section
+        assert "p50" in section
+        assert "whole-PASS before/after delta is not a measurement" in section, (
+            "the warning against whole-pass deltas is gone; a future round "
+            "will re-derive the weak statistic")
+        # the size claim must stay a range with its drivers, not a constant
+        assert "~0.9 KB" in section
+        assert "not as a constant" in section
