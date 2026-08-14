@@ -1601,9 +1601,12 @@ class TestTheGateTextIsTrue:
         section = " ".join(section.split())
         assert "RESERVED write lock" in section
         assert "p50" in section
-        assert "whole-PASS before/after delta is not a measurement" in section, (
+        assert "Do not re-derive this from a whole-PASS" in section, (
             "the warning against whole-pass deltas is gone; a future round "
             "will re-derive the weak statistic")
         # the size claim must stay a range with its drivers, not a constant
-        assert "~0.9 KB" in section
+        assert "0.8–0.9 KB per record" in section
         assert "not as a constant" in section
+        # and the retired figure must stay retired, named as retired
+        assert "+2.02 ms median whole-pass delta" in section
+        assert "interleaving noise" in section

@@ -2329,10 +2329,13 @@ reading warning below before you read it on EVO. What to read, and the traps:
   Every other outcome, including every pre-flight skip and refusal, is.
 * **The file now carries a second writer (GATE7-SPARSE-TELEMETRY-001).** The
   sparse observer appends under `writer_name="crypto_horizon_observe"`,
-  `operation_name="scheduled_sparse_observation"` — ~880 B per record (882 B
-  measured for its fullest record on the dev Mac; the figure moves with the
-  length of `host`, `systemd_unit` and `source_command`, so treat it as ~0.9 KB,
-  not as a constant) — and it is default-off with no timer, so nothing arrives
+  `operation_name="scheduled_sparse_observation"` — **0.8–0.9 KB per record**
+  (measured on the dev Mac: 825 B for an ordinary completed pass, 882 B for the
+  fullest record the lane can build). Treat it as ~0.9 KB, **not as a
+  constant**: it moves with which optional fields the pass produced and with
+  the length of `host`, `systemd_unit` and `source_command`, so a single-byte
+  figure will not reproduce on EVO. The 4,096 B line cap is far above both, so
+  nothing sheds fields. It is default-off with no timer, so nothing arrives
   on EVO today. **This is why the calibration filter below is scoped to one
   `writer_name`, and it must stay scoped**: the two writers have different
   phase vocabularies, and averaging
@@ -2355,17 +2358,25 @@ reading warning below before you read it on EVO. What to read, and the traps:
   `enrolled + observations_recorded + ticks_written`. `write_hold_measured`
   works exactly as it does for writer A, and `write_hold_ms_max`/`commit_ms`
   are both omitted when it is `false`.
-* **What the append costs, measured.** One record is ~0.9 KB and one emit is a
-  single `os.write()` outside every transaction the lane owns. On the dev Mac
-  at load ~12, 400 emits per arm: **p50 0.131 ms idle and 0.128 ms while a
-  second connection held SQLite's RESERVED write lock on a real file-backed
-  database** — a difference of −2.5 µs, i.e. none. The reviewer of
-  GATE7-SPARSE-TELEMETRY-001 measured the same shape on a quieter host
-  (0.096 ms idle / 0.130 ms contended, +34 µs). Both readings say the same
-  thing and it is the only cost claim to rely on: the append does not see the
-  write lock, because it never touches SQLite. Any whole-PASS before/after
-  delta is not a measurement of this — a ~1,500 ms pass cannot resolve a
-  0.1 ms append, and such deltas have come back NEGATIVE at p90.
+* **What the append costs, measured — and the number NOT to use.** One emit is
+  a single `os.write()` of that ~0.9 KB, outside every transaction the lane
+  owns. Two independent runs on the dev Mac, 400 emits per arm, with a second
+  connection holding SQLite's RESERVED write lock on a real file-backed
+  database for the contended arm:
+
+  | run | p50 idle | p50 under a held RESERVED lock | delta |
+  |---|---|---|---|
+  | review of GATE7-SPARSE-TELEMETRY-001 | 0.096 ms | 0.130 ms | +34 µs |
+  | follow-up round, load ~12 | 0.131 ms | 0.128 ms | −2.5 µs |
+
+  Both say the same thing, and it is the only cost claim to rely on: **the
+  append does not see the write lock, because it never touches SQLite.** The
+  absolute p50 tracks host load; the delta is tens of microseconds in either
+  direction, i.e. nothing. **Do not re-derive this from a whole-PASS
+  before/after delta.** A ~1,500 ms pass cannot resolve a 0.1 ms append: an
+  earlier round of this branch reported a "+2.02 ms median whole-pass delta"
+  that was interleaving noise at load ~25, and the same experiment returned a
+  LOWER p90 with telemetry ON.
 
 #### Deriving `initial_per_token_cost_seconds` — the mandatory filter
 
