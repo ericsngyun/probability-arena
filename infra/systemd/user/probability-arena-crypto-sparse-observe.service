@@ -1,0 +1,212 @@
+# Probability Arena — CRYPTO-COVERAGE-REPAIR-002 prospective sparse observation.
+# Enrols eligible NEW births into the standing rolling cohort and buys exactly
+# one 6h and one 24h market/liquidity observation per birth, through the
+# DexScreener adapter and nothing else. SolanaTracker is structurally denied by
+# a run-scoped provider policy, not merely unused. No cohort arming, no
+# discovery scan, no wallets, no keys, no swaps, no signing, no orders, no
+# execution of any kind. Measurement only, never advice.
+# A complete no-op while ENABLE_CRYPTO_SPARSE_OBSERVATION is false or unset.
+# NOT auto-installed. See the .timer file for install commands.
+#
+# GATE7-SPARSE-UNITS-001 authored these units. NOTHING IS INSTALLED, ENABLED OR
+# STARTED BY THAT MILESTONE — these are repo templates and activation is an
+# operator action, in the order documented under "Sparse observer timer" in
+# docs/EVO_X2_RUNBOOK.md (which leads with the DISABLE procedure, on purpose).
+
+[Unit]
+Description=Probability Arena crypto sparse horizon observation (DexScreener only)
+# NO After=network-online.target, and for a DIFFERENT reason than the
+# reconciler's. The reconciler omits it because it makes zero external calls;
+# THIS LANE DOES MAKE THEM, so the honest reason has to be stated rather than
+# inherited. `network-online.target` belongs to the SYSTEM manager; a
+# `systemd --user` unit ordering against it does not get the dependency it
+# looks like it is getting, and writing the line would tell a future reader
+# this lane's network readiness is handled when it is not. What actually
+# covers a not-yet-up network is the adapter contract plus the band:
+# `DexScreenerAdapter._get` never raises on transport failure, `_fetch_phase`
+# reads the provider ledger's failure delta and the row is written as
+# `request_failed` — which `_is_retryable` re-plans on the NEXT pass while the
+# band is still open (SPARSE_MAX_ATTEMPTS = 2). A pass that fires into a dead
+# network costs one wasted request per due token and loses nothing.
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/projects/probability-arena
+EnvironmentFile=%h/projects/probability-arena/.env
+# NO `--force` AND NO `--dry-run`. This is not style; both would corrupt the
+# record this lane exists to produce:
+#   * `--force` sets `gate_bypassed=True` on the per-pass telemetry record.
+#     `run_source` is DERIVED from systemd's `INVOCATION_ID` (see
+#     `app/telemetry/writer_pass.py`), so every run of this unit files as
+#     `run_source="scheduled"`. `scheduled` + `gate_bypassed=True` is defined
+#     in that module as a real anomaly — putting `--force` here would file
+#     every single timer run as an attended bypass and destroy the one signal
+#     that catches a genuine one.
+#   * `--dry-run` enrols nothing, fetches nothing and writes nothing, so a
+#     timer carrying it would be a schedule that produces no observations
+#     while looking green in `systemctl list-timers`.
+# The gate is meant to be crossed by the FLAG in .env, never by an argument
+# here. See the enable procedure in the runbook.
+ExecStart=%h/projects/probability-arena/.venv/bin/python -m app.cli crypto-sparse-observe
+NoNewPrivileges=true
+# SAFE TO INSTALL DARK, and this is the confirmed behaviour, not an intention.
+# With `ENABLE_CRYPTO_SPARSE_OBSERVATION` unset or false and neither bypass
+# argument present, `run_scheduled_sparse_observation` returns
+# `_base_result(STATUS_DISABLED, ...)` from its FIRST branch: before the
+# overlap lock, before the MarketOps health read, before the cohort lookup —
+# so no row is read, no row is written, no provider is called and no telemetry
+# record is appended (the `disabled` return deliberately does not pass through
+# `_finish`, precisely so an hourly dark timer does not file 24 events a day
+# describing nothing). The CLI prints
+#   status=disabled  external_calls=0  no-op (flag ... is off)
+# and returns 0, so the unit goes green. A dark tick costs one Python
+# interpreter start and one settings load. That is the entire cost.
+#
+# Yield CPU and IO. This lane's own write-lock hold is small (25-token batches,
+# <= 50 rows per commit, measured max competing-writer stall 45 ms), but it
+# shares the host with a continuously-writing watcher, a 5-minute MarketOps
+# timer and a documented lock-contention history, and the production database
+# runs `journal_mode=delete` — where a reader and a writer exclude each other,
+# so even this lane's prelude SELECTs are contention, not free. The live lanes
+# must win every scheduling contest against a measurement lane.
+Nice=10
+CPUWeight=20
+IOWeight=20
+#
+# ---------------------------------------------------------------------------
+# TimeoutStartSec — DERIVED HERE, NOT COPIED FROM THE RECONCILER
+# ---------------------------------------------------------------------------
+# The reconciler's 7min is its own number from its own arithmetic and means
+# nothing here: different phases, different bounds, and this lane has no
+# lock-wait budget, so its per-lock-acquisition figure is the full inherited
+# `sqlite_busy_timeout_ms` (30 s) rather than a derived 5 s share.
+#
+# The pass decomposes into a LOAD-INDEPENDENT part N and a LOCK-DEPENDENT part.
+# Write the per-lock-acquisition wait as w and the host's SQLite busy-timeout
+# overshoot factor as L (measured in this repo: 1.01x on an idle EVO, 5.80x on
+# a dev Mac at load average 5-6; no constant bounds it).
+#
+#   total(w, L) = N + B * w * L
+#
+# N, the terms that involve no lock at all:
+#
+#   prelude compute — measured 110 ms of a 1,569 ms pass at
+#     193k members, cold cache (warm `_enrolment_candidates`
+#     1.34 ms, `_sparse_plan` 18.26 ms). Allowance 9x the
+#     measurement:                                                       1 s
+#   fetch phase — `crypto_sparse_observation_max_duration_seconds`
+#     default 90 s, ANCHORED AT FETCH START (`_fetch_phase`'s
+#     docstring), so the prelude is not inside it; plus one
+#     in-flight request, because the deadline is checked only
+#     BETWEEN tokens and the loop can begin a fetch at
+#     deadline-epsilon. One `DexScreenerAdapter` request carries
+#     a 15 s httpx timeout, which is PER OPERATION, not per
+#     request: a connect that lands at 14.9 s followed by a read
+#     is ~30 s, so the in-flight fetch is charged at 2 x 15 s.
+#                                                    90 + 30  =         120 s
+#   write-phase retry sleeps — 4 batches (observe_limit 100 /
+#     write_batch_size 25) x 2 sleeps x DB_LOCKED_RETRY_SECONDS
+#     3.0 s. These are `time.sleep`, so no L applies:                   24 s
+#   teardown + the single JSONL telemetry append (non-SQLite,
+#     no lock, one `os.write`):                                          1 s
+#   ------------------------------------------------------------------------
+#   N                                                                  146 s
+#
+# B, the number of points at which this pass can wait on the SQLite lock. All
+# three counts are STRUCTURALLY bounded by shipped constants, not by hope:
+#
+#   prelude SELECTs (MarketOps health, cohort lookup, migration-0029 index
+#     probe, `_enrolment_candidates`, `_sparse_plan`) — under
+#     `journal_mode=delete` a read waits on a writer's exclusive lock, so
+#     these are blocking points. Generous count:                          8
+#   enrolment commits — ceil(enrol_limit 200 / write_batch_size 25).
+#     `_enrol` deliberately has NO retry ladder (a lock refuses the pass and
+#     the next pass re-selects; enrolment is idempotent by unique index), so
+#     each commit is exactly one acquisition:                             8
+#   write-phase preloads (`members`, `retry_rows`):                       2
+#   write-phase ladder — 4 batches x DB_LOCKED_MAX_ATTEMPTS 3 x 2
+#     acquisitions per attempt (`prepare()` may emit SQL inside the try,
+#     then `session.commit()`):                                          24
+#   ------------------------------------------------------------------------
+#   B                                                                    42
+#
+# Evaluated:
+#
+#   w = 0.045 s (the MEASURED max competing-writer stall for this lane)
+#     L = 1.01x  (EVO, idle, measured)                              ~147.9 s
+#     L = 5.80x  (dev Mac at load average 5-6, measured)            ~157.0 s
+#
+#   w = 30 s (the full inherited busy timeout — the ARITHMETIC CEILING)
+#     L = 1.01x                                                    ~1,419 s
+#     L = 5.80x                                                    ~7,454 s
+#
+# NO VALUE OF TimeoutStartSec CAN COVER THE ARITHMETIC CEILING, and this unit
+# does not pretend otherwise. At the worst L this repo has measured the ceiling
+# is ~124 minutes — longer than the lane's own 60-minute cadence — so a timeout
+# that covered it would be a timeout that never fires. The value below is
+# therefore chosen against the MEASURED regime, with the exceedance conditions
+# written down so the next reader does not have to re-derive them.
+#
+# 5min (300 s) is 2.03x the measured-regime figure at L = 1.01 and 1.91x at the
+# worst measured L = 5.80. That margin is spent entirely on w, the one input the
+# measurement does not bound. THE CONDITIONS AT WHICH 300 s IS EXCEEDED:
+#
+#   holding L = 1.01, at w = 3.63 s   (81x the measured 45 ms stall)
+#   holding L = 5.80, at w = 0.63 s   (14x the measured 45 ms stall)
+#   holding w = 45 ms, at L = 81.5    (14x the worst L ever measured here)
+#
+# None of that is a guarantee and must not be quoted as one: w is bounded only
+# by the 30 s busy timeout and L is unbounded above.
+#
+# THE ONE UNBOUNDED TERM IS NOT THE LOCK. It is the in-flight fetch. httpx's
+# 15 s timeout is per socket operation, so a provider that trickles bytes below
+# the read timeout is not bounded by it at all, and `_fetch_phase` checks its
+# deadline only BETWEEN tokens — nothing in this lane interrupts a request that
+# has already started. For that failure mode TimeoutStartSec IS the only bound,
+# which is a second, independent reason not to set it generously.
+#
+# THIS VALUE IS DERIVED FROM FOUR SHIPPED CONSTANTS and is invalid without them:
+# `DEFAULT_MAX_DURATION_SECONDS` 90.0, `DEFAULT_ENROL_LIMIT` 200,
+# `DEFAULT_OBSERVE_LIMIT` 100, `DEFAULT_WRITE_BATCH_SIZE` 25 (all in
+# app/services/crypto_sparse_observation.py), plus `DB_LOCKED_MAX_ATTEMPTS` 3 /
+# `DB_LOCKED_RETRY_SECONDS` 3.0 (crypto_tape.py) and the adapter's 15 s timeout.
+# The deployment plan's step 3 explicitly tells the operator to RE-SET
+# `CRYPTO_SPARSE_OBSERVATION_MAX_DURATION_SECONDS` from a measured attended
+# pass; doing that invalidates this number. `tests/test_gate7_sparse_units_001.py`
+# recomputes the model from those constants and fails if this value stops
+# covering it — it is a pin, not a comment.
+#
+# WHAT HAPPENS WHEN IT IS HIT (worked out for THIS lane, and it is not the
+# reconciler's answer). systemd sends SIGTERM and then SIGKILL; Python's default
+# SIGTERM disposition terminates without running `finally` blocks.
+#   * DURABLE: every enrolment batch whose commit returned, and every write
+#     batch whose `_commit_with_retry` returned. Counters advance only after a
+#     commit RETURNS, so nothing was ever over-claimed.
+#   * LOST: the in-flight batch (staged rows are rolled back when the OS closes
+#     the connection), the printed receipt, and — the one that matters — THE
+#     TELEMETRY RECORD. `_emit_pass_telemetry` runs inside `_finish`, at the end
+#     of the pass, so a killed pass appends NOTHING to the 001A JSONL sink.
+#   * THEREFORE THIS LANE HAS NO ORPHAN SIGNATURE. The reconciler's overrun is
+#     self-reporting: it leaves a `status='running'` row that
+#     `lock_wait_run_row_orphaned()` names. This lane has no run table (the
+#     GATE7-SPARSE-TELEMETRY-001 gate lifted only the JSONL half), so an overrun
+#     is INVISIBLE IN ITS OWN TELEMETRY and is visible only in
+#     `journalctl` (`Failed with result 'timeout'`) and, one band later, as a
+#     rising `scheduling_miss_rate` in `crypto-observation-coverage-report`.
+#     An operator who suspects an overrun must read the journal; the corpus will
+#     not tell them.
+#   * NOTHING IS LEFT INCONSISTENT. The overlap lock is a kernel-held `flock`,
+#     released on process death, so no stale lock survives. Double-enrolment is
+#     impossible (`ix_horizon_member_cohort_token`) and double-observation is
+#     impossible (`ix_horizon_obs_cohort_token_horizon`), so the next pass
+#     re-plans from persisted state and picks up exactly what has no row yet.
+#     There is nothing to repair by hand.
+#   * WHAT IS ACTUALLY PAID: the provider requests already spent on the
+#     in-flight batch's tokens (at most 25 tokens, and up to the full
+#     observe_limit of 100 if the kill lands before the first commit), plus any
+#     member-horizon whose band closes before the next pass — which becomes a
+#     permanent, never-backfilled `scheduling_miss`.
+TimeoutStartSec=5min
+
+[Install]
+WantedBy=default.target
