@@ -601,6 +601,79 @@ class TestCommitMappingAndPhaseDiscipline:
         assert "lock_wait_ms" not in event
 
 
+# --- 6b. the mapping itself, without a sink ---------------------------------
+
+
+def _result(**over) -> dict:
+    base = {
+        "status": "ok", "stop_reason": "complete", "gate_bypassed": None,
+        "duration_ms": 1234, "external_calls": 4, "due_observations": 8,
+        "deferred_observations": 2, "band_closed_during_pass": 3,
+        "enrolled": 5, "observations_recorded": 6, "ticks_written": 7,
+        "batches_committed": 2,
+        "write_lock": {
+            "batches": 2, "retry_attempts": 1, "lock_failures": 1,
+            "write_hold_ms_max": 140.75, "commit_ms_max": 9.4,
+            "commit_ms_total": 12.0, "persisted": False, "note": "",
+        },
+    }
+    base.update(over)
+    return base
+
+
+class TestFieldMapping:
+    """`_pass_telemetry_fields` is split out of the emitter precisely so the
+    mapping can be pinned without a sink or a database. These are the cases a
+    live pass cannot produce on demand."""
+
+    def test_the_band_closed_count_is_not_folded_into_rows_skipped(self):
+        """`deferred_observations` (never attempted, under `observe_limit` or
+        the deadline) and `band_closed_during_pass` (fetched, then correctly
+        refused as out of band) are different facts. Summing them would make
+        neither invertible, and only one of them means "this pass was too
+        small". The band-closed count has no field in the envelope and is
+        DROPPED rather than smuggled into a field that means something else."""
+        fields = sparse._pass_telemetry_fields(_result())
+        assert fields["rows_skipped"] == 2
+        assert 5 not in (fields["rows_skipped"],), "3 was folded in"
+
+    def test_the_row_sum_spans_the_tables_this_lane_writes(self):
+        fields = sparse._pass_telemetry_fields(_result())
+        assert fields["rows_committed"] == 5 + 6 + 7
+        assert fields["rows_attempted"] == 8
+
+    def test_a_float_hold_truncates_to_an_int_as_the_envelope_requires(self):
+        fields = sparse._pass_telemetry_fields(_result())
+        assert fields["write_hold_ms_max"] == 140
+        assert fields["commit_ms"] == 9
+        assert isinstance(fields["write_hold_ms_max"], int)
+        assert isinstance(fields["commit_ms"], int)
+
+    def test_a_pass_with_no_batches_omits_both_timing_figures(self):
+        fields = sparse._pass_telemetry_fields(
+            _result(write_lock={"batches": 0, "retry_attempts": 0,
+                                "lock_failures": 0, "write_hold_ms_max": 0.0,
+                                "commit_ms_max": 0.0}))
+        assert fields["write_hold_measured"] is False
+        assert "write_hold_ms_max" not in fields
+        assert "commit_ms" not in fields
+        assert "commit_quality" not in fields
+
+    @pytest.mark.parametrize("meter", [None, "not-a-dict", 7, []])
+    def test_a_missing_or_malformed_meter_reads_as_measured_nothing(self, meter):
+        """Refusals before the write phase have no `write_lock` key at all, and
+        a duck-typed stand-in can put anything there. Neither may raise on the
+        writer's return path."""
+        fields = sparse._pass_telemetry_fields(_result(write_lock=meter))
+        assert fields["write_hold_measured"] is False
+        assert fields["retry_count"] == 0
+        assert "write_hold_ms_max" not in fields
+
+    def test_no_lock_wait_field_is_ever_produced(self):
+        fields = sparse._pass_telemetry_fields(_result())
+        assert not [k for k in fields if "lock_wait" in k]
+
+
 # --- 7. HARD CONSTRAINT 1: the telemetry path never touches SQLite ----------
 
 
