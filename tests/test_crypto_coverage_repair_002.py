@@ -14,6 +14,7 @@ Grouped by the property under test:
   * idempotency and restart survival
   * transaction shape: no write lock is held across network I/O
   * DexScreener only — SolanaTracker structurally unreachable
+  * GATE 1 — exact token identity: no tick from another token's pair
   * observation coverage vs reconciliation coverage: two distinct surfaces
   * the standing rolling cohort is not armable
 """
@@ -39,6 +40,7 @@ from app.models import (
 from app.services import crypto_sparse_observation as sparse
 from app.services.crypto_horizon import (
     MEMBERSHIP_ROLLING,
+    OBS_IDENTITY_MISMATCH,
     OBS_OBSERVED,
     OBS_PROVIDER_NO_PAIR,
     OBS_REQUEST_FAILED,
@@ -176,6 +178,28 @@ async def run_pass(session, *, adapter=None, now=NOW, s=None, cfg=None, **kw):
     )
 
 
+WSOL = "So11111111111111111111111111111111111111112"
+# A different, equally valid Solana token. Same chain, same shape, not ours.
+FOREIGN_TOKEN = "So9999" + "F" * 34
+
+
+def _foreign_pair_json(pair_address: str) -> dict:
+    """A perfectly healthy DEX Screener pair entry for a token that is NOT the
+    one we asked about: right chain, every required field, huge liquidity, real
+    activity — and a price six orders of magnitude away from ours."""
+    return {
+        "chainId": CHAIN,
+        "pairAddress": pair_address,
+        "baseToken": {"address": FOREIGN_TOKEN, "symbol": "OTHER"},
+        "quoteToken": {"address": WSOL},
+        "dexId": "raydium",
+        "priceUsd": "999.0",
+        "liquidity": {"usd": 1_000_000.0},
+        "volume": {"h24": 500_000.0},
+        "txns": {"m5": {"buys": 400, "sells": 400}},
+    }
+
+
 class _TransportFailureClient:
     """An `httpx.AsyncClient` stand-in that reproduces each way the REAL
     DexScreener adapter loses a request. It never raises out of the adapter
@@ -269,6 +293,72 @@ class _TransportFailureClient:
                 "quoteToken": {
                     "address": "So11111111111111111111111111111111111111112",
                 },
+                "dexId": "raydium",
+                "priceUsd": "0.001",
+                "liquidity": {"usd": 12345.0},
+                "volume": {"h24": 100.0},
+                "txns": {"m5": {"buys": 2, "sells": 1}},
+            }])
+        # GATE 1 (CRYPTO-COVERAGE-REPAIR-002). Every mode below is a HEALTHY
+        # provider response: HTTP 200, a genuine JSON array, right chain, every
+        # required field present and well-formed. B1 does not fire, Probe 15
+        # does not fire (except where noted), the pair parses, scores and is
+        # selectable. The ONLY thing wrong is WHICH TOKEN it is about.
+        if self.mode == "identity_wrong_token":
+            return httpx.Response(200, request=request, json=[
+                _foreign_pair_json("PairForeign"),
+            ])
+        if self.mode == "identity_mixture":
+            token = url.rsplit("/", 1)[-1]
+            # The foreign pair is deliberately built to WIN selection if the
+            # gate is removed: `active_pair_quality_score` caps the liquidity
+            # term at ~100 and pays only +25 for an exact base-token match, so
+            # 1,000,000 of foreign liquidity against 1,000 of ours beats the
+            # bonus by ~75 points. Reverting the gate therefore does not merely
+            # admit the foreign pair, it SELECTS it — and its price is 999.0,
+            # six orders of magnitude from the truth.
+            return httpx.Response(200, request=request, json=[
+                _foreign_pair_json("PairForeign"),
+                {
+                    "chainId": CHAIN,
+                    "pairAddress": "PairMine",
+                    "baseToken": {"address": token, "symbol": "T"},
+                    "quoteToken": {"address": WSOL},
+                    "dexId": "raydium",
+                    "priceUsd": "0.001",
+                    "liquidity": {"usd": 1_000.0},
+                    "volume": {"h24": 10.0},
+                    "txns": {"m5": {"buys": 2, "sells": 1}},
+                },
+            ])
+        if self.mode == "identity_quote_only":
+            # our token appears — as the QUOTE side. `priceUsd` is the FOREIGN
+            # base asset's price, not ours.
+            token = url.rsplit("/", 1)[-1]
+            entry = _foreign_pair_json("PairQuoteSide")
+            entry["quoteToken"] = {"address": token, "symbol": "T"}
+            return httpx.Response(200, request=request, json=[entry])
+        # UPSTREAM FIELD DRIFT: the identity field itself is gone, renamed or
+        # null. These are NOT Gate 1's to catch — `_parse_pair` drops a pair
+        # without `baseToken.address`, and Probe 15's outcome check then turns
+        # "non-empty payload, zero usable pairs" into a failed REQUEST. Pinned
+        # here so the boundary between the two mechanisms is asserted, not
+        # assumed, and so drift can never silently start being read as identity.
+        if self.mode in (
+            "identity_field_absent", "identity_field_renamed",
+            "identity_field_null",
+        ):
+            token = url.rsplit("/", 1)[-1]
+            base = {
+                "identity_field_absent": {"symbol": "T"},
+                "identity_field_renamed": {"tokenAddress": token, "symbol": "T"},
+                "identity_field_null": {"address": None, "symbol": "T"},
+            }[self.mode]
+            return httpx.Response(200, request=request, json=[{
+                "chainId": CHAIN,
+                "pairAddress": "PairDrift",
+                "baseToken": base,
+                "quoteToken": {"address": WSOL},
                 "dexId": "raydium",
                 "priceUsd": "0.001",
                 "liquidity": {"usd": 12345.0},
@@ -2273,6 +2363,287 @@ async def test_a_non_empty_payload_that_parses_to_zero_pairs_is_a_failed_request
         assert session.query(CryptoPriceTick).count() == 0
     else:  # OBS_OBSERVED
         assert session.query(CryptoPriceTick).count() == 1
+
+
+# --- 7b. GATE 1 — exact token identity ------------------------------------------
+#
+# The defect: `fetch_pairs_for_token` filters the provider's answer by CHAIN
+# only, and `select_pair`'s quality policy pays an exact base-token match a +25
+# BONUS instead of gating on it. So a chain-correct, well-formed, non-empty
+# answer about a DIFFERENT token parses cleanly, scores, is selected, and is
+# recorded as `OBS_OBSERVED` with a price tick filed under the requested token's
+# address. Every earlier check in this milestone passes on that response.
+#
+# THE PROOF IS AT THE DATABASE, not at a return value. Note carefully that
+# `token_address` on the tick is copied from the PLAN ENTRY, so it always equals
+# the requested token by construction — asserting only that would prove nothing.
+# What actually distinguishes a right tick from a wrong one is its CONTENT:
+# `pair_address` / `price_usd` / `liquidity_usd` must come from a pair whose
+# BASE token is that same address. `_assert_no_foreign_tick` asserts both.
+
+
+def _assert_no_foreign_tick(session, token: str) -> None:
+    """No persisted tick may be sourced from another token's pair.
+
+    Read back from `crypto_price_ticks` itself — not from the pass result, not
+    from the ORM identity map — because the guarantee this milestone owes is
+    about what is DURABLE."""
+    rows = session.execute(
+        select(
+            CryptoPriceTick.token_address,
+            CryptoPriceTick.pair_address,
+            CryptoPriceTick.price_usd,
+        )
+    ).all()
+    for row in rows:
+        assert row.token_address == token, (
+            f"a tick was persisted under {row.token_address!r}, not {token!r}"
+        )
+        assert row.pair_address != "PairForeign", (
+            "a tick was persisted from another token's pair "
+            f"({row.pair_address}) under {token}"
+        )
+        assert row.pair_address != "PairQuoteSide", (
+            "a tick was persisted from a pair that merely QUOTES this token "
+            f"({row.pair_address}); its price is the base asset's, not ours"
+        )
+        assert row.price_usd != 999.0, (
+            "a tick carries the FOREIGN token's price under this token's address"
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode,expected_status,expected_ticks", [
+    # 1. WRONG TOKEN, SAME CHAIN. The whole answer is about someone else.
+    ("identity_wrong_token", OBS_IDENTITY_MISMATCH, 0),
+    # 2. MIXTURE. Ours is present but out-scored ~75 points by the foreign pair;
+    #    ours must be the one selected and the foreign one must not leak.
+    ("identity_mixture", OBS_OBSERVED, 1),
+    # 3. QUOTE-SIDE ONLY. Our token is in the pair — as the quote. `priceUsd` is
+    #    the BASE asset's price. Deliberately NOT identity: see
+    #    `_identity_matched`. A quote-side match would write another asset's
+    #    price under our address, which is the defect wearing a nicer hat.
+    ("identity_quote_only", OBS_IDENTITY_MISMATCH, 0),
+    # 4. UPSTREAM FIELD DRIFT. Not Gate 1's to catch and deliberately so:
+    #    `_parse_pair` drops a pair with no `baseToken.address`, and Probe 15
+    #    turns "non-empty payload, zero usable pairs" into a failed REQUEST
+    #    before identity is ever consulted. Pinned so the boundary is asserted.
+    ("identity_field_absent", OBS_REQUEST_FAILED, 0),
+    ("identity_field_renamed", OBS_REQUEST_FAILED, 0),
+    ("identity_field_null", OBS_REQUEST_FAILED, 0),
+    # 5. HONEST EMPTY ANSWER. `[]` is a real provider answer about OUR token and
+    #    must stay terminal — aged past 24h that is `token_inactive`, and the
+    #    gate must not convert it into an identity result.
+    ("200_empty_list", OBS_TOKEN_INACTIVE, 0),
+    # 6. EXACT CORRECT BASE PAIR. The happy path must be untouched.
+    ("ok", OBS_OBSERVED, 1),
+])
+async def test_gate_1_no_tick_is_ever_persisted_from_another_tokens_pair(
+    session, mode, expected_status, expected_ticks,
+):
+    """Driven through the REAL `DexScreenerAdapter` so the gate is proven on the
+    production code path, not on a fake that could not have had the defect.
+
+    Aged past 24h on purpose: `aged` is what makes `_record_observation` read
+    `candidate_count == 0` as the TERMINAL, affirmative claim `token_inactive`.
+    That is the outcome an identity mismatch must never be able to reach, so the
+    test is run where reaching it is easiest."""
+    token = token_id(1)
+    add_birth(session, 1, anchor=NOW - timedelta(hours=24))
+    session.commit()
+
+    r = await run_real_pass(session, mode=mode, now=NOW)
+
+    assert _TransportFailureClient.requested, "the real adapter issued no request"
+    assert r["status"] in sparse.HEALTHY_STATUSES, r.get("error")
+    obs = session.query(CryptoHorizonObservation).one()
+    assert obs.status == expected_status, (
+        f"mode={mode!r} produced {obs.status!r}, expected {expected_status!r}"
+    )
+    assert obs.token_address == token
+    # THE LOAD-BEARING ASSERTION, read back from the table.
+    assert session.query(CryptoPriceTick).count() == expected_ticks
+    _assert_no_foreign_tick(session, token)
+
+    if expected_status == OBS_IDENTITY_MISMATCH:
+        # a typed NON-observation: no price, no pair, no tick, and above all
+        # neither `token_inactive` nor `observed`
+        assert obs.missing_cause == OBS_IDENTITY_MISMATCH
+        assert obs.tick_id is None
+        assert obs.price_usd is None and obs.liquidity_usd is None
+        assert obs.pair_address is None
+        assert r["outcome_counts"] == {OBS_IDENTITY_MISMATCH: 1}
+    if mode == "identity_mixture":
+        # ours was selected, and every number on the row is ours
+        tick = session.query(CryptoPriceTick).one()
+        assert tick.pair_address == "PairMine"
+        assert tick.price_usd == 0.001
+        assert tick.liquidity_usd == 1_000.0
+        assert obs.pair_address == "PairMine"
+        assert obs.price_usd == 0.001
+
+
+def test_gate_1_the_foreign_pair_would_win_selection_without_the_gate():
+    """The mutations above are only load-bearing if the foreign pair is what the
+    unguarded lane WOULD have chosen. Asserted against the real scorer rather
+    than assumed, so a future re-tuning of `active_pair_quality_score` that
+    quietly makes the fixture harmless fails here instead of silently turning
+    six mutations into no-ops."""
+    from app.services.crypto_horizon import active_pair_quality_score, select_pair
+
+    token = token_id(1)
+    mine = pair(token, price=0.001, liq=1_000.0, address="PairMine")
+    foreign = pair(FOREIGN_TOKEN, price=999.0, liq=1_000_000.0, address="PairForeign")
+
+    assert active_pair_quality_score(foreign, token) > active_pair_quality_score(
+        mine, token
+    ), "the +25 exact-match bonus already outweighs the fixture: mutation is inert"
+
+    # the shared, ungated selector picks the foreign pair — this IS the defect
+    chosen, _basis = select_pair([foreign, mine], token)
+    assert chosen.pair_address == "PairForeign"
+    assert chosen.base_token_address != token
+
+    # the lane's gate is what removes it from consideration at all
+    kept = [p for p in (foreign, mine) if sparse._identity_matched(p, token)]
+    assert [p.pair_address for p in kept] == ["PairMine"]
+
+
+def test_gate_1_does_not_change_the_shared_adapters_contract():
+    """BLAST RADIUS. The gate lives in this lane, not in `DexScreenerAdapter`,
+    which the scout, meme, discovery and frozen-horizon lanes share. The adapter
+    must still return a chain-matching foreign pair unchanged; if this ever
+    starts failing, the gate has leaked out of its lane."""
+    import inspect
+
+    from app.adapters import dexscreener
+
+    source = inspect.getsource(dexscreener.DexScreenerAdapter.fetch_pairs_for_token)
+    assert "base_token_address" not in source, (
+        "the identity gate leaked into the SHARED adapter"
+    )
+    assert "token_address" in inspect.signature(
+        dexscreener.DexScreenerAdapter.fetch_pairs_for_token
+    ).parameters
+
+
+@pytest.mark.asyncio
+async def test_gate_1_an_identity_mismatch_is_re_plannable_while_the_band_is_open(
+    session,
+):
+    """TERMINALITY. `identity_mismatch` sits on the RETRYABLE side of the
+    cause-based split, for the reason `_is_retryable` gives: terminal means "the
+    provider told us something ABOUT THIS TOKEN", and an answer naming only
+    other tokens told us nothing about this one. It is also indistinguishable
+    from upstream field drift, i.e. a contract violation, which is precisely the
+    correlated whole-fleet failure the rule exists to keep re-plannable."""
+    add_birth(session, 1, anchor=NOW - timedelta(hours=6))
+    session.commit()
+
+    first = await run_real_pass(session, mode="identity_wrong_token", now=NOW)
+    assert first["outcome_counts"] == {OBS_IDENTITY_MISMATCH: 1}
+    assert first["retryable_request_failures"] == 0  # nothing to retry yet
+
+    # 30 minutes later the band is still open (it closes at anchor + 6h + 60m)
+    second = await run_real_pass(session, mode="ok", now=NOW + timedelta(minutes=30))
+    assert second["retryable_request_failures"] == 1
+    assert second["request_failures_reattempted"] == 1
+    assert second["outcome_counts"] == {OBS_OBSERVED: 1}
+
+    obs = session.query(CryptoHorizonObservation).one()  # UPDATED, not inserted
+    assert obs.status == OBS_OBSERVED
+    assert session.query(CryptoPriceTick).count() == 1
+    _assert_no_foreign_tick(session, token_id(1))
+
+
+@pytest.mark.asyncio
+async def test_gate_1_an_identity_mismatch_is_hard_capped_at_two_attempts(session):
+    """Making identity retryable must not widen the spend bound. The cap is per
+    (token, horizon) and counts ATTEMPTS regardless of cause, so a permanently
+    mismatching token costs exactly one extra request, ever — the same
+    `SPARSE_MAX_ATTEMPTS = 2` ceiling `request_failed` already carries."""
+    add_birth(session, 1, anchor=NOW - timedelta(hours=6))
+    session.commit()
+
+    await run_real_pass(session, mode="identity_wrong_token", now=NOW)
+    second = await run_real_pass(
+        session, mode="identity_wrong_token", now=NOW + timedelta(minutes=20),
+    )
+    assert second["external_calls"] == 1
+    obs = session.query(CryptoHorizonObservation).one()
+    assert obs.status == OBS_IDENTITY_MISMATCH
+    assert obs.raw_payload[sparse.ATTEMPTS_KEY] == sparse.SPARSE_MAX_ATTEMPTS
+
+    # third pass, band STILL open, provider healthy — the cap holds and no
+    # further request is bought
+    third = await run_real_pass(session, mode="ok", now=NOW + timedelta(minutes=40))
+    assert third["external_calls"] == 0
+    assert third["due_observations"] == 0
+    assert session.query(CryptoHorizonObservation).one().status == OBS_IDENTITY_MISMATCH
+    assert session.query(CryptoPriceTick).count() == 0
+
+
+@pytest.mark.asyncio
+async def test_gate_1_an_identity_mismatch_is_terminal_once_the_band_closes(session):
+    """Retryability never extends the band. The planner alone decides what is
+    still due, and a closed band ends the horizon whatever the cause."""
+    add_birth(session, 1, anchor=NOW - timedelta(hours=6))
+    session.commit()
+    await run_real_pass(session, mode="identity_wrong_token", now=NOW)
+    # the 6h band closes at anchor + 6h + 60m == NOW + 60m
+    after = await run_real_pass(session, mode="ok", now=NOW + timedelta(minutes=61))
+    assert after["external_calls"] == 0
+    assert after["due_observations"] == 0
+    assert session.query(CryptoHorizonObservation).one().status == OBS_IDENTITY_MISMATCH
+    assert session.query(CryptoPriceTick).count() == 0
+
+
+@pytest.mark.asyncio
+async def test_gate_1_records_what_the_provider_actually_answered(session):
+    """`AUDIT_CANDIDATE_LIMIT = 0` stores no per-candidate diagnostics, so
+    without this receipt an identity mismatch would be a status with no
+    evidence — indistinguishable, on inspection, from a bug in the gate itself.
+    Bounded at 5 addresses so `raw_payload` is not re-inflated."""
+    add_birth(session, 1, anchor=NOW - timedelta(hours=6))
+    session.commit()
+    await run_real_pass(session, mode="identity_wrong_token", now=NOW)
+
+    gate = session.query(CryptoHorizonObservation).one().raw_payload[
+        "selected_pair_basis"
+    ]["identity_gate"]
+    assert gate["requested_token"] == token_id(1)
+    assert gate["pairs_returned"] == 1
+    assert gate["exact_base_matches"] == 0
+    assert gate["rejected_base_tokens"] == [FOREIGN_TOKEN]
+    assert len(gate["rejected_base_tokens"]) <= 5
+
+
+@pytest.mark.asyncio
+async def test_gate_1_never_fabricates_a_price_from_a_foreign_candidate(session):
+    """The subtler leak. When nothing is eligible, `_record_observation` harvests
+    `price_usd` from `candidates` for the early-liquidity diagnostic. The gate
+    therefore has to filter `candidates` too, not just the selection — otherwise
+    a foreign pair's price is written onto OUR observation row even though no
+    tick is."""
+    from app.services.crypto_horizon import OBS_NO_LIQUIDITY_STATE
+
+    token = token_id(1)
+    adapter = FakeAdapter({token: [
+        # ours: priced but zero liquidity, so nothing is eligible
+        pair(token, price=0.001, liq=0.0, address="PairMine"),
+        # theirs: priced far higher, and the harvest takes the HIGHEST price
+        pair(FOREIGN_TOKEN, price=999.0, liq=0.0, address="PairForeign"),
+    ]})
+    add_birth(session, 1, anchor=NOW - timedelta(hours=6))
+    session.commit()
+
+    await run_pass(session, adapter=adapter, now=NOW)
+
+    obs = session.query(CryptoHorizonObservation).one()
+    assert obs.status == OBS_NO_LIQUIDITY_STATE
+    assert obs.price_usd == 0.001, "a FOREIGN pair's price was written to our row"
+    assert obs.pair_address == "PairMine"
+    assert session.query(CryptoPriceTick).count() == 0
 
 
 def test_the_module_references_no_paid_provider_identifier():
