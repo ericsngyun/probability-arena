@@ -2406,7 +2406,17 @@ measured on this host.
    ```bash
    sed -i 's/^ENABLE_CRYPTO_SPARSE_OBSERVATION=.*/ENABLE_CRYPTO_SPARSE_OBSERVATION=true/' \
      ~/projects/probability-arena/.env
+   grep ENABLE_CRYPTO_SPARSE_OBSERVATION ~/projects/probability-arena/.env   # verify
+   # expect exactly: ENABLE_CRYPTO_SPARSE_OBSERVATION=true
+   # If it prints NOTHING the key is absent and the `sed` was a silent no-op —
+   # `s/^KEY=.*/…/` substitutes, it does not append. Add the line instead:
+   #   echo 'ENABLE_CRYPTO_SPARSE_OBSERVATION=true' >> ~/projects/probability-arena/.env
    ```
+   **Do not skip the `grep`.** Without it a no-op `sed` leaves the lane dark
+   while you believe it is live, and the first thing you would notice is a
+   coverage report with an empty numerator — one full band later, with every
+   band that closed in between a permanent, never-backfilled `scheduling_miss`.
+   The disable procedure verifies its own `sed` for the same reason.
 7. **Read the first unattended pass** before trusting the second:
    ```bash
    journalctl --user -u probability-arena-crypto-sparse-observe.service -n 60 --no-pager

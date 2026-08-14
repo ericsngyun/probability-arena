@@ -48,15 +48,41 @@ Description=Run Probability Arena crypto sparse horizon observation every hour
 # = timer_oncalendar() at SPARSE_CADENCE_MINUTES = 60. systemd expands
 # `hourly` to `*-*-* *:00:00`.
 #
-# ON SITTING ON THE 5-MINUTE MarketOps GRID, deliberately, and unlike the
-# reconciler. That unit moved itself to :07 specifically to avoid the MarketOps
-# grid, because a competing writer's worst-case WAIT tracks the reconciler's
-# whole PASS WALL TIME. That reasoning does not transfer: this lane's write
-# phase is 25-token batches with <= 50 rows per commit and a MEASURED max
-# competing-writer stall of 45 ms, so a collision costs tens of milliseconds,
-# not tens of seconds. Buying grid avoidance here would cost the one property
+# ON SITTING ON THE CALENDAR LATTICE, deliberately, and unlike the reconciler.
+# That unit moved itself to :07 specifically to avoid the MarketOps grid,
+# because a competing writer's worst-case WAIT tracks the reconciler's whole
+# PASS WALL TIME. That reasoning does not transfer: this lane's write phase is
+# 25-token batches with <= 50 rows per commit and a MEASURED max competing-
+# writer stall of 45 ms IN THAT WRITE PHASE (the source measurement, B7 in
+# tests/test_crypto_coverage_repair_002.py, put the FETCH phase at 28 ms and the
+# PRELUDE at 2,023 ms — 45 ms is the smallest of the three, and it is quoted
+# because the write phase is what a grid collision contends with). A collision
+# there costs tens of milliseconds, not tens of seconds.
+#
+# THE FULL COLLISION SET, NOT JUST MarketOps. `hourly` is `*-*-* *:00:00`, so
+# every firing lands on :00:00, and three other units in infra/systemd/user/
+# share that instant:
+#   * probability-arena-marketops.timer — 5-minute grid, so :00 every hour.
+#   * probability-arena-baseline.timer — `OnCalendar=*-*-* 00/4:00:00`, so
+#     :00:00 six times a day.
+#   * probability-arena-retention.timer — `OnCalendar=daily` (= `*-*-* 00:00:00`),
+#     once a day, and it is the DELETE-heavy writer on this host.
+# AND THIS TIMER ARRIVES FIRST, DETERMINISTICALLY. It is the only timer in that
+# directory with `RandomizedDelaySec=0` AND `AccuracySec=1s`; marketops carries
+# 30 s of jitter, baseline 300 s, retention 600 s. So at every :00 stampede this
+# lane is at the head of the window and the jittered writers queue behind it —
+# which is the benign direction (a short pass ahead of long ones), but it is a
+# consequence of the zero-jitter derivation above, not an independent choice,
+# and it cannot be tuned away without spending jitter invariant (2) does not
+# have.
+#
+# THE :00 STAMPEDE IS THEREFORE AN ACCEPTED COST, priced the same way the
+# MarketOps collision is: once a day it overlaps a DELETE-heavy retention pass,
+# and six times a day a baseline pass, at a write-phase contention cost measured
+# in tens of milliseconds. Buying grid avoidance would cost the one property
 # worth more — an `OnCalendar` an operator can copy from the CLI and a test can
-# pin against the constant — so the collision is accepted, with its price named.
+# pin against the constant. Moving this to an offset (`:37`) is an app/ change,
+# because `timer_oncalendar()` derives this string; it is not a unit-file edit.
 OnCalendar=hourly
 # ZERO JITTER, AND THIS IS DERIVED, NOT A PREFERENCE. Invariant (2) needs at
 # least 2 scheduled passes inside every closed band of length 2*BAND = 120 min.

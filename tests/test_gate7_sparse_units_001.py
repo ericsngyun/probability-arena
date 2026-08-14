@@ -30,7 +30,9 @@ import pytest
 from app.adapters.dexscreener import DexScreenerAdapter
 from app.config import Settings
 from app.services import crypto_sparse_observation as sparse
+from app.services.crypto_horizon import CryptoHorizonService
 from app.services.crypto_tape import DB_LOCKED_MAX_ATTEMPTS, DB_LOCKED_RETRY_SECONDS
+from app.telemetry.sink import get_sink, read_events
 
 REPO = Path(__file__).resolve().parents[1]
 UNIT_DIR = REPO / "infra/systemd/user"
@@ -47,6 +49,48 @@ def parse_unit(path: Path) -> configparser.ConfigParser:
     parser.optionxform = str
     parser.read_string(path.read_text())
     return parser
+
+
+def unit_directives(path: Path) -> list[tuple[str, str, str]]:
+    """Every `(section, key, value)` a unit file DECLARES, duplicates included.
+
+    `parse_unit` cannot answer the questions the safety pins below ask, and the
+    two ways it fails are opposite:
+
+      * IT COLLAPSES DUPLICATES. `strict=False` keeps the LAST value for a
+        repeated key, but systemd takes the UNION of repeated `OnCalendar=`
+        lines. `OnCalendar=*-*-* *:00,30:00` followed by `OnCalendar=hourly`
+        reads to configparser as `hourly` and fires to systemd every 30
+        minutes, which is a doubled provider bill invisible to the cadence pin.
+      * IT CANNOT SEE ABSENCE FROM PROSE. These files are 80% comment, so a
+        `key in section` test is only as good as the parse — and a naive
+        `"Environment=" in text` grep is worse in both directions at once: it
+        trips on a comment that merely NAMES the directive, and it is SATISFIED
+        by a comment that merely names it.
+
+    So this reads directives and nothing else: `[Section]` headers, `key=value`
+    lines, and skipping blanks and `#`/`;` comments the way systemd does. A
+    comment can neither trip a ban nor satisfy a requirement here.
+    """
+    directives: list[tuple[str, str, str]] = []
+    section = ""
+    for raw in path.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or line.startswith(";"):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1]
+            continue
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        directives.append((section, key.strip(), value.strip()))
+    return directives
+
+
+def directive_values(path: Path, key: str) -> list[str]:
+    """Every value declared for `key`, in file order. Empty if never declared."""
+    return [v for _s, k, v in unit_directives(path) if k == key]
 
 
 def oncalendar_interval_minutes(value: str) -> float:
@@ -123,7 +167,84 @@ def test_service_is_a_user_level_oneshot_with_no_loop_of_its_own():
     # recurrence belongs to the timer, never a loop inside the service
     for banned in ("while true", "--loop", "\nsleep ", "crontab", "daemon"):
         assert banned not in text, banned
-    assert service["Install"]["WantedBy"] == "default.target"
+
+
+def test_the_service_declares_no_install_section():
+    """A timer-driven `Type=oneshot` must not be independently enable-able.
+
+    This DEVIATES from the reconciler's service unit, which carries
+    `[Install] WantedBy=default.target`, and the deviation is the point: the
+    timer's `Unit=` is what pulls this service in, so an `[Install]` here buys
+    nothing and leaves a latent hazard. A stray
+    `systemctl --user enable …-crypto-sparse-observe.service` — easy to type
+    when you meant `.timer` — would install a `default.target` want, and this
+    PROVIDER-SPENDING lane would then run a full pass at every login, off the
+    schedule, with invariant (2)'s lattice argument silent about the extra
+    firings. Precedent does not justify propagating an unsafe default into a
+    lane the precedent did not consider: the reconciler is provider-free.
+
+    MUTATION: restore `[Install] WantedBy=default.target` and this fails.
+    """
+    sections = {section for section, _k, _v in unit_directives(SERVICE_UNIT)}
+    assert "Install" not in sections, (
+        "the sparse .service has grown an [Install] section; a stray "
+        "`systemctl --user enable` on the SERVICE would then run a "
+        "provider-spending pass at every login, off the timer's schedule"
+    )
+    assert directive_values(SERVICE_UNIT, "WantedBy") == []
+    assert directive_values(SERVICE_UNIT, "RequiredBy") == []
+    assert directive_values(SERVICE_UNIT, "Also") == []
+    # The TIMER keeps its [Install] — that is the unit an operator enables, and
+    # `timers.target` is inert until they do.
+    assert directive_values(TIMER_UNIT, "WantedBy") == ["timers.target"]
+
+
+def test_the_service_takes_its_environment_only_from_the_env_file():
+    """THE GATE IS CROSSED IN `.env`, NEVER IN THE UNIT.
+
+    The whole safety story of this milestone is "install the units dark, flip
+    the flag later, deliberately". An `Environment=` directive in the service
+    would end that story at install time: systemd applies `Environment=` AFTER
+    `EnvironmentFile=` when it appears later in the unit, so a single line
+
+        Environment=ENABLE_CRYPTO_SPARSE_OBSERVATION=true
+
+    arms the lane the moment the file is copied, overriding the `.env` the
+    disable procedure in the runbook edits — and the operator's `grep` on
+    `.env` would still show `false`. Nothing else in this suite bans it: the
+    unit-name list, the `NOT auto-installed` string, the `systemctl` check and
+    the dark-contract test (which asserts only that the STRING
+    `ENABLE_CRYPTO_SPARSE_OBSERVATION` occurs, and an arming directive contains
+    it) are all satisfied by a service carrying that line.
+
+    So: no `Environment=` at all, and `EnvironmentFile=` exactly once as the
+    sole env source. Asserted against PARSED DIRECTIVES — a comment naming
+    `Environment=` (there are several) neither trips this nor satisfies it.
+
+    MUTATION: add `Environment=ENABLE_CRYPTO_SPARSE_OBSERVATION=true` to the
+    service and this fails; delete the `EnvironmentFile=` line and this fails.
+    """
+    for path in (SERVICE_UNIT, TIMER_UNIT):
+        assert directive_values(path, "Environment") == [], (
+            f"{path.name}: an `Environment=` directive can arm "
+            "ENABLE_CRYPTO_SPARSE_OBSERVATION at install time and takes "
+            "precedence over the .env file the runbook's disable procedure "
+            "edits. The gate is crossed in .env, never in the unit."
+        )
+        # The rest of systemd's env-injection surface, for completeness: each of
+        # these can put a value in the pass's environment without appearing in
+        # `.env`, and none of them has a use in this lane.
+        for banned in ("PassEnvironment", "UnsetEnvironment",
+                       "EnvironmentFileOverride"):
+            assert directive_values(path, banned) == [], f"{path.name}: {banned}"
+
+    env_files = directive_values(SERVICE_UNIT, "EnvironmentFile")
+    assert len(env_files) == 1, (
+        f"expected exactly one EnvironmentFile= directive, got {env_files}; "
+        "a second one is a second, unreviewed place the flag can be set"
+    )
+    assert env_files[0].endswith("projects/probability-arena/.env")
+    assert directive_values(TIMER_UNIT, "EnvironmentFile") == []
 
 
 def test_service_uses_the_fixed_venv_python_and_project_paths():
@@ -172,7 +293,23 @@ def test_the_timer_oncalendar_is_the_one_the_cadence_constant_derives():
         with no constant at all, and is what makes the `hourly` alias explicit
         rather than a lucky string match.
     """
+    # DUPLICATES FIRST, because the two parsers disagree about them and systemd
+    # sides with the one this pin was NOT using. `parse_unit` is
+    # `strict=False`, so it keeps the LAST value for a repeated key; systemd
+    # takes the UNION of every `OnCalendar=`. A file carrying
+    #   OnCalendar=*-*-* *:00,30:00
+    #   OnCalendar=hourly
+    # passes every assertion below while firing every 30 minutes — doubling the
+    # provider bill and halving the lattice gap the jitter test reasons about,
+    # invisibly.
+    declared = directive_values(TIMER_UNIT, "OnCalendar")
+    assert len(declared) == 1, (
+        f"expected exactly one OnCalendar= directive, got {declared}; systemd "
+        "takes the UNION of repeated OnCalendar lines, so the cadence pin "
+        "below would be checking only the last one"
+    )
     on_calendar = parse_unit(TIMER_UNIT)["Timer"]["OnCalendar"]
+    assert on_calendar == declared[0]
     assert on_calendar == sparse.timer_oncalendar(), (
         "the installed OnCalendar is no longer what SPARSE_CADENCE_MINUTES "
         f"derives ({sparse.timer_oncalendar()!r}); the systemd schedule and "
@@ -251,18 +388,34 @@ def sparse_pass_model(w_seconds: float, load_factor: float) -> float:
     )
     adapter_timeout = DexScreenerAdapter(settings=Settings(_env_file=None)).timeout
     load_independent = (
-        1.0                                               # prelude compute
+        INTERPRETER_START_ALLOWANCE_S                     # `TimeoutStartSec` on a
+        # `Type=oneshot` bounds the WHOLE process, imports included.
+        + 1.0                                             # prelude compute
         + sparse.DEFAULT_MAX_DURATION_SECONDS             # fetch deadline
-        + 2.0 * adapter_timeout                           # one in-flight request
+        # One in-flight request. `Timeout(15.0)` sets connect, write, read AND
+        # pool to 15 s EACH, so the arithmetically complete charge for a
+        # request that stalls in every phase it performs is 3 x 15 s, not the
+        # 2 x this model used to carry. Pool is not charged: the adapter issues
+        # requests sequentially against an uncontended client, so acquisition
+        # does not queue. A 4th 15 s would not move the verdict either.
+        + 3.0 * adapter_timeout
         + write_batches * (DB_LOCKED_MAX_ATTEMPTS - 1) * DB_LOCKED_RETRY_SECONDS
         + 1.0                                             # teardown + JSONL append
     )
     return load_independent + blocking_points * w_seconds * load_factor
 
 
+# The smallest of the source measurement's three phase figures — the write
+# phase (fetch was 28 ms; the PRELUDE was 2,023 ms). See the citation note in
+# the .service: this is w for the B term's largest contributor, and the prelude
+# acquisitions are carried at the same w as an admitted simplification.
 MEASURED_COMPETING_WRITER_STALL_S = 0.045   # this lane's write phase, measured
 WORST_MEASURED_LOAD_FACTOR = 5.80           # dev Mac at load average 5-6
 IDLE_MEASURED_LOAD_FACTOR = 1.01            # EVO, idle
+# Interpreter start plus `import app.cli` (SQLAlchemy, pydantic, httpx), which
+# `TimeoutStartSec` covers on a `Type=oneshot` and the model used to omit.
+# Measured on the dev Mac at load average 3-4: 0.41 / 0.44 / 0.67 s wall.
+INTERPRETER_START_ALLOWANCE_S = 3.0         # ~4.5x the worst measurement
 
 
 def test_timeout_start_sec_covers_the_measured_regime_it_was_derived_from():
@@ -300,7 +453,7 @@ def test_the_service_states_the_derivation_and_the_exceedance_conditions():
     chosen value is exceeded, and the non-corrupting outcome are all IN THE
     FILE, so the next reader does not re-derive them."""
     text = SERVICE_UNIT.read_text()
-    for token in ("5.80", "1.01", "42", "146", "45 ms", "SIGTERM"):
+    for token in ("5.80", "1.01", "42", "164", "45 ms", "SIGTERM"):
         assert token in text, token
     assert "unbounded" in text  # L has no ceiling and the file must not imply one
     # The two measured-regime figures the file TABULATES are recomputed, so the
@@ -316,11 +469,110 @@ def test_the_service_states_the_derivation_and_the_exceedance_conditions():
 def test_the_dark_install_contract_is_stated_in_the_service():
     """The unit is meant to be installed while the flag is off. That is only
     safe because `disabled` returns before any read, write, call or telemetry
-    append — the file has to say so, and the flag has to still be off."""
+    append — the file has to say so, and the flag has to still be off.
+
+    THE PROSE HALF ONLY. The claim itself is executed by
+    `test_a_dark_pass_touches_no_row_no_provider_and_no_sink` below.
+    """
     text = SERVICE_UNIT.read_text()
     assert "ENABLE_CRYPTO_SPARSE_OBSERVATION" in text
     assert "status=disabled" in text
     assert Settings(_env_file=None).enable_crypto_sparse_observation is False
+
+
+class _ExplodingSession:
+    """A `Session` that fails any use at all. The dark pass must never reach it.
+
+    Every entry point a SQLAlchemy `Session` offers this lane raises, so the
+    test cannot pass by a stub quietly returning an empty result: the pass
+    either returns before touching the session or the test errors.
+    """
+
+    def __getattr__(self, name):
+        def _boom(*_a, **_k):
+            raise AssertionError(
+                f"a dark pass touched the database: Session.{name}() was "
+                "called with ENABLE_CRYPTO_SPARSE_OBSERVATION off"
+            )
+        return _boom
+
+
+class _ExplodingAdapter:
+    """The provider surface `CryptoHorizonService` calls. A dark pass spends
+    no requests, so any call here is a real DexScreener request this lane
+    would have paid for at install time."""
+
+    source_name = "dexscreener"
+
+    def __init__(self):
+        self.calls = 0
+
+    async def fetch_pairs_for_token(self, token_address):
+        self.calls += 1
+        raise AssertionError(
+            f"a dark pass called the provider for {token_address!r}")
+
+
+async def test_a_dark_pass_touches_no_row_no_provider_and_no_sink(tmp_path):
+    """THE DARK-INSTALL CONTRACT, EXECUTED.
+
+    The .service file's central safety claim — the one that makes step 5 of the
+    runbook's enable procedure ("install the units dark") legitimate — is that
+    with the flag off `run_scheduled_sparse_observation` returns from its FIRST
+    branch, "before the overlap lock, before the MarketOps health read, before
+    the cohort lookup — so no row is read, no row is written, no provider is
+    called and no telemetry record is appended".
+
+    Until now that claim existed as PROSE plus a `Settings(...) is False`
+    check, which proves only the default, not the behaviour. Given the entire
+    deployment intent is "install dark and flip later", the claim is worth an
+    executable pin: an operator who copies these units onto EVO-X2 is trusting
+    it, and a future edit that moved any of that work above the gate would
+    spend provider requests, and take a lock, on a host that installed the
+    timer precisely because it believed it would not.
+
+    Each half is proved by a surface that FAILS rather than one that records:
+    the session raises on any attribute use, the adapter raises on any fetch.
+    Telemetry is the exception — it is asserted by counting, because
+    `_emit_pass_telemetry` swallows everything by design and a raising sink
+    would prove nothing.
+
+    MUTATION: move the gate below the MarketOps health read, or route the
+    `disabled` return through `_finish`, and this fails.
+    """
+    settings_off = Settings(_env_file=None, database_url="sqlite://")
+    assert settings_off.enable_crypto_sparse_observation is False, (
+        "this test is meaningless if the flag defaults on")
+
+    adapter = _ExplodingAdapter()
+    service = CryptoHorizonService(adapter=adapter, settings=settings_off)
+
+    sink = get_sink()
+    before = sink.emitted
+
+    result = await sparse.run_scheduled_sparse_observation(
+        _ExplodingSession(), settings=settings_off, service=service,
+        sleeper=lambda _s: None,
+    )
+
+    # The typed no-op the unit's comment quotes, not merely "did not crash".
+    assert result["status"] == sparse.STATUS_DISABLED
+    assert result["flag"] == sparse.FLAG
+    assert result["gate_bypassed"] is None
+    assert result.get("external_calls", 0) == 0
+
+    assert adapter.calls == 0, "a dark pass spent provider requests"
+
+    # ZERO TELEMETRY APPENDS. The `disabled` return deliberately does not pass
+    # through `_finish`, so an hourly dark timer files nothing — otherwise a
+    # dark install would write 24 records a day describing nothing, into the
+    # shared 001A sink whose per-writer counts a calibration corpus reads.
+    assert sink.emitted == before, "a dark pass appended a telemetry record"
+    assert sink.dropped == 0 and sink.rejected == 0
+    if Path(sink.path).exists():
+        events, malformed = read_events(sink.path)
+        assert (events, malformed) == ([], 0), (
+            f"a dark pass wrote to the telemetry sink: {events}")
 
 
 # --- nothing here installs, enables, or starts anything ------------------------
@@ -328,16 +580,33 @@ def test_the_dark_install_contract_is_stated_in_the_service():
 
 def test_the_units_neither_install_nor_enable_anything():
     """`systemctl` appears in both files ONLY inside the commented install
-    recipe. A unit that could install or enable something would need an
-    `ExecStartPre`/`ExecStartPost`/`ExecStop*` directive, and there is none."""
+    recipe. The ONE `ExecStart=` is the whole execution surface: any other
+    `Exec*` directive is a second program this unit runs, and a second program
+    is how a template installs itself.
+
+    `ExecCondition=` is in the ban list and is not decoration. systemd runs it
+    BEFORE `ExecStart=`, so `ExecCondition=/path/install.sh` is exactly the
+    hazard `ExecStartPre=/path/install.sh` is banned for, reached one step
+    earlier — and it was the one execution vector this test used to leave open.
+
+    Asserted over DECLARED DIRECTIVES rather than the parsed mapping, so a
+    repeated `Exec*` cannot hide behind `strict=False` deduplication.
+    """
+    banned_prefixes = (
+        "ExecStartPre", "ExecStartPost", "ExecStop", "ExecReload",
+        "ExecCondition",
+    )
     for path in (SERVICE_UNIT, TIMER_UNIT):
-        parsed = parse_unit(path)
-        for section in parsed.sections():
-            for key in parsed[section]:
-                assert not key.startswith("ExecStartPre"), f"{path.name}: {key}"
-                assert not key.startswith("ExecStartPost"), f"{path.name}: {key}"
-                assert not key.startswith("ExecStop"), f"{path.name}: {key}"
-                assert not key.startswith("ExecReload"), f"{path.name}: {key}"
+        for _section, key, value in unit_directives(path):
+            for prefix in banned_prefixes:
+                assert not key.startswith(prefix), (
+                    f"{path.name}: {key}={value} — systemd runs this as a "
+                    "second program, which is how an uninstalled template "
+                    "installs itself"
+                )
+        # ...and the one permitted Exec* directive is permitted exactly once.
+        assert len(directive_values(path, "ExecStart")) == (
+            1 if path is SERVICE_UNIT else 0), path.name
         for line in path.read_text().splitlines():
             if "systemctl" in line:
                 assert line.lstrip().startswith("#"), (

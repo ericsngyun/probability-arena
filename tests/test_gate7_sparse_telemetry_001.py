@@ -1588,6 +1588,16 @@ class TestTheGateTextIsTrue:
         from a `WantedBy` that the repo itself activates, and nothing in the
         repo may run `systemctl` against it outside a comment. The FLAG half of
         the gate is unchanged and still asserted directly, one test above.
+
+        THE `WantedBy` SENTENCE IS NOW ASSERTED, not just written. It used to be
+        prose with nothing behind it — the exact shape that has burned this repo
+        repeatedly — so the reachability claim is checked here: the `.service`
+        declares no `[Install]` at all (so it cannot be enabled independently of
+        its timer, which would run a provider-spending pass at every login), and
+        the timer's only `WantedBy` is `timers.target`, which nothing in this
+        repo activates. `tests/test_gate7_sparse_units_001.py` holds the fuller
+        version of both, including the `Environment=` ban that keeps the FLAG
+        half of this gate un-armable from the unit layer.
         """
         systemd_dir = Path(__file__).resolve().parents[1] / "infra" / "systemd"
         units = sorted(systemd_dir.rglob("*sparse*"))
@@ -1602,6 +1612,22 @@ class TestTheGateTextIsTrue:
                 if "systemctl" in line:
                     assert line.lstrip().startswith("#"), (
                         f"{unit.name}: systemctl outside a comment: {line!r}")
+            # The `WantedBy` half of the claim above. Read from DECLARED
+            # directives (skipping the comments, which name these targets while
+            # explaining them), because a grep would be satisfied by the prose.
+            wanted_by = [
+                stripped.partition("=")[2].strip()
+                for stripped in (ln.strip() for ln in text.splitlines())
+                if stripped.startswith("WantedBy=")
+            ]
+            expected = [] if unit.suffix == ".service" else ["timers.target"]
+            assert wanted_by == expected, (
+                f"{unit.name}: WantedBy={wanted_by}, expected {expected}. The "
+                "service must carry no [Install] (a stray `systemctl --user "
+                "enable` on it would run a provider-spending pass at every "
+                "login); the timer's `timers.target` is inert until an "
+                "operator enables it, and nothing in this repo does."
+            )
         # And the gate's own subject is untouched: the pass still says a timer
         # is not installed, because authoring a template did not install one.
         assert "no timer is installed" in sparse._WriteMeter().snapshot()["note"]
