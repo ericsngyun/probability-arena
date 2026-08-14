@@ -1339,14 +1339,40 @@ OBSERVATION_DENOMINATOR = "member_horizons_whose_band_has_closed"
 
 OBS_STATE_OBSERVED = "observed"
 OBS_STATE_ATTEMPTED_MISSED = "attempted_missed"
+OBS_STATE_OUT_OF_BAND = "out_of_band"
 OBS_STATE_SCHEDULING_MISS = "scheduling_miss"
 OBS_STATE_ENROLLED_TOO_LATE = "enrolled_after_band_closed"
 OBS_STATE_BAND_OPEN = "band_open"
 OBS_STATE_BAND_NOT_OPEN = "band_not_open_yet"
 
+# The minimum window this report will accept. A closed 24h band needs
+# `now > anchor + 24h + BAND` while the member filter needs `added_at >=
+# now - hours` and `added_at >= anchor`; with `hours` below that, NO member can
+# satisfy both and the 24h denominator is structurally zero — measured:
+# `hours=24` gave `bands_closed=0, look_completion_rate=None`, a silent empty
+# answer that reads like "nothing to report".
+LONGEST_SPARSE_HORIZON = max(SPARSE_HORIZONS, key=lambda pair: pair[1])[0]
+MIN_REPORT_HOURS = int(
+    (max(m for _l, m in SPARSE_HORIZONS) + SPARSE_BAND_MINUTES + 59) // 60
+)
+
 
 def _rate(numerator: int, denominator: int) -> float | None:
     return round(numerator / denominator, 4) if denominator else None
+
+
+def timer_oncalendar() -> str:
+    """The exact systemd `OnCalendar=` line this lane's cadence implies.
+
+    Derived from SPARSE_CADENCE_MINUTES rather than written down twice: the
+    cadence constant and the installed timer must not be able to drift apart,
+    and the operator installing the unit should not have to translate minutes
+    into calendar syntax by hand."""
+    minutes = int(SPARSE_CADENCE_MINUTES)
+    if minutes >= 60 and minutes % 60 == 0:
+        hours = minutes // 60
+        return "hourly" if hours == 1 else f"*-*-* 00/{hours}:00:00"
+    return f"*-*-* *:00/{minutes}:00"
 
 
 def build_observation_coverage_report(
@@ -1370,6 +1396,17 @@ def build_observation_coverage_report(
       * `attempted_missed`  — we looked; the provider had nothing usable
                               (token_inactive / provider_no_pair /
                               no_liquidity_state / request_failed)
+      * `out_of_band`       — an `observed` row whose `observed_at` is NOT
+                              inside this member-horizon's band. This lane
+                              cannot produce one; a manual `observe_once`
+                              against the standing cohort could (it plans at
+                              the fractional tape tolerance), and before this
+                              state existed such a row scored as a clean
+                              `observed` and drove `look_completion_rate` to
+                              1.0 while `target_distance max` printed 7200s
+                              against a 3600s half-width. Counted in the
+                              closed-band denominator, never in `observed`,
+                              never in `target_distance_seconds`.
       * `scheduling_miss`   — the band closed while this member was enrolled
                               and this lane never looked. THIS is the number
                               that proves the mechanism ran; it is not
@@ -1416,33 +1453,86 @@ def build_observation_coverage_report(
             "status": STATUS_AMBIGUOUS_COHORT,
             "cohort_ids": [c.id for c in cohorts],
         }
+    if hours is not None and hours < MIN_REPORT_HOURS:
+        return {
+            **base,
+            "status": "window_too_short",
+            "window_hours": hours,
+            "minimum_window_hours": MIN_REPORT_HOURS,
+            "error": (
+                f"--hours {hours} structurally nulls the "
+                f"{LONGEST_SPARSE_HORIZON} denominator: a closed "
+                f"{LONGEST_SPARSE_HORIZON} band needs now > anchor + horizon + "
+                "band, while a member's added_at is never before its anchor, so "
+                f"no member can satisfy both. Use --hours >= "
+                f"{MIN_REPORT_HOURS} (or omit it for every enrolled member)."
+            ),
+        }
     if not cohorts:
         return {**base, "status": "no_cohort", "enrolled_members": 0}
     cohort = cohorts[0]
 
-    member_q = select(CryptoHorizonCohortMember).where(
-        CryptoHorizonCohortMember.cohort_id == cohort.id
-    )
+    # COLUMNS, NOT ENTITIES, AND BOTH SIDES WINDOWED.
+    #
+    # Measured at one year of this lane's own output (193,450 members /
+    # 386,900 observations, ANALYZE run): the members query took 25.1s and the
+    # observations query — which had NO window filter at all, only
+    # `cohort_id = :id` — took 368.3s at 692MB peak RSS, holding SHARED for
+    # 14.7s and causing 3 hard `database is locked` failures in a competing
+    # writer at a 2s busy timeout. `--hours 48` left the 368s query untouched.
+    # This is the operator's ONLY verification surface and the CLI default is
+    # `--hours None`.
+    #
+    # The report reads 4 member fields of 9 and 5 observation fields of 22, and
+    # never needs `raw_payload`, so both queries select columns. When `hours`
+    # is given the observation side is scoped to the SAME member window via a
+    # token subquery; when it is not, the extra subquery would be pure cost
+    # over the identical row set, so it is omitted.
+    member_window = None
+    member_q = select(
+        CryptoHorizonCohortMember.token_address,
+        CryptoHorizonCohortMember.first_evidence_at,
+        CryptoHorizonCohortMember.birth_observed_at,
+        CryptoHorizonCohortMember.added_at,
+    ).where(CryptoHorizonCohortMember.cohort_id == cohort.id)
     if hours:
+        member_window = now - timedelta(hours=hours)
         member_q = member_q.where(
-            CryptoHorizonCohortMember.added_at >= now - timedelta(hours=hours)
+            CryptoHorizonCohortMember.added_at >= member_window
         )
     members = list(session.execute(
         member_q.order_by(CryptoHorizonCohortMember.id)
-    ).scalars().all())
-    observations = list(session.execute(
-        select(CryptoHorizonObservation).where(
-            CryptoHorizonObservation.cohort_id == cohort.id
+    ).all())
+
+    obs_q = select(
+        CryptoHorizonObservation.token_address,
+        CryptoHorizonObservation.horizon,
+        CryptoHorizonObservation.status,
+        CryptoHorizonObservation.missing_cause,
+        CryptoHorizonObservation.observed_at,
+    ).where(CryptoHorizonObservation.cohort_id == cohort.id)
+    if member_window is not None:
+        obs_q = obs_q.where(
+            CryptoHorizonObservation.token_address.in_(
+                select(CryptoHorizonCohortMember.token_address).where(
+                    CryptoHorizonCohortMember.cohort_id == cohort.id,
+                    CryptoHorizonCohortMember.added_at >= member_window,
+                )
+            )
         )
-    ).scalars().all())
-    obs_by_key = {(o.token_address, o.horizon): o for o in observations}
+    obs_by_key = {
+        (o.token_address, o.horizon): o
+        for o in session.execute(obs_q).all()
+    }
 
     by_horizon: dict[str, dict] = {}
     misses: list[dict] = []
     distances: list[float] = []
+    enrolment_lags: list[float] = []
     for label, minutes in SPARSE_HORIZONS:
         states = {
             OBS_STATE_OBSERVED: 0, OBS_STATE_ATTEMPTED_MISSED: 0,
+            OBS_STATE_OUT_OF_BAND: 0,
             OBS_STATE_SCHEDULING_MISS: 0, OBS_STATE_ENROLLED_TOO_LATE: 0,
             OBS_STATE_BAND_OPEN: 0, OBS_STATE_BAND_NOT_OPEN: 0,
         }
@@ -1456,15 +1546,24 @@ def build_observation_coverage_report(
             target = anchor + timedelta(minutes=minutes)
             band_start = target - timedelta(minutes=SPARSE_BAND_MINUTES)
             band_end = target + timedelta(minutes=SPARSE_BAND_MINUTES)
+            added_at = _aware(member.added_at)
+            if label == SPARSE_HORIZON_LABELS[0] and added_at is not None:
+                enrolment_lags.append((added_at - anchor).total_seconds())
             obs = obs_by_key.get((member.token_address, label))
             if obs is not None:
                 if obs.status == OBS_OBSERVED:
-                    states[OBS_STATE_OBSERVED] += 1
+                    # The band is recomputed HERE from the member's own anchor
+                    # and this lane's fixed half-width — never taken from the
+                    # row, which a manual `observe_once` pass would have
+                    # written at the much wider fractional tape tolerance.
                     observed_at = _aware(obs.observed_at)
-                    if observed_at is not None and obs.target_at is not None:
-                        distances.append(
-                            abs((observed_at - _aware(obs.target_at)).total_seconds())
-                        )
+                    if observed_at is None or not (
+                        band_start <= observed_at <= band_end
+                    ):
+                        states[OBS_STATE_OUT_OF_BAND] += 1
+                        continue
+                    states[OBS_STATE_OBSERVED] += 1
+                    distances.append(abs((observed_at - target).total_seconds()))
                 else:
                     states[OBS_STATE_ATTEMPTED_MISSED] += 1
                     causes[obs.missing_cause or obs.status] = (
@@ -1481,8 +1580,9 @@ def build_observation_coverage_report(
                 # inflate `scheduling_miss_rate` with tokens that predate
                 # enrolment — the same denominator conflation this whole
                 # milestone exists to stop. Counted separately and excluded
-                # from every rate.
-                added_at = _aware(member.added_at)
+                # from every rate — but `never_had_a_chance_rate` below reports
+                # it against the whole member-horizon population, so a lane
+                # that accomplishes nothing cannot read clean.
                 if added_at is not None and added_at > band_end:
                     states[OBS_STATE_ENROLLED_TOO_LATE] += 1
                     continue
@@ -1501,29 +1601,73 @@ def build_observation_coverage_report(
         closed = (
             states[OBS_STATE_OBSERVED]
             + states[OBS_STATE_ATTEMPTED_MISSED]
+            + states[OBS_STATE_OUT_OF_BAND]
             + states[OBS_STATE_SCHEDULING_MISS]
         )
         attempted = states[OBS_STATE_OBSERVED] + states[OBS_STATE_ATTEMPTED_MISSED]
+        # every member-horizon this report saw, pending ones included: the
+        # denominator `never_had_a_chance_rate` needs, because
+        # `enrolled_after_band_closed` is excluded from all the others and a
+        # lane that enrolled everything too late would otherwise read clean.
+        population = sum(states.values())
         by_horizon[label] = {
             **states,
             "bands_closed": closed,
             "attempted": attempted,
+            "member_horizons": population,
             "miss_causes": causes,
             "observation_attempt_rate": _rate(attempted, closed),
             "observation_success_rate": _rate(states[OBS_STATE_OBSERVED], attempted),
             "look_completion_rate": _rate(states[OBS_STATE_OBSERVED], closed),
             "scheduling_miss_rate": _rate(states[OBS_STATE_SCHEDULING_MISS], closed),
+            "out_of_band_rate": _rate(states[OBS_STATE_OUT_OF_BAND], closed),
+            "never_had_a_chance_rate": _rate(
+                states[OBS_STATE_ENROLLED_TOO_LATE], population
+            ),
             "attempt_denominator": OBSERVATION_DENOMINATOR,
             "success_denominator": "attempted_member_horizons",
+            "never_had_a_chance_denominator": "member_horizons_in_window",
         }
 
     distances.sort()
+    enrolment_lags.sort()
 
-    def pctile(p: float):
-        if not distances:
+    def pctile(values: list[float], p: float):
+        if not values:
             return None
-        idx = min(len(distances) - 1, int(p * (len(distances) - 1)))
-        return round(distances[idx], 1)
+        idx = min(len(values) - 1, int(p * (len(values) - 1)))
+        return round(values[idx], 1)
+
+    # LIVENESS. `scheduling_miss_rate` detects a SLOW timer but not a STOPPED
+    # one: once the timer stops, late births land in the excluded
+    # `enrolled_after_band_closed` bucket or (past the enrolment window) are
+    # never enrolled at all, and the rate lags a full band before it moves.
+    # These two ages move within one cadence. Read by MAX(id), which walks the
+    # primary key backwards, never a scan over `observed_at`/`added_at`.
+    latest_observation_at = _aware(session.execute(
+        select(CryptoHorizonObservation.observed_at)
+        .where(CryptoHorizonObservation.cohort_id == cohort.id)
+        .order_by(CryptoHorizonObservation.id.desc())
+        .limit(1)
+    ).scalar())
+    latest_enrolment_at = _aware(session.execute(
+        select(CryptoHorizonCohortMember.added_at)
+        .where(CryptoHorizonCohortMember.cohort_id == cohort.id)
+        .order_by(CryptoHorizonCohortMember.id.desc())
+        .limit(1)
+    ).scalar())
+    latest_pass_at = max(
+        [t for t in (latest_observation_at, latest_enrolment_at) if t is not None],
+        default=None,
+    )
+    pass_age_minutes = (
+        round((now - latest_pass_at).total_seconds() / 60.0, 1)
+        if latest_pass_at is not None else None
+    )
+    cadence_warning = (
+        pass_age_minutes is not None
+        and pass_age_minutes > 1.5 * SPARSE_CADENCE_MINUTES
+    )
 
     return {
         **base,
@@ -1533,8 +1677,30 @@ def build_observation_coverage_report(
         "window_hours": hours,
         "by_horizon": by_horizon,
         "scheduling_miss_examples": misses,
+        "liveness": {
+            "latest_pass_at": (
+                latest_pass_at.isoformat() if latest_pass_at else None
+            ),
+            "latest_observation_at": (
+                latest_observation_at.isoformat() if latest_observation_at else None
+            ),
+            "latest_enrolment_at": (
+                latest_enrolment_at.isoformat() if latest_enrolment_at else None
+            ),
+            "previous_pass_age_minutes": pass_age_minutes,
+            "cadence_minutes": SPARSE_CADENCE_MINUTES,
+            "cadence_warning": cadence_warning,
+            "expected_timer_oncalendar": timer_oncalendar(),
+        },
+        "enrolment_lag_seconds": {
+            "p50": pctile(enrolment_lags, 0.5),
+            "p90": pctile(enrolment_lags, 0.9),
+            "max": (round(enrolment_lags[-1], 1) if enrolment_lags else None),
+            "band_half_width_seconds": SPARSE_BAND_MINUTES * 60,
+            "measures": "member.added_at - birth anchor, per enrolled member",
+        },
         "target_distance_seconds": {
-            "p50": pctile(0.5), "p90": pctile(0.9),
+            "p50": pctile(distances, 0.5), "p90": pctile(distances, 0.9),
             "max": (round(distances[-1], 1) if distances else None),
             "band_half_width_seconds": SPARSE_BAND_MINUTES * 60,
         },

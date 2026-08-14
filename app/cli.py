@@ -4121,6 +4121,9 @@ async def crypto_horizon_observe_once(
         )
         print("crypto horizon observe — observation only, never advice")
         print(f"status={r['status']}  external_calls={r.get('external_calls', 0)}")
+        if r["status"] == "rolling_cohort_not_observable":
+            print(f"  {r['error']}")
+            return -1
         if r["status"] == "no_cohort":
             print(f"  no members for cohort_id={cohort_id}")
             return 0
@@ -4963,8 +4966,8 @@ async def crypto_observation_coverage_report(
             f"generated_at={r['generated_at']}"
         )
         if r["status"] != "ok":
-            print(f"  {r.get('cohort_ids') or 'no standing rolling cohort'}")
-            return 0
+            print(f"  {r.get('error') or r.get('cohort_ids') or 'no standing rolling cohort'}")
+            return 0 if r["status"] == "no_cohort" else -1
         print(
             f"cohort_id={r['cohort_id']}  enrolled_members={r['enrolled_members']}  "
             f"window_hours={r['window_hours']}  band=+/-{r['band_minutes']}min  "
@@ -4978,9 +4981,16 @@ async def crypto_observation_coverage_report(
             )
             print(
                 f"    observed={h['observed']}  attempted_missed="
-                f"{h['attempted_missed']}  scheduling_miss={h['scheduling_miss']}  "
+                f"{h['attempted_missed']}  out_of_band={h['out_of_band']}  "
+                f"scheduling_miss={h['scheduling_miss']}  "
                 f"band_open={h['band_open']}  band_not_open_yet="
                 f"{h['band_not_open_yet']}"
+            )
+            print(
+                f"    enrolled_after_band_closed="
+                f"{h['enrolled_after_band_closed']}  never_had_a_chance_rate="
+                f"{h['never_had_a_chance_rate']} "
+                f"(denominator={h['never_had_a_chance_denominator']})"
             )
             print(
                 f"    observation_attempt_rate={h['observation_attempt_rate']}  "
@@ -4989,11 +4999,24 @@ async def crypto_observation_coverage_report(
             )
             print(
                 f"    look_completion_rate={h['look_completion_rate']}  "
-                f"scheduling_miss_rate={h['scheduling_miss_rate']}"
+                f"scheduling_miss_rate={h['scheduling_miss_rate']}  "
+                f"out_of_band_rate={h['out_of_band_rate']}"
             )
             if h["miss_causes"]:
                 print(f"    miss_causes={h['miss_causes']}")
-        print(f"\ntarget_distance_seconds={r['target_distance_seconds']}")
+        live = r["liveness"]
+        print(
+            f"\nliveness: latest_pass_at={live['latest_pass_at']}  "
+            f"previous_pass_age_minutes={live['previous_pass_age_minutes']}  "
+            f"cadence={live['cadence_minutes']}min  "
+            f"WARNING={live['cadence_warning']}"
+        )
+        print(
+            f"  expected timer line: OnCalendar="
+            f"{live['expected_timer_oncalendar']}"
+        )
+        print(f"enrolment_lag_seconds={r['enrolment_lag_seconds']}")
+        print(f"target_distance_seconds={r['target_distance_seconds']}")
         if r["scheduling_miss_examples"]:
             print("scheduling misses (never backfilled):")
             for e in r["scheduling_miss_examples"]:

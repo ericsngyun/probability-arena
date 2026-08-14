@@ -1560,6 +1560,144 @@ async def test_a_band_that_closed_after_enrolment_IS_a_scheduling_miss(session):
     assert rep["scheduling_miss_examples"][0]["enrolled_at"] is not None
 
 
+def _sql_for(session, table: str, run) -> list[str]:
+    """Every SELECT `run()` issues against `table`, as raw SQL."""
+    from sqlalchemy import event as sa_event
+
+    seen: list[str] = []
+
+    @sa_event.listens_for(session.get_bind(), "before_cursor_execute")
+    def _capture(conn, cursor, statement, params, context, executemany):
+        if table in statement and statement.lstrip().upper().startswith("SELECT"):
+            seen.append(statement)
+
+    try:
+        run()
+    finally:
+        sa_event.remove(session.get_bind(), "before_cursor_execute", _capture)
+    return seen
+
+
+@pytest.mark.asyncio
+async def test_the_coverage_report_bounds_both_queries_by_the_same_window(session):
+    """B6. `--hours` filtered the MEMBERS query only; the observations query
+    was `WHERE cohort_id = :id` unconditionally, and it selected whole
+    entities. Measured at one year of this lane's own output (193,450 members /
+    386,900 observations, ANALYZE run): members 25.1s, observations 368.3s,
+    peak RSS 692MB, SHARED held 14.7s, 3 hard `database is locked` failures in
+    a competing writer — and `--hours 48` left the 368s query untouched. This
+    is the operator's only verification surface."""
+    add_birth(session, 1, anchor=NOW - timedelta(hours=6))
+    session.commit()
+    await run_pass(session, adapter=FakeAdapter({token_id(1): [pair(token_id(1))]}), now=NOW)
+
+    statements = _sql_for(
+        session, "crypto_horizon_observations",
+        lambda: sparse.build_observation_coverage_report(
+            session, settings=settings(), hours=48, now=NOW + timedelta(hours=2),
+        ),
+    )
+    obs_selects = [s for s in statements if "FROM crypto_horizon_observations" in s]
+    assert obs_selects, statements
+    scan_all = [
+        s for s in obs_selects
+        if "added_at" not in s and "ORDER BY" not in s.upper()
+    ]
+    assert not scan_all, (
+        "the observations query is not bounded by the report window:\n"
+        + "\n\n".join(scan_all)
+    )
+    # and it reads columns, not the 22-field entity (raw_payload above all)
+    for statement in obs_selects:
+        assert "raw_payload" not in statement, statement
+
+
+@pytest.mark.asyncio
+async def test_the_coverage_report_selects_member_columns_not_entities(session):
+    add_birth(session, 1, anchor=NOW - timedelta(hours=6))
+    session.commit()
+    await run_pass(session, adapter=FakeAdapter({token_id(1): [pair(token_id(1))]}), now=NOW)
+    statements = _sql_for(
+        session, "crypto_horizon_cohort_members",
+        lambda: sparse.build_observation_coverage_report(
+            session, settings=settings(), now=NOW + timedelta(hours=2),
+        ),
+    )
+    assert statements
+    for statement in statements:
+        assert "crypto_horizon_cohort_members.symbol" not in statement, statement
+        assert "crypto_horizon_cohort_members.birth_event_id" not in statement, statement
+
+
+@pytest.mark.asyncio
+async def test_a_window_shorter_than_a_closed_24h_band_is_refused(session):
+    """`--hours 24` structurally nulls the 24h denominator: a closed 24h band
+    needs `now > anchor + 25h` while `added_at >= now - hours` and `added_at >=
+    anchor`, so no member can qualify. Measured: `hours=24` gave
+    `bands_closed=0, look_completion_rate=None` — a silent empty answer that
+    reads like "nothing to report"."""
+    add_birth(session, 1, anchor=NOW - timedelta(hours=6))
+    session.commit()
+    await run_pass(session, adapter=FakeAdapter({token_id(1): [pair(token_id(1))]}), now=NOW)
+
+    refused = sparse.build_observation_coverage_report(
+        session, settings=settings(), hours=24, now=NOW + timedelta(hours=2),
+    )
+    assert refused["status"] == "window_too_short"
+    assert refused["minimum_window_hours"] == sparse.MIN_REPORT_HOURS == 25
+    assert "24h" in refused["error"]
+    assert "by_horizon" not in refused
+
+    ok = sparse.build_observation_coverage_report(
+        session, settings=settings(), hours=25, now=NOW + timedelta(hours=2),
+    )
+    assert ok["status"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_the_report_reports_liveness_and_the_exact_timer_line(session):
+    """`scheduling_miss_rate` detects a SLOW timer but not a STOPPED one — late
+    births land in the excluded `enrolled_after_band_closed` bucket or vanish
+    past the enrolment window entirely, and the rate lags a full band."""
+    add_birth(session, 1, anchor=NOW - timedelta(hours=6))
+    session.commit()
+    await run_pass(session, adapter=FakeAdapter({token_id(1): [pair(token_id(1))]}), now=NOW)
+
+    fresh = sparse.build_observation_coverage_report(
+        session, settings=settings(), now=NOW + timedelta(minutes=30),
+    )
+    assert fresh["liveness"]["cadence_warning"] is False
+    assert fresh["liveness"]["previous_pass_age_minutes"] < 60
+    assert fresh["liveness"]["expected_timer_oncalendar"] == sparse.timer_oncalendar()
+
+    stopped = sparse.build_observation_coverage_report(
+        session, settings=settings(), now=NOW + timedelta(hours=4),
+    )
+    assert stopped["liveness"]["cadence_warning"] is True
+    assert stopped["liveness"]["previous_pass_age_minutes"] > 1.5 * 60
+
+
+@pytest.mark.asyncio
+async def test_enrolling_after_the_band_closed_shows_up_as_a_rate(session):
+    """`enrolled_after_band_closed` is excluded from every rate. Without a
+    compensating signal, 20 births all enrolled after their 6h band had closed
+    make every rate read clean while the mechanism accomplishes nothing."""
+    for n in range(1, 21):
+        add_birth(session, n, anchor=NOW - timedelta(hours=7, minutes=30))
+    session.commit()
+    r = await run_pass(session, adapter=FakeAdapter({}), now=NOW)
+    assert r["due_observations"] == 0
+
+    report = sparse.build_observation_coverage_report(
+        session, settings=settings(), now=NOW + timedelta(minutes=5),
+    )
+    six = report["by_horizon"]["6h"]
+    assert six[sparse.OBS_STATE_ENROLLED_TOO_LATE] == 20
+    assert six["look_completion_rate"] is None  # nothing in the denominator
+    assert six["never_had_a_chance_rate"] == 1.0
+    assert report["enrolment_lag_seconds"]["p50"] is not None
+
+
 def test_the_report_is_compute_on_demand(session):
     before = row_counts(session)
     r = sparse.build_observation_coverage_report(session, settings=settings(), now=NOW)
@@ -1595,6 +1733,130 @@ async def test_a_rolling_cohort_can_never_be_armed(session):
     plan = build_arm_plan(session, cohort.id, now=NOW)
     assert plan["status"] == "rolling_cohort_not_armable"
     assert plan["jobs"] == [] and plan["installed"] is False
+
+
+@pytest.mark.asyncio
+async def test_the_manual_lane_refuses_the_rolling_cohort(session):
+    """B3. `is_rolling_cohort` was checked at exactly ONE choke point
+    (`build_arm_plan`). `observe_once` and `build_plan` had none, they plan at
+    the FRACTIONAL tape tolerance (+/-12h at 24h, not this lane's +/-60min) and
+    take the retry-in-place branch — and every sparse pass prints `cohort_id=`
+    on stdout, so the id is right there.
+
+    Measured before the fix: a `request_failed` at 6h, then
+    `observe_once(<that cohort id>)` two hours later produced
+    `status=observed`, `observed_at` a full hour outside `window_end`, and the
+    coverage report scored `look_completion_rate 1.0` while printing
+    `target_distance max 7200.0` against `band_half_width 3600.0`."""
+    from app.services.crypto_horizon import (
+        STATUS_ROLLING_COHORT_REFUSED,
+        RollingCohortRefused,
+    )
+
+    add_birth(session, 1, anchor=NOW - timedelta(hours=6))
+    session.commit()
+    await run_real_pass(session, mode="429", now=NOW)
+    cohort = session.query(CryptoHorizonCohort).one()
+    assert is_rolling_cohort(cohort)
+
+    s = settings()
+    service = CryptoHorizonService(
+        adapter=FakeAdapter({token_id(1): [pair(token_id(1))]}), settings=s,
+    )
+    two_hours_later = session  # (the manual lane reads the wall clock itself)
+    r = await service.observe_once(two_hours_later, cohort_id=cohort.id)
+    assert r["status"] == STATUS_ROLLING_COHORT_REFUSED
+    assert r["external_calls"] == 0
+    assert r["persisted"] is False
+    # nothing was rewritten
+    assert session.query(CryptoHorizonObservation).one().status == OBS_REQUEST_FAILED
+
+    with pytest.raises(RollingCohortRefused):
+        service.build_plan(session, cohort.id)
+
+    # and the CLI surfaces it as a non-zero exit, not a silent success
+    from app import cli
+
+    rc = await cli.crypto_horizon_observe_once(
+        cohort_id=cohort.id, session=session,
+    )
+    assert rc == -1
+
+
+@pytest.mark.asyncio
+async def test_a_frozen_cohort_is_still_manually_observable(session):
+    """The refusal must be surgical: the manual lane it was written for keeps
+    working exactly as before."""
+    s = settings()
+    service = CryptoHorizonService(
+        adapter=FakeAdapter({token_id(1): [pair(token_id(1))]}), settings=s,
+    )
+    add_birth(session, 1, anchor=datetime.now(timezone.utc) - timedelta(minutes=15))
+    session.commit()
+    built = service.create_cohort(session, hours=24, limit=10, confirm=True)
+    cohort_id = built["cohort_id"]
+    assert not is_rolling_cohort(session.get(CryptoHorizonCohort, cohort_id))
+    assert isinstance(service.build_plan(session, cohort_id), list)
+    r = await service.observe_once(session, cohort_id=cohort_id)
+    assert r["status"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_an_out_of_band_observation_is_not_scored_as_a_look(session):
+    """B3, reporting half. An `observed` row whose `observed_at` falls outside
+    the member-horizon's band is a distinct `out_of_band` state, excluded from
+    `observed` and from `target_distance_seconds` — the invariant being that
+    `target_distance_seconds.max` can never exceed the band half-width."""
+    add_birth(session, 1, anchor=NOW - timedelta(hours=6))
+    session.commit()
+    await run_pass(
+        session, adapter=FakeAdapter({token_id(1): [pair(token_id(1))]}), now=NOW,
+    )
+    obs = session.query(CryptoHorizonObservation).one()
+    assert obs.status == OBS_OBSERVED
+
+    at = NOW + timedelta(minutes=90)
+    clean = sparse.build_observation_coverage_report(
+        session, settings=settings(), now=at,
+    )
+    assert clean["by_horizon"]["6h"]["observed"] == 1
+    assert clean["by_horizon"]["6h"][sparse.OBS_STATE_OUT_OF_BAND] == 0
+    assert clean["by_horizon"]["6h"]["look_completion_rate"] == 1.0
+
+    # now move that observation an hour outside its band, exactly as a manual
+    # `observe_once` pass at the fractional tolerance would have written it
+    obs.observed_at = NOW + timedelta(minutes=120)
+    session.commit()
+    dirty = sparse.build_observation_coverage_report(
+        session, settings=settings(), now=at + timedelta(minutes=60),
+    )
+    six = dirty["by_horizon"]["6h"]
+    assert six[sparse.OBS_STATE_OUT_OF_BAND] == 1
+    assert six["observed"] == 0
+    assert six["look_completion_rate"] == 0.0
+    assert six["out_of_band_rate"] == 1.0
+    distance = dirty["target_distance_seconds"]
+    assert distance["max"] is None or (
+        distance["max"] <= distance["band_half_width_seconds"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_target_distance_never_exceeds_the_band_half_width(session):
+    """The invariant, stated once and asserted over every horizon of a mixed
+    population — the number that would have disproved the fabricated
+    `look_completion_rate 1.0`."""
+    for n in range(1, 5):
+        add_birth(session, n, anchor=NOW - timedelta(hours=6, minutes=15 * n))
+    session.commit()
+    pairs = {token_id(n): [pair(token_id(n))] for n in range(1, 5)}
+    await run_pass(session, adapter=FakeAdapter(pairs), now=NOW)
+    report = sparse.build_observation_coverage_report(
+        session, settings=settings(), now=NOW + timedelta(hours=2),
+    )
+    d = report["target_distance_seconds"]
+    assert d["max"] is not None
+    assert d["max"] <= d["band_half_width_seconds"], report["by_horizon"]
 
 
 def test_a_frozen_cohort_is_still_armable(session):

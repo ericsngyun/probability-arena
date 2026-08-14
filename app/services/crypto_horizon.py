@@ -96,6 +96,18 @@ MEMBERSHIP_FROZEN = "frozen"
 MEMBERSHIP_ROLLING = "rolling_prospective_sparse"
 
 
+STATUS_ROLLING_COHORT_REFUSED = "rolling_cohort_not_observable"
+
+
+class RollingCohortRefused(RuntimeError):
+    """Raised by a MANUAL frozen-cohort entry point handed the standing
+    rolling sparse cohort. Loud rather than degraded: every manual path here
+    plans at the FRACTIONAL tape tolerance (up to +/-12h at 24h) and takes the
+    retry-in-place branch, so running one against the rolling cohort rewrites
+    a terminal miss as an out-of-band `observed` and the coverage report then
+    scores it as a clean look."""
+
+
 def is_rolling_cohort(cohort) -> bool:
     """True for the CRYPTO-COVERAGE-REPAIR-002 standing sparse-observation
     cohort (rolling admission). False for every frozen research cohort, and
@@ -820,7 +832,34 @@ class CryptoHorizonService:
             if o.status in INACTIVE_STATUSES
         }
 
+    def _refuse_rolling(self, session: Session, cohort_id: int):
+        """CRYPTO-COVERAGE-REPAIR-002 B3. `is_rolling_cohort` used to be checked
+        at exactly ONE choke point (`build_arm_plan`). `observe_once` and
+        `build_plan` had no guard at all, and every sparse pass prints
+        `cohort_id=` on stdout, so the id is trivially available to an operator.
+
+        Measured: a `request_failed` at 6h, then `observe_once(<that cohort
+        id>)` two hours later produced `status=observed` with `observed_at` a
+        full hour OUTSIDE `window_end` — because these paths plan at the
+        fractional tape tolerance, not this lane's fixed band, and take the
+        retry-in-place branch. The observation-coverage report then scored
+        `look_completion_rate 1.0`.
+
+        One cheap row read, the same one-line predicate."""
+        cohort = session.get(CryptoHorizonCohort, cohort_id)
+        if is_rolling_cohort(cohort):
+            raise RollingCohortRefused(
+                f"cohort {cohort_id} has ROLLING membership "
+                "(CRYPTO-COVERAGE-REPAIR-002 prospective sparse observation). "
+                "It is driven by its own governed scheduled pass, at a fixed "
+                "absolute band; this manual frozen-cohort path "
+                "plans at the fractional tape tolerance and retries misses in "
+                "place, which would write out-of-band observations into the "
+                "sparse denominator. Use crypto-sparse-observe instead."
+            )
+
     def build_plan(self, session: Session, cohort_id: int, now=None) -> list[HorizonPlanEntry]:
+        self._refuse_rolling(session, cohort_id)
         now = now or _now()
         members = self._members(session, cohort_id)
         observations = self._observations(session, cohort_id)
@@ -838,7 +877,24 @@ class CryptoHorizonService:
         """One manual, bounded observation pass over currently-due horizons.
         Dry-run makes ZERO external calls and persists nothing (plan preview).
         A real pass fetches nearest-due tokens first, persists ordinary price
-        ticks + audit observation rows, and reports provider calls."""
+        ticks + audit observation rows, and reports provider calls.
+
+        Refuses the standing ROLLING sparse cohort (see `_refuse_rolling`) as a
+        typed result rather than an exception, because this is the CLI's own
+        entry point and the operator needs the reason, not a traceback."""
+        cohort = session.get(CryptoHorizonCohort, cohort_id)
+        if is_rolling_cohort(cohort):
+            try:
+                self._refuse_rolling(session, cohort_id)
+            except RollingCohortRefused as exc:
+                return {
+                    "status": STATUS_ROLLING_COHORT_REFUSED,
+                    "note": HORIZON_NOTE,
+                    "external_calls": 0,
+                    "cohort_id": cohort_id,
+                    "persisted": False,
+                    "error": str(exc),
+                }
         now = _now()
         cap = max(1, min(limit, OBSERVE_MAX_CALLS))
         members = self._members(session, cohort_id)
