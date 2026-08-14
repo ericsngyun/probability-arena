@@ -72,12 +72,26 @@ CONFIRM_PHRASE = "I have read the B2 regression audit and the B3 gate"
 # A pass makes many lock acquisitions and its `lock_wait_ms` is their SUM,
 # which carries a known systematic floor — one `run_row` sample and one
 # `finalize` sample per pass that are once-per-pass bookkeeping, not
-# contention. Measured on eight healthy, fully UNCONTENDED reconciler passes:
+# contention. Measured on eight healthy, fully UNCONTENDED reconciler passes
+# IN THE GATE2-WRITER-TELEMETRY-001 SESSION (the series lands here in 4147bcd):
 # `lock_wait_ms` 21/11/11/10/9/9/14/10 ms, every one of which the flat
 # predicate below counts, against `batch_lock_wait_ms_max` of 3/3/2/1/1/1/6/2
 # ms — i.e. nothing contended. Eight passes therefore crossed `> 6` on their
 # own, and the calibration session for `initial_per_token_cost_seconds` is
 # itself about eight attended `--force` passes.
+#
+# NAME THE SESSION WHEN YOU QUOTE THESE. Three eight-value
+# `batch_lock_wait_ms_max` series are in circulation and they are DIFFERENT
+# populations, not restatements of one:
+#   * 3/3/2/1/1/1/6/2  — GATE2-WRITER-TELEMETRY-001, uncontended passes. THIS
+#     is the series the scoping argument below stands on.
+#   * the CALIBRATION-GATE3-001 per-pass table (EVO-X2, ef92b4d) — 516/938/
+#     514/4038/1015/..., i.e. passes that DID wait; see the runbook's Gate 3
+#     subsection. Quoting it here would not support the argument below.
+#   * 6/5/1/1/2/1/2/2   — quoted in review, not recorded in this repository.
+#     Treat it as unsourced until a session is attached to it.
+# The scoping conclusion survives all three; the provenance does not, so keep
+# the label attached to the numbers.
 #
 # THE THRESHOLD IS NOT RAISED. Raising a limit to accommodate a miscount
 # destroys the safeguard; the defect was never the limit, it was the
@@ -142,10 +156,16 @@ def _lock_tally(path: Path) -> dict:
     scoping is visible and auditable rather than silent.
 
     NOTE, not fixed here (GATE2 C2): this does `path.read_text()` on the whole
-    file — the same whole-file slurp the runbook warns about for
-    `app.telemetry.sink.read_events` (measured 406 MB peak heap on a 58 MB
-    file). Nothing rotates this file before 001E, so check its size before
-    running this script on EVO. Recorded in the runbook's growth section."""
+    file — the same class of whole-file slurp the runbook warns about for
+    `app.telemetry.sink.read_events`, but NOT the same cost. **This function's
+    own measured cost is ~204 MB peak Python heap on a 60.8 MB file — 3.4x
+    amplification** (Gate 4 review, which ran both readers against that one
+    file; `read_events` measured 453 MB, 7.2x, because it holds every parsed
+    event while this discards each line after counting it). The 406 MB / 58 MB
+    figure previously cited here was `read_events`', not this function's.
+    Cheaper is not cheap: 3.4x of a file that nothing rotates before 001E is
+    still the reason to check its size before running this script on EVO. The
+    same paired measurement is in the runbook's growth section."""
     scope = sorted(LOCK_EVENT_WRITERS)
     if not path.exists():
         return {"file": str(path), "exists": False,

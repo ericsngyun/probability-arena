@@ -2271,6 +2271,13 @@ load 5-6).
    (`crypto-reconciler-health` prints it per run). Observation only — nothing
    branches on it — but a drifted precondition is now visible instead of
    invisible.
+
+   **The calibrated value is only valid at the batch size it was derived
+   against.** Gate 3's `0.15` is derived and margined for a **5-token** first
+   batch, which is what `min(8, 5)` produces on today's constants. **Raising
+   `CRYPTO_TAPE_RECONCILER_BATCH_SIZE` above 5 requires re-deriving the seed
+   first** — see "HARD PRECONDITION for Gate 6" in the Gate 3 subsection below,
+   and the no-partial-batch precondition any re-derivation must satisfy.
 4. **A `TimeoutStartSec` that covers the derivation below**, or an explicit
    accepted decision to live with the documented SIGKILL outcome.
 
@@ -2386,9 +2393,23 @@ CALIBRATION-GATE3-001 — Gate 3 derivation (EVO-X2, ef92b4d)
   median         18.8 ms/token
   warm max       19.8 ms/token   (the 7-sample warm cluster)
   cold start     105.4 ms/token  (n=1, the first write after a fresh checkout)
-  margin         0.15 = 0.1054 x 1.42
+  margin         0.15 = 0.1054 x 1.423
   CHOSEN         initial_per_token_cost_seconds = 0.15
+
+  AS SHIPPED, end to end — what the code does with 0.15
+  bias 1.5                             -> conservative estimate 0.225 s/token
+  next_adaptive_batch_size(2.0, 0.15)  -> 8 tokens    (NOT 2.0/0.15 = 13)
+      at cold 105.4 ms/token -> 0.843 s   (42.2% of the 2.0 s SLO)
+  B11 ceiling CRYPTO_TAPE_RECONCILER_BATCH_SIZE = 5
+  min(8, 5)                            -> 5 tokens    <- THE FIRST BATCH,
+      at cold 105.4 ms/token -> 0.527 s   (26.3% of SLO)   identical to today
+      at warm  19.8 ms/token -> 0.099 s
 ```
+
+**Read the second half of that block before acting on the first.** `2.0 / 0.15
+≈ 13` is budget arithmetic and is not a batch size the code ever issues. On
+today's constants the calibrated first batch is **5 tokens — exactly what ships
+today**, so setting this constant changes reconciler behaviour not at all.
 
 ##### The session
 
@@ -2425,6 +2446,24 @@ max **over batches**, so numerator and denominator are at the same grain. The
 pairing was verified on every pass — `batches_committed x 5 == tokens_considered`
 held throughout.
 
+> **HARD PRECONDITION for any future re-calibration: no batch may be partial.**
+> Check `batches_committed x batch_size == tokens_considered` on **every** pass
+> in the sample, and record the result. This is not a note about the Gate 3
+> session — it is the difference between a valid and an invalid derivation.
+>
+> The numerator is a **max over batches**; the denominator is **fixed**. If any
+> batch was short, the worst batch's true per-token cost is
+> `write_hold_ms_max / (tokens in THAT batch)`, which is *larger* than the
+> arithmetic reports. **The failure direction is an UNDER-estimate of per-token
+> cost** — a seed too small, a first batch too large, and a write-lock hold
+> longer than the SLO was checked against. That is the unsafe direction, and
+> nothing else on such a pass looks wrong.
+>
+> A short batch is ordinary: any pass whose `tokens_considered` is not an exact
+> multiple of `batch_size` has one, and a **deadline-stopped** session is the
+> standard way to produce one. If the identity does not hold on every pass, the
+> session has not derived a constant — re-run it, do not adjust the arithmetic.
+
 **`rows_committed` was NOT used, and the table above shows why.** 3,500 rows
 over 350 batches is 10 rows per 5-token batch: it is
 `snapshots_created + outcomes_updated + birth_events_created` summed across
@@ -2446,39 +2485,65 @@ A controller seeded from the warm cluster demonstrates the failure directly.
 back into the estimator. The median (18.8) is worse still. So the seed is set
 from the cold tail, not from the centre of the distribution.
 
-`0.15 = worst observed (0.1054) x 1.42`. First batch `2.0 / 0.15 ≈ 13` tokens →
-**1.37 s at the cold cost (68% of the SLO)**, 0.26 s at the warm cost, with the
-controller free to grow from there on real measurements.
+`0.15 = worst observed (0.1054) x 1.423`. The seed is then biased high by 1.5
+to 0.225 s/token, `next_adaptive_batch_size(2.0, 0.15)` returns **8** tokens
+(**0.843 s at the cold cost, 42.2% of the SLO**), and the B11 ceiling clamps
+that to `min(8, 5) = 5` — **0.527 s at the cold cost (26.3% of the SLO)**,
+0.099 s at the warm cost, with the controller free to grow from there on real
+measurements.
 
-##### It LOOSENS, it does not tighten — say so plainly
+##### On today's constants the effect is NO CHANGE; the loosening is latent
 
-13 tokens is **larger** than the fixed `CRYPTO_TAPE_RECONCILER_BATCH_SIZE = 5`
-that ships today. Calibrating this constant therefore *relaxes* the first
-batch relative to current behaviour; it does not constrain it. Anyone reading
-this as a tightening has it backwards, and would then be tempted to "recover"
-throughput elsewhere.
+**The as-shipped first batch is 5 tokens — exactly what ships today.** On
+today's other constants, setting this seed changes reconciler behaviour not at
+all. Two readings are wrong in opposite directions:
 
-##### What the shipped code actually does with 0.15 — the two clamps
+* **It is not a tightening.** Neither intermediate figure is below current
+  behaviour — 13 tokens on the budget arithmetic, 8 after the bias, both
+  **larger** than the fixed `CRYPTO_TAPE_RECONCILER_BATCH_SIZE = 5`. Nothing
+  here constrains the first batch, so there is no throughput to "recover"
+  elsewhere.
+* **It is not a loosening either — not yet.** The loosening is *latent*: it is
+  realised only if Gate 6 also raises the B11 ceiling above 5, at which point
+  the first batch becomes 8 tokens (0.843 s, 42.2% of the SLO at the cold
+  cost). That is a separate decision, with its own evidence and its own hard
+  precondition (below), deliberately not taken here.
 
-The `2.0 / 0.15 ≈ 13` above is the budget arithmetic. Two mechanisms already in
-the code make the **as-shipped** first batch smaller, and neither was changed
-here:
+##### The two clamps, in the order the code applies them
+
+Neither was changed here; both are named because the end-to-end figure above is
+unreadable without them.
 
 * **`AdaptiveBatchCostEstimate` biases the seed HIGH** by
   `bias_multiplier = 1.5` before it is ever used to size a batch. The
   conservative estimate from a 0.15 seed is 0.225 s/token, so
-  `next_adaptive_batch_size(2.0, ...)` returns **8**, not 13 — a hold of
-  **0.84 s at the cold cost (42% of the SLO)**. The same bias applies to the
-  warm-seed counterfactual: 67 tokens, **7.06 s, still 3.5x the SLO**. The
-  conclusion is unchanged and the margin is larger than the headline
-  arithmetic suggests.
+  `next_adaptive_batch_size(2.0, ...)` returns **8** — a hold of **0.843 s at
+  the cold cost (42.2% of the SLO)**. The same bias applies to the warm-seed
+  counterfactual: a conservative 0.0297 s/token, **67 tokens, 7.06 s, still
+  3.5x the SLO**. The bias does not rescue a warm seed.
 * **The B11 sanity ceiling is `batch_size`**, i.e. the shipped
   `CRYPTO_TAPE_RECONCILER_BATCH_SIZE = 5`. Once adaptive batching is active
-  `batch_size` becomes a maximum only, and `min(8, 5) = 5`. **So at Gate 6, on
-  today's constants, the calibrated first batch is 5 tokens — identical to
-  today's fixed behaviour.** The loosening above is *latent*: it is realised
-  only if Gate 6 also raises that ceiling, which is a separate decision with
-  its own evidence, deliberately not taken here.
+  `batch_size` becomes a maximum only, and `min(8, 5) = 5` — the shipped first
+  batch, and the reason the effect above is no change at all.
+
+##### HARD PRECONDITION for Gate 6 — raising the B11 ceiling re-opens this derivation
+
+**The calibration risk did not resolve; it transferred.** `0.15` is inert today
+only because `min(8, 5) = 5`. Every margin recorded in this subsection is a
+statement about a **5-token** batch and about nothing else.
+
+> **Precondition (Gate 6), alongside preconditions 1-4 above.** Raising
+> `CRYPTO_TAPE_RECONCILER_BATCH_SIZE` above **5** requires
+> `initial_per_token_cost_seconds` to be **re-derived first**. The ceiling is
+> not an independent throughput knob, and a re-derivation is itself subject to
+> the no-partial-batch precondition in "Which pairing was used" above.
+
+It is a precondition and not a note because the cold tail is bounded by
+**n = 1**: the only thing between an unmeasured worse cold start and an SLO
+breach is the margin, and the margin suffices only at 5 tokens. At a ceiling of
+8 the cold-cost hold is already 42.2% of the SLO on the single cold observation
+that exists — a cold start twice as slow as the one measured puts 8 tokens at
+**84%** and 13 tokens **past** the SLO.
 
 ##### Caveats — these are part of the derivation, not footnotes
 
@@ -2486,9 +2551,14 @@ here:
   worse cold start is entirely possible; the 1.42x margin exists for exactly
   that reason and is not a proof of anything. A second cold observation is the
   cheapest thing that would improve this constant.
-* **The margin is a judgement, not a measurement.** 1.42x was chosen to land
-  the cold-case hold under 70% of the SLO on the headline arithmetic. No
-  distributional claim is made about it.
+* **The margin is a judgement, not a measurement.** It is exactly
+  `0.15 / 0.1054 = 1.423x` over the single worst observation, and no
+  distributional claim is made about it. **State what it buys against the
+  as-shipped batch, not the budget arithmetic:** at the shipped 5-token first
+  batch the cold-case hold is **26.3% of the SLO**; at an 8-token batch (the
+  B11 ceiling raised) **42.2%**. An earlier form of this caveat anchored on
+  "under 70% of the SLO" from the `2.0/0.15 ≈ 13`-token figure — a batch size
+  the code never issues. That anchor is superseded by the block above.
 * **Pass 4 overshot its 30 s deadline by 37%** (`duration_ms = 41035`) on a
   4,038 ms `batch_lock_wait_ms_max`. This is the documented limit that
   `max_duration_seconds` **cannot interrupt a statement already blocked inside
@@ -2523,16 +2593,25 @@ ls -lh ~/probability-arena-telemetry/sqlite-writes.jsonl
 
 Do **not** use `app.telemetry.sink.read_events` on EVO. It calls
 `path.read_bytes()` on the whole file and holds every parsed event: measured
-**420 MB peak Python heap on a 60 MB file** (7.0x amplification, 8.5 s). It is
-a test helper. Stream with `jq` instead, as above.
+**420 MB peak Python heap on a 60 MB file** (7.0x amplification, 8.5 s) in the
+GATE2 session, and **453 MB on a 60.8 MB file** (7.2x) in the Gate 4 paired
+measurement below. It is a test helper. Stream with `jq` instead, as above.
 
 **`_lock_tally` reads the same way, and unlike `read_events` it is a consumer
 that actually runs on EVO.** `scripts/sqlite_analyze_maintenance.py::
-_lock_tally` does `path.read_text()` on the whole file — measured **406 MB peak
-heap on a 58 MB file**. That is a second and independent reason to check the
-size above: `read_events` is a test helper you can simply decline to run, while
-this one sits on the ANALYZE maintenance path. **Not fixed** — recorded so the
-size check is understood as protecting a real consumer.
+_lock_tally` does `path.read_text()` on the whole file. **Its own measured cost
+is 204 MB peak heap on a 60.8 MB file — 3.4x amplification**, from the Gate 4
+review, which ran both whole-file readers against that one file. It is about
+half `read_events` because it discards each line after counting it instead of
+holding every parsed event. **The 406 MB / 58 MB figure previously recorded
+here for `_lock_tally` was `read_events`' cost, not the tally's** — the
+script's own docstring attributed the same number to `read_events`, and the two
+artifacts disagreed about whose it was; the paired measurement replaces it in
+both. Cheaper is not cheap: 3.4x of a file with no rotation is still a second
+and independent reason to check the size above, and `read_events` is a test
+helper you can decline to run while this one sits on the ANALYZE maintenance
+path. **Not fixed** — recorded so the size check is understood as protecting a
+real consumer.
 
 **`lock_events` is cumulative and monotonic.** `_lock_tally` counts every line
 in the file with no time window, and nothing rotates the file before 001E, so
@@ -2543,6 +2622,17 @@ while the Kalshi DEMO session's `current_lock_events > 6` stop condition in
 number — so once it crosses, it stays crossed for the life of the file. Only
 the delta is bounded. Owned by 001E along with rotation; recorded here so it is
 not rediscovered mid-session.
+
+**The `writer_name` scoping did NOT fix this, and was not meant to.** It fixed
+*which* population is counted, not *over what interval*: `lock_events` is
+cumulative and monotonic **for the in-scope writers too**. Measured: **90 days
+of hourly `tick_aggregation` at a benign 0.5% genuine-contention rate produces
+11 in-scope events — past the `> 6` stop condition** with nothing whatever
+wrong. That is not a cosmetic ageing problem, because `> 6` governs exactly the
+attended-session stop conditions the `initial_per_token_cost_seconds`
+calibration depends on. **NAMED FOLLOW-UP, not built here:** give `_lock_tally`
+a `--since` argument, or report a `lock_events_last_24h` figure beside the
+cumulative count. Owned by 001E with rotation.
 
 Measured cost of the append itself, against a real competing SQLite writer on
 this repo's dev Mac: **p50 0.10 ms, p95 0.32 ms** while a co-tenant *held* the
@@ -2583,8 +2673,20 @@ it was the population being counted under it.
 **Why scoping and not `batch_lock_wait_ms_max`.** Moving the count onto the
 phase-attributed field was the other candidate fix, and on the measured numbers
 it does not work as stated: the same eight healthy, uncontended passes measure
-`batch_lock_wait_ms_max` of 3/3/2/1/1/1/6/2 ms, so `> 0` on that field counts
-them exactly as the flat predicate did. Making it work would need a millisecond
+`batch_lock_wait_ms_max` of 3/3/2/1/1/1/6/2 ms — **the
+GATE2-WRITER-TELEMETRY-001 session** — so `> 0` on that field counts them
+exactly as the flat predicate did.
+
+**Name the session whenever you quote an eight-value series.** Three are in
+circulation and they are different populations, not restatements of one:
+`3/3/2/1/1/1/6/2` is GATE2-WRITER-TELEMETRY-001's uncontended passes and is the
+series this argument stands on; the CALIBRATION-GATE3-001 per-pass table
+(EVO-X2, `ef92b4d`, Gate 3 subsection above) records passes that *did* wait —
+516/938/514/**4038**/1015/... — and would not support this argument; and a
+`6/5/1/1/2/1/2/2` series quoted in review is **not recorded anywhere in this
+repository** and should be treated as unsourced until a session is attached to
+it. The scoping conclusion survives all three. The provenance does not, which
+is why the label travels with the numbers. Making it work would need a millisecond
 threshold, and the only one available is the reconciler's own breaker constant
 — importing that into the count that governs the reconciler would let guarded
 code widen its own boundary, the same inversion the histogram validation was
