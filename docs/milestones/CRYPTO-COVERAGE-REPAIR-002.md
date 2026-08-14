@@ -804,3 +804,30 @@ deployed or enabled.
 * `max_duration_seconds=0` is still accepted and still yields exactly one fetch
   with a healthy `partial` — the deliberate "already past due" sentinel the tape
   reconciler uses, kept for consistency and depended on by the deadline test.
+
+### Suite after the review round
+
+`.venv/bin/python -m pytest tests/ -q`, twice on the same commit:
+
+| load (1/5/15 min) | result | wall |
+|---|---|---|
+| 13.53 / 18.68 / 15.98 | 4,340 passed, **10 failed**, 6 skipped, 4 xfailed | 19m21s |
+| 4.43 / 6.34 / 12.03 → 3.72 | 4,349 passed, **1 failed**, 6 skipped, 4 xfailed | 9m41s |
+
+The lane's own file is 97 tests (up from 57), all green, and 4,360 are collected
+(up from 4,320) — the +40 are the new ones.
+
+**Every failure in both runs is the documented wall-clock cluster, not this
+lane.** All ten were re-run in isolation and all ten passed. Five of the seven
+files involved bind `NOW = datetime.now(timezone.utc)` at MODULE IMPORT
+(`test_live_market_001`, `test_marketops`, `test_ops009`,
+`test_tennis_candidate_order_001`, `test_tennis_live_source_001`), so elapsed
+suite time alone moves seeded rows out of a live freshness window. The other
+two are explicit timing budgets:
+`test_sqlite_lock_telemetry_001a::test_emit_overhead_within_budget` asserts a
+1ms p99, and `test_kalshi_fs_totality_harness_001` drives
+`subprocess.run(..., timeout=2.0)` and says in its own header that its
+wall-clock cost is "load-dependent in a way no fixed timeout could bound". The
+count tracks load and elapsed time exactly: 10 failures in a 19-minute run at
+load 13–24, 1 in a 10-minute run at load 4. None of these files reference
+`crypto_sparse_observation` or `crypto_horizon`.
