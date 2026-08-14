@@ -2333,9 +2333,9 @@ reading warning below before you read it on EVO. What to read, and the traps:
   measured for its fullest record on the dev Mac; the figure moves with the
   length of `host`, `systemd_unit` and `source_command`, so treat it as ~0.9 KB,
   not as a constant) — and it is default-off with no timer, so nothing arrives
-  on EVO today. **This is why
-  the calibration filter below is scoped to one `writer_name`, and it must stay
-  scoped**: the two writers have different phase vocabularies, and averaging
+  on EVO today. **This is why the calibration filter below is scoped to one
+  `writer_name`, and it must stay scoped**: the two writers have different
+  phase vocabularies, and averaging
   them together produces a per-token cost that belongs to neither. Read writer
   B's records with the same predicate and its own name, e.g.
   `jq -c 'select(.writer_name=="crypto_horizon_observe")' …`. Four differences
@@ -2344,9 +2344,14 @@ reading warning below before you read it on EVO. What to read, and the traps:
   no run row, no finalize commit, and it times no lock wait anywhere, so those
   fields are ABSENT rather than zero; its contention signal is `lock_failures`
   plus `retry_count`. `commit_ms` on its records is its per-pass **maximum**
-  batch commit (`batch_count` is the denominator), not one transaction's value
-  — see the cross-writer reduction rule below, which is a hard rule and not a
-  stylistic preference. `rows_committed` is
+  batch commit (`batch_count` is the denominator), not one transaction's value.
+  **`commit_ms` must be filtered by `writer_name` before ANY cross-writer
+  aggregation** — the reduction differs per writer (`tick_aggregation` records
+  its LAST sub-window commit) and both are stamped `commit_quality="exact"`,
+  because that tier says how a sample was measured, not how samples were
+  reduced. That is a hard rule, not a preference; it is stated in full in
+  `docs/SQLITE_LOCK_TELEMETRY_001A.md` and in `app/telemetry/schema.py`'s
+  docstring. `rows_committed` is
   `enrolled + observations_recorded + ticks_written`. `write_hold_measured`
   works exactly as it does for writer A, and `write_hold_ms_max`/`commit_ms`
   are both omitted when it is `false`.

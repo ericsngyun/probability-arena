@@ -1582,6 +1582,9 @@ class TestTheGateTextIsTrue:
         assert "per-pass **maximum**" in section, (
             "the commit_ms aggregation caveat is gone — a reader would take a "
             "max for a single transaction's commit")
+        assert "filtered by `writer_name` before ANY cross-writer" in (
+            " ".join(section.split())), (
+            "the operator-facing half of the commit_ms hard rule is gone")
 
     def test_the_runbooks_cost_claim_is_the_one_that_can_carry_weight(self):
         """The branch's original cost argument cited a whole-PASS median delta.
