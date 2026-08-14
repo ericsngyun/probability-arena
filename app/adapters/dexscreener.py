@@ -149,7 +149,22 @@ class DexScreenerAdapter:
         self.chain = settings.crypto_chain
         self.timeout = 15.0
 
-    async def _get(self, path: str) -> dict | list | None:
+    async def _get(
+        self, path: str, *, expect: type[list] | type[dict],
+    ) -> dict | list | None:
+        # CRYPTO-COVERAGE-REPAIR-002 (B1): `expect` is the SHAPE THIS ENDPOINT
+        # CONTRACTS FOR, and it is mandatory. An HTTP 200 whose decoded body is
+        # not that shape — a JSON error object, a WAF/Cloudflare interstitial
+        # that happens to decode, an upstream schema change on a `/v1` path —
+        # is a FAILED request, not an empty answer. Callers used to coerce it
+        # away (`if not isinstance(payload, list): return []`), so the provider
+        # ledger recorded a success, the sparse-observation transport-failure
+        # delta saw nothing, and past 24h the row was written as the terminal,
+        # affirmative token-state claim `token_inactive`. The blast radius of a
+        # shape change is total and correlated: every token, every pass.
+        # `mark_failed` here is what makes the existing `_transport_failures`
+        # delta cover it, with no change needed at the call sites.
+        #
         # CRYPTO-DISCOVERY-PROVIDER-GATE-001: when a run-scoped provider policy
         # is installed (all governed discovery runs), authorize this request at
         # the lowest level before opening a client. Ungoverned callers (the
@@ -181,8 +196,16 @@ class DexScreenerAdapter:
                     mark_failed(Provider.DEXSCREENER)
                     return None
                 response.raise_for_status()
+                payload = response.json()
+                if not isinstance(payload, expect):
+                    logger.warning(
+                        "DEX Screener returned %s for %s, expected %s",
+                        type(payload).__name__, url, expect.__name__,
+                    )
+                    mark_failed(Provider.DEXSCREENER)
+                    return None
                 mark_succeeded(Provider.DEXSCREENER)
-                return response.json()
+                return payload
         except (httpx.HTTPError, ValueError) as exc:
             logger.warning("DEX Screener fetch failed for %s: %s", url, exc)
             mark_failed(Provider.DEXSCREENER)
@@ -190,15 +213,19 @@ class DexScreenerAdapter:
 
     async def fetch_latest_token_profiles(self) -> list[TokenProfile]:
         """Latest token profiles (rate limit 60 rpm), filtered to our chain."""
-        return _parse_profiles(await self._get("/token-profiles/latest/v1"), self.chain)
+        payload = await self._get("/token-profiles/latest/v1", expect=list)
+        return _parse_profiles(payload, self.chain)
 
     async def fetch_latest_boosted_tokens(self) -> list[TokenProfile]:
         """Latest boosted tokens (rate limit 60 rpm), filtered to our chain."""
-        return _parse_profiles(await self._get("/token-boosts/latest/v1"), self.chain)
+        payload = await self._get("/token-boosts/latest/v1", expect=list)
+        return _parse_profiles(payload, self.chain)
 
     async def fetch_pairs_for_token(self, token_address: str) -> list[PairData]:
         """All pairs/pools for one token address (rate limit 300 rpm)."""
-        payload = await self._get(f"/token-pairs/v1/{self.chain}/{token_address}")
+        payload = await self._get(
+            f"/token-pairs/v1/{self.chain}/{token_address}", expect=list,
+        )
         if not isinstance(payload, list):
             return []
         pairs = [_parse_pair(entry) for entry in payload]
@@ -206,7 +233,9 @@ class DexScreenerAdapter:
 
     async def fetch_pair(self, pair_address: str) -> PairData | None:
         """One pair by its pair address (rate limit 300 rpm)."""
-        payload = await self._get(f"/latest/dex/pairs/{self.chain}/{pair_address}")
+        payload = await self._get(
+            f"/latest/dex/pairs/{self.chain}/{pair_address}", expect=dict,
+        )
         if not isinstance(payload, dict):
             return None
         entries = payload.get("pairs") or payload.get("pair") or []
@@ -220,7 +249,7 @@ class DexScreenerAdapter:
 
     async def search_pairs(self, query: str) -> list[PairData]:
         """Free-text pair search (rate limit 300 rpm), filtered to our chain."""
-        payload = await self._get(f"/latest/dex/search?q={query}")
+        payload = await self._get(f"/latest/dex/search?q={query}", expect=dict)
         if not isinstance(payload, dict):
             return []
         pairs = [_parse_pair(entry) for entry in payload.get("pairs") or []]

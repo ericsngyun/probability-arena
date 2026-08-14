@@ -210,6 +210,22 @@ class _TransportFailureClient:
             return httpx.Response(503, request=request)
         if self.mode == "bad_json":
             return httpx.Response(200, content=b"<html>nope", request=request)
+        # B1 (SHAPE). An HTTP 200 that DECODES cleanly but is not the shape the
+        # endpoint contracts for. `bad_json` above is caught by `response.json()`
+        # raising; these are not — they used to be coerced away by the caller's
+        # `if not isinstance(payload, list): return []`, so the ledger recorded
+        # a SUCCESS and the row was written as a provider ANSWER.
+        if self.mode == "200_dict_error":
+            # what a JSON error object / an upstream schema change looks like
+            return httpx.Response(
+                200, request=request,
+                json={"error": "rate limited", "code": 429},
+            )
+        if self.mode == "200_html_string":
+            # a WAF/Cloudflare interstitial served as a JSON string body
+            return httpx.Response(
+                200, request=request, json="<html>Attention Required</html>",
+            )
         if self.mode == "ok":
             token = url.rsplit("/", 1)[-1]
             return httpx.Response(200, request=request, json=[{
@@ -1678,32 +1694,70 @@ async def test_a_ledger_that_proves_a_paid_request_is_a_typed_refusal(session):
     assert "solana-tracker" in r["error"]
     assert session.query(CryptoHorizonObservation).count() == 0
 
+    # B2 + B3. This branch is the SEVERE one — a paid request actually went
+    # out — and it used to be the one with the POORER record: `external_calls:
+    # 0`, `solana_tracker_calls: 0`, `provider_ledger: None`, while the milder
+    # DENIED path (nothing spent) reported all three. It must now carry the
+    # full receipt, and every number must be DERIVED from the ledger.
+    #
+    # These assertions replace a retired source-text test that pinned the
+    # literal `ledger.get("solana-tracker", {})`. That wording check killed one
+    # mutant by accident: a semantically identical mutant that zeroes the same
+    # receipt without writing the banned string survived the whole suite. Both
+    # die here, because a ledger that accounts a paid request MOVES the number.
+    assert r["provider_ledger"], "the ledger snapshot was lost with the run context"
+    entry = r["provider_ledger"]["solana-tracker"]
+    assert (entry["started"], entry["succeeded"]) == (1, 1)
+    assert r["solana_tracker_calls"] == sum(
+        entry.get(k, 0) for k in ("authorized", "started", "succeeded", "failed")
+    ) == 2, "a proven paid request was still reported as zero paid requests"
+    assert r["external_calls"] == 1, "the DexScreener spend was reported as zero"
+    assert r["denied_provider_attempts"] == {}, (
+        "nothing was denied here — the request got through, which is the point"
+    )
 
-@pytest.mark.asyncio
-async def test_solana_tracker_calls_is_read_from_the_ledger_not_hardcoded(session):
-    """MUTANT KILLER 2. Hardcoding `solana_tracker_calls = 0` survived the
-    original suite. A ledger that accounts a paid request must move the number
-    — proven here on the REPORTING path by inspecting a ledger the pass itself
-    produced, since the assertion above makes the same shape fatal."""
+
+def test_the_paid_provider_receipt_is_a_pure_function_of_the_ledger():
+    """MUTANT KILLER 2, rewritten (B3).
+
+    This test used to assert that `_run_locked`'s SOURCE TEXT contained the
+    literal `ledger.get("solana-tracker", {})` and did not contain
+    `result["solana_tracker_calls"] = 0`. That pins WORDING, not behaviour: a
+    reviewer's mutant died only because it happened to write that exact string,
+    and a semantically identical mutant that zeroed the receipt some other way
+    survived all 97 tests. This project has named that defect class repeatedly.
+
+    So: drive the single population helper every exit now shares, with a ledger
+    the module never produced, and assert the OUTPUT. Any mutant that stops
+    deriving the count from the ledger fails here regardless of how it is
+    spelled — and the behavioural end-to-end proof on a real pass lives in
+    `test_a_ledger_that_proves_a_paid_request_is_a_typed_refusal` above."""
     ledger = {
         "dexscreener": {"authorized": 3, "started": 3, "succeeded": 3, "failed": 0},
         "solana-tracker": {
             "authorized": 2, "started": 2, "succeeded": 1, "failed": 1,
-            "blocked_policy": 0,
+            "blocked_policy": 4,
         },
     }
-    counted = sum(
-        ledger.get("solana-tracker", {}).get(k, 0)
-        for k in ("authorized", "started", "succeeded", "failed")
+    result: dict = {}
+    sparse._apply_provider_ledger(result, ledger, calls=3)
+
+    assert result["solana_tracker_calls"] == 6
+    assert result["external_calls"] == 3
+    assert result["provider_ledger"] is ledger
+    assert result["denied_provider_attempts"] == {"solana-tracker": 4}
+
+    # and it is a FUNCTION of the ledger, not a constant: a different ledger
+    # must produce a different number through the very same call
+    other: dict = {}
+    sparse._apply_provider_ledger(
+        other,
+        {"solana-tracker": {"authorized": 1, "started": 1, "succeeded": 1,
+                            "failed": 0, "blocked_policy": 0}},
+        calls=0,
     )
-    assert counted == 6
-
-    # and the module derives it exactly that way, from the ledger it was given
-    import inspect as _inspect
-
-    source = _inspect.getsource(sparse._run_locked)
-    assert 'ledger.get("solana-tracker", {})' in source
-    assert 'result["solana_tracker_calls"] = 0' not in source
+    assert other["solana_tracker_calls"] == 3
+    assert other["denied_provider_attempts"] == {}
 
 
 @pytest.mark.asyncio
@@ -1863,7 +1917,15 @@ async def test_the_real_adapter_reaches_only_dexscreener_urls(session):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode", ["429", "timeout", "server_error", "bad_json"])
+@pytest.mark.parametrize("mode", [
+    "429", "timeout", "server_error", "bad_json",
+    # B1 (SHAPE): an HTTP 200 whose body decodes but is not a pair array. These
+    # two fabricated `token_inactive` — terminally, with the pass exiting `ok`
+    # and `ledger_failed == 0` — until `_get` learned the shape each endpoint
+    # contracts for. The trigger is narrow; the blast radius is total and
+    # correlated, because a shape change writes off EVERY token in EVERY pass.
+    "200_dict_error", "200_html_string",
+])
 @pytest.mark.parametrize("horizon,age_hours", [("6h", 6), ("24h", 24)])
 async def test_a_transport_failure_is_never_persisted_as_a_token_state(
     session, mode, horizon, age_hours,

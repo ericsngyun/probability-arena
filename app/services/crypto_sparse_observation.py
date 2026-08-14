@@ -675,10 +675,42 @@ async def _fetch_phase(
         and any(entry.get(k) for k in ("authorized", "started", "succeeded", "failed"))
     }
     if spent:
-        raise ProviderPolicyViolation(
+        # CRYPTO-COVERAGE-REPAIR-002 (B2): carry the EVIDENCE, exactly as the
+        # `ProviderPolicyError` branch above does. This is the more severe of
+        # the two paths — a paid request actually went out — and it used to
+        # report `external_calls: 0`, `solana_tracker_calls: 0` and no ledger
+        # at all, while the milder DENIED path (nothing spent) reported both.
+        # The one path whose entire existence is to prove a paid request
+        # happened must not be the one with the poorer record.
+        violation = ProviderPolicyViolation(
             f"sparse observation issued a non-DexScreener provider request: {spent}"
         )
+        violation.provider_ledger = ledger
+        violation.external_calls = calls
+        raise violation
     return fetched, calls, stop_reason, ledger
+
+
+def _apply_provider_ledger(result: dict, ledger: dict, calls: int) -> None:
+    """Populate every provider-spend receipt on `result` FROM the ledger.
+
+    One implementation for all three exits — the healthy pass, the denied
+    attempt, and the proven violation — so the severe path can never again
+    report less than the mild one. Nothing here is hardcoded: the paid-provider
+    count is derived from the same accounting the guard itself keeps, so a
+    ledger that accounts a paid request always moves the number.
+    """
+    result["external_calls"] = calls
+    result["provider_ledger"] = ledger
+    result["solana_tracker_calls"] = sum(
+        ledger.get("solana-tracker", {}).get(k, 0)
+        for k in ("authorized", "started", "succeeded", "failed")
+    )
+    result["denied_provider_attempts"] = {
+        name: entry["blocked_policy"]
+        for name, entry in ledger.items()
+        if name != "dexscreener" and entry.get("blocked_policy")
+    }
 
 
 # --- the pass -------------------------------------------------------------------
@@ -1028,6 +1060,15 @@ async def _run_locked(
     except ProviderPolicyViolation as exc:
         # The ledger PROVED a non-DexScreener request happened. Typed, loud,
         # non-zero — the structural guarantee this lane sells is broken.
+        #
+        # B2: this is the SEVERE branch, so it carries the FULL receipt. The
+        # ledger dies with the `provider_run` context inside `_fetch_phase`, so
+        # it travels on the exception exactly as the denied branch below does.
+        _apply_provider_ledger(
+            result,
+            getattr(exc, "provider_ledger", {}) or {},
+            getattr(exc, "external_calls", 0),
+        )
         return _refused(STATUS_PROVIDER_POLICY_VIOLATION, str(exc))
     except Exception as exc:
         from app.services.crypto_provider_policy import ProviderPolicyError
@@ -1036,38 +1077,18 @@ async def _run_locked(
             # A provider this lane never authorizes was reached. Loud and
             # non-zero — never degraded into a provider miss. The evidence of
             # what HAD already been spent travels on the exception.
-            ledger = getattr(exc, "provider_ledger", {}) or {}
-            result["external_calls"] = getattr(exc, "external_calls", 0)
-            result["provider_ledger"] = ledger
-            result["solana_tracker_calls"] = sum(
-                ledger.get("solana-tracker", {}).get(k, 0)
-                for k in ("authorized", "started", "succeeded", "failed")
+            _apply_provider_ledger(
+                result,
+                getattr(exc, "provider_ledger", {}) or {},
+                getattr(exc, "external_calls", 0),
             )
-            result["denied_provider_attempts"] = {
-                name: entry["blocked_policy"]
-                for name, entry in ledger.items()
-                if name != "dexscreener" and entry.get("blocked_policy")
-            }
             return _refused(
                 STATUS_PROVIDER_POLICY_VIOLATION,
                 f"a non-DexScreener provider was attempted from the sparse "
                 f"observation path and was denied before any request: {exc}",
             )
         raise
-    result["external_calls"] = calls
-    result["provider_ledger"] = ledger
-    # Derived from the ledger, never hardcoded: the number a reader wants is
-    # "did this lane spend paid-provider budget", and it must come from the
-    # same accounting the guard itself keeps.
-    result["solana_tracker_calls"] = sum(
-        ledger.get("solana-tracker", {}).get(k, 0)
-        for k in ("authorized", "started", "succeeded", "failed")
-    )
-    result["denied_provider_attempts"] = {
-        name: entry["blocked_policy"]
-        for name, entry in ledger.items()
-        if name != "dexscreener" and entry.get("blocked_policy")
-    }
+    _apply_provider_ledger(result, ledger, calls)
     result["provider"] = getattr(service.adapter, "source_name", "dexscreener")
 
     if stop_reason == STOP_DEADLINE:
