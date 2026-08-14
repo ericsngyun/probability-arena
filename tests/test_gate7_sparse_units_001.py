@@ -303,6 +303,14 @@ def test_the_service_states_the_derivation_and_the_exceedance_conditions():
     for token in ("5.80", "1.01", "42", "146", "45 ms", "SIGTERM"):
         assert token in text, token
     assert "unbounded" in text  # L has no ceiling and the file must not imply one
+    # The two measured-regime figures the file TABULATES are recomputed, so the
+    # table cannot go stale while the coverage assertion above still passes.
+    for load_factor in (IDLE_MEASURED_LOAD_FACTOR, WORST_MEASURED_LOAD_FACTOR):
+        figure = sparse_pass_model(MEASURED_COMPETING_WRITER_STALL_S, load_factor)
+        assert f"{figure:.1f}" in text, (
+            f"the unit's tabulated figure for L = {load_factor} is stale; the "
+            f"model now gives {figure:.1f} s"
+        )
 
 
 def test_the_dark_install_contract_is_stated_in_the_service():
