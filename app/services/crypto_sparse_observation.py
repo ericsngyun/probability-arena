@@ -870,9 +870,13 @@ async def _run_locked(
     ticks = 0
     recorded = 0
     batches = 0
-    pending = 0
-    try:
-        for item in fetched:
+
+    def _stage(batch: list[_Fetched]):
+        """Stage one batch's rows. Called once per commit ATTEMPT — see
+        `_commit_with_retry`: a rollback expunges everything staged, so the
+        rows must be rebuilt, not merely re-committed."""
+        staged = {"outcomes": {}, "ticks": 0, "recorded": 0}
+        for item in batch:
             member = members.get(item.token_address)
             for entry in due_by_token.get(item.token_address, []):
                 status, _cause, tick = service._record_observation(
@@ -882,18 +886,26 @@ async def _run_locked(
                     audit_candidate_limit=AUDIT_CANDIDATE_LIMIT,
                     tick_source=TICK_SOURCE,
                 )
-                outcomes[status] = outcomes.get(status, 0) + 1
-                recorded += 1
+                staged["outcomes"][status] = staged["outcomes"].get(status, 0) + 1
+                staged["recorded"] += 1
                 if tick is not None:
-                    ticks += 1
-            pending += 1
-            if pending >= cfg.write_batch_size:
-                _commit_with_retry(session, sleeper)
-                batches += 1
-                pending = 0
-        if pending:
-            _commit_with_retry(session, sleeper)
+                    staged["ticks"] += 1
+        return staged
+
+    try:
+        for start in range(0, len(fetched), cfg.write_batch_size):
+            batch = fetched[start:start + cfg.write_batch_size]
+            # NOTHING is counted until the batch's commit has RETURNED. The
+            # counters used to be incremented as rows were staged, so a pass
+            # whose commit failed still reported the full `observations_
+            # recorded` — a green pass that wrote nothing after spending real
+            # provider requests.
+            staged = _commit_with_retry(session, lambda b=batch: _stage(b), sleeper)
             batches += 1
+            recorded += staged["recorded"]
+            ticks += staged["ticks"]
+            for name, count in staged["outcomes"].items():
+                outcomes[name] = outcomes.get(name, 0) + count
     except IntegrityError as exc:
         session.rollback()
         result.update({
@@ -941,20 +953,43 @@ def _logical_clock(now: datetime, started: datetime):
     return _clock
 
 
-def _commit_with_retry(session: Session, sleeper=None) -> None:
-    """Bounded lock-retry ladder around one batch commit — the same shape the
-    tape reconciler uses. A persistent lock re-raises so the caller turns it
-    into a typed `db_locked` result with the already-committed batches intact."""
+def _commit_with_retry(session: Session, prepare, sleeper=None):
+    """Bounded lock-retry ladder around one batch commit, with the batch
+    RE-STAGED after every rollback.
+
+    `prepare` must stage the batch (and may return an arbitrary summary of what
+    it staged). It is called once before the first attempt and AGAIN after each
+    rollback, because `session.rollback()` expunges every pending object and
+    expires every persistent one: retrying a bare `session.commit()` after a
+    rollback commits an EMPTY transaction and returns successfully having
+    written nothing. `crypto_tape.py` (see `_commit_batch_with_retry`'s
+    `prepare` contract) documents this exact hazard verbatim; the first version
+    of this function claimed "the same shape the tape reconciler uses" while
+    omitting the mechanism that makes it correct, and silently discarded whole
+    batches while reporting `status=ok`.
+
+    A persistent lock re-raises so the caller turns it into a typed `db_locked`
+    result with the already-committed batches intact. Returns `prepare`'s last
+    return value, which the caller counts ONLY after this returns."""
     sleeper = sleeper or time.sleep
     for attempt in range(1, DB_LOCKED_MAX_ATTEMPTS + 1):
         try:
+            # INSIDE the try, exactly as the reconciler's ladder does it: after
+            # a rollback the objects `prepare()` touches are expired, so
+            # staging can itself emit SQL (autoflush, lazy-load) and hit the
+            # lock. Staging outside the try would send that straight past this
+            # ladder.
+            staged = prepare()
             session.commit()
-            return
+            return staged
         except Exception as exc:
             if not _is_db_locked(exc) or attempt == DB_LOCKED_MAX_ATTEMPTS:
                 raise
             session.rollback()
             sleeper(DB_LOCKED_RETRY_SECONDS)
+    raise RuntimeError(  # pragma: no cover - the loop always returns or raises
+        "commit retry ladder exhausted without committing or raising"
+    )
 
 
 # --- enrolment ------------------------------------------------------------------

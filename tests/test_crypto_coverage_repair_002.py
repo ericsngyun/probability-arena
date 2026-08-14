@@ -790,6 +790,102 @@ async def test_no_write_transaction_is_held_across_network_io(session):
 
 
 @pytest.mark.asyncio
+async def test_a_lock_on_the_first_commit_restages_the_batch_instead_of_losing_it(
+    session,
+):
+    """B4 (DATA LOSS). `session.rollback()` expunges every staged object, so a
+    retry ladder that simply re-calls `session.commit()` commits an EMPTY
+    transaction and returns successfully having written nothing — while the
+    caller has already counted the rows. Measured before the fix: 3 staged
+    observations, first commit raises `database is locked`, the pass returns
+    `status=ok, observations_recorded=3` with ZERO rows in the database, after
+    spending 3 real provider requests.
+
+    The batch must be RE-STAGED after the rollback, and nothing may be counted
+    until the commit has returned."""
+    import sqlite3
+
+    from sqlalchemy.exc import OperationalError
+
+    for n in (1, 2, 3):
+        add_birth(session, n, anchor=NOW - timedelta(hours=6))
+    session.commit()
+    pairs = {token_id(n): [pair(token_id(n))] for n in (1, 2, 3)}
+
+    real_commit = session.commit
+    failures = {"n": 0}
+
+    def flaky_commit():
+        # fail only the first WRITE-phase commit; enrolment commits (which
+        # stage no observation) go through untouched
+        staging_observations = any(
+            isinstance(obj, CryptoHorizonObservation) for obj in session.new
+        )
+        if staging_observations and failures["n"] == 0:
+            failures["n"] += 1
+            raise OperationalError(
+                "INSERT INTO crypto_horizon_observations", {},
+                sqlite3.OperationalError("database is locked"),
+            )
+        return real_commit()
+
+    session.commit = flaky_commit
+    try:
+        r = await run_pass(
+            session, adapter=FakeAdapter(pairs), now=NOW, cfg=config(write_batch_size=25),
+        )
+    finally:
+        del session.commit
+
+    assert failures["n"] == 1, "the lock was never injected"
+    assert r["status"] == sparse.STATUS_OK, r.get("error")
+    persisted = session.query(CryptoHorizonObservation).count()
+    assert persisted == 3, "the rolled-back batch was never re-staged"
+    assert r["observations_recorded"] == persisted
+    assert r["ticks_written"] == session.query(CryptoPriceTick).count() == 3
+    assert r["batches_committed"] == 1
+
+
+@pytest.mark.asyncio
+async def test_nothing_is_counted_until_the_batch_commit_returns(session):
+    """B4, the reporting half. A permanently locked database must produce
+    `status=db_locked` with the counters reflecting what is actually durable —
+    never a report of rows that were staged and discarded."""
+    import sqlite3
+
+    from sqlalchemy.exc import OperationalError
+
+    for n in (1, 2, 3):
+        add_birth(session, n, anchor=NOW - timedelta(hours=6))
+    session.commit()
+    pairs = {token_id(n): [pair(token_id(n))] for n in (1, 2, 3)}
+
+    real_commit = session.commit
+
+    def always_locked():
+        if any(isinstance(obj, CryptoHorizonObservation) for obj in session.new):
+            raise OperationalError(
+                "INSERT INTO crypto_horizon_observations", {},
+                sqlite3.OperationalError("database is locked"),
+            )
+        return real_commit()
+
+    session.commit = always_locked
+    try:
+        r = await run_pass(
+            session, adapter=FakeAdapter(pairs), now=NOW, cfg=config(write_batch_size=25),
+        )
+    finally:
+        del session.commit
+
+    assert r["status"] == sparse.STATUS_DB_LOCKED
+    assert r["observations_recorded"] == 0
+    assert r["ticks_written"] == 0
+    assert r["batches_committed"] == 0
+    assert session.query(CryptoHorizonObservation).count() == 0
+
+
+@pytest.mark.asyncio
 async def test_the_audit_payload_is_bounded_to_three_candidates(session):
     """RAW-PAYLOAD-STORAGE-001: raw payloads were 27% of the production DB with
     zero readers. This lane writes ~1,000 observation rows/day, so it must not
