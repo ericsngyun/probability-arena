@@ -111,6 +111,7 @@ from app.services.crypto_tape import (
     _now,
     _reconciliation_should_abort,
 )
+from app.telemetry import writer_pass
 
 logger = logging.getLogger(__name__)
 
@@ -488,9 +489,197 @@ def _base_result(status: str, config: SparseObservationConfig, started: datetime
     }
 
 
+# GATE7-SPARSE-TELEMETRY-001 — writer B's identity on the SHARED 001A sink.
+#
+# `crypto_horizon_observe` is the value the sink's `WRITER_NAMES` enum already
+# RESERVES for this lane ("reserved for later slices (001B-001D)"); this is that
+# slice, so nothing about the label set changes. It is deliberately NOT
+# `crypto_tape`: the two writers touch different rows, have different result
+# shapes and different phase vocabularies, and a shared name would make the
+# reconciler's calibration corpus unfilterable.
+TELEMETRY_WRITER_NAME = "crypto_horizon_observe"
+TELEMETRY_OPERATION_NAME = "scheduled_sparse_observation"
+# The coarse family this lane certainly owns. Its observation/cohort/member
+# rows are `crypto_horizon_*`. The `crypto_price_ticks` rows it also writes have
+# no unambiguous family in `TABLE_GROUPS` (`market_ticks` is the Kalshi
+# `market_price_ticks` family), so they are NOT attributed rather than
+# mis-attributed — an out-of-set family would cost this pass its whole record
+# were it not for `normalize_table_groups`, and a wrong in-set one would be
+# worse than silence.
+TELEMETRY_TABLE_GROUPS = ("crypto_horizon",)
+
+
 def _finish(result: dict, started: datetime) -> dict:
     result["duration_ms"] = max(0, int((_now() - started).total_seconds() * 1000))
+    # THE ONE TERMINAL FUNNEL. Every typed refusal (`_refused` in both the outer
+    # gate and `_run_locked`), the dry run, both write-phase aborts and the
+    # normal return all land here, so no terminal outcome can escape unrecorded
+    # — including the ones that never reach a durable row, which are exactly the
+    # passes a calibration corpus must not be blind to.
+    #
+    # The `disabled` early return deliberately does NOT come through here, for
+    # the same reason `crypto_tape._finish` excludes it: a flag that is off means
+    # no pass happened, and this lane proposes an HOURLY cadence, so recording it
+    # would file 24 events a day describing nothing.
+    _emit_pass_telemetry(result, started)
     return result
+
+
+def _emit_pass_telemetry(result: dict, started: datetime) -> None:
+    """One JSONL append per terminal outcome on the non-SQLite 001A sink.
+
+    Opens no connection, takes no lock, and never raises: this is called after
+    the pass has finished all of its own commits (or after the rollback that
+    ended it), so the single `os.write()` append is outside every transaction
+    this lane owns.
+
+    THE WHOLE BODY IS GUARDED, NOT JUST THE EMIT. `emit_writer_pass` swallows
+    everything, but the field extraction runs BEFORE it, on the writer's return
+    path. Writer A's review proved this reachable: an `int()` on a non-numeric
+    escaped the guard and failed the pass. Writer A could not actually produce
+    one (every producer is an int); WRITER B IS THE SHAPE THAT CAN — its meter
+    carries FLOATS, its `write_lock` block is absent on most refusal paths, and
+    a duck-typed stand-in can put anything in either. So the extraction degrades
+    to an identity record rather than being dropped: a bare `except: pass` here
+    would throw away the whole record instead of landing one without the numbers,
+    and "the pass happened, with this status" is the fact the corpus needs most.
+
+    It reports the truth about its own persistence back into the result (see
+    `_WriteMeter.snapshot`): a failed append must never read as a landed one."""
+    try:
+        fields = _pass_telemetry_fields(result)
+    except Exception:
+        fields = {}
+    event_id = None
+    try:
+        event_id = writer_pass.emit_writer_pass(
+            writer_name=TELEMETRY_WRITER_NAME,
+            operation_name=TELEMETRY_OPERATION_NAME,
+            started_at=started.isoformat().replace("+00:00", "Z"),
+            run_status=result.get("status"),
+            stop_reason=result.get("stop_reason"),
+            # `gate_bypassed` is the ATTENDED-BYPASS bit and stays a separate
+            # field from `run_source`, exactly as writer A keeps `--force`
+            # separate: `run_source="scheduled"` together with
+            # `gate_bypassed=True` is a real anomaly and stays readable as one
+            # only while the two do not merge. `run_source` itself is NOT passed
+            # — `emit_writer_pass` DERIVES it from systemd's `INVOCATION_ID`, so
+            # an operator pasting this lane's `ExecStart` to reproduce a failure
+            # by hand cannot file their attended pass as a timer run.
+            #
+            # This lane's `bypass` is a STRING (`"force"` / `"dry_run"` / None)
+            # because both flags bypass the gate attended and the result says
+            # which; the telemetry field is a strict bool, so it carries "was the
+            # gate bypassed at all". `run_status="dry_run"` on the same record is
+            # what distinguishes the two.
+            gate_bypassed=result.get("gate_bypassed") is not None,
+            table_groups=list(TELEMETRY_TABLE_GROUPS),
+            **fields,
+        )
+    except Exception:  # pragma: no cover - `emit_writer_pass` swallows too
+        event_id = None
+    lock = result.get("write_lock")
+    if isinstance(lock, dict):
+        lock["persisted"] = event_id is not None
+
+
+def _pass_telemetry_fields(result: dict) -> dict:
+    """The extraction half of `_emit_pass_telemetry`, split out so the guard
+    above has something to guard and so the mapping is testable without a sink.
+    Returns only the fields that are not None.
+
+    PHASE ATTRIBUTION IS PRESERVED BY OMISSION, NOT BY ZEROS. Writer A stores
+    `batch` / `run_row` / `finalize` lock waits in three separate fields because
+    its breakers read the BATCH figure and only that; the pass total includes
+    once-per-pass bookkeeping samples that are instrument, not contention.
+
+    Writer B has exactly ONE write phase — batched observation commits — and no
+    run row and no finalize commit, so `run_row_lock_wait_ms` and
+    `finalize_lock_wait_ms` have nothing to report and are ABSENT. It also times
+    no lock WAIT at all: `_WriteMeter` measures hold and commit wall time plus a
+    count of locked attempts, and there is no timer around the wait itself. So
+    `lock_wait_ms` and `batch_lock_wait_ms_max` are absent too.
+
+    THAT ABSENCE IS THE POINT, and a derived stand-in was considered and
+    refused. `retry_attempts * DB_LOCKED_RETRY_SECONDS` would look like the
+    design's `derived_estimate` "summed retry sleeps", but this lane's sleeper is
+    INJECTABLE (every test passes a no-op), so the number would be a constant
+    dressed as a measurement — indistinguishable at the sink from a timed one.
+    `lock_wait_ms` also feeds `scripts/sqlite_analyze_maintenance.py::_lock_tally`,
+    whose `lock_events` count is a GOVERNED STOP CONDITION. Writing a fabricated
+    value into a governed gate is the precise harm the phase split exists to
+    prevent. `lock_failures` carries this lane's contention signal honestly."""
+    meter = result.get("write_lock") or {}
+    if not isinstance(meter, dict):
+        meter = {}
+
+    def _int_or_none(value):
+        return None if value is None else int(value)
+
+    # A1 — "NOT MEASURED" AND "SUB-MILLISECOND" MUST NOT BOTH PERSIST AS 0.
+    # `_WriteMeter.record` runs once per RETURNED commit, so `batches` is 0
+    # exactly when this pass opened no write transaction at all (gate refusal,
+    # invalid config, overlap, degraded MarketOps, dry run, a lock lost before
+    # the first batch). Its `write_hold_ms_max` and `commit_ms_max` are then a
+    # structural 0.0 that measured nothing, and `int(0.0004 * 1000) == 0`
+    # truncates a genuine sub-millisecond hold to the same 0. An operator
+    # averaging the field would fold the unmeasured passes into the mean, pull it
+    # down, and set a production batch constant too AGGRESSIVE. So both timing
+    # fields are OMITTED when nothing was measured, and `write_hold_measured`
+    # travels alongside them so the two cases stay distinguishable on disk.
+    batches = int(meter.get("batches") or 0)
+    hold_measured = batches > 0
+
+    # `commit_ms_max` HAS NO EXACT FIELD IN THE 001A ENVELOPE — MAPPED, NOT ADDED.
+    # Adding one would change the sink's schema, which serves five writers and is
+    # the safety boundary; `commit_ms` is the envelope's commit-duration field
+    # ("`after_commit` - `before_commit`", quality `exact`) and writer B's
+    # `commit_start -> session.commit()` boundary is exactly that measurement.
+    # What does NOT match is the AGGREGATION: writer B commits once per batch and
+    # reports the per-pass MAXIMUM, not one transaction's value. That is the same
+    # direction `write_hold_ms_max` already takes (worst case, never an average),
+    # `batch_count` on the same record names the denominator, and the design's own
+    # precedent is `tick_aggregation`, which puts its LAST sub-window commit in
+    # this field with `commit_quality="exact"`. The quality tier describes how the
+    # samples were measured, not how they were reduced, so "exact" is honest;
+    # the reduction is stated here and in the runbook.
+    fields = {
+        # `rows_attempted` is member-horizons this pass planned to observe;
+        # `rows_committed` is a ROW count summed across the tables this lane
+        # writes (enrolments + observation rows + ticks), the same cross-table
+        # sum `rows_committed` means for writer A, so it is >= the token count.
+        "rows_attempted": _int_or_none(result.get("due_observations")),
+        "rows_committed": sum(
+            int(result.get(key) or 0)
+            for key in ("enrolled", "observations_recorded", "ticks_written")
+        ),
+        # Planned member-horizons this pass did not attempt at all, under
+        # `observe_limit` or the deadline. Deliberately NOT summed with
+        # `band_closed_during_pass`, which is a fetched member-horizon this lane
+        # correctly REFUSED to write out of band — a different fact with no field
+        # of its own, and flattening the two would make neither invertible.
+        "rows_skipped": _int_or_none(result.get("deferred_observations")),
+        "batch_count": _int_or_none(result.get("batches_committed")),
+        "retry_count": int(meter.get("retry_attempts") or 0),
+        "lock_failures": _int_or_none(meter.get("lock_failures")),
+        "external_calls": _int_or_none(result.get("external_calls")),
+        "write_hold_measured": hold_measured,
+        "write_hold_ms_max": (
+            _int_or_none(meter.get("write_hold_ms_max")) if hold_measured
+            else None
+        ),
+        "commit_ms": (
+            _int_or_none(meter.get("commit_ms_max")) if hold_measured else None
+        ),
+        "commit_quality": "exact" if hold_measured else None,
+        # STRUCTURAL, not observed: the fetch phase holds no transaction and the
+        # write phase touches no network (see `run_scheduled_sparse_observation`'s
+        # sequence). Stated so a later edit that interleaved them would have to
+        # change a persisted claim.
+        "provider_io_during_transaction": False,
+        "duration_ms": _int_or_none(result.get("duration_ms")),
+    }
+    return {k: v for k, v in fields.items() if v is not None}
 
 
 # --- the fetch phase ------------------------------------------------------------
@@ -1370,10 +1559,21 @@ class _WriteMeter:
     timer against the same file, and shipped with `duration_ms` and nothing
     else. These are the same measurements, IN THE RESULT.
 
-    They are NOT persisted to a run table: that needs a new table and a
-    migration decision this review round did not take. Until it does, this
-    lane's timer must not be installed — the flag stays off and the CLI is the
-    only way to read these numbers."""
+    GATE7-SPARSE-TELEMETRY-001 LIFTED THE RUN-RECORD HALF OF THAT GATE, and
+    only that half. These scalars are now persisted once per pass to the
+    non-SQLite SQLITE-LOCK-TELEMETRY-001A JSONL sink, under the `writer_name`
+    the sink's enum already reserved for this lane — the same surface the
+    reconciler uses, so the two writers calibrate against one corpus rather than
+    two parallel accounting systems. It needed no new table and no migration:
+    that is why it could be taken, when a run table could not.
+
+    WHAT IS STILL NOT TRUE. The numbers exist now; they are not yet CALIBRATED.
+    Persistence is what a calibration corpus needs, not a substitute for one, so
+    the flag remains default-off, the timer remains uninstalled, and both still
+    need their own approval. `persisted` below is per-PASS and is set from the
+    append's actual result — a sink that failed reports False, because a claim
+    of persistence this pass did not have is exactly the fabricated success the
+    telemetry contract forbids."""
 
     batches: int = 0
     retry_attempts: int = 0
@@ -1400,10 +1600,15 @@ class _WriteMeter:
             "write_hold_ms_max": round(self.write_hold_ms_max, 3),
             "commit_ms_max": round(self.commit_ms_max, 3),
             "commit_ms_total": round(self.commit_ms_total, 3),
+            # False until `_finish` hears back from the sink; never asserted.
             "persisted": False,
             "note": (
-                "write-phase only; the fetch phase holds no transaction. NOT "
-                "persisted to a run table — install no timer until it is"
+                "write-phase only; the fetch phase holds no transaction. "
+                "Persisted per pass to the non-SQLite SQLITE-LOCK-TELEMETRY-001A "
+                "JSONL sink as writer 'crypto_horizon_observe' (never to a run "
+                "table); 'persisted' reports whether THIS pass's record actually "
+                "landed. Recorded is not calibrated — the flag stays off and no "
+                "timer is installed until these numbers have been read"
             ),
         }
 
