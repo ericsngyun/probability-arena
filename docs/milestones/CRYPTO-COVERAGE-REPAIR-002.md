@@ -965,6 +965,16 @@ right quantities and persists none of them; the payload still carries
 disarmed for exactly this reason, and this lane must not be the first to install
 one on uncalibrated numbers.
 
+> **SUPERSEDED IN PART — GATE7-SPARSE-TELEMETRY-001 (2026-08-14).** The
+> RUN-RECORD half of that gate is satisfied: every terminal pass now appends one
+> record to the shared SQLITE-LOCK-TELEMETRY-001A JSONL sink as
+> `writer_name="crypto_horizon_observe"`, and the payload's `persisted` flag is
+> set from the append's actual outcome instead of being a constant `false`. It
+> needed **no table and no migration**, which is why it could be taken when a run
+> table could not. The CALIBRATION half is untouched: the numbers now survive the
+> process, nobody has read them yet, **the flag is still default-off and no timer
+> is installed**. See §"NOT done" below.
+
 ---
 
 ## 12. Activation order (NOT performed)
@@ -1067,12 +1077,16 @@ deployed or enabled.
 
 ### NOT done — must land before the flag is flipped
 
-* **A PERSISTED run record.** `write_lock` reports lock-wait/write-hold in the
+* ~~**A PERSISTED run record.** `write_lock` reports lock-wait/write-hold in the
   RESULT only. Persisting it needs a new table and a migration decision this
-  round did not take. The reconciler's timer is disarmed precisely because these
-  numbers are uncalibrated on EVO; **this lane's hourly timer must not be
-  installed until the run record exists.** The `write_lock` snapshot carries
-  `persisted: false` and says so.
+  round did not take.~~ **DONE — GATE7-SPARSE-TELEMETRY-001 (2026-08-14)**, and
+  not the way this bullet assumed: not a run table, and therefore no migration.
+  The pass appends one record per terminal outcome to the shared 001A JSONL
+  sink, which is non-SQLite by mandate and survives the passes a
+  single-attempt finalize commit loses. **The timer is still not installed and
+  the flag is still default-off** — the reason has changed from "the record does
+  not exist" to "the record exists and nobody has read it yet". Installing the
+  timer is a separate decision that needs a calibration reading first.
 * `max_duration_seconds=0` is still accepted and still yields exactly one fetch
   with a healthy `partial` — the deliberate "already past due" sentinel the tape
   reconciler uses, kept for consistency and depended on by the deadline test.

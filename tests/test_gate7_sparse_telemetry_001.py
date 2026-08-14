@@ -1180,3 +1180,23 @@ class TestTheGateTextIsTrue:
         units = list((Path(__file__).resolve().parents[1] / "infra" / "systemd"
                       ).rglob("*sparse*"))
         assert units == [], f"a timer/service unit was installed: {units}"
+
+    def test_the_runbook_tells_an_operator_how_writer_b_differs(self):
+        """A TEXT PIN, deliberately: the shared sink now has two grains and two
+        vocabularies in one file, and an operator who reads writer B's records
+        with writer A's expectations gets a per-token cost that belongs to
+        neither. Nothing else in the suite can catch this paragraph's removal."""
+        runbook = (Path(__file__).resolve().parents[1] / "docs"
+                   / "EVO_X2_RUNBOOK.md").read_text()
+        section = runbook.split(
+            "### Where the per-pass record now lands "
+            "(GATE2-WRITER-TELEMETRY-001)")[1].split("### `TimeoutStartSec`")[0]
+        assert 'writer_name="crypto_horizon_observe"' in section
+        # the four fields whose ABSENCE a reader must not read as a zero
+        for field in ("lock_wait_ms", "batch_lock_wait_ms_max",
+                      "run_row_lock_wait_ms", "finalize_lock_wait_ms"):
+            assert field in section
+        assert "ABSENT rather than zero" in section
+        assert "per-pass **maximum**" in section, (
+            "the commit_ms aggregation caveat is gone — a reader would take a "
+            "max for a single transaction's commit")

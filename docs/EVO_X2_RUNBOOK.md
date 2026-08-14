@@ -2327,6 +2327,24 @@ reading warning below before you read it on EVO. What to read, and the traps:
   not build an enforcement decision on the field without adding a check first.
 * `run_status="disabled"` is deliberately never emitted (no run happened).
   Every other outcome, including every pre-flight skip and refusal, is.
+* **The file now carries a second writer (GATE7-SPARSE-TELEMETRY-001).** The
+  sparse observer appends under `writer_name="crypto_horizon_observe"`,
+  `operation_name="scheduled_sparse_observation"` — 863 B per record, and it
+  is default-off with no timer, so nothing arrives on EVO today. **This is why
+  the calibration filter below is scoped to one `writer_name`, and it must stay
+  scoped**: the two writers have different phase vocabularies, and averaging
+  them together produces a per-token cost that belongs to neither. Read writer
+  B's records with the same predicate and its own name, e.g.
+  `jq -c 'select(.writer_name=="crypto_horizon_observe")' …`. Four differences
+  to expect: it emits **no** `lock_wait_ms`, `batch_lock_wait_ms_max`,
+  `run_row_lock_wait_ms` or `finalize_lock_wait_ms` — it has one write phase,
+  no run row, no finalize commit, and it times no lock wait anywhere, so those
+  fields are ABSENT rather than zero; its contention signal is `lock_failures`
+  plus `retry_count`. `commit_ms` on its records is its per-pass **maximum**
+  batch commit (`batch_count` is the denominator), not one transaction's value.
+  `rows_committed` is `enrolled + observations_recorded + ticks_written`.
+  `write_hold_measured` works exactly as it does for writer A, and
+  `write_hold_ms_max`/`commit_ms` are both omitted when it is `false`.
 
 #### Deriving `initial_per_token_cost_seconds` — the mandatory filter
 
