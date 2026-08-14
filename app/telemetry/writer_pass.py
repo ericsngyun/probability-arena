@@ -218,13 +218,21 @@ def resolve_run_source() -> str:
     routes: `emit_writer_pass(run_source="scheduled")` takes a caller-asserted
     value with no provenance check at all and bypasses this function entirely;
     `export INVOCATION_ID=anything` satisfies the check below; and
-    `SQLITE_TELEMETRY_SYSTEMD_UNIT` independently sets `systemd_unit`. None of
-    that is a live risk TODAY, and the reason is structural rather than lucky:
-    nothing reads the JSONL — there is no consumer anywhere in `app/` or
-    `scripts/` — the health latch is driven by real Python arguments, not by
-    this field, and `_record_health` writes BEFORE the emit, so a forged value
-    cannot reach the gate even in principle. Enforcement belongs to whoever
-    builds the first reader; it must not be assumed to exist before then."""
+    `SQLITE_TELEMETRY_SYSTEMD_UNIT` independently sets `systemd_unit`.
+
+    That is not a live risk today, but NOT for the reason the review gave. The
+    review concluded "no consumer of the JSONL exists anywhere in `app/` or
+    `scripts/`"; THAT IS WRONG — `scripts/sqlite_analyze_maintenance.py::
+    _lock_tally` reads this file and its `lock_events` count is a governed
+    stop condition (see the runbook). The conclusion survives on a narrower
+    and checkable fact: that consumer reads `lock_wait_ms`, `retry_count`,
+    `started_at`, `operation_name`, `writer_name` and `outcome`, and NOT
+    `run_source`. Nothing anywhere reads `run_source`. Combined with the health
+    latch being driven by real Python arguments and `_record_health` writing
+    BEFORE the emit, a forged value cannot reach any gate.
+
+    Enforcement belongs to whoever builds the first reader OF THIS FIELD; it
+    must not be assumed to exist before then."""
     return (
         RUN_SOURCE_SCHEDULED
         if os.environ.get("INVOCATION_ID")

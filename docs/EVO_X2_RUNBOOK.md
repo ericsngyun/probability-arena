@@ -2403,6 +2403,32 @@ point, because those are the passes the run row loses. It does **not** survive a
 SIGKILL: the append is the last thing a pass does, so a kill mid-finalize loses
 the JSONL line exactly as it loses the run row.
 
+#### BEFORE YOU ENABLE THE RECONCILER: this file already has a consumer
+
+`scripts/sqlite_analyze_maintenance.py::_lock_tally` reads this same JSONL file
+and reports `lock_events`, counting **any** event with `lock_wait_ms > 0` or
+`retry_count > 0`. That predicate was written when only the two 001A writers
+(`tick_aggregation`, `backup`) appended here, and for them a non-zero lock wait
+genuinely is a lock event. It is a governed number: the ANALYZE record carries
+it as a before/after **delta**, and `current_lock_events > 6` is a documented
+session stop condition.
+
+**A healthy `crypto_tape` reconciler pass routinely reports `lock_wait_ms > 0`**
+— measured 12 ms on an uncontended 12-token pass, from once-per-pass `run_row`
+and `finalize` bookkeeping samples that are instrument, not contention. So the
+moment `enable_crypto_tape_reconciler` is turned on with a timer, `lock_events`
+starts climbing by roughly one per pass (~4/day at the 6-hourly cadence) and
+will cross 6 within two days — reading as new contention when nothing has
+contended.
+
+Nothing moves today: both writers ship default-OFF and no timer is installed.
+But this must be resolved **before the flag is flipped**, not after. Either
+teach `_lock_tally` to scope its count to `writer_name in {tick_aggregation,
+backup}`, or move it onto the phase-attributed `batch_lock_wait_ms_max`, which
+is the only figure that means contention. Do not simply raise the threshold —
+that discards the signal instead of fixing its denominator. This is a
+maintenance-script change and is deliberately **not** made on this branch.
+
 ### `TimeoutStartSec` vs the finalize ladder
 
 The run row's finalize inherits the **connection's** busy timeout (30 s in

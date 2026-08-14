@@ -1048,6 +1048,70 @@ class TestRunbookIsActionable:
         assert "SIGKILLed mid-finalize" not in doc
         assert "SIGKILL" in doc, "the limitation must be named, not deleted"
 
+    def test_the_preexisting_lock_tally_consumer_is_named(self):
+        """THE SECURITY REVIEW GOT THIS ONE WRONG, and the correction is worth
+        a test rather than a sentence.
+
+        The review concluded "no consumer of the JSONL exists anywhere in
+        `app/` or `scripts/`" and rested the `run_source`-forgeability verdict
+        on it. There IS one:
+        `scripts/sqlite_analyze_maintenance.py::_lock_tally`. Its `lock_events`
+        figure is governed — a before/after delta on the ANALYZE record and a
+        documented `> 6` session stop condition.
+
+        The forgeability verdict survives, on a narrower fact this test pins:
+        that consumer does not read `run_source`."""
+        script = (Path(__file__).resolve().parents[1]
+                  / "scripts" / "sqlite_analyze_maintenance.py").read_text()
+        tally = script.split("def _lock_tally")[1].split("\ndef ")[0]
+        assert "lock_wait_ms" in tally, "the consumer moved; re-verify the runbook"
+        assert "run_source" not in tally, (
+            "the tally now reads run_source — the forgeable field has a "
+            "consumer, and the deferred-enforcement decision must be revisited"
+        )
+
+    def test_a_healthy_pass_would_register_as_a_lock_event_in_that_tally(
+        self, filedb
+    ):
+        """THE INTERACTION THAT MUST BE RESOLVED BEFORE THE FLAG IS FLIPPED.
+
+        `_lock_tally` counts any event with `lock_wait_ms > 0` or
+        `retry_count > 0` as a lock event. That predicate is correct for the
+        two 001A writers. It is NOT correct for a reconciler pass: a healthy,
+        uncontended pass reports a non-zero `lock_wait_ms` from once-per-pass
+        `run_row` and `finalize` bookkeeping samples, which are instrument and
+        not contention — the same distinction the four separate phase fields
+        exist to preserve.
+
+        So enabling the reconciler would push `lock_events` past its governed
+        `> 6` stop condition within days while nothing had contended. Nothing
+        moves today (both writers are default-OFF, no timer installed), and the
+        fix belongs to the maintenance script, not here. This test exists so
+        the interaction cannot be silently forgotten, and it is written to FAIL
+        LOUDLY if a later change makes it stop being true."""
+        summary, events = _run(filedb)
+        event = events[0]
+        counted_as_lock_event = (
+            (event.get("lock_wait_ms") or 0) > 0
+            or (event.get("retry_count") or 0) > 0
+        )
+        assert counted_as_lock_event, (
+            "a healthy pass no longer trips the tally's predicate — re-read "
+            "the runbook's 'BEFORE YOU ENABLE THE RECONCILER' section, the "
+            "hazard it describes may be resolved or may have moved"
+        )
+        # and the reason it is a FALSE positive: the contention figure is zero
+        assert summary["lock_wait_phases"]["run_row"]["measurements"] >= 1, (
+            "the non-zero wait comes from bookkeeping, not contention"
+        )
+
+    def test_the_enable_time_hazard_is_written_down(self):
+        section = self._section()
+        assert "_lock_tally" in section, (
+            "the pre-existing consumer of this file is not named in the runbook"
+        )
+        assert "BEFORE YOU ENABLE" in section
+
     def test_the_emit_is_the_last_thing_the_pass_does(self, filedb, monkeypatch):
         """The BEHAVIOURAL half of the correction above, and the reason the
         SIGKILL claim was false: by the time the append happens the health
