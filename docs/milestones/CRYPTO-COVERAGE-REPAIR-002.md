@@ -130,7 +130,7 @@ inside the survival window. The report carries `target_distance_seconds`.
 **A third, smaller schedule number (GATE7-SPARSE-UNITS-001).**
 
 ```python
-SPARSE_TIMER_PHASE_MINUTE = 37  # WHERE on the clock the CADENCE lattice sits
+SPARSE_TIMER_PHASE_MINUTE = 47  # WHERE on the clock the CADENCE lattice sits
 ```
 
 The cadence fixes the *gap* between passes and says nothing about the *phase*.
@@ -143,9 +143,13 @@ on the host (`baseline` six times a day, the DELETE-heavy `retention` once a
 day) with `RandomizedDelaySec=0` + `AccuracySec=1s` — arriving first,
 deterministically, with no jitter available to move it. Pinned by
 `test_the_timer_does_not_share_a_minute_with_a_calendar_neighbour` and
-`test_the_phase_offset_costs_invariant_two_nothing`. One residual is *accepted
-and disclosed rather than avoided*: `probability-arena-backup.timer`
-(`01:30:00`, jitter 600 s) can cover :37 once a day in the 01:xx hour.
+`test_the_phase_offset_costs_invariant_two_nothing`. **No residual is accepted.**
+The approval named `:37` as an *example* of a non-colliding phase, and `:37`
+turned out not to be one — `probability-arena-backup.timer` (`01:30:00`, jitter
+600 s) starts uniformly over 01:30–01:40 and can cover it once a day in the
+01:xx hour. `:47` is outside every calendar neighbour's start window (declared
+minute **plus** its whole `RandomizedDelaySec`), so the accepted-overlap list in
+the pin is empty and any overlap at all fails it.
 
 ### 2.4 Why only 6h and 24h
 
@@ -1021,8 +1025,8 @@ one on uncalibrated numbers.
    chosen 90.0.
 4. `crypto-observation-coverage-report` — confirm the denominator is what step 2
    predicted and that `scheduling_miss` is 0.
-5. Only then flip the flag and install an hourly user timer — hourly **at :37**
-   (`OnCalendar=*-*-* *:37:00`), not on the `hourly` alias's :00; see the phase
+5. Only then flip the flag and install an hourly user timer — hourly **at :47**
+   (`OnCalendar=*-*-* *:47:00`), not on the `hourly` alias's :00; see the phase
    note in §2.3. The cadence in the
    unit **must** match `SPARSE_CADENCE_MINUTES`; invariant (2) is stated against
    that number, and nothing in the code can enforce a systemd `OnCalendar` it

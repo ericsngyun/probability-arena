@@ -347,15 +347,16 @@ _CALENDAR_NEIGHBOURS = (
 # one starts to. Every entry must ALSO be disclosed in the timer unit's own
 # prose — an accepted cost that is only in a test is a cost nobody operating the
 # host will ever read.
-_ACCEPTED_CALENDAR_OVERLAPS = {
-    # `OnCalendar=*-*-* 01:30:00`, RandomizedDelaySec=600 -> 01:30-01:40. This
-    # is HOUR-PINNED, so it can meet the sparse pass at most once a day and only
-    # in the 01:xx hour, against `baseline`'s six-a-day and `retention`'s
-    # once-a-day at the instant the sparse pass could never be jittered out of.
-    # Strictly smaller than what the offset bought, and the offset was approved
-    # on baseline+retention. Recorded, not hidden.
-    "probability-arena-backup.timer",
-}
+#
+# IT IS EMPTY, AND THAT IS THE CLAIM. The shipped phase is clear of every
+# calendar neighbour's START WINDOW (declared minute + whole
+# RandomizedDelaySec), so this lane accepts no calendar collision at all and the
+# pin below degenerates to "no overlaps, full stop". :37 — the value the
+# approval named as an EXAMPLE of a non-colliding phase — needed an entry here
+# for `probability-arena-backup.timer`, whose 600 s jitter off `01:30:00`
+# reaches :37; :47 does not. An entry added back here is a real cost and has to
+# be disclosed in the unit file, which the test below enforces.
+_ACCEPTED_CALENDAR_OVERLAPS: set[str] = set()
 
 
 def test_the_timer_does_not_share_a_minute_with_a_calendar_neighbour():
@@ -376,14 +377,18 @@ def test_the_timer_does_not_share_a_minute_with_a_calendar_neighbour():
     minute, because its jitter is 0.
 
     MINUTE-OF-HOUR IS AN OVER-APPROXIMATION AND IS KEPT ON PURPOSE. `backup`
-    fires at `01:30:00`, so a minute-of-hour comparison flags it against a
-    sparse pass at :37 that can only actually meet it in the 01:xx hour. The
-    over-approximation is the safe direction for a pin, so it stays, and the
-    one unit it over-flags is listed in `_ACCEPTED_CALENDAR_OVERLAPS` with the
-    reason — and has to be disclosed in the unit file too.
+    fires at `01:30:00`, so a minute-of-hour comparison flags it in every hour
+    even though it could only ever meet the sparse pass in the 01:xx one. The
+    over-approximation is the safe direction for a pin, so it stays — and at the
+    shipped phase it costs nothing, because :47 is outside that unit's jitter
+    window in the first place. `_ACCEPTED_CALENDAR_OVERLAPS` is EMPTY: this lane
+    shares its minute with no calendar neighbour, so any overlap at all fails
+    here.
 
     MUTATION: set `SPARSE_TIMER_PHASE_MINUTE = 0` (which is what returning to
-    `hourly` means) and this fails, naming baseline and retention.
+    `hourly` means) and this fails, naming baseline and retention. Set it to 37
+    — the value the approval named as an example, before `backup`'s 600 s jitter
+    off `01:30:00` was checked against it — and this fails naming `backup`.
     """
     on_calendar = parse_unit(TIMER_UNIT)["Timer"]["OnCalendar"]
     m = re.search(r":(\d{2}):00$", on_calendar)

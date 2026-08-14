@@ -198,17 +198,32 @@ SPARSE_CADENCE_MINUTES = 60.0
 # would arrive at the head of every :00 stampede deterministically, with the
 # jittered writers queueing behind it.
 #
-# :37 is empty on this host's calendar, checked against every unit in
-# infra/systemd/user/ rather than against memory:
+# :47 is empty on this host's calendar, checked against every unit in
+# infra/systemd/user/ rather than against memory. Each window below is the
+# neighbour's declared minute PLUS its whole RandomizedDelaySec, so these are
+# the intervals in which a neighbour can START, not merely where it is pinned:
 #   baseline    :00-:05   (jitter 300)      retention   00:00-00:10 (jitter 600)
 #   reconcile   :07-:12   (jitter 300)      backup      01:30-01:40 (jitter 600)
 #   tick-agg    :22-:24   (boot-anchored 1h, jitter 120; the runbook records the
 #                          slot this host's boot put it in)
+# :47 lies outside every one of them, so this lane shares its minute with NO
+# calendar neighbour — there is no accepted residual to price.
+#
+# WHY 47 AND NOT 37, WHICH IS THE NUMBER THE APPROVAL NAMED. The approval was
+# for "a non-colliding phase such as :37", and :37 turned out not to satisfy the
+# binding half of that: `probability-arena-backup.timer` is
+# `OnCalendar=*-*-* 01:30:00` with `RandomizedDelaySec=600`, so its start is
+# uniform over 01:30:00-01:40:00 and CAN land on :37 — once a day at most, and
+# only in the 01:xx hour, but a residual that has to be accepted and disclosed
+# rather than avoided. :47 clears that window and every other neighbour's, and
+# the phase is free of invariant (2) either way (containment of a closed 2*BAND
+# interval by a CADENCE-spaced lattice is translation-invariant), so the
+# non-colliding phase costs nothing the illustrative one would have saved.
 # MarketOps and meme-news are BOOT-anchored (`OnUnitActiveSec`), so their grids
 # drift with uptime and no fixed phase can dodge them for good; that collision
 # was already priced at tens of milliseconds in the .service file and is
 # unchanged by this number.
-SPARSE_TIMER_PHASE_MINUTE = 37
+SPARSE_TIMER_PHASE_MINUTE = 47
 if not 0 <= SPARSE_TIMER_PHASE_MINUTE <= 59:
     raise ValueError("SPARSE_TIMER_PHASE_MINUTE must be a minute of the hour")
 
@@ -2234,14 +2249,14 @@ def timer_oncalendar() -> str:
     made a later cadence change silently re-enter the stampede this offset
     exists to leave, so the offset applies to all three:
 
-      * 60 min          -> `*-*-* *:37:00`      (the shipped form)
-      * H hours         -> `*-*-* 00/H:37:00`   (every H hours, at :37)
-      * M < 60 min      -> `*-*-* *:{37 % M}/M:00`
+      * 60 min          -> `*-*-* *:47:00`      (the shipped form)
+      * H hours         -> `*-*-* 00/H:47:00`   (every H hours, at :47)
+      * M < 60 min      -> `*-*-* *:{47 % M}/M:00`
 
     The sub-hour form takes the phase MODULO the cadence because a systemd
-    minute-repetition `start/step` must begin inside the first step; `37/30`
-    would put the first firing at :37 and the next at :67, which is not a
-    minute. `37 % 30 = 7` keeps the same lattice gap on a phase this host is
+    minute-repetition `start/step` must begin inside the first step; `47/30`
+    would put the first firing at :47 and the next at :77, which is not a
+    minute. `47 % 30 = 17` keeps the same lattice gap on a phase this host is
     also free at."""
     minutes = int(SPARSE_CADENCE_MINUTES)
     phase = int(SPARSE_TIMER_PHASE_MINUTE)
