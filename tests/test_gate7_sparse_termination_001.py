@@ -36,7 +36,11 @@ that can only be hit by a genuine failure. The one duration-based assertion —
 that the child is STILL ALIVE after its own fetch deadline has passed — is
 monotone in the safe direction: extra load can only make the child slower to
 exit, never faster, and the child cannot exit at all while the provider is
-still dripping. There is no `datetime.now()` bound at import in this module.
+still dripping. Nothing in this module binds a clock at import or collection
+time — the one `datetime.now()` lives inside the driver TEMPLATE STRING and is
+evaluated fresh in each child, which is the fix for the flake class this repo
+already has on record (a module-level `NOW = datetime.now()` that goes stale
+between collection and execution).
 """
 
 import os
