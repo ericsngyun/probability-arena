@@ -38,7 +38,11 @@ from sqlalchemy.orm import sessionmaker
 from app.config import Settings
 from app.db import Base
 from app.models import CryptoPriceTick, CryptoToken
-from app.services.crypto_tape import run_scheduled_reconciliation
+from app.services import crypto_reconciler_guard as guard
+from app.services.crypto_tape import (
+    LockWaitAccounting,
+    run_scheduled_reconciliation,
+)
 from app.telemetry import writer_pass
 from app.telemetry.schema import (
     REQUIRED_FIELDS,
@@ -49,7 +53,7 @@ from app.telemetry.schema import (
     build_event,
     validate_event,
 )
-from app.telemetry.sink import get_sink, read_events
+from app.telemetry.sink import TelemetrySink, get_sink, read_events
 
 CHAIN = "solana"
 HOLDER_TIMEOUT_SECONDS = 0.2
@@ -123,6 +127,21 @@ class _FileDb:
 
     def close(self):
         self.engine.dispose()
+
+
+class _HoldMeter:
+    """The minimum surface `LockWaitAccounting.record` reads off a meter.
+
+    Deliberately hand-built rather than driving a real transaction: the point
+    of A1 is the SUB-MILLISECOND hold, and a real one cannot be produced on
+    demand. `record` duck-types the phase via `getattr`, so this is the same
+    path a real `LockWaitMeter` takes."""
+
+    def __init__(self, *, hold_seconds: float, lock_wait_seconds: float = 0.0,
+                 phase: str = "batch"):
+        self.hold_seconds = hold_seconds
+        self.lock_wait_seconds = lock_wait_seconds
+        self.phase = phase
 
 
 class _Holder:
@@ -555,3 +574,486 @@ class TestTelemetryIsNotAContentionSource:
             started_at=_now_z(), run_status="ok")
         assert get_sink().path.suffix == ".jsonl"
         assert not str(get_sink().path).endswith(".db")
+
+
+# --- 10. A1: "not measured" and "sub-millisecond" are distinguishable --------
+
+class TestWriteHoldIsNotZeroInflated:
+    """THE SURVIVORSHIP BIAS, ARRIVING BY A SECOND ROUTE.
+
+    Rejecting `crypto_token_lifecycle_runs` removed the ABSENCE bias: the
+    passes that lose their record are the contended ones, so a store blind to
+    them cannot calibrate a threshold. `write_hold_ms_max=0` re-introduced the
+    same bias as ZERO-INFLATION — a contended pass, a refusal and a pre-flight
+    skip all persist 0 while having measured nothing at all, and
+    `int(hold_seconds * 1000)` truncates a genuine 0.4 ms hold to 0 as well.
+
+    An operator averaging the field to derive `initial_per_token_cost_seconds`
+    would pull the mean DOWN with passes that measured nothing and set the
+    constant too AGGRESSIVE — larger batches, longer holds, on a live
+    production writer. These tests pin the disambiguation at both ends: the
+    accounting counts holds, and the emitter refuses to persist a hold figure
+    it did not measure."""
+
+    def test_a_sub_millisecond_hold_is_counted_even_though_it_truncates_to_zero(
+        self,
+    ):
+        """The truncation itself, at the source. `write_hold_ms_max` is 0 and
+        stays 0 — it is shipped schema that run rows and the CLI read — but
+        `write_hold_measurements` is 1, which is the whole difference between
+        "held the lock briefly" and "never opened a write transaction"."""
+        acc = LockWaitAccounting()
+        acc.record(_HoldMeter(hold_seconds=0.0004))
+        summary = acc.as_summary()
+        assert summary["write_hold_ms_max"] == 0, "0.4 ms must truncate to 0"
+        assert summary["write_hold_measurements"] == 1
+
+    def test_a_pass_that_opened_no_write_transaction_counts_no_holds(self):
+        acc = LockWaitAccounting()
+        acc.record(_HoldMeter(hold_seconds=0.0))
+        summary = acc.as_summary()
+        assert summary["write_hold_ms_max"] == 0
+        assert summary["write_hold_measurements"] == 0, (
+            "a sample with no hold must not be counted as a hold measurement"
+        )
+
+    def test_a_completed_pass_marks_its_hold_as_measured(self, filedb):
+        summary, events = _run(filedb)
+        event = events[0]
+        assert summary["write_hold_measurements"] > 0
+        assert event["write_hold_measured"] is True
+        assert event["write_hold_ms_max"] == summary["write_hold_ms_max"]
+
+    def test_a_refused_pass_omits_the_hold_rather_than_reporting_zero(
+        self, filedb
+    ):
+        """THE CALIBRATION-POISONING CASE. A refusal measured nothing. If it
+        persisted `write_hold_ms_max=0` an averaging query could not tell it
+        from a real zero, so the field is ABSENT and `write_hold_measured` is
+        an explicit false."""
+        _, events = _run(filedb, limit=0)
+        event = events[0]
+        assert event["run_status"] == "invalid_config"
+        assert event["write_hold_measured"] is False
+        assert "write_hold_ms_max" not in event, (
+            "an unmeasured pass must not contribute a zero to the mean"
+        )
+
+    def test_the_calibration_filter_excludes_every_unmeasured_pass(self, filedb):
+        """The filter the runbook tells an operator to apply, executed. Mixing
+        a refusal into the corpus is exactly what biases the constant."""
+        _run(filedb, limit=0)              # refusal: measured nothing
+        _run(filedb)                       # a real pass
+        events = _events()
+        assert len(events) == 2
+        eligible = [
+            e for e in events
+            if e.get("run_status") in {"ok", "partial", "truncated",
+                                       "backlog_expiring"}
+            and (e.get("batch_count") or 0) > 0
+            and e.get("write_hold_measured") is True
+        ]
+        assert len(eligible) == 1
+        assert all("write_hold_ms_max" in e for e in eligible)
+
+
+# --- 11. A2: the calibration quantities are PERSISTED, not merely computed ---
+
+class TestCalibrationQuantitiesSurvive:
+    def test_the_slo_counter_this_gate_exists_for_is_carried(self, filedb):
+        """`write_hold_slo_violations` is the number the controller Gate 3
+        builds is supposed to act on. `as_summary` computed it and the emit
+        threw it away."""
+        summary, events = _run(filedb)
+        assert events[0]["write_hold_slo_violations"] == (
+            summary["write_hold_slo_violations"]
+        )
+
+    def test_the_lock_wait_denominator_is_carried(self, filedb):
+        """Every average over the lock-wait scalars needs it, and A1's
+        disambiguation needs it too."""
+        summary, events = _run(filedb)
+        assert events[0]["lock_wait_measurements"] == (
+            summary["lock_wait_measurements"]
+        )
+
+    def test_the_breaker_tallies_are_carried(self, filedb):
+        summary, events = _run(filedb)
+        assert events[0]["batch_lock_wait_warnings"] == (
+            summary["batch_lock_wait_warnings"]
+        )
+        assert events[0]["batch_lock_wait_aborts"] == (
+            summary["batch_lock_wait_aborts"]
+        )
+
+    def test_the_histogram_survives_the_pass(self, filedb):
+        """`LockWaitAccounting`'s own docstring: a threshold must be derived
+        from the tail of `lock_wait_histogram_ms`, NEVER from a scalar, because
+        the per-attempt measurement bias lands almost entirely in the `1-10`
+        bucket. A persisted surface that keeps only scalars therefore forces
+        the gate to be calibrated from the one source its author warned
+        against."""
+        summary, events = _run(filedb)
+        assert events[0]["lock_wait_histogram_ms"] == (
+            summary["lock_wait_histogram_ms"]
+        )
+        assert sum(events[0]["lock_wait_histogram_ms"].values()) == (
+            summary["lock_wait_measurements"]
+        )
+
+    def test_the_histogram_stays_a_bounded_bucket_map(self):
+        """The one nested field. It must not become a route around the
+        high-cardinality guard — a token id or ticker as a key is rejected."""
+        for bad in (
+            {"tok-abc123": 1},                       # a key that is not a bucket
+            {"1-10": -1},                            # an impossible count
+            {"1-10": True},                          # a bool is not a count
+            {"1-10": 1.5},                           # a float is not a count
+            {str(i): 0 for i in range(20)},          # unbounded bucket count
+            ["1-10"],                                # not a map at all
+        ):
+            with pytest.raises(TelemetryValidationError):
+                validate_event(_valid_event(lock_wait_histogram_ms=bad))
+        validate_event(_valid_event(lock_wait_histogram_ms={
+            "<1": 0, "1-10": 8, ">=30000": 0,
+        }))
+
+    def test_rows_committed_is_a_row_sum_across_three_tables(self, filedb):
+        """NOT a committed-TOKEN count, which is what Gate 3 asks for. One
+        token can produce a snapshot AND an outcome update AND a birth event,
+        so this denominator is >= the token count and a per-token cost derived
+        from it UNDER-estimates cost — which, inverted into a batch size, errs
+        toward smaller batches. Safe, but only while it is not mistaken for a
+        token count. Pinned so the arithmetic cannot drift silently."""
+        summary, events = _run(filedb)
+        event = events[0]
+        assert event["rows_committed"] == (
+            summary["snapshots_created"]
+            + summary["outcomes_updated"]
+            + summary["birth_events_created"]
+        )
+        assert event["rows_attempted"] == summary["tokens_considered"]
+        assert event["rows_committed"] > event["rows_attempted"], (
+            "the mismatch is the point: rows are not tokens"
+        )
+
+
+# --- 12. A3: the sink degrades instead of deleting ---------------------------
+
+class TestDegradeRatherThanDelete:
+    """FIVE REACHABLE CLASSES GAVE `rejected=1, emitted=0` THROUGH THE
+    SANCTIONED ENTRY POINT — i.e. the sink silently deleted a whole pass
+    record, which is precisely the failure this gate exists to end.
+
+    Builder-side normalization is necessary but NOT SUFFICIENT: it closes the
+    label doors (`outcome`, `table_groups`, unknown `**fields` keys) and
+    cannot close the type doors, because a value can be the wrong type in ANY
+    field. So both halves ship: the builder normalizes, and the sink retries
+    once with the event stripped to REQUIRED_FIELDS + `truncated=true`."""
+
+    def test_an_unknown_outcome_costs_the_label_not_the_record(self):
+        """`outcome` is REQUIRED and enum-checked, and it was the one
+        caller-supplied label reaching the envelope UN-normalized — popped out
+        of `**fields` and forwarded, unlike `run_status`/`stop_reason`."""
+        sink = get_sink()
+        before = sink.rejected
+        eid = writer_pass.emit_writer_pass(
+            writer_name="crypto_tape", operation_name="p",
+            started_at=_now_z(), run_status="ok", outcome="bogus",
+        )
+        assert eid is not None, "an unknown outcome must not delete the record"
+        assert sink.rejected == before, "it must not even reach the validator"
+        event = _events()[-1]
+        assert event["outcome"] == "unknown"
+        assert event["run_status"] == "ok", "the exact status is still carried"
+
+    def test_an_unknown_table_group_costs_the_family_not_the_record(self):
+        eid = writer_pass.emit_writer_pass(
+            writer_name="crypto_tape", operation_name="p",
+            started_at=_now_z(), run_status="ok",
+            table_groups=["crypto_horizon", "not_a_family"],
+        )
+        assert eid is not None
+        event = _events()[-1]
+        assert event["table_groups"] == ["crypto_horizon"]
+
+    def test_an_all_unknown_table_group_list_becomes_absent_not_empty(self):
+        eid = writer_pass.emit_writer_pass(
+            writer_name="crypto_tape", operation_name="p",
+            started_at=_now_z(), run_status="ok", table_groups=["nope"],
+        )
+        assert eid is not None
+        assert "table_groups" not in _events()[-1]
+
+    def test_an_unknown_field_key_is_dropped_not_forwarded(self):
+        """WRITER B'S CONCRETE CASE. `crypto_sparse_observation`'s `_WriteMeter`
+        produces `commit_ms_max`, which this envelope has no field for. Under
+        the old builder it rode `**fields` straight into the validator and took
+        the whole record with it."""
+        sink = get_sink()
+        before = sink.rejected
+        eid = writer_pass.emit_writer_pass(
+            writer_name="crypto_horizon_observe", operation_name="p",
+            started_at=_now_z(), run_status="partial",
+            batch_count=3, commit_ms_max=17,
+        )
+        assert eid is not None, "one unknown key must not delete the record"
+        assert sink.rejected == before
+        event = _events()[-1]
+        assert "commit_ms_max" not in event
+        assert event["batch_count"] == 3, "the known fields still land"
+
+    def test_a_wrong_typed_field_degrades_the_record_rather_than_deleting_it(
+        self,
+    ):
+        """THE DOOR NORMALIZATION CANNOT CLOSE. A float in a duration field is
+        a TYPE error, not a label error, so no builder-side mapping can catch
+        it. The sink keeps the pass by shedding the optional fields."""
+        sink = get_sink()
+        rejected_before, degraded_before = sink.rejected, sink.degraded
+        eid = writer_pass.emit_writer_pass(
+            writer_name="crypto_tape", operation_name="p",
+            started_at=_now_z(), run_status="ok",
+            write_hold_ms_max=12.5,
+        )
+        assert eid is not None, "a degraded record beats a deleted one"
+        assert sink.rejected == rejected_before + 1, "the full event WAS invalid"
+        assert sink.degraded == degraded_before + 1
+        event = _events()[-1]
+        assert event["truncated"] is True, "the degradation is self-disclosed"
+        assert "write_hold_ms_max" not in event
+        assert REQUIRED_FIELDS <= set(event), "identity and timing survive"
+
+    def test_a_non_bool_gate_bypassed_degrades_rather_than_deleting(self):
+        eid = writer_pass.emit_writer_pass(
+            writer_name="crypto_tape", operation_name="p",
+            started_at=_now_z(), run_status="ok", gate_bypassed=1,
+        )
+        assert eid is not None
+        assert _events()[-1]["truncated"] is True
+
+    def test_a_record_whose_identity_is_unusable_is_still_dropped(self):
+        """The degradation is ONE retry on a stripped event, not a loosening.
+        A required field that is itself invalid cannot be salvaged, and
+        pretending otherwise would put an unattributable line on disk."""
+        sink = get_sink()
+        before = sink.emitted
+        assert sink.emit(_valid_event(writer_name="not_a_writer")) is False
+        assert sink.emitted == before
+
+    def test_the_validator_itself_is_not_loosened(self):
+        """The closed-set guarantee is the reason this surface is safe to keep
+        on disk. Degradation must never become "accept it anyway"."""
+        for bad in (
+            {"lock_wait_ms": 1.5},
+            {"batch_count": -1},
+            {"gate_bypassed": 1},
+            {"run_status": "not_a_status"},
+            {"table_groups": ["not_a_family"]},
+            {"a_field_nobody_declared": 1},
+        ):
+            with pytest.raises(TelemetryValidationError):
+                validate_event(_valid_event(**bad))
+
+    def test_a_degraded_record_still_carries_no_secret(self):
+        """Stripping to REQUIRED_FIELDS must not be a route around the secret
+        scan — the stripped event goes through the SAME validator."""
+        sink = get_sink()
+        before = sink.emitted
+        assert sink.emit(_valid_event(
+            operation_name="pass api_key=xyz", lock_wait_ms=1.5,
+        )) is False
+        assert sink.emitted == before
+
+
+# --- 13. A4: telemetry extraction cannot fail the pass ----------------------
+
+class TestExtractionCannotFailThePass:
+    def test_a_non_numeric_measurement_cannot_escape_into_the_writer(
+        self, filedb, monkeypatch
+    ):
+        """PROVED BEFORE THE FIX: `emit_writer_pass` swallows everything, but
+        the `int()` coercions that build its arguments run BEFORE it, on the
+        writer's return path, unguarded. A non-numeric produced `ValueError:
+        invalid literal for int() ... 'n/a'` escaping
+        `run_scheduled_reconciliation` entirely — THE PASS FAILING BECAUSE OF
+        TELEMETRY.
+
+        No writer-A producer can do this today (every one is an int). It
+        becomes reachable the moment writer B is wired, because writer B has a
+        different result shape and an unmapped `commit_ms_max`. Simulated at
+        the same seam a differing result shape would arrive through."""
+        original = LockWaitAccounting.as_summary
+
+        def _poisoned(self):
+            summary = original(self)
+            summary["write_hold_measurements"] = "n/a"
+            return summary
+
+        monkeypatch.setattr(LockWaitAccounting, "as_summary", _poisoned)
+        session = filedb.Factory()
+        try:
+            summary = run_scheduled_reconciliation(
+                session, settings=filedb.settings())
+        finally:
+            session.close()
+        assert summary["status"] in {"ok", "partial", "truncated",
+                                     "backlog_expiring"}, (
+            "telemetry extraction must never decide the pass's outcome"
+        )
+
+    def test_the_pass_still_leaves_a_record_when_extraction_fails(
+        self, filedb, monkeypatch
+    ):
+        """Same thesis as the sink's degradation: swallowing the error must
+        not also delete the record. The pass HAPPENED and its status is what a
+        calibration corpus must not be blind to, so the identity record lands
+        without the numbers."""
+        original = LockWaitAccounting.as_summary
+
+        def _poisoned(self):
+            summary = original(self)
+            summary["write_hold_measurements"] = "n/a"
+            return summary
+
+        monkeypatch.setattr(LockWaitAccounting, "as_summary", _poisoned)
+        session = filedb.Factory()
+        try:
+            summary = run_scheduled_reconciliation(
+                session, settings=filedb.settings())
+        finally:
+            session.close()
+        events = _events()
+        assert len(events) == 1
+        assert events[0]["run_status"] == summary["status"]
+        assert "write_hold_ms_max" not in events[0]
+
+
+# --- 14. A5: the two filesystem defences that survived mutation -------------
+
+class TestFilesystemDefences:
+    """BOTH OF THESE SURVIVED A MUTATION RUN WITH ALL 44 GATE-2 AND ALL 31
+    001A TESTS STILL GREEN. The defences work; nothing pinned them, so a later
+    edit could delete either one for free."""
+
+    def test_a_symlinked_sink_path_is_refused_not_followed(self, tmp_path):
+        """THE ONE FILESYSTEM ROUTE TO THE CORRUPTION TRAP. A symlink planted
+        at `~/probability-arena-telemetry/sqlite-writes.jsonl` pointing at the
+        live SQLite database would make the telemetry writer append JSON INTO
+        THE DATABASE FILE: corruption, and the non-SQLite sink writing to
+        SQLite, which is this milestone's one hard mandate. `O_NOFOLLOW` is
+        what stops it."""
+        directory = tmp_path / "tel"
+        directory.mkdir()
+        target = tmp_path / "pretend.db"
+        payload = b"SQLite format 3\x00-- not to be appended to --\n"
+        target.write_bytes(payload)
+        (directory / "sqlite-writes.jsonl").symlink_to(target)
+
+        sink = TelemetrySink(directory)
+        dropped_before = sink.dropped
+        assert sink.emit(_valid_event()) is False, (
+            "the emit must FAIL rather than follow the symlink"
+        )
+        assert sink.dropped == dropped_before + 1
+        assert target.read_bytes() == payload, (
+            "the symlink target was written to — O_NOFOLLOW is gone"
+        )
+
+    def test_the_symlink_refusal_does_not_raise_into_the_writer(self, tmp_path):
+        directory = tmp_path / "tel"
+        directory.mkdir()
+        target = tmp_path / "pretend.db"
+        target.write_bytes(b"x")
+        (directory / "sqlite-writes.jsonl").symlink_to(target)
+        # returns False, never raises — the failure contract still holds
+        assert TelemetrySink(directory).emit(_valid_event()) is False
+
+    def test_directory_permissions_are_reenforced_on_a_loose_dir(self, tmp_path):
+        """`mkdir(mode=..., exist_ok=True)` applies `mode` ONLY when it
+        creates. A telemetry directory that already exists world-readable
+        therefore stays world-readable without the explicit `chmod` — and this
+        file is the one place a host's write-coordination history accumulates."""
+        directory = tmp_path / "tel"
+        directory.mkdir(mode=0o777)
+        os.chmod(directory, 0o777)
+        assert TelemetrySink(directory).emit(_valid_event()) is True
+        assert (directory.stat().st_mode & 0o777) == 0o700, (
+            "a pre-existing loose telemetry directory was left loose"
+        )
+
+    def test_the_file_mode_is_owner_only(self, tmp_path):
+        directory = tmp_path / "tel"
+        sink = TelemetrySink(directory)
+        assert sink.emit(_valid_event()) is True
+        assert (sink.path.stat().st_mode & 0o777) == 0o600
+
+
+# --- 15. A6: the runbook says what an operator must actually do -------------
+
+class TestRunbookIsActionable:
+    """A TEXT PIN, DELIBERATELY, because the artifact under test is text. The
+    constant `initial_per_token_cost_seconds` is derived by a human following
+    this section; a runbook that omits the filter is exactly as dangerous as
+    code that omits it, and nothing else in this suite can catch its removal."""
+
+    RUNBOOK = (Path(__file__).resolve().parents[1]
+               / "docs" / "EVO_X2_RUNBOOK.md")
+
+    def test_the_calibration_filter_is_stated(self):
+        text = self.RUNBOOK.read_text()
+        section = text.split(
+            "### Where the per-pass record now lands (GATE2-WRITER-TELEMETRY-001)"
+        )[1].split("### `TimeoutStartSec`")[0]
+        for clause in ("run_status", "batch_count", "write_hold_measured"):
+            assert clause in section, f"the filter omits {clause}"
+        assert "backlog_expiring" in section
+
+    def test_the_self_contradictory_cli_instruction_is_gone(self):
+        """It said "read the fields with `python -m app.cli` — there is no
+        report command yet ... so for now this is `jq`", which is an
+        instruction to run a command that does not exist."""
+        text = self.RUNBOOK.read_text()
+        section = text.split(
+            "### Where the per-pass record now lands (GATE2-WRITER-TELEMETRY-001)"
+        )[1].split("### `TimeoutStartSec`")[0]
+        assert "Read the fields with `python -m app.cli`" not in section
+
+    def test_the_growth_and_reading_hazards_are_stated(self):
+        text = self.RUNBOOK.read_text()
+        section = text.split(
+            "### Where the per-pass record now lands (GATE2-WRITER-TELEMETRY-001)"
+        )[1].split("### `TimeoutStartSec`")[0]
+        assert "does not rotate" in section
+        assert "read_events" in section
+
+    def test_the_sigkill_claim_is_corrected_not_repeated(self):
+        """`writer_pass.py` claimed the sink survives passes the run row loses
+        "including SIGKILLed mid-finalize". It does not: the emit is the LAST
+        thing a pass does, so a SIGKILL loses the JSONL line exactly as it
+        loses the run row. The genuine advantage is over contended, aborted
+        and refused passes."""
+        doc = writer_pass.__doc__ or ""
+        assert "SIGKILLed mid-finalize" not in doc
+        assert "SIGKILL" in doc, "the limitation must be named, not deleted"
+
+    def test_the_emit_is_the_last_thing_the_pass_does(self, filedb, monkeypatch):
+        """The BEHAVIOURAL half of the correction above, and the reason the
+        SIGKILL claim was false: by the time the append happens the health
+        record is already written, so there is no window in which the JSONL
+        line exists and the health/run state does not."""
+        seen = {}
+        original = TelemetrySink.emit
+
+        def _watch(self, event):
+            state = guard.load_state(
+                guard.health_state_path(filedb.url, CHAIN), CHAIN)
+            seen["health_records_at_emit"] = len(state.get("runs") or [])
+            return original(self, event)
+
+        monkeypatch.setattr(TelemetrySink, "emit", _watch)
+        _run(filedb)
+        assert seen, "the sink was never called at all"
+        assert seen["health_records_at_emit"] >= 1, (
+            "the emit ran before the health record — it is not last"
+        )

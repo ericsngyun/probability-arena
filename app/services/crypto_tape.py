@@ -5345,8 +5345,12 @@ def run_scheduled_reconciliation(
         before it becomes reachable rather than after."""
         try:
             fields = _pass_telemetry_fields(result)
-        except Exception:  # pragma: no cover - defended by the test below
-            return
+        except Exception:
+            # Same thesis as the sink's `_degrade`: a degraded record beats a
+            # deleted one. The pass still HAPPENED and its status is still the
+            # thing a calibration corpus must not be blind to, so the identity
+            # record is emitted without the numbers rather than not at all.
+            fields = {}
         try:
             writer_pass.emit_writer_pass(
                 writer_name="crypto_tape",
