@@ -27,12 +27,12 @@ rotation to a single owner (the 001E collector/maintenance step), never the
 writers — two writers tripping the threshold concurrently must not race a
 ``rename()``. **Until 001E lands the file has NO size bound, NO rotation, NO
 retention and NO alert**, and it is SHARED with the 001A writers rather than
-being this milestone's alone. Growth per writer is small (~906 B per governed
-reconciler pass, ~3.6 KB/day at the 6-hourly cadence) but it is monotonic.
-``read_events`` below reads the WHOLE file into memory and is unsuitable for a
-large one — measured 419 MB peak Python heap on a 60 MB file (~7x
-amplification, 5.3 s). Check the file's size before reading it, and prefer
-streaming (``jq``) on a host. See docs/EVO_X2_RUNBOOK.md.
+being this milestone's alone. Growth per writer is small — measured 1,168 B
+per governed reconciler pass, ~4.6 KB/day at the 6-hourly cadence — but it is
+monotonic. ``read_events`` below reads the WHOLE file into memory and is
+unsuitable for a large one: measured 420 MB peak Python heap on a 60 MB file
+(7.0x amplification, 8.5 s). Check the file's size before reading it, and
+prefer streaming (``jq``) on a host. See docs/EVO_X2_RUNBOOK.md.
 """
 
 from __future__ import annotations
@@ -235,8 +235,8 @@ def read_events(path: Path | str) -> tuple[list[dict], int]:
     line (crash mid-write). Returns (events, malformed_lines). Read-only.
 
     NOT FOR A HOST. This slurps the entire file with `read_bytes()` and then
-    holds every parsed event — measured 419 MB peak Python heap on a 60 MB
-    file (~7x amplification, 5.3 s) — and the sink file does not rotate until
+    holds every parsed event — measured 420 MB peak Python heap on a 60 MB
+    file (7.0x amplification, 8.5 s) — and the sink file does not rotate until
     001E. On EVO, stream it with `jq` instead."""
     path = Path(path)
     events: list[dict] = []

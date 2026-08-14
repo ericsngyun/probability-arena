@@ -2377,9 +2377,11 @@ record the constant.
 it is **shared** with the SQLITE-LOCK-TELEMETRY-001A writers rather than being
 this milestone's alone. Rotation is owned by 001E, which is unbuilt.
 
-Gate 2's own contribution is genuinely small — **906 B per pass, ~3.6 KB/day**
-at the 6-hourly cadence — but growth is monotonic and the 001A writers add
-their own. **Check the file's size before you read it**:
+Gate 2's own contribution is genuinely small — measured **1,168 B per pass,
+~4.6 KB/day** at the 6-hourly cadence (it was 906 B before the SLO counter,
+the two denominators and the histogram were added) — but growth is monotonic
+and the 001A writers add their own. **Check the file's size before you read
+it**:
 
 ```sh
 ls -lh ~/probability-arena-telemetry/sqlite-writes.jsonl
@@ -2387,8 +2389,8 @@ ls -lh ~/probability-arena-telemetry/sqlite-writes.jsonl
 
 Do **not** use `app.telemetry.sink.read_events` on EVO. It calls
 `path.read_bytes()` on the whole file and holds every parsed event: measured
-**419 MB peak Python heap on a 60 MB file** (~7x amplification, 5.3 s). It is a
-test helper. Stream with `jq` instead, as above.
+**420 MB peak Python heap on a 60 MB file** (7.0x amplification, 8.5 s). It is
+a test helper. Stream with `jq` instead, as above.
 
 Measured cost of the append itself, against a real competing SQLite writer on
 this repo's dev Mac: **p50 0.10 ms, p95 0.32 ms** while a co-tenant *held* the

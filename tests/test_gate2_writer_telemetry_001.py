@@ -1000,30 +1000,41 @@ class TestRunbookIsActionable:
     RUNBOOK = (Path(__file__).resolve().parents[1]
                / "docs" / "EVO_X2_RUNBOOK.md")
 
-    def test_the_calibration_filter_is_stated(self):
+    def _section(self) -> str:
         text = self.RUNBOOK.read_text()
-        section = text.split(
+        return text.split(
             "### Where the per-pass record now lands (GATE2-WRITER-TELEMETRY-001)"
         )[1].split("### `TimeoutStartSec`")[0]
+
+    def test_the_calibration_filter_is_stated(self):
+        """PINNED AT THE FILTER BLOCK, NOT AT THE SECTION. A first version of
+        this test asserted the three clause names appeared anywhere in the
+        section — and a mutation that deleted `write_hold_measured` from the
+        filter itself SURVIVED, because the name still appeared in the prose
+        bullet above it. The block an operator copies is the artifact under
+        test, so that is what is read."""
+        section = self._section()
+        blocks = [
+            b for b in section.split("```")
+            if "run_status" in b and "AND" in b
+        ]
+        assert blocks, "the filter block is gone"
         for clause in ("run_status", "batch_count", "write_hold_measured"):
-            assert clause in section, f"the filter omits {clause}"
-        assert "backlog_expiring" in section
+            assert any(clause in b for b in blocks), (
+                f"the filter block omits {clause}"
+            )
+        assert any("backlog_expiring" in b for b in blocks)
+        # the two false-zero cases the filter exists to exclude are named
+        assert "write_hold_measured == true" in section
 
     def test_the_self_contradictory_cli_instruction_is_gone(self):
         """It said "read the fields with `python -m app.cli` — there is no
         report command yet ... so for now this is `jq`", which is an
         instruction to run a command that does not exist."""
-        text = self.RUNBOOK.read_text()
-        section = text.split(
-            "### Where the per-pass record now lands (GATE2-WRITER-TELEMETRY-001)"
-        )[1].split("### `TimeoutStartSec`")[0]
-        assert "Read the fields with `python -m app.cli`" not in section
+        assert "Read the fields with `python -m app.cli`" not in self._section()
 
     def test_the_growth_and_reading_hazards_are_stated(self):
-        text = self.RUNBOOK.read_text()
-        section = text.split(
-            "### Where the per-pass record now lands (GATE2-WRITER-TELEMETRY-001)"
-        )[1].split("### `TimeoutStartSec`")[0]
+        section = self._section()
         assert "does not rotate" in section
         assert "read_events" in section
 
