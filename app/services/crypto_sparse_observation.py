@@ -530,12 +530,20 @@ async def _fetch_phase(
                 # non-zero delta across this one call means "no answer", for
                 # any adapter that participates in the policy.
                 request_failed = _transport_failures(ctx) > before
-            except ProviderPolicyError:
+            except ProviderPolicyError as exc:
                 # NEVER degrade an authorization failure into an ordinary
                 # provider miss. The policy module says so explicitly, and the
                 # whole "no SolanaTracker spend" guarantee depends on it: a
                 # swallowed denial is indistinguishable from a token that
                 # simply has no pairs.
+                #
+                # The LEDGER dies with the `provider_run` context, so it is
+                # attached to the exception here. This is the one path whose
+                # entire purpose is to prove what a provider did; it used to
+                # report `external_calls: 0` and no ledger after real fetches.
+                exc.provider_ledger = ctx.ledger.snapshot()
+                exc.external_calls = calls
+                exc.token_address = token
                 raise
             except Exception as exc:  # adapter degrades to [], but be safe
                 logger.warning(
@@ -741,9 +749,28 @@ async def _run_locked(
     started: datetime,
     sleeper,
 ) -> dict:
+    # ONE result dict for the whole pass, built up in place.
+    #
+    # `_refused` used to rebuild from `_base_result`, which DESTROYED the
+    # evidence of what the pass had already done. Measured: a
+    # `provider_policy_violation` after enrolment reported `enrolled: 0,
+    # persisted: False, cohort_id: None` while the database held 1 cohort and 5
+    # members; a violation on request 5 of 8 reported `external_calls: 0`,
+    # `solana_tracker_calls: 0` and no ledger at all, after 4 real paid-free
+    # fetches. The one path whose entire purpose is to prove what a provider
+    # did understated real spend as zero. The `db_locked` WRITE path already
+    # did this correctly with `result.update(...)`; every path now does.
+    result = _base_result(STATUS_OK, cfg, started)
+    result["gate_bypassed"] = bypass
+    result["enrol_limit"] = cfg.enrol_limit
+    result["observe_limit"] = cfg.observe_limit
+    result["write_batch_size"] = cfg.write_batch_size
+    result["max_duration_seconds"] = cfg.max_duration_seconds
+    result["cohort_id"] = None
+    result["cohort_created"] = False
+
     def _refused(status: str, error: str) -> dict:
-        result = _base_result(status, cfg, started)
-        result["gate_bypassed"] = bypass
+        result["status"] = status
         result["error"] = error
         return _finish(result, started)
 
@@ -784,15 +811,7 @@ async def _run_locked(
             "which one owns the observation denominator",
         )
     cohort = cohorts[0] if cohorts else None
-
-    result = _base_result(STATUS_OK, cfg, started)
-    result["gate_bypassed"] = bypass
-    result["enrol_limit"] = cfg.enrol_limit
-    result["observe_limit"] = cfg.observe_limit
-    result["write_batch_size"] = cfg.write_batch_size
-    result["max_duration_seconds"] = cfg.max_duration_seconds
     result["cohort_id"] = cohort.id if cohort is not None else None
-    result["cohort_created"] = False
 
     service = service or CryptoHorizonService(settings=s)
 
@@ -835,12 +854,30 @@ async def _run_locked(
     if cohort is None:
         cohort = _create_rolling_cohort(session, cfg.chain, now)
         result["cohort_created"] = True
-    enrolled = 0
+    # `progress` is updated after each COMMITTED enrolment batch, so a refusal
+    # mid-enrolment reports what is actually durable rather than 0.
+    progress = {"enrolled": 0}
+
+    def _settle_enrolment_state() -> None:
+        """After a rollback, report what the DATABASE holds — the cohort row is
+        only flushed, not committed, until the first enrolment batch lands, so
+        a rollback can un-create it."""
+        result["enrolled"] = progress["enrolled"]
+        try:
+            surviving = find_rolling_cohort(session, cfg.chain)
+        except Exception:  # pragma: no cover - the DB is already unhappy
+            return
+        result["cohort_id"] = surviving[0].id if surviving else None
+        result["cohort_created"] = bool(result["cohort_created"]) and bool(surviving)
+        result["persisted"] = (
+            progress["enrolled"] > 0 or bool(result["cohort_created"])
+        )
+
     try:
-        enrolled = _enrol(session, cfg, cohort, candidates, now)
-        result["cohort_id"] = cohort.id
+        enrolled = _enrol(session, cfg, cohort, candidates, now, progress)
     except IntegrityError as exc:
         session.rollback()
+        _settle_enrolment_state()
         return _refused(
             STATUS_CONCURRENT_WRITE_CONFLICT,
             f"enrolment raced another writer on the standing cohort: {exc}",
@@ -848,11 +885,13 @@ async def _run_locked(
     except Exception as exc:
         session.rollback()
         if _is_db_locked(exc):
+            _settle_enrolment_state()
             return _refused(
                 STATUS_DB_LOCKED,
                 "database is locked; pass abandoned during enrolment",
             )
         raise
+    result["cohort_id"] = cohort.id
     result["enrolled"] = enrolled
     result["persisted"] = enrolled > 0 or result["cohort_created"]
 
@@ -891,7 +930,20 @@ async def _run_locked(
 
         if isinstance(exc, ProviderPolicyError):
             # A provider this lane never authorizes was reached. Loud and
-            # non-zero — never degraded into a provider miss.
+            # non-zero — never degraded into a provider miss. The evidence of
+            # what HAD already been spent travels on the exception.
+            ledger = getattr(exc, "provider_ledger", {}) or {}
+            result["external_calls"] = getattr(exc, "external_calls", 0)
+            result["provider_ledger"] = ledger
+            result["solana_tracker_calls"] = sum(
+                ledger.get("solana-tracker", {}).get(k, 0)
+                for k in ("authorized", "started", "succeeded", "failed")
+            )
+            result["denied_provider_attempts"] = {
+                name: entry["blocked_policy"]
+                for name, entry in ledger.items()
+                if name != "dexscreener" and entry.get("blocked_policy")
+            }
             return _refused(
                 STATUS_PROVIDER_POLICY_VIOLATION,
                 f"a non-DexScreener provider was attempted from the sparse "
@@ -1009,23 +1061,25 @@ async def _run_locked(
                 outcomes[name] = outcomes.get(name, 0) + count
     except IntegrityError as exc:
         session.rollback()
-        result.update({
-            "status": STATUS_CONCURRENT_WRITE_CONFLICT,
-            "error": (
-                "an observation row for this (cohort, token, horizon) already "
-                f"existed — another pass raced this one: {exc}"
-            ),
-            "batches_committed": batches,
-        })
+        _record_write_progress(result, batches, recorded, ticks, retried, outcomes)
+        result["error"] = (
+            "an observation row for this (cohort, token, horizon) already "
+            f"existed — another pass raced this one: {exc}"
+        )
+        result["status"] = STATUS_CONCURRENT_WRITE_CONFLICT
         return _finish(result, started)
     except Exception as exc:
         session.rollback()
         if _is_db_locked(exc):
-            result.update({
-                "status": STATUS_DB_LOCKED,
-                "error": "database is locked; observation write phase abandoned",
-                "batches_committed": batches,
-            })
+            _record_write_progress(
+                result, batches, recorded, ticks, retried, outcomes,
+            )
+            result["error"] = (
+                "database is locked; observation write phase abandoned. The "
+                "counts above are the batches that COMMITTED before the lock, "
+                "and they are durable."
+            )
+            result["status"] = STATUS_DB_LOCKED
             return _finish(result, started)
         raise
 
@@ -1038,6 +1092,22 @@ async def _run_locked(
     if stop_reason != STOP_COMPLETE:
         result["status"] = STATUS_PARTIAL
     return _finish(result, started)
+
+
+def _record_write_progress(
+    result: dict, batches: int, recorded: int, ticks: int, retried: int,
+    outcomes: dict,
+) -> None:
+    """Carry the DURABLE write-phase counts into a refusal result. Every one of
+    these is incremented only after a batch's commit returned (see
+    `_commit_with_retry`), so a partially-committed pass reports the rows it
+    actually wrote instead of claiming zero."""
+    result["batches_committed"] = batches
+    result["observations_recorded"] = recorded
+    result["ticks_written"] = ticks
+    result["request_failures_reattempted"] = retried
+    result["outcome_counts"] = dict(outcomes)
+    result["persisted"] = bool(result.get("persisted")) or recorded > 0
 
 
 def _logical_clock(now: datetime, started: datetime):
@@ -1147,13 +1217,18 @@ def _enrolment_candidates(
 
 def _enrol(
     session: Session, cfg: SparseObservationConfig, cohort, births: list,
-    now: datetime,
+    now: datetime, progress: dict | None = None,
 ) -> int:
     """Insert members in bounded batches. The unique index on
     (cohort_id, token_address) is what makes a re-run — or a restart mid-pass —
     incapable of double-enrolling; this function adds no bookkeeping of its
-    own."""
-    added = 0
+    own.
+
+    `progress["enrolled"]` is advanced only after a batch's commit RETURNS, so
+    a caller that catches a lock or a race mid-enrolment reports what is
+    durable rather than what was staged."""
+    progress = progress if progress is not None else {}
+    progress.setdefault("enrolled", 0)
     pending = 0
     for birth in births:
         session.add(CryptoHorizonCohortMember(
@@ -1164,14 +1239,17 @@ def _enrol(
             first_evidence_at=_aware(birth.first_evidence_at),
             added_at=now,
         ))
-        added += 1
         pending += 1
         if pending >= cfg.write_batch_size:
             session.commit()
+            progress["enrolled"] += pending
             pending = 0
-    if pending or added == 0:
+    if pending or progress["enrolled"] == 0:
+        # the trailing partial batch — and, when there is nothing to enrol at
+        # all, the commit that makes a freshly created cohort durable
         session.commit()
-    return added
+        progress["enrolled"] += pending
+    return progress["enrolled"]
 
 
 # --- planning -------------------------------------------------------------------

@@ -1182,6 +1182,154 @@ async def test_a_provider_policy_violation_is_a_loud_typed_refusal(session):
     assert session.query(CryptoHorizonObservation).count() == 0
 
 
+@pytest.mark.asyncio
+async def test_a_refusal_reports_the_work_it_had_already_done(session):
+    """B8. `_refused` rebuilt the result from `_base_result`, destroying the
+    evidence of what the pass had already done. Measured: a
+    `provider_policy_violation` after enrolment reported `enrolled: 0,
+    persisted: False, cohort_id: None` while the database held 1 cohort and 5
+    members."""
+    from app.services.crypto_provider_policy import Provider, guard_provider_request
+
+    class ViolatingOnFirst(FakeAdapter):
+        async def fetch_pairs_for_token(self, token_address):
+            await guard_provider_request(Provider.SOLANA_TRACKER)
+            return []
+
+    for n in range(1, 6):
+        add_birth(session, n, anchor=NOW - timedelta(hours=6))
+    session.commit()
+    r = await run_pass(session, adapter=ViolatingOnFirst(), now=NOW)
+
+    assert r["status"] == sparse.STATUS_PROVIDER_POLICY_VIOLATION
+    assert session.query(CryptoHorizonCohort).count() == 1
+    assert session.query(CryptoHorizonCohortMember).count() == 5
+    assert r["enrolled"] == 5, "the refusal claimed no enrolment happened"
+    assert r["cohort_id"] == session.query(CryptoHorizonCohort).one().id
+    assert r["cohort_created"] is True
+    assert r["persisted"] is True
+    assert r["births_considered"] == 5
+
+
+@pytest.mark.asyncio
+async def test_a_policy_violation_reports_the_provider_spend_it_had_made(session):
+    """The other half of B8: a violation on request 5 of 8 reported
+    `external_calls: 0`, `solana_tracker_calls: 0` hardcoded and NO ledger,
+    after 4 real fetches. The one path whose purpose is to prove what a paid
+    provider did understated real spend as zero."""
+    from app.services.crypto_provider_policy import Provider, guard_provider_request
+
+    class ViolatingOnFifth(FakeAdapter):
+        async def fetch_pairs_for_token(self, token_address):
+            if self.calls >= 4:
+                await guard_provider_request(Provider.SOLANA_TRACKER)
+            return await super().fetch_pairs_for_token(token_address)
+
+    for n in range(1, 9):
+        add_birth(session, n, anchor=NOW - timedelta(hours=6, minutes=n))
+    session.commit()
+    pairs = {token_id(n): [pair(token_id(n))] for n in range(1, 9)}
+    adapter = ViolatingOnFifth(pairs)
+    r = await run_pass(session, adapter=adapter, now=NOW)
+
+    assert r["status"] == sparse.STATUS_PROVIDER_POLICY_VIOLATION
+    assert adapter.calls == 4, "the fake did not reach the fifth request"
+    assert r["external_calls"] == 4, "real provider spend was reported as zero"
+    assert r["provider_ledger"], "the ledger snapshot was lost with the run context"
+    assert r["denied_provider_attempts"] == {"solana-tracker": 1}
+    assert r["solana_tracker_calls"] == 0
+    for key in ("authorized", "started", "succeeded", "failed"):
+        assert r["provider_ledger"]["solana-tracker"][key] == 0, key
+
+
+@pytest.mark.asyncio
+async def test_a_lock_mid_write_reports_the_batches_that_are_durable(session):
+    """B8, the partially-committed case: the result claimed 0 rows while
+    committed observations and ticks were durable on disk."""
+    import sqlite3
+
+    from sqlalchemy.exc import OperationalError
+
+    for n in range(1, 7):
+        add_birth(session, n, anchor=NOW - timedelta(hours=6, minutes=n))
+    session.commit()
+    pairs = {token_id(n): [pair(token_id(n))] for n in range(1, 7)}
+
+    real_commit = session.commit
+    seen = {"obs_commits": 0}
+
+    def locked_after_two_batches():
+        if any(isinstance(o, CryptoHorizonObservation) for o in session.new):
+            seen["obs_commits"] += 1
+            if seen["obs_commits"] > 2:
+                raise OperationalError(
+                    "INSERT INTO crypto_horizon_observations", {},
+                    sqlite3.OperationalError("database is locked"),
+                )
+        return real_commit()
+
+    session.commit = locked_after_two_batches
+    try:
+        r = await run_pass(
+            session, adapter=FakeAdapter(pairs), now=NOW,
+            cfg=config(write_batch_size=2),
+        )
+    finally:
+        del session.commit
+
+    assert r["status"] == sparse.STATUS_DB_LOCKED
+    durable_obs = session.query(CryptoHorizonObservation).count()
+    durable_ticks = session.query(CryptoPriceTick).count()
+    assert durable_obs == 4 and durable_ticks == 4
+    assert r["observations_recorded"] == durable_obs
+    assert r["ticks_written"] == durable_ticks
+    assert r["batches_committed"] == 2
+    assert r["outcome_counts"] == {OBS_OBSERVED: 4}
+    assert r["persisted"] is True
+    assert r["enrolled"] == 6
+
+
+@pytest.mark.asyncio
+async def test_a_lock_during_enrolment_reports_the_members_that_are_durable(session):
+    """A lock partway through enrolment must report the committed members, and
+    must NOT claim a cohort it rolled back into non-existence."""
+    import sqlite3
+
+    from sqlalchemy.exc import OperationalError
+
+    for n in range(1, 7):
+        add_birth(session, n, anchor=NOW - timedelta(hours=6, minutes=n))
+    session.commit()
+
+    real_commit = session.commit
+    seen = {"member_commits": 0}
+
+    def locked_after_two_batches():
+        if any(isinstance(o, CryptoHorizonCohortMember) for o in session.new):
+            seen["member_commits"] += 1
+            if seen["member_commits"] > 2:
+                raise OperationalError(
+                    "INSERT INTO crypto_horizon_cohort_members", {},
+                    sqlite3.OperationalError("database is locked"),
+                )
+        return real_commit()
+
+    session.commit = locked_after_two_batches
+    try:
+        r = await run_pass(
+            session, adapter=FakeAdapter({}), now=NOW, cfg=config(write_batch_size=2),
+        )
+    finally:
+        del session.commit
+
+    assert r["status"] == sparse.STATUS_DB_LOCKED
+    durable = session.query(CryptoHorizonCohortMember).count()
+    assert durable == 4
+    assert r["enrolled"] == durable
+    assert r["cohort_id"] == session.query(CryptoHorizonCohort).one().id
+    assert r["persisted"] is True
+
+
 def _module_identifiers(path: str) -> set[str]:
     """Every NAME the module actually references — imports, attributes, calls.
 
