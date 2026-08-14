@@ -92,10 +92,14 @@ def timespan_seconds(value: str) -> float:
     total = 0.0
     matched = False
     for number, unit in re.findall(r"(\d+(?:\.\d+)?)\s*([a-z]*)", value):
-        if unit == "" and number == "":
-            continue
         matched = True
-        total += float(number) * units.get(unit, 1.0 if unit == "" else None)
+        # A bare number is seconds in systemd. An UNRECOGNISED suffix must fail
+        # loudly rather than arithmetic-error: this helper is what the
+        # TimeoutStartSec pin compares against, and a silently mis-scaled
+        # timespan would make that pin pass for the wrong reason.
+        assert unit == "" or unit in units, (
+            f"unrecognised systemd time unit {unit!r} in {value!r}")
+        total += float(number) * (1.0 if unit == "" else units[unit])
     assert matched, f"unparsable systemd timespan {value!r}"
     return total
 
