@@ -578,6 +578,24 @@ class TestRunSourceAndBypass:
         assert sparse._gate_bypassed_bit({"gate_bypassed": "force"}) is True
         assert sparse._gate_bypassed_bit({"gate_bypassed": "dry_run"}) is True
 
+    def test_a_poisoned_bypass_key_still_lands_a_record_marked_anomalous(self):
+        """The bit is computed under the same degrade-never-drop guard as the
+        field extraction, and its fallback points the same way. Only the
+        `gate_bypassed` lookup is poisoned: the guard is for THIS field, and
+        `_emit_pass_telemetry`'s other lookups are pre-existing behaviour this
+        follow-up deliberately leaves alone."""
+        class Hostile(dict):
+            def get(self, key, *a, **k):
+                if key == "gate_bypassed":
+                    raise RuntimeError("no")
+                return super().get(key, *a, **k)
+
+        result = Hostile({"status": "ok", "stop_reason": "complete"})
+        sparse._emit_pass_telemetry(result, datetime.now(timezone.utc))
+        event = only_event()
+        assert event["gate_bypassed"] is True
+        assert event["writer_name"] == sparse.TELEMETRY_WRITER_NAME
+
     def test_the_missing_key_reaches_the_sink_as_true_not_as_false(self):
         """Through the emitter, not just the helper: the default must survive
         the call, and must not cost the record."""

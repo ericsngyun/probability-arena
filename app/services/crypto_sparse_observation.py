@@ -550,7 +550,12 @@ def _emit_pass_telemetry(result: dict, started: datetime) -> None:
         fields = _pass_telemetry_fields(result)
     except Exception:
         fields = {}
-    gate_bypassed = _gate_bypassed_bit(result)
+    try:
+        gate_bypassed = _gate_bypassed_bit(result)
+    except Exception:
+        # The same doctrine as the extraction guard above — degrade, never
+        # drop — pointed the same way as a missing key: toward the anomaly.
+        gate_bypassed = True
     event_id = None
     try:
         event_id = writer_pass.emit_writer_pass(
@@ -601,12 +606,14 @@ def _gate_bypassed_bit(result: dict) -> bool:
     catch, so a MISSING key must land on the side that gets looked at, never on
     the side that gets filtered out.
 
-    IT REPORTS `True` RATHER THAN RAISING, deliberately. This is evaluated on
-    the writer's return path inside `_emit_pass_telemetry`, whose `except`
-    turns any raise into `event_id = None` — a raise here would DELETE the
-    whole record, and "the pass happened, with this status" is the fact the
-    corpus needs most. A wrong-but-loud bit costs one investigation; a dropped
-    record costs a pass. The absent key is also recoverable: a scheduled pass
+    IT REPORTS `True` RATHER THAN RAISING, deliberately. This runs on the
+    WRITER'S RETURN PATH, after the pass has done its real work: a raise here
+    would either fail a pass that had already succeeded or — once caught —
+    delete the record entirely, and "the pass happened, with this status" is
+    the fact the corpus needs most. A wrong-but-loud bit costs one
+    investigation; a dropped record costs a pass. (The caller guards this call
+    anyway, and its fallback is the same `True`, so a non-dict `result` cannot
+    take the record down either.) The absent key is also recoverable: a scheduled pass
     with `gate_bypassed=True` and no `--force` in the unit's ExecStart is
     exactly the shape of this bug."""
     bypass = result.get("gate_bypassed", _GATE_BYPASSED_UNSET)

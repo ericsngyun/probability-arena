@@ -41,8 +41,10 @@ def _isolate_sqlite_telemetry(tmp_path):
     below already uses. Rewriting the seven `undo()` calls would fix seven
     instances and leave the class open to the eighth; this closes the class.
     The env var (not the resolved `telemetry_dir` function) stays the patch
-    point deliberately: `SQLITE_TELEMETRY_DIR` is inherited by SUBPROCESSES,
-    and at least one test asserts the no-SQLite mandate out of process.
+    point deliberately. Patching the function would be equally undo-proof but
+    would protect this process ONLY: `SQLITE_TELEMETRY_DIR` is inherited by
+    SUBPROCESSES, and this suite spawns them (the out-of-process no-SQLite
+    probes in test_gate7_sparse_telemetry_001).
 
     The teardown assertion is the second half of the fix: if some future
     fixture ordering or an explicit `os.environ` write ever un-isolates a test
