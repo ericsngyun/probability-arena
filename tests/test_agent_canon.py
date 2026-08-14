@@ -73,6 +73,60 @@ class TestDocsExist:
         ):
             assert phrase in text, f"safety boundaries missing: {phrase}"
 
+    def test_route_quote_amendment_states_its_narrow_permissions(self):
+        """SAFETY-BOUNDARY-ROUTE-QUOTE-001 pins.
+
+        The amendment permits two capability modes. What makes them safe is not
+        the permission but the enumerated prohibitions and the hard artifact
+        requirement — so those are what this pins. If any of these strings
+        leaves the document, the boundary itself has changed and this test is
+        supposed to fail.
+        """
+        raw = (REPO_ROOT / "docs/SAFETY_BOUNDARIES.md").read_text()
+        for token in (
+            "SAFETY-BOUNDARY-ROUTE-QUOTE-001",
+            "READ_ONLY_ROUTE_QUOTE",
+            "PAPER_SIMULATION",
+        ):
+            assert token in raw, f"route-quote amendment missing: {token}"
+
+        text = raw.lower()
+        for phrase in (
+            # READ_ONLY_ROUTE_QUOTE: the inference that must stay closed.
+            "swap instructions",
+            "broadcasting",
+            "wallet key material",
+            # PAPER_SIMULATION: the two fields that keep a modeled number labeled.
+            "model identifier",
+            "modeled-vs-observed basis",
+            # Permitting a quote never permits paying for one.
+            "paid rpc",
+            "solanatracker",
+            # The policy/enforcement mismatch must stay documented, not discovered.
+            "banned_identifier_fragments",
+        ):
+            assert phrase in text, f"route-quote amendment missing: {phrase}"
+
+    def test_ast_audit_still_blocks_the_route_quote_identifiers(self):
+        """Tripwire for the documented policy/enforcement mismatch.
+
+        The amendment tells readers that the doc permits the capabilities while
+        the AST audit still bans the identifiers. If someone unbans a fragment,
+        that paragraph silently becomes false — so unbanning must land together
+        with an update to the amendment, and this test is what forces the pair.
+        """
+        from app.services import frontier_eval
+
+        for fragment in ("swap", "jupiter", "paper_trad", "portfolio", "position_siz"):
+            assert fragment in frontier_eval.BANNED_IDENTIFIER_FRAGMENTS, (
+                f"{fragment!r} left BANNED_IDENTIFIER_FRAGMENTS — that weakens an "
+                "automated control and must be reflected in the "
+                "SAFETY-BOUNDARY-ROUTE-QUOTE-001 interaction section"
+            )
+        assert "app/services/frontier_eval.py" in (
+            REPO_ROOT / "docs/SAFETY_BOUNDARIES.md"
+        ).read_text(), "the amendment must name the file that enforces the ban list"
+
     def test_canon_constants_align_with_boundaries(self):
         forbidden = " ".join(canon.FORBIDDEN_CAPABILITIES).lower()
         for term in ("ev", "paper trading", "order placement", "wallet", "autonomous"):

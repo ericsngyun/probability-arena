@@ -7,16 +7,16 @@ require crossing one must stop and report back instead of building.
 
 | Boundary | Status | Gate: what must be explicitly accepted first |
 |---|---|---|
-| **EV calculation** | ❌ none exists | The MVP-005A gate crossed (paired n=36, both deltas negative — 2026-07-04); the accepted design was implemented as the **edge precheck**: probability-gap measurement (forecast − midpoint) with validity checks, behind `ENABLE_EDGE_PRECHECK=false`. It has no dollar-EV, side, size, or action fields by construction, and `paper_candidate_later` is a review label with zero behavior. **Dollar EV remains forbidden with no unlocking milestone defined** |
-| **Trade recommendations** | ❌ none exists | Post-MVP-005B review; never from a forecaster directly — forecasts are reasoning artifacts |
-| **Paper trading / simulation** | ❌ none exists | MVP-005B, gated on MVP-005A acceptance. EDGE-ANALYSIS-001 (`edge-cohort-report`) only *measures* per-cohort gap follow-through and *reports* whether the MVP-005B gate is met — it is analysis, unlocks nothing, and advancing still requires explicit human acceptance |
-| **Portfolio sizing** | ❌ none exists | Post-paper-trading milestone with explicit human acceptance |
-| **Order placement** | ❌ none exists | A dedicated, explicitly-accepted live-trading milestone (not currently on the roadmap) |
-| **Wallet / private-key handling — custody** | ❌ none exists (ADR-002) | A dedicated custody design + security review milestone; keys would never live in this repo/DB regardless. **Narrowed by KALSHI-READONLY-AUTH-001 — see the amendment below: RSA *request-authentication* key loading is now permitted in exactly one file for read-scoped Kalshi market data. Wallets, custody, and transaction/order signing remain forbidden with no implementation surface.** |
-| **Live trading / execution** | ❌ none exists | Same as order placement; also requires operational controls (limits, kill switches) designed first |
+| **EV calculation** | ❌ none exists | The MVP-005A gate crossed (paired n=36, both deltas negative — 2026-07-04); the accepted design was implemented as the **edge precheck**: probability-gap measurement (forecast − midpoint) with validity checks, behind `ENABLE_EDGE_PRECHECK=false`. It has no dollar-EV, side, size, or action fields by construction, and `paper_candidate_later` is a review label with zero behavior. **Dollar EV remains forbidden with no unlocking milestone defined.** **Unchanged by SAFETY-BOUNDARY-ROUTE-QUOTE-001: `PAPER_SIMULATION` permits a MODELED, backward-looking fill/P&L on a stated hypothetical — that is not dollar EV, and it may not be used to compute, approximate, or stand in for one** |
+| **Trade recommendations** | ❌ none exists | Post-MVP-005B review; never from a forecaster directly — forecasts are reasoning artifacts. **Unchanged by SAFETY-BOUNDARY-ROUTE-QUOTE-001: a modeled `PAPER_SIMULATION` P&L and a `READ_ONLY_ROUTE_QUOTE` route are both EVIDENCE, never a recommendation — neither may carry or imply a side, an entry instruction, or an action** |
+| **Paper trading / simulation** | ❌ none exists | MVP-005B, gated on MVP-005A acceptance. EDGE-ANALYSIS-001 (`edge-cohort-report`) only *measures* per-cohort gap follow-through and *reports* whether the MVP-005B gate is met — it is analysis, unlocks nothing, and advancing still requires explicit human acceptance. **Narrowed by SAFETY-BOUNDARY-ROUTE-QUOTE-001 — see the amendment below: capability mode `PAPER_SIMULATION` may produce MODELED fills/P&L only, and every artifact it produces must carry an explicit model identifier and a modeled-vs-observed basis. MVP-005B still governs whether such a lane is BUILT; real fills, real orders, real positions and real capital remain forbidden with no implementation surface.** |
+| **Portfolio sizing** | ❌ none exists | Post-paper-trading milestone with explicit human acceptance. **Unchanged by SAFETY-BOUNDARY-ROUTE-QUOTE-001: a `PAPER_SIMULATION` fill necessarily has a size, but that size is a stated INPUT of the simulation, declared as modeled in its basis — it is not a sizing recommendation, and nothing may derive, optimize, rank, or recommend a size from a modeled result** |
+| **Order placement** | ❌ none exists | A dedicated, explicitly-accepted live-trading milestone (not currently on the roadmap). **Unchanged by SAFETY-BOUNDARY-ROUTE-QUOTE-001: a modeled fill is not an order, and an executable route quote is not an order ticket** |
+| **Wallet / private-key handling — custody** | ❌ none exists (ADR-002) | A dedicated custody design + security review milestone; keys would never live in this repo/DB regardless. **Narrowed by KALSHI-READONLY-AUTH-001 — see the amendment below: RSA *request-authentication* key loading is now permitted in exactly one file for read-scoped Kalshi market data. Wallets, custody, and transaction/order signing remain forbidden with no implementation surface.** **SAFETY-BOUNDARY-ROUTE-QUOTE-001 narrows this row no further: `READ_ONLY_ROUTE_QUOTE` may never load, derive, generate, import, hold, or reference wallet key material, and the KALSHI-READONLY-AUTH-001 exception is confined to Kalshi read-scoped request authentication in exactly one file — it does not extend to route quoting or to any DEX/RPC surface.** |
+| **Live trading / execution** | ❌ none exists | Same as order placement; also requires operational controls (limits, kill switches) designed first. **Unchanged by SAFETY-BOUNDARY-ROUTE-QUOTE-001: retrieving executable route evidence is not execution, and the amendment enumerates the operations that stay forbidden precisely so "we already hold an executable quote" cannot be read as a step toward one** |
 | **Autonomous trading** | ❌ none exists | Not planned; would require all of the above plus standing human-in-the-loop controls |
 | **Crypto wallets** | ❌ none exists | CRYPTO-001 shipped read-only scouting only; wallet milestones explicitly deferred |
-| **Swaps / transaction construction / signing (Jupiter or any DEX)** | ❌ none exists | WALLET-001 (policy-controlled transaction *proposal* gateway only — no signing/keys), itself gated on CRYPTO-002 (risk engine) + CRYPTO-003 (paper simulator) acceptance; much later |
+| **Swaps / transaction construction / signing (Jupiter or any DEX)** | ❌ none exists | WALLET-001 (policy-controlled transaction *proposal* gateway only — no signing/keys), itself gated on CRYPTO-002 (risk engine) + CRYPTO-003 (paper simulator) acceptance; much later. **UNCHANGED by SAFETY-BOUNDARY-ROUTE-QUOTE-001. `READ_ONLY_ROUTE_QUOTE` sits ADJACENT to this row and loosens no part of it: retrieving a route/amount quote is permitted; requesting swap instructions or transaction bytes, constructing/encoding a transaction, simulating one against an RPC node, signing, submitting or broadcasting it are all still forbidden with no implementation surface. A quote endpoint being reachable says nothing about its build/swap sibling on the same API — that sibling is this row, not the amendment.** |
 
 ## Amendment KALSHI-READONLY-AUTH-001 (2026-08-06) — confined request signing
 
@@ -78,6 +78,148 @@ separate approved milestone (KALSHI-REALTIME-OBSERVATION-001B).
 Signing any second route; accepting a write-scoped key; exposing a
 general-purpose signer; loading a key for any venue other than Kalshi; or
 holding key material outside `app/realtime/auth.py`.
+
+## Amendment SAFETY-BOUNDARY-ROUTE-QUOTE-001 (2026-08-14) — executable route evidence and modeled fills
+
+**Permitted, narrowly — two capability modes:**
+
+`READ_ONLY_ROUTE_QUOTE` — may **retrieve executable route/amount evidence**:
+what route a stated input size would take, and what output amount, price
+impact, and fee a public quote endpoint reports for it. Retrieval of the quote
+and nothing else.
+
+`PAPER_SIMULATION` — may **produce modeled fills and modeled P&L only**, and
+**must require an explicit model identifier and a modeled-vs-observed basis**
+on every artifact it produces.
+
+Neither mode is implemented. This amendment states what would be **permitted**
+if it were; it authorizes no milestone, installs nothing, and — per the
+interaction section below — does not by itself make such an implementation
+pass the automated safety audit.
+
+### `READ_ONLY_ROUTE_QUOTE` — the operations that stay forbidden, named
+
+An executable quote sits one inference away from "so fetch the instructions".
+That inference is closed here by enumeration, not by trusting a later reader's
+judgment. Under this mode there is **no implementation surface** for:
+
+- requesting, fetching, or receiving **swap instructions, a serialized
+  transaction, or transaction/instruction bytes** from any endpoint —
+  including the build/swap sibling route of the very API that served the
+  quote. Reaching a quote route grants nothing on any other route;
+- **constructing, assembling, encoding, or serializing** a transaction,
+  instruction, or message by any means, client-side included;
+- **simulating a transaction against an RPC node** (`simulateTransaction` and
+  equivalents) — that is transaction construction with a different verb, and
+  it requires the bytes this amendment forbids obtaining;
+- **signing** anything, with any key;
+- **submitting, broadcasting, sending, or relaying** a transaction, or
+  fetching a blockhash, priority fee, or nonce for one;
+- **loading, deriving, generating, importing, holding, or referencing wallet
+  key material**, seed phrases, or keypairs. KALSHI-READONLY-AUTH-001 is
+  confined to Kalshi read-scoped request authentication in one file and does
+  not extend here;
+- supplying a wallet address we control as the quote's user/payer, or any
+  parameter whose only function is to bind the quote to **our** ability to
+  execute it. The permitted object is *what a trade of size X would cost*,
+  never *the trade we are about to make*.
+
+A route quote remains subject to the phase-independent read-only rule below.
+If a venue exposes quoting only via a non-GET request, that request may carry
+no key, no wallet, and nothing that mutates venue state — and it still may not
+return instructions.
+
+### `PAPER_SIMULATION` — the two fields are a hard requirement, not guidance
+
+The danger is a modeled number silently becoming a P&L number downstream. The
+structural defense is that the number cannot travel without saying what it is.
+**Every artifact carrying a modeled fill or modeled P&L must carry, on the
+artifact itself:**
+
+1. an explicit **model identifier** — a named, versioned identifier of the
+   model that produced the number; and
+2. an explicit **modeled-vs-observed basis** — which inputs were OBSERVED
+   (recorded quote/tick/route evidence, with its timestamp) and which were
+   MODELED (assumed fill price, slippage, fee, latency, size).
+
+An artifact missing either field is **out of boundary**: it must not be
+produced, persisted, printed, returned, or forwarded. The requirement travels
+*with* the number and may **not** be satisfied by a file header, a README, a
+run-level note, a docstring, or a column comment — none of those survive the
+number being copied into a report, a row, an alert, or another agent's
+context, which is exactly when the mislabeling happens. An aggregate,
+export, or summary inherits both fields, or is not produced.
+
+Also forbidden under this mode, with no implementation surface: any real fill,
+real order, real position, or real capital; and presenting a modeled number as
+realized, actual, or observed P&L.
+
+### Unchanged and still excluded from BOTH modes: paid RPC, paid trade feeds, SolanaTracker
+
+Permitting an executable route quote does **not** permit paying for one.
+Neither mode may use a **paid RPC endpoint**, a **paid trade/orderflow feed**,
+or **SolanaTracker** — free public endpoints only. A route quote obtainable
+only by paying for it is not obtainable under this amendment; the correct
+outcome is no quote, reported honestly, never a purchase.
+
+SolanaTracker's existing paid, per-provider-confirmed use in the crypto
+discovery/risk lanes (CRYPTO-DISCOVERY-PROVIDER-GATE-001) is untouched by this
+amendment and is **not** a precedent these two modes may borrow: that
+authorization is scoped to those lanes' declared `ProviderPolicy`, and this
+amendment adds no provider, no policy entry, and no `paid_confirmed`.
+
+### Interaction with the AST safety audit — the policy and the code now disagree, deliberately
+
+`app/services/frontier_eval.py` carries `BANNED_IDENTIFIER_FRAGMENTS`,
+enforced by an AST identifier scan over every `.py` file in `app/`
+(`frontier-eval-report --include-safety`). That list still contains `swap` and
+`jupiter`, and — bearing on the second mode — `paper_trad`, `expected_value`,
+`position_siz`, `portfolio`, `place_order`, `submit_order` and `create_order`.
+The canonical text
+grep in `AGENTS.md` / `docs/TESTING_POLICY.md` likewise still matches
+`paper_trad` and `wallet`.
+
+So, stated plainly: **this document now permits the two capabilities while the
+automated control still blocks the identifiers an implementation would use.**
+A `READ_ONLY_ROUTE_QUOTE` implementation that names its venue or route in the
+obvious way will FAIL the safety audit, and so will a paper simulator that
+reaches for the obvious vocabulary. A reader should learn this here rather
+than by hitting it.
+
+The audit is a **separate enforcement mechanism** from this document and is
+**not amended by it**. Removing a fragment from that list, or adding an
+allowlist entry, weakens an automated control that currently protects every
+file in `app/`; that is its own narrow, separately reviewed change, made when
+an implementation actually needs it, scoped to the exact fragment in the exact
+file (the allowlist exempts a FRAGMENT in a FILE, never a whole file), and
+recorded here. Until then the correct outcome of writing such code is a
+failing safety audit, and the correct response is to open that separate
+change — never to rename an identifier to slip past the scan, and never to
+broaden the allowlist past the one file that needs it.
+
+### Why the boundary had to move rather than be reinterpreted
+
+The **Paper trading / simulation** and **Swaps / transaction construction /
+signing** rows above were written when nothing downstream could consume
+executable evidence, so "no paper trading" and "no swaps" were one
+undifferentiated refusal: the read-only half (*what would a fill of size X
+have cost?*) was forbidden by the same sentence as the acting half (*go get
+the instructions and send it*). Those are different objects with different
+worst cases. A route quote is a price observation that happens to be
+executable; a swap instruction is a transaction waiting for a signature.
+Amending openly is the honest fix — quietly deciding the old rows "obviously
+did not mean a mere quote" is how a boundary stops meaning anything, and it is
+the same reasoning that would next decide they obviously did not mean the
+build endpoint either.
+
+### What would require amending this again
+
+Fetching anything from a build/swap/instruction endpoint; holding transaction
+bytes in the process however obtained; any key material under either mode;
+paying any provider for route, quote, orderflow, or RPC access under either
+mode; producing a fill or P&L number without its model identifier and
+modeled-vs-observed basis; or unbanning any `BANNED_IDENTIFIER_FRAGMENTS`
+entry on behalf of either capability.
 
 ## What "no implementation surface" means
 
