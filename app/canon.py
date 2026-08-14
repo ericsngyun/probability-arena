@@ -14,7 +14,10 @@ CURRENT_PHASE = (
     "research. Crypto Arena: provider-governed read-only Solana surveillance + "
     "risk engine (a risk score is an avoid/flag verdict, never a trade "
     "recommendation), lifecycle tape, bounded frozen-cohort horizon observation "
-    "and explicitly-armed one-shot orchestration, shared-candidate feasibility "
+    "and explicitly-armed one-shot orchestration (a SECOND, default-OFF and "
+    "not-yet-merged cohort kind with ROLLING admission exists on branch "
+    "crypto-coverage-repair-002; frozen-cohort entry points refuse it), "
+    "shared-candidate feasibility "
     "analysis, and a measurement-only candidate-readiness signal whose 14-day "
     "observation window CLOSED 2026-07-31 with a PASS (both checkpoints done; the "
     "hook remains enabled pending an explicit keep-on/turn-off decision). "
@@ -47,6 +50,12 @@ ALLOWED_CAPABILITIES = (
     "+ shadow selection analysis; changes no stored label or live selection)",
     "crypto horizon observation (bounded frozen-cohort market/liquidity "
     "observations near lifecycle horizons via DexScreener)",
+    "crypto prospective sparse observation (CRYPTO-COVERAGE-REPAIR-002, "
+    "default-OFF, NOT merged/deployed: ONE standing ROLLING cohort admits "
+    "eligible new births and buys at most two 6h and two 24h DexScreener "
+    "observations each inside a fixed band; SolanaTracker structurally denied; "
+    "no arming, no backfill, no interpolation. The rolling cohort is refused "
+    "by every frozen-cohort entry point via is_rolling_cohort)",
     "crypto horizon scheduling (compute-on-demand manual timing/reminder reports; "
     "no provider calls, persistence, timers, or automatic observation)",
     "crypto horizon one-shot orchestration (explicitly armed user-systemd jobs "

@@ -75,7 +75,7 @@ WRITE (batched commits, no network)
 | eligibility predicate | `crypto_tape._completeness_reason` | the same rule `--require-complete` and the anchor feed already use |
 | MarketOps health abort | `crypto_tape._reconciliation_should_abort` | the concept reused literally, not reimplemented |
 | overlap-flock mechanism + lock dir | `crypto_tape._resolve_lock_dir` | inherits the suite's lock-isolation fixture |
-| tables | `crypto_horizon_cohorts` / `_cohort_members` / `_observations` | **no migration** |
+| tables | `crypto_horizon_cohorts` / `_cohort_members` / `_observations` | no new table, no new column, no data change; **one additive index, migration 0029** (see §11 B7) |
 | unique indexes | `ix_horizon_member_cohort_token`, `ix_horizon_obs_cohort_token_horizon` | idempotency enforced by the DB, not by bookkeeping |
 
 **Two default-inert parameters were added to the shared lane** so the reuse is
@@ -458,10 +458,14 @@ review.
 * **No canary.** No cohort arming, no one-shot timers, no orchestrator manifest,
   no CANARY-005. The standing cohort is explicitly refused by `build_arm_plan`.
 * **No second scheduler.** No new planner, no new window arithmetic, no new
-  observation table, **no migration**.
+  observation table. The only schema change is migration 0029, one additive
+  index on `crypto_horizon_cohort_members(cohort_id, added_at)`.
 * **No interpolation, no nearest-tick substitution, no backfill.** The module
   never reads `crypto_price_ticks`. Absent evidence stays absent.
-* **No retries.** One attempt per (token, horizon), ever.
+* **No retry STORM.** A provider ANSWER is terminal; a failed REQUEST is not an
+  answer and is re-plannable while its band is open, hard-capped at 2 attempts
+  per (token, horizon). See §11 B2 — the original "one attempt, ever" rule let a
+  single rate-limit window permanently burn every token in a pass.
 * **No skip-if-a-tick-already-exists.** CRYPTO-COVERAGE-REPAIR-001 Stage 2
   proposed skipping a re-tick when in-window evidence already exists. Not built,
   on the milestone's own numbers: at 6h only 6.0% of due tokens are
@@ -733,3 +737,70 @@ No migration. No systemd unit. No provider adapter change.
 Free denominator first (the reconciler), purchased observations second — but the
 reconciler's timer is disarmed pending its own calibration, so in practice this
 lane is the live path to new evidence and should be watched on its own merits.
+
+---
+
+## 11. Review round 1 — three independent REQUEST CHANGES, and what was done
+
+Three reviewers ran against `4c10880`. Two independently proved the mechanism
+could **fabricate an observation**; a third proved it could **silently lose
+writes and report success**. Everything below is fixed on this branch, each with
+a test that was verified to FAIL on revert (mutation applied, `__pycache__`
+cleared, failure recorded, mutation reverted). Nothing here is merged, pushed,
+deployed or enabled.
+
+### Blocking
+
+| ID | Defect | Fix | Revert proof |
+|---|---|---|---|
+| **B4** | `_commit_with_retry` rolled back and re-called `session.commit()`. A rollback expunges pending objects, so the retry committed an EMPTY transaction and returned normally; counters were already incremented while staging, so the pass reported `status=ok, observations_recorded=N` having written nothing after N real requests. | `prepare()` callback called INSIDE the try on every attempt (the reconciler's proven shape); the write phase stages batches in a closure and counts only after a commit RETURNS. | pre-fix code restored: lock on first write commit → `status=ok`, 0 of 3 rows durable, `observations_recorded=3`; permanent lock → `ok` instead of `db_locked`. |
+| **B1** | `DexScreenerAdapter` never raises — 429/timeout/5xx/bad JSON all `return None` → `[]`. `request_failed=True` was unreachable with the real adapter, so a transport failure was persisted as `provider_no_pair`, or at 24h (where `aged` is true by construction) the TERMINAL `token_inactive`. | `_fetch_phase` reads the provider ledger's DexScreener `failed`/`skipped_cap`/`skipped_budget` delta across each call. No adapter contract change. | delta removed: 429@6h → `provider_no_pair`, 429@24h → `token_inactive`, same for timeout/503/bad JSON. 8 parametrized cases drive the REAL adapter with `httpx` intercepted. |
+| **B2** | Any existing row was terminal, so one transient failure burned the horizon while the band was open — correlated across every token in the pass. | Terminality by CAUSE. Answers are terminal; `request_failed` is re-plannable while the band is open, capped at `SPARSE_MAX_ATTEMPTS = 2` (marker in the row's own audit payload; absent == 1; unparsable == exhausted). | `_is_retryable → False`: band-open retry and cap tests fail. |
+| **B3** | `is_rolling_cohort` was checked at ONE choke point. `observe_once`/`build_plan` had no guard, plan at the fractional tape tolerance and retry in place; every pass prints `cohort_id=`. Produced `status=observed` an hour outside `window_end`, scored `look_completion_rate 1.0`. | `_refuse_rolling` on both (typed result for the CLI path, `RollingCohortRefused` for `build_plan`); the report classifies an observation outside its recomputed band as `out_of_band`, excluded from `observed` and from `target_distance_seconds`. | guard removed → `ok` + row rewritten; band check removed → `out_of_band` 0. Invariant test: `target_distance.max <= band_half_width`. |
+| **B5** | `observe_limit` sorted by ABSOLUTE target distance, serving the least urgent first. | Earliest-deadline-first on `window_end`, distance only as tiebreak. Both `observe_limit` tests now use STAGGERED anchors (the shipped one used five identical anchors, so ordering was unobservable). | old key restored → the member with 1 minute of band left is deferred for one with an hour of runway. |
+| **B6** | `--hours` filtered members only; the observations query was `WHERE cohort_id = :id` on whole entities (measured 368.3s / 692MB / 3 competing-writer lock failures at one year of output). | Both queries select COLUMNS; observations are scoped to the same member window via a token subquery when `hours` is given. `--hours < 25` is refused (`window_too_short`) instead of silently nulling the 24h denominator. | filter removed → captured SQL is a bare `WHERE cohort_id = ?`; `MIN_REPORT_HOURS` removed → `hours=24` returns `ok`. |
+| **B7** | Prelude was 11.8s of a 14.3s pass with 2 hard lock failures. `_enrolment_candidates` had a non-sargable `coalesce()` anchor + `NOT IN` (LIST SUBQUERY over all members + temp B-tree); `_sparse_plan` was a bare SCAN. | Anchor is `first_evidence_at` outright (also the correctness fix — `compute_survival` anchors strictly there); correlated `NOT EXISTS`; an implied two-sided `added_at` range plus migration 0029's `(cohort_id, added_at)` index. | `NOT IN` + coalesce restored → `LIST SUBQUERY 1 \| … \| USE TEMP B-TREE`; one-sided range restored → `SCAN crypto_horizon_cohort_members`. The test asserts the PLAN at 20k members with `ANALYZE` run. |
+| **B8** | `_refused` rebuilt from `_base_result`, destroying evidence: a violation after enrolment reported `enrolled: 0, cohort_id: None` against 1 cohort / 5 members; a violation on request 5 of 8 reported `external_calls: 0` and no ledger after 4 real fetches. | One result dict built up in place; the ledger snapshot travels on the raised `ProviderPolicyError`; `_enrol` counts only committed batches and a refusal re-reads whether the cohort survived the rollback; write-phase refusals carry durable counts. | pre-fix `_refused` restored → `enrolled 0 == 5`, `external_calls 0 == 4`, `observations_recorded 0 == 4`, `enrolled 0 == 4`. |
+
+### Also landed (the pre-flag MEDIUM/LOW list)
+
+* eligibility requires a real `first_evidence_at`; the `observed_at` fallback is
+  gone (it was the TAPE RUN time and produced `provider_gap=True` labels).
+  The fixture gained the `first_evidence=False` knob it lacked.
+* `--hours < 25` refused; `never_had_a_chance_rate`, `enrolment_lag_seconds`,
+  and a `liveness` block (`latest_pass_at`, `previous_pass_age_minutes`,
+  `cadence_warning` above 1.5x cadence, and the exact `OnCalendar=` line derived
+  from `SPARSE_CADENCE_MINUTES`) — read by MAX(id), never a timestamp scan.
+* `enrolment_page_exhausted` marks a candidate page filled with ineligible
+  births instead of letting starvation look like "nothing to enrol".
+* **three surviving mutants killed**, each verified by re-applying it: deleting
+  the ledger assertion, nulling the policy cap, dropping the second-cohort
+  refusal. The assertion is now a typed `provider_policy_violation`, not a bare
+  `RuntimeError`.
+* a lost rolling marker can no longer create a SECOND standing cohort; creation
+  logs at WARNING.
+* the fetch deadline is anchored at FETCH start, making `.env.example`,
+  `config.py` and `FEATURE_FLAGS.md` true.
+* `AUDIT_CANDIDATE_LIMIT` 3 → 0 (424 MB/year of a ~750 MB/year total on a
+  4.55 GB DB past a 3,072 MB gate, for a blob nothing reads).
+* import-time invariants `raise ValueError` instead of `assert`.
+* the transaction-shape docstring states the STRUCTURAL guarantee (no session
+  parameter, no session on the service) instead of claiming its own test proves
+  it; a new boundary test at `app/db.py` asserts pysqlite's deferred implicit
+  BEGIN, which the headline property depends on and nothing owned.
+* `write_lock` instrumentation in the result — batches, retry attempts, lock
+  failures, write-hold max, commit max/total.
+* `AGENTS.md`, `docs/SAFETY_BOUNDARIES.md` and `app/canon.py` now describe the
+  rolling cohort kind; `agent-context` is the first thing every agent reads.
+
+### NOT done — must land before the flag is flipped
+
+* **A PERSISTED run record.** `write_lock` reports lock-wait/write-hold in the
+  RESULT only. Persisting it needs a new table and a migration decision this
+  round did not take. The reconciler's timer is disarmed precisely because these
+  numbers are uncalibrated on EVO; **this lane's hourly timer must not be
+  installed until the run record exists.** The `write_lock` snapshot carries
+  `persisted: false` and says so.
+* `max_duration_seconds=0` is still accepted and still yields exactly one fetch
+  with a healthy `partial` — the deliberate "already past due" sentinel the tape
+  reconciler uses, kept for consistency and depended on by the deadline test.
