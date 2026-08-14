@@ -2371,6 +2371,140 @@ Whichever you pick, `write_hold_ms_max` is a **max** over batches while both
 denominators are **sums** over the pass — state which pairing you used when you
 record the constant.
 
+#### Gate 3 — the calibration session and the chosen constant
+
+**CHOSEN: `CRYPTO_TAPE_RECONCILER_INITIAL_PER_TOKEN_COST_SECONDS = 0.15`.**
+
+It is written into `.env.example` **commented out**, exactly as it was before,
+and is set **nowhere that takes effect**. Activation is Gate 6, and it is a
+separate, deliberate decision. Nothing in this subsection turns anything on.
+
+```text
+CALIBRATION-GATE3-001 — Gate 3 derivation (EVO-X2, ef92b4d)
+  samples (n=8)  per-token ms = write_hold_ms_max / batch_size, batch_size=5
+  sorted         14.8  17.8  18.0  18.8  18.8  19.6  19.8  105.4
+  median         18.8 ms/token
+  warm max       19.8 ms/token   (the 7-sample warm cluster)
+  cold start     105.4 ms/token  (n=1, the first write after a fresh checkout)
+  margin         0.15 = 0.1054 x 1.42
+  CHOSEN         initial_per_token_cost_seconds = 0.15
+```
+
+##### The session
+
+Eight **attended `--force`** passes on EVO-X2 at branch `CALIBRATION-GATE3-001`
+(`ef92b4d`), with `ENABLE_CRYPTO_TAPE_RECONCILER` **off** throughout — so every
+pass recorded `gate_bypassed=force` and no timer existed. Host load 0.3–0.6,
+with the ordinary co-tenants running: the crypto watcher, MarketOps on its
+5-minute cycle, meme-news on its 5-minute cycle, and hourly tick-aggregation.
+
+All eight passed the mandatory filter above — `writer_name == "crypto_tape"`,
+the four-status set, `batch_count > 0`, `write_hold_measured == true` — with
+**zero passes filtered out**, and every one of the eight recorded
+`write_hold_slo_violations = 0`.
+
+| # | status | batches | hold_ms_max | batch_lock_wait_ms_max | rows_committed |
+|---|--------|---------|-------------|------------------------|----------------|
+| 1 | partial | 350 | 527 | 516 | 3500 |
+| 2 | partial | 391 | 99 | 938 | 3910 |
+| 3 | partial | 394 | 94 | 514 | 3940 |
+| 4 | partial | 181 | 98 | 4038 | 1810 |
+| 5 | ok | 135 | 94 | 1015 | 1350 |
+| 6–8 | ok | — | — | — | — |
+
+Pass 1 is the cold start (first write after a fresh checkout). Pass 4 is the
+deadline overshoot. Passes 6–8 each returned `ok` on an identical
+`tokens_considered = 590` in ~11 s.
+
+##### Which pairing was used — the section above requires this be stated
+
+`per-token cost = write_hold_ms_max / batch_size`, with **`batch_size = 5`
+tokens**. This is neither of the two pass-level denominators the section above
+warns about: it is the **per-batch token count**, and `write_hold_ms_max` is a
+max **over batches**, so numerator and denominator are at the same grain. The
+pairing was verified on every pass — `batches_committed x 5 == tokens_considered`
+held throughout.
+
+**`rows_committed` was NOT used, and the table above shows why.** 3,500 rows
+over 350 batches is 10 rows per 5-token batch: it is
+`snapshots_created + outcomes_updated + birth_events_created` summed across
+three tables, roughly 2x the token count here. Dividing by it would have
+under-estimated per-token cost by about half.
+
+##### Why the single cold observation governs
+
+The seed is consumed **once, at process start — the coldest moment in the
+pass.** That is the whole reason the cold sample cannot be discarded as an
+outlier: it is the only observation taken under the conditions the seed is
+actually used in, and it is a *recurring* condition, not a freak one — every
+deploy and every reboot produces it.
+
+A controller seeded from the warm cluster demonstrates the failure directly.
+`2.0 / 0.0198 ≈ 101` tokens in the first batch; at the observed cold cost of
+105.4 ms/token that batch holds the write lock for **10.6 s — 5x the 2.0 s
+`RECONCILE_WRITE_TIME_SLO_SECONDS`** — before a single measurement has been fed
+back into the estimator. The median (18.8) is worse still. So the seed is set
+from the cold tail, not from the centre of the distribution.
+
+`0.15 = worst observed (0.1054) x 1.42`. First batch `2.0 / 0.15 ≈ 13` tokens →
+**1.37 s at the cold cost (68% of the SLO)**, 0.26 s at the warm cost, with the
+controller free to grow from there on real measurements.
+
+##### It LOOSENS, it does not tighten — say so plainly
+
+13 tokens is **larger** than the fixed `CRYPTO_TAPE_RECONCILER_BATCH_SIZE = 5`
+that ships today. Calibrating this constant therefore *relaxes* the first
+batch relative to current behaviour; it does not constrain it. Anyone reading
+this as a tightening has it backwards, and would then be tempted to "recover"
+throughput elsewhere.
+
+##### What the shipped code actually does with 0.15 — the two clamps
+
+The `2.0 / 0.15 ≈ 13` above is the budget arithmetic. Two mechanisms already in
+the code make the **as-shipped** first batch smaller, and neither was changed
+here:
+
+* **`AdaptiveBatchCostEstimate` biases the seed HIGH** by
+  `bias_multiplier = 1.5` before it is ever used to size a batch. The
+  conservative estimate from a 0.15 seed is 0.225 s/token, so
+  `next_adaptive_batch_size(2.0, ...)` returns **8**, not 13 — a hold of
+  **0.84 s at the cold cost (42% of the SLO)**. The same bias applies to the
+  warm-seed counterfactual: 67 tokens, **7.06 s, still 3.5x the SLO**. The
+  conclusion is unchanged and the margin is larger than the headline
+  arithmetic suggests.
+* **The B11 sanity ceiling is `batch_size`**, i.e. the shipped
+  `CRYPTO_TAPE_RECONCILER_BATCH_SIZE = 5`. Once adaptive batching is active
+  `batch_size` becomes a maximum only, and `min(8, 5) = 5`. **So at Gate 6, on
+  today's constants, the calibrated first batch is 5 tokens — identical to
+  today's fixed behaviour.** The loosening above is *latent*: it is realised
+  only if Gate 6 also raises that ceiling, which is a separate decision with
+  its own evidence, deliberately not taken here.
+
+##### Caveats — these are part of the derivation, not footnotes
+
+* **n = 1 for the cold case.** The cold tail is **not bounded by this data**. A
+  worse cold start is entirely possible; the 1.42x margin exists for exactly
+  that reason and is not a proof of anything. A second cold observation is the
+  cheapest thing that would improve this constant.
+* **The margin is a judgement, not a measurement.** 1.42x was chosen to land
+  the cold-case hold under 70% of the SLO on the headline arithmetic. No
+  distributional claim is made about it.
+* **Pass 4 overshot its 30 s deadline by 37%** (`duration_ms = 41035`) on a
+  4,038 ms `batch_lock_wait_ms_max`. This is the documented limit that
+  `max_duration_seconds` **cannot interrupt a statement already blocked inside
+  SQLite** — the deadline is only evaluated between batches. It is **not a
+  calibration input** (the hold was a normal 98 ms; the wait was the lock, not
+  the write) but it belongs in this record, and it is the same class of event
+  precondition 1 asks to be *observed* rather than modelled.
+* **Passes 6–8 returned `ok` on an identical `tokens_considered = 590`.** The
+  historical backlog has drained to steady state, so the warm cluster is a
+  steady-state measurement. A backlog surge is a different population and this
+  constant was not measured against one.
+* **Eight passes, one host, one session, one branch.** The constant is not
+  portable to a different host, and re-deriving it is the required step if the
+  host changes — the same rule `CRYPTO_TAPE_RECONCILER_BATCH_SIZE` already
+  carries.
+
 #### Growth, rotation and reading this file
 
 **The file does not rotate, has no size bound, no retention and no alert**, and
