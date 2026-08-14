@@ -23,10 +23,19 @@ The candidates were audited before anything was built:
   * `crypto_token_lifecycle_runs.config["write_coordination"]` already holds
     most of writer A's scalars at the right grain — but it is written by the
     finalize commit, which gets ONE attempt. The passes whose numbers matter
-    most (contended, aborted, SIGKILLed mid-finalize) are exactly the passes
-    that lose it. `crypto_tape.lock_wait_run_row_orphaned()` names that
-    signature precisely. A store that is blind to bad passes cannot calibrate
-    a contention threshold.
+    most — CONTENDED, ABORTED and REFUSED — are exactly the passes that lose
+    it. `crypto_tape.lock_wait_run_row_orphaned()` names that signature
+    precisely. A store that is blind to bad passes cannot calibrate a
+    contention threshold.
+
+    **THE SINK DOES NOT SURVIVE A SIGKILL, AND AN EARLIER VERSION OF THIS
+    DOCSTRING CLAIMED IT DID** (A6, security review of this branch). The emit
+    is the LAST thing a pass does — after `_record_health`, after every commit
+    the pass owns — so a SIGKILL mid-finalize loses the JSONL line exactly as
+    it loses the run row. The advantage over the run row is real but narrower
+    than that: a pass that RETURNS a terminal result having committed nothing
+    (contended, aborted, refused, pre-flight-skipped) still emits, because the
+    append is not part of any transaction. It is not crash durability.
   * the health-state file (`crypto_reconciler_guard`) DOES survive those
     passes, and deliberately so — but it is bounded at
     `HEALTH_HISTORY_MAX_RECORDS = 40` rolling records, holds "only scalars a
@@ -57,8 +66,11 @@ from __future__ import annotations
 import os
 
 from app.telemetry.schema import (
+    ALLOWED_FIELDS,
+    OUTCOMES,
     RUN_STATUSES,
     STOP_REASONS,
+    TABLE_GROUPS,
     build_event,
     writer_instance_id,
 )
@@ -69,6 +81,15 @@ from app.telemetry.sink import get_sink
 _CONFIG_REFUSAL_PREFIX = "invalid_"
 _CONFIG_REFUSAL_LABEL = "invalid_config"
 _OTHER = "other"
+_UNKNOWN = "unknown"
+
+# Fields the builder itself owns and passes positionally; they must never be
+# re-supplied through `**fields`, and they are not "unknown" either.
+_BUILDER_OWNED_FIELDS = frozenset({
+    "writer_name", "writer_class", "operation_name", "started_at",
+    "finished_at", "outcome", "run_source", "run_status", "stop_reason",
+    "gate_bypassed", "writer_instance_id",
+})
 
 RUN_SOURCE_SCHEDULED = "scheduled"
 RUN_SOURCE_MANUAL = "manual"
@@ -135,6 +156,40 @@ def outcome_for_status(status: str | None) -> str:
     return _STATUS_TO_OUTCOME.get(normalize_run_status(status) or "", "unknown")
 
 
+def normalize_outcome(outcome) -> str:
+    """`outcome` is REQUIRED and enum-checked, so an unrecognised one deletes
+    the whole event at the sink. It was the only caller-supplied label reaching
+    the envelope un-normalized (A3, security review of this branch): unlike
+    `run_status`/`stop_reason` it was popped straight out of `**fields` and
+    forwarded. It becomes "unknown" — which is a real member of `OUTCOMES` and
+    the honest label for "this producer named a bucket we do not have"."""
+    if outcome is None:
+        return _UNKNOWN
+    text = str(outcome)
+    return text if text in OUTCOMES else _UNKNOWN
+
+
+def normalize_table_groups(groups):
+    """Keep the recognised coarse families, drop the rest, and return None
+    when nothing recognised survives (the field is optional, so absent is
+    better than an empty list that reads as "touched no tables").
+
+    Same reason as every other normalizer here: `table_groups` is validated
+    against a closed set, so ONE unrecognised family would cost the pass its
+    entire record."""
+    if groups is None:
+        return None
+    if isinstance(groups, str) or not isinstance(groups, (list, tuple, set)):
+        groups = [groups]
+    kept = [g for g in groups if isinstance(g, str) and g in TABLE_GROUPS]
+    # dedupe, order-stable
+    seen = []
+    for g in kept:
+        if g not in seen:
+            seen.append(g)
+    return seen or None
+
+
 def resolve_run_source() -> str:
     """Scheduled vs manual, DERIVED rather than asserted by the caller.
 
@@ -156,7 +211,20 @@ def resolve_run_source() -> str:
     `gate_bypassed` (whether `--force` was passed) is recorded ALONGSIDE this,
     never merged into it: `run_source="scheduled"` with `gate_bypassed=True`
     is a real anomaly, and it stays visible only while the two remain separate
-    fields."""
+    fields.
+
+    FORGEABLE, PLAINLY, AND WIDER THAN JUST THIS FUNCTION (noted by the
+    security review of this branch, deliberately NOT enforced here). Three
+    routes: `emit_writer_pass(run_source="scheduled")` takes a caller-asserted
+    value with no provenance check at all and bypasses this function entirely;
+    `export INVOCATION_ID=anything` satisfies the check below; and
+    `SQLITE_TELEMETRY_SYSTEMD_UNIT` independently sets `systemd_unit`. None of
+    that is a live risk TODAY, and the reason is structural rather than lucky:
+    nothing reads the JSONL — there is no consumer anywhere in `app/` or
+    `scripts/` — the health latch is driven by real Python arguments, not by
+    this field, and `_record_health` writes BEFORE the emit, so a forged value
+    cannot reach the gate even in principle. Enforcement belongs to whoever
+    builds the first reader; it must not be assumed to exist before then."""
     return (
         RUN_SOURCE_SCHEDULED
         if os.environ.get("INVOCATION_ID")
@@ -185,10 +253,32 @@ def emit_writer_pass(
     owns and takes no SQLite lock at any point.
 
     `writer_class` is derived from `run_source` rather than accepted from the
-    caller, so the two can never disagree."""
+    caller, so the two can never disagree.
+
+    EVERY LABEL THAT REACHES THE ENVELOPE IS NORMALIZED HERE FIRST, and any key
+    the schema does not know is DROPPED rather than forwarded (A3, security
+    review of this branch). The sink's validator is strict by design, so an
+    un-normalized label or a stray key does not fail one field — it deletes the
+    whole pass record. Five reachable classes did exactly that through this
+    entry point: an unrecognised `outcome`, an unrecognised `table_groups`
+    family, any unknown key arriving via `**fields` (writer B's `commit_ms_max`
+    is the concrete case), a float in a duration/count field, and
+    `gate_bypassed=1` instead of `True`. The first three are closed here; the
+    last two are structurally unclosable at the builder (a value can be the
+    wrong TYPE in any field), which is why the sink also degrades rather than
+    deletes — see `TelemetrySink._degrade`. Normalization and degradation are
+    two halves of one guarantee; neither alone is sufficient."""
     try:
         source = run_source or resolve_run_source()
         status = normalize_run_status(run_status)
+        outcome = fields.pop("outcome", None)
+        groups = normalize_table_groups(fields.pop("table_groups", None))
+        # DROP, do not forward, anything the closed field set does not know.
+        # A dropped field costs one number; a forwarded one costs the record.
+        extra = {
+            k: v for k, v in fields.items()
+            if k in ALLOWED_FIELDS and k not in _BUILDER_OWNED_FIELDS
+        }
         event = build_event(
             writer_name=writer_name,
             writer_class=(
@@ -198,7 +288,12 @@ def emit_writer_pass(
             operation_name=operation_name,
             started_at=started_at,
             finished_at=finished_at,
-            outcome=fields.pop("outcome", None) or outcome_for_status(run_status),
+            # Falsy (absent/empty) keeps the pre-existing behaviour of DERIVING
+            # from the status; a supplied one is normalized, never forwarded.
+            outcome=(
+                normalize_outcome(outcome) if outcome
+                else outcome_for_status(run_status)
+            ),
             writer_instance_id=fields.pop(
                 "writer_instance_id", writer_instance_id()),
             run_source=source,
@@ -209,7 +304,8 @@ def emit_writer_pass(
             ),
             **({"gate_bypassed": gate_bypassed}
                if gate_bypassed is not None else {}),
-            **fields,
+            **({"table_groups": groups} if groups is not None else {}),
+            **extra,
         )
         if get_sink().emit(event):
             return event["event_id"]

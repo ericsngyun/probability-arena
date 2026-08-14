@@ -80,7 +80,14 @@ RUN_STATUSES = frozenset({
     "ok", "dry_run", "error", "partial", "truncated", "dry_run_partial",
     "skipped_overlap", "skipped_contention", "lock_unavailable",
     "concurrent_write_conflict", "backlog_expiring", "unsafe_host_cost",
-    "marketops_degraded", "skipped_health_latch", "disabled",
+    "marketops_degraded", "skipped_health_latch",
+    # `disabled` is in the set but writer A can NEVER emit it: that status
+    # returns before the terminal funnel, deliberately (see `_finish` in
+    # crypto_tape.py — a flag that is off means no run happened, and recording
+    # it would file four events a day describing nothing). It is carried for
+    # writer B and for a hand-built event; it is not dead, but nothing in the
+    # reconciler's calibration corpus will ever have it.
+    "disabled",
     # The `invalid_*` config-refusal FAMILY is collapsed to this single label
     # by the builder. It is an open prefix (one member per validated setting),
     # so enumerating it here would guarantee this set drifts behind the code.
@@ -154,6 +161,31 @@ ALLOWED_FIELDS = frozenset({
     # is a real report about the host — but neither is contention and neither
     # may be summed into the batch figure. Storing all four separately is what
     # keeps that distinction from being re-flattened by a later reader.
+    #
+    # `write_hold_ms_max` IS MEANINGLESS WITHOUT `write_hold_measured`, AND THE
+    # PAIR MUST TRAVEL TOGETHER (A1, security review of this branch). Three
+    # different passes persist `write_hold_ms_max=0`: one that never opened a
+    # write transaction (contended/refused/skipped), one that measured a
+    # genuine sub-millisecond hold (`int(0.0004 * 1000) == 0` truncates), and
+    # one that measured a true zero. An operator averaging the field to derive
+    # `initial_per_token_cost_seconds` would fold the first kind — which
+    # measured NOTHING — into the mean, pull it down, and set the constant too
+    # AGGRESSIVE: larger batches, longer holds, on a live writer. That is the
+    # survivorship bias this milestone rejected `crypto_token_lifecycle_runs`
+    # to avoid, re-entering as ZERO-INFLATION. The emitter therefore OMITS
+    # `write_hold_ms_max` entirely when nothing was measured and carries
+    # `write_hold_measured` alongside it when it did, so "not measured" and
+    # "sub-millisecond" are distinguishable in the persisted record. The
+    # calibration filter is stated in docs/EVO_X2_RUNBOOK.md.
+    "write_hold_measured", "write_hold_slo_violations",
+    # The SLO counter this gate exists to hand the controller, plus the two
+    # denominators any average over the fields above needs, plus the
+    # distribution the thresholds are actually derived from (the class
+    # docstring on `LockWaitAccounting` is explicit that a threshold must come
+    # from the histogram tail, never from a scalar — so the histogram has to be
+    # the thing that survives the pass).
+    "lock_wait_measurements", "batch_lock_wait_warnings",
+    "batch_lock_wait_aborts", "lock_wait_histogram_ms",
     "run_status", "stop_reason", "run_source", "gate_bypassed",
     "batch_count", "batch_lock_wait_ms_max", "run_row_lock_wait_ms",
     "finalize_lock_wait_ms", "write_hold_ms_max", "lock_failures",
@@ -180,11 +212,26 @@ _DURATION_FIELDS = ("duration_ms", "transaction_hold_ms", "lock_wait_ms",
                     "adaptive_initial_per_token_cost_ms")
 # GATE2-WRITER-TELEMETRY-001 — non-negative integer counts. Separate from the
 # durations only so the rejection message names the right kind of impossible.
-_COUNT_FIELDS = ("batch_count", "lock_failures", "adaptive_batch_size_max")
+_COUNT_FIELDS = ("batch_count", "lock_failures", "adaptive_batch_size_max",
+                 "lock_wait_measurements", "write_hold_slo_violations",
+                 "batch_lock_wait_warnings", "batch_lock_wait_aborts")
 # GATE2-WRITER-TELEMETRY-001 — strict booleans. `1`/`0` are rejected rather
 # than coerced: a field that silently accepts both is a field two readers will
 # eventually disagree about.
-_BOOL_FIELDS = ("gate_bypassed", "adaptive_batching_active")
+_BOOL_FIELDS = ("gate_bypassed", "adaptive_batching_active",
+                "write_hold_measured")
+
+# GATE2-WRITER-TELEMETRY-001 — the ONE nested field, and the only one this
+# envelope will ever carry. Validated STRUCTURALLY rather than against an
+# imported bucket list, because importing the reconciler's edges into the
+# schema would invert the dependency (the safety boundary would then depend on
+# the code it is guarding). A histogram key is a bucket LABEL — `<1`, `1-10`,
+# `>=30000` — which is derived from the edge tuple and can never carry a token
+# id, ticker or cohort name; anything else is rejected, so the
+# high-cardinality guarantee survives the nesting.
+_HISTOGRAM_FIELDS = ("lock_wait_histogram_ms",)
+_HISTOGRAM_KEY_RE = re.compile(r"^(?:<\d{1,7}|\d{1,7}-\d{1,7}|>=\d{1,7})$")
+MAX_HISTOGRAM_BUCKETS = 16
 # correlation ids are integers, never names/strings — keeps the "cohort
 # names never emitted" boundary structural, not regex-dependent
 _INT_ID_FIELDS = ("marketops_cycle_id", "scanner_run_id", "cohort_id", "job_id")
@@ -347,6 +394,27 @@ def validate_event(event: dict) -> dict:
         value = event.get(field)
         if value is not None and not isinstance(value, bool):
             raise TelemetryValidationError(f"{field} must be a bool")
+    # GATE2-WRITER-TELEMETRY-001 — bounded bucket map: bucket-label keys only,
+    # non-negative integer counts, and a hard bucket ceiling so a malformed
+    # producer cannot smuggle cardinality in through the one nested field.
+    for field in _HISTOGRAM_FIELDS:
+        value = event.get(field)
+        if value is None:
+            continue
+        if not isinstance(value, dict) or len(value) > MAX_HISTOGRAM_BUCKETS:
+            raise TelemetryValidationError(
+                f"{field} must be a bounded bucket map"
+            )
+        for label, count in value.items():
+            if not isinstance(label, str) or not _HISTOGRAM_KEY_RE.match(label):
+                raise TelemetryValidationError(
+                    f"{field} key is not a bucket label: {label!r}"
+                )
+            if (isinstance(count, bool) or not isinstance(count, int)
+                    or count < 0):
+                raise TelemetryValidationError(
+                    f"impossible count: {field}[{label}]={count!r}"
+                )
 
     # secret scan on every string value (schema-controlled fields only is the
     # first line of defense; this is the second)

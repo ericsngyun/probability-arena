@@ -2290,9 +2290,9 @@ passes are exactly the ones whose numbers matter and exactly the ones the run
 row loses. **This milestone adds no migration**: nothing to apply, nothing to
 break if it is not applied, and the Alembic head stays `0028`.
 
-Read the fields with `python -m app.cli` — there is no report command yet; the
-collector/rotation step is owned by 001E and is still unbuilt, so for now this
-is `jq` over the file. What to read, and the one trap:
+**There is no report command.** The collector/rotation step is owned by 001E
+and is still unbuilt, so reading this file is `jq` over it — see the growth and
+reading warning below before you read it on EVO. What to read, and the traps:
 
 * `batch_lock_wait_ms_max` is **the only** figure the breakers act on. The
   pass total (`lock_wait_ms`) carries one `run_row` and one `finalize` sample
@@ -2300,22 +2300,106 @@ is `jq` over the file. What to read, and the one trap:
   read off the total measures the instrument. `run_row_lock_wait_ms` and
   `finalize_lock_wait_ms` are recorded separately and must not be summed into
   the batch figure.
+* **Derive a threshold from `lock_wait_histogram_ms`, not from a scalar.** The
+  histogram is now persisted per pass for exactly this reason
+  (`LockWaitAccounting`'s own docstring: the per-attempt measurement bias lands
+  almost entirely in the `1-10` bucket, so the tail survives the bias and the
+  scalars do not).
 * `write_hold_ms_max` against the 2.0 s SLO, alongside
+  `write_hold_slo_violations` (the SLO counter itself) and
   `adaptive_initial_per_token_cost_ms` — a recorded hold distribution means
   nothing without the seed that produced it.
 * `run_source` is derived from systemd's own `INVOCATION_ID`, not from the
   command line, so an attended pass cannot be filed as a timer run by copying
   the unit's `ExecStart`. `gate_bypassed` (`--force`) is a **separate** field:
   filter unattended passes on `run_source="scheduled"`, never on the absence
-  of `--force`.
+  of `--force`. **`run_source` is nonetheless forgeable and is not evidence**:
+  a caller may pass it directly to `emit_writer_pass`, and `export
+  INVOCATION_ID=anything` satisfies the derivation. Nothing consumes this file
+  today and the health latch does not read it, so nothing is at risk — but do
+  not build an enforcement decision on the field without adding a check first.
 * `run_status="disabled"` is deliberately never emitted (no run happened).
   Every other outcome, including every pre-flight skip and refusal, is.
+
+#### Deriving `initial_per_token_cost_seconds` — the mandatory filter
+
+`write_hold_ms_max=0` **does not mean the hold was zero.** A contended pass, a
+refused pass and a pre-flight skip all record no hold at all, and
+`int(hold_seconds * 1000)` truncates a genuine 0.4 ms hold to 0 as well.
+Averaging the raw field mixes passes that measured *nothing* into the mean,
+pulls it down, and yields a constant that is **too aggressive** — larger
+batches and longer holds on a live production writer. That is the same
+survivorship bias that got `crypto_token_lifecycle_runs` rejected, arriving as
+zero-inflation instead of absence.
+
+Two fields resolve it, and both must be used:
+
+* `write_hold_measured` (bool) — `false` means no write transaction was opened.
+  `write_hold_ms_max` is **omitted entirely** from such a record.
+* `write_hold_ms_max = 0` **with** `write_hold_measured = true` is a real,
+  sub-millisecond hold. Keep it.
+
+**Filter every calibration query on all of:**
+
+```
+run_status ∈ {ok, partial, truncated, backlog_expiring}
+AND batch_count > 0
+AND write_hold_measured == true
+```
+
+```sh
+jq -c 'select(.writer_name=="crypto_tape"
+       and (.run_status|IN("ok","partial","truncated","backlog_expiring"))
+       and (.batch_count // 0) > 0
+       and .write_hold_measured == true)
+       | {write_hold_ms_max, batch_count, rows_committed, rows_attempted,
+          adaptive_initial_per_token_cost_ms}' \
+  ~/probability-arena-telemetry/sqlite-writes.jsonl
+```
+
+**`rows_committed` is not a token count.** It is
+`snapshots_created + outcomes_updated + birth_events_created` — rows summed
+across three tables, and one token can contribute to all three. Gate 3 asks for
+"per-batch write-hold and committed-**token** count", so a per-token cost
+derived as `write_hold_ms_max / rows_committed` uses a denominator that is
+**≥** the token count and therefore **under-estimates** per-token cost; once
+inverted into a batch size that errs toward *smaller* batches, which is the
+safe direction. If you want a token-grain denominator instead, use
+`rows_attempted` (`tokens_considered`), and note the reverse caveat: it counts
+tokens the pass looked at, so on a truncated pass it is an over-estimate.
+Whichever you pick, `write_hold_ms_max` is a **max** over batches while both
+denominators are **sums** over the pass — state which pairing you used when you
+record the constant.
+
+#### Growth, rotation and reading this file
+
+**The file does not rotate, has no size bound, no retention and no alert**, and
+it is **shared** with the SQLITE-LOCK-TELEMETRY-001A writers rather than being
+this milestone's alone. Rotation is owned by 001E, which is unbuilt.
+
+Gate 2's own contribution is genuinely small — **906 B per pass, ~3.6 KB/day**
+at the 6-hourly cadence — but growth is monotonic and the 001A writers add
+their own. **Check the file's size before you read it**:
+
+```sh
+ls -lh ~/probability-arena-telemetry/sqlite-writes.jsonl
+```
+
+Do **not** use `app.telemetry.sink.read_events` on EVO. It calls
+`path.read_bytes()` on the whole file and holds every parsed event: measured
+**419 MB peak Python heap on a 60 MB file** (~7x amplification, 5.3 s). It is a
+test helper. Stream with `jq` instead, as above.
 
 Measured cost of the append itself, against a real competing SQLite writer on
 this repo's dev Mac: **p50 0.10 ms, p95 0.32 ms** while a co-tenant *held* the
 RESERVED lock — statistically identical to the idle-host figure, which is the
-structural point (it takes no lock). Roughly 1 KB per pass, ~4 KB/day at the
-6-hourly cadence.
+structural point (it takes no lock).
+
+**The sink is not crash-durable.** It survives a pass that *returned* having
+committed nothing — contended, aborted, refused, skipped — which is the whole
+point, because those are the passes the run row loses. It does **not** survive a
+SIGKILL: the append is the last thing a pass does, so a kill mid-finalize loses
+the JSONL line exactly as it loses the run row.
 
 ### `TimeoutStartSec` vs the finalize ladder
 
