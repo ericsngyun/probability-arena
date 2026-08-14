@@ -123,6 +123,21 @@ _STATUS_TO_OUTCOME = {
     "error": "failed_other",
     "unsafe_host_cost": "failed_other",
     _CONFIG_REFUSAL_LABEL: "failed_other",
+    # GATE7-SPARSE-TELEMETRY-001 — writer B's two typed refusals. Both were
+    # pre-registered in `RUN_STATUSES` and neither had a coarse bucket, so they
+    # fell through to "unknown": the fall-through is the right DEFAULT (it never
+    # forces a status into a neighbouring bucket) but it is the wrong answer for
+    # a refusal we can name. `provider_policy_violation` is the severest outcome
+    # this lane has — the structural "no SolanaTracker spend" guarantee broken —
+    # and filing it as "unknown" hides it from any coarse filter.
+    #
+    # NEITHER IS REACHABLE BY WRITER A: both labels belong to the sparse
+    # observer's vocabulary, so adding them cannot change one reconciler record.
+    # They are `failed_other` and NOT `failed_lock` for the same reason
+    # `lock_unavailable` is — bucketing a non-lock refusal as lock loss would
+    # inflate the contention rate this surface exists to measure.
+    "ambiguous_cohort": "failed_other",
+    "provider_policy_violation": "failed_other",
 }
 
 

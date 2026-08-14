@@ -52,7 +52,7 @@ from app.models import (
     MarketOpsRun,
 )
 from app.services import crypto_sparse_observation as sparse
-from app.services.crypto_horizon import CryptoHorizonService
+from app.services.crypto_horizon import MEMBERSHIP_ROLLING, CryptoHorizonService
 from app.telemetry import writer_pass
 from app.telemetry.schema import (
     REQUIRED_FIELDS,
@@ -290,6 +290,32 @@ class TestRefusalsAreRecorded:
         event = only_event()
         assert event["run_status"] == "marketops_degraded"
         assert event["outcome"] == "skipped_health"
+
+    @pytest.mark.asyncio
+    async def test_an_ambiguous_cohort_refusal_is_bucketed_as_a_failure(
+        self, session
+    ):
+        """`ambiguous_cohort` and `provider_policy_violation` were reserved in
+        `RUN_STATUSES` with no coarse bucket, so both fell through to
+        "unknown" — which hides the severest refusal this lane has from any
+        `outcome` filter. They are `failed_other`, never `failed_lock`:
+        bucketing a non-lock refusal as lock loss would inflate the contention
+        rate this whole surface exists to measure."""
+        for _ in range(2):
+            session.add(CryptoHorizonCohort(
+                chain=CHAIN, member_limit=0, window_hours=25, note="x",
+                provenance={"membership": MEMBERSHIP_ROLLING}, created_at=NOW))
+        session.commit()
+        result = await run_pass(session)
+        assert result["status"] == "ambiguous_cohort"
+        event = only_event()
+        assert event["run_status"] == "ambiguous_cohort"
+        assert event["outcome"] == "failed_other"
+
+    def test_the_provider_policy_violation_is_not_filed_as_unknown(self):
+        assert writer_pass.outcome_for_status(
+            "provider_policy_violation") == "failed_other"
+        assert writer_pass.outcome_for_status("ambiguous_cohort") == "failed_other"
 
     @pytest.mark.asyncio
     async def test_a_dry_run_is_recorded_and_says_it_bypassed_the_gate(
