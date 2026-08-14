@@ -660,8 +660,9 @@ class TestFieldMapping:
         small". The band-closed count has no field in the envelope and is
         DROPPED rather than smuggled into a field that means something else."""
         fields = sparse._pass_telemetry_fields(_result())
-        assert fields["rows_skipped"] == 2
-        assert 5 not in (fields["rows_skipped"],), "3 was folded in"
+        assert fields["rows_skipped"] == 2, (
+            "expected the 2 deferred member-horizons alone; 5 would mean the "
+            "3 band-closed ones were folded in")
 
     def test_the_row_sum_spans_the_tables_this_lane_writes(self):
         fields = sparse._pass_telemetry_fields(_result())
@@ -1082,8 +1083,10 @@ class TestDegradeRatherThanDelete:
         assert sink.emit(event) is True
         landed, _ = read_events(sink.path)
         assert landed[0]["outcome"] == "failed_lock"
-        assert landed[0]["rows_committed"] if False else True  # not resurrected
-        assert "rows_committed" not in landed[0]
+        assert landed[0]["truncated"] is True
+        assert "run_status" not in landed[0], (
+            "an optional field survived the strip — the degrade is not the "
+            "REQUIRED_FIELDS one")
 
     @pytest.mark.asyncio
     async def test_a_lost_record_is_never_reported_as_a_landed_one(
