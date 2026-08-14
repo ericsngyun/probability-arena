@@ -43,7 +43,7 @@
 # stopped timer actually looks like one band later (>=7h at 6h, >=25h at 24h).
 
 [Unit]
-Description=Run Probability Arena crypto sparse horizon observation every hour
+Description=Run Probability Arena crypto sparse horizon observation hourly at :37
 
 [Timer]
 # = timer_oncalendar() at SPARSE_CADENCE_MINUTES = 60 and
