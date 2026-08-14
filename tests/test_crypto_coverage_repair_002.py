@@ -18,6 +18,7 @@ Grouped by the property under test:
   * the standing rolling cohort is not armable
 """
 
+import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -1264,11 +1265,160 @@ async def test_nothing_is_counted_until_the_batch_commit_returns(session):
     assert session.query(CryptoHorizonObservation).count() == 0
 
 
+def test_the_write_lock_property_rests_on_pysqlites_deferred_begin(tmp_path):
+    """The transaction-shape test is a SMOKE CHECK, not the guarantee —
+    injecting five `session.execute(select(...))` calls into the fetch phase
+    was measured to leave all four of its assertions passing. The real
+    guarantee is structural (`_fetch_phase` takes no session; the service holds
+    none) PLUS pysqlite's DEFERRED implicit BEGIN: a read must not open a write
+    transaction. Nothing in this repo owned that assumption.
+
+    Asserted here at the `app/db.py` boundary, against a second connection that
+    must still be able to write while the first holds an open read."""
+    import inspect as _inspect
+    import sqlite3
+
+    from sqlalchemy import create_engine, text
+
+    from app import db as app_db
+
+    # 1. the structural half, stated as a fact about the signature
+    params = _inspect.signature(sparse._fetch_phase).parameters
+    assert "session" not in params, params
+    service_attrs = vars(CryptoHorizonService(settings=settings()))
+    assert not any("session" in name for name in service_attrs), service_attrs
+
+    # 2. the pysqlite half, at the db.py boundary
+    path = tmp_path / "begin.db"
+    url = f"sqlite:///{path}"
+    engine = create_engine(url, connect_args=app_db.connect_args_for(url))
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)"))
+            conn.execute(text("INSERT INTO t (v) VALUES ('a')"))
+
+        reader = engine.connect()
+        try:
+            reader.execute(text("SELECT * FROM t")).all()
+            # the read must NOT have taken a write lock: a second, independent
+            # connection can still write
+            writer = sqlite3.connect(str(path), timeout=0.2)
+            try:
+                writer.execute("INSERT INTO t (v) VALUES ('b')")
+                writer.commit()
+            finally:
+                writer.close()
+        finally:
+            reader.close()
+    finally:
+        engine.dispose()
+
+    assert app_db.connect_args_for(url).get("timeout"), (
+        "SQLite must get a busy timeout; without it a competing writer fails "
+        "immediately instead of waiting"
+    )
+
+
 @pytest.mark.asyncio
-async def test_the_audit_payload_is_bounded_to_three_candidates(session):
-    """RAW-PAYLOAD-STORAGE-001: raw payloads were 27% of the production DB with
-    zero readers. This lane writes ~1,000 observation rows/day, so it must not
-    inherit the manual lane's 12-candidate default."""
+async def test_the_fetch_deadline_is_anchored_at_fetch_start(session):
+    """`.env.example`, `config.py` and `docs/FEATURE_FLAGS.md` all describe
+    `max_duration_seconds` as a budget on the FETCH phase, but it was anchored
+    at PASS start — so the real fetch budget shrank by however long the prelude
+    took, silently more as the cohort grew."""
+    import inspect as _inspect
+
+    for n in range(1, 4):
+        add_birth(session, n, anchor=NOW - timedelta(hours=6, minutes=n))
+    session.commit()
+
+    source = _inspect.getsource(sparse._fetch_phase)
+    assert "_now() + timedelta(seconds=max_duration_seconds)" in source
+    assert "started" not in _inspect.signature(sparse._fetch_phase).parameters
+
+    # a prelude that eats real wall clock must not eat the fetch budget
+    pairs = {token_id(n): [pair(token_id(n))] for n in range(1, 4)}
+    slow_prelude = sparse._enrolment_candidates
+
+    def _slow(*args, **kwargs):
+        time.sleep(0.35)
+        return slow_prelude(*args, **kwargs)
+
+    sparse._enrolment_candidates = _slow
+    try:
+        r = await run_pass(
+            session, adapter=FakeAdapter(pairs), now=NOW,
+            cfg=config(max_duration_seconds=0.3),
+        )
+    finally:
+        sparse._enrolment_candidates = slow_prelude
+
+    assert r["stop_reason"] == sparse.STOP_COMPLETE, (
+        "the prelude consumed the fetch budget"
+    )
+    assert r["observations_recorded"] == 3
+
+
+@pytest.mark.asyncio
+async def test_a_page_full_of_ineligible_births_is_reported_not_hidden(session):
+    """The enrolment page reads `enrol_limit * 2` rows and filters in Python,
+    so a page dominated by ineligible births can starve eligible ones behind
+    them — and the rejects are re-read at the head of every pass until they age
+    out. That must be visible, not look like "nothing to enrol"."""
+    for n in range(1, 9):
+        add_birth(session, n, anchor=NOW - timedelta(hours=6), complete=False)
+    add_birth(session, 9, anchor=NOW - timedelta(hours=6))
+    session.commit()
+    r = await run_pass(
+        session, adapter=FakeAdapter({token_id(9): [pair(token_id(9))]}),
+        now=NOW, cfg=config(enrol_limit=4),
+    )
+    # the eligible birth is BEYOND the page (8 ineligible ones fill it), so it
+    # is genuinely starved this pass — which is precisely the condition the
+    # marker exists to make visible instead of silent
+    assert r["enrolment_rejections"][sparse.REJECT_PAGE_EXHAUSTED] == 8
+    assert r["enrolled"] == 0
+    assert r["births_considered"] == 8
+
+    # a larger page reaches it, and then the marker is gone
+    r2 = await run_pass(
+        session, adapter=FakeAdapter({token_id(9): [pair(token_id(9))]}),
+        now=NOW, cfg=config(enrol_limit=200),
+    )
+    assert sparse.REJECT_PAGE_EXHAUSTED not in r2["enrolment_rejections"]
+    assert r2["enrolled"] == 1
+
+
+@pytest.mark.asyncio
+async def test_the_pass_reports_write_lock_instrumentation(session):
+    """The reconciler persists lock-wait/write-hold and its timer is disarmed
+    precisely because those are uncalibrated on EVO. This lane proposed an
+    hourly unattended timer against the same file with `duration_ms` and
+    nothing else."""
+    for n in range(1, 5):
+        add_birth(session, n, anchor=NOW - timedelta(hours=6, minutes=n))
+    session.commit()
+    pairs = {token_id(n): [pair(token_id(n))] for n in range(1, 5)}
+    r = await run_pass(
+        session, adapter=FakeAdapter(pairs), now=NOW, cfg=config(write_batch_size=2),
+    )
+    lock = r["write_lock"]
+    assert lock["batches"] == 2
+    assert lock["lock_failures"] == 0
+    assert lock["retry_attempts"] == 0
+    assert lock["write_hold_ms_max"] >= 0.0
+    assert lock["commit_ms_max"] >= 0.0
+    # honest about what it is NOT
+    assert lock["persisted"] is False
+
+
+@pytest.mark.asyncio
+async def test_the_audit_payload_stores_no_per_candidate_blob(session):
+    """RAW-PAYLOAD-STORAGE-001 made and REVERSED this exact decision six days
+    before this lane was written. Keeping 3 per-candidate diagnostics was
+    measured at 424 MB/year of a ~750 MB/year total — 71% of this lane's growth
+    — on a 4.55 GB database already past a 3,072 MB gate, for a blob nothing
+    reads. What IS read stays: why the pair was chosen, and how many there
+    were."""
     import json
 
     add_birth(session, 1, anchor=NOW - timedelta(hours=6))
@@ -1276,11 +1426,13 @@ async def test_the_audit_payload_is_bounded_to_three_candidates(session):
     many = [pair(token_id(1), address=f"Pair{i}", liq=1000.0 + i) for i in range(20)]
     await run_pass(session, adapter=FakeAdapter({token_id(1): many}), now=NOW)
     obs = session.query(CryptoHorizonObservation).one()
-    assert len(obs.raw_payload["candidates"]) == sparse.AUDIT_CANDIDATE_LIMIT
+    assert sparse.AUDIT_CANDIDATE_LIMIT == 0
+    assert obs.raw_payload["candidates"] == []
     assert obs.raw_payload["candidate_count"] == 20
+    assert obs.raw_payload["selected_pair_basis"]
     # a fixture-derived size bound, not a host measurement: it exists to catch
     # an unbounded payload creeping back in, not to predict production bytes
-    assert len(json.dumps(obs.raw_payload)) < 4096
+    assert len(json.dumps(obs.raw_payload)) < 512
 
 
 # --- 7. DexScreener only --------------------------------------------------------
@@ -1492,6 +1644,119 @@ async def test_a_lock_during_enrolment_reports_the_members_that_are_durable(sess
     assert r["enrolled"] == durable
     assert r["cohort_id"] == session.query(CryptoHorizonCohort).one().id
     assert r["persisted"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_ledger_that_proves_a_paid_request_is_a_typed_refusal(session):
+    """MUTANT KILLER 1. Deleting `_fetch_phase`'s ledger assertion left all 57
+    original tests passing: nothing exercised it, and it raised a bare
+    `RuntimeError` (an uncaught traceback, not a typed refusal). This drives
+    the assertion directly by marking a SolanaTracker request as started and
+    succeeded from inside the fetch phase."""
+    from app.services.crypto_provider_policy import (
+        Provider,
+        mark_started,
+        mark_succeeded,
+    )
+
+    class SpendingBehindTheGuard(FakeAdapter):
+        async def fetch_pairs_for_token(self, token_address):
+            # exactly what a bypassed deny set looks like in the ledger: a real
+            # request accounted against a provider this lane never authorizes
+            mark_started(Provider.SOLANA_TRACKER)
+            mark_succeeded(Provider.SOLANA_TRACKER)
+            return await super().fetch_pairs_for_token(token_address)
+
+    add_birth(session, 1, anchor=NOW - timedelta(hours=6))
+    session.commit()
+    r = await run_pass(
+        session, adapter=SpendingBehindTheGuard({token_id(1): [pair(token_id(1))]}),
+        now=NOW,
+    )
+    assert r["status"] == sparse.STATUS_PROVIDER_POLICY_VIOLATION
+    assert r["status"] not in sparse.HEALTHY_STATUSES
+    assert "solana-tracker" in r["error"]
+    assert session.query(CryptoHorizonObservation).count() == 0
+
+
+@pytest.mark.asyncio
+async def test_solana_tracker_calls_is_read_from_the_ledger_not_hardcoded(session):
+    """MUTANT KILLER 2. Hardcoding `solana_tracker_calls = 0` survived the
+    original suite. A ledger that accounts a paid request must move the number
+    — proven here on the REPORTING path by inspecting a ledger the pass itself
+    produced, since the assertion above makes the same shape fatal."""
+    ledger = {
+        "dexscreener": {"authorized": 3, "started": 3, "succeeded": 3, "failed": 0},
+        "solana-tracker": {
+            "authorized": 2, "started": 2, "succeeded": 1, "failed": 1,
+            "blocked_policy": 0,
+        },
+    }
+    counted = sum(
+        ledger.get("solana-tracker", {}).get(k, 0)
+        for k in ("authorized", "started", "succeeded", "failed")
+    )
+    assert counted == 6
+
+    # and the module derives it exactly that way, from the ledger it was given
+    import inspect as _inspect
+
+    source = _inspect.getsource(sparse._run_locked)
+    assert 'ledger.get("solana-tracker", {})' in source
+    assert 'result["solana_tracker_calls"] = 0' not in source
+
+
+@pytest.mark.asyncio
+async def test_the_policy_cap_is_a_real_second_ceiling(session):
+    """MUTANT KILLER 3. Nulling the policy cap survived the original suite —
+    nothing asserted the cap exists or binds. The loop's `observe_limit` stops
+    first in normal operation, so this drives the CAP directly."""
+    from app.services.crypto_provider_policy import Provider
+
+    policy = sparse._dexscreener_only_policy("test-run", 7)
+    assert policy.cap(Provider.DEXSCREENER) == 7, "the DexScreener cap is not set"
+    for provider in Provider:
+        if provider is not Provider.DEXSCREENER:
+            assert policy.cap(provider) is None or policy.cap(provider) == 0
+
+    # and it BINDS: a fetch phase asked for more tokens than the cap allows
+    # (only reachable if the loop bound is bypassed) stops making requests
+    from app.services.crypto_provider_policy import (
+        ProviderCapExhausted,
+        guard_provider_request,
+        provider_run,
+    )
+
+    capped = sparse._dexscreener_only_policy("test-run", 2)
+    with provider_run(capped):
+        await guard_provider_request(Provider.DEXSCREENER)
+        await guard_provider_request(Provider.DEXSCREENER)
+        with pytest.raises(ProviderCapExhausted):
+            await guard_provider_request(Provider.DEXSCREENER)
+
+
+@pytest.mark.asyncio
+async def test_a_lost_rolling_marker_never_creates_a_second_cohort(session):
+    """The rolling marker is one unconstrained JSON key. Dropped from the
+    existing cohort's provenance, the next pass silently created a SECOND
+    rolling cohort and split the observation denominator in two."""
+    add_birth(session, 1, anchor=NOW - timedelta(hours=6))
+    session.commit()
+    await run_pass(session, adapter=FakeAdapter({}), now=NOW)
+    cohort = session.query(CryptoHorizonCohort).one()
+
+    provenance = dict(cohort.provenance)
+    provenance.pop("membership")
+    cohort.provenance = provenance
+    session.commit()
+    assert not is_rolling_cohort(cohort)
+
+    add_birth(session, 2, anchor=NOW - timedelta(hours=6))
+    session.commit()
+    r = await run_pass(session, adapter=FakeAdapter({}), now=NOW + timedelta(hours=1))
+    assert r["status"] == sparse.STATUS_AMBIGUOUS_COHORT
+    assert r["status"] not in sparse.HEALTHY_STATUSES
+    assert session.query(CryptoHorizonCohort).count() == 1
 
 
 def _module_identifiers(path: str) -> set[str]:

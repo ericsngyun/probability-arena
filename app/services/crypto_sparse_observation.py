@@ -130,6 +130,18 @@ FLAG = "enable_crypto_sparse_observation"
 LOCK_FILENAME = ".crypto-sparse-observe-{chain}.lock"
 TICK_SOURCE = "crypto-sparse-obs"
 COHORT_NOTE = "standing rolling cohort for prospective sparse observation"
+SPARSE_COHORT_SOURCE = "prospective_sparse_observation"
+
+
+class AmbiguousCohortError(RuntimeError):
+    """Refusal to guess which cohort owns the observation denominator."""
+
+
+class ProviderPolicyViolation(RuntimeError):
+    """A non-DexScreener provider reached a REQUEST inside this lane's fetch
+    phase. The deny set is supposed to make that impossible before a socket
+    opens, so reaching it means the structural guarantee is broken; it is a
+    typed refusal (`provider_policy_violation`), never a reported metric."""
 
 # --- the two horizons this lane buys --------------------------------------------
 # 15m and 1h are NOT bought. The measured production coverage at those horizons
@@ -166,19 +178,26 @@ SPARSE_HORIZON_LABELS: tuple[str, ...] = tuple(label for label, _m in SPARSE_HOR
 SPARSE_BAND_MINUTES = 60.0
 SPARSE_CADENCE_MINUTES = 60.0
 
+# `raise`, not `assert`: `python -O` strips assert statements outright, and
+# these two are the invariants that keep the lane from buying ticks that can
+# never mature a label.
+if not SPARSE_HORIZONS:
+    raise ValueError("sparse horizons must be a non-empty subset of HORIZONS")
 _TIGHTEST_TAPE_TOLERANCE_MINUTES = min(
     minutes * HORIZON_TOLERANCE for _label, minutes in SPARSE_HORIZONS
 )
-assert SPARSE_HORIZONS, "sparse horizons must be a non-empty subset of HORIZONS"
-assert SPARSE_BAND_MINUTES <= _TIGHTEST_TAPE_TOLERANCE_MINUTES, (
-    "invariant (1) BAND CONTAINMENT violated: a sparse observation could land "
-    "outside compute_survival's tolerance window and buy a tick that can never "
-    "mature the label it was bought for"
-)
-assert int((2 * SPARSE_BAND_MINUTES) // SPARSE_CADENCE_MINUTES) >= 2, (
-    "invariant (2) MISSED-PASS TOLERANCE violated: fewer than 2 scheduled "
-    "passes fall inside a band, so one missed pass silently loses the horizon"
-)
+if SPARSE_BAND_MINUTES > _TIGHTEST_TAPE_TOLERANCE_MINUTES:
+    raise ValueError(
+        "invariant (1) BAND CONTAINMENT violated: a sparse observation could "
+        "land outside compute_survival's tolerance window and buy a tick that "
+        "can never mature the label it was bought for"
+    )
+if int((2 * SPARSE_BAND_MINUTES) // SPARSE_CADENCE_MINUTES) < 2:
+    raise ValueError(
+        "invariant (2) MISSED-PASS TOLERANCE violated: fewer than 2 scheduled "
+        "passes fall inside a band, so one missed pass silently loses the "
+        "horizon"
+    )
 
 # The band closes at target + BAND; past that a member-horizon is permanently
 # unobservable. A birth older than this at the LONGEST sparse horizon can never
@@ -195,10 +214,17 @@ DEFAULT_ENROL_LIMIT = 200          # 9x the ~22/pass steady-state enrolment rate
 DEFAULT_OBSERVE_LIMIT = 100        # 2.27x the ~44/pass steady-state fetch rate
 DEFAULT_WRITE_BATCH_SIZE = 25      # tokens committed per write transaction
 DEFAULT_MAX_DURATION_SECONDS = 90.0  # deadline on the FETCH phase only
-# RAW-PAYLOAD-STORAGE-001: raw payloads were 27% of the production DB with zero
-# readers. This lane writes ~1,000 observation rows/day, so it keeps 3 candidate
-# diagnostics, not the manual lane's 12.
-AUDIT_CANDIDATE_LIMIT = 3
+# RAW-PAYLOAD-STORAGE-001 made and then REVERSED this exact decision six days
+# before this lane was written: raw payloads were 27% of the production DB with
+# zero readers, and `RAW_PAYLOAD_CAPTURE_MODE=none` cut ticks 2051B -> 118B.
+# Keeping 3 per-candidate diagnostics here was measured at 424 MB/year of a
+# ~750 MB/year total, i.e. 71% of this lane's growth, on a 4.55 GB database
+# already past a 3,072 MB gate — for a blob nothing reads.
+#
+# 0 keeps the two fields that ARE read: `selected_pair_basis` (why this pair
+# was chosen — the audit question) and `candidate_count` (how many there were).
+# The per-candidate list is dropped.
+AUDIT_CANDIDATE_LIMIT = 0
 
 # --- statuses -------------------------------------------------------------------
 STATUS_DISABLED = "disabled"
@@ -224,6 +250,9 @@ STOP_COMPLETE = "complete"
 REJECT_INCOMPLETE_ANCHOR = "incomplete_lifecycle_anchor"
 REJECT_NO_ANCHOR_TIMESTAMP = "no_first_evidence_at"
 REJECT_ALL_BANDS_CLOSED = "all_sparse_bands_closed"
+# not a per-birth reason: a marker that the candidate PAGE was filled with
+# ineligible births, so eligible ones may be waiting behind them
+REJECT_PAGE_EXHAUSTED = "enrolment_page_exhausted"
 
 
 # --- eligibility ----------------------------------------------------------------
@@ -360,6 +389,41 @@ def find_rolling_cohort(session: Session, chain: str) -> list[CryptoHorizonCohor
 
 
 def _create_rolling_cohort(session: Session, chain: str, now: datetime):
+    """Create THE standing cohort. Never a second one.
+
+    The rolling marker is one unconstrained JSON key. Dropped from the existing
+    cohort's provenance, the next pass silently created a SECOND rolling cohort
+    and split the observation denominator in two; forged onto a frozen cohort,
+    the lane wedges at `ambiguous_cohort` forever. The forged direction is
+    already fail-closed and loud. This closes the dropped direction: a cohort
+    carrying this lane's own `provenance["source"]` for this chain is treated
+    as the standing cohort whether or not the membership key survived, and a
+    second one is refused rather than created.
+
+    Creation is a once-per-deployment event and is logged at WARNING so it can
+    never happen quietly."""
+    existing = session.execute(
+        select(CryptoHorizonCohort).where(CryptoHorizonCohort.chain == chain)
+    ).scalars().all()
+    orphaned = [
+        c for c in existing
+        if (getattr(c, "provenance", None) or {}).get("source")
+        == SPARSE_COHORT_SOURCE
+    ]
+    if orphaned:
+        raise AmbiguousCohortError(
+            f"chain {chain} already has {len(orphaned)} cohort(s) created by "
+            f"this lane (ids {[c.id for c in orphaned]}) whose "
+            f"provenance['membership'] is no longer {MEMBERSHIP_ROLLING!r}. "
+            "Refusing to create a second standing cohort and split the "
+            "observation denominator; repair the marker on the existing "
+            "cohort instead."
+        )
+    logger.warning(
+        "CRYPTO-COVERAGE-REPAIR-002: creating THE standing rolling sparse "
+        "cohort for chain %s. This should happen exactly once per deployment; "
+        "a second occurrence means the rolling marker was lost.", chain,
+    )
     cohort = CryptoHorizonCohort(
         chain=chain,
         # A rolling cohort has no member limit by construction. 0 records that
@@ -370,7 +434,7 @@ def _create_rolling_cohort(session: Session, chain: str, now: datetime):
         window_hours=int(ENROL_WINDOW_MINUTES // 60),
         note=COHORT_NOTE,
         provenance={
-            "source": "prospective_sparse_observation",
+            "source": SPARSE_COHORT_SOURCE,
             "milestone": "CRYPTO-COVERAGE-REPAIR-002",
             "membership": MEMBERSHIP_ROLLING,
             "horizons": list(SPARSE_HORIZON_LABELS),
@@ -488,7 +552,7 @@ def _transport_failures(ctx) -> int:
 async def _fetch_phase(
     service: CryptoHorizonService,
     due_tokens: list[str],
-    deadline: datetime | None,
+    max_duration_seconds: float | None,
     clock,
 ) -> tuple[list[_Fetched], int, str, dict]:
     """Fetch every due token's pairs. **Opens no transaction and writes
@@ -502,8 +566,28 @@ async def _fetch_phase(
     tens of seconds of network I/O on a shared host. That is precisely the
     single-transaction shape OPS-013 retired and CRYPTO-COVERAGE-REPAIR-001
     spent five review rounds on. Here the write lock is not held at all while
-    the provider is being called; the property is pinned by test, not asserted
-    in a comment.
+    the provider is being called.
+
+    WHAT ACTUALLY GUARANTEES IT is STRUCTURAL, not the test: this function has
+    no `session` parameter and `CryptoHorizonService` holds no session, so
+    there is no session in scope to open a transaction with. The
+    transaction-shape test is a smoke check, not the guarantee — injecting five
+    `session.execute(select(...))` calls into this phase was measured to leave
+    all four of its assertions passing, because it watches commits and ORM
+    flushes rather than statement starts. The earlier docstring claimed the
+    opposite.
+
+    The headline property additionally depends on pysqlite's DEFERRED implicit
+    BEGIN: a read does not open a write transaction. Nothing in this repo owns
+    that assumption, so `tests/test_crypto_coverage_repair_002.py` asserts it at
+    the `app/db.py` boundary.
+
+    THE DEADLINE IS ANCHORED HERE, at the first line of the fetch phase — not
+    at pass start. `.env.example`, `config.py` and `docs/FEATURE_FLAGS.md` all
+    describe it as a budget on the FETCH phase, and anchoring it at pass start
+    made the real fetch budget shrink by however long the prelude took, i.e.
+    silently smaller as the cohort grew. Anchoring it here makes the three
+    documents true and decouples the budget from prelude cost.
 
     Returns (fetched, calls, stop_reason, provider_ledger)."""
     from app.services.crypto_provider_policy import (
@@ -516,6 +600,10 @@ async def _fetch_phase(
     fetched: list[_Fetched] = []
     calls = 0
     stop_reason = STOP_COMPLETE
+    deadline = (
+        _now() + timedelta(seconds=max_duration_seconds)
+        if max_duration_seconds is not None else None
+    )
     policy = _dexscreener_only_policy(new_run_id(), len(due_tokens))
     with provider_run(policy) as ctx:
         for token in due_tokens:
@@ -586,8 +674,8 @@ async def _fetch_phase(
         if name != Provider.DEXSCREENER.value
         and any(entry.get(k) for k in ("authorized", "started", "succeeded", "failed"))
     }
-    if spent:  # pragma: no cover - structurally unreachable
-        raise RuntimeError(
+    if spent:
+        raise ProviderPolicyViolation(
             f"sparse observation issued a non-DexScreener provider request: {spent}"
         )
     return fetched, calls, stop_reason, ledger
@@ -863,7 +951,11 @@ async def _run_locked(
         return _finish(result, started)
 
     if cohort is None:
-        cohort = _create_rolling_cohort(session, cfg.chain, now)
+        try:
+            cohort = _create_rolling_cohort(session, cfg.chain, now)
+        except AmbiguousCohortError as exc:
+            session.rollback()
+            return _refused(STATUS_AMBIGUOUS_COHORT, str(exc))
         result["cohort_created"] = True
     # `progress` is updated after each COMMITTED enrolment batch, so a refusal
     # mid-enrolment reports what is actually durable rather than 0.
@@ -927,15 +1019,16 @@ async def _run_locked(
     # 0.0 is the deliberate "already past due" sentinel (same convention as
     # the tape reconciler's `max_duration_seconds`): the fetch loop then stops
     # after exactly one token, never before the first, so a pass can never
-    # report `ok` having fetched nothing.
-    deadline = (
-        started + timedelta(seconds=cfg.max_duration_seconds)
-        if cfg.max_duration_seconds is not None else None
-    )
+    # report `ok` having fetched nothing. The budget is anchored inside
+    # `_fetch_phase`, at fetch start — see its docstring.
     try:
         fetched, calls, stop_reason, ledger = await _fetch_phase(
-            service, selected_tokens, deadline, clock,
+            service, selected_tokens, cfg.max_duration_seconds, clock,
         )
+    except ProviderPolicyViolation as exc:
+        # The ledger PROVED a non-DexScreener request happened. Typed, loud,
+        # non-zero — the structural guarantee this lane sells is broken.
+        return _refused(STATUS_PROVIDER_POLICY_VIOLATION, str(exc))
     except Exception as exc:
         from app.services.crypto_provider_policy import ProviderPolicyError
 
@@ -991,12 +1084,19 @@ async def _run_locked(
     # `_sparse_plan`'s bounding note; the same unbounded-growth hazard applies
     # here, and `service._members` deliberately has no filter because the
     # frozen lane it was written for has at most 100 members).
+    #
+    # `fetched_tokens` is bounded by `observe_limit` (<= OBSERVE_MAX_CALLS =
+    # 100), so this `.in_()` can never grow with the cohort. The `chain`
+    # predicate is redundant with `cohort_id` — a cohort is single-chain by
+    # construction — but it is stated so a future multi-chain cohort cannot
+    # silently mix chains here.
     fetched_tokens = [item.token_address for item in fetched]
     members = {
         m.token_address: m
         for m in session.execute(
             select(CryptoHorizonCohortMember).where(
                 CryptoHorizonCohortMember.cohort_id == cohort.id,
+                CryptoHorizonCohortMember.chain == cfg.chain,
                 CryptoHorizonCohortMember.token_address.in_(fetched_tokens),
             )
         ).scalars().all()
@@ -1022,6 +1122,7 @@ async def _run_locked(
     recorded = 0
     batches = 0
     retried = 0
+    meter = _WriteMeter()
 
     def _stage(batch: list[_Fetched]):
         """Stage one batch's rows. Called once per commit ATTEMPT — see
@@ -1063,7 +1164,9 @@ async def _run_locked(
             # whose commit failed still reported the full `observations_
             # recorded` — a green pass that wrote nothing after spending real
             # provider requests.
-            staged = _commit_with_retry(session, lambda b=batch: _stage(b), sleeper)
+            staged = _commit_with_retry(
+                session, lambda b=batch: _stage(b), sleeper, meter,
+            )
             batches += 1
             recorded += staged["recorded"]
             ticks += staged["ticks"]
@@ -1072,7 +1175,9 @@ async def _run_locked(
                 outcomes[name] = outcomes.get(name, 0) + count
     except IntegrityError as exc:
         session.rollback()
-        _record_write_progress(result, batches, recorded, ticks, retried, outcomes)
+        _record_write_progress(
+            result, batches, recorded, ticks, retried, outcomes, meter,
+        )
         result["error"] = (
             "an observation row for this (cohort, token, horizon) already "
             f"existed — another pass raced this one: {exc}"
@@ -1083,7 +1188,7 @@ async def _run_locked(
         session.rollback()
         if _is_db_locked(exc):
             _record_write_progress(
-                result, batches, recorded, ticks, retried, outcomes,
+                result, batches, recorded, ticks, retried, outcomes, meter,
             )
             result["error"] = (
                 "database is locked; observation write phase abandoned. The "
@@ -1100,14 +1205,63 @@ async def _run_locked(
     result["batches_committed"] = batches
     result["request_failures_reattempted"] = retried
     result["persisted"] = result["persisted"] or recorded > 0
+    result["write_lock"] = meter.snapshot()
     if stop_reason != STOP_COMPLETE:
         result["status"] = STATUS_PARTIAL
     return _finish(result, started)
 
 
+@dataclass
+class _WriteMeter:
+    """Per-pass write-phase lock instrumentation.
+
+    The reconciler PERSISTS `lock_wait_ms` / `write_hold_ms_max` / `blocked_ms`
+    / phase attribution — and its timer is disarmed precisely because those
+    numbers are uncalibrated on EVO. This lane proposes an hourly unattended
+    timer against the same file, and shipped with `duration_ms` and nothing
+    else. These are the same measurements, IN THE RESULT.
+
+    They are NOT persisted to a run table: that needs a new table and a
+    migration decision this review round did not take. Until it does, this
+    lane's timer must not be installed — the flag stays off and the CLI is the
+    only way to read these numbers."""
+
+    batches: int = 0
+    retry_attempts: int = 0
+    lock_failures: int = 0
+    write_hold_ms_max: float = 0.0
+    commit_ms_max: float = 0.0
+    commit_ms_total: float = 0.0
+
+    def record(self, *, attempts: int, hold_ms: float, commit_ms: float) -> None:
+        self.batches += 1
+        self.retry_attempts += attempts - 1
+        self.write_hold_ms_max = max(self.write_hold_ms_max, hold_ms)
+        self.commit_ms_max = max(self.commit_ms_max, commit_ms)
+        self.commit_ms_total += commit_ms
+
+    def record_failure(self, attempt: int) -> None:
+        self.lock_failures += 1
+
+    def snapshot(self) -> dict:
+        return {
+            "batches": self.batches,
+            "retry_attempts": self.retry_attempts,
+            "lock_failures": self.lock_failures,
+            "write_hold_ms_max": round(self.write_hold_ms_max, 3),
+            "commit_ms_max": round(self.commit_ms_max, 3),
+            "commit_ms_total": round(self.commit_ms_total, 3),
+            "persisted": False,
+            "note": (
+                "write-phase only; the fetch phase holds no transaction. NOT "
+                "persisted to a run table — install no timer until it is"
+            ),
+        }
+
+
 def _record_write_progress(
     result: dict, batches: int, recorded: int, ticks: int, retried: int,
-    outcomes: dict,
+    outcomes: dict, meter: "_WriteMeter",
 ) -> None:
     """Carry the DURABLE write-phase counts into a refusal result. Every one of
     these is incremented only after a batch's commit returned (see
@@ -1119,6 +1273,7 @@ def _record_write_progress(
     result["request_failures_reattempted"] = retried
     result["outcome_counts"] = dict(outcomes)
     result["persisted"] = bool(result.get("persisted")) or recorded > 0
+    result["write_lock"] = meter.snapshot()
 
 
 def _logical_clock(now: datetime, started: datetime):
@@ -1136,7 +1291,7 @@ def _logical_clock(now: datetime, started: datetime):
     return _clock
 
 
-def _commit_with_retry(session: Session, prepare, sleeper=None):
+def _commit_with_retry(session: Session, prepare, sleeper=None, meter=None):
     """Bounded lock-retry ladder around one batch commit, with the batch
     RE-STAGED after every rollback.
 
@@ -1162,13 +1317,25 @@ def _commit_with_retry(session: Session, prepare, sleeper=None):
             # staging can itself emit SQL (autoflush, lazy-load) and hit the
             # lock. Staging outside the try would send that straight past this
             # ladder.
+            hold_start = time.perf_counter()
             staged = prepare()
+            commit_start = time.perf_counter()
             session.commit()
+            if meter is not None:
+                meter.record(
+                    attempts=attempt,
+                    hold_ms=(time.perf_counter() - hold_start) * 1000.0,
+                    commit_ms=(time.perf_counter() - commit_start) * 1000.0,
+                )
             return staged
         except Exception as exc:
             if not _is_db_locked(exc) or attempt == DB_LOCKED_MAX_ATTEMPTS:
+                if meter is not None and _is_db_locked(exc):
+                    meter.record_failure(attempt)
                 raise
             session.rollback()
+            if meter is not None:
+                meter.record_failure(attempt)
             sleeper(DB_LOCKED_RETRY_SECONDS)
     raise RuntimeError(  # pragma: no cover - the loop always returns or raises
         "commit retry ladder exhausted without committing or raising"
@@ -1243,6 +1410,20 @@ def _enrolment_candidates(
             eligible.append(birth)
         else:
             rejections[reason] = rejections.get(reason, 0) + 1
+    # PAGE EXHAUSTION, reported not hidden. This reads `enrol_limit * 2` rows
+    # and filters in Python, so a page dominated by ineligible births can
+    # return fewer than `enrol_limit` eligible ones while eligible births wait
+    # behind them — and the rejects are re-read at the head of every pass until
+    # they age out of the window. The page bound stays (pushing
+    # `_completeness_reason`'s full predicate into SQL would duplicate it in
+    # two places, and paging until `enrol_limit` eligible rows are found makes
+    # a bounded pass unbounded), but the condition is now visible instead of
+    # looking like "there was nothing to enrol".
+    page_exhausted = (
+        len(births) >= cfg.enrol_limit * 2 and len(eligible) < cfg.enrol_limit
+    )
+    if page_exhausted:
+        rejections[REJECT_PAGE_EXHAUSTED] = len(births) - len(eligible)
     if count_anchorless:
         # A birth with NULL `first_evidence_at` cannot appear in the indexed
         # range above at all, so the scheduled pass excludes it in SQL and it
@@ -1279,7 +1460,16 @@ def _enrol(
 
     `progress["enrolled"]` is advanced only after a batch's commit RETURNS, so
     a caller that catches a lock or a race mid-enrolment reports what is
-    durable rather than what was staged."""
+    durable rather than what was staged.
+
+    NO RETRY LADDER HERE, deliberately (resolved once B4's `_commit_with_retry`
+    landed). Enrolment is idempotent by unique index and costs nothing to
+    repeat: a lock refuses the pass, the already-committed batches stay, and
+    the NEXT scheduled pass re-selects exactly the births that still have no
+    member row. Retrying inline would extend a pass's hold on a contended
+    database to buy something the cadence already provides for free. The WRITE
+    phase is different — it has already spent real provider requests, so
+    abandoning it wastes them, which is why the ladder lives there."""
     progress = progress if progress is not None else {}
     progress.setdefault("enrolled", 0)
     pending = 0
@@ -1422,6 +1612,7 @@ def _sparse_plan(
             select(CryptoHorizonCohortMember)
             .where(
                 CryptoHorizonCohortMember.cohort_id == cohort.id,
+                CryptoHorizonCohortMember.chain == cfg.chain,
                 CryptoHorizonCohortMember.added_at >= member_cutoff,
                 CryptoHorizonCohortMember.added_at <= now,
                 anchor_col >= member_cutoff,

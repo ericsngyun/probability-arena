@@ -4926,6 +4926,11 @@ async def crypto_sparse_observe(
             f"deferred={r['deferred_observations']}  "
             f"stop_reason={r['stop_reason']}"
         )
+        print(
+            f"retryable_request_failures={r['retryable_request_failures']}  "
+            f"request_failures_reattempted={r['request_failures_reattempted']}"
+        )
+        print(f"write_lock={r.get('write_lock')}")
         print(f"provider_ledger={r.get('provider_ledger')}")
         return r["observations_recorded"]
     finally:
