@@ -59,6 +59,7 @@ from app.models import (
 # and keeping the two apart is what stops a future edit from quietly
 # re-deriving a policy number from a measured one.
 from app.services import crypto_reconciler_guard as guard
+from app.telemetry import writer_pass
 
 def _completeness_reason(birth, min_liquidity: float) -> str | None:
     """None when the birth is a COMPLETE lifecycle anchor; else the rejection
@@ -5285,6 +5286,91 @@ def run_scheduled_reconciliation(
     ) or CryptoTapeConfig.from_settings(s).chain
     _health_path = guard.health_state_path(getattr(s, "database_url", None), _chain)
 
+    # GATE2-WRITER-TELEMETRY-001 — the adaptive-batching config that was
+    # actually in force, captured for the pass telemetry.
+    #
+    # A HOLDER RATHER THAN A CLOSURE OVER THE LOCALS, on purpose: `_refused`
+    # is defined here but CALLED from validation points both before and after
+    # those locals exist (`invalid_limit` fires before `batch` is even
+    # assigned). A closure reading them directly would raise NameError on
+    # exactly the early-refusal paths this gate most needs recorded. An empty
+    # holder is also the honest answer for those passes — a refusal that
+    # happened before config resolution genuinely HAS no resolved config, and
+    # the fields are omitted rather than reported as zeros.
+    _adaptive_cfg: dict = {}
+
+    def _emit_pass_telemetry(result: dict) -> None:
+        """One JSONL append per terminal outcome, on the non-SQLite 001A sink.
+
+        Takes no lock, opens no connection, and never raises: `emit_writer_pass`
+        swallows everything, and this wrapper is called only after the pass has
+        finished all of its own commits. It is deliberately NOT part of the
+        finalize commit — that commit gets one attempt, and the passes whose
+        numbers matter most are the ones that lose it.
+
+        PHASE ATTRIBUTION IS PRESERVED, NOT FLATTENED. `batch_lock_wait_ms_max`
+        is the batch-phase figure the breakers read; the `run_row` and
+        `finalize` waits ride along in their own fields. The pass total stays
+        in the pre-existing `lock_wait_ms`. Four fields, never summed."""
+        phases = result.get("lock_wait_phases") or {}
+
+        def _phase_wait(name: str):
+            entry = phases.get(name)
+            return entry.get("lock_wait_ms") if isinstance(entry, dict) else None
+
+        def _int_or_none(value):
+            return None if value is None else int(value)
+
+        # "written" is every row the pass actually created or updated across
+        # the three tables it touches; `tokens_considered` is what it looked at.
+        written = sum(
+            int(result.get(key) or 0)
+            for key in ("snapshots_created", "outcomes_updated",
+                        "birth_events_created")
+        )
+        fields = {
+            "rows_attempted": _int_or_none(result.get("tokens_considered")),
+            "rows_committed": written,
+            "rows_skipped": _int_or_none(result.get("tokens_omitted")),
+            "batch_count": _int_or_none(result.get("batches_committed")),
+            "retry_count": int(result.get("lock_retry_events") or 0),
+            "external_calls": _int_or_none(result.get("external_calls")),
+            "lock_wait_ms": _int_or_none(result.get("lock_wait_ms")),
+            "batch_lock_wait_ms_max": _int_or_none(
+                result.get("batch_lock_wait_ms_max")),
+            "run_row_lock_wait_ms": _int_or_none(
+                _phase_wait(LOCK_WAIT_PHASE_RUN_ROW)),
+            "finalize_lock_wait_ms": _int_or_none(
+                result.get("finalize_lock_wait_ms")),
+            "write_hold_ms_max": _int_or_none(result.get("write_hold_ms_max")),
+            "adaptive_batching_active": result.get("adaptive_batching_active"),
+            "duration_ms": _int_or_none(result.get("duration_ms")),
+            **_adaptive_cfg,
+        }
+        writer_pass.emit_writer_pass(
+            writer_name="crypto_tape",
+            operation_name="scheduled_reconciliation",
+            started_at=started.isoformat().replace("+00:00", "Z"),
+            run_status=result.get("status"),
+            stop_reason=result.get("stop_reason"),
+            # The `--force` bit itself, kept SEPARATE from `run_source`: an
+            # attended force pass must never trip or clear the rolling latch,
+            # and `scheduled` + `bypassed` has to stay readable as the anomaly
+            # it would be.
+            gate_bypassed=bool(force),
+            table_groups=["crypto_horizon", "runs_audit"],
+            **{k: v for k, v in fields.items() if v is not None},
+        )
+
+    def _finish(result: dict) -> dict:
+        """The single terminal funnel: record the gate history, then persist
+        the pass record. Both call sites of `_record_health` go through here,
+        so no terminal outcome — including every pre-flight skip and refusal —
+        can escape unrecorded."""
+        recorded = _record_health(result)
+        _emit_pass_telemetry(recorded)
+        return recorded
+
     def _record_health(result: dict) -> dict:
         """Annotate EVERY governed outcome with its review verdict, append it
         to the rolling history, and trip the latch when the trend appears.
@@ -5418,7 +5504,7 @@ def run_scheduled_reconciliation(
         # CRYPTO-RECONCILER-GUARDED-TIMER-001: a refusal is an OUTCOME, and a
         # skipped run is data, not silence. Config refusals (`invalid_*`) are
         # annotated but not counted — see `guard.records_feed_gate`.
-        return _record_health(refused)
+        return _finish(refused)
 
     if cap < 1:
         # SQLite treats LIMIT -1 as "no limit", so an unvalidated cap is an
@@ -5516,6 +5602,26 @@ def run_scheduled_reconciliation(
             "invalid_time_budget_seconds",
             f"time_budget_seconds {resolved_time_budget} must be > 0",
         )
+    # GATE2-WRITER-TELEMETRY-001 — the adaptive shape is now resolved AND
+    # validated, so record what was actually in force. This is the config the
+    # write-hold SLO has to be calibrated against: `initial_per_token_cost`
+    # is the uncalibrated seed the whole gate is waiting on, and a recorded
+    # distribution is meaningless without the seed that produced it. Populated
+    # here rather than at the emit so a refusal AFTER this point still carries
+    # it, and a refusal BEFORE it carries nothing rather than a fabricated zero.
+    _adaptive_cfg.update({
+        k: v for k, v in {
+            "adaptive_batch_size_max": int(batch),
+            "adaptive_time_budget_ms": (
+                None if resolved_time_budget is None
+                else int(resolved_time_budget * 1000)
+            ),
+            "adaptive_initial_per_token_cost_ms": (
+                None if resolved_initial_cost is None
+                else int(resolved_initial_cost * 1000)
+            ),
+        }.items() if v is not None
+    })
     # CRYPTO-RECONCILER-LOCK-WAIT-BUDGET-001 — the LOCK-WAIT budget. This is
     # NOT `time_budget_seconds` (which bounds how long a transaction may
     # HOLD the write lock) and the two must never be conflated. None keeps
@@ -5917,7 +6023,7 @@ def run_scheduled_reconciliation(
     # relabelling above (`truncated`, `backlog_expiring`) has already
     # happened, so the recorded row is the status the operator will read, not
     # an earlier draft of it.
-    return _record_health(summary)
+    return _finish(summary)
 
 
 def _reconciliation_should_abort(session: Session) -> bool:
