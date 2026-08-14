@@ -560,6 +560,54 @@ class TestRunSourceAndBypass:
         await run_pass(session, adapter=adapter)
         assert only_event()["gate_bypassed"] is False
 
+    def test_a_result_missing_the_key_defaults_to_the_ANOMALOUS_reading(self):
+        """LOW-2. `result.get("gate_bypassed") is not None` reported `False` for
+        a result that never set the key — "the gate was NOT bypassed", the one
+        reading this field exists to make impossible. A forgotten key now lands
+        on the side an operator investigates.
+
+        Inert today by construction, which is why it is pinned here and not
+        reachable through a live pass: the test below proves every terminal
+        path currently sets the key, and this one proves what happens the day
+        one does not."""
+        assert sparse._gate_bypassed_bit({}) is True
+        assert sparse._gate_bypassed_bit({"status": "ok"}) is True
+        # and the three values a real path does set are unchanged
+        assert sparse._gate_bypassed_bit({"gate_bypassed": None}) is False
+        assert sparse._gate_bypassed_bit({"gate_bypassed": "force"}) is True
+        assert sparse._gate_bypassed_bit({"gate_bypassed": "dry_run"}) is True
+
+    def test_the_missing_key_reaches_the_sink_as_true_not_as_false(self):
+        """Through the emitter, not just the helper: the default must survive
+        the call, and must not cost the record."""
+        sparse._emit_pass_telemetry(
+            {"status": "ok", "stop_reason": "complete"},
+            datetime.now(timezone.utc),
+        )
+        assert only_event()["gate_bypassed"] is True
+
+    @pytest.mark.asyncio
+    async def test_every_terminal_path_sets_the_key_today(self, session):
+        """The other half of LOW-2: the default is a backstop, not a licence.
+        A pass that reaches `_finish` without the key is a bug in THAT path."""
+        results = [
+            await run_pass(session, adapter=seed(session)),
+            await run_pass(
+                session, adapter=FakeAdapter(), dry_run=True,
+                s=settings(enable_crypto_sparse_observation=False)),
+            await run_pass(
+                session, adapter=FakeAdapter(),
+                cfg=config(chain=CHAIN, write_batch_size=0)),
+        ]
+        for result in results:
+            assert "gate_bypassed" in result, (
+                f"{result['status']} reached a terminal state without the "
+                "attended-bypass bit")
+        # three DIFFERENT terminal kinds, so this cannot decay into three
+        # identical happy passes and keep passing
+        assert len({r["status"] for r in results}) == 3, (
+            [r["status"] for r in results])
+
 
 # --- 5. A1: "not measured" and "sub-millisecond" stay distinguishable -------
 

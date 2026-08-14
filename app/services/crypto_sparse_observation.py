@@ -550,6 +550,7 @@ def _emit_pass_telemetry(result: dict, started: datetime) -> None:
         fields = _pass_telemetry_fields(result)
     except Exception:
         fields = {}
+    gate_bypassed = _gate_bypassed_bit(result)
     event_id = None
     try:
         event_id = writer_pass.emit_writer_pass(
@@ -571,8 +572,9 @@ def _emit_pass_telemetry(result: dict, started: datetime) -> None:
             # because both flags bypass the gate attended and the result says
             # which; the telemetry field is a strict bool, so it carries "was the
             # gate bypassed at all". `run_status="dry_run"` on the same record is
-            # what distinguishes the two.
-            gate_bypassed=result.get("gate_bypassed") is not None,
+            # what distinguishes the two. The MISSING-key case is handled in
+            # `_gate_bypassed_bit`, not here — see LOW-2 there.
+            gate_bypassed=gate_bypassed,
             table_groups=list(TELEMETRY_TABLE_GROUPS),
             **fields,
         )
@@ -581,6 +583,36 @@ def _emit_pass_telemetry(result: dict, started: datetime) -> None:
     lock = result.get("write_lock")
     if isinstance(lock, dict):
         lock["persisted"] = event_id is not None
+
+
+_GATE_BYPASSED_UNSET = object()
+
+
+def _gate_bypassed_bit(result: dict) -> bool:
+    """The attended-bypass bit, defaulting TOWARD the anomaly (LOW-2).
+
+    This was `result.get("gate_bypassed") is not None`. Every terminal path
+    sets the key today (`_base_result` does NOT — each of the three
+    `gate_bypassed` assignments does), so that expression is inert right now.
+    It is still the wrong default: a future terminal path that forgot the key
+    would have reported `False` — "the gate was NOT bypassed" — which is the
+    one reading this field exists to make impossible. `run_source="scheduled"`
+    together with `gate_bypassed=True` is the anomaly an operator is meant to
+    catch, so a MISSING key must land on the side that gets looked at, never on
+    the side that gets filtered out.
+
+    IT REPORTS `True` RATHER THAN RAISING, deliberately. This is evaluated on
+    the writer's return path inside `_emit_pass_telemetry`, whose `except`
+    turns any raise into `event_id = None` — a raise here would DELETE the
+    whole record, and "the pass happened, with this status" is the fact the
+    corpus needs most. A wrong-but-loud bit costs one investigation; a dropped
+    record costs a pass. The absent key is also recoverable: a scheduled pass
+    with `gate_bypassed=True` and no `--force` in the unit's ExecStart is
+    exactly the shape of this bug."""
+    bypass = result.get("gate_bypassed", _GATE_BYPASSED_UNSET)
+    if bypass is _GATE_BYPASSED_UNSET:
+        return True
+    return bypass is not None
 
 
 def _pass_telemetry_fields(result: dict) -> dict:
