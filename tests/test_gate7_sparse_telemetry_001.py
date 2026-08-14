@@ -677,122 +677,151 @@ class TestFieldMapping:
 # --- 7. HARD CONSTRAINT 1: the telemetry path never touches SQLite ----------
 
 
-_SQLITE_AUDIT_PREFIXES = ("sqlite3.",)
+# The driver runs OUT OF PROCESS, and that is not incidental.
+# `sys.addaudithook` CANNOT BE REMOVED once installed and it switches on
+# CPython's audit machinery for the whole interpreter for the rest of its life.
+# Installing one inside the shared suite would silently tax every later test —
+# including `test_emit_overhead_within_budget`, which asserts a 1 ms p99 on this
+# very sink. A subprocess is also strictly stronger evidence: the hook is armed
+# in a pristine interpreter where no engine has ever been created, so a
+# `sqlite3.connect` anywhere under the emit has nowhere to hide.
+_AUDIT_DRIVER = r'''
+import errno, json, os, sys
+sys.path.insert(0, {root!r})
+seen = []
+def hook(name, args):
+    if name.startswith("sqlite3."):
+        seen.append(name)
+sys.addaudithook(hook)
+
+broken = sys.argv[1]
+tmp = sys.argv[2]
+over = {{}}
+if broken == "happy":
+    os.environ["SQLITE_TELEMETRY_DIR"] = os.path.join(tmp, "tel")
+elif broken == "missing_parent":
+    blocker = os.path.join(tmp, "blocker")
+    open(blocker, "w").write("not a directory")
+    os.environ["SQLITE_TELEMETRY_DIR"] = os.path.join(blocker, "tel")
+elif broken == "permission_denied":
+    d = os.path.join(tmp, "tel"); os.mkdir(d)
+    f = os.path.join(d, "sqlite-writes.jsonl")
+    open(f, "w").close(); os.chmod(f, 0o400)
+    os.environ["SQLITE_TELEMETRY_DIR"] = d
+elif broken == "symlink":
+    d = os.path.join(tmp, "tel"); os.mkdir(d)
+    victim = os.path.join(tmp, "pretend.db")
+    open(victim, "wb").write(b"SQLite format 3\x00")
+    os.symlink(victim, os.path.join(d, "sqlite-writes.jsonl"))
+    os.environ["SQLITE_TELEMETRY_DIR"] = d
+elif broken == "dir_is_a_file":
+    f = os.path.join(tmp, "tel")
+    open(f, "w").write("a regular file, not a directory")
+    os.environ["SQLITE_TELEMETRY_DIR"] = f
+elif broken == "disk_full":
+    os.environ["SQLITE_TELEMETRY_DIR"] = os.path.join(tmp, "tel")
+    real_write = os.write
+    def full(fd, data):
+        if b'"writer_name"' in data:
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return real_write(fd, data)
+    os.write = full
+elif broken == "unserializable_value":
+    os.environ["SQLITE_TELEMETRY_DIR"] = os.path.join(tmp, "tel")
+    over = {{"rows_committed": object()}}
+else:
+    raise SystemExit("unknown scenario " + broken)
+
+from datetime import datetime, timezone
+from app.telemetry import writer_pass
+
+before = len(seen)
+writer_pass.emit_writer_pass(
+    writer_name="crypto_horizon_observe",
+    operation_name="scheduled_sparse_observation",
+    started_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    run_status="ok", batch_count=1, write_hold_measured=True,
+    write_hold_ms_max=3, commit_ms=1, commit_quality="exact",
+    external_calls=4, table_groups=["crypto_horizon"], **over,
+)
+# only what the EMIT raised; the import above is not under test
+print(json.dumps(seen[before:]))
+'''
 
 
-class _SqliteAudit:
-    """`sys.addaudithook` cannot be removed once installed, so this one stays
-    for the process and simply stops recording when disarmed. It records every
-    `sqlite3.*` audit event, which CPython raises on connect and on every
-    statement execution."""
+def _audit_emit(scenario: str, tmp_path: Path) -> list[str]:
+    import json
+    import subprocess
 
-    _installed = False
-    armed = False
-    seen: list[str] = []
-
-    @classmethod
-    def install(cls):
-        if cls._installed:
-            return
-        def hook(name, args):
-            if cls.armed and name.startswith(_SQLITE_AUDIT_PREFIXES):
-                cls.seen.append(name)
-        sys.addaudithook(hook)
-        cls._installed = True
-
-    @classmethod
-    def record(cls, fn):
-        cls.install()
-        cls.seen = []
-        cls.armed = True
-        try:
-            fn()
-        finally:
-            cls.armed = False
-        return list(cls.seen)
-
-
-def _emit_once(**over):
-    def _go():
-        writer_pass.emit_writer_pass(**{
-            "writer_name": sparse.TELEMETRY_WRITER_NAME,
-            "operation_name": sparse.TELEMETRY_OPERATION_NAME,
-            "started_at": datetime.now(timezone.utc)
-            .isoformat().replace("+00:00", "Z"),
-            "run_status": "ok", "batch_count": 1, "write_hold_measured": True,
-            "write_hold_ms_max": 3, "commit_ms": 1, "commit_quality": "exact",
-            **over,
-        })
-    return _go
+    root = str(Path(__file__).resolve().parents[1])
+    driver = tmp_path / "driver.py"
+    driver.write_text(_AUDIT_DRIVER.format(root=root))
+    work = tmp_path / "work"
+    work.mkdir()
+    proc = subprocess.run(
+        [sys.executable, str(driver), scenario, str(work)],
+        capture_output=True, text=True, cwd=root)
+    assert proc.returncode == 0, (
+        f"the emit raised out of a pristine process:\n{proc.stderr}")
+    return json.loads(proc.stdout.strip().splitlines()[-1])
 
 
 class TestTelemetryNeverTouchesSqlite:
     """THE ONE HARD MANDATE OF THE 001A SINK, proved for writer B the way it
     was proved for writer A: an audit hook that would see a connect or an
-    execute, across the happy path and every error path the emit has."""
+    execute, across the happy path and every error path the emit has.
 
-    def test_the_happy_path_opens_no_database(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("SQLITE_TELEMETRY_DIR", str(tmp_path / "tel"))
-        import app.telemetry.sink as sink_mod
-        sink_mod._sink = None
-        seen = _SqliteAudit.record(_emit_once())
-        assert seen == [], f"the emit touched SQLite: {seen}"
+    `sqlite3.connect` and `sqlite3.execute` are CPython audit events raised by
+    the stdlib driver itself — which is the driver SQLAlchemy uses here — so a
+    database opened anywhere under the emit, by any layer, lands in this list."""
+
+    def test_the_happy_path_opens_no_database(self, tmp_path):
+        assert _audit_emit("happy", tmp_path) == []
 
     @pytest.mark.parametrize("broken", [
         "missing_parent", "permission_denied", "symlink", "dir_is_a_file",
         "disk_full", "unserializable_value",
     ])
-    def test_no_error_path_opens_a_database(
-        self, monkeypatch, tmp_path, broken
-    ):
-        import app.telemetry.sink as sink_mod
-
-        over = {}
-        if broken == "missing_parent":
-            blocker = tmp_path / "blocker"
-            blocker.write_text("not a directory")
-            monkeypatch.setenv("SQLITE_TELEMETRY_DIR", str(blocker / "tel"))
-        elif broken == "permission_denied":
-            directory = tmp_path / "tel"
-            directory.mkdir()
-            (directory / "sqlite-writes.jsonl").touch(mode=0o400)
-            os.chmod(directory / "sqlite-writes.jsonl", 0o400)
-            monkeypatch.setenv("SQLITE_TELEMETRY_DIR", str(directory))
-        elif broken == "symlink":
-            directory = tmp_path / "tel"
-            directory.mkdir()
-            target = tmp_path / "pretend.db"
-            target.write_bytes(b"SQLite format 3\x00")
-            (directory / "sqlite-writes.jsonl").symlink_to(target)
-            monkeypatch.setenv("SQLITE_TELEMETRY_DIR", str(directory))
-        elif broken == "dir_is_a_file":
-            destination = tmp_path / "tel"
-            destination.write_text("this is a file, not a directory")
-            monkeypatch.setenv("SQLITE_TELEMETRY_DIR", str(destination))
-        elif broken == "disk_full":
-            monkeypatch.setenv("SQLITE_TELEMETRY_DIR", str(tmp_path / "tel"))
-            real_write = os.write
-
-            def full(fd, data):
-                if b'"writer_name"' in data:
-                    raise OSError(errno.ENOSPC, "No space left on device")
-                return real_write(fd, data)
-
-            monkeypatch.setattr(os, "write", full)
-        elif broken == "unserializable_value":
-            monkeypatch.setenv("SQLITE_TELEMETRY_DIR", str(tmp_path / "tel"))
-            over = {"batch_count": object()}
-
-        sink_mod._sink = None
-        seen = _SqliteAudit.record(_emit_once(**over))
+    def test_no_error_path_opens_a_database(self, tmp_path, broken):
+        seen = _audit_emit(broken, tmp_path)
         assert seen == [], f"the {broken} path touched SQLite: {seen}"
+
+    def test_the_audit_harness_would_actually_see_a_database(self, tmp_path):
+        """THE HARNESS'S OWN NEGATIVE CONTROL. Six clean results mean nothing
+        unless the hook can fail — a typo in the event prefix would produce the
+        same six empty lists."""
+        import json
+        import subprocess
+
+        root = str(Path(__file__).resolve().parents[1])
+        probe = tmp_path / "probe.py"
+        probe.write_text(
+            "import json, sqlite3, sys\n"
+            "seen = []\n"
+            "sys.addaudithook(lambda n, a: "
+            "seen.append(n) if n.startswith('sqlite3.') else None)\n"
+            f"sqlite3.connect({str(tmp_path / 'probe.db')!r}).execute('select 1')\n"
+            "print(json.dumps(seen))\n")
+        proc = subprocess.run([sys.executable, str(probe)],
+                              capture_output=True, text=True, cwd=root)
+        assert proc.returncode == 0, proc.stderr
+        assert json.loads(proc.stdout.strip()), (
+            "the audit hook sees nothing even when SQLite IS used — the six "
+            "clean results above prove nothing")
 
     def test_the_sink_path_is_not_a_database(self, monkeypatch, tmp_path):
         monkeypatch.setenv("SQLITE_TELEMETRY_DIR", str(tmp_path / "tel"))
         import app.telemetry.sink as sink_mod
         sink_mod._sink = None
-        _emit_once()()
+        assert writer_pass.emit_writer_pass(
+            writer_name=sparse.TELEMETRY_WRITER_NAME,
+            operation_name=sparse.TELEMETRY_OPERATION_NAME,
+            started_at=datetime.now(timezone.utc)
+            .isoformat().replace("+00:00", "Z"),
+            run_status="ok",
+        ) is not None
         assert get_sink().path.suffix == ".jsonl"
+        assert not str(get_sink().path).endswith(".db")
 
 
 # --- 8. HARD CONSTRAINT 2: the destination-failure matrix -------------------
@@ -1174,7 +1203,8 @@ class TestTheGateTextIsTrue:
         assert "not calibrated" in note.lower()
 
     def test_the_flag_is_still_default_off(self):
-        assert Settings(database_url="sqlite://").enable_crypto_sparse_observation is False
+        default = Settings(database_url="sqlite://")
+        assert default.enable_crypto_sparse_observation is False
 
     def test_no_timer_unit_was_installed(self):
         units = list((Path(__file__).resolve().parents[1] / "infra" / "systemd"
