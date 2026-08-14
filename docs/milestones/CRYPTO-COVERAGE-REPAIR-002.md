@@ -704,7 +704,8 @@ above are from that clean run, with disk headroom monitored throughout
   marks the request FAILED when a 200's decoded body is not it (round 3, B1).
 * `alembic/versions/0029_horizon_member_cohort_added_at.py` — the composite
   index `ix_horizon_member_cohort_added_at (cohort_id, added_at)`.
-* `tests/test_crypto_coverage_repair_002.py` — 106 tests.
+* `tests/test_crypto_coverage_repair_002.py` — 114 tests (Probe 15 added 8:
+  six fabrication shapes plus two controls).
 
 **Migration 0029 is REQUIRED.** `ensure_schema_current` in `guarded` mode raises
 `MigrationRequiredError` until an operator applies it, and that guard fronts
