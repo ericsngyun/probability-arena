@@ -25,7 +25,8 @@ Every scheduled pass (a) enrols newly-eligible births and (b) fetches
 market/liquidity state via the existing read-only DexScreener adapter for every
 member whose 6h or 24h SPARSE BAND is open right now, writing one ordinary
 `crypto_price_tick` plus one `crypto_horizon_observations` audit row per
-observation. Exactly one attempt per (token, horizon), ever. The pure planner
+observation. At most TWO attempts per (token, horizon), ever, and the second
+only when the first got no ANSWER (see `_is_retryable`). The pure planner
 (`crypto_horizon.plan_observations`), the pair-selection policy
 (`crypto_horizon.select_pair`) and the record/miss semantics
 (`CryptoHorizonService._record_observation`) are REUSED unchanged — this module
@@ -41,8 +42,12 @@ WHAT IT DELIBERATELY DOES NOT DO
 * No interpolation, no nearest-tick substitution, no backfill. An observation
   happened inside its band or it does not exist; a band that closes unobserved
   is a permanent, reported `scheduling_miss` and is never filled in later.
-* No retry storm. One attempt per (token, horizon). A miss is terminal for this
-  lane, exactly as `permanently_missing_evidence` is terminal for the tape.
+* No retry storm. A provider ANSWER (`observed`, `provider_no_pair`,
+  `no_liquidity_state`, `token_inactive`) is terminal for this lane, exactly as
+  `permanently_missing_evidence` is terminal for the tape. A failed REQUEST is
+  not an answer — it stays re-plannable while its band is open, hard-capped at
+  2 attempts per (token, horizon), so a rate-limit window cannot permanently
+  burn every token in a pass.
 * No SolanaTracker. Structurally, not by convention: the fetch phase runs
   inside a `provider_run` policy that ALLOWS only DexScreener and explicitly
   DENIES every other provider, so a paid-provider request raises
@@ -63,7 +68,7 @@ import os
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from sqlalchemy import func, select
@@ -80,6 +85,7 @@ from app.models import (
 from app.services.crypto_horizon import (
     MEMBERSHIP_ROLLING,
     OBS_OBSERVED,
+    OBS_REQUEST_FAILED,
     OBSERVE_MAX_CALLS,
     STATUS_DUE_NOW,
     CryptoHorizonService,
@@ -109,8 +115,10 @@ SPARSE_NOTE = (
     "Prospective sparse observation: every eligible NEW birth gets exactly one "
     "governed 6h observation and one governed 24h observation, fetched via the "
     "existing read-only DexScreener adapter (no SolanaTracker, structurally "
-    "denied). One attempt per (token, horizon) — no retries, no polling, no "
-    "backfill, no interpolation, no nearest-tick substitution. A band that "
+    "denied). A provider ANSWER is terminal; a failed REQUEST may be "
+    "re-attempted once while its band is open (hard cap 2 per token-horizon) "
+    "— no polling, no backfill, no interpolation, no nearest-tick "
+    "substitution. A band that "
     "closes unobserved stays a reported miss forever. Observation only — never "
     "EV, a side, a size, an order, or a recommendation. No wallets, keys, "
     "swaps, signing, or execution."
@@ -391,6 +399,8 @@ def _base_result(status: str, config: SparseObservationConfig, started: datetime
         "outcome_counts": {},
         "batches_committed": 0,
         "deferred_observations": 0,
+        "retryable_request_failures": 0,
+        "request_failures_reattempted": 0,
         "stop_reason": None,
         "persisted": False,
         "duration_ms": 0,
@@ -696,6 +706,28 @@ def _sparse_overlap_lock(lock_dir: Path, chain: str):
         os.close(fd)
 
 
+_FAR_FUTURE = datetime.max.replace(tzinfo=timezone.utc)
+
+
+def _earliest_deadline_first(entry: HorizonPlanEntry):
+    """Selection order under `observe_limit`: the member-horizon whose BAND
+    CLOSES SOONEST is served first.
+
+    The original key was the ABSOLUTE distance to the horizon target, which
+    conflates "59 minutes of runway left" with "closes in 1 minute" and served
+    the LEAST urgent first — measured: with three staggered births and
+    `observe_limit=1`, the one with 1 minute of band left was deferred and
+    permanently lost, while a member with an hour of runway was observed. That
+    directly contradicts the starvation reasoning `_enrolment_candidates`
+    states one function away. `target_distance_s` survives only as the
+    tiebreak among members whose bands close at the same instant."""
+    window_end = _aware(entry.window_end) or _FAR_FUTURE
+    distance = (
+        entry.target_distance_s if entry.target_distance_s is not None else 1e18
+    )
+    return (window_end, distance, entry.token_address, entry.horizon)
+
+
 async def _run_locked(
     session: Session,
     s: Settings,
@@ -779,11 +811,17 @@ async def _run_locked(
             {"token": b.token_address[:16], "symbol": b.symbol}
             for b in candidates[:10]
         ]
-        plan = _sparse_plan(
+        plan, retryable_ids = _sparse_plan(
             session, cfg, cohort, now,
             extra_members=_transient_members(cfg, candidates),
         )
-        due = [e for e in plan if e.status == STATUS_DUE_NOW]
+        due = sorted(
+            (e for e in plan if e.status == STATUS_DUE_NOW),
+            key=_earliest_deadline_first,
+        )
+        result["retryable_request_failures"] = sum(
+            1 for e in due if (e.token_address, e.horizon) in retryable_ids
+        )
         result["due_observations"] = len(due)
         result["would_fetch_tokens"] = len({e.token_address for e in due})
         result["would_observe"] = [
@@ -819,14 +857,15 @@ async def _run_locked(
     result["persisted"] = enrolled > 0 or result["cohort_created"]
 
     # --- plan (pure) ------------------------------------------------------
-    plan = _sparse_plan(session, cfg, cohort, now)
+    plan, retryable_ids = _sparse_plan(session, cfg, cohort, now)
     due = [e for e in plan if e.status == STATUS_DUE_NOW]
     result["plan_status_counts"] = _plan_counts(plan)
     result["due_observations"] = len(due)
+    result["retryable_request_failures"] = sum(
+        1 for e in due if (e.token_address, e.horizon) in retryable_ids
+    )
     due_by_token: dict[str, list[HorizonPlanEntry]] = {}
-    for entry in sorted(
-        due, key=lambda e: (e.target_distance_s if e.target_distance_s is not None else 1e18)
-    ):
+    for entry in sorted(due, key=_earliest_deadline_first):
         due_by_token.setdefault(entry.token_address, []).append(entry)
     ordered_tokens = list(due_by_token)
     selected_tokens = ordered_tokens[: cfg.observe_limit]
@@ -899,26 +938,54 @@ async def _run_locked(
             )
         ).scalars().all()
     } if fetched_tokens else {}
+    # A re-attempt must UPDATE the existing `request_failed` row, never insert
+    # beside it — the unique index on (cohort, token, horizon) makes that
+    # mandatory. Only the rows for tokens this pass actually fetched are
+    # loaded, and only when there are any.
+    needed_ids = [
+        obs_id for (token, _horizon), obs_id in retryable_ids.items()
+        if token in due_by_token and token in set(fetched_tokens)
+    ]
+    retry_rows = {
+        (row.token_address, row.horizon): row
+        for row in session.execute(
+            select(CryptoHorizonObservation).where(
+                CryptoHorizonObservation.id.in_(needed_ids)
+            )
+        ).scalars().all()
+    } if needed_ids else {}
     outcomes: dict[str, int] = {}
     ticks = 0
     recorded = 0
     batches = 0
+    retried = 0
 
     def _stage(batch: list[_Fetched]):
         """Stage one batch's rows. Called once per commit ATTEMPT — see
         `_commit_with_retry`: a rollback expunges everything staged, so the
         rows must be rebuilt, not merely re-committed."""
-        staged = {"outcomes": {}, "ticks": 0, "recorded": 0}
+        staged = {"outcomes": {}, "ticks": 0, "recorded": 0, "retried": 0}
         for item in batch:
             member = members.get(item.token_address)
             for entry in due_by_token.get(item.token_address, []):
+                existing = retry_rows.get((item.token_address, entry.horizon))
+                # read BEFORE the call: `_record_observation` replaces
+                # `raw_payload` wholesale. After a rollback the row is expired
+                # and re-read from the database, so this recounts correctly on
+                # every staging attempt rather than compounding.
+                attempts = _attempts_used(existing) if existing is not None else 0
                 status, _cause, tick = service._record_observation(
                     session, cohort.id, member, entry, item.selected, item.basis,
                     item.candidates, item.request_failed,
-                    item.fetched_at or clock(), existing=None,
+                    item.fetched_at or clock(), existing=existing,
                     audit_candidate_limit=AUDIT_CANDIDATE_LIMIT,
                     tick_source=TICK_SOURCE,
                 )
+                if existing is not None:
+                    payload = dict(existing.raw_payload or {})
+                    payload[ATTEMPTS_KEY] = attempts + 1
+                    existing.raw_payload = payload
+                    staged["retried"] += 1
                 staged["outcomes"][status] = staged["outcomes"].get(status, 0) + 1
                 staged["recorded"] += 1
                 if tick is not None:
@@ -937,6 +1004,7 @@ async def _run_locked(
             batches += 1
             recorded += staged["recorded"]
             ticks += staged["ticks"]
+            retried += staged["retried"]
             for name, count in staged["outcomes"].items():
                 outcomes[name] = outcomes.get(name, 0) + count
     except IntegrityError as exc:
@@ -965,6 +1033,7 @@ async def _run_locked(
     result["ticks_written"] = ticks
     result["outcome_counts"] = outcomes
     result["batches_committed"] = batches
+    result["request_failures_reattempted"] = retried
     result["persisted"] = result["persisted"] or recorded > 0
     if stop_reason != STOP_COMPLETE:
         result["status"] = STATUS_PARTIAL
@@ -1122,22 +1191,63 @@ def _transient_members(cfg: SparseObservationConfig, births: list) -> list:
     ]
 
 
+SPARSE_MAX_ATTEMPTS = 2
+ATTEMPTS_KEY = "sparse_attempts"
+
+
+def _attempts_used(row) -> int:
+    """How many attempts a persisted observation row represents.
+
+    A row written by this lane's FIRST attempt carries no marker, so absence
+    means 1. Anything unparsable is treated as EXHAUSTED — a corrupt marker
+    must not become an unbounded retry licence."""
+    payload = row.raw_payload if isinstance(row.raw_payload, dict) else {}
+    try:
+        return max(1, int(payload.get(ATTEMPTS_KEY, 1)))
+    except (TypeError, ValueError):
+        return SPARSE_MAX_ATTEMPTS
+
+
+def _is_retryable(status: str, attempts: int) -> bool:
+    """Terminality depends on the miss CAUSE, not on a row merely existing.
+
+    A provider ANSWER — `observed`, `provider_no_pair`, `no_liquidity_state`,
+    `token_inactive` — is terminal. That is the honest one-shot semantic this
+    lane promises: the provider was asked and it told us something.
+
+    A failed REQUEST is not an answer. Treating it as terminal permanently
+    burned the horizon while the band was still open, and did so in CORRELATED
+    fashion: one DexScreener rate-limit window burned every token in the pass
+    (up to `observe_limit`) simultaneously and forever. So a `request_failed`
+    row stays re-plannable WHILE ITS BAND IS OPEN (the planner alone decides
+    that), hard-capped at SPARSE_MAX_ATTEMPTS per (token, horizon) so spend
+    stays bounded — at most 2 requests per birth-horizon, 4 per birth — and no
+    retry storm is possible."""
+    return status == OBS_REQUEST_FAILED and attempts < SPARSE_MAX_ATTEMPTS
+
+
 def _sparse_plan(
     session: Session, cfg: SparseObservationConfig, cohort, now: datetime,
     extra_members: list | None = None,
-) -> list[HorizonPlanEntry]:
+) -> tuple[list[HorizonPlanEntry], dict[tuple[str, str], int]]:
     """The sparse plan: the SHARED pure planner restricted to this lane's
-    horizons and band, with this lane's ONE-SHOT rule applied on top.
+    horizons and band, with this lane's CAUSE-BASED terminality applied on top.
 
-    The one-shot rule is why `existing` is passed EMPTY and the filter happens
-    here instead: `plan_observations` treats only an `observed` row as terminal
-    and leaves a MISSED row retryable in place — correct for a manual cohort
-    pass an operator re-runs deliberately, wrong for a lane that fires every
-    hour, where it would become a retry storm. Here ANY existing row for a
-    (token, horizon) is terminal, so each pair is attempted exactly once and
-    the provider spend per birth is bounded at exactly two requests."""
+    Returns `(entries, retryable_ids)`, where `retryable_ids` maps
+    (token_address, horizon) to the id of the `request_failed` observation row
+    that a re-attempt must UPDATE IN PLACE rather than insert beside (the
+    unique index on (cohort, token, horizon) makes that mandatory, not
+    optional).
+
+    `existing` is passed EMPTY to `plan_observations` and the filter happens
+    here instead: the shared planner treats only an `observed` row as terminal
+    and leaves every MISSED row retryable in place, unbounded — correct for a
+    manual cohort pass an operator re-runs deliberately, wrong for a lane that
+    fires every hour. See `_is_retryable` for the rule this lane applies
+    instead."""
     members = list(extra_members or [])
     attempted: set = set()
+    retryable_ids: dict[tuple[str, str], int] = {}
     if cohort is not None:
         # BOUNDED BY THE ENROLMENT WINDOW, not by cohort size.
         #
@@ -1168,27 +1278,35 @@ def _sparse_plan(
         ).scalars().all())
         members = persisted + members
         if not members:
-            return []
+            return [], {}
         tokens = [m.token_address for m in members]
-        attempted = {
-            (row.token_address, row.horizon)
-            for row in session.execute(
-                select(
-                    CryptoHorizonObservation.token_address,
-                    CryptoHorizonObservation.horizon,
-                ).where(
-                    CryptoHorizonObservation.cohort_id == cohort.id,
-                    CryptoHorizonObservation.token_address.in_(tokens),
-                )
-            ).all()
-        }
+        # Columns, not entities: this reads 5 of 22 fields and never needs the
+        # rest. `raw_payload` is read only for the attempt marker.
+        for row in session.execute(
+            select(
+                CryptoHorizonObservation.id,
+                CryptoHorizonObservation.token_address,
+                CryptoHorizonObservation.horizon,
+                CryptoHorizonObservation.status,
+                CryptoHorizonObservation.raw_payload,
+            ).where(
+                CryptoHorizonObservation.cohort_id == cohort.id,
+                CryptoHorizonObservation.token_address.in_(tokens),
+            )
+        ).all():
+            key = (row.token_address, row.horizon)
+            if _is_retryable(row.status, _attempts_used(row)):
+                retryable_ids[key] = row.id
+            else:
+                attempted.add(key)
     if not members:
-        return []
+        return [], {}
     plan = plan_observations(
         members, {}, set(), now,
         horizons=SPARSE_HORIZONS, window_minutes=SPARSE_BAND_MINUTES,
     )
-    return [e for e in plan if (e.token_address, e.horizon) not in attempted]
+    entries = [e for e in plan if (e.token_address, e.horizon) not in attempted]
+    return entries, retryable_ids
 
 
 def _plan_counts(plan: list[HorizonPlanEntry]) -> dict:

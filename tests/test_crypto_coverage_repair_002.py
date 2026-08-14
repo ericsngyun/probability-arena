@@ -174,6 +174,82 @@ async def run_pass(session, *, adapter=None, now=NOW, s=None, cfg=None, **kw):
     )
 
 
+class _TransportFailureClient:
+    """An `httpx.AsyncClient` stand-in that reproduces each way the REAL
+    DexScreener adapter loses a request. It never raises out of the adapter
+    (`dexscreener.py` explicitly disclaims that) — it degrades to [], which is
+    exactly why the empty list cannot be read as a provider answer.
+
+    `mode="ok"` returns a healthy pair so the same harness can drive a
+    recovered provider on a later pass."""
+
+    mode = "429"
+    requested: list[str] = []
+
+    def __init__(self, *a, **kw):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def get(self, url):
+        import httpx
+
+        type(self).requested.append(url)
+        request = httpx.Request("GET", url)
+        if self.mode == "429":
+            return httpx.Response(429, request=request)
+        if self.mode == "timeout":
+            raise httpx.ReadTimeout("timed out", request=request)
+        if self.mode == "server_error":
+            return httpx.Response(503, request=request)
+        if self.mode == "bad_json":
+            return httpx.Response(200, content=b"<html>nope", request=request)
+        if self.mode == "ok":
+            token = url.rsplit("/", 1)[-1]
+            return httpx.Response(200, request=request, json=[{
+                "chainId": CHAIN,
+                "pairAddress": "PairReal",
+                "baseToken": {"address": token, "symbol": "T"},
+                "quoteToken": {
+                    "address": "So11111111111111111111111111111111111111112",
+                },
+                "dexId": "raydium",
+                "priceUsd": "0.001",
+                "liquidity": {"usd": 12345.0},
+                "volume": {"h24": 100.0},
+                "txns": {"m5": {"buys": 2, "sells": 1}},
+            }])
+        raise AssertionError(self.mode)
+
+
+async def run_real_pass(session, *, mode, now=NOW, cfg=None):
+    """One pass driven through the REAL `DexScreenerAdapter` with httpx
+    intercepted, so transport failures take the production code path."""
+    import httpx
+
+    from app.adapters.dexscreener import DexScreenerAdapter
+
+    _TransportFailureClient.mode = mode
+    _TransportFailureClient.requested = []
+    original = httpx.AsyncClient
+    httpx.AsyncClient = _TransportFailureClient
+    try:
+        s = settings()
+        service = CryptoHorizonService(
+            adapter=DexScreenerAdapter(settings=s), settings=s,
+        )
+        return await sparse.run_scheduled_sparse_observation(
+            session, settings=s, service=service, config=cfg or config(), now=now,
+            sleeper=lambda _x: None,
+        )
+    finally:
+        httpx.AsyncClient = original
+
+
 def row_counts(session) -> dict:
     return {
         "cohorts": session.query(CryptoHorizonCohort).count(),
@@ -505,6 +581,108 @@ async def test_a_miss_is_terminal_and_is_never_retried(session):
 
 
 @pytest.mark.asyncio
+async def test_a_failed_request_is_re_attempted_while_the_band_is_still_open(session):
+    """B2. A provider ANSWER is terminal; a failed REQUEST is not an answer.
+
+    Measured before the fix: 6h band open, first fetch fails, the next pass 30
+    minutes later made ZERO adapter calls against a healthy provider with 30
+    minutes of band left — and it was CORRELATED, so one DexScreener
+    rate-limit window burned every token in the pass permanently."""
+    add_birth(session, 1, anchor=NOW - timedelta(hours=6))
+    session.commit()
+
+    first = await run_real_pass(session, mode="429", now=NOW)
+    assert first["outcome_counts"] == {OBS_REQUEST_FAILED: 1}
+    assert first["retryable_request_failures"] == 0  # nothing to retry yet
+
+    # 30 minutes later the band is still open (it closes at anchor + 6h + 60m)
+    second = await run_real_pass(
+        session, mode="ok", now=NOW + timedelta(minutes=30),
+    )
+    assert second["retryable_request_failures"] == 1
+    assert second["request_failures_reattempted"] == 1
+    assert second["outcome_counts"] == {OBS_OBSERVED: 1}
+    obs = session.query(CryptoHorizonObservation).one()
+    assert obs.status == OBS_OBSERVED
+    assert obs.horizon == "6h"
+    assert session.query(CryptoPriceTick).count() == 1
+
+
+@pytest.mark.asyncio
+async def test_a_re_attempt_is_hard_capped_at_two_per_token_horizon(session):
+    """The retry must be bounded, not a window. Two attempts per (token,
+    horizon) — 4 provider requests per birth, ever — and the third pass inside
+    the same open band makes no call at all."""
+    add_birth(session, 1, anchor=NOW - timedelta(hours=6))
+    session.commit()
+
+    await run_real_pass(session, mode="429", now=NOW)
+    second = await run_real_pass(session, mode="timeout", now=NOW + timedelta(minutes=20))
+    assert second["request_failures_reattempted"] == 1
+    assert second["external_calls"] == 1
+    obs = session.query(CryptoHorizonObservation).one()
+    assert obs.status == OBS_REQUEST_FAILED
+    assert obs.raw_payload[sparse.ATTEMPTS_KEY] == sparse.SPARSE_MAX_ATTEMPTS
+
+    # third pass, band STILL open, provider healthy — the cap holds
+    third = await run_real_pass(session, mode="ok", now=NOW + timedelta(minutes=40))
+    assert third["external_calls"] == 0
+    assert third["due_observations"] == 0
+    assert session.query(CryptoHorizonObservation).one().status == OBS_REQUEST_FAILED
+
+
+@pytest.mark.asyncio
+async def test_a_failed_request_is_not_re_attempted_after_the_band_closes(session):
+    """Retryability never extends the band. Once it has closed the miss is
+    permanent, exactly like every other miss in this lane."""
+    add_birth(session, 1, anchor=NOW - timedelta(hours=6))
+    session.commit()
+    await run_real_pass(session, mode="429", now=NOW)
+    # the 6h band closes at anchor + 6h + 60m == NOW + 60m
+    after = await run_real_pass(session, mode="ok", now=NOW + timedelta(minutes=61))
+    assert after["external_calls"] == 0
+    assert after["due_observations"] == 0
+    assert session.query(CryptoHorizonObservation).one().status == OBS_REQUEST_FAILED
+
+
+@pytest.mark.asyncio
+async def test_a_provider_answer_stays_terminal_even_with_the_band_open(session):
+    """The other side of the cause split: `provider_no_pair` is an ANSWER and
+    must stay one-shot, or a token the provider genuinely has nothing for gets
+    re-fetched at every pass for the whole band."""
+    add_birth(session, 1, anchor=NOW - timedelta(hours=6))
+    session.commit()
+    import httpx
+
+    class EmptyAnswer(_TransportFailureClient):
+        async def get(self, url):
+            type(self).requested.append(url)
+            return httpx.Response(200, json=[], request=httpx.Request("GET", url))
+
+    from app.adapters.dexscreener import DexScreenerAdapter
+
+    original = httpx.AsyncClient
+    httpx.AsyncClient = EmptyAnswer
+    try:
+        s = settings()
+        service = CryptoHorizonService(
+            adapter=DexScreenerAdapter(settings=s), settings=s,
+        )
+        first = await sparse.run_scheduled_sparse_observation(
+            session, settings=s, service=service, config=config(), now=NOW,
+            sleeper=lambda _x: None,
+        )
+    finally:
+        httpx.AsyncClient = original
+    assert first["outcome_counts"] == {OBS_PROVIDER_NO_PAIR: 1}
+
+    later = await run_real_pass(session, mode="ok", now=NOW + timedelta(minutes=30))
+    assert later["external_calls"] == 0
+    assert later["due_observations"] == 0
+    assert session.query(CryptoHorizonObservation).one().status == OBS_PROVIDER_NO_PAIR
+
+
+@pytest.mark.asyncio
 async def test_a_band_that_closes_unobserved_is_never_backfilled(session):
     """Absent evidence stays absent. No interpolation, no nearest tick, no
     late observation stamped with an in-band timestamp."""
@@ -655,8 +833,11 @@ async def test_a_pass_killed_mid_cycle_converges_with_no_duplicates(session):
 
 @pytest.mark.asyncio
 async def test_the_observe_limit_defers_rather_than_dropping(session):
+    """STAGGERED anchors, deliberately: the original fixture used five births
+    at IDENTICAL anchors, so the selection ORDER was unobservable and the test
+    could not exercise its own case."""
     for n in range(1, 6):
-        add_birth(session, n, anchor=NOW - timedelta(hours=6))
+        add_birth(session, n, anchor=NOW - timedelta(hours=6, minutes=10 * n))
     session.commit()
     pairs = {token_id(n): [pair(token_id(n))] for n in range(1, 6)}
     adapter = FakeAdapter(pairs)
@@ -667,6 +848,36 @@ async def test_the_observe_limit_defers_rather_than_dropping(session):
     # the deferred ones are still selectable while their band is open
     r2 = await run_pass(session, adapter=adapter, now=NOW, cfg=config())
     assert r2["observations_recorded"] == 3
+
+
+@pytest.mark.asyncio
+async def test_the_observe_limit_serves_the_soonest_deadline_first(session):
+    """B5. `observe_limit` used to sort by the ABSOLUTE distance to the horizon
+    target, which conflates "59 minutes of runway left" with "closes in 1
+    minute" and therefore served the LEAST urgent member first. Measured: three
+    births, `observe_limit=1` — the one with 1 minute of band left was deferred
+    and permanently lost.
+
+    Ordering must be earliest-deadline-first: the band that closes soonest is
+    the one a bounded pass must not defer."""
+    # anchors chosen so all three 6h bands are open at NOW but close 1, 31 and
+    # 59 minutes from now respectively
+    for n, minutes_left in ((1, 59), (2, 31), (3, 1)):
+        add_birth(
+            session, n,
+            anchor=NOW - timedelta(hours=6, minutes=60 - minutes_left),
+        )
+    session.commit()
+    pairs = {token_id(n): [pair(token_id(n))] for n in (1, 2, 3)}
+    adapter = FakeAdapter(pairs)
+    r = await run_pass(session, adapter=adapter, now=NOW, cfg=config(observe_limit=1))
+    assert r["observations_recorded"] == 1
+    assert adapter.fetched == [token_id(3)], (
+        "the member with 1 minute of band left was deferred in favour of one "
+        "with an hour of runway"
+    )
+    obs = session.query(CryptoHorizonObservation).one()
+    assert obs.token_address == token_id(3)
 
 
 @pytest.mark.asyncio
@@ -718,7 +929,9 @@ async def test_the_pass_working_set_is_bounded_by_the_enrolment_window(session):
         loaded.append(target.id)
 
     try:
-        plan = sparse._sparse_plan(session, config(), cohort, NOW + timedelta(hours=1))
+        plan, _retryable = sparse._sparse_plan(
+            session, config(), cohort, NOW + timedelta(hours=1),
+        )
     finally:
         sa_event.remove(CryptoHorizonCohortMember, "load", _seen)
 
@@ -736,7 +949,7 @@ async def test_a_member_whose_bands_have_all_closed_is_never_replanned(session):
     await run_pass(session, adapter=FakeAdapter({token_id(1): [pair(token_id(1))]}), now=NOW)
     cohort = session.query(CryptoHorizonCohort).one()
     long_after = NOW + timedelta(days=3)
-    assert sparse._sparse_plan(session, config(), cohort, long_after) == []
+    assert sparse._sparse_plan(session, config(), cohort, long_after) == ([], {})
     adapter = FakeAdapter({token_id(1): [pair(token_id(1))]})
     r = await run_pass(session, adapter=adapter, now=long_after)
     assert r["due_observations"] == 0 and adapter.calls == 0
@@ -1070,39 +1283,6 @@ async def test_the_real_adapter_reaches_only_dexscreener_urls(session):
     assert r["provider_ledger"]["dexscreener"]["succeeded"] == len(requested)
     assert r["solana_tracker_calls"] == 0
     assert r["denied_provider_attempts"] == {}
-
-
-class _TransportFailureClient:
-    """An `httpx.AsyncClient` stand-in that reproduces each way the REAL
-    DexScreener adapter loses a request: it never raises out of the adapter
-    (`dexscreener.py` explicitly disclaims that), it degrades to []."""
-
-    mode = "429"
-    requested: list[str] = []
-
-    def __init__(self, *a, **kw):
-        pass
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *a):
-        return False
-
-    async def get(self, url):
-        import httpx
-
-        type(self).requested.append(url)
-        request = httpx.Request("GET", url)
-        if self.mode == "429":
-            return httpx.Response(429, request=request)
-        if self.mode == "timeout":
-            raise httpx.ReadTimeout("timed out", request=request)
-        if self.mode == "server_error":
-            return httpx.Response(503, request=request)
-        if self.mode == "bad_json":
-            return httpx.Response(200, content=b"<html>nope", request=request)
-        raise AssertionError(self.mode)
 
 
 @pytest.mark.asyncio
