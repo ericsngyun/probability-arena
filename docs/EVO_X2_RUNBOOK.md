@@ -2482,6 +2482,49 @@ lock acquisition waiting the full 30 s busy timeout it is ~124 minutes, longer
 than the lane's own cadence — so the number is chosen against measurement and
 the exceedance conditions are written down instead of a guarantee.
 
+#### What a timed-out sparse pass leaves behind (GATE7-SPARSE-UNITS-001)
+
+**It used to leave nothing.** `_emit_pass_telemetry` runs from `_finish`, on the
+return path, and this lane has no run table — so a pass killed by
+`TimeoutStartSec` appended no JSONL line at all. An overrun of the
+observation-coverage lane was invisible in observation telemetry, readable only
+from `journalctl` and, one full band later, from a rising
+`scheduling_miss_rate`.
+
+Two coupled changes fixed that, and **neither works without the other**:
+
+* the service unit declares `KillSignal=SIGINT`. systemd's default is SIGTERM,
+  whose default CPython disposition kills the process without running a single
+  `finally` — the handler could never be reached. SIGINT unwinds.
+* the CLI command carries a **termination funnel**
+  (`app/cli.py::crypto_sparse_observe`). `KeyboardInterrupt`,
+  `asyncio.CancelledError` and `SystemExit` are all `BaseException`, so they
+  pass straight through every `except Exception:` inside the pass; the CLI
+  boundary is the first frame that can catch them.
+
+What to expect after a `Failed with result 'timeout'`:
+
+```bash
+journalctl --user -u probability-arena-crypto-sparse-observe.service -n 40 --no-pager
+jq -c 'select(.writer_name=="crypto_horizon_observe" and .run_status=="terminated")' \
+  ~/probability-arena-telemetry/sqlite-writes.jsonl | tail -5
+```
+
+* `run_status="terminated"`, `outcome="failed_other"`,
+  `exception_category="process_interrupted"`, and `run_source="scheduled"` if
+  systemd sent the signal (it is derived from `INVOCATION_ID`, never asserted).
+* **No `rows_committed`, no `rows_attempted`, no `external_calls`** — and that
+  omission is deliberate. The funnel holds no result dict, so it reports
+  identity, timing and cause and claims nothing about work. A `0` there would
+  assert "this pass committed nothing", which is false for any pass killed
+  after its first batch. To learn what actually landed, count rows or read the
+  next pass's plan.
+* exit status **130**.
+* **Still best-effort, not crash durability.** The record is written by a
+  process being torn down inside `TimeoutStopSec` (unset, so the manager
+  default of 90 s). A SIGKILL — host OOM, `kill -9`, `TimeoutStopSec` expiring
+  — still leaves nothing, exactly as before.
+
 ### Where the per-pass record now lands (GATE2-WRITER-TELEMETRY-001)
 
 Precondition 3 needs a **distribution**, and until this milestone a pass left

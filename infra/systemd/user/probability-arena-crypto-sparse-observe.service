@@ -75,6 +75,43 @@ CPUWeight=20
 IOWeight=20
 #
 # ---------------------------------------------------------------------------
+# KillSignal — SIGINT, AND IT IS HALF OF A TWO-PART FIX
+# ---------------------------------------------------------------------------
+# systemd's default `KillSignal` is SIGTERM, and CPython's DEFAULT SIGTERM
+# DISPOSITION TERMINATES THE PROCESS WITHOUT UNWINDING: no `finally`, no
+# `except`, no exit hook. A pass killed by `TimeoutStartSec` therefore left
+# ZERO trace in this lane's own corpus — `_emit_pass_telemetry` runs inside
+# `_finish`, on the RETURN PATH, and there is no run-row insert at pass start,
+# so an overrun of the OBSERVATION-COVERAGE lane was invisible in observation
+# telemetry. It showed up only in `journalctl` and, one full band later, as a
+# rising `scheduling_miss_rate`.
+#
+# SIGINT is the one signal CPython gives a default handler that RAISES:
+# `KeyboardInterrupt`, on the main thread, which unwinds through
+# `run_scheduled_sparse_observation` (whose guards are all `except Exception:`
+# and cannot catch a `BaseException`) up to the termination funnel at the CLI
+# boundary in `app/cli.py::crypto_sparse_observe`. That funnel appends ONE
+# typed `run_status="terminated"` record to the 001A JSONL sink and exits
+# non-zero.
+#
+# THIS LINE ALONE CHANGES NOTHING, and neither does the funnel alone. Without
+# the funnel there is no handler and `KeyboardInterrupt` merely produces a
+# traceback with no record; without this line the funnel is never reached
+# because SIGTERM does not unwind. Both halves ship together.
+#
+# THERE IS TIME TO PERSIST. After `TimeoutStartSec` systemd sends `KillSignal`
+# and then waits `TimeoutStopSec` — NOT SET HERE, so the manager default of 90 s
+# applies — before SIGKILL. The record is one `os.write()` on an append-only
+# non-SQLite file, taken before the session is closed.
+#
+# NOT `ExecStopPost=`, and that route is closed on purpose:
+# `tests/test_gate7_sparse_units_001.py::
+# test_the_units_neither_install_nor_enable_anything` bans every `Exec*`
+# directive but `ExecStart=`, because a second program in this unit is how an
+# uninstalled template installs itself. The fix belongs in `app/`.
+KillSignal=SIGINT
+#
+# ---------------------------------------------------------------------------
 # TimeoutStartSec — DERIVED HERE, NOT COPIED FROM THE RECONCILER
 # ---------------------------------------------------------------------------
 # The reconciler's 7min is its own number from its own arithmetic and means
@@ -216,24 +253,44 @@ IOWeight=20
 # covering it — it is a pin, not a comment.
 #
 # WHAT HAPPENS WHEN IT IS HIT (worked out for THIS lane, and it is not the
-# reconciler's answer). systemd sends SIGTERM and then SIGKILL; Python's default
-# SIGTERM disposition terminates without running `finally` blocks.
+# reconciler's answer). systemd sends `KillSignal` — SIGINT here, see the
+# directive above — and then SIGKILL after `TimeoutStopSec` (unset, so the
+# manager default of 90 s). SIGINT raises `KeyboardInterrupt` on the main
+# thread, so the process UNWINDS. Under the default SIGTERM it would not have:
+# Python's default SIGTERM disposition terminates without running a `finally`.
 #   * DURABLE: every enrolment batch whose commit returned, and every write
 #     batch whose `_commit_with_retry` returned. Counters advance only after a
 #     commit RETURNS, so nothing was ever over-claimed.
 #   * LOST: the in-flight batch (staged rows are rolled back when the OS closes
-#     the connection), the printed receipt, and — the one that matters — THE
-#     TELEMETRY RECORD. `_emit_pass_telemetry` runs inside `_finish`, at the end
-#     of the pass, so a killed pass appends NOTHING to the 001A JSONL sink.
-#   * THEREFORE THIS LANE HAS NO ORPHAN SIGNATURE. The reconciler's overrun is
-#     self-reporting: it leaves a `status='running'` row that
+#     the connection) and the printed pass receipt.
+#   * RECORDED, WHICH IT WAS NOT BEFORE: exactly one 001A JSONL line carrying
+#     `run_status="terminated"`, `outcome="failed_other"`,
+#     `exception_category="process_interrupted"`, the derived `run_source`
+#     (`scheduled` under systemd, `manual` from a shell) and the pass's real
+#     start and end. `_emit_pass_telemetry` still runs only from `_finish`, on
+#     the return path, so it is NOT what files this — the CLI-boundary funnel in
+#     `app/cli.py::crypto_sparse_observe` is, because `KeyboardInterrupt` is a
+#     `BaseException` and slips past every `except Exception:` inside
+#     `_run_locked`. The exit status is 130.
+#   * THE RECORD CLAIMS NO COUNTERS, ON PURPOSE. That funnel holds no result
+#     dict — the pass was killed mid-flight and returned nothing — so it reports
+#     identity, timing and cause and omits `rows_committed` entirely. A `0`
+#     there would assert "this pass committed nothing", which is false for any
+#     pass killed after its first batch. Absent is this envelope's own idiom for
+#     "not measured" (cf. `write_hold_measured`). To learn what DID land, count
+#     rows, or read the next pass's plan: it re-plans from persisted state.
+#   * THIS LANE STILL HAS NO ORPHAN SIGNATURE, and this does not give it one.
+#     The reconciler's overrun leaves a `status='running'` row that
 #     `lock_wait_run_row_orphaned()` names. This lane has no run table (the
-#     GATE7-SPARSE-TELEMETRY-001 gate lifted only the JSONL half), so an overrun
-#     is INVISIBLE IN ITS OWN TELEMETRY and is visible only in
-#     `journalctl` (`Failed with result 'timeout'`) and, one band later, as a
-#     rising `scheduling_miss_rate` in `crypto-observation-coverage-report`.
-#     An operator who suspects an overrun must read the journal; the corpus will
-#     not tell them.
+#     GATE7-SPARSE-TELEMETRY-001 gate lifted only the JSONL half) and this
+#     milestone does not add one. What changed is narrower and worth stating
+#     exactly: an overrun is no longer INVISIBLE in this lane's own telemetry —
+#     it files a typed record — but that record is written by a process that is
+#     being torn down, so it is best-effort and not crash durability. A SIGKILL
+#     (a host OOM, `TimeoutStopSec` expiring, `kill -9`) still leaves nothing.
+#     `journalctl` (`Failed with result 'timeout'`) and, one band later, a
+#     rising `scheduling_miss_rate` in `crypto-observation-coverage-report`
+#     remain the corroborating signals.
 #   * NOTHING IS LEFT INCONSISTENT. The overlap lock is a kernel-held `flock`,
 #     released on process death, so no stale lock survives. Double-enrolment is
 #     impossible (`ix_horizon_member_cohort_token`) and double-observation is
