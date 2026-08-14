@@ -1507,6 +1507,12 @@ class CryptoHorizonCohortMember(Base):
 
     __table_args__ = (
         Index("ix_horizon_member_cohort_token", "cohort_id", "token_address", unique=True),
+        # CRYPTO-COVERAGE-REPAIR-002 B7 (migration 0029). The standing rolling
+        # cohort makes `cohort_id` non-selective — one cohort, every member —
+        # so the per-pass working-set query degenerated to a full table SCAN
+        # (measured at 193k members with sqlite_stat1 present). This index
+        # gives the enrolment-window range something to drive: 58ms -> 0.3ms.
+        Index("ix_horizon_member_cohort_added_at", "cohort_id", "added_at"),
     )
 
 

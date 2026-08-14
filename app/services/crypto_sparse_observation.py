@@ -38,7 +38,9 @@ WHAT IT DELIBERATELY DOES NOT DO
 * No canary. No cohort arming, no one-shot timers, no orchestrator manifest.
   The standing cohort is explicitly refused by `build_arm_plan`.
 * No second scheduler. No new planner, no new window arithmetic, no new
-  observation table, no migration.
+  observation table. The ONLY schema change is migration 0029, one additive
+  index on `crypto_horizon_cohort_members(cohort_id, added_at)` — no new
+  table, no new column, no data change (see `_sparse_plan`).
 * No interpolation, no nearest-tick substitution, no backfill. An observation
   happened inside its band or it does not exist; a band that closes unobserved
   is a permanent, reported `scheduling_miss` and is never filled in later.
@@ -73,7 +75,7 @@ from pathlib import Path
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from app.config import Settings, get_settings
 from app.models import (
@@ -220,7 +222,7 @@ STOP_COMPLETE = "complete"
 
 # --- enrolment rejection reasons (honest, never silent) -------------------------
 REJECT_INCOMPLETE_ANCHOR = "incomplete_lifecycle_anchor"
-REJECT_NO_ANCHOR_TIMESTAMP = "no_anchor_timestamp"
+REJECT_NO_ANCHOR_TIMESTAMP = "no_first_evidence_at"
 REJECT_ALL_BANDS_CLOSED = "all_sparse_bands_closed"
 
 
@@ -252,10 +254,19 @@ def enrolment_rejection_reason(birth, now: datetime) -> str | None:
     Deliberately NOT a rule: liquidity/volume/risk thresholds, launchpad venue,
     boost state, or anything else that would make the observed population a
     SELECTED sample. The denominator this lane exists to repair must stay the
-    whole eligible birth population."""
-    anchor = _aware(getattr(birth, "first_evidence_at", None)) or _aware(
-        getattr(birth, "observed_at", None)
-    )
+    whole eligible birth population.
+
+    THE ANCHOR IS `first_evidence_at`, WITH NO FALLBACK. This used to coalesce
+    to `observed_at`, but `CryptoLifecycleTapeRecorder.compute_survival`
+    anchors STRICTLY on `first_evidence_at` and sets `provider_gap=True`
+    immediately when it is NULL. Measured: a birth with NULL
+    `first_evidence_at` was enrolled and observed, then scored
+    `survived_6h=None, provider_gap=True` — provider spend with a provably
+    zero denominator gain, the exact thing rule 1 above exists to prevent, one
+    field over. The fallback was also wrong on its own terms: `observed_at` is
+    the TAPE RUN time, not a birth time, so a single tape run backfilling
+    older tokens would anchor them all at the same instant."""
+    anchor = _aware(getattr(birth, "first_evidence_at", None))
     if anchor is None:
         return REJECT_NO_ANCHOR_TIMESTAMP
     if _completeness_reason(birth, 0.0) is not None:
@@ -817,7 +828,7 @@ async def _run_locked(
 
     # --- enrolment (pure DB, no provider) ---------------------------------
     candidates, rejections, considered = _enrolment_candidates(
-        session, cfg, cohort, now,
+        session, cfg, cohort, now, count_anchorless=dry_run,
     )
     result["births_considered"] = considered
     result["enrolment_rejections"] = rejections
@@ -1169,6 +1180,7 @@ def _commit_with_retry(session: Session, prepare, sleeper=None):
 
 def _enrolment_candidates(
     session: Session, cfg: SparseObservationConfig, cohort, now: datetime,
+    count_anchorless: bool = False,
 ) -> tuple[list, dict, int]:
     """Eligible, not-yet-enrolled births, OLDEST ANCHOR FIRST.
 
@@ -1180,10 +1192,26 @@ def _enrolment_candidates(
 
     The candidate query is bounded by the enrolment window on both sides: a
     birth older than `ENROL_WINDOW_MINUTES` has no reachable band and is not a
-    candidate at all, so this never walks the whole birth table."""
-    anchor_col = func.coalesce(
-        CryptoTokenBirthEvent.first_evidence_at, CryptoTokenBirthEvent.observed_at,
-    )
+    candidate at all.
+
+    TWO QUERY-SHAPE FIXES, both measured with `EXPLAIN QUERY PLAN` at 193k
+    members with `sqlite_stat1` present (668ms -> 0.8ms, 835x, no schema
+    change):
+
+    * SARGABLE ANCHOR. The predicate used to be
+      `coalesce(first_evidence_at, observed_at) BETWEEN :cutoff AND :now`. A
+      function of a column cannot use an index, so the existing
+      `ix_crypto_token_birth_events_first_evidence_at` was unusable and this
+      became a full scan of the birth table — the docstring's "never walks the
+      whole birth table" was false. `first_evidence_at` is now required
+      outright (see `enrolment_rejection_reason`), so the predicate is a bare
+      indexed range.
+    * NOT EXISTS, NOT `NOT IN`. `NOT IN (subquery)` made SQLite materialise
+      LIST SUBQUERY 1 — ALL 193k member rows — into a temporary table on every
+      pass, then sort into a temp B-tree. A correlated `NOT EXISTS` probes the
+      unique `ix_horizon_member_cohort_token` index once per candidate row
+      instead. This is the dominant win of the two."""
+    anchor_col = CryptoTokenBirthEvent.first_evidence_at
     cutoff = now - timedelta(minutes=ENROL_WINDOW_MINUTES)
     conditions = [
         CryptoTokenBirthEvent.chain == cfg.chain,
@@ -1191,10 +1219,13 @@ def _enrolment_candidates(
         anchor_col <= now,
     ]
     if cohort is not None:
-        already = select(CryptoHorizonCohortMember.token_address).where(
-            CryptoHorizonCohortMember.cohort_id == cohort.id
+        member = aliased(CryptoHorizonCohortMember)
+        conditions.append(
+            ~select(member.id).where(
+                member.cohort_id == cohort.id,
+                member.token_address == CryptoTokenBirthEvent.token_address,
+            ).exists()
         )
-        conditions.append(CryptoTokenBirthEvent.token_address.notin_(already))
     births = list(session.execute(
         select(CryptoTokenBirthEvent)
         .where(*conditions)
@@ -1212,6 +1243,28 @@ def _enrolment_candidates(
             eligible.append(birth)
         else:
             rejections[reason] = rejections.get(reason, 0) + 1
+    if count_anchorless:
+        # A birth with NULL `first_evidence_at` cannot appear in the indexed
+        # range above at all, so the scheduled pass excludes it in SQL and it
+        # never reaches the histogram. That is the right shape for an hourly
+        # job — the alternative predicate is non-sargable and costs a full
+        # birth-table scan every pass — but a SILENT exclusion is exactly what
+        # this project keeps paying for, so the operator-facing DRY RUN counts
+        # them with one bounded probe.
+        anchorless = session.execute(
+            select(func.count()).select_from(
+                select(CryptoTokenBirthEvent.id).where(
+                    CryptoTokenBirthEvent.chain == cfg.chain,
+                    CryptoTokenBirthEvent.first_evidence_at.is_(None),
+                    CryptoTokenBirthEvent.observed_at >= cutoff,
+                    CryptoTokenBirthEvent.observed_at <= now,
+                ).limit(cfg.enrol_limit * 2).subquery()
+            )
+        ).scalar_one()
+        if anchorless:
+            rejections[REJECT_NO_ANCHOR_TIMESTAMP] = (
+                rejections.get(REJECT_NO_ANCHOR_TIMESTAMP, 0) + anchorless
+            )
     return eligible[: cfg.enrol_limit], rejections, len(births)
 
 
@@ -1341,6 +1394,25 @@ def _sparse_plan(
         # than that has nothing due and never will, so it is excluded in SQL —
         # the working set is bounded at roughly (arrival rate x 25h), i.e.
         # ~550 members, whatever the cohort's lifetime size.
+        # The cohort_id predicate alone has NO selectivity — there is exactly
+        # one rolling cohort, so every member row matches it and SQLite chose a
+        # bare `SCAN crypto_horizon_cohort_members` (measured at 193k members
+        # with sqlite_stat1 present). The `coalesce(...)` anchor predicate is
+        # non-sargable and could not rescue it.
+        #
+        # `member_cutoff <= added_at <= now` is IMPLIED, never a new filter: a
+        # member is enrolled at `added_at = <that pass's now>` and eligibility
+        # requires `anchor <= now`, so `anchor <= added_at <= now` always
+        # holds and every row passing the anchor predicate passes this one.
+        # What it adds is a two-sided sargable range that
+        # `ix_horizon_member_cohort_added_at` (migration 0029) can drive.
+        # Measured with EXPLAIN QUERY PLAN at 60k members after ANALYZE: the
+        # ONE-SIDED form still plans as `SCAN crypto_horizon_cohort_members`
+        # (SQLite's default selectivity guess for an open-ended range is 1/4 of
+        # the table, which loses to a scan), the two-sided form plans as
+        # `SEARCH ... USING INDEX ix_horizon_member_cohort_added_at`. Ordering
+        # by (added_at, id) rather than id alone keeps the index's own order,
+        # so there is no temp B-tree either.
         member_cutoff = now - timedelta(minutes=ENROL_WINDOW_MINUTES)
         anchor_col = func.coalesce(
             CryptoHorizonCohortMember.first_evidence_at,
@@ -1350,9 +1422,14 @@ def _sparse_plan(
             select(CryptoHorizonCohortMember)
             .where(
                 CryptoHorizonCohortMember.cohort_id == cohort.id,
+                CryptoHorizonCohortMember.added_at >= member_cutoff,
+                CryptoHorizonCohortMember.added_at <= now,
                 anchor_col >= member_cutoff,
             )
-            .order_by(CryptoHorizonCohortMember.id)
+            .order_by(
+                CryptoHorizonCohortMember.added_at,
+                CryptoHorizonCohortMember.id,
+            )
         ).scalars().all())
         members = persisted + members
         if not members:

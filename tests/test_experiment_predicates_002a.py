@@ -498,10 +498,12 @@ class TestSafetySurface:
         # REGISTRY-002A itself added no migration (head was 0027 when this
         # shipped). CRYPTO-COVERAGE-REPAIR-001 (a later, unrelated
         # milestone) legitimately adds 0028 — a data-safe column-width widen
-        # — so 0028 is an accepted head too; anything past that would be a
-        # real, unreviewed scope violation of THIS test's boundary.
+        # — and CRYPTO-COVERAGE-REPAIR-002 adds 0029, one additive index on
+        # crypto_horizon_cohort_members(cohort_id, added_at). Both are
+        # accepted heads; anything past that would be a real, unreviewed
+        # scope violation of THIS test's boundary.
         versions = sorted(p.name for p in Path("alembic/versions").glob("0*.py"))
-        assert versions[-1].startswith(("0027", "0028"))
+        assert versions[-1].startswith(("0027", "0028", "0029"))
 
     def test_no_timer_daemon_or_marketops_hook(self):
         for rel in self.FILES:

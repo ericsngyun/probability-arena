@@ -606,8 +606,11 @@ def test_no_migration_added():
     versions = sorted(
         Path(p).name for p in glob.glob("alembic/versions/[0-9]*.py"))
     assert versions, "alembic versions must be visible from repo root"
-    assert versions[-1].startswith(("0027", "0028")), (
-        "SQLITE-LOCK-TELEMETRY-001A must not add a migration; head must stay 0027/0028"
+    # CRYPTO-COVERAGE-REPAIR-002 adds 0029, one additive index on
+    # crypto_horizon_cohort_members(cohort_id, added_at); accepted here
+    # for the same reason 0028 is — it belongs to a different milestone.
+    assert versions[-1].startswith(("0027", "0028", "0029")), (
+        "SQLITE-LOCK-TELEMETRY-001A must not add a migration; head must stay 0027/0028/0029"
     )
 
 

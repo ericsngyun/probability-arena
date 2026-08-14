@@ -129,10 +129,11 @@ def token_id(n: int) -> str:
 
 def add_birth(
     session, n=1, *, anchor, complete=True, liq=5_000.0, chain=CHAIN,
+    first_evidence=True,
 ):
     birth = CryptoTokenBirthEvent(
         chain=chain, token_address=token_id(n), symbol=f"T{n}",
-        observed_at=anchor, first_evidence_at=anchor,
+        observed_at=anchor, first_evidence_at=(anchor if first_evidence else None),
         launch_source="dexscreener:profile",
         first_pair_address=("Pair%04d" % n) if complete else None,
         first_dex_id="raydium",
@@ -346,6 +347,40 @@ def test_incomplete_lifecycle_anchor_is_never_enrolled(session):
     assert [b.token_address for b in cands] == [token_id(1)]
     assert rejections == {sparse.REJECT_INCOMPLETE_ANCHOR: 2}
     assert considered == 3
+
+
+@pytest.mark.asyncio
+async def test_a_birth_with_no_first_evidence_at_is_never_enrolled(session):
+    """Eligibility used to anchor on `coalesce(first_evidence_at, observed_at)`
+    while `CryptoLifecycleTapeRecorder.compute_survival` anchors STRICTLY on
+    `first_evidence_at` and sets `provider_gap=True` the moment it is NULL.
+
+    Measured before the fix: a birth with NULL `first_evidence_at` was enrolled
+    and observed, then scored `survived_6h=None, provider_gap=True` — provider
+    spend with a provably zero denominator gain, one field over from the rule
+    that exists to prevent exactly that. The fallback was wrong on its own
+    terms too: `observed_at` is the TAPE RUN time, not a birth time."""
+    good = add_birth(session, 1, anchor=NOW - timedelta(hours=6))
+    anchorless = add_birth(
+        session, 2, anchor=NOW - timedelta(hours=6), first_evidence=False,
+    )
+    session.commit()
+
+    assert sparse.enrolment_rejection_reason(good, NOW) is None
+    assert sparse.enrolment_rejection_reason(anchorless, NOW) == (
+        sparse.REJECT_NO_ANCHOR_TIMESTAMP
+    )
+    adapter = FakeAdapter({token_id(n): [pair(token_id(n))] for n in (1, 2)})
+    # the operator-facing dry run counts the exclusion rather than hiding it
+    preview = await run_pass(session, adapter=FakeAdapter(), now=NOW, dry_run=True)
+    assert preview["enrolment_rejections"] == {sparse.REJECT_NO_ANCHOR_TIMESTAMP: 1}
+    assert preview["would_enrol"] == 1
+
+    r = await run_pass(session, adapter=adapter, now=NOW)
+    assert r["enrolled"] == 1
+    assert adapter.fetched == [token_id(1)], "spend on a zero-denominator birth"
+    members = session.query(CryptoHorizonCohortMember).all()
+    assert [m.token_address for m in members] == [token_id(1)]
 
 
 def test_a_birth_whose_last_band_has_closed_is_never_enrolled(session):
@@ -938,6 +973,135 @@ async def test_the_pass_working_set_is_bounded_by_the_enrolment_window(session):
     assert len(loaded) == 1, f"loaded {len(loaded)} members; the query is unbounded"
     # the aged-out tail contributes nothing to the plan either
     assert {e.token_address for e in plan} == {token_id(1)}
+
+
+def _explain(engine, session, run) -> list[tuple[str, list[str]]]:
+    """Every SELECT `run()` issues, paired with its EXPLAIN QUERY PLAN.
+
+    The plan is what matters, not the row count: a 101-row fixture with no
+    `sqlite_stat1` produces a DIFFERENT plan than a realistic table with one,
+    so a bound-test that pins ORM materialisation pins nothing about scan cost.
+    """
+    from sqlalchemy import event as sa_event
+
+    captured: list[tuple[str, object]] = []
+
+    @sa_event.listens_for(engine, "before_cursor_execute")
+    def _cap(conn, cursor, statement, params, context, many):
+        if statement.lstrip().upper().startswith("SELECT"):
+            captured.append((statement, params))
+
+    try:
+        run()
+    finally:
+        sa_event.remove(engine, "before_cursor_execute", _cap)
+
+    out = []
+    raw = engine.raw_connection()
+    try:
+        cursor = raw.cursor()
+        for statement, params in captured:
+            cursor.execute("EXPLAIN QUERY PLAN " + statement, params)
+            out.append((statement, [row[3] for row in cursor.fetchall()]))
+    finally:
+        raw.close()
+    return out
+
+
+@pytest.fixture
+def big_cohort():
+    """A realistically sized rolling cohort WITH `sqlite_stat1` populated —
+    without ANALYZE, SQLite plans from defaults and the assertions below are
+    meaningless."""
+    from sqlalchemy import text
+
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    s = Session(engine)
+    cohort = CryptoHorizonCohort(
+        chain=CHAIN, member_limit=0, window_hours=25,
+        note=sparse.COHORT_NOTE,
+        provenance={"membership": MEMBERSHIP_ROLLING},
+        created_at=NOW,
+    )
+    s.add(cohort)
+    s.flush()
+    s.bulk_insert_mappings(CryptoHorizonCohortMember, [
+        {
+            "cohort_id": cohort.id, "chain": CHAIN,
+            "token_address": f"M{i:012d}", "symbol": "x",
+            "birth_event_id": None,
+            "birth_observed_at": NOW - timedelta(days=60) + timedelta(minutes=i % 86000),
+            "first_evidence_at": NOW - timedelta(days=60) + timedelta(minutes=i % 86000),
+            "added_at": NOW - timedelta(days=60) + timedelta(minutes=i % 86000),
+        }
+        for i in range(20_000)
+    ])
+    s.bulk_insert_mappings(CryptoTokenBirthEvent, [
+        {
+            "chain": CHAIN, "token_address": f"B{i:012d}", "symbol": "x",
+            "observed_at": NOW - timedelta(minutes=i % 1400),
+            "first_evidence_at": NOW - timedelta(minutes=i % 1400),
+            "launch_source": "dexscreener:profile",
+            "first_pair_address": "p", "first_dex_id": "raydium",
+            "initial_price_usd": 0.001, "initial_liquidity_usd": 5_000.0,
+            "created_at": NOW - timedelta(minutes=i % 1400),
+        }
+        for i in range(4_000)
+    ])
+    s.commit()
+    s.execute(text("ANALYZE"))
+    s.commit()
+    try:
+        yield engine, s, cohort
+    finally:
+        s.close()
+
+
+def test_the_pass_queries_never_scan_the_member_table(big_cohort):
+    """B7. The pre-fetch phase was the real contention source: phase-attributed
+    against a real competing writer at 193k members, the prelude was 11.8s of a
+    14.3s pass with a 2,023ms competing-writer max and 2 hard lock failures,
+    while the fetch phase's max was 28ms and the write phase's 45ms.
+
+    From EXPLAIN QUERY PLAN at scale: `_enrolment_candidates`' `coalesce(...)`
+    anchor was non-sargable so the birth index was unusable, then LIST SUBQUERY
+    1 materialised ALL members for the `NOT IN`, then a temp B-tree sort;
+    `_sparse_plan` was a bare `SCAN crypto_horizon_cohort_members`. The
+    docstring's "this never walks the whole birth table" was false.
+
+    This asserts the PLAN, not a row count."""
+    engine, s, cohort = big_cohort
+    cfg = sparse.SparseObservationConfig(chain=CHAIN)
+    plans = _explain(
+        engine, s,
+        lambda: (
+            sparse._enrolment_candidates(s, cfg, cohort, NOW),
+            sparse._sparse_plan(s, cfg, cohort, NOW),
+        ),
+    )
+    assert plans
+    for statement, plan in plans:
+        joined = " | ".join(plan)
+        assert "SCAN crypto_horizon_cohort_members" not in joined, (
+            f"{joined}\nfor:\n{statement}"
+        )
+        assert "SCAN crypto_token_birth_events" not in joined, (
+            f"{joined}\nfor:\n{statement}"
+        )
+        assert "LIST SUBQUERY" not in joined, (
+            "the member table is being materialised into a temporary table:\n"
+            f"{joined}\nfor:\n{statement}"
+        )
+        assert "TEMP B-TREE" not in joined, f"{joined}\nfor:\n{statement}"
+
+    flat = [line for _st, plan in plans for line in plan]
+    assert any(
+        "ix_horizon_member_cohort_added_at" in line for line in flat
+    ), flat
+    assert any(
+        "ix_crypto_token_birth_events_first_evidence_at" in line for line in flat
+    ), flat
 
 
 @pytest.mark.asyncio
@@ -2054,16 +2218,69 @@ def test_no_forbidden_capability_identifier_in_the_new_surface():
     assert offenders == [], offenders
 
 
-def test_no_migration_was_required():
+def test_the_only_schema_change_is_one_additive_index():
     """This lane reuses `crypto_horizon_cohorts` / `_cohort_members` /
-    `_observations` unchanged. A new migration here would mean the reuse claim
-    is false."""
+    `_observations` unchanged — no new table, no new column, no data change.
+
+    It does add ONE index (0029, B7): the standing rolling cohort makes
+    `cohort_id` non-selective, so the per-pass working-set query planned as a
+    bare `SCAN crypto_horizon_cohort_members`. The branch used to claim "no
+    migration"; this test states what the migration actually is, so the claim
+    cannot quietly grow."""
     import pathlib
+    import re
 
     versions = sorted(
-        p.name for p in pathlib.Path("alembic/versions").glob("*.py")
+        p.name for p in pathlib.Path("alembic/versions").glob("0*.py")
     )
-    assert not any("sparse" in v for v in versions), versions
+    new = [v for v in versions if v.startswith(("0029", "0030"))]
+    assert new == ["0029_horizon_member_cohort_added_at.py"], versions
+
+    source = pathlib.Path(
+        "alembic/versions/0029_horizon_member_cohort_added_at.py"
+    ).read_text()
+    forbidden = re.compile(
+        r"\b(create_table|drop_table|add_column|drop_column|alter_column|"
+        r"execute|bulk_insert)\b"
+    )
+    assert not forbidden.search(source), "0029 is not additive-index-only"
+    assert source.count("op.create_index") == 1
+    assert source.count("op.drop_index") == 1  # and it is reversible
+
+
+def test_the_index_migration_round_trips(tmp_path):
+    """Up and down, per docs/TESTING_POLICY.md."""
+    from alembic import command
+    from alembic.config import Config
+    from sqlalchemy import create_engine, inspect
+
+    from app.db import PROJECT_ROOT, run_migrations
+
+    url = f"sqlite:///{tmp_path}/idx.db"
+    run_migrations(url)
+
+    def index_names() -> set[str]:
+        engine = create_engine(url)
+        try:
+            return {
+                ix["name"]
+                for ix in inspect(engine).get_indexes("crypto_horizon_cohort_members")
+            }
+        finally:
+            engine.dispose()
+
+    assert "ix_horizon_member_cohort_added_at" in index_names()
+
+    config = Config()
+    config.set_main_option("script_location", str(PROJECT_ROOT / "alembic"))
+    config.set_main_option("sqlalchemy.url", url)
+    command.downgrade(config, "0028")
+    assert "ix_horizon_member_cohort_added_at" not in index_names()
+    # the unique index the double-enrolment guarantee depends on is untouched
+    assert "ix_horizon_member_cohort_token" in index_names()
+    command.upgrade(config, "0029")
+    assert "ix_horizon_member_cohort_added_at" in index_names()
+
 
 
 def test_the_cli_commands_are_registered():

@@ -675,7 +675,10 @@ class TestSafetySurface:
         # shipped); CRYPTO-COVERAGE-REPAIR-001 (later, unrelated) legitimately
         # adds 0028 — a data-safe column-width widen — so 0028 is accepted too.
         versions = sorted(p.name for p in Path("alembic/versions").glob("0*.py"))
-        assert versions[-1].startswith(("0027", "0028")), (
+        # CRYPTO-COVERAGE-REPAIR-002 adds 0029, one additive index on
+        # crypto_horizon_cohort_members(cohort_id, added_at); accepted here
+        # for the same reason 0028 is — it belongs to a different milestone.
+        assert versions[-1].startswith(("0027", "0028", "0029")), (
             f"unexpected migration added: {versions[-1]}")
 
     def test_report_and_backfill_are_registered_in_the_cli(self):
