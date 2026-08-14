@@ -751,12 +751,22 @@ class TestCommitMappingAndPhaseDiscipline:
         retry ladder is driven for real — a locked commit, then a rollback, then
         a re-stage — so the count is a measurement and not a sleep constant.
 
-        NEVER `monkeypatch.undo()` IN THIS SUITE. pytest hands every fixture of
-        a test the SAME `monkeypatch` instance, so `undo()` also reverts
-        conftest's `_isolate_sqlite_telemetry` and the next `get_sink()` resolves
-        to the operator's REAL ~/probability-arena-telemetry file. Caught here
-        while writing this test (it read three of a host's own records); a
-        private context is used instead."""
+        A private `MonkeyPatch.context()` is used below rather than the test's
+        `monkeypatch` fixture. That started as a WORKAROUND: pytest hands every
+        fixture of a test the same `monkeypatch` instance, so `undo()` also
+        reverted conftest's `_isolate_sqlite_telemetry` and the next
+        `get_sink()` resolved to the operator's REAL
+        ~/probability-arena-telemetry file — caught here while writing this
+        test, which read three of a host's own records.
+
+        THE WORKAROUND IS NO LONGER LOAD-BEARING, and the ban it carried
+        ("never undo() in this suite") is lifted: the review that followed
+        rejected fixing one instance and closed the class instead — the fixture
+        now patches on a private `MonkeyPatch` of its own, so no `undo()`
+        anywhere can reach it (see `TestTelemetryIsolationSurvivesMonkeypatchUndo`,
+        which calls `undo()` deliberately). The private context stays here
+        because scoping a `Session.commit` patch to three lines is the right
+        shape regardless."""
         adapter = seed(session, count=2)
         tripped = {"done": False}
         real_commit = Session.commit
