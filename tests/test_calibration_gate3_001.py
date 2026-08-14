@@ -320,8 +320,18 @@ class TestTheChosenValueCannotDriftSilently:
                 )
 
     @pytest.mark.parametrize("phrase", [
-        # the cold sample is n=1 and the tail is NOT bounded by this data
+        # the cold sample is n=1 ...
         "n = 1",
+        # ... and this is the CLAIM that caveat makes. Pinned separately
+        # because the count alone survives being restated in a table while
+        # the qualification it exists to carry is deleted — a mutation that
+        # removed the caveat prose and left `(n = 1)` in a fence passed an
+        # earlier version of this test.
+        "not bounded by this data",
+        # the cold sample must not be re-read as an outlier and dropped
+        "outlier",
+        # the margin is a judgement, not a measurement
+        "1.42",
         # the denominator actually used, as the filter subsection requires
         "batch_size",
         # rows_committed is a three-table row count, not a token count
@@ -332,6 +342,9 @@ class TestTheChosenValueCannotDriftSilently:
         "590",
         # the SLO the whole derivation is against
         "2.0 s",
+        # the ceiling that currently clamps the calibrated first batch back
+        # to today's fixed behaviour — the reason the loosening is latent
+        "B11",
     ])
     def test_the_caveats_survive_in_both_docs(self, phrase):
         """These are load-bearing qualifications, not decoration. Each was
