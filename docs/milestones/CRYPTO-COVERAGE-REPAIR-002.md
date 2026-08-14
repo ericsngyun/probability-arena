@@ -699,14 +699,39 @@ above are from that clean run, with disk headroom monitored throughout
 * `app/cli.py` — `crypto-sparse-observe` (`--dry-run`, `--force`,
   `--enrol-limit`, `--observe-limit`, `--write-batch-size`,
   `--max-duration-seconds`) and `crypto-observation-coverage-report`.
-* `tests/test_crypto_coverage_repair_002.py` — 57 tests.
+* `app/adapters/dexscreener.py` — `_get` takes a mandatory `expect` shape and
+  marks the request FAILED when a 200's decoded body is not it (round 3, B1).
+* `alembic/versions/0029_horizon_member_cohort_added_at.py` — the composite
+  index `ix_horizon_member_cohort_added_at (cohort_id, added_at)`.
+* `tests/test_crypto_coverage_repair_002.py` — 101 tests.
 
-No migration. No systemd unit. No provider adapter change.
+**Migration 0029 is REQUIRED.** `ensure_schema_current` in `guarded` mode raises
+`MigrationRequiredError` until an operator applies it, and that guard fronts
+~100 CLI call sites, the FastAPI startup, and the 5-minute MarketOps timer. **The
+first symptom of deploying this branch without applying 0029 would be the
+MarketOps timer failing repo-wide** — nowhere near this lane, and hard to
+attribute. `crypto-sparse-observe` itself deliberately does NOT call
+`ensure_schema_current` (same precedent as `crypto-tape-reconcile`), so it is the
+one command that runs happily against an un-migrated DB, on the slow path; §12
+step 0 and the pass's own `working_set_index_present` receipt exist because that
+absence is otherwise silent.
+
+No systemd unit.
 
 ---
 
 ## 12. Activation order (NOT performed)
 
+0. **Apply migration 0029** (`alembic upgrade head`) and confirm it landed.
+   Nothing else in this order is safe first: every other command on the host
+   goes through `ensure_schema_current` in `guarded` mode and will raise
+   `MigrationRequiredError` until 0029 is applied — including the 5-minute
+   MarketOps timer, which is the failure an operator would see and would not
+   connect to this lane. Verify from the pass itself: step 1's output must
+   print `working_set_index_present=True`. If it prints `False`, stop —
+   `_sparse_plan` is on the un-indexed path (measured 416 ms cold vs 25 ms) and
+   the plan-assertion test cannot catch it, because it runs against a
+   `create_all` schema that always has the index.
 1. Deploy dark at the default-OFF flag; confirm `crypto-sparse-observe` prints
    `status=disabled external_calls=0`.
 2. `crypto-sparse-observe --dry-run` on the target host — read

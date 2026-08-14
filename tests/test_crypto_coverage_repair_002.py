@@ -1122,6 +1122,54 @@ def test_the_pass_queries_never_scan_the_member_table(big_cohort):
 
 
 @pytest.mark.asyncio
+async def test_the_pass_reports_whether_the_working_set_index_exists(session):
+    """B5. The plan-assertion test above CANNOT catch a missing migration 0029:
+    it runs against a `create_all` schema, which always has the index. And
+    `crypto-sparse-observe` deliberately does not call `ensure_schema_current`
+    (the `crypto-tape-reconcile` precedent), so it is the one command that runs
+    happily against an un-migrated DB, on the slow path — measured 416 ms cold
+    against 25 ms. Nothing said so. This project's own history is the argument:
+    a missing `ANALYZE` stayed invisible for six sessions and cost 9.9x.
+
+    The receipt is a receipt, not a refusal: the pass still works without the
+    index, just slowly, so the value must appear and the pass must still pass."""
+    from sqlalchemy import text
+
+    add_birth(session, 1, anchor=NOW - timedelta(hours=6))
+    session.commit()
+
+    r = await run_pass(
+        session, adapter=FakeAdapter({token_id(1): [pair(token_id(1))]}), now=NOW,
+    )
+    assert r["status"] in sparse.HEALTHY_STATUSES, r.get("error")
+    assert r["working_set_index_present"] is True
+
+    # and it is a real probe of THIS database, not a constant: drop the index
+    # migration 0029 creates and the same pass must say so
+    session.execute(text(f"DROP INDEX {sparse.WORKING_SET_INDEX}"))
+    session.commit()
+    add_birth(session, 2, anchor=NOW - timedelta(hours=6))
+    session.commit()
+
+    r2 = await run_pass(
+        session, adapter=FakeAdapter({token_id(2): [pair(token_id(2))]}), now=NOW,
+    )
+    assert r2["working_set_index_present"] is False, (
+        "a missing migration 0029 was reported as present"
+    )
+    assert r2["status"] in sparse.HEALTHY_STATUSES, (
+        "the index is a receipt, not a gate — the pass must still work"
+    )
+    assert r2["observations_recorded"] == 1
+
+    # the dry-run path reports it too — that is the path an operator runs FIRST
+    dry = await run_pass(
+        session, adapter=FakeAdapter(), now=NOW, dry_run=True,
+    )
+    assert dry["working_set_index_present"] is False
+
+
+@pytest.mark.asyncio
 async def test_a_member_whose_bands_have_all_closed_is_never_replanned(session):
     """Convergence: once both bands are behind it, a member drops out of the
     working set permanently rather than being re-walked at every pass."""
@@ -2617,3 +2665,49 @@ def test_the_cli_commands_are_registered():
     names = set(parser._subparsers._group_actions[0].choices)
     assert "crypto-sparse-observe" in names
     assert "crypto-observation-coverage-report" in names
+
+
+def test_the_coverage_report_window_is_bounded_by_default(monkeypatch):
+    """B6. `--hours None` — what the operator got by typing the command's name
+    — is one dense column scan of the whole observation table. Measured at year
+    1 on a 754MB fixture it stalls a co-tenant writer 3.0-3.7s; EVO's database
+    is 4.55GB with 1.01x-5.80x documented load overshoot, and three clean runs
+    at a 2s busy timeout on the smaller file is sampling luck, not a result.
+    `--hours 48` measures 0.6-1.2s with a 506ms stall.
+
+    So the DEFAULT is bounded and full history is an explicit `--all`. This
+    asserts the value that actually reaches the builder, not the help text."""
+    from app import cli
+
+    seen: list = []
+
+    async def _fake(hours=None, top=5, session=None):
+        seen.append(hours)
+        return 0
+
+    monkeypatch.setattr(cli, "crypto_observation_coverage_report", _fake)
+
+    assert cli.main(["crypto-observation-coverage-report"]) == 0
+    assert seen == [sparse.DEFAULT_REPORT_HOURS], (
+        "the bare command still reaches the unbounded whole-table scan"
+    )
+    assert sparse.DEFAULT_REPORT_HOURS >= sparse.MIN_REPORT_HOURS, (
+        "the default window structurally nulls the 24h denominator"
+    )
+
+    # full history is still reachable, and still means "no window"
+    seen.clear()
+    assert cli.main(["crypto-observation-coverage-report", "--all"]) == 0
+    assert seen == [None]
+
+    # an explicit window still wins
+    seen.clear()
+    assert cli.main(["crypto-observation-coverage-report", "--hours", "48"]) == 0
+    assert seen == [48]
+
+    # and the two forms cannot be combined into an ambiguous request
+    seen.clear()
+    assert cli.main(
+        ["crypto-observation-coverage-report", "--hours", "48", "--all"]
+    ) == 1
+    assert seen == [], "a conflicting request still ran"

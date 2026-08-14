@@ -4905,6 +4905,18 @@ async def crypto_sparse_observe(
             f"births_considered={r['births_considered']}  "
             f"enrolment_rejections={r['enrolment_rejections']}"
         )
+        # B5: this command deliberately does NOT call `ensure_schema_current`
+        # (see above), so it is the one command that runs happily against an
+        # un-migrated DB — on `_sparse_plan`'s un-indexed path, measured 416 ms
+        # cold against 25 ms. Say so on the receipt rather than let a
+        # load-bearing absence stay silent.
+        print(f"working_set_index_present={r.get('working_set_index_present')}")
+        if r.get("working_set_index_present") is False:
+            print(
+                "  WARNING: migration 0029 has NOT been applied to this "
+                "database. The planner is on the slow, un-indexed path. Apply "
+                "`alembic upgrade head` before enabling the flag."
+            )
         if r["status"] == "dry_run":
             print(
                 f"would_create_cohort={r.get('would_create_cohort')}  "
@@ -8396,6 +8408,10 @@ def _add_provider_gate_args(sub) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    from app.services.crypto_sparse_observation import (
+        DEFAULT_REPORT_HOURS as OBS_COVERAGE_DEFAULT_HOURS,
+    )
+
     parser = argparse.ArgumentParser(
         prog="python -m app.cli",
         description="Probability Arena — read-only Kalshi market intelligence CLI.",
@@ -9171,10 +9187,21 @@ def build_parser() -> argparse.ArgumentParser:
              "coverage (see crypto-tape-coverage-report); reads no survival "
              "label, persists nothing, zero external calls",
     )
+    # B6: the window is BOUNDED by default. Unbounded (`--all`) is one dense
+    # column scan of the whole observation table — measured at year 1 on a 754MB
+    # fixture it stalls a co-tenant writer 3.0-3.7s, and EVO's database is
+    # 4.55GB with documented load overshoot. Full history is still available and
+    # still correct; it is now an explicit choice.
     obscov_parser.add_argument(
         "--hours", type=int, default=None,
-        help="restrict to members enrolled within the last N hours "
-             "(default: every enrolled member)",
+        help=f"restrict to members enrolled within the last N hours "
+             f"(default: {OBS_COVERAGE_DEFAULT_HOURS})",
+    )
+    obscov_parser.add_argument(
+        "--all", action="store_true", dest="all_history",
+        help="every enrolled member, no window. Scans the whole observation "
+             "table and can stall a concurrent writer for seconds on a large "
+             "database — use deliberately, not as a default",
     )
     obscov_parser.add_argument("--top", type=int, default=5)
     retro_parser = subparsers.add_parser(
@@ -9954,8 +9981,20 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0 if n >= 0 else 1
     if args.command == "crypto-observation-coverage-report":
+        # B6. Explicit `--hours` always wins; `--all` is the only way to the
+        # unbounded scan; neither given means the bounded default.
+        from app.services.crypto_sparse_observation import (
+            DEFAULT_REPORT_HOURS as OBS_COVERAGE_DEFAULT_HOURS,
+        )
+
+        if args.all_history and args.hours is not None:
+            print("crypto-observation-coverage-report: --hours and --all conflict")
+            return 1
+        hours = None if args.all_history else (
+            args.hours if args.hours is not None else OBS_COVERAGE_DEFAULT_HOURS
+        )
         n = asyncio.run(
-            crypto_observation_coverage_report(hours=args.hours, top=args.top)
+            crypto_observation_coverage_report(hours=hours, top=args.top)
         )
         return 0 if n >= 0 else 1
     if args.command == "crypto-retrospect-report":

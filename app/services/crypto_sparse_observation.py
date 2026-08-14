@@ -73,7 +73,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, aliased
 
@@ -464,6 +464,8 @@ def _base_result(status: str, config: SparseObservationConfig, started: datetime
         "cadence_minutes": SPARSE_CADENCE_MINUTES,
         "external_calls": 0,
         "provider": "dexscreener",
+        # None until the pass gets far enough to look (B5); never a false True.
+        "working_set_index_present": None,
         "solana_tracker_calls": 0,
         "births_considered": 0,
         "enrolled": 0,
@@ -943,6 +945,13 @@ async def _run_locked(
         )
     cohort = cohorts[0] if cohorts else None
     result["cohort_id"] = cohort.id if cohort is not None else None
+
+    # B5: report whether migration 0029's working-set index exists BEFORE the
+    # plan runs, on both the dry-run and the live path. False means
+    # `_sparse_plan` is about to take the un-indexed path; it is not a refusal,
+    # because nothing here is unsafe without it — it is the one signal that
+    # makes an otherwise silent, load-bearing absence visible on the receipt.
+    result["working_set_index_present"] = _working_set_index_present(session)
 
     service = service or CryptoHorizonService(settings=s)
 
@@ -1568,6 +1577,47 @@ def _is_retryable(status: str, attempts: int) -> bool:
     return status == OBS_REQUEST_FAILED and attempts < SPARSE_MAX_ATTEMPTS
 
 
+WORKING_SET_INDEX = "ix_horizon_member_cohort_added_at"
+
+
+def _working_set_index_present(session: Session) -> bool | None:
+    """Is migration 0029's composite index actually on this database?
+
+    CRYPTO-COVERAGE-REPAIR-002 (B5). The index is load-bearing — `_sparse_plan`
+    measured 416 ms cold without it against 25 ms with it — and its absence is
+    otherwise SILENT here. `crypto-sparse-observe` deliberately does not call
+    `ensure_schema_current` (the same precedent as `crypto-tape-reconcile`), so
+    it is the one command that runs happily against an un-migrated DB, on the
+    slow path. The plan-assertion test cannot catch it either: it runs against a
+    `create_all` schema, which always has the index.
+
+    This project's own history is the argument. A missing `ANALYZE` stayed
+    invisible for six sessions and cost 9.9x, because nothing in any pass's
+    output said whether the statistics existed. One cheap query per pass, on a
+    receipt the operator already reads, is what that costs to never repeat.
+
+    Returns None when the question is not answerable (a non-SQLite backend, or
+    the catalogue read itself failing) — never a false 'present'.
+    """
+    try:
+        # Dialect-gated on purpose: `sqlite_master` does not exist elsewhere,
+        # and a failed statement would poison the session's transaction for the
+        # enrolment that follows. A probe must never be able to break a pass.
+        if session.get_bind().dialect.name != "sqlite":
+            return None
+        row = session.execute(
+            text(
+                "SELECT 1 FROM sqlite_master "
+                "WHERE type = 'index' AND name = :name"
+            ),
+            {"name": WORKING_SET_INDEX},
+        ).first()
+    except Exception as exc:  # pragma: no cover - catalogue read failure
+        logger.debug("working-set index probe failed: %s", exc)
+        return None
+    return row is not None
+
+
 def _sparse_plan(
     session: Session, cfg: SparseObservationConfig, cohort, now: datetime,
     extra_members: list | None = None,
@@ -1723,6 +1773,22 @@ MIN_REPORT_HOURS = int(
     (max(m for _l, m in SPARSE_HORIZONS) + SPARSE_BAND_MINUTES + 59) // 60
 )
 
+# CRYPTO-COVERAGE-REPAIR-002 (B6): the CLI's DEFAULT window, in hours.
+#
+# The unbounded form is not safe as a default. Measured at year 1 on a 754MB
+# fixture, `--hours None` stalls a co-tenant writer for 3.0-3.7s — one dense
+# column scan of the whole observation table. Three runs at a 2s busy timeout
+# produced no hard failure, but that is sampling luck on a 754MB file: EVO's is
+# 4.55GB, with 1.01x-5.80x load overshoot documented in this repo. `--hours 48`
+# measures 0.6-1.2s with a 506ms stall.
+#
+# 168h = 7 days: >= MIN_REPORT_HOURS by a wide margin (so no denominator is
+# structurally nulled), long enough that a full 24h band plus a week of passes
+# is in view, and short enough to stay in the bounded regime. Full history is
+# still available and still correct — it is now `--all`, an explicit choice
+# rather than what an operator gets by typing the command's name.
+DEFAULT_REPORT_HOURS = 168
+
 
 def _rate(numerator: int, denominator: int) -> float | None:
     return round(numerator / denominator, 4) if denominator else None
@@ -1831,8 +1897,13 @@ def build_observation_coverage_report(
                 f"{LONGEST_SPARSE_HORIZON} denominator: a closed "
                 f"{LONGEST_SPARSE_HORIZON} band needs now > anchor + horizon + "
                 "band, while a member's added_at is never before its anchor, so "
-                f"no member can satisfy both. Use --hours >= "
-                f"{MIN_REPORT_HOURS} (or omit it for every enrolled member)."
+                f"no member can satisfy both. {MIN_REPORT_HOURS} is the "
+                "STRUCTURAL MINIMUM, not a safe value: it admits only members "
+                "enrolled in the last "
+                f"{MIN_REPORT_HOURS} hours, and a member enrolled N hours ago "
+                f"needs --hours >= {MIN_REPORT_HOURS} + N to appear at all. Use "
+                f"the default ({DEFAULT_REPORT_HOURS}) unless you know the "
+                "window you want, or --all for every enrolled member."
             ),
         }
     if not cohorts:
@@ -1861,7 +1932,15 @@ def build_observation_coverage_report(
         CryptoHorizonCohortMember.first_evidence_at,
         CryptoHorizonCohortMember.birth_observed_at,
         CryptoHorizonCohortMember.added_at,
-    ).where(CryptoHorizonCohortMember.cohort_id == cohort.id)
+    ).where(
+        CryptoHorizonCohortMember.cohort_id == cohort.id,
+        # The `chain` predicate matches `_sparse_plan` and the write-phase load,
+        # both of which gained one. It is redundant with `cohort_id` — a cohort
+        # is single-chain by construction — but the report is the surface an
+        # operator trusts, and a cohort that ever acquired a foreign-chain row
+        # should not be able to enter this denominator silently.
+        CryptoHorizonCohortMember.chain == cfg.chain,
+    )
     if hours:
         member_window = now - timedelta(hours=hours)
         member_q = member_q.where(
@@ -1883,6 +1962,7 @@ def build_observation_coverage_report(
             CryptoHorizonObservation.token_address.in_(
                 select(CryptoHorizonCohortMember.token_address).where(
                     CryptoHorizonCohortMember.cohort_id == cohort.id,
+                    CryptoHorizonCohortMember.chain == cfg.chain,
                     CryptoHorizonCohortMember.added_at >= member_window,
                 )
             )
