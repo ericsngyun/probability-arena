@@ -1317,10 +1317,71 @@ class TestRunbookIsActionable:
     def test_the_growth_section_names_the_second_whole_file_reader(self):
         """`read_events` is a test helper an operator can decline to run.
         `_lock_tally` slurps the same way and sits on the ANALYZE maintenance
-        path, so the size check protects a real consumer."""
+        path, so the size check protects a real consumer.
+
+        THE FIGURE PINNED HERE IS THE TALLY'S OWN. An earlier version of this
+        test asserted `406 MB` / `58 MB`, which is `read_events`' cost — the
+        pin passed while the runbook and the script docstring disagreed about
+        whose number it was. Pinning a superseded number keeps it alive, so
+        the tally's measured cost and its amplification are pinned instead,
+        and the two artifacts are required to AGREE below."""
         section = self._section()
-        assert "406 MB" in section and "58 MB" in section
+        assert "204 MB" in section and "60.8 MB" in section and "3.4x" in section, (
+            "_lock_tally's OWN measured heap cost is gone from the growth "
+            "section — the operator is back to reading read_events' number"
+        )
+        assert "453 MB" in section and "7.2x" in section, (
+            "the paired read_events figure is gone, so the tally's 3.4x has "
+            "nothing to be 'cheaper than' and reads as safe"
+        )
         assert "cumulative and monotonic" in section
+
+    def test_the_tally_heap_figure_agrees_with_the_scripts_own_docstring(self):
+        """THE PIN THAT MAKES THE ONE ABOVE HOLD. Two artifacts carry this
+        measurement — the runbook an operator reads before running the script,
+        and the docstring of the function itself. The defect being fixed was
+        precisely that they carried different numbers for the same thing, so
+        pinning each against a literal is not enough: they must agree with
+        each other, and a change to either one alone must fail."""
+        section = self._section()
+        docstring = _MAINTENANCE_SCRIPT.read_text().split("def _lock_tally")[1]
+        for figure in ("204 MB", "60.8 MB", "3.4x", "453 MB", "7.2x"):
+            assert figure in docstring, (
+                f"{figure!r} is in the runbook growth section but not in "
+                "`_lock_tally`'s docstring — the operator-facing record and "
+                "the function's own record have diverged again"
+            )
+            assert figure in section, (
+                f"{figure!r} is in `_lock_tally`'s docstring but not in the "
+                "runbook growth section"
+            )
+        for artifact, text in (("runbook", section), ("docstring", docstring)):
+            assert "406 MB" not in text or "read_events" in text, (
+                f"the {artifact} still carries 406 MB without saying it is "
+                "read_events' figure"
+            )
+
+    def test_the_lock_wait_series_carries_the_session_it_came_from(self):
+        """Three eight-value `batch_lock_wait_ms_max` series are in
+        circulation and they are different populations. The scoping conclusion
+        survives all three; the provenance does not, so the label has to
+        travel with the numbers or the next reader quotes the wrong one."""
+        section = self._section()
+        script = _MAINTENANCE_SCRIPT.read_text()
+        for artifact, text in (("runbook", section), ("script", script)):
+            assert "3/3/2/1/1/1/6/2" in text, (
+                f"the uncontended series is gone from the {artifact}"
+            )
+            head, _, tail = text.partition("3/3/2/1/1/1/6/2")
+            near = head[-400:] + tail[:400]
+            assert "GATE2-WRITER-TELEMETRY-001" in near, (
+                f"the {artifact} quotes 3/3/2/1/1/1/6/2 without naming the "
+                "session it was measured in"
+            )
+            assert "6/5/1/1/2/1/2/2" in text and "unsourced" in text, (
+                f"the {artifact} no longer records that a third series is in "
+                "circulation with no session attached to it"
+            )
 
     def test_the_emit_is_the_last_thing_the_pass_does(self, filedb, monkeypatch):
         """The BEHAVIOURAL half of the correction above, and the reason the
