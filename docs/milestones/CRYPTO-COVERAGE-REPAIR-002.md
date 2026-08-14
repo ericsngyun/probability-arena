@@ -276,6 +276,160 @@ Consequences, all pinned by test:
 
 ---
 
+## 4.1 Gate 1 — exact token identity
+
+**The identity guarantee.** *This lane may record an observation, and may write
+a price tick, for requested token **T** only when the selected pair's
+`base_token_address` is exactly **T**.*
+
+### The defect
+
+`fetch_pairs_for_token` filters the provider's answer by **chain only**
+(`dexscreener.py`: `pair.chain == self.chain`). It never checks that a returned
+pair is *about the token that was asked for*. Downstream, `select_pair` does not
+require it either: `active_pair_quality_score` pays an exact base-token match a
+**+25 bonus** rather than gating on it, and the liquidity term alone is worth up
+to 100 — so a foreign pair with more liquidity outscores the correct one and
+wins.
+
+The consequence is the worst-shaped failure this milestone can have. A
+chain-correct, well-formed, non-empty response whose pairs belong to a
+**different token** passes B1 (the container is a list), passes Probe 15 (the
+entries parse into usable pairs for this chain), parses, scores, is selected,
+and is recorded as `OBS_OBSERVED` **with a price tick under the requested
+token's address**. Nothing in the receipts says so. For a milestone whose entire
+purpose is an honest denominator, a tick filed under the wrong token is worse
+than a missing one: a missing row is visibly missing, a wrong row is invisibly
+wrong and contaminates every survival label computed from it.
+
+### Where the gate lives, and why not in the adapter
+
+In **this lane only** — `_identity_matched`, applied in `_fetch_phase` before
+selection and before any diagnostic is built. The shared adapter is untouched.
+
+The adapter is used by the scout, meme, discovery and frozen-horizon lanes (216
+passing tests, re-measured at **216 passed** after this change). The `+25 bonus`
+is a deliberate *soft* preference there — for a discovery-time liquidity read, a
+related pool can legitimately be the best observable price — and this lane is
+the only one that turns a selected pair into a per-token, per-horizon price tick
+that a survival label is later computed from. Confining the hard gate here
+changes exactly the behaviour that needs changing and nothing else. No evidence
+was found that the adapter violates its own contract; its docstring promises
+chain filtering and delivers it.
+
+### Base only — the quote side is not identity
+
+A pair whose `quote_token_address == T` but whose base is something else prices
+**that other asset against T**. Its `priceUsd` is the base asset's price, not
+T's. Accepting a quote-side match would write another token's price under our
+address, which is the same defect arriving by a politer route, so
+`quote_token_address` is read nowhere in the predicate. The cost is real and
+accepted: a token that appears *only* as a quote produces a typed
+non-observation rather than a wrong number.
+
+### Terminality — RETRYABLE, and why
+
+`identity_mismatch` sits on the **retryable** side of the existing cause-based
+split, alongside `request_failed`, under the same `SPARSE_MAX_ATTEMPTS = 2` cap.
+
+Three reasons, all from the design already in place:
+
+1. **The design's own definition of an answer.** Terminal means "the provider
+   was asked and it told us something **about this token**". A response naming
+   only other tokens told us nothing about this one — it is not a quieter
+   `provider_no_pair`, it is an answer to a question we did not ask.
+2. **Consistency with Probe 15.** Probe 15 already settled the identical shape
+   one level coarser: a non-empty payload yielding zero pairs *for this chain*
+   is a failed request, not an honest empty answer. Identity is that same rule
+   at token granularity. Classifying it terminal would leave the two
+   contradicting each other on neighbouring lines.
+3. **It is indistinguishable from upstream field drift** — the provider starting
+   to put a pool or quote address in `baseToken.address` — which is a contract
+   violation, and correlated across every token in every pass. That correlated,
+   whole-fleet shape is precisely what the cause-based rule exists to keep
+   re-plannable.
+
+**Retryable is the cheap choice here, not the expensive one.** The cap is per
+(token, horizon) and counts *attempts* regardless of cause, so a permanently
+mismatching token costs exactly **one** extra request before being terminal
+forever. The existing bounds are unchanged: 2 requests per (token, horizon), 4
+per birth, 40 across a 20-token correlated outage. The band closing still ends
+the horizon unconditionally — the planner, not `_is_retryable`, decides what is
+still due.
+
+The result key `retryable_request_failures` now counts both causes. The name was
+deliberately **not** changed: it is a published receipt field printed by
+`crypto-sparse-observe` and pinned by test, and renaming a receipt is a breaking
+change for a nomenclature improvement.
+
+### What is persisted
+
+A typed non-observation: `status = missing_cause = identity_mismatch`, no tick,
+no `tick_id`, no price, no liquidity, no pair address. It is **never**
+`token_inactive` (the affirmative claim that the token is dead) and **never**
+`OBS_OBSERVED`. Because `AUDIT_CANDIDATE_LIMIT = 0` stores no per-candidate
+diagnostics, the row would otherwise carry no evidence at all, so the basis
+gains a bounded `identity_gate` receipt — requested token, pairs returned, exact
+matches, and up to **5** rejected base addresses — enough to distinguish "one
+stray pool" from "the endpoint is answering about a different token entirely"
+without re-inflating `raw_payload` (RAW-PAYLOAD-STORAGE-001).
+
+`candidates` is filtered by the gate too, not just the selection. That is
+load-bearing and easy to miss: when nothing is eligible, `_record_observation`
+harvests the **highest** `price_usd` from `candidates` for the early-liquidity
+diagnostic, so an ungated candidate list writes a foreign price onto our
+observation row even though no tick is written.
+
+**No schema change.** `status` is a plain `String(24)` with no enum or CHECK
+constraint; `identity_mismatch` is 17 characters. Migration 0029 is untouched.
+
+### The proof is at the database
+
+Note carefully that `token_address` on the tick is copied from the **plan
+entry**, so it equals the requested token *by construction* — asserting only
+that would prove nothing. What distinguishes a right tick from a wrong one is
+its **content**. Reverting the gate and reading `crypto_price_ticks` back yields
+the defect literally:
+
+```
+(token_address, pair_address, price_usd)
+('So0001TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT', 'PairForeign', 999.0)
+```
+
+— our token's address, a foreign token's pair, a foreign token's price, 6 orders
+of magnitude from the truth. `_assert_no_foreign_tick` asserts both halves
+against the table, on every mutation.
+
+### Required mutations, all proven
+
+15 tests added (`test_gate_1_*`). Reverts applied by **file copy** and restored
+by file copy; the tree was confirmed byte-clean after each.
+
+| # | mutation | result |
+|---|---|---|
+| M28 | the identity gate removed entirely (`mine = pairs`) | 8 FAIL — incl. `identity_wrong_token` recorded as `observed`, and a `PairForeign`/`999.0` tick persisted under our address in the mixture case |
+| M29 | selection gated but `candidates` left ungated | `test_gate_1_never_fabricates_a_price_from_a_foreign_candidate` FAILS — foreign price harvested onto our row |
+| M30 | identity collapsed into `request_failed` (untyped) | 5 FAIL — a contract violation filed in the rate-limit bucket |
+| M31 | `identity_mismatch` made terminal | 2 FAIL — band-open re-plan and cap tests |
+| M32 | the short-circuit dropped (falls through to `candidate_count == 0`) | 5 FAIL — incl. the row becoming the terminal, affirmative `token_inactive` |
+| M33 | the `SPARSE_MAX_ATTEMPTS` cap removed (regression guard) | 2 FAIL — the Gate 1 cap test **and** the pre-existing `request_failed` cap test |
+
+Controls that must **not** move, and did not: an honest `[]` stays the terminal
+`token_inactive` past 24h; an exact correct base pair still produces
+`OBS_OBSERVED` and one tick; the three field-drift shapes (`baseToken.address`
+absent / renamed / null) stay `request_failed`, because `_parse_pair` drops them
+and Probe 15's outcome check fires **before** identity is ever consulted — the
+boundary between the two mechanisms is now asserted rather than assumed.
+
+`test_gate_1_the_foreign_pair_would_win_selection_without_the_gate` pins that the
+foreign fixture genuinely out-scores ours through the real
+`active_pair_quality_score`, so a future re-tuning of the scorer cannot quietly
+turn six mutations into no-ops.
+`test_gate_1_does_not_change_the_shared_adapters_contract` fails if the gate ever
+leaks into `DexScreenerAdapter`.
+
+---
+
 ## 5. Governance
 
 | control | behaviour |
@@ -635,6 +789,32 @@ This run is also what surfaced the `scheduling_miss` denominator defect in §6.
 
 ## 10.2 Full-suite validation
 
+### After Gate 1 (2026-08-13)
+
+```
+2 failed, 4,380 passed, 6 skipped, 4 xfailed, 3 warnings in 581.74s (9:41)
+load average at start 5.06 / 6.05 / 10.84   at end 5.56 / 5.17 / 7.90
+disk 18 GiB free at start, 17 GiB free at end
+```
+
+4,365 + 15 new Gate 1 tests = **4,380**, i.e. the pass count moved by exactly the
+tests added and nothing else. Both failures are the two known pre-existing ones,
+neither related to this branch: `test_live_market_001::test_volatile_market_
+surfaces_in_examples` (the module-level `NOW` binding described below —
+deterministic, not load) and
+`test_kalshi_async_accounting_harness_001::…[sigint]` (under separate triage).
+**Both pass in isolation**: `test_live_market_001.py` 28 passed;
+`TestRealSignalReproducesTheSameClass` 3 passed.
+
+Blast radius re-measured on the shared adapter's other lanes —
+`test_crypto_arena`, `test_crypto_provider_gate_001`, `test_crypto_risk_engine`,
+`test_provider_budget_001`, `test_crypto_horizon_obs_001/002`,
+`test_crypto_horizon_orchestrator_001`,
+`test_crypto_horizon_cohort_select_001/002` — **216 passed**, identical to the
+pre-Gate-1 count.
+
+### Round 3 baseline
+
 ```
 4,320 collected
 5 failed, 4,305 passed, 6 skipped, 4 xfailed, 3 warnings in 700.75s (11:40)
@@ -690,9 +870,11 @@ above are from that clean run, with disk headroom monitored throughout
 
 * `app/services/crypto_sparse_observation.py` — the mechanism and the
   observation-coverage report.
-* `app/services/crypto_horizon.py` — two default-inert parameters on
-  `plan_observations` and `_record_observation`; `MEMBERSHIP_FROZEN` /
-  `MEMBERSHIP_ROLLING` / `is_rolling_cohort`.
+* `app/services/crypto_horizon.py` — three default-inert parameters on
+  `plan_observations` and `_record_observation` (`audit_candidate_limit`,
+  `tick_source`, and Gate 1's `failure_status`); `OBS_IDENTITY_MISMATCH`;
+  `MEMBERSHIP_FROZEN` / `MEMBERSHIP_ROLLING` / `is_rolling_cohort`. Every
+  addition is inert for `observe_once` and the frozen-cohort lane.
 * `app/services/crypto_horizon_orchestrator.py` — `build_arm_plan` refuses a
   rolling cohort (`rolling_cohort_not_armable`).
 * `app/config.py`, `app/canon.py`, `.env.example`, `docs/FEATURE_FLAGS.md` — the
@@ -704,8 +886,8 @@ above are from that clean run, with disk headroom monitored throughout
   marks the request FAILED when a 200's decoded body is not it (round 3, B1).
 * `alembic/versions/0029_horizon_member_cohort_added_at.py` — the composite
   index `ix_horizon_member_cohort_added_at (cohort_id, added_at)`.
-* `tests/test_crypto_coverage_repair_002.py` — 114 tests (Probe 15 added 8:
-  six fabrication shapes plus two controls).
+* `tests/test_crypto_coverage_repair_002.py` — **129 tests** (Probe 15 added 8:
+  six fabrication shapes plus two controls; Gate 1 added 15).
 
 **Migration 0029 is REQUIRED.** `ensure_schema_current` in `guarded` mode raises
 `MigrationRequiredError` until an operator applies it, and that guard fronts
