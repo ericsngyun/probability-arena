@@ -5023,11 +5023,13 @@ async def crypto_observation_coverage_report(
                 print(f"    miss_causes={h['miss_causes']}")
         live = r["liveness"]
         print(
-            f"\nliveness: latest_pass_at={live['latest_pass_at']}  "
-            f"previous_pass_age_minutes={live['previous_pass_age_minutes']}  "
+            f"\nliveness: latest_write_at={live['latest_write_at']}  "
+            f"previous_write_age_minutes={live['previous_write_age_minutes']}  "
             f"cadence={live['cadence_minutes']}min  "
             f"WARNING={live['cadence_warning']}"
         )
+        if live["cadence_warning"]:
+            print(f"  cadence_warning means: {live['cadence_warning_means']}")
         print(
             f"  expected timer line: OnCalendar="
             f"{live['expected_timer_oncalendar']}"

@@ -3,8 +3,9 @@
 Status: **implemented on branch `crypto-coverage-repair-002`. NOT MERGED, NOT
 PUSHED, NOT DEPLOYED, NOT ENABLED.** The feature flag
 (`ENABLE_CRYPTO_SPARSE_OBSERVATION`) is default-OFF in code; off is a clean
-no-op. No systemd unit is written, installed, or armed by this milestone. No
-migration. Nothing on EVO-X2 was read, copied, or touched.
+no-op. No systemd unit is written, installed, or armed by this milestone.
+**One additive migration, 0029, is REQUIRED** — see §11 and §12 step 0. Nothing
+on EVO-X2 was read, copied, or touched.
 
 Branch base: `main` @ `98cd506`.
 
@@ -703,7 +704,7 @@ above are from that clean run, with disk headroom monitored throughout
   marks the request FAILED when a 200's decoded body is not it (round 3, B1).
 * `alembic/versions/0029_horizon_member_cohort_added_at.py` — the composite
   index `ix_horizon_member_cohort_added_at (cohort_id, added_at)`.
-* `tests/test_crypto_coverage_repair_002.py` — 101 tests.
+* `tests/test_crypto_coverage_repair_002.py` — 106 tests.
 
 **Migration 0029 is REQUIRED.** `ensure_schema_current` in `guarded` mode raises
 `MigrationRequiredError` until an operator applies it, and that guard fronts
@@ -717,6 +718,69 @@ step 0 and the pass's own `working_set_index_present` receipt exist because that
 absence is otherwise silent.
 
 No systemd unit.
+
+### Round 3 — 2 PASS, 1 REQUEST CHANGES
+
+Blocking:
+
+* **B1 (shape).** An HTTP 200 whose decoded body was not a pair array was
+  recorded as a provider ANSWER — `provider_no_pair` at 6h, the TERMINAL
+  `token_inactive` at 24h, with the pass exiting `ok` and `ledger_failed == 0`.
+  A JSON error object, a WAF interstitial, and an upstream schema change on a
+  `/v1` path all take that route, and the blast radius is total and correlated.
+  `_get` now takes a mandatory `expect` shape and marks the request FAILED when
+  the body is not it; the existing `_transport_failures` delta covers the rest.
+  Revert proof: the 4 new `200_dict_error` / `200_html_string` cases fail, the
+  `200_empty_list` control still passes.
+* **B2 (receipt).** The severe provider-violation branch — a paid request
+  ACTUALLY went out — reported `external_calls: 0`, `solana_tracker_calls: 0`
+  and no ledger, while the milder DENIED branch reported all three. Fixed by
+  attaching the ledger at the `if spent:` raise and giving all three exits one
+  `_apply_provider_ledger` helper. Revert proof: drop the attachment and the
+  end-to-end receipt assertions fail.
+* **B3 (wording, not behaviour).** A source-text test pinned the literal
+  `ledger.get("solana-tracker", {})`. A semantically identical mutant that
+  zeroed the same receipt without that string survived all 97 tests. Retired
+  and replaced with behavioural assertions. Revert proof: a wording-free
+  zeroing mutant now kills both replacements.
+* **B4.** This document said "57 tests" and "No migration" — see the migration
+  paragraph in §11 and step 0 in §12.
+
+Pre-flag (both PASSing reviewers):
+
+* **B5.** `working_set_index_present` on every pass receipt, with a CLI warning
+  when False. Migration 0029 is load-bearing (416 ms cold vs 25 ms) and its
+  absence was silent, because this command deliberately does not call
+  `ensure_schema_current` and the plan-assertion test runs against a
+  `create_all` schema that always has the index.
+* **B6.** The coverage report's default window is bounded at
+  `DEFAULT_REPORT_HOURS = 168`; full history is the explicit `--all`.
+  Unbounded is one dense column scan measured to stall a co-tenant 3.0-3.7 s
+  at year 1 on a 754 MB fixture, against EVO's 4.55 GB.
+
+LOW, all landed:
+
+* the lane no longer files its OWN band edge as `out_of_band`: `_stage`
+  re-checks `window_end` against the fetch timestamp and counts the skip as
+  `band_closed_during_pass`. `out_of_band_rate` therefore means manual-lane
+  contamination and nothing else.
+* `latest_pass_at` → `latest_write_at` (it is a MAX(id) write proxy; a healthy
+  pass with nothing to do writes nothing and false-warned), plus a
+  `cadence_warning_means` string stating the weaker claim.
+* the `--hours` refusal no longer reads as though 25 were SAFE — it is the
+  structural minimum, and a member enrolled N hours ago needs `>= 25 + N`.
+* `enrolment_lag_seconds` gained `p99` and `over_band_count`: the rate dilutes
+  (20 late among 200 pending reads 0.1) and `p90` misses a 10% tail.
+* `build_observation_coverage_report`'s member query gained the `chain`
+  predicate `_sparse_plan` and the write-phase load already had.
+* `_transport_failures`' `skipped_cap` / `skipped_budget` buckets are now
+  asserted directly — dropping either left every other test passing.
+
+**Still not lifted: the self-imposed timer gate.** `write_lock` measures the
+right quantities and persists none of them; the payload still carries
+`persisted: false` and the instruction inside it. The reconciler's own timer is
+disarmed for exactly this reason, and this lane must not be the first to install
+one on uncalibrated numbers.
 
 ---
 
@@ -793,7 +857,7 @@ deployed or enabled.
   gone (it was the TAPE RUN time and produced `provider_gap=True` labels).
   The fixture gained the `first_evidence=False` knob it lacked.
 * `--hours < 25` refused; `never_had_a_chance_rate`, `enrolment_lag_seconds`,
-  and a `liveness` block (`latest_pass_at`, `previous_pass_age_minutes`,
+  and a `liveness` block (`latest_write_at`, `previous_write_age_minutes`,
   `cadence_warning` above 1.5x cadence, and the exact `OnCalendar=` line derived
   from `SPARSE_CADENCE_MINUTES`) — read by MAX(id), never a timestamp scan.
 * `enrolment_page_exhausted` marks a candidate page filled with ineligible

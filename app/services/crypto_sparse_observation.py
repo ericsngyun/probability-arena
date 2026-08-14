@@ -2139,17 +2139,25 @@ def build_observation_coverage_report(
         .order_by(CryptoHorizonCohortMember.id.desc())
         .limit(1)
     ).scalar())
-    latest_pass_at = max(
+    # NAMED FOR WHAT IT IS (LOW). This was `latest_pass_at`, which it is not:
+    # it is derived from MAX(id) over rows this lane WROTE, so a perfectly
+    # healthy pass with nothing to enrol and nothing due does not advance it and
+    # false-warns `cadence_warning: True`. A real pass heartbeat needs a run
+    # table and a migration decision this round did not take; until it does, the
+    # honest fix is the honest name — `latest_write_at`, with the warning
+    # documented as "no WRITE in 1.5 cadences", which is a weaker claim than
+    # "the timer stopped" and must be read as one.
+    latest_write_at = max(
         [t for t in (latest_observation_at, latest_enrolment_at) if t is not None],
         default=None,
     )
-    pass_age_minutes = (
-        round((now - latest_pass_at).total_seconds() / 60.0, 1)
-        if latest_pass_at is not None else None
+    write_age_minutes = (
+        round((now - latest_write_at).total_seconds() / 60.0, 1)
+        if latest_write_at is not None else None
     )
     cadence_warning = (
-        pass_age_minutes is not None
-        and pass_age_minutes > 1.5 * SPARSE_CADENCE_MINUTES
+        write_age_minutes is not None
+        and write_age_minutes > 1.5 * SPARSE_CADENCE_MINUTES
     )
 
     return {
@@ -2161,8 +2169,8 @@ def build_observation_coverage_report(
         "by_horizon": by_horizon,
         "scheduling_miss_examples": misses,
         "liveness": {
-            "latest_pass_at": (
-                latest_pass_at.isoformat() if latest_pass_at else None
+            "latest_write_at": (
+                latest_write_at.isoformat() if latest_write_at else None
             ),
             "latest_observation_at": (
                 latest_observation_at.isoformat() if latest_observation_at else None
@@ -2170,15 +2178,31 @@ def build_observation_coverage_report(
             "latest_enrolment_at": (
                 latest_enrolment_at.isoformat() if latest_enrolment_at else None
             ),
-            "previous_pass_age_minutes": pass_age_minutes,
+            "previous_write_age_minutes": write_age_minutes,
             "cadence_minutes": SPARSE_CADENCE_MINUTES,
             "cadence_warning": cadence_warning,
+            "cadence_warning_means": (
+                "no WRITE from this lane in 1.5 cadences. It is a write proxy, "
+                "NOT a pass heartbeat: a healthy pass with nothing to enrol and "
+                "nothing due writes nothing and trips this. A real heartbeat "
+                "needs a run table; there is none yet."
+            ),
             "expected_timer_oncalendar": timer_oncalendar(),
         },
         "enrolment_lag_seconds": {
             "p50": pctile(enrolment_lags, 0.5),
             "p90": pctile(enrolment_lags, 0.9),
+            # LOW. `never_had_a_chance_rate` DILUTES — 20 late enrolments among
+            # 200 pending reads as 0.1 — and `p90` misses a 10% tail entirely,
+            # so a run where every tenth member was enrolled after its band
+            # closed looks clean at p90 while `max` screams. `p99` and an
+            # explicit COUNT over the band half-width are the two numbers that
+            # cannot be diluted by a large healthy denominator.
+            "p99": pctile(enrolment_lags, 0.99),
             "max": (round(enrolment_lags[-1], 1) if enrolment_lags else None),
+            "over_band_count": sum(
+                1 for lag in enrolment_lags if lag > SPARSE_BAND_MINUTES * 60
+            ),
             "band_half_width_seconds": SPARSE_BAND_MINUTES * 60,
             "measures": "member.added_at - birth anchor, per enrolled member",
         },

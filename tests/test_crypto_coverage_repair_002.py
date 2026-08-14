@@ -2082,6 +2082,58 @@ async def test_a_transport_failure_is_never_persisted_as_a_token_state(
     assert session.query(CryptoPriceTick).count() == 0
 
 
+def test_a_deterministic_guard_skip_counts_as_a_lost_request():
+    """The OTHER half of the B1 control, which was untested.
+
+    `_transport_failures` reads three ledger buckets, not one. `failed` covers
+    429 / timeout / connection error / 5xx / undecodable JSON (and now, since
+    round 3, a 200 of the wrong shape). `skipped_cap` and `skipped_budget`
+    cover the DETERMINISTIC guard skips: `_get` returns None before opening a
+    client, `fetch_pairs_for_token` degrades that to [], and the write phase
+    would read it as a provider ANSWER — the same fabrication B1 is about,
+    reached without a socket ever opening.
+
+    Dropping either bucket leaves every other test in this file passing, so it
+    is asserted directly against the ledger the guard itself keeps."""
+    from app.services.crypto_provider_policy import Provider, ProviderLedger
+
+    class _Ctx:
+        def __init__(self, ledger):
+            self.ledger = ledger
+
+    dex = Provider.DEXSCREENER
+
+    assert sparse._transport_failures(_Ctx(ProviderLedger())) == 0
+
+    only_failed = ProviderLedger()
+    only_failed.failed[dex] = 2
+    assert sparse._transport_failures(_Ctx(only_failed)) == 2
+
+    only_cap = ProviderLedger()
+    only_cap.skipped_cap[dex] = 3
+    assert sparse._transport_failures(_Ctx(only_cap)) == 3, (
+        "a per-run cap skip returned None and was not counted as a lost request"
+    )
+
+    only_budget = ProviderLedger()
+    only_budget.skipped_budget[dex] = 4
+    assert sparse._transport_failures(_Ctx(only_budget)) == 4, (
+        "a budget skip returned None and was not counted as a lost request"
+    )
+
+    all_three = ProviderLedger()
+    all_three.failed[dex] = 2
+    all_three.skipped_cap[dex] = 3
+    all_three.skipped_budget[dex] = 4
+    assert sparse._transport_failures(_Ctx(all_three)) == 9
+
+    # and it is DexScreener-scoped: another provider's losses are not this
+    # lane's transport failures
+    other = ProviderLedger()
+    other.failed[Provider.SOLANA_TRACKER] = 5
+    assert sparse._transport_failures(_Ctx(other)) == 0
+
+
 @pytest.mark.asyncio
 async def test_an_empty_provider_answer_is_still_a_provider_answer(session):
     """The other half of B1: the delta must not turn a genuine `[]` — HTTP 200
@@ -2410,14 +2462,28 @@ async def test_the_report_reports_liveness_and_the_exact_timer_line(session):
         session, settings=settings(), now=NOW + timedelta(minutes=30),
     )
     assert fresh["liveness"]["cadence_warning"] is False
-    assert fresh["liveness"]["previous_pass_age_minutes"] < 60
+    assert fresh["liveness"]["previous_write_age_minutes"] < 60
     assert fresh["liveness"]["expected_timer_oncalendar"] == sparse.timer_oncalendar()
 
     stopped = sparse.build_observation_coverage_report(
         session, settings=settings(), now=NOW + timedelta(hours=4),
     )
     assert stopped["liveness"]["cadence_warning"] is True
-    assert stopped["liveness"]["previous_pass_age_minutes"] > 1.5 * 60
+    assert stopped["liveness"]["previous_write_age_minutes"] > 1.5 * 60
+
+    # LOW. The field is named for what it IS. It is derived from MAX(id) over
+    # rows this lane WROTE, so a healthy pass with nothing to enrol and nothing
+    # due does not advance it and false-warns. Calling it `latest_pass_at` sold
+    # a pass heartbeat the mechanism does not have, and a real one needs a run
+    # table this round did not decide on. The name and the stated meaning are
+    # the fix; the weaker claim must be readable AS the weaker claim.
+    assert "latest_pass_at" not in stopped["liveness"]
+    assert "previous_pass_age_minutes" not in stopped["liveness"]
+    assert stopped["liveness"]["latest_write_at"]
+    assert "write" in stopped["liveness"]["cadence_warning_means"].lower()
+    assert "not a pass heartbeat" in (
+        stopped["liveness"]["cadence_warning_means"].lower()
+    )
 
 
 @pytest.mark.asyncio
@@ -2439,6 +2505,36 @@ async def test_enrolling_after_the_band_closed_shows_up_as_a_rate(session):
     assert six["look_completion_rate"] is None  # nothing in the denominator
     assert six["never_had_a_chance_rate"] == 1.0
     assert report["enrolment_lag_seconds"]["p50"] is not None
+
+
+@pytest.mark.asyncio
+async def test_a_late_enrolment_tail_is_visible_when_the_rate_dilutes(session):
+    """LOW (dilution). `never_had_a_chance_rate` is a RATE: 20 members enrolled
+    after their band closed among 200 healthy pending ones reads as 0.1, and
+    `p90` misses a 10% tail entirely — every headline reads clean while every
+    tenth member never had a chance. `max` was the only unambiguous signal and
+    a single number cannot say how many. `p99` and `over_band_count` can."""
+    # 180 fresh members (lag ~0) and 20 enrolled long after their band closed
+    for n in range(1, 181):
+        add_birth(session, n, anchor=NOW - timedelta(minutes=5))
+    for n in range(181, 201):
+        add_birth(session, n, anchor=NOW - timedelta(hours=8))
+    session.commit()
+    await run_pass(session, adapter=FakeAdapter({}), now=NOW)
+
+    lag = sparse.build_observation_coverage_report(
+        session, settings=settings(), now=NOW + timedelta(minutes=5),
+    )["enrolment_lag_seconds"]
+
+    half_width = lag["band_half_width_seconds"]
+    assert lag["p90"] <= half_width, (
+        "this fixture is only interesting if p90 stays clean"
+    )
+    assert lag["p99"] > half_width, "the 10% tail is invisible at p99 too"
+    assert lag["over_band_count"] == 20, (
+        "the number of members enrolled past the band half-width is not stated"
+    )
+    assert lag["max"] > half_width
 
 
 def test_the_report_is_compute_on_demand(session):
