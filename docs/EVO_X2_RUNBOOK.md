@@ -2274,6 +2274,49 @@ load 5-6).
 4. **A `TimeoutStartSec` that covers the derivation below**, or an explicit
    accepted decision to live with the documented SIGKILL outcome.
 
+### Where the per-pass record now lands (GATE2-WRITER-TELEMETRY-001)
+
+Precondition 3 needs a **distribution**, and until this milestone a pass left
+nothing behind but journald stdout once the unit's log rotated. Every governed
+pass now appends **one JSONL line** to the SQLITE-LOCK-TELEMETRY-001A sink —
+`~/probability-arena-telemetry/sqlite-writes.jsonl`, overridable with
+`SQLITE_TELEMETRY_DIR`.
+
+**Not a database table, on purpose.** The sink is non-SQLite by mandate, so it
+cannot take the write lock it is measuring, and it survives a pass that
+committed nothing — which the run row's `config["write_coordination"]` does
+not, because that rides the single-attempt finalize commit. The contended
+passes are exactly the ones whose numbers matter and exactly the ones the run
+row loses. **This milestone adds no migration**: nothing to apply, nothing to
+break if it is not applied, and the Alembic head stays `0028`.
+
+Read the fields with `python -m app.cli` — there is no report command yet; the
+collector/rotation step is owned by 001E and is still unbuilt, so for now this
+is `jq` over the file. What to read, and the one trap:
+
+* `batch_lock_wait_ms_max` is **the only** figure the breakers act on. The
+  pass total (`lock_wait_ms`) carries one `run_row` and one `finalize` sample
+  per pass that are once-per-pass bookkeeping, not contention — a threshold
+  read off the total measures the instrument. `run_row_lock_wait_ms` and
+  `finalize_lock_wait_ms` are recorded separately and must not be summed into
+  the batch figure.
+* `write_hold_ms_max` against the 2.0 s SLO, alongside
+  `adaptive_initial_per_token_cost_ms` — a recorded hold distribution means
+  nothing without the seed that produced it.
+* `run_source` is derived from systemd's own `INVOCATION_ID`, not from the
+  command line, so an attended pass cannot be filed as a timer run by copying
+  the unit's `ExecStart`. `gate_bypassed` (`--force`) is a **separate** field:
+  filter unattended passes on `run_source="scheduled"`, never on the absence
+  of `--force`.
+* `run_status="disabled"` is deliberately never emitted (no run happened).
+  Every other outcome, including every pre-flight skip and refusal, is.
+
+Measured cost of the append itself, against a real competing SQLite writer on
+this repo's dev Mac: **p50 0.10 ms, p95 0.32 ms** while a co-tenant *held* the
+RESERVED lock — statistically identical to the idle-host figure, which is the
+structural point (it takes no lock). Roughly 1 KB per pass, ~4 KB/day at the
+6-hourly cadence.
+
 ### `TimeoutStartSec` vs the finalize ladder
 
 The run row's finalize inherits the **connection's** busy timeout (30 s in
