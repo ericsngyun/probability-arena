@@ -86,6 +86,7 @@ from app.models import (
 )
 from app.services.crypto_horizon import (
     MEMBERSHIP_ROLLING,
+    OBS_IDENTITY_MISMATCH,
     OBS_OBSERVED,
     OBS_REQUEST_FAILED,
     OBSERVE_MAX_CALLS,
@@ -510,6 +511,9 @@ class _Fetched:
     basis: dict
     candidates: list = field(default_factory=list)
     request_failed: bool = False
+    # Gate 1: the provider answered with pairs, and NONE of them is about this
+    # token. Distinct from `request_failed` (no answer at all) and never both.
+    identity_mismatch: bool = False
     fetched_at: datetime | None = None
 
 
@@ -552,6 +556,44 @@ def _transport_failures(ctx) -> int:
         bucket.get(Provider.DEXSCREENER, 0)
         for bucket in (ledger.failed, ledger.skipped_cap, ledger.skipped_budget)
     )
+
+
+def _identity_matched(pair, token: str) -> bool:
+    """Is this pair's BASE token exactly the token we asked about?
+
+    CRYPTO-COVERAGE-REPAIR-002 (Gate 1). `fetch_pairs_for_token` filters the
+    provider's answer by CHAIN only (`dexscreener.py`: `pair.chain ==
+    self.chain`), and `select_pair`'s quality policy gives an exact base-token
+    match a +25 BONUS rather than making it a gate. So a chain-correct,
+    well-formed, non-empty answer whose pairs belong to a DIFFERENT token parses
+    cleanly, scores, is selectable, and lands as `OBS_OBSERVED` with a price
+    tick filed under the wrong token address. For a milestone whose entire
+    purpose is an honest denominator, a tick under the wrong token is worse than
+    a missing one: a missing row is visibly missing, a wrong row is invisibly
+    wrong and contaminates every survival label derived from it.
+
+    THIS GATE LIVES IN THIS LANE, NOT IN THE SHARED ADAPTER. The adapter is used
+    by the scout, meme, discovery and frozen-horizon lanes; the +25 bonus is a
+    deliberate soft preference there (a quote-side or related pool can be the
+    honest best OBSERVABLE price for a discovery-time liquidity read), and this
+    lane is the only one that turns a selected pair into a per-token,
+    per-horizon price tick that a survival label is computed from. Confining the
+    hard gate here changes exactly the behaviour that needs changing.
+
+    BASE ONLY, DELIBERATELY. A pair with `quote_token_address == token` prices
+    something ELSE against our token: its `price_usd` is the BASE asset's price,
+    not this token's. Accepting a quote-side match would write another token's
+    price under our address — precisely the defect this gate exists to close,
+    arriving by a slightly politer route. `quote_token_address` is therefore
+    read nowhere in this predicate.
+
+    A missing / renamed / null identity field cannot reach here: `_parse_pair`
+    already returns None without `baseToken.address`, and Probe 15's
+    outcome-based check turns a non-empty payload that parses to zero pairs into
+    a failed REQUEST upstream of this function. This predicate closes the
+    remaining case — the field is present, well-formed, and names a DIFFERENT
+    token."""
+    return pair.base_token_address == token
 
 
 async def _fetch_phase(
@@ -656,13 +698,42 @@ async def _fetch_phase(
                 pairs = []
                 request_failed = True
             calls += 1
-            selected, basis = select_pair(pairs, token)
+            # GATE 1 — EXACT TOKEN IDENTITY, applied before selection and before
+            # any diagnostic is built. `mine` is the ONLY list that reaches
+            # `select_pair` or `describe_pair`, so a wrong-token pair cannot be
+            # scored, cannot be selected, and cannot leak a price into the
+            # observation row through the `no_liquidity_state` branch of
+            # `_record_observation` (which harvests `price_usd` from
+            # `candidates` when nothing is eligible).
+            mine = [p for p in pairs if _identity_matched(p, token)]
+            # An answer that named only OTHER tokens is not an answer about
+            # THIS one. It must never reach `select_pair([])`'s
+            # `candidate_count: 0`, which past 24h `_record_observation` reads
+            # as the terminal, affirmative claim `token_inactive`.
+            identity_mismatch = bool(pairs) and not mine and not request_failed
+            selected, basis = select_pair(mine, token)
+            if len(mine) != len(pairs):
+                # The ONLY durable evidence of what the provider actually said,
+                # because `AUDIT_CANDIDATE_LIMIT = 0` stores no per-candidate
+                # diagnostics. Bounded at 5 addresses: a lane writing ~1,000
+                # rows/day must not re-inflate `raw_payload` (RAW-PAYLOAD-
+                # STORAGE-001), and 5 is enough to tell "one stray pool" from
+                # "the endpoint is answering about a different token entirely".
+                rejected = sorted({p.base_token_address for p in pairs} - {token})
+                basis = {**basis, "identity_gate": {
+                    "requested_token": token,
+                    "pairs_returned": len(pairs),
+                    "exact_base_matches": len(mine),
+                    "rejected_base_tokens": rejected[:5],
+                    "rejected_base_token_count": len(rejected),
+                }}
             fetched.append(_Fetched(
                 token_address=token,
                 selected=selected,
                 basis=basis,
-                candidates=[describe_pair(p, token) for p in pairs],
+                candidates=[describe_pair(p, token) for p in mine],
                 request_failed=request_failed,
+                identity_mismatch=identity_mismatch,
                 # the LOGICAL observation time (see `_logical_clock`): real
                 # wall clock in production, the injected clock under test, so
                 # the tick lands where the caller's clock says it did
@@ -1199,12 +1270,25 @@ async def _run_locked(
                 # and re-read from the database, so this recounts correctly on
                 # every staging attempt rather than compounding.
                 attempts = _attempts_used(existing) if existing is not None else 0
+                # GATE 1. An identity mismatch takes the same SHORT-CIRCUIT as a
+                # failed request — no tick, no price, no `candidate_count: 0`
+                # reading — but is stamped with its own cause, so a provider
+                # CONTRACT violation is never filed in the rate-limit bucket.
+                # `request_failed` wins when both are set (they cannot be: no
+                # answer means no pairs to fail identity on) because "we never
+                # heard back" is the stronger and earlier fact.
+                short_circuit = item.request_failed or item.identity_mismatch
+                failure_status = (
+                    OBS_REQUEST_FAILED if item.request_failed
+                    else OBS_IDENTITY_MISMATCH
+                )
                 status, _cause, tick = service._record_observation(
                     session, cohort.id, member, entry, item.selected, item.basis,
-                    item.candidates, item.request_failed,
+                    item.candidates, short_circuit,
                     observed_at, existing=existing,
                     audit_candidate_limit=AUDIT_CANDIDATE_LIMIT,
                     tick_source=TICK_SOURCE,
+                    failure_status=failure_status,
                 )
                 if existing is not None:
                     payload = dict(existing.raw_payload or {})
@@ -1609,8 +1693,33 @@ def _is_retryable(status: str, attempts: int) -> bool:
     row stays re-plannable WHILE ITS BAND IS OPEN (the planner alone decides
     that), hard-capped at SPARSE_MAX_ATTEMPTS per (token, horizon) so spend
     stays bounded — at most 2 requests per birth-horizon, 4 per birth — and no
-    retry storm is possible."""
-    return status == OBS_REQUEST_FAILED and attempts < SPARSE_MAX_ATTEMPTS
+    retry storm is possible.
+
+    CRYPTO-COVERAGE-REPAIR-002 (Gate 1) puts `identity_mismatch` on the SAME
+    side, and the reason is the design's own definition of an answer. Terminal
+    means "the provider was asked and it TOLD US SOMETHING ABOUT THIS TOKEN".
+    A response that named only OTHER tokens told us nothing about this one; it
+    is not a quieter `provider_no_pair`, it is a response to a question we did
+    not ask. Probe 15 already settled the identical shape one level coarser —
+    a non-empty payload yielding zero pairs FOR THIS CHAIN is a failed request,
+    not an honest empty answer — and identity is that same rule at token
+    granularity, so classifying it terminal would leave the two inconsistent.
+    It is also indistinguishable from upstream field drift (the provider
+    starting to put a pool or quote address in `baseToken.address`), which is a
+    contract violation and exactly the correlated, whole-fleet failure the
+    cause-based rule exists to keep re-plannable.
+
+    RETRYABLE IS THE CONSERVATIVE CHOICE HERE, not the expensive one, and it
+    costs nothing new: the cap is per (token, horizon) and counts ATTEMPTS
+    regardless of cause, so a permanently mismatching token costs exactly one
+    extra request before it is terminal forever — the same bound
+    `request_failed` already carries, and the same 40-request ceiling for a
+    20-token correlated outage. The band closing still ends it unconditionally:
+    the planner, not this predicate, decides what is still due."""
+    return (
+        status in (OBS_REQUEST_FAILED, OBS_IDENTITY_MISMATCH)
+        and attempts < SPARSE_MAX_ATTEMPTS
+    )
 
 
 WORKING_SET_INDEX = "ix_horizon_member_cohort_added_at"
@@ -1662,8 +1771,9 @@ def _sparse_plan(
     horizons and band, with this lane's CAUSE-BASED terminality applied on top.
 
     Returns `(entries, retryable_ids)`, where `retryable_ids` maps
-    (token_address, horizon) to the id of the `request_failed` observation row
-    that a re-attempt must UPDATE IN PLACE rather than insert beside (the
+    (token_address, horizon) to the id of the non-terminal (`request_failed` or
+    `identity_mismatch`) observation row that a re-attempt must UPDATE IN PLACE
+    rather than insert beside (the
     unique index on (cohort, token, horizon) makes that mandatory, not
     optional).
 

@@ -130,9 +130,17 @@ OBS_TOKEN_INACTIVE = "token_inactive"
 OBS_PROVIDER_NO_PAIR = "provider_no_pair"
 OBS_NO_LIQUIDITY_STATE = "no_liquidity_state"
 OBS_REQUEST_FAILED = "request_failed"
+# CRYPTO-COVERAGE-REPAIR-002 (Gate 1). The provider ANSWERED, and the answer
+# contained no pair whose BASE token is the token we asked about. Emitted ONLY
+# by the prospective sparse lane's identity gate (`crypto_sparse_observation.
+# _identity_matched`); `observe_once` and the frozen-cohort lane never produce
+# it, because it reaches `_record_observation` exclusively through that lane's
+# explicit `failure_status=` argument, whose default leaves every other caller
+# bit-for-bit unchanged.
+OBS_IDENTITY_MISMATCH = "identity_mismatch"
 MISS_CAUSES = (
     OBS_TOKEN_INACTIVE, OBS_PROVIDER_NO_PAIR, OBS_NO_LIQUIDITY_STATE,
-    OBS_REQUEST_FAILED,
+    OBS_REQUEST_FAILED, OBS_IDENTITY_MISMATCH,
 )
 
 # early-liquidity (15m/1h) field-completeness diagnostics
@@ -975,6 +983,7 @@ class CryptoHorizonService:
         *,
         audit_candidate_limit: int = AUDIT_CANDIDATE_LIMIT,
         tick_source: str = TICK_SOURCE,
+        failure_status: str = OBS_REQUEST_FAILED,
     ):
         """Upsert one observation row (+ an ordinary price tick ONLY when an
         eligible pair with liquidity was selected — never a null-liquidity
@@ -988,7 +997,16 @@ class CryptoHorizonService:
         27% of the production DB with zero readers, so a lane that writes
         ~1,000 rows/day must not inherit the 12-candidate manual default), and
         `tick_source` stamps the written tick so the lane that bought it is
-        attributable. Both default to the OBS-001 values."""
+        attributable. Both default to the OBS-001 values.
+
+        Gate 1 added a third, `failure_status`: WHICH status the
+        `request_failed` short-circuit writes. It defaults to
+        `OBS_REQUEST_FAILED`, so `observe_once` and the whole frozen-cohort lane
+        are unchanged. The sparse lane passes `OBS_IDENTITY_MISMATCH` when the
+        provider answered but the answer was not ABOUT THIS TOKEN. Collapsing
+        that into `request_failed` would bury a provider CONTRACT violation
+        inside the bucket that is expected to be noisy with rate limits and
+        timeouts — the one bucket nobody investigates."""
         if existing is not None and existing.status == OBS_OBSERVED:
             return OBS_OBSERVED, None, None  # frozen; never re-observe
         birth_at = entry.birth_at
@@ -999,7 +1017,7 @@ class CryptoHorizonService:
         tick = None
         price = liq = vol = mcap = fdv = pair_addr = dex = None
         if request_failed:
-            status, cause = OBS_REQUEST_FAILED, OBS_REQUEST_FAILED
+            status, cause = failure_status, failure_status
         elif basis.get("candidate_count", 0) == 0:
             # no pair from the provider — inactive if the token has aged out
             status = OBS_TOKEN_INACTIVE if aged else OBS_PROVIDER_NO_PAIR

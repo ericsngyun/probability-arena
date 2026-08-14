@@ -1538,7 +1538,7 @@ class CryptoHorizonObservation(Base):
     target_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     window_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     window_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    status: Mapped[str] = mapped_column(String(24), index=True)  # observed|token_inactive|provider_no_pair|no_liquidity_state|request_failed
+    status: Mapped[str] = mapped_column(String(24), index=True)  # observed|token_inactive|provider_no_pair|no_liquidity_state|request_failed|identity_mismatch
     missing_cause: Mapped[str | None] = mapped_column(String(32))
     tick_id: Mapped[int | None] = mapped_column(ForeignKey("crypto_price_ticks.id"))
     price_usd: Mapped[float | None] = mapped_column(Float)
