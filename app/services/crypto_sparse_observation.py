@@ -601,10 +601,13 @@ def _gate_bypassed_bit(result: dict) -> bool:
     `gate_bypassed` assignments does), so that expression is inert right now.
     It is still the wrong default: a future terminal path that forgot the key
     would have reported `False` — "the gate was NOT bypassed" — which is the
-    one reading this field exists to make impossible. `run_source="scheduled"`
-    together with `gate_bypassed=True` is the anomaly an operator is meant to
-    catch, so a MISSING key must land on the side that gets looked at, never on
-    the side that gets filtered out.
+    one reading this field exists to make impossible. An UNATTENDED pass (the
+    derived scheduled/manual field on the same record — see the comment at the
+    `emit_writer_pass` call above, which may name it; this docstring may not,
+    because `test_calibration_gate3_001` greps for that token outside the emit
+    path and skips only `#`-comment lines) carrying `gate_bypassed=True` is the
+    anomaly an operator is meant to catch, so a MISSING key must land on the
+    side that gets looked at, never on the side that gets filtered out.
 
     IT REPORTS `True` RATHER THAN RAISING, deliberately. This runs on the
     WRITER'S RETURN PATH, after the pass has done its real work: a raise here
