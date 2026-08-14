@@ -108,3 +108,44 @@ MarketOps/watcher/crypto/meme/horizon instrumentation, shared-engine
 listener registration, report commands, Prometheus aggregation, rotation
 ownership, alerts — all deferred to 001B–001E, with every MarketOps-hot-path
 piece additionally gated behind the readiness window close (2026-07-30).
+
+## Follow-ups recorded by GATE2-WRITER-TELEMETRY-001 (not fixed here)
+
+Recorded so none of these is rediscovered from scratch. **None of them is a
+defect in the sink**, and none is touched by the GATE2 branch.
+
+### 1. `'n/a'` in a result key escapes the health gate, BEFORE telemetry
+
+**Pre-existing, out of scope, predates this milestone.** A security review of
+the GATE2 branch first reported this as a telemetry-extraction escape and then
+corrected itself: the escape is in
+`app/services/crypto_reconciler_guard.py::review_reasons`, which is health-gate
+code that runs on the same shared result dict *before* any telemetry runs.
+`crypto_tape._pass_telemetry_fields` is fully guarded (A4) and cannot be the
+first thing to raise.
+
+A non-numeric value such as `'n/a'` reaches an unguarded `int()` at four
+places in that function:
+
+| line | key |
+|------|-----|
+| `:264` | `write_hold_ms_max` (`int(write_hold_ms_max)`) |
+| `:268` | `write_hold_slo_violations` |
+| `:272` | `batch_lock_wait_aborts` |
+| `:274` | `batch_lock_wait_warnings` |
+
+`or 0` guards `None`, not a non-numeric string, so the `ValueError` escapes
+`review_reasons` and therefore the pass. `crypto_reconciler_guard.py` is
+untouched by the GATE2 branch and no current producer emits a non-numeric in
+any of these keys; the exposure arrives with a producer that does.
+
+### 2. `parent_event_id` is not in `REQUIRED_FIELDS` — a note for 001E
+
+`app/telemetry/schema.py` lists `parent_event_id` in `ALLOWED_FIELDS` but not
+in `REQUIRED_FIELDS`, so the sink's degradation path (which drops a corrupt
+optional field and keeps the record) can drop it: a degraded CHILD event then
+lands with no way back to its parent. **LOW, and not reachable today** —
+neither 001A writer emits parent/child events, and the GATE2 writer-pass
+records are all parents. Whoever adds the first nested unit in 001E must
+either promote `parent_event_id` to required for child events or accept that a
+degraded child loses its correlation.

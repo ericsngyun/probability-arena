@@ -48,6 +48,7 @@ from app.services.crypto_tape import (
 )
 from app.telemetry import writer_pass
 from app.telemetry.schema import (
+    ALLOWED_FIELDS,
     REQUIRED_FIELDS,
     RUN_SOURCES,
     RUN_STATUSES,
@@ -1341,3 +1342,52 @@ class TestRunbookIsActionable:
         assert seen["health_records_at_emit"] >= 1, (
             "the emit ran before the health record — it is not last"
         )
+
+
+# --- 16. recorded follow-ups: pinned to the FACT, not to the prose ----------
+
+class TestRecordedFollowUps:
+    """OUT OF SCOPE, DELIBERATELY NOT FIXED, and written down in
+    docs/SQLITE_LOCK_TELEMETRY_001A.md so neither is rediscovered from
+    scratch.
+
+    Each is pinned to the underlying FACT rather than to the sentence
+    describing it, so that fixing the thing fails the test and forces the note
+    to be retired — a follow-up note that outlives its defect is worse than no
+    note, because the next reader spends the same afternoon on it."""
+
+    MILESTONE_DOC = (Path(__file__).resolve().parents[1]
+                     / "docs" / "SQLITE_LOCK_TELEMETRY_001A.md")
+
+    #: the four unguarded `int()` calls in `review_reasons`, by result key
+    GUARD_ESCAPING_KEYS = (
+        "write_hold_ms_max", "write_hold_slo_violations",
+        "batch_lock_wait_aborts", "batch_lock_wait_warnings",
+    )
+
+    def test_the_guard_escape_is_pre_existing_and_still_real(self):
+        """The security review first reported this as a telemetry escape, then
+        corrected itself: it is in the HEALTH GATE, which runs on the same
+        shared result dict BEFORE any telemetry does.
+        `crypto_reconciler_guard.py` is untouched by this branch."""
+        for key in self.GUARD_ESCAPING_KEYS:
+            with pytest.raises(ValueError):
+                guard.review_reasons({key: "n/a"})
+
+    def test_the_guard_escape_is_recorded_with_its_keys(self):
+        doc = self.MILESTONE_DOC.read_text()
+        assert "crypto_reconciler_guard.py" in doc
+        for key in self.GUARD_ESCAPING_KEYS:
+            assert key in doc, f"the follow-up note omits {key}"
+        for line in (":264", ":268", ":272", ":274"):
+            assert line in doc, f"the follow-up note omits line {line}"
+
+    def test_parent_event_id_is_still_droppable(self):
+        """LOW. Allowed but not required, so the degradation path can drop it
+        and a degraded CHILD event loses its parent correlation. Not reachable
+        today — no 001A writer emits parent/child events — so this is a note
+        for 001E, not a fix."""
+        assert "parent_event_id" in ALLOWED_FIELDS
+        assert "parent_event_id" not in REQUIRED_FIELDS
+        doc = self.MILESTONE_DOC.read_text()
+        assert "parent_event_id" in doc and "001E" in doc
