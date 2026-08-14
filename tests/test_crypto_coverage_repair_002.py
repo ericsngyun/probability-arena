@@ -226,6 +226,40 @@ class _TransportFailureClient:
             return httpx.Response(
                 200, request=request, json="<html>Attention Required</html>",
             )
+        # Probe 15 (CRYPTO-COVERAGE-REPAIR-002 round 2): `expect=list` validates
+        # the CONTAINER, not the endpoint's CONTRACT. These are all genuine JSON
+        # ARRAYS — `isinstance(payload, list)` is true for every one of them —
+        # whose elements do not parse into a usable pair for this chain. The
+        # trigger is an upstream field rename inside the array, arguably likelier
+        # than the container-type change B1 already fixed.
+        if self.mode == "200_list_of_strings":
+            return httpx.Response(200, request=request, json=["nope", "still nope"])
+        if self.mode == "200_list_of_ints":
+            return httpx.Response(200, request=request, json=[1, 2, 3])
+        if self.mode == "200_list_of_dicts_no_keys":
+            return httpx.Response(
+                200, request=request,
+                json=[{"someRenamedField": "x"}, {"anotherOne": 2}],
+            )
+        if self.mode == "200_list_of_dicts_wrong_chain":
+            return httpx.Response(200, request=request, json=[{
+                "chainId": "ethereum",
+                "pairAddress": "PairWrongChain",
+                "baseToken": {"address": "0xabc", "symbol": "T"},
+            }])
+        if self.mode == "200_list_of_nulls":
+            return httpx.Response(200, request=request, json=[None, None])
+        if self.mode == "200_nested_error_envelope_list":
+            # an error object, shaped like the array the endpoint is supposed
+            # to return, so it still passes `isinstance(payload, list)`
+            return httpx.Response(
+                200, request=request,
+                json=[{"error": "rate limited", "code": 429}],
+            )
+        # CONTROL: a genuinely empty array is an honest provider answer and
+        # must stay terminal — it must NOT be swept up by the Probe 15 check.
+        if self.mode == "200_empty_list":
+            return httpx.Response(200, request=request, json=[])
         if self.mode == "ok":
             token = url.rsplit("/", 1)[-1]
             return httpx.Response(200, request=request, json=[{
@@ -2168,6 +2202,77 @@ async def test_an_empty_provider_answer_is_still_a_provider_answer(session):
     assert r["outcome_counts"] == {OBS_PROVIDER_NO_PAIR: 1}
     obs = session.query(CryptoHorizonObservation).one()
     assert obs.status == OBS_PROVIDER_NO_PAIR
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode,age_hours,expected_status", [
+    # Probe 15: a genuine JSON ARRAY (isinstance(payload, list) is True — B1's
+    # `expect=list` check does not fire) whose elements do not parse into a
+    # usable pair for this chain. Before this fix each of these six reached
+    # `select_pair([])`, which writes `candidate_count: 0` — indistinguishable
+    # from a token that genuinely has no pairs — and past 24h `aged` makes the
+    # miss the terminal, affirmative `token_inactive`. Aged here so the
+    # terminal path is exercised, same as B1's own parametrization.
+    ("200_list_of_strings", 24, OBS_REQUEST_FAILED),
+    ("200_list_of_ints", 24, OBS_REQUEST_FAILED),
+    ("200_list_of_dicts_no_keys", 24, OBS_REQUEST_FAILED),
+    ("200_list_of_dicts_wrong_chain", 24, OBS_REQUEST_FAILED),
+    ("200_list_of_nulls", 24, OBS_REQUEST_FAILED),
+    ("200_nested_error_envelope_list", 24, OBS_REQUEST_FAILED),
+    # CONTROL: a genuinely empty array is an honest provider answer. Not aged,
+    # so a false positive here would show up as the wrong status directly
+    # (aged would otherwise mask `provider_no_pair` behind `token_inactive`,
+    # which is also the CORRECT terminal answer for an honest empty list —
+    # this control isolates the un-aged case to catch a false `mark_failed`).
+    ("200_empty_list", 6, OBS_PROVIDER_NO_PAIR),
+    # CONTROL: one real, chain-matching, fully-shaped pair must still produce
+    # an honest observation — the fix must not become a false positive on the
+    # happy path.
+    ("ok", 6, OBS_OBSERVED),
+])
+async def test_a_non_empty_payload_that_parses_to_zero_pairs_is_a_failed_request(
+    session, mode, age_hours, expected_status,
+):
+    """Probe 15, driven through the REAL adapter. `mark_failed` fires on
+    OUTCOME (non-empty payload in, zero chain-matching pairs out), not on any
+    enumerated shape — this is the class-closing property under test, not one
+    more shape added to a list."""
+    import httpx
+
+    from app.adapters.dexscreener import DexScreenerAdapter
+
+    add_birth(session, 1, anchor=NOW - timedelta(hours=age_hours))
+    session.commit()
+
+    _TransportFailureClient.mode = mode
+    _TransportFailureClient.requested = []
+    original = httpx.AsyncClient
+    httpx.AsyncClient = _TransportFailureClient
+    try:
+        s = settings()
+        service = CryptoHorizonService(
+            adapter=DexScreenerAdapter(settings=s), settings=s,
+        )
+        r = await sparse.run_scheduled_sparse_observation(
+            session, settings=s, service=service, config=config(), now=NOW,
+            sleeper=lambda _x: None,
+        )
+    finally:
+        httpx.AsyncClient = original
+
+    assert _TransportFailureClient.requested, "the real adapter issued no request"
+    assert r["status"] in sparse.HEALTHY_STATUSES, r.get("error")
+    obs = session.query(CryptoHorizonObservation).one()
+    assert obs.status == expected_status, (
+        f"mode={mode!r} produced {obs.status!r}, expected {expected_status!r}"
+    )
+    if expected_status == OBS_REQUEST_FAILED:
+        assert obs.missing_cause == OBS_REQUEST_FAILED
+        assert session.query(CryptoPriceTick).count() == 0
+    elif expected_status == OBS_PROVIDER_NO_PAIR:
+        assert session.query(CryptoPriceTick).count() == 0
+    else:  # OBS_OBSERVED
+        assert session.query(CryptoPriceTick).count() == 1
 
 
 def test_the_module_references_no_paid_provider_identifier():

@@ -229,7 +229,30 @@ class DexScreenerAdapter:
         if not isinstance(payload, list):
             return []
         pairs = [_parse_pair(entry) for entry in payload]
-        return [pair for pair in pairs if pair is not None and pair.chain == self.chain]
+        parsed = [pair for pair in pairs if pair is not None and pair.chain == self.chain]
+        # CRYPTO-COVERAGE-REPAIR-002 (Probe 15): `expect=list` above validates
+        # the CONTAINER, not the endpoint's CONTRACT. A 200 whose body genuinely
+        # is a JSON array — of strings, ints, dicts missing chainId/pairAddress/
+        # baseToken.address, dicts for the wrong chain, nulls, or a nested error
+        # envelope shaped like a list — passes `isinstance(payload, list)` and
+        # still lands here as a fabricated `token_inactive` past 24h, for the
+        # same reason B1 fixed: the caller had no way to tell "answered, empty"
+        # from "answered, unusable" apart from re-deriving it here.
+        #
+        # The check is on the OUTCOME against the INPUT, not on any one shape:
+        # a non-empty payload that yields zero pairs FOR THIS CHAIN is a failed
+        # request, not an honest empty answer. `[]` in is still `[]` out and
+        # stays terminal (an empty array IS a real "no pairs" answer); anything
+        # non-empty that fails to survive parsing/chain-filtering is not.
+        if payload and not parsed:
+            logger.warning(
+                "DEX Screener returned %d entries for %s that yielded zero "
+                "usable %s pairs", len(payload), token_address, self.chain,
+            )
+            from app.services.crypto_provider_policy import Provider, mark_failed
+
+            mark_failed(Provider.DEXSCREENER)
+        return parsed
 
     async def fetch_pair(self, pair_address: str) -> PairData | None:
         """One pair by its pair address (rate limit 300 rpm)."""
