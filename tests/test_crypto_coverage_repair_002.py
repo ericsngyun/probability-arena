@@ -40,6 +40,8 @@ from app.services.crypto_horizon import (
     MEMBERSHIP_ROLLING,
     OBS_OBSERVED,
     OBS_PROVIDER_NO_PAIR,
+    OBS_REQUEST_FAILED,
+    OBS_TOKEN_INACTIVE,
     OBSERVE_MAX_CALLS,
     CryptoHorizonService,
     is_rolling_cohort,
@@ -1068,6 +1070,129 @@ async def test_the_real_adapter_reaches_only_dexscreener_urls(session):
     assert r["provider_ledger"]["dexscreener"]["succeeded"] == len(requested)
     assert r["solana_tracker_calls"] == 0
     assert r["denied_provider_attempts"] == {}
+
+
+class _TransportFailureClient:
+    """An `httpx.AsyncClient` stand-in that reproduces each way the REAL
+    DexScreener adapter loses a request: it never raises out of the adapter
+    (`dexscreener.py` explicitly disclaims that), it degrades to []."""
+
+    mode = "429"
+    requested: list[str] = []
+
+    def __init__(self, *a, **kw):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def get(self, url):
+        import httpx
+
+        type(self).requested.append(url)
+        request = httpx.Request("GET", url)
+        if self.mode == "429":
+            return httpx.Response(429, request=request)
+        if self.mode == "timeout":
+            raise httpx.ReadTimeout("timed out", request=request)
+        if self.mode == "server_error":
+            return httpx.Response(503, request=request)
+        if self.mode == "bad_json":
+            return httpx.Response(200, content=b"<html>nope", request=request)
+        raise AssertionError(self.mode)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["429", "timeout", "server_error", "bad_json"])
+@pytest.mark.parametrize("horizon,age_hours", [("6h", 6), ("24h", 24)])
+async def test_a_transport_failure_is_never_persisted_as_a_token_state(
+    session, mode, horizon, age_hours,
+):
+    """B1 (FABRICATION), driven through the REAL adapter.
+
+    `DexScreenerAdapter` never raises — 429, timeout, 5xx and undecodable JSON
+    all `return None`, so `fetch_pairs_for_token` returns []. The write phase
+    then read that empty list as a provider ANSWER and persisted
+    `provider_no_pair` — or, at 24h where `aged` is true by construction, the
+    TERMINAL `token_inactive`: an affirmative claim that the token is dead,
+    derived from a request that never returned an answer, and never re-examined.
+
+    The old test for this path used a fake adapter raising `RuntimeError`, a
+    contract the real adapter explicitly disclaims: the tested path could not
+    occur and the production path was untested."""
+    import httpx
+
+    from app.adapters.dexscreener import DexScreenerAdapter
+
+    add_birth(session, 1, anchor=NOW - timedelta(hours=age_hours))
+    session.commit()
+
+    _TransportFailureClient.mode = mode
+    _TransportFailureClient.requested = []
+    original = httpx.AsyncClient
+    httpx.AsyncClient = _TransportFailureClient
+    try:
+        s = settings()
+        service = CryptoHorizonService(
+            adapter=DexScreenerAdapter(settings=s), settings=s,
+        )
+        r = await sparse.run_scheduled_sparse_observation(
+            session, settings=s, service=service, config=config(), now=NOW,
+            sleeper=lambda _x: None,
+        )
+    finally:
+        httpx.AsyncClient = original
+
+    assert _TransportFailureClient.requested, "the real adapter issued no request"
+    assert r["status"] in sparse.HEALTHY_STATUSES, r.get("error")
+    obs = session.query(CryptoHorizonObservation).one()
+    assert obs.horizon == horizon
+    assert obs.status not in (OBS_PROVIDER_NO_PAIR, OBS_TOKEN_INACTIVE), (
+        f"a {mode} was persisted as the token-state fact {obs.status!r}"
+    )
+    assert obs.status == OBS_REQUEST_FAILED
+    assert obs.missing_cause == OBS_REQUEST_FAILED
+    assert r["outcome_counts"] == {OBS_REQUEST_FAILED: 1}
+    assert session.query(CryptoPriceTick).count() == 0
+
+
+@pytest.mark.asyncio
+async def test_an_empty_provider_answer_is_still_a_provider_answer(session):
+    """The other half of B1: the delta must not turn a genuine `[]` — HTTP 200
+    with an empty pair list — into `request_failed`. That would make every
+    honest `provider_no_pair` retryable and double this lane's spend."""
+    import httpx
+
+    from app.adapters.dexscreener import DexScreenerAdapter
+
+    class EmptyClient(_TransportFailureClient):
+        async def get(self, url):
+            type(self).requested.append(url)
+            return httpx.Response(200, json=[], request=httpx.Request("GET", url))
+
+    add_birth(session, 1, anchor=NOW - timedelta(hours=6))
+    session.commit()
+    EmptyClient.requested = []
+    original = httpx.AsyncClient
+    httpx.AsyncClient = EmptyClient
+    try:
+        s = settings()
+        service = CryptoHorizonService(
+            adapter=DexScreenerAdapter(settings=s), settings=s,
+        )
+        r = await sparse.run_scheduled_sparse_observation(
+            session, settings=s, service=service, config=config(), now=NOW,
+            sleeper=lambda _x: None,
+        )
+    finally:
+        httpx.AsyncClient = original
+
+    assert r["outcome_counts"] == {OBS_PROVIDER_NO_PAIR: 1}
+    obs = session.query(CryptoHorizonObservation).one()
+    assert obs.status == OBS_PROVIDER_NO_PAIR
 
 
 def test_the_module_references_no_paid_provider_identifier():

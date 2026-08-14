@@ -447,6 +447,23 @@ def _dexscreener_only_policy(run_id: str, cap: int):
     )
 
 
+def _transport_failures(ctx) -> int:
+    """How many DexScreener requests this run has failed to get an ANSWER for.
+
+    `failed` covers 429 / timeout / connection error / 5xx / undecodable JSON
+    (the adapter marks all of them). `skipped_cap` / `skipped_budget` cover the
+    deterministic guard skips, which also return None and also are not an
+    answer. Read as a delta across a single call, this is the transport-failure
+    signal the adapter's return value deliberately erases."""
+    from app.services.crypto_provider_policy import Provider
+
+    ledger = ctx.ledger
+    return sum(
+        bucket.get(Provider.DEXSCREENER, 0)
+        for bucket in (ledger.failed, ledger.skipped_cap, ledger.skipped_budget)
+    )
+
+
 async def _fetch_phase(
     service: CryptoHorizonService,
     due_tokens: list[str],
@@ -484,9 +501,25 @@ async def _fetch_phase(
             if deadline is not None and _now() >= deadline and fetched:
                 stop_reason = STOP_DEADLINE
                 break
+            before = _transport_failures(ctx)
             try:
                 pairs = await service.adapter.fetch_pairs_for_token(token)
-                request_failed = False
+                # THE REAL ADAPTER NEVER RAISES (dexscreener.py: "never raise on
+                # network/HTTP/schema problems" — 429, timeout, 5xx and JSON
+                # errors all `return None`, so `fetch_pairs_for_token` returns
+                # []). An empty list therefore does NOT mean "the provider
+                # answered and had no pair"; without this delta the write phase
+                # recorded `provider_no_pair` — or, past 24h where `aged` is
+                # true by construction, the TERMINAL `token_inactive`, an
+                # affirmative claim that the token is dead derived from a
+                # request that never returned an answer.
+                #
+                # The provider ledger is the one place that already knows.
+                # `_get` calls `mark_failed` on every transport/schema failure
+                # and the cap/budget skips are accounted there too, so a
+                # non-zero delta across this one call means "no answer", for
+                # any adapter that participates in the policy.
+                request_failed = _transport_failures(ctx) > before
             except ProviderPolicyError:
                 # NEVER degrade an authorization failure into an ordinary
                 # provider miss. The policy module says so explicitly, and the
