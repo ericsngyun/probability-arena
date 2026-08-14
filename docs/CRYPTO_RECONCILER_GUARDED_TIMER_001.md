@@ -129,6 +129,9 @@ reproduces it.
 ### 4.3 The chosen value
 
 ```text
+samples (n=8, ms/token)  14.8  17.8  18.0  18.8  18.8  19.6  19.8  105.4
+  median 18.8 | warm-cluster max 19.8 | cold-start 105.4
+
 initial_per_token_cost_seconds = 0.15
   = worst observed (0.1054 s/token) x 1.42
 first batch = 2.0 / 0.15 ≈ 13 tokens
