@@ -2281,6 +2281,182 @@ load 5-6).
 4. **A `TimeoutStartSec` that covers the derivation below**, or an explicit
    accepted decision to live with the documented SIGKILL outcome.
 
+### Sparse observer timer (GATE7-SPARSE-UNITS-001)
+
+A **different lane from the reconciler** and a different unit pair:
+`probability-arena-crypto-sparse-observe.{service,timer}`. The reconciler is
+provider-free and revisits rows already on disk; this lane **spends real
+DexScreener requests** to buy one 6h and one 24h observation per enrolled
+birth. Nothing about the reconciler's numbers transfers, and the two timers are
+enabled, disabled and read independently.
+
+**Nothing is installed on EVO-X2 by GATE7-SPARSE-UNITS-001.** The unit files
+are repo templates; installation and activation are operator actions, in the
+order below. **The disable procedure comes first on purpose** — an operator
+reaching for this section is usually reaching for the brake.
+
+#### Disable the sparse observer timer
+
+Three levels, cheapest first. Each is complete on its own; you do not need the
+next one.
+
+```bash
+# 1. STOP FUTURE PASSES (keeps the unit installed, keeps all state).
+#    The pass becomes a clean no-op: no read, no write, no provider call, and
+#    no telemetry record. Exits 0.
+sed -i 's/^ENABLE_CRYPTO_SPARSE_OBSERVATION=.*/ENABLE_CRYPTO_SPARSE_OBSERVATION=false/' \
+  ~/projects/probability-arena/.env
+grep ENABLE_CRYPTO_SPARSE_OBSERVATION ~/projects/probability-arena/.env   # verify
+
+# 2. STOP THE SCHEDULE ITSELF (also stops the dark no-op firing at all).
+systemctl --user disable --now probability-arena-crypto-sparse-observe.timer
+systemctl --user list-timers | grep crypto-sparse-observe   # expect: nothing
+
+# 3. STOP A PASS THAT IS RUNNING RIGHT NOW.
+systemctl --user stop probability-arena-crypto-sparse-observe.service
+```
+
+Level 3 is safe by construction and needs no cleanup. The pass writes in
+batches through `_commit_with_retry(prepare=…)`, and every counter advances
+only after a commit has **returned**:
+
+* **Durable**: every enrolment batch and every observation batch that committed.
+* **Rolled back**: the in-flight batch's staged rows — neither duplicated nor
+  half-written, because `prepare()` re-stages from scratch on every attempt.
+* **Not left inconsistent**: the overlap guard is a kernel-held `flock`, so it
+  is released on process death and no stale lock survives; double-enrolment is
+  impossible (`ix_horizon_member_cohort_token`) and double-observation is
+  impossible (`ix_horizon_obs_cohort_token_horizon`), so the next pass re-plans
+  from persisted state and picks up exactly what has no row yet. **There is no
+  `running` row to orphan — this lane has no run table.**
+* **Actually paid**: the provider requests already spent on the interrupted
+  batch's tokens, plus any member-horizon whose band closes before the next
+  pass, which becomes a permanent, never-backfilled `scheduling_miss`.
+
+**A stop or a `TimeoutStartSec` overrun leaves no trace in this lane's own
+telemetry.** `_emit_pass_telemetry` runs at the end of the pass, so a killed
+pass appends nothing to the JSONL sink. Unlike the reconciler — whose overrun
+signature is an orphaned `status='running'` row — the evidence here is
+`journalctl` (`Failed with result 'timeout'`) and, one band later, a rising
+`scheduling_miss_rate`. If you suspect an overrun, read the journal; the corpus
+will not tell you.
+
+There is **no automatic disable** for this lane. The reconciler's rolling
+health latch is its own and does not gate this timer.
+
+#### Enable the sparse observer timer
+
+Do these in order; each step's check must pass before the next. Steps 1–4 are
+the CRYPTO-COVERAGE-REPAIR-002 deployment plan and are **not optional** — in
+particular step 3, which is the only place `MAX_DURATION_SECONDS` gets a value
+measured on this host.
+
+1. **Apply migration 0029.** The command deliberately does not run Alembic, so
+   an un-migrated database puts the planner on the slow, un-indexed path
+   (measured 416 ms cold against 25 ms):
+   ```bash
+   cd ~/projects/probability-arena && .venv/bin/alembic upgrade head
+   ```
+2. **Dark check and dry run** (flag still false):
+   ```bash
+   .venv/bin/python -m app.cli crypto-sparse-observe
+   # expect: status=disabled  external_calls=0  no-op
+   .venv/bin/python -m app.cli crypto-sparse-observe --dry-run
+   # read: births_considered, enrolment_rejections, would_enrol,
+   #       due_observations, working_set_index_present=True
+   ```
+3. **One attended pass, then set the fetch budget from it.**
+   ```bash
+   .venv/bin/python -m app.cli crypto-sparse-observe --force --observe-limit 5
+   ```
+   Read `duration_ms` and `write_lock`. Set
+   `CRYPTO_SPARSE_OBSERVATION_MAX_DURATION_SECONDS` from the measured
+   per-request latency rather than from the chosen 90.0. **Changing it
+   invalidates `TimeoutStartSec`** — that value is derived from the 90 s
+   default (see "`TimeoutStartSec` for the sparse observer" below), and
+   `tests/test_gate7_sparse_units_001.py` fails until the unit is re-derived.
+   Do that re-derivation before step 5, not after.
+4. **Read the coverage report** and confirm the denominator matches what step 2
+   predicted and that `scheduling_miss` is 0:
+   ```bash
+   .venv/bin/python -m app.cli crypto-observation-coverage-report
+   ```
+   Note the line it prints: `expected timer line: OnCalendar=…`. **Copy that
+   string into the unit rather than typing a cadence.** Nothing in the code can
+   see a systemd `OnCalendar`, and this is the weakest joint in the lane.
+5. **Install the units dark** (flag still false):
+   ```bash
+   cp infra/systemd/user/probability-arena-crypto-sparse-observe.{service,timer} \
+      ~/.config/systemd/user/
+   systemctl --user daemon-reload
+   systemctl --user enable --now probability-arena-crypto-sparse-observe.timer
+   systemctl --user list-timers | grep crypto-sparse-observe   # next tick, <= 1h
+   journalctl --user -u probability-arena-crypto-sparse-observe.service -n 20 --no-pager
+   # expect: status=disabled  external_calls=0  no-op
+   ```
+   Confirm the installed `OnCalendar` is the string step 4 printed:
+   ```bash
+   grep OnCalendar ~/.config/systemd/user/probability-arena-crypto-sparse-observe.timer
+   ```
+6. **Flip the flag** and let exactly one natural tick run:
+   ```bash
+   sed -i 's/^ENABLE_CRYPTO_SPARSE_OBSERVATION=.*/ENABLE_CRYPTO_SPARSE_OBSERVATION=true/' \
+     ~/projects/probability-arena/.env
+   ```
+7. **Read the first unattended pass** before trusting the second:
+   ```bash
+   journalctl --user -u probability-arena-crypto-sparse-observe.service -n 60 --no-pager
+   .venv/bin/python -m app.cli crypto-observation-coverage-report
+   ```
+   Expected on a healthy pass: `status=ok`, `solana_tracker_calls=0`,
+   `gate_bypassed=None`, `stop_reason=complete`,
+   `working_set_index_present=True`, and a `write_lock` block with
+   `lock_failures=0` and `persisted=True`. **`gate_bypassed=True` on a
+   scheduled run means `--force` reached the `ExecStart` — remove it.**
+   `status=partial` with `stop_reason=deadline` or `observe_limit` is the pass
+   telling you work remains, not a fault.
+
+#### Expected timer inventory after install
+
+So a later audit has a list to diff against rather than a memory. Run:
+
+```bash
+systemctl --user list-timers --all --no-pager | grep probability
+```
+
+| Unit | Expected after this install | Source of that expectation |
+|---|---|---|
+| `probability-arena-baseline.timer` | present, every 4 h | "Deployed services" table at the top of this file |
+| `probability-arena-retention.timer` | present, daily | same |
+| `probability-arena-backup.timer` | present, daily 01:30 UTC | SQLITE-BACKUP-COORDINATION-001, recurrence proven |
+| `probability-arena-marketops.timer` | present, 5 min | referenced throughout as the live 5-minute writer |
+| `probability-arena-tick-aggregation.timer` | present, gated by `ENABLE_TICK_AGGREGATION_TIMER` | OPS-013 hardening section |
+| `probability-arena-meme-news.timer` | **absent** unless its own section was followed | MEME-NEWS-002 is "NOT auto-installed" |
+| `probability-arena-crypto-reconcile.timer` | **absent** unless "Enable the guarded reconciler timer" was followed | that section |
+| `probability-arena-crypto-sparse-observe.timer` | **present, hourly** — the only unit this procedure adds | this section |
+
+**The audit-proof statement is the delta, not the table**: this procedure adds
+**exactly one** timer and **exactly one** oneshot service, and changes nothing
+else. The table above is assembled from this runbook's own sections rather than
+from a live query, so treat a mismatch as a question to answer, not as a
+failure — but a unit present that is on **neither** list is a finding.
+
+`probability-arena-watcher.service` is a continuous service, not a timer, and
+does not appear in `list-timers`.
+
+#### `TimeoutStartSec` for the sparse observer
+
+The full derivation, its inputs, and the exceedance conditions live **in the
+unit file** — `infra/systemd/user/probability-arena-crypto-sparse-observe.service`
+— because that is where the next person to change the number will be. In brief:
+`5min` covers the measured-regime model (~157 s at the worst load factor this
+repo has measured, L = 5.80) with a ~1.9× margin, and that margin is spent
+entirely on the per-lock-acquisition wait, which the measurement does not
+bound. **No value could cover the arithmetic ceiling** — at L = 5.80 with every
+lock acquisition waiting the full 30 s busy timeout it is ~124 minutes, longer
+than the lane's own cadence — so the number is chosen against measurement and
+the exceedance conditions are written down instead of a guarantee.
+
 ### Where the per-pass record now lands (GATE2-WRITER-TELEMETRY-001)
 
 Precondition 3 needs a **distribution**, and until this milestone a pass left
