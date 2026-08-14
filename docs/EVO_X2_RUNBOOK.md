@@ -2279,7 +2279,11 @@ load 5-6).
    first** — see "HARD PRECONDITION for Gate 6" in the Gate 3 subsection below,
    and the no-partial-batch precondition any re-derivation must satisfy.
 4. **A `TimeoutStartSec` that covers the derivation below**, or an explicit
-   accepted decision to live with the documented SIGKILL outcome.
+   accepted decision to live with the documented SIGKILL outcome. "Below" means
+   "`TimeoutStartSec` vs the finalize ladder" — the RECONCILER's derivation.
+   GATE7-SPARSE-UNITS-001 inserted a second, unrelated `TimeoutStartSec`
+   derivation between here and there, for the sparse observer; the two share a
+   directive name and nothing else.
 
 ### Sparse observer timer (GATE7-SPARSE-UNITS-001)
 
