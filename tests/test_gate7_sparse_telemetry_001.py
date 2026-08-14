@@ -218,6 +218,97 @@ def filedb(tmp_path):
         db.close()
 
 
+# --- 0. the isolation that every other test in the repo depends on ----------
+
+
+def _real_sink_fingerprint() -> tuple:
+    """Stat-only fingerprint of the OPERATOR's sink. Never reads the file: it
+    does not rotate before 001E and `read_events` slurps it whole."""
+    import app.telemetry.sink as sink_mod
+
+    real = Path.home() / sink_mod.DEFAULT_DIRNAME / sink_mod.ACTIVE_FILENAME
+    if not real.exists():
+        return (False, None, None)
+    st = real.stat()
+    return (True, st.st_size, st.st_mtime_ns)
+
+
+class TestTelemetryIsolationSurvivesMonkeypatchUndo:
+    """MEDIUM-1 of this branch's review, closed in conftest.
+
+    `_isolate_sqlite_telemetry` is autouse and function-scoped. It used to take
+    the TEST's `monkeypatch`, and pytest hands every fixture of a test the SAME
+    instance — so `monkeypatch.undo()` (seven call sites, four modules) reverted
+    the isolation and the next instrumented writer to run appended to the
+    operator's REAL ~/probability-arena-telemetry/sqlite-writes.jsonl.
+
+    The exposure was never "a test that emits deliberately"; it is WHATEVER
+    instrumented writer runs after the undo, and this branch adds a fifth whose
+    trigger is every terminal outcome including refusals. So the guarantee is
+    pinned here rather than left to the seven call sites."""
+
+    def test_undo_cannot_redirect_this_lane_at_the_operator_sink(
+        self, monkeypatch
+    ):
+        """FAILS ON REVERT — and fails BEFORE it emits anything, deliberately:
+        proving the old behaviour must never cost the operator a real append."""
+        import app.telemetry.sink as sink_mod
+
+        real_dir = Path.home() / sink_mod.DEFAULT_DIRNAME
+        before = _real_sink_fingerprint()
+
+        # a perfectly ordinary use of the fixture: patch something unrelated,
+        # then wind the whole instance back.
+        monkeypatch.setenv("GATE7_UNRELATED_PROBE", "1")
+        monkeypatch.undo()
+        sink_mod._sink = None
+
+        assert sink_mod.telemetry_dir() != real_dir, (
+            "monkeypatch.undo() reverted conftest's telemetry isolation; "
+            "the next emit would land in the operator's real sink")
+
+        event_id = writer_pass.emit_writer_pass(
+            writer_name=sparse.TELEMETRY_WRITER_NAME,
+            operation_name=sparse.TELEMETRY_OPERATION_NAME,
+            started_at=datetime.now(timezone.utc)
+            .isoformat().replace("+00:00", "Z"),
+            run_status="ok", stop_reason="complete",
+            table_groups=["crypto_horizon"],
+        )
+        assert event_id is not None, "the isolated append must still work"
+        assert get_sink().path.parent != real_dir
+        assert len(events()) == 1
+        assert _real_sink_fingerprint() == before, (
+            "the operator's real telemetry file was modified by the suite")
+
+    @pytest.mark.asyncio
+    async def test_a_real_pass_after_an_undo_still_lands_in_the_temp_sink(
+        self, session, monkeypatch
+    ):
+        """The same guarantee through the actual writer, not a bare emit.
+
+        THE `telemetry_dir()` ASSERTION BELOW MUST STAY AHEAD OF THE PASS. It
+        is not redundant with the test above: verifying that this test fails on
+        revert means RUNNING it against the broken fixture, and without the
+        guard that run appends a real record to the operator's file. Measured,
+        on this host, before the guard was added: the real sink went 3 lines /
+        2,706 B -> 4 lines / 3,565 B and had to be repaired by truncation."""
+        import app.telemetry.sink as sink_mod
+
+        before = _real_sink_fingerprint()
+        monkeypatch.setenv("GATE7_UNRELATED_PROBE", "1")
+        monkeypatch.undo()
+        sink_mod._sink = None
+        assert sink_mod.telemetry_dir() != Path.home() / sink_mod.DEFAULT_DIRNAME, (
+            "isolation lost after undo(); refusing to run a pass that would "
+            "append to the operator's real sink")
+
+        adapter = seed(session)
+        await run_pass(session, adapter=adapter)
+        assert len(events()) == 1
+        assert _real_sink_fingerprint() == before
+
+
 # --- 1. identity: the reserved name, the reserved slice ---------------------
 
 

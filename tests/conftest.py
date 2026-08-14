@@ -20,18 +20,52 @@ from app.schemas import MarketData
 
 
 @pytest.fixture(autouse=True)
-def _isolate_sqlite_telemetry(tmp_path, monkeypatch):
+def _isolate_sqlite_telemetry(tmp_path):
     """SQLITE-LOCK-TELEMETRY-001A: every test writes telemetry (if any) to a
     per-test temp dir, never to the real ~/probability-arena-telemetry/ —
     instrumented writers (tick aggregation, backup) are exercised by many
-    pre-existing tests. Also resets the process-wide sink singleton."""
+    pre-existing tests. Also resets the process-wide sink singleton.
+
+    MEDIUM-1 (GATE7-SPARSE-TELEMETRY-001 review): this used to take the TEST's
+    `monkeypatch` fixture. pytest hands every fixture of a test the SAME
+    `MonkeyPatch` instance, so any test calling `monkeypatch.undo()` — seven
+    call sites across four modules do — reverted THIS isolation too, and the
+    next `get_sink()` resolved to the operator's REAL
+    ~/probability-arena-telemetry/sqlite-writes.jsonl. Reproduced by the
+    reviewer: after `undo()` the resolved path was the real sink, which exists
+    on this host and is a live operator artifact.
+
+    THE FIX IS STRUCTURAL, NOT A SWEEP OF THE SEVEN CALL SITES. A private
+    `MonkeyPatch` records its patches on ITSELF, so no test-visible `undo()`
+    can reach them — the same instrument `_isolate_crypto_tape_overlap_lock`
+    below already uses. Rewriting the seven `undo()` calls would fix seven
+    instances and leave the class open to the eighth; this closes the class.
+    The env var (not the resolved `telemetry_dir` function) stays the patch
+    point deliberately: `SQLITE_TELEMETRY_DIR` is inherited by SUBPROCESSES,
+    and at least one test asserts the no-SQLite mandate out of process.
+
+    The teardown assertion is the second half of the fix: if some future
+    fixture ordering or an explicit `os.environ` write ever un-isolates a test
+    anyway, that test FAILS rather than silently appending to the operator's
+    file."""
     import app.telemetry.sink as _telemetry_sink
 
-    monkeypatch.setenv(
-        "SQLITE_TELEMETRY_DIR", str(tmp_path / "telemetry-isolated"))
-    _telemetry_sink._sink = None
-    yield
-    _telemetry_sink._sink = None
+    isolated = tmp_path / "telemetry-isolated"
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("SQLITE_TELEMETRY_DIR", str(isolated))
+        _telemetry_sink._sink = None
+        try:
+            yield
+        finally:
+            resolved = _telemetry_sink.telemetry_dir()
+            _telemetry_sink._sink = None
+    if resolved != isolated:
+        raise AssertionError(
+            "SQLite telemetry isolation was lost during this test: "
+            f"telemetry_dir() resolved to {resolved}, not {isolated}. "
+            "Anything this test emitted may have landed in the operator's "
+            "real sink."
+        )
 
 
 @pytest.fixture(scope="session", autouse=True)
