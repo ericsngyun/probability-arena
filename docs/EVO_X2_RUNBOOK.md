@@ -2388,6 +2388,17 @@ measured on this host.
    Note the line it prints: `expected timer line: OnCalendar=…`. **Copy that
    string into the unit rather than typing a cadence.** Nothing in the code can
    see a systemd `OnCalendar`, and this is the weakest joint in the lane.
+
+   It currently prints `OnCalendar=*-*-* *:37:00` — hourly, **at :37, not at
+   :00**. That is derived from two constants (`SPARSE_CADENCE_MINUTES = 60`,
+   `SPARSE_TIMER_PHASE_MINUTE = 37`), not typed, and the `:37` is deliberate:
+   `hourly` would put this lane on `*-*-* *:00:00` alongside
+   `probability-arena-baseline.timer` (:00–:05) and the DELETE-heavy
+   `probability-arena-retention.timer` (00:00–00:10), and it is the only unit in
+   the directory with `RandomizedDelaySec=0` + `AccuracySec=1s`, so it could not
+   be jittered out of that window. **If the printed string ever says `hourly`
+   again, stop** — the phase constant has been reverted and the unit is back on
+   the crowded lattice.
 5. **Install the units dark** (flag still false):
    ```bash
    cp infra/systemd/user/probability-arena-crypto-sparse-observe.{service,timer} \
@@ -2447,7 +2458,7 @@ systemctl --user list-timers --all --no-pager | grep probability
 | `probability-arena-tick-aggregation.timer` | present, gated by `ENABLE_TICK_AGGREGATION_TIMER` | OPS-013 hardening section |
 | `probability-arena-meme-news.timer` | **absent** unless its own section was followed | MEME-NEWS-002 is "NOT auto-installed" |
 | `probability-arena-crypto-reconcile.timer` | **absent** unless "Enable the guarded reconciler timer" was followed | that section |
-| `probability-arena-crypto-sparse-observe.timer` | **present, hourly** — the only unit this procedure adds | this section |
+| `probability-arena-crypto-sparse-observe.timer` | **present, hourly at `:37`** (`OnCalendar=*-*-* *:37:00`, zero jitter) — the only unit this procedure adds | this section |
 
 **The audit-proof statement is the delta, not the table**: this procedure adds
 **exactly one** timer and **exactly one** oneshot service, and changes nothing

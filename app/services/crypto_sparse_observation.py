@@ -180,6 +180,38 @@ SPARSE_HORIZON_LABELS: tuple[str, ...] = tuple(label for label, _m in SPARSE_HOR
 SPARSE_BAND_MINUTES = 60.0
 SPARSE_CADENCE_MINUTES = 60.0
 
+# --- the PHASE of that cadence (a third policy number, and a smaller one) -------
+# The cadence fixes the GAP between passes; it says nothing about WHERE on the
+# clock the lattice sits. Both invariants above are translation-invariant — a
+# lattice of gap g contains the same number of points in any closed interval of
+# length 2*BAND wherever it starts (pinned exhaustively over every phase by
+# `test_at_least_two_scheduled_passes_fall_inside_every_band` in
+# tests/test_crypto_coverage_repair_002.py) — so the phase is free, costs no
+# jitter, and is chosen purely to stay off other units' calendars.
+#
+# :00 IS THE ONE PHASE THAT IS NOT FREE ON THIS HOST. `hourly` expands to
+# `*-*-* *:00:00`, and the :00 instant is already occupied by
+# `probability-arena-baseline.timer` (`OnCalendar=*-*-* 00/4:00:00`, six times
+# a day) and `probability-arena-retention.timer` (`OnCalendar=daily` = `*-*-*
+# 00:00:00`, the DELETE-heavy writer on this host). This lane is the ONLY unit
+# in infra/systemd/user/ with `RandomizedDelaySec=0` AND `AccuracySec=1s`, so it
+# would arrive at the head of every :00 stampede deterministically, with the
+# jittered writers queueing behind it.
+#
+# :37 is empty on this host's calendar, checked against every unit in
+# infra/systemd/user/ rather than against memory:
+#   baseline    :00-:05   (jitter 300)      retention   00:00-00:10 (jitter 600)
+#   reconcile   :07-:12   (jitter 300)      backup      01:30-01:40 (jitter 600)
+#   tick-agg    :22-:24   (boot-anchored 1h, jitter 120; the runbook records the
+#                          slot this host's boot put it in)
+# MarketOps and meme-news are BOOT-anchored (`OnUnitActiveSec`), so their grids
+# drift with uptime and no fixed phase can dodge them for good; that collision
+# was already priced at tens of milliseconds in the .service file and is
+# unchanged by this number.
+SPARSE_TIMER_PHASE_MINUTE = 37
+if not 0 <= SPARSE_TIMER_PHASE_MINUTE <= 59:
+    raise ValueError("SPARSE_TIMER_PHASE_MINUTE must be a minute of the hour")
+
 # `raise`, not `assert`: `python -O` strips assert statements outright, and
 # these two are the invariants that keep the lane from buying ticks that can
 # never mature a label.
@@ -2188,17 +2220,37 @@ def _rate(numerator: int, denominator: int) -> float | None:
 
 
 def timer_oncalendar() -> str:
-    """The exact systemd `OnCalendar=` line this lane's cadence implies.
+    """The exact systemd `OnCalendar=` line this lane's cadence and phase imply.
 
-    Derived from SPARSE_CADENCE_MINUTES rather than written down twice: the
-    cadence constant and the installed timer must not be able to drift apart,
-    and the operator installing the unit should not have to translate minutes
-    into calendar syntax by hand."""
+    Derived from SPARSE_CADENCE_MINUTES and SPARSE_TIMER_PHASE_MINUTE rather
+    than written down twice: the constants and the installed timer must not be
+    able to drift apart, and the operator installing the unit should not have to
+    translate minutes into calendar syntax by hand.
+
+    THE PHASE IS CARRIED IN EVERY BRANCH, not just the shipped one. The hourly
+    branch used to return the alias `hourly`, which systemd expands to
+    `*-*-* *:00:00` — the one phase this host's calendar is crowded at (see
+    SPARSE_TIMER_PHASE_MINUTE). Leaving the other two branches on :00 would have
+    made a later cadence change silently re-enter the stampede this offset
+    exists to leave, so the offset applies to all three:
+
+      * 60 min          -> `*-*-* *:37:00`      (the shipped form)
+      * H hours         -> `*-*-* 00/H:37:00`   (every H hours, at :37)
+      * M < 60 min      -> `*-*-* *:{37 % M}/M:00`
+
+    The sub-hour form takes the phase MODULO the cadence because a systemd
+    minute-repetition `start/step` must begin inside the first step; `37/30`
+    would put the first firing at :37 and the next at :67, which is not a
+    minute. `37 % 30 = 7` keeps the same lattice gap on a phase this host is
+    also free at."""
     minutes = int(SPARSE_CADENCE_MINUTES)
+    phase = int(SPARSE_TIMER_PHASE_MINUTE)
     if minutes >= 60 and minutes % 60 == 0:
         hours = minutes // 60
-        return "hourly" if hours == 1 else f"*-*-* 00/{hours}:00:00"
-    return f"*-*-* *:00/{minutes}:00"
+        if hours == 1:
+            return f"*-*-* *:{phase:02d}:00"
+        return f"*-*-* 00/{hours}:{phase:02d}:00"
+    return f"*-*-* *:{phase % minutes:02d}/{minutes}:00"
 
 
 def build_observation_coverage_report(

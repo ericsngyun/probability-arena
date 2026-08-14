@@ -27,8 +27,9 @@
 # the design, and it is right.
 #
 # THE `OnCalendar` BELOW IS NOT HAND-PICKED. It is what
-# `crypto_sparse_observation.timer_oncalendar()` returns for the shipped
-# cadence — the same string `crypto-observation-coverage-report` prints as
+# `crypto_sparse_observation.timer_oncalendar()` returns for the shipped cadence
+# AND the shipped phase (`SPARSE_TIMER_PHASE_MINUTE = 37`, which is why the line
+# is not `hourly`) — the same string `crypto-observation-coverage-report` prints as
 # `expected timer line: OnCalendar=...` for an operator to COPY rather than
 # type. `tests/test_gate7_sparse_units_001.py` parses this file and asserts the
 # value equals that function's return, so a change to `SPARSE_CADENCE_MINUTES`
@@ -45,45 +46,69 @@
 Description=Run Probability Arena crypto sparse horizon observation every hour
 
 [Timer]
-# = timer_oncalendar() at SPARSE_CADENCE_MINUTES = 60. systemd expands
-# `hourly` to `*-*-* *:00:00`.
+# = timer_oncalendar() at SPARSE_CADENCE_MINUTES = 60 and
+# SPARSE_TIMER_PHASE_MINUTE = 37. Still derived, still copy-able from
+# `crypto-observation-coverage-report`, still pinned by test against BOTH
+# constants — the phase is now part of the derivation rather than a property of
+# the `hourly` alias.
 #
-# ON SITTING ON THE CALENDAR LATTICE, deliberately, and unlike the reconciler.
-# That unit moved itself to :07 specifically to avoid the MarketOps grid,
-# because a competing writer's worst-case WAIT tracks the reconciler's whole
-# PASS WALL TIME. That reasoning does not transfer: this lane's write phase is
-# 25-token batches with <= 50 rows per commit and a MEASURED max competing-
-# writer stall of 45 ms IN THAT WRITE PHASE (the source measurement, B7 in
+# THE PHASE IS OFF :00, AND THAT IS WHAT THIS OFFSET BUYS. `hourly` expands to
+# `*-*-* *:00:00`, and the :00 instant is occupied on this host:
+#   * probability-arena-baseline.timer — `OnCalendar=*-*-* 00/4:00:00`, so
+#     :00:00 six times a day (RandomizedDelaySec=300, i.e. :00-:05).
+#   * probability-arena-retention.timer — `OnCalendar=daily` (= `*-*-* 00:00:00`),
+#     once a day, and it is the DELETE-heavy writer on this host
+#     (RandomizedDelaySec=600, i.e. 00:00-00:10).
+# THOSE TWO ARE WHAT :37 DODGES. It also stays clear of the reconciler at
+# :07-:12 and of the boot-anchored hourly tick-aggregation slot this host's
+# uptime put at :22-:24.
+#
+# ONE ACCEPTED RESIDUAL, STATED RATHER THAN GLOSSED:
+# probability-arena-backup.timer
+# is `OnCalendar=*-*-* 01:30:00` with `RandomizedDelaySec=600`, so its
+# start is uniform over 01:30:00-01:40:00 and CAN land on :37. It is accepted,
+# not avoided, and the reasoning is that it is strictly smaller than what the
+# offset bought:
+#   * ONCE A DAY AT MOST, and only in the 01:xx hour, because that unit's hour
+#     field is pinned to 01 — against `baseline`'s six-a-day and `retention`'s
+#     once-a-day at an instant this lane could never be jittered away from.
+#   * PROBABILISTIC, not deterministic: the overlap depends on where in its
+#     600 s jitter the backup lands, so it is not a standing appointment.
+#   * The backup is a bounded file copy (SQLITE-BACKUP-COORDINATION-001:
+#     measured 37 s, 0 restarts, lock events unchanged), not a DELETE-heavy
+#     writer.
+# `tests/test_gate7_sparse_units_001.py` holds this as an explicit accepted-
+# overlap list and fails if any OTHER calendar unit starts covering :37 — and it
+# also fails if an accepted overlap stops being named here.
+# IF THIS RESIDUAL IS EVER JUDGED TOO EXPENSIVE, the fix is one constant:
+# `SPARSE_TIMER_PHASE_MINUTE = 47` clears the backup window entirely and every
+# other calendar neighbour, at no cost to invariant (2). It was not taken here
+# because :37 is the approved value and this residual was found after.
+#
+# WHY THE COLLISION WAS WORTH MOVING RATHER THAN PRICING. The direct contention
+# cost really is small — this lane's write phase is 25-token batches with <= 50
+# rows per commit and a MEASURED max competing-writer stall of 45 ms IN THAT
+# WRITE PHASE (the source measurement, B7 in
 # tests/test_crypto_coverage_repair_002.py, put the FETCH phase at 28 ms and the
 # PRELUDE at 2,023 ms — 45 ms is the smallest of the three, and it is quoted
-# because the write phase is what a grid collision contends with). A collision
-# there costs tens of milliseconds, not tens of seconds.
+# because the write phase is what a grid collision contends with). What made :00
+# different from an ordinary collision is that THIS TIMER ARRIVES FIRST,
+# DETERMINISTICALLY, AND CANNOT BE MOVED OUT OF THE WAY BY JITTER. It is the
+# only timer in this directory with `RandomizedDelaySec=0` AND `AccuracySec=1s`
+# — see the zero-jitter derivation below, which is forced by invariant (2) and
+# leaves nothing to spend — so at every :00 stampede it sat at the head of a
+# window it could not be jittered out of. The phase is the ONE knob that moves
+# the lattice at zero cost to invariant (2): containment of a closed 2*BAND
+# interval by a CADENCE-spaced lattice is translation-invariant, so the gap, and
+# therefore the invariant, is untouched. Pinned by
+# `test_the_phase_offset_costs_invariant_two_nothing`.
 #
-# THE FULL COLLISION SET, NOT JUST MarketOps. `hourly` is `*-*-* *:00:00`, so
-# every firing lands on :00:00, and three other units in infra/systemd/user/
-# share that instant:
-#   * probability-arena-marketops.timer — 5-minute grid, so :00 every hour.
-#   * probability-arena-baseline.timer — `OnCalendar=*-*-* 00/4:00:00`, so
-#     :00:00 six times a day.
-#   * probability-arena-retention.timer — `OnCalendar=daily` (= `*-*-* 00:00:00`),
-#     once a day, and it is the DELETE-heavy writer on this host.
-# AND THIS TIMER ARRIVES FIRST, DETERMINISTICALLY. It is the only timer in that
-# directory with `RandomizedDelaySec=0` AND `AccuracySec=1s`; marketops carries
-# 30 s of jitter, baseline 300 s, retention 600 s. So at every :00 stampede this
-# lane is at the head of the window and the jittered writers queue behind it —
-# which is the benign direction (a short pass ahead of long ones), but it is a
-# consequence of the zero-jitter derivation above, not an independent choice,
-# and it cannot be tuned away without spending jitter invariant (2) does not
-# have.
-#
-# THE :00 STAMPEDE IS THEREFORE AN ACCEPTED COST, priced the same way the
-# MarketOps collision is: once a day it overlaps a DELETE-heavy retention pass,
-# and six times a day a baseline pass, at a write-phase contention cost measured
-# in tens of milliseconds. Buying grid avoidance would cost the one property
-# worth more — an `OnCalendar` an operator can copy from the CLI and a test can
-# pin against the constant. Moving this to an offset (`:37`) is an app/ change,
-# because `timer_oncalendar()` derives this string; it is not a unit-file edit.
-OnCalendar=hourly
+# WHAT :37 DOES NOT BUY. probability-arena-marketops.timer and
+# probability-arena-meme-news.timer are BOOT-anchored (`OnUnitActiveSec=`), so
+# their grids drift with uptime and NO fixed phase can dodge them permanently.
+# That collision remains priced, not avoided, at the tens-of-milliseconds
+# write-phase figure above.
+OnCalendar=*-*-* *:37:00
 # ZERO JITTER, AND THIS IS DERIVED, NOT A PREFERENCE. Invariant (2) needs at
 # least 2 scheduled passes inside every closed band of length 2*BAND = 120 min.
 # At the shipped pair (BAND 60, CADENCE 60) that holds with EXACTLY ZERO SLACK:

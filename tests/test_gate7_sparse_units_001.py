@@ -103,19 +103,31 @@ def oncalendar_interval_minutes(value: str) -> float:
     accepted — anything else raises, because an unrecognised calendar spec means
     the coupling is no longer being checked, and silently returning `None` there
     is exactly how a pin stops pinning.
+
+    THE OFFSET FORMS ARE THE SHIPPED ONES. `timer_oncalendar()` carries
+    `SPARSE_TIMER_PHASE_MINUTE` in every branch (the lane moved off the crowded
+    :00 lattice), so the minute field is a free two-digit phase rather than a
+    literal `00`. The aliases stay recognised even though nothing emits them any
+    more: `hourly` is exactly what a hand-edit that undid the offset would put
+    back, and this function has to be able to CONVERT it in order for the
+    equality half of the pin to be the thing that rejects it.
     """
     value = value.strip()
     aliases = {"minutely": 1.0, "hourly": 60.0, "daily": 1440.0}
     if value in aliases:
         return aliases[value]
-    # `*-*-* 00/H:00:00` — every H hours from midnight
-    m = re.fullmatch(r"\*-\*-\* 00/(\d+):00:00", value)
-    if m:
+    # `*-*-* *:MM:00` — every hour, at minute MM (the shipped form)
+    m = re.fullmatch(r"\*-\*-\* \*:(\d{2}):00", value)
+    if m and int(m.group(1)) <= 59:
+        return 60.0
+    # `*-*-* 00/H:MM:00` — every H hours from midnight, at minute MM
+    m = re.fullmatch(r"\*-\*-\* 00/(\d+):(\d{2}):00", value)
+    if m and int(m.group(2)) <= 59:
         return float(m.group(1)) * 60.0
-    # `*-*-* *:00/M:00` — every M minutes within every hour
-    m = re.fullmatch(r"\*-\*-\* \*:00/(\d+):00", value)
-    if m:
-        return float(m.group(1))
+    # `*-*-* *:SS/M:00` — every M minutes within every hour, from minute SS
+    m = re.fullmatch(r"\*-\*-\* \*:(\d{2})/(\d+):00", value)
+    if m and int(m.group(1)) < int(m.group(2)):
+        return float(m.group(2))
     raise AssertionError(
         f"OnCalendar={value!r} is not a form this test can convert to an "
         "interval, so the cadence coupling is NOT being checked. Extend this "
@@ -317,6 +329,145 @@ def test_the_timer_oncalendar_is_the_one_the_cadence_constant_derives():
         "in app/ can see this file"
     )
     assert oncalendar_interval_minutes(on_calendar) == sparse.SPARSE_CADENCE_MINUTES
+
+
+# The units in infra/systemd/user/ that fire on a CALENDAR rather than a boot
+# anchor. Boot-anchored units (marketops, meme-news, tick-aggregation) are
+# deliberately absent: their grids move with uptime, so no fixed phase can dodge
+# them and a pin claiming otherwise would be checking nothing.
+_CALENDAR_NEIGHBOURS = (
+    "probability-arena-baseline.timer",
+    "probability-arena-retention.timer",
+    "probability-arena-backup.timer",
+    "probability-arena-crypto-reconcile.timer",
+)
+
+# Overlaps this milestone ACCEPTED rather than avoided. A unit named here may
+# cover the sparse phase; a unit NOT named here may not, and the test fails if
+# one starts to. Every entry must ALSO be disclosed in the timer unit's own
+# prose — an accepted cost that is only in a test is a cost nobody operating the
+# host will ever read.
+_ACCEPTED_CALENDAR_OVERLAPS = {
+    # `OnCalendar=*-*-* 01:30:00`, RandomizedDelaySec=600 -> 01:30-01:40. This
+    # is HOUR-PINNED, so it can meet the sparse pass at most once a day and only
+    # in the 01:xx hour, against `baseline`'s six-a-day and `retention`'s
+    # once-a-day at the instant the sparse pass could never be jittered out of.
+    # Strictly smaller than what the offset bought, and the offset was approved
+    # on baseline+retention. Recorded, not hidden.
+    "probability-arena-backup.timer",
+}
+
+
+def test_the_timer_does_not_share_a_minute_with_a_calendar_neighbour():
+    """THE PHASE PIN. Cadence fixes the GAP between passes and says nothing
+    about where the lattice sits on the clock; this is the other half.
+
+    `hourly` is `*-*-* *:00:00`, and :00 is the one crowded instant on this
+    host: `baseline` (`00/4:00:00`, six times a day) and `retention`
+    (`daily` = `00:00:00`, the DELETE-heavy writer) both land there. This lane
+    is the only unit in the directory with `RandomizedDelaySec=0` AND
+    `AccuracySec=1s`, so on `hourly` it arrived at the head of every :00
+    stampede DETERMINISTICALLY — it could not be jittered out of the way,
+    because invariant (2) has no jitter to spend (see the test below).
+
+    So the schedule is checked against the OTHER UNITS' PARSED CALENDARS, not
+    against a comment claiming they were considered. Every neighbour's window is
+    `[minute, minute + RandomizedDelaySec]`; this lane's window is a single
+    minute, because its jitter is 0.
+
+    MINUTE-OF-HOUR IS AN OVER-APPROXIMATION AND IS KEPT ON PURPOSE. `backup`
+    fires at `01:30:00`, so a minute-of-hour comparison flags it against a
+    sparse pass at :37 that can only actually meet it in the 01:xx hour. The
+    over-approximation is the safe direction for a pin, so it stays, and the
+    one unit it over-flags is listed in `_ACCEPTED_CALENDAR_OVERLAPS` with the
+    reason — and has to be disclosed in the unit file too.
+
+    MUTATION: set `SPARSE_TIMER_PHASE_MINUTE = 0` (which is what returning to
+    `hourly` means) and this fails, naming baseline and retention.
+    """
+    on_calendar = parse_unit(TIMER_UNIT)["Timer"]["OnCalendar"]
+    m = re.search(r":(\d{2}):00$", on_calendar)
+    assert m, (
+        f"OnCalendar={on_calendar!r} has no explicit minute field, so this lane "
+        "is back on an alias whose phase is implicit (`hourly` is :00). The "
+        "phase must be visible in the unit to be checkable against it."
+    )
+    ours = int(m.group(1))
+    assert ours == sparse.SPARSE_TIMER_PHASE_MINUTE
+
+    timer = parse_unit(TIMER_UNIT)["Timer"]
+    assert timespan_seconds(timer.get("RandomizedDelaySec", "0")) == 0.0, (
+        "this test's one-minute window for THIS lane assumes zero jitter")
+
+    overlapping = {}
+    for name in _CALENDAR_NEIGHBOURS:
+        path = UNIT_DIR / name
+        declared = directive_values(path, "OnCalendar")
+        assert len(declared) == 1, (name, declared)
+        spec = declared[0]
+        # `daily` is the alias for `*-*-* 00:00:00`.
+        neighbour = 0 if spec == "daily" else int(
+            re.search(r":(\d{2}):\d{2}$", spec).group(1))
+        jitter_minutes = math.ceil(
+            timespan_seconds(directive_values(path, "RandomizedDelaySec")[0] or "0")
+            / 60.0
+        )
+        if neighbour <= ours <= neighbour + jitter_minutes:
+            overlapping[name] = (
+                f"{name} fires at :{neighbour:02d} and jitters up to "
+                f"+{jitter_minutes}min, which covers :{ours:02d}")
+
+    unaccepted = [
+        why for name, why in overlapping.items()
+        if name not in _ACCEPTED_CALENDAR_OVERLAPS
+    ]
+    assert not unaccepted, (
+        "the sparse timer shares a minute with a jittered calendar neighbour "
+        "that this milestone did not accept, and it cannot be jittered out of "
+        "the way — invariant (2) leaves it zero jitter to spend: "
+        + "; ".join(unaccepted)
+    )
+
+    # An accepted overlap that is only in this file is a cost nobody operating
+    # the host will read. Each one has to be named in the unit's own prose.
+    timer_text = TIMER_UNIT.read_text()
+    for name in sorted(overlapping):
+        assert name in timer_text, (
+            f"{name} overlaps the sparse timer's phase and the timer unit does "
+            "not mention it; an accepted collision has to be disclosed where "
+            "the operator reads it, not only in a test"
+        )
+
+
+def test_the_phase_offset_costs_invariant_two_nothing():
+    """Moving the lattice must not be allowed to look free without being free.
+
+    Invariant (2) needs >= 2 scheduled passes inside every CLOSED band of length
+    2*BAND, and at BAND = CADENCE = 60 that holds with EXACTLY ZERO slack. The
+    phase changes WHERE the lattice sits, never its gap, and containment of a
+    fixed-length closed interval by a fixed-gap lattice is translation-
+    invariant — so the offset is free. That is an argument, and this is the
+    executable half of it: the band is slid across a full cadence in 0.1-minute
+    steps against the ACTUAL shipped phase, and every position must still
+    contain two passes.
+
+    MUTATION: raise `SPARSE_CADENCE_MINUTES` above `SPARSE_BAND_MINUTES` and
+    this fails at some offsets — which is the whole point of it sweeping rather
+    than sampling one.
+    """
+    band = sparse.SPARSE_BAND_MINUTES
+    cadence = sparse.SPARSE_CADENCE_MINUTES
+    phase = float(sparse.SPARSE_TIMER_PHASE_MINUTE)
+    # the firing lattice, in minutes past an arbitrary midnight
+    lattice = [phase + k * cadence for k in range(0, 200)]
+    for start_tenths in range(0, int(cadence) * 10):
+        lo = start_tenths / 10.0
+        hi = lo + 2 * band
+        hits = sum(1 for t in lattice if lo <= t <= hi)
+        assert hits >= 2, (
+            f"a closed band starting at {lo} min contains {hits} scheduled "
+            f"pass(es) at phase :{int(phase):02d}; invariant (2) needs 2"
+        )
 
 
 def test_the_timer_spends_no_jitter_it_does_not_have():
@@ -661,16 +812,34 @@ def test_the_runbook_documents_the_post_install_timer_inventory():
 @pytest.mark.parametrize("value,expected", [
     ("hourly", 60.0),
     ("daily", 1440.0),
+    # the phase-carrying forms `timer_oncalendar()` actually emits
+    ("*-*-* *:37:00", 60.0),
+    ("*-*-* *:00:00", 60.0),
+    ("*-*-* 00/6:37:00", 360.0),
+    ("*-*-* *:07/30:00", 30.0),
     ("*-*-* 00/6:00:00", 360.0),
     ("*-*-* *:00/30:00", 30.0),
 ])
 def test_the_oncalendar_converter_reads_the_forms_this_lane_can_emit(value, expected):
     """The pin is only as good as this conversion, so it is tested directly —
-    including the alias, which is the form the shipped cadence produces and the
-    one a naive string compare would get wrong."""
+    including the `hourly` alias, which nothing emits any more but which is
+    exactly what a hand-edit undoing the phase offset would put back, and which
+    a naive string compare would get wrong."""
     assert oncalendar_interval_minutes(value) == expected
 
 
-def test_the_oncalendar_converter_refuses_a_form_it_cannot_check():
+@pytest.mark.parametrize("value", [
+    "*-*-* 03,09,15,21:07:00",     # the reconciler's form — a list, not a step
+    "*-*-* *:60:00",               # not a minute of the hour
+    "*-*-* *:37/30:00",            # a start outside its own step: :37 then :67
+    "*-*-* *:5:00",                # unpadded — not a form the deriver emits
+    "Mon *-*-* *:37:00",           # a weekday restriction the interval hides
+    "",
+])
+def test_the_oncalendar_converter_refuses_a_form_it_cannot_check(value):
+    """RAISES, never returns None. A silent `None` here is how the cadence pin
+    stops pinning while still passing, so every form this function cannot
+    convert has to be loud — including the near-misses of the offset syntax the
+    lane now emits, which is the class the offset newly created."""
     with pytest.raises(AssertionError):
-        oncalendar_interval_minutes("*-*-* 03,09,15,21:07:00")
+        oncalendar_interval_minutes(value)
