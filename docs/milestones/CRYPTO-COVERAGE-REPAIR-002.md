@@ -127,6 +127,30 @@ A consequence worth stating: because the band is ±60 min rather than the tape's
 ±3h/±12h, an observation lands close to the *target*, not merely somewhere
 inside the survival window. The report carries `target_distance_seconds`.
 
+**A third, smaller schedule number (GATE7-SPARSE-UNITS-001).**
+
+```python
+SPARSE_TIMER_PHASE_MINUTE = 47  # WHERE on the clock the CADENCE lattice sits
+```
+
+The cadence fixes the *gap* between passes and says nothing about the *phase*.
+Both invariants above are translation-invariant — a fixed-gap lattice contains
+the same number of points in a closed interval of length `2×BAND` wherever it
+starts — so the phase is free of invariant (2) and is chosen purely to stay off
+other units' calendars. `timer_oncalendar()` used to return the systemd alias
+`hourly`, i.e. `*-*-* *:00:00`, which put this lane on the one crowded instant
+on the host (`baseline` six times a day, the DELETE-heavy `retention` once a
+day) with `RandomizedDelaySec=0` + `AccuracySec=1s` — arriving first,
+deterministically, with no jitter available to move it. Pinned by
+`test_the_timer_does_not_share_a_minute_with_a_calendar_neighbour` and
+`test_the_phase_offset_costs_invariant_two_nothing`. **No residual is accepted.**
+The approval named `:37` as an *example* of a non-colliding phase, and `:37`
+turned out not to be one — `probability-arena-backup.timer` (`01:30:00`, jitter
+600 s) starts uniformly over 01:30–01:40 and can cover it once a day in the
+01:xx hour. `:47` is outside every calendar neighbour's start window (declared
+minute **plus** its whole `RandomizedDelaySec`), so the accepted-overlap list in
+the pin is empty and any overlap at all fails it.
+
 ### 2.4 Why only 6h and 24h
 
 15m and 1h production coverage is already **80.9% / 81.1%** — the background
@@ -1001,7 +1025,9 @@ one on uncalibrated numbers.
    chosen 90.0.
 4. `crypto-observation-coverage-report` — confirm the denominator is what step 2
    predicted and that `scheduling_miss` is 0.
-5. Only then flip the flag and install an hourly user timer. The cadence in the
+5. Only then flip the flag and install an hourly user timer — hourly **at :47**
+   (`OnCalendar=*-*-* *:47:00`), not on the `hourly` alias's :00; see the phase
+   note in §2.3. The cadence in the
    unit **must** match `SPARSE_CADENCE_MINUTES`; invariant (2) is stated against
    that number, and nothing in the code can enforce a systemd `OnCalendar` it
    cannot see. **This coupling is the weakest joint in the design.** It is not

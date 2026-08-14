@@ -1,0 +1,136 @@
+# Probability Arena — CRYPTO-COVERAGE-REPAIR-002 sparse horizon observation
+# timer (USER unit). NOT auto-installed. Install:
+#   cp infra/systemd/user/probability-arena-crypto-sparse-observe.{service,timer} \
+#      ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now probability-arena-crypto-sparse-observe.timer
+# Inspect:
+#   systemctl --user list-timers | grep crypto-sparse-observe
+#   journalctl --user -u probability-arena-crypto-sparse-observe.service -n 50 --no-pager
+#
+# THIS FILE IS A REPO TEMPLATE. Nothing here is installed on EVO-X2 by
+# GATE7-SPARSE-UNITS-001; installation and activation are operator actions, in
+# the order documented under "Sparse observer timer" in docs/EVO_X2_RUNBOOK.md
+# (which leads with the DISABLE procedure, on purpose). The pass is a clean
+# no-op while `enable_crypto_sparse_observation` is off — see the SAFE TO
+# INSTALL DARK note in the .service file — so the timer is safe to install dark
+# and enable later.
+#
+# ---------------------------------------------------------------------------
+# THE CADENCE COUPLING — the weakest joint in this lane, and how this file
+# stays on the right side of it
+# ---------------------------------------------------------------------------
+# `SPARSE_CADENCE_MINUTES = 60.0` (app/services/crypto_sparse_observation.py)
+# is the period the CODE assumes. Invariant (2) MISSED-PASS TOLERANCE is stated
+# against exactly that number, and NOTHING IN THE CODE CAN ENFORCE A systemd
+# `OnCalendar=` IT CANNOT SEE. The milestone doc names this the weakest joint in
+# the design, and it is right.
+#
+# THE `OnCalendar` BELOW IS NOT HAND-PICKED. It is what
+# `crypto_sparse_observation.timer_oncalendar()` returns for the shipped cadence
+# AND the shipped phase (`SPARSE_TIMER_PHASE_MINUTE = 47`, which is why the line
+# is not `hourly`) — the same string `crypto-observation-coverage-report` prints as
+# `expected timer line: OnCalendar=...` for an operator to COPY rather than
+# type. `tests/test_gate7_sparse_units_001.py` parses this file and asserts the
+# value equals that function's return, so a change to `SPARSE_CADENCE_MINUTES`
+# that does not reach this file fails the suite rather than silently
+# de-synchronising the schedule from the invariant.
+#
+# The mitigations that already shipped stay the operational half of this: the
+# report's `previous_write_age_minutes` with `cadence_warning` above 1.5x
+# cadence (a WRITE proxy, not a pass heartbeat — read its
+# `cadence_warning_means`), and `scheduling_miss_rate`, which is what a slow or
+# stopped timer actually looks like one band later (>=7h at 6h, >=25h at 24h).
+
+[Unit]
+Description=Run Probability Arena crypto sparse horizon observation hourly at :47
+
+[Timer]
+# = timer_oncalendar() at SPARSE_CADENCE_MINUTES = 60 and
+# SPARSE_TIMER_PHASE_MINUTE = 47. Still derived, still copy-able from
+# `crypto-observation-coverage-report`, still pinned by test against BOTH
+# constants — the phase is now part of the derivation rather than a property of
+# the `hourly` alias.
+#
+# THE PHASE IS OFF :00, AND THAT IS WHAT THIS OFFSET BUYS. `hourly` expands to
+# `*-*-* *:00:00`, and the :00 instant is occupied on this host:
+#   * probability-arena-baseline.timer — `OnCalendar=*-*-* 00/4:00:00`, so
+#     :00:00 six times a day (RandomizedDelaySec=300, i.e. :00-:05).
+#   * probability-arena-retention.timer — `OnCalendar=daily` (= `*-*-* 00:00:00`),
+#     once a day, and it is the DELETE-heavy writer on this host
+#     (RandomizedDelaySec=600, i.e. 00:00-00:10).
+# THOSE TWO ARE WHAT :47 DODGES. It also stays clear of the reconciler at
+# :07-:12, of the boot-anchored hourly tick-aggregation slot this host's uptime
+# put at :22-:24, and of probability-arena-backup.timer, whose
+# `OnCalendar=*-*-* 01:30:00` plus `RandomizedDelaySec=600` makes its start
+# uniform over 01:30:00-01:40:00.
+#
+# NO ACCEPTED CALENDAR RESIDUAL. Every neighbour's START WINDOW — its declared
+# minute plus its whole RandomizedDelaySec, not just the pinned instant — is
+# clear of :47, so this lane shares its minute with no calendar unit at all and
+# there is nothing here to price. `tests/test_gate7_sparse_units_001.py` holds
+# the accepted-overlap list EMPTY and fails if ANY calendar unit starts covering
+# the shipped phase; if one ever has to be accepted, that test also fails until
+# it is disclosed in this file.
+#
+# The approval was for "a non-colliding phase such as :37". :37 is not one:
+# backup's jitter window covers it, once a day and only in the 01:xx hour. :47
+# satisfies the binding half of the approval, and the phase is free of invariant
+# (2) either way, so the non-colliding value costs nothing.
+#
+# WHY THE COLLISION WAS WORTH MOVING RATHER THAN PRICING. The direct contention
+# cost really is small — this lane's write phase is 25-token batches with <= 50
+# rows per commit and a MEASURED max competing-writer stall of 45 ms IN THAT
+# WRITE PHASE (the source measurement, B7 in
+# tests/test_crypto_coverage_repair_002.py, put the FETCH phase at 28 ms and the
+# PRELUDE at 2,023 ms — 45 ms is the smallest of the three, and it is quoted
+# because the write phase is what a grid collision contends with). What made :00
+# different from an ordinary collision is that THIS TIMER ARRIVES FIRST,
+# DETERMINISTICALLY, AND CANNOT BE MOVED OUT OF THE WAY BY JITTER. It is the
+# only timer in this directory with `RandomizedDelaySec=0` AND `AccuracySec=1s`
+# — see the zero-jitter derivation below, which is forced by invariant (2) and
+# leaves nothing to spend — so at every :00 stampede it sat at the head of a
+# window it could not be jittered out of. The phase is the ONE knob that moves
+# the lattice at zero cost to invariant (2): containment of a closed 2*BAND
+# interval by a CADENCE-spaced lattice is translation-invariant, so the gap, and
+# therefore the invariant, is untouched. Pinned by
+# `test_the_phase_offset_costs_invariant_two_nothing`.
+#
+# WHAT :47 DOES NOT BUY. probability-arena-marketops.timer and
+# probability-arena-meme-news.timer are BOOT-anchored (`OnUnitActiveSec=`), so
+# their grids drift with uptime and NO fixed phase can dodge them permanently.
+# That collision remains priced, not avoided, at the tens-of-milliseconds
+# write-phase figure above.
+OnCalendar=*-*-* *:47:00
+# ZERO JITTER, AND THIS IS DERIVED, NOT A PREFERENCE. Invariant (2) needs at
+# least 2 scheduled passes inside every closed band of length 2*BAND = 120 min.
+# At the shipped pair (BAND 60, CADENCE 60) that holds with EXACTLY ZERO SLACK:
+# a lattice of gap g puts at least 2 points in a 120-minute closed interval only
+# while g <= 60 min. Every second of scheduler jitter is therefore spent from a
+# budget that is already empty, and a single 61-minute gap drops a band to one
+# scheduled pass — the state invariant (2) exists to prevent.
+#   * RandomizedDelaySec is the jitter that is OURS to remove, so it is 0. The
+#     reconciler's 300 s would be a straight invariant violation here.
+#   * AccuracySec cannot be removed, only shrunk: systemd's default of 1 min
+#     coalesces timers into a 60 s window, which is 1.7% of this cadence and on
+#     its own enough to produce a 61-minute gap. 1 s is 0.03%.
+# The containment argument is exact at zero jitter and degrades continuously; 1s
+# is the smallest honest claim, not a guarantee of a perfect lattice.
+RandomizedDelaySec=0
+AccuracySec=1s
+# Persistent=false, and the trade is real rather than free. A catch-up firing
+# can only SHORTEN a gap, so it could not break invariant (2) and would
+# occasionally rescue a band that closes during an outage. It is declined
+# anyway: a catch-up lands in the boot storm alongside marketops
+# OnBootSec=2min, meme-news 3min and tick-aggregation 5min with the watcher
+# already writing, and this lane is a PROVIDER lane — it would spend real
+# requests, at boot, against a MarketOps health read taken before MarketOps has
+# run. THE COST OF THIS CHOICE, stated plainly: invariant (2) tolerates exactly
+# ONE missed pass, and with no catch-up a second consecutive miss is a
+# permanent, never-backfilled `scheduling_miss` for every band that closes in
+# between.
+Persistent=false
+Unit=probability-arena-crypto-sparse-observe.service
+
+[Install]
+WantedBy=timers.target

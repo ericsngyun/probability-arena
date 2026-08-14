@@ -138,6 +138,16 @@ _STATUS_TO_OUTCOME = {
     # inflate the contention rate this surface exists to measure.
     "ambiguous_cohort": "failed_other",
     "provider_policy_violation": "failed_other",
+    # GATE7-SPARSE-UNITS-001 — killed from outside (systemd `TimeoutStartSec` ->
+    # `KillSignal`, or Ctrl-C). `failed_other` for the same reason
+    # `lock_unavailable` is: it is NOT lock loss, and bucketing it as
+    # `failed_lock` would inflate the contention rate this surface exists to
+    # measure. It is deliberately not `partial_success` either — that bucket
+    # asserts some of the work landed, and the terminal funnel that emits this
+    # label holds no result and therefore knows of no work that landed. The
+    # honest coarse reading is "this pass did not succeed"; `run_status` on the
+    # same record says why.
+    "terminated": "failed_other",
 }
 
 

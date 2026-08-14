@@ -112,6 +112,24 @@ RUN_STATUSES = frozenset({
     # crypto_sparse_observation (writer B)
     "db_locked", "ambiguous_cohort", "provider_policy_violation",
     "window_too_short", "no_cohort",
+    # GATE7-SPARSE-UNITS-001 — THE PASS DID NOT END, IT WAS ENDED. A writer that
+    # is killed from outside (systemd's `TimeoutStartSec` reaching `KillSignal`,
+    # or an operator's Ctrl-C) never reaches its own terminal funnel, so before
+    # this label the only two things that could be filed were nothing at all —
+    # the pre-existing behaviour, which is why an overrun of the observation
+    # lane was invisible in the observation lane's own telemetry — or, worse, a
+    # status describing work that did not finish.
+    #
+    # IT IS ITS OWN LABEL AND NOT `error`, AND NOT `other`. `error` is a fault
+    # the pass DIAGNOSED and returned; this is the absence of a return. `other`
+    # is the normalization sentinel for a status this set has not met, and
+    # filing a known, expected, externally-caused end under the sentinel would
+    # make it unfindable in exactly the query an operator investigating a
+    # `Failed with result 'timeout'` in journald would run. A record carrying
+    # this label makes NO claim about how much of the pass completed — see the
+    # termination funnel in `app/cli.py`, which deliberately reports no counters
+    # because at the CLI boundary it holds no result to report them from.
+    "terminated",
     # the normalization sentinel — a status this set does not know
     "other",
 })

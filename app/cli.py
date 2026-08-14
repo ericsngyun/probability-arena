@@ -4827,6 +4827,100 @@ async def crypto_horizon_outcome_reconciliation_report(
             session.close()
 
 
+# GATE7-SPARSE-UNITS-001 — THE TERMINATION FUNNEL FOR THE SPARSE OBSERVER.
+#
+# THE DEFECT THIS CLOSES. `crypto_sparse_observation._emit_pass_telemetry` is
+# called from `_finish`, on the RETURN PATH — not from a `finally` — and there
+# is no run-row insert at pass start. So a pass that never returns files
+# nothing: a `TimeoutStartSec` kill left ZERO corpus trace, and the one lane
+# whose entire purpose is observation coverage could not record its own overrun.
+# It surfaced only in `journalctl` and, one band later, as a rising
+# `scheduling_miss_rate`.
+#
+# WHY THE FUNNEL IS HERE AND NOT DEEPER. `KeyboardInterrupt` and `SystemExit`
+# derive from `BaseException`, so they slip past every `except Exception:` in
+# `run_scheduled_sparse_observation` and `_run_locked` — a handler further in
+# would never see them. The CLI boundary is the first frame that can.
+#
+# WHY SIGINT. The unit carries `KillSignal=SIGINT`. CPython's default SIGINT
+# disposition raises `KeyboardInterrupt` on the main thread, which UNWINDS;
+# the default SIGTERM disposition terminates the process without running a
+# single `finally`. systemd then waits `TimeoutStopSec` (default 90 s) before
+# SIGKILL, which is ample. NEITHER HALF WORKS ALONE: `KillSignal=SIGINT`
+# without this funnel still emits nothing, because the emit is on the return
+# path; this funnel without `KillSignal=SIGINT` never runs, because SIGTERM
+# does not unwind.
+SPARSE_TERMINATION_RUN_STATUS = "terminated"
+# 128 + SIGINT(2), the shell convention for "killed by SIGINT". Any non-zero
+# value satisfies the contract; this one says WHICH non-zero.
+SPARSE_TERMINATION_EXIT_CODE = 130
+
+
+def _emit_sparse_termination_record(started, exc, *, gate_bypassed: bool) -> None:
+    """Best-effort ONE typed termination record for a sparse pass that was
+    ended from outside. Never raises, never hangs, never delays the exit.
+
+    TYPED AS A TERMINATION, NEVER AS SUCCESS. `run_status="terminated"` is its
+    own member of the closed `RUN_STATUSES` set with its own
+    `_STATUS_TO_OUTCOME` entry (`failed_other`), so this record can never be
+    read as `ok`, and it is not filed under the `other` normalization sentinel
+    either — a known, expected, externally-caused end has to be findable by the
+    operator who just read `Failed with result 'timeout'` in journald.
+
+    IT CLAIMS NO COUNTERS, AND THE OMISSION IS THE POINT. This frame holds no
+    result dict: the pass was killed inside `run_scheduled_sparse_observation`
+    and returned nothing. In writer B, counters advance only AFTER a commit
+    RETURNS, so the durable totals exist — but they exist in a local of a frame
+    that is being unwound, not here. Reporting `rows_committed=0` would assert
+    "this pass committed nothing", which is a claim this frame cannot make and
+    which would be FALSE for any pass killed after its first batch. So the
+    record carries identity, timing and cause and nothing else. Absent is the
+    schema's own idiom for "not measured" (see `write_hold_measured` in
+    `app/telemetry/schema.py`); a zero would be the sixth fabrication shape this
+    lane has closed, and there will not be one.
+
+    BEST-EFFORT MEANS BEST-EFFORT. The 001A sink is already fail-soft by design
+    (`durable_but_nonblocking`: it validates, counts and drops, and never raises
+    into a writer) and `emit_writer_pass` swallows on top of that, so an
+    unavailable sink costs this function nothing. The `except BaseException`
+    below is for the case those two cannot cover: a SECOND signal arriving while
+    this record is being written, which would otherwise abort the exit path the
+    record is supposed to precede. No second store, no run table, no retry."""
+    try:
+        from datetime import datetime, timezone
+
+        from app.services.crypto_sparse_observation import (
+            TELEMETRY_OPERATION_NAME,
+            TELEMETRY_TABLE_GROUPS,
+            TELEMETRY_WRITER_NAME,
+        )
+        from app.telemetry import writer_pass
+
+        def _iso(moment) -> str:
+            return moment.isoformat().replace("+00:00", "Z")
+
+        writer_pass.emit_writer_pass(
+            writer_name=TELEMETRY_WRITER_NAME,
+            operation_name=TELEMETRY_OPERATION_NAME,
+            started_at=_iso(started),
+            finished_at=_iso(datetime.now(timezone.utc)),
+            run_status=SPARSE_TERMINATION_RUN_STATUS,
+            # `run_source` is NOT passed — `emit_writer_pass` derives it from
+            # systemd's `INVOCATION_ID`, so a scheduled kill and an operator's
+            # Ctrl-C stay distinguishable without either being asserted here.
+            gate_bypassed=gate_bypassed,
+            # `process_interrupted`, not `timeout`: this frame sees a signal, and
+            # it cannot tell a `TimeoutStartSec` kill from a Ctrl-C. The one that
+            # is true of both is the one that gets recorded. `run_source` on the
+            # same event is what narrows it.
+            exception_class=type(exc).__name__,
+            exception_category="process_interrupted",
+            table_groups=list(TELEMETRY_TABLE_GROUPS),
+        )
+    except BaseException:  # noqa: BLE001 - a second signal must not wedge the exit
+        pass
+
+
 async def crypto_sparse_observe(
     dry_run: bool = False, force: bool = False,
     enrol_limit: int | None = None, observe_limit: int | None = None,
@@ -4841,13 +4935,63 @@ async def crypto_sparse_observe(
     enable_crypto_sparse_observation (default OFF = clean no-op). No
     SolanaTracker (structurally denied), no cohort arming, no retries, no
     interpolation, no backfill. Idempotent and restart-safe. Returns
-    observations recorded, or -1 on any non-healthy status."""
+    observations recorded, or -1 on any non-healthy status.
+
+    A pass ENDED FROM OUTSIDE (systemd's `TimeoutStartSec` reaching the unit's
+    `KillSignal=SIGINT`, or an operator's Ctrl-C) does not return at all: it
+    files one typed `terminated` telemetry record and raises `SystemExit` with a
+    non-zero status. See `_emit_sparse_termination_record` above."""
+    import signal as os_signal
+    from datetime import datetime, timezone
+
     from app.services.crypto_sparse_observation import (
         HEALTHY_STATUSES,
         STATUS_DISABLED,
         SparseObservationConfig,
         run_scheduled_sparse_observation,
     )
+
+    # Bound INSIDE the function, never at module import: this repo has a
+    # documented flake class from a module-level `NOW = datetime.now()`.
+    started = datetime.now(timezone.utc)
+
+    # WHY A LOOP SIGNAL HANDLER AND NOT JUST `except KeyboardInterrupt`.
+    # CPython's default SIGINT handler raises `KeyboardInterrupt` ON THE FRAME
+    # THE MAIN THREAD IS CURRENTLY EXECUTING. While this coroutine is SUSPENDED
+    # at an `await` — which is exactly where a trickling provider leaves it, and
+    # exactly the case `TimeoutStartSec` exists for — that frame is asyncio's
+    # `_run_once`, NOT this one. The `except` below would never see it: the
+    # exception propagates out of `asyncio.run` entirely and past this function.
+    #
+    # `loop.add_signal_handler` is the repo's existing answer to this (the
+    # watcher and marketops loops both use it) and it lands the signal INSIDE
+    # the running loop, where cancelling this task delivers the interrupt at the
+    # coroutine's own await point. The `except` clause is still needed for the
+    # other half: a SIGINT arriving while this coroutine is genuinely RUNNING
+    # Python (the write phase, the receipt) does raise `KeyboardInterrupt` here.
+    #
+    # SIGINT ONLY. SIGTERM is deliberately NOT registered: the unit's
+    # `KillSignal=SIGINT` is what makes this reachable under systemd, and
+    # handling SIGTERM here would quietly make that directive optional. The two
+    # halves are meant to stay coupled — see the `KillSignal` block in the
+    # .service file.
+    signalled: list[str] = []
+    pass_task = asyncio.current_task()
+    loop = asyncio.get_running_loop()
+
+    def _on_sigint() -> None:
+        signalled.append("SIGINT")
+        if pass_task is not None:
+            pass_task.cancel()
+
+    handler_installed = False
+    try:
+        loop.add_signal_handler(os_signal.SIGINT, _on_sigint)
+        handler_installed = True
+    except (NotImplementedError, RuntimeError):
+        # No signal support on this loop/platform. The default disposition is
+        # then still in force, which is strictly no worse than before.
+        pass
 
     owns_session = session is None
     if owns_session:
@@ -4945,7 +5089,45 @@ async def crypto_sparse_observe(
         print(f"write_lock={r.get('write_lock')}")
         print(f"provider_ledger={r.get('provider_ledger')}")
         return r["observations_recorded"]
+    except (KeyboardInterrupt, SystemExit, asyncio.CancelledError) as exc:
+        # THE TERMINATION FUNNEL. All three are `BaseException`, so this is the
+        # only frame in the call chain that sees them — every guard inside
+        # `run_scheduled_sparse_observation` and `_run_locked` is an
+        # `except Exception:`, which none of them satisfy.
+        #
+        # `CancelledError` IS THE SIGNAL PATH, NOT AN ODDITY. It is what the
+        # SIGINT handler installed above delivers to this coroutine when the
+        # pass is suspended at an await — the common case, because that is where
+        # a slow or trickling provider leaves it. A cancellation this function
+        # did NOT cause belongs to whoever did cause it and is re-raised
+        # untouched, so a caller cancelling this pass for its own reasons never
+        # gets a spurious `terminated` record.
+        if isinstance(exc, asyncio.CancelledError) and not signalled:
+            raise
+        #
+        # THE RECORD IS PERSISTED BEFORE THE SESSION IS CLOSED, deliberately:
+        # `finally` below runs after this block, and the JSONL append must not
+        # be sequenced behind a rollback on a database this pass may have just
+        # lost a lock race on.
+        _emit_sparse_termination_record(
+            started, exc, gate_bypassed=bool(force or dry_run))
+        print(
+            f"status=terminated  signal_class={type(exc).__name__}  "
+            "the pass was ended from outside and did not complete; "
+            "durable batches are unaffected and the next pass re-plans"
+        )
+        # NON-ZERO, AND NOT VIA THE DISPATCHER'S `-1` CONVENTION. `SystemExit`
+        # propagates out of `asyncio.run` and out of `main()` unchanged, so the
+        # exit status cannot be softened by a caller that forgets to map the
+        # return value. Re-raising the original `KeyboardInterrupt` would also
+        # exit non-zero, but only by luck of CPython's top-level handler.
+        raise SystemExit(SPARSE_TERMINATION_EXIT_CODE) from None
     finally:
+        if handler_installed:
+            try:
+                loop.remove_signal_handler(os_signal.SIGINT)
+            except Exception:  # pragma: no cover - defensive
+                pass
         if owns_session:
             session.close()
 

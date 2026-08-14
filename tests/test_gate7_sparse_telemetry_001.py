@@ -1569,9 +1569,68 @@ class TestTheGateTextIsTrue:
         assert default.enable_crypto_sparse_observation is False
 
     def test_no_timer_unit_was_installed(self):
-        units = list((Path(__file__).resolve().parents[1] / "infra" / "systemd"
-                      ).rglob("*sparse*"))
-        assert units == [], f"a timer/service unit was installed: {units}"
+        """NARROWED BY GATE7-SPARSE-UNITS-001, which authored the templates this
+        assertion used to forbid outright.
+
+        The gate text this class guards is `_WriteMeter.snapshot`'s note: "the
+        flag stays off and no timer is installed until these numbers have been
+        read". That claim is about INSTALLATION ON THE HOST. The original
+        assertion — that no file under `infra/systemd` may even mention the
+        lane — was a stricter proxy than the claim, and the reconciler is the
+        standing proof that the two are different things: its reviewed
+        `probability-arena-crypto-reconcile.{service,timer}` have lived in this
+        directory for milestones while the runbook says, correctly, that nothing
+        is installed on EVO-X2.
+
+        So the proxy is narrowed to what a repo test can actually observe, and
+        it is not weaker in the direction that matters: every sparse unit in the
+        tree must declare itself an uninstalled template, must not be reachable
+        from a `WantedBy` that the repo itself activates, and nothing in the
+        repo may run `systemctl` against it outside a comment. The FLAG half of
+        the gate is unchanged and still asserted directly, one test above.
+
+        THE `WantedBy` SENTENCE IS NOW ASSERTED, not just written. It used to be
+        prose with nothing behind it — the exact shape that has burned this repo
+        repeatedly — so the reachability claim is checked here: the `.service`
+        declares no `[Install]` at all (so it cannot be enabled independently of
+        its timer, which would run a provider-spending pass at every login), and
+        the timer's only `WantedBy` is `timers.target`, which nothing in this
+        repo activates. `tests/test_gate7_sparse_units_001.py` holds the fuller
+        version of both, including the `Environment=` ban that keeps the FLAG
+        half of this gate un-armable from the unit layer.
+        """
+        systemd_dir = Path(__file__).resolve().parents[1] / "infra" / "systemd"
+        units = sorted(systemd_dir.rglob("*sparse*"))
+        assert [u.name for u in units] == [
+            "probability-arena-crypto-sparse-observe.service",
+            "probability-arena-crypto-sparse-observe.timer",
+        ], f"unexpected sparse unit files: {[u.name for u in units]}"
+        for unit in units:
+            text = unit.read_text()
+            assert "NOT auto-installed" in text, unit.name
+            for line in text.splitlines():
+                if "systemctl" in line:
+                    assert line.lstrip().startswith("#"), (
+                        f"{unit.name}: systemctl outside a comment: {line!r}")
+            # The `WantedBy` half of the claim above. Read from DECLARED
+            # directives (skipping the comments, which name these targets while
+            # explaining them), because a grep would be satisfied by the prose.
+            wanted_by = [
+                stripped.partition("=")[2].strip()
+                for stripped in (ln.strip() for ln in text.splitlines())
+                if stripped.startswith("WantedBy=")
+            ]
+            expected = [] if unit.suffix == ".service" else ["timers.target"]
+            assert wanted_by == expected, (
+                f"{unit.name}: WantedBy={wanted_by}, expected {expected}. The "
+                "service must carry no [Install] (a stray `systemctl --user "
+                "enable` on it would run a provider-spending pass at every "
+                "login); the timer's `timers.target` is inert until an "
+                "operator enables it, and nothing in this repo does."
+            )
+        # And the gate's own subject is untouched: the pass still says a timer
+        # is not installed, because authoring a template did not install one.
+        assert "no timer is installed" in sparse._WriteMeter().snapshot()["note"]
 
     def test_the_runbook_tells_an_operator_how_writer_b_differs(self):
         """A TEXT PIN, deliberately: the shared sink now has two grains and two
