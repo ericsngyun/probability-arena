@@ -342,6 +342,17 @@ def test_impossible_timing_rejected(telemetry_dir):
 
 
 def test_secret_bearing_field_rejected(telemetry_dir):
+    """UPDATED BY GATE2-WRITER-TELEMETRY-001. The validator's verdict is
+    unchanged and still the boundary; what changed is what the SINK does with
+    a rejected event — it no longer deletes the whole record, it retries once
+    stripped to REQUIRED_FIELDS (see `TelemetrySink._degrade`).
+
+    The guarantee this test exists for is therefore asserted where it actually
+    lives — THE ON-DISK BYTES — rather than via `emit()`'s return value, which
+    is a weaker proxy: a poisoned OPTIONAL field is shed, so the secret never
+    reaches disk AND the writer keeps a record that it ran. A poison in a
+    REQUIRED field cannot be shed and the event is still dropped outright."""
+    sink = get_sink()
     for poison in (
         "api_key=abc123", "Authorization: Bearer xyz", "password=hunter2",
         "postgresql+psycopg2://user:pw@host/db", "sqlite:///data/probability_arena.db",
@@ -349,10 +360,28 @@ def test_secret_bearing_field_rejected(telemetry_dir):
         bad = _make_event(source_command=poison)
         with pytest.raises(TelemetryValidationError):
             validate_event(bad)
-        assert get_sink().emit(bad) is False
+        rejected_before = sink.rejected
+        landed = sink.emit(bad)
+        assert sink.rejected == rejected_before + 1, "the event WAS rejected"
+        if landed:
+            assert sink.path.read_bytes().count(poison.encode()) == 0
+            events, malformed = read_events(sink.path)
+            assert malformed == 0
+            assert events[-1]["truncated"] is True
+            assert events[-1].get("source_command") is None
+    # a poison in a REQUIRED field cannot be degraded away — still dropped
+    emitted_before = sink.emitted
+    assert sink.emit(_make_event(operation_name="run api_key=abc123")) is False
+    assert sink.emitted == emitted_before
+    assert b"api_key=abc123" not in sink.path.read_bytes()
 
 
 def test_high_cardinality_field_rejected(telemetry_dir):
+    """UPDATED BY GATE2-WRITER-TELEMETRY-001 — same reasoning as the secret
+    test above. The closed field set is unchanged and still rejects every one
+    of these; the sink now sheds the offending key instead of deleting the
+    record, so the high-cardinality VALUE still never reaches disk."""
+    sink = get_sink()
     for key, value in (
         ("token_id", "So11111111111111111111111111111111111111112"),
         ("ticker", "KXBTC-25DEC"), ("cohort_name", "canary-6"),
@@ -362,7 +391,19 @@ def test_high_cardinality_field_rejected(telemetry_dir):
         bad = _make_event(**{key: value})
         with pytest.raises(TelemetryValidationError):
             validate_event(bad)
-        assert get_sink().emit(bad) is False
+        rejected_before = sink.rejected
+        landed = sink.emit(bad)
+        assert sink.rejected == rejected_before + 1, "the event WAS rejected"
+        if landed:
+            raw = sink.path.read_bytes()
+            assert key.encode() not in raw, f"{key} reached disk"
+            if isinstance(value, str):
+                # a short integer like `100` collides with ordinary envelope
+                # digits, so only the identifying STRING values are asserted
+                assert value.encode() not in raw, f"{key}'s value reached disk"
+            events, malformed = read_events(sink.path)
+            assert malformed == 0
+            assert events[-1]["truncated"] is True
     # bare table names are not a valid table group either
     with pytest.raises(TelemetryValidationError):
         validate_event(_make_event(table_groups=["market_price_ticks_raw_table"]))

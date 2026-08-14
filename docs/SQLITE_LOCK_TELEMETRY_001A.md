@@ -14,7 +14,7 @@ surface of any kind.
 | Piece | File | Notes |
 |---|---|---|
 | Event envelope + validation | `app/telemetry/schema.py` | closed 42-field set, bounded enums, timing-quality tags, impossible-timing rejection, secret-value scan |
-| Append-only JSONL sink | `app/telemetry/sink.py` | non-SQLite by mandate; `~/probability-arena-telemetry/sqlite-writes.jsonl` (env `SQLITE_TELEMETRY_DIR`); dir `0700`, file `0600`; one unbuffered `os.write` on an `O_APPEND` fd; ≤4096 B/line with optional-field truncation; short write = dropped, never resumed; reader helper skips + counts malformed/partial lines |
+| Append-only JSONL sink | `app/telemetry/sink.py` | non-SQLite by mandate; `~/probability-arena-telemetry/sqlite-writes.jsonl` (env `SQLITE_TELEMETRY_DIR`); dir `0700`, file `0600`; one unbuffered `os.write` on an `O_APPEND` fd; ≤4096 B/line with optional-field truncation; short write = dropped, never resumed; a rejected event degrades to `REQUIRED_FIELDS` + `truncated=true` rather than being deleted (GATE2); `O_NOFOLLOW` refuses a symlinked sink path; reader helper skips + counts malformed/partial lines and is a **test helper only** (7.0x heap amplification, no rotation until 001E) |
 | Session-scoped timing primitives | `app/telemetry/sqlite_events.py` | `OpContext` + instance-level Session listeners (`after_flush`/`before_commit`/`after_commit`/`after_rollback`), provider-I/O span primitive, gauge sampling — **never attached to the shared engine or sessionmaker** |
 | Tick-aggregation emit sites | `app/services/tick_aggregation.py` | parent `aggregate` event + one child `commit_unit` event per retryable unit (outcome, retry_count/limit, commit_ms `exact`, hold `instrumented_estimate`, lock-wait `derived_estimate` floor, rollback timing); dry-run emits nothing |
 | Backup emit site | `app/services/backup.py` | one reader op event per real backup (success/failure, duration, `database_bytes`, `filesystem_free_bytes`, query-form `PRAGMA` samples) for writer-overlap measurement |
@@ -28,6 +28,20 @@ a dropped event, the fallback is a single bounded stderr/journald line
 (`telemetry_sink_unavailable`) with no retry loop, no recursion, and no DB
 write. Events are emitted only **after** a commit completes or terminal
 failure handling finishes — never between `before_commit` and `after_commit`.
+
+**AMENDED BY GATE2-WRITER-TELEMETRY-001 — a rejection no longer deletes the
+record.** The validator is unchanged and still the safety boundary: it rejects
+the same events it always did, and no secret-bearing or high-cardinality value
+has ever reached disk or does now. What changed is the consequence. A rejected
+event is counted (`sink.rejected`) and then retried ONCE stripped to
+`REQUIRED_FIELDS` plus `truncated=true`; if that stripped form validates it
+lands and is counted again as `sink.degraded`, otherwise it is dropped as
+before. The reason is a calibration one: the passes that fail validation are
+disproportionately the abnormal ones, so silently deleting them biases any
+distribution built from this file — which is exactly the failure that got a
+run-row table rejected as the store for this data in the first place. The two
+001A rejection tests now assert the guarantee against the **on-disk bytes**
+rather than against `emit()`'s return value.
 
 ## Documented deviations from the design text (none silent)
 
@@ -94,3 +108,44 @@ MarketOps/watcher/crypto/meme/horizon instrumentation, shared-engine
 listener registration, report commands, Prometheus aggregation, rotation
 ownership, alerts — all deferred to 001B–001E, with every MarketOps-hot-path
 piece additionally gated behind the readiness window close (2026-07-30).
+
+## Follow-ups recorded by GATE2-WRITER-TELEMETRY-001 (not fixed here)
+
+Recorded so none of these is rediscovered from scratch. **None of them is a
+defect in the sink**, and none is touched by the GATE2 branch.
+
+### 1. `'n/a'` in a result key escapes the health gate, BEFORE telemetry
+
+**Pre-existing, out of scope, predates this milestone.** A security review of
+the GATE2 branch first reported this as a telemetry-extraction escape and then
+corrected itself: the escape is in
+`app/services/crypto_reconciler_guard.py::review_reasons`, which is health-gate
+code that runs on the same shared result dict *before* any telemetry runs.
+`crypto_tape._pass_telemetry_fields` is fully guarded (A4) and cannot be the
+first thing to raise.
+
+A non-numeric value such as `'n/a'` reaches an unguarded `int()` at four
+places in that function:
+
+| line | key |
+|------|-----|
+| `:264` | `write_hold_ms_max` (`int(write_hold_ms_max)`) |
+| `:268` | `write_hold_slo_violations` |
+| `:272` | `batch_lock_wait_aborts` |
+| `:274` | `batch_lock_wait_warnings` |
+
+`or 0` guards `None`, not a non-numeric string, so the `ValueError` escapes
+`review_reasons` and therefore the pass. `crypto_reconciler_guard.py` is
+untouched by the GATE2 branch and no current producer emits a non-numeric in
+any of these keys; the exposure arrives with a producer that does.
+
+### 2. `parent_event_id` is not in `REQUIRED_FIELDS` — a note for 001E
+
+`app/telemetry/schema.py` lists `parent_event_id` in `ALLOWED_FIELDS` but not
+in `REQUIRED_FIELDS`, so the sink's degradation path (which drops a corrupt
+optional field and keeps the record) can drop it: a degraded CHILD event then
+lands with no way back to its parent. **LOW, and not reachable today** —
+neither 001A writer emits parent/child events, and the GATE2 writer-pass
+records are all parents. Whoever adds the first nested unit in 001E must
+either promote `parent_event_id` to required for child events or accept that a
+degraded child loses its correlation.

@@ -59,6 +59,43 @@ from pathlib import Path
 
 CONFIRM_PHRASE = "I have read the B2 regression audit and the B3 gate"
 
+# GATE2-WRITER-TELEMETRY-001 (security re-review, C2) — THE POPULATION
+# `lock_events` IS COUNTED OVER, and the reason it has to be named.
+#
+# `_lock_tally` was written when exactly two writers appended to the 001A JSONL
+# sink, and for both of them one record is one OPERATION: a non-zero
+# `lock_wait_ms` on a `tick_aggregation` or `backup` record means that
+# operation waited on somebody else's write lock. The `> 6` stop condition in
+# docs/KALSHI_DEMO_READONLY_VALIDATION_2026_08.md was read off that population.
+#
+# GATE2 added a second GRAIN to the same file: one record per writer PASS.
+# A pass makes many lock acquisitions and its `lock_wait_ms` is their SUM,
+# which carries a known systematic floor — one `run_row` sample and one
+# `finalize` sample per pass that are once-per-pass bookkeeping, not
+# contention. Measured on eight healthy, fully UNCONTENDED reconciler passes:
+# `lock_wait_ms` 21/11/11/10/9/9/14/10 ms, every one of which the flat
+# predicate below counts, against `batch_lock_wait_ms_max` of 3/3/2/1/1/1/6/2
+# ms — i.e. nothing contended. Eight passes therefore crossed `> 6` on their
+# own, and the calibration session for `initial_per_token_cost_seconds` is
+# itself about eight attended `--force` passes.
+#
+# THE THRESHOLD IS NOT RAISED. Raising a limit to accommodate a miscount
+# destroys the safeguard; the defect was never the limit, it was the
+# population being counted under it. So the count is scoped back to the
+# operation-grain writers the constant was derived from.
+#
+# WHY NOT `batch_lock_wait_ms_max` (the other offered fix): on the numbers
+# above it does not work as stated — the uncontended passes measure 1-6 ms on
+# that field too, so `> 0` counts them exactly as the flat predicate does.
+# Making it work needs a millisecond threshold, and the only one available is
+# the reconciler's own breaker constant — importing that here would let
+# guarded code widen the boundary that governs it. Scoping needs no constant.
+#
+# Out-of-scope writers are NOT hidden: they are reported separately below, so a
+# genuinely contended reconciler pass is still visible in the ANALYZE record.
+# It simply cannot move a number calibrated on a different population.
+LOCK_EVENT_WRITERS = frozenset({"tick_aggregation", "backup"})
+
 
 def _state(path: Path, telemetry: Path | None) -> dict:
     conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
@@ -96,12 +133,28 @@ def _state(path: Path, telemetry: Path | None) -> dict:
 
 def _lock_tally(path: Path) -> dict:
     """SQLITE-LOCK-TELEMETRY-001A's append-only JSONL sink. Counted, never
-    modified. A malformed tail line is counted, not fatal."""
+    modified. A malformed tail line is counted, not fatal.
+
+    `lock_events` IS SCOPED TO `LOCK_EVENT_WRITERS` — see the constant above
+    for why. Records from any other writer are counted in
+    `out_of_scope_events`, and the subset of them that WOULD have tripped the
+    flat predicate is reported as `out_of_scope_flat_predicate_hits` so the
+    scoping is visible and auditable rather than silent.
+
+    NOTE, not fixed here (GATE2 C2): this does `path.read_text()` on the whole
+    file — the same whole-file slurp the runbook warns about for
+    `app.telemetry.sink.read_events` (measured 406 MB peak heap on a 58 MB
+    file). Nothing rotates this file before 001E, so check its size before
+    running this script on EVO. Recorded in the runbook's growth section."""
+    scope = sorted(LOCK_EVENT_WRITERS)
     if not path.exists():
-        return {"file": str(path), "exists": False}
+        return {"file": str(path), "exists": False,
+                "lock_event_scope": scope}
     total = 0
     lock_events = 0
     malformed = 0
+    out_of_scope_events = 0
+    out_of_scope_flat_predicate_hits = 0
     last_lock = None
     last_ts = None
     for line in path.read_text(errors="replace").splitlines():
@@ -112,7 +165,13 @@ def _lock_tally(path: Path) -> dict:
             continue
         total += 1
         last_ts = e.get("started_at", last_ts)
-        if (e.get("lock_wait_ms") or 0) > 0 or (e.get("retry_count") or 0) > 0:
+        waited = ((e.get("lock_wait_ms") or 0) > 0
+                  or (e.get("retry_count") or 0) > 0)
+        if e.get("writer_name") not in LOCK_EVENT_WRITERS:
+            out_of_scope_events += 1
+            out_of_scope_flat_predicate_hits += int(waited)
+            continue
+        if waited:
             lock_events += 1
             last_lock = {
                 "started_at": e.get("started_at"),
@@ -124,7 +183,10 @@ def _lock_tally(path: Path) -> dict:
             }
     return {"file": str(path), "exists": True, "events": total,
             "lock_events": lock_events, "malformed_lines": malformed,
-            "last_event_at": last_ts, "last_lock_event": last_lock}
+            "last_event_at": last_ts, "last_lock_event": last_lock,
+            "lock_event_scope": scope,
+            "out_of_scope_events": out_of_scope_events,
+            "out_of_scope_flat_predicate_hits": out_of_scope_flat_predicate_hits}
 
 
 def main() -> int:

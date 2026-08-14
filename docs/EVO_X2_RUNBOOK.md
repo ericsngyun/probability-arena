@@ -2274,6 +2274,335 @@ load 5-6).
 4. **A `TimeoutStartSec` that covers the derivation below**, or an explicit
    accepted decision to live with the documented SIGKILL outcome.
 
+### Where the per-pass record now lands (GATE2-WRITER-TELEMETRY-001)
+
+Precondition 3 needs a **distribution**, and until this milestone a pass left
+nothing behind but journald stdout once the unit's log rotated. Every governed
+pass now appends **one JSONL line** to the SQLITE-LOCK-TELEMETRY-001A sink —
+`~/probability-arena-telemetry/sqlite-writes.jsonl`, overridable with
+`SQLITE_TELEMETRY_DIR`.
+
+**Not a database table, on purpose.** The sink is non-SQLite by mandate, so it
+cannot take the write lock it is measuring, and it survives a pass that
+committed nothing — which the run row's `config["write_coordination"]` does
+not, because that rides the single-attempt finalize commit. The contended
+passes are exactly the ones whose numbers matter and exactly the ones the run
+row loses. **This milestone adds no migration**: nothing to apply, nothing to
+break if it is not applied, and the Alembic head stays `0028`.
+
+**There is no report command.** The collector/rotation step is owned by 001E
+and is still unbuilt, so reading this file is `jq` over it — see the growth and
+reading warning below before you read it on EVO. What to read, and the traps:
+
+* `batch_lock_wait_ms_max` is **the only** figure the breakers act on. The
+  pass total (`lock_wait_ms`) carries one `run_row` and one `finalize` sample
+  per pass that are once-per-pass bookkeeping, not contention — a threshold
+  read off the total measures the instrument. `run_row_lock_wait_ms` and
+  `finalize_lock_wait_ms` are recorded separately and must not be summed into
+  the batch figure.
+* **Derive a threshold from `lock_wait_histogram_ms`, not from a scalar.** The
+  histogram is now persisted per pass for exactly this reason
+  (`LockWaitAccounting`'s own docstring: the per-attempt measurement bias lands
+  almost entirely in the `1-10` bucket, so the tail survives the bias and the
+  scalars do not).
+* `write_hold_ms_max` against the 2.0 s SLO, alongside
+  `write_hold_slo_violations` (the SLO counter itself) and
+  `adaptive_initial_per_token_cost_ms` — a recorded hold distribution means
+  nothing without the seed that produced it.
+* `run_source` is derived from systemd's own `INVOCATION_ID`, not from the
+  command line, so an attended pass cannot be filed as a timer run by copying
+  the unit's `ExecStart`. `gate_bypassed` (`--force`) is a **separate** field:
+  filter unattended passes on `run_source="scheduled"`, never on the absence
+  of `--force`. **`run_source` is nonetheless forgeable and is not evidence**:
+  a caller may pass it directly to `emit_writer_pass`, and `export
+  INVOCATION_ID=anything` satisfies the derivation. Nothing consumes this file
+  today and the health latch does not read it, so nothing is at risk — but do
+  not build an enforcement decision on the field without adding a check first.
+* `run_status="disabled"` is deliberately never emitted (no run happened).
+  Every other outcome, including every pre-flight skip and refusal, is.
+
+#### Deriving `initial_per_token_cost_seconds` — the mandatory filter
+
+`write_hold_ms_max=0` **does not mean the hold was zero.** A contended pass, a
+refused pass and a pre-flight skip all record no hold at all, and
+`int(hold_seconds * 1000)` truncates a genuine 0.4 ms hold to 0 as well.
+Averaging the raw field mixes passes that measured *nothing* into the mean,
+pulls it down, and yields a constant that is **too aggressive** — larger
+batches and longer holds on a live production writer. That is the same
+survivorship bias that got `crypto_token_lifecycle_runs` rejected, arriving as
+zero-inflation instead of absence.
+
+Two fields resolve it, and both must be used:
+
+* `write_hold_measured` (bool) — `false` means no write transaction was opened.
+  `write_hold_ms_max` is **omitted entirely** from such a record.
+* `write_hold_ms_max = 0` **with** `write_hold_measured = true` is a real,
+  sub-millisecond hold. Keep it.
+
+**Filter every calibration query on all of:**
+
+```
+run_status ∈ {ok, partial, truncated, backlog_expiring}
+AND batch_count > 0
+AND write_hold_measured == true
+```
+
+```sh
+jq -c 'select(.writer_name=="crypto_tape"
+       and (.run_status|IN("ok","partial","truncated","backlog_expiring"))
+       and (.batch_count // 0) > 0
+       and .write_hold_measured == true)
+       | {write_hold_ms_max, batch_count, rows_committed, rows_attempted,
+          adaptive_initial_per_token_cost_ms}' \
+  ~/probability-arena-telemetry/sqlite-writes.jsonl
+```
+
+**`rows_committed` is not a token count.** It is
+`snapshots_created + outcomes_updated + birth_events_created` — rows summed
+across three tables, and one token can contribute to all three. Gate 3 asks for
+"per-batch write-hold and committed-**token** count", so a per-token cost
+derived as `write_hold_ms_max / rows_committed` uses a denominator that is
+**≥** the token count and therefore **under-estimates** per-token cost; once
+inverted into a batch size that errs toward *smaller* batches, which is the
+safe direction. If you want a token-grain denominator instead, use
+`rows_attempted` (`tokens_considered`), and note the reverse caveat: it counts
+tokens the pass looked at, so on a truncated pass it is an over-estimate.
+Whichever you pick, `write_hold_ms_max` is a **max** over batches while both
+denominators are **sums** over the pass — state which pairing you used when you
+record the constant.
+
+#### Gate 3 — the calibration session and the chosen constant
+
+**CHOSEN: `CRYPTO_TAPE_RECONCILER_INITIAL_PER_TOKEN_COST_SECONDS = 0.15`.**
+
+It is written into `.env.example` **commented out**, exactly as it was before,
+and is set **nowhere that takes effect**. Activation is Gate 6, and it is a
+separate, deliberate decision. Nothing in this subsection turns anything on.
+
+```text
+CALIBRATION-GATE3-001 — Gate 3 derivation (EVO-X2, ef92b4d)
+  samples (n=8)  per-token ms = write_hold_ms_max / batch_size, batch_size=5
+  sorted         14.8  17.8  18.0  18.8  18.8  19.6  19.8  105.4
+  median         18.8 ms/token
+  warm max       19.8 ms/token   (the 7-sample warm cluster)
+  cold start     105.4 ms/token  (n=1, the first write after a fresh checkout)
+  margin         0.15 = 0.1054 x 1.42
+  CHOSEN         initial_per_token_cost_seconds = 0.15
+```
+
+##### The session
+
+Eight **attended `--force`** passes on EVO-X2 at branch `CALIBRATION-GATE3-001`
+(`ef92b4d`), with `ENABLE_CRYPTO_TAPE_RECONCILER` **off** throughout — so every
+pass recorded `gate_bypassed=force` and no timer existed. Host load 0.3–0.6,
+with the ordinary co-tenants running: the crypto watcher, MarketOps on its
+5-minute cycle, meme-news on its 5-minute cycle, and hourly tick-aggregation.
+
+All eight passed the mandatory filter above — `writer_name == "crypto_tape"`,
+the four-status set, `batch_count > 0`, `write_hold_measured == true` — with
+**zero passes filtered out**, and every one of the eight recorded
+`write_hold_slo_violations = 0`.
+
+| # | status | batches | hold_ms_max | batch_lock_wait_ms_max | rows_committed |
+|---|--------|---------|-------------|------------------------|----------------|
+| 1 | partial | 350 | 527 | 516 | 3500 |
+| 2 | partial | 391 | 99 | 938 | 3910 |
+| 3 | partial | 394 | 94 | 514 | 3940 |
+| 4 | partial | 181 | 98 | 4038 | 1810 |
+| 5 | ok | 135 | 94 | 1015 | 1350 |
+| 6–8 | ok | — | — | — | — |
+
+Pass 1 is the cold start (first write after a fresh checkout). Pass 4 is the
+deadline overshoot. Passes 6–8 each returned `ok` on an identical
+`tokens_considered = 590` in ~11 s.
+
+##### Which pairing was used — the section above requires this be stated
+
+`per-token cost = write_hold_ms_max / batch_size`, with **`batch_size = 5`
+tokens**. This is neither of the two pass-level denominators the section above
+warns about: it is the **per-batch token count**, and `write_hold_ms_max` is a
+max **over batches**, so numerator and denominator are at the same grain. The
+pairing was verified on every pass — `batches_committed x 5 == tokens_considered`
+held throughout.
+
+**`rows_committed` was NOT used, and the table above shows why.** 3,500 rows
+over 350 batches is 10 rows per 5-token batch: it is
+`snapshots_created + outcomes_updated + birth_events_created` summed across
+three tables, roughly 2x the token count here. Dividing by it would have
+under-estimated per-token cost by about half.
+
+##### Why the single cold observation governs
+
+The seed is consumed **once, at process start — the coldest moment in the
+pass.** That is the whole reason the cold sample cannot be discarded as an
+outlier: it is the only observation taken under the conditions the seed is
+actually used in, and it is a *recurring* condition, not a freak one — every
+deploy and every reboot produces it.
+
+A controller seeded from the warm cluster demonstrates the failure directly.
+`2.0 / 0.0198 ≈ 101` tokens in the first batch; at the observed cold cost of
+105.4 ms/token that batch holds the write lock for **10.6 s — 5x the 2.0 s
+`RECONCILE_WRITE_TIME_SLO_SECONDS`** — before a single measurement has been fed
+back into the estimator. The median (18.8) is worse still. So the seed is set
+from the cold tail, not from the centre of the distribution.
+
+`0.15 = worst observed (0.1054) x 1.42`. First batch `2.0 / 0.15 ≈ 13` tokens →
+**1.37 s at the cold cost (68% of the SLO)**, 0.26 s at the warm cost, with the
+controller free to grow from there on real measurements.
+
+##### It LOOSENS, it does not tighten — say so plainly
+
+13 tokens is **larger** than the fixed `CRYPTO_TAPE_RECONCILER_BATCH_SIZE = 5`
+that ships today. Calibrating this constant therefore *relaxes* the first
+batch relative to current behaviour; it does not constrain it. Anyone reading
+this as a tightening has it backwards, and would then be tempted to "recover"
+throughput elsewhere.
+
+##### What the shipped code actually does with 0.15 — the two clamps
+
+The `2.0 / 0.15 ≈ 13` above is the budget arithmetic. Two mechanisms already in
+the code make the **as-shipped** first batch smaller, and neither was changed
+here:
+
+* **`AdaptiveBatchCostEstimate` biases the seed HIGH** by
+  `bias_multiplier = 1.5` before it is ever used to size a batch. The
+  conservative estimate from a 0.15 seed is 0.225 s/token, so
+  `next_adaptive_batch_size(2.0, ...)` returns **8**, not 13 — a hold of
+  **0.84 s at the cold cost (42% of the SLO)**. The same bias applies to the
+  warm-seed counterfactual: 67 tokens, **7.06 s, still 3.5x the SLO**. The
+  conclusion is unchanged and the margin is larger than the headline
+  arithmetic suggests.
+* **The B11 sanity ceiling is `batch_size`**, i.e. the shipped
+  `CRYPTO_TAPE_RECONCILER_BATCH_SIZE = 5`. Once adaptive batching is active
+  `batch_size` becomes a maximum only, and `min(8, 5) = 5`. **So at Gate 6, on
+  today's constants, the calibrated first batch is 5 tokens — identical to
+  today's fixed behaviour.** The loosening above is *latent*: it is realised
+  only if Gate 6 also raises that ceiling, which is a separate decision with
+  its own evidence, deliberately not taken here.
+
+##### Caveats — these are part of the derivation, not footnotes
+
+* **n = 1 for the cold case.** The cold tail is **not bounded by this data**. A
+  worse cold start is entirely possible; the 1.42x margin exists for exactly
+  that reason and is not a proof of anything. A second cold observation is the
+  cheapest thing that would improve this constant.
+* **The margin is a judgement, not a measurement.** 1.42x was chosen to land
+  the cold-case hold under 70% of the SLO on the headline arithmetic. No
+  distributional claim is made about it.
+* **Pass 4 overshot its 30 s deadline by 37%** (`duration_ms = 41035`) on a
+  4,038 ms `batch_lock_wait_ms_max`. This is the documented limit that
+  `max_duration_seconds` **cannot interrupt a statement already blocked inside
+  SQLite** — the deadline is only evaluated between batches. It is **not a
+  calibration input** (the hold was a normal 98 ms; the wait was the lock, not
+  the write) but it belongs in this record, and it is the same class of event
+  precondition 1 asks to be *observed* rather than modelled.
+* **Passes 6–8 returned `ok` on an identical `tokens_considered = 590`.** The
+  historical backlog has drained to steady state, so the warm cluster is a
+  steady-state measurement. A backlog surge is a different population and this
+  constant was not measured against one.
+* **Eight passes, one host, one session, one branch.** The constant is not
+  portable to a different host, and re-deriving it is the required step if the
+  host changes — the same rule `CRYPTO_TAPE_RECONCILER_BATCH_SIZE` already
+  carries.
+
+#### Growth, rotation and reading this file
+
+**The file does not rotate, has no size bound, no retention and no alert**, and
+it is **shared** with the SQLITE-LOCK-TELEMETRY-001A writers rather than being
+this milestone's alone. Rotation is owned by 001E, which is unbuilt.
+
+Gate 2's own contribution is genuinely small — measured **1,168 B per pass,
+~4.6 KB/day** at the 6-hourly cadence (it was 906 B before the SLO counter,
+the two denominators and the histogram were added) — but growth is monotonic
+and the 001A writers add their own. **Check the file's size before you read
+it**:
+
+```sh
+ls -lh ~/probability-arena-telemetry/sqlite-writes.jsonl
+```
+
+Do **not** use `app.telemetry.sink.read_events` on EVO. It calls
+`path.read_bytes()` on the whole file and holds every parsed event: measured
+**420 MB peak Python heap on a 60 MB file** (7.0x amplification, 8.5 s). It is
+a test helper. Stream with `jq` instead, as above.
+
+**`_lock_tally` reads the same way, and unlike `read_events` it is a consumer
+that actually runs on EVO.** `scripts/sqlite_analyze_maintenance.py::
+_lock_tally` does `path.read_text()` on the whole file — measured **406 MB peak
+heap on a 58 MB file**. That is a second and independent reason to check the
+size above: `read_events` is a test helper you can simply decline to run, while
+this one sits on the ANALYZE maintenance path. **Not fixed** — recorded so the
+size check is understood as protecting a real consumer.
+
+**`lock_events` is cumulative and monotonic.** `_lock_tally` counts every line
+in the file with no time window, and nothing rotates the file before 001E, so
+the tally only ever grows. The two consumers differ in exactly this: the
+ANALYZE record takes a **bounded before/after delta** (`delta.lock_events`),
+while the Kalshi DEMO session's `current_lock_events > 6` stop condition in
+`docs/KALSHI_DEMO_READONLY_VALIDATION_2026_08.md` reads the **cumulative**
+number — so once it crosses, it stays crossed for the life of the file. Only
+the delta is bounded. Owned by 001E along with rotation; recorded here so it is
+not rediscovered mid-session.
+
+Measured cost of the append itself, against a real competing SQLite writer on
+this repo's dev Mac: **p50 0.10 ms, p95 0.32 ms** while a co-tenant *held* the
+RESERVED lock — statistically identical to the idle-host figure, which is the
+structural point (it takes no lock).
+
+**The sink is not crash-durable.** It survives a pass that *returned* having
+committed nothing — contended, aborted, refused, skipped — which is the whole
+point, because those are the passes the run row loses. It does **not** survive a
+SIGKILL: the append is the last thing a pass does, so a kill mid-finalize loses
+the JSONL line exactly as it loses the run row.
+
+#### BEFORE YOU ENABLE THE RECONCILER: this file already has a consumer
+
+`scripts/sqlite_analyze_maintenance.py::_lock_tally` reads this same JSONL file
+and reports `lock_events`, counting **any** event with `lock_wait_ms > 0` or
+`retry_count > 0`. That predicate was written when only the two 001A writers
+(`tick_aggregation`, `backup`) appended here, and for them a non-zero lock wait
+genuinely is a lock event. It is a governed number: the ANALYZE record carries
+it as a before/after **delta**, and `current_lock_events > 6` is a documented
+session stop condition.
+
+**A healthy `crypto_tape` reconciler pass routinely reports `lock_wait_ms > 0`**
+— measured 12 ms on an uncontended 12-token pass, from once-per-pass `run_row`
+and `finalize` bookkeeping samples that are instrument, not contention. So the
+moment `enable_crypto_tape_reconciler` is turned on with a timer, `lock_events`
+starts climbing by roughly one per pass (~4/day at the 6-hourly cadence) and
+will cross 6 within two days — reading as new contention when nothing has
+contended.
+
+**RESOLVED — the count is now scoped by `writer_name`.** `lock_events` counts
+only `tick_aggregation` and `backup` (`LOCK_EVENT_WRITERS` in
+`scripts/sqlite_analyze_maintenance.py`), which is the population the `> 6`
+constant was read off. **The threshold was NOT raised.** Raising a limit to
+accommodate a miscount destroys the safeguard; the defect was never the limit,
+it was the population being counted under it.
+
+**Why scoping and not `batch_lock_wait_ms_max`.** Moving the count onto the
+phase-attributed field was the other candidate fix, and on the measured numbers
+it does not work as stated: the same eight healthy, uncontended passes measure
+`batch_lock_wait_ms_max` of 3/3/2/1/1/1/6/2 ms, so `> 0` on that field counts
+them exactly as the flat predicate did. Making it work would need a millisecond
+threshold, and the only one available is the reconciler's own breaker constant
+— importing that into the count that governs the reconciler would let guarded
+code widen its own boundary, the same inversion the histogram validation was
+deliberately kept structural to avoid. Scoping needs no constant at all.
+
+**The reconciler is scoped out of the governed count, not hidden.** The tally
+also reports `lock_event_scope`, `out_of_scope_events` and
+`out_of_scope_flat_predicate_hits`, so a `crypto_tape` pass that genuinely
+contends is still visible in the ANALYZE record — it simply cannot move a
+number calibrated on a different population.
+
+**THE DEADLINE WAS THE CALIBRATION SESSION, NOT THE TIMER.** An earlier
+statement of this hazard said it had to be resolved "before the flag is
+flipped". That was late by one step: the session that derives
+`initial_per_token_cost_seconds` is itself about eight attended `--force`
+passes, and under the old predicate those alone crossed `> 6` before any timer
+existed. The scoping had to land first, and did.
+
 ### `TimeoutStartSec` vs the finalize ladder
 
 The run row's finalize inherits the **connection's** busy timeout (30 s in

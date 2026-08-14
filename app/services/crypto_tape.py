@@ -59,6 +59,7 @@ from app.models import (
 # and keeping the two apart is what stops a future edit from quietly
 # re-deriving a policy number from a measured one.
 from app.services import crypto_reconciler_guard as guard
+from app.telemetry import writer_pass
 
 def _completeness_reason(birth, min_liquidity: float) -> str | None:
     """None when the birth is a COMPLETE lifecycle anchor; else the rejection
@@ -1235,6 +1236,16 @@ class LockWaitAccounting:
         self.budget_ms_min: int | None = None
         self.hold_seconds_max = 0.0
         self.hold_slo_violations = 0
+        # GATE2-WRITER-TELEMETRY-001 (A1) — how many samples actually carried a
+        # write hold. `write_hold_ms_max` alone cannot say: `int(hold * 1000)`
+        # truncates a genuine 0.4 ms hold to 0, so "held the lock for under a
+        # millisecond" and "never opened a write transaction at all" both
+        # persist as 0. That ambiguity is a CALIBRATION hazard, not a cosmetic
+        # one — the constant derived from an average over these fields governs
+        # a live writer's batch size, and folding unmeasured passes in as zeros
+        # biases it toward LARGER batches and LONGER holds. This counter is the
+        # denominator that separates the two.
+        self.hold_measurements = 0
         # CRYPTO-RECONCILER-LOCK-WAIT-PHASE-ATTRIBUTION-001 — the same samples,
         # split by the phase that produced them. Bounded exactly like the
         # histogram is: four scalars per phase, no raw samples. Pre-seeded with
@@ -1309,6 +1320,7 @@ class LockWaitAccounting:
         if _in_decision_tail(ms):
             stats["decision_tail"] += 1
         if meter.hold_seconds > 0:
+            self.hold_measurements += 1
             self.hold_seconds_max = max(self.hold_seconds_max, meter.hold_seconds)
             if meter.hold_seconds > RECONCILE_WRITE_TIME_SLO_SECONDS:
                 self.hold_slo_violations += 1
@@ -1437,7 +1449,17 @@ class LockWaitAccounting:
             "lock_wait_histogram_ms": self.histogram(),
             "lock_wait_budget_ms": self.budget_ms_applied,
             "lock_wait_budget_ms_min": self.budget_ms_min,
+            # GATE2-WRITER-TELEMETRY-001 (A1). `write_hold_ms_max` is kept
+            # exactly as it was — an int, truncating, zero when nothing was
+            # held — because run rows and the CLI already read it. What was
+            # MISSING is the fact that makes it interpretable:
+            # `write_hold_measurements` is 0 iff no write transaction was ever
+            # opened, so a 0 that carries a non-zero count is a real
+            # sub-millisecond hold and a 0 that carries a zero count is NOT A
+            # MEASUREMENT. Never average `write_hold_ms_max` over passes
+            # without filtering on this.
             "write_hold_ms_max": int(self.hold_seconds_max * 1000),
+            "write_hold_measurements": self.hold_measurements,
             "write_hold_slo_seconds": RECONCILE_WRITE_TIME_SLO_SECONDS,
             "write_hold_slo_violations": self.hold_slo_violations,
             # CRYPTO-RECONCILER-LOCK-WAIT-PHASE-ATTRIBUTION-001.
@@ -5285,6 +5307,154 @@ def run_scheduled_reconciliation(
     ) or CryptoTapeConfig.from_settings(s).chain
     _health_path = guard.health_state_path(getattr(s, "database_url", None), _chain)
 
+    # GATE2-WRITER-TELEMETRY-001 — the adaptive-batching config that was
+    # actually in force, captured for the pass telemetry.
+    #
+    # A HOLDER RATHER THAN A CLOSURE OVER THE LOCALS, on purpose: `_refused`
+    # is defined here but CALLED from validation points both before and after
+    # those locals exist (`invalid_limit` fires before `batch` is even
+    # assigned). A closure reading them directly would raise NameError on
+    # exactly the early-refusal paths this gate most needs recorded. An empty
+    # holder is also the honest answer for those passes — a refusal that
+    # happened before config resolution genuinely HAS no resolved config, and
+    # the fields are omitted rather than reported as zeros.
+    _adaptive_cfg: dict = {}
+
+    def _emit_pass_telemetry(result: dict) -> None:
+        """One JSONL append per terminal outcome, on the non-SQLite 001A sink.
+
+        Takes no lock, opens no connection, and never raises: `emit_writer_pass`
+        swallows everything, and this wrapper is called only after the pass has
+        finished all of its own commits. It is deliberately NOT part of the
+        finalize commit — that commit gets one attempt, and the passes whose
+        numbers matter most are the ones that lose it.
+
+        PHASE ATTRIBUTION IS PRESERVED, NOT FLATTENED. `batch_lock_wait_ms_max`
+        is the batch-phase figure the breakers read; the `run_row` and
+        `finalize` waits ride along in their own fields. The pass total stays
+        in the pre-existing `lock_wait_ms`. Four fields, never summed.
+
+        A4 (security review of this branch): THE WHOLE BODY IS GUARDED, not
+        just the emit. `emit_writer_pass` swallows everything, but the field
+        extraction below runs BEFORE it, on the writer's return path — and
+        `int()` on a non-numeric raises. Proved: a non-numeric in one of these
+        keys produced `ValueError: invalid literal for int()` escaping
+        `run_scheduled_reconciliation` entirely, i.e. THE PASS FAILED BECAUSE OF
+        TELEMETRY. No current writer-A producer can do that (every one is an
+        int), but writer B has a different result shape, so the guard is placed
+        before it becomes reachable rather than after."""
+        try:
+            fields = _pass_telemetry_fields(result)
+        except Exception:
+            # Same thesis as the sink's `_degrade`: a degraded record beats a
+            # deleted one. The pass still HAPPENED and its status is still the
+            # thing a calibration corpus must not be blind to, so the identity
+            # record is emitted without the numbers rather than not at all.
+            fields = {}
+        try:
+            writer_pass.emit_writer_pass(
+                writer_name="crypto_tape",
+                operation_name="scheduled_reconciliation",
+                started_at=started.isoformat().replace("+00:00", "Z"),
+                run_status=result.get("status"),
+                stop_reason=result.get("stop_reason"),
+                # The `--force` bit itself, kept SEPARATE from `run_source`: an
+                # attended force pass must never trip or clear the rolling
+                # latch, and `scheduled` + `bypassed` has to stay readable as
+                # the anomaly it would be.
+                gate_bypassed=bool(force),
+                table_groups=["crypto_horizon", "runs_audit"],
+                **fields,
+            )
+        except Exception:  # pragma: no cover - `emit_writer_pass` swallows too
+            return
+
+    def _pass_telemetry_fields(result: dict) -> dict:
+        """The extraction half of `_emit_pass_telemetry`, split out so the
+        guard above has something to guard and so the mapping is testable
+        without a sink. Returns only the fields that are not None."""
+        phases = result.get("lock_wait_phases") or {}
+
+        def _phase_wait(name: str):
+            entry = phases.get(name)
+            return entry.get("lock_wait_ms") if isinstance(entry, dict) else None
+
+        def _int_or_none(value):
+            return None if value is None else int(value)
+
+        # `rows_committed` IS A ROW COUNT SUMMED ACROSS THREE TABLES, NOT A
+        # TOKEN COUNT (A2, security review of this branch). Gate 3 asks for
+        # "per-batch write-hold and committed-token count", and one token can
+        # produce a snapshot AND an outcome update AND a birth event, so this
+        # denominator is >= the token count. A per-token cost derived as
+        # hold/rows is therefore an UNDER-estimate of per-token cost and, once
+        # inverted into a batch size, errs toward SMALLER batches — the safe
+        # direction. It is documented rather than renamed because the field is
+        # `rows_committed` in the shipped 001A envelope and means exactly this
+        # for every other writer too. `rows_attempted` (`tokens_considered`) is
+        # the closest available token-grain denominator; the runbook says which
+        # to use. `tokens_considered` is what the pass looked at.
+        written = sum(
+            int(result.get(key) or 0)
+            for key in ("snapshots_created", "outcomes_updated",
+                        "birth_events_created")
+        )
+        # A1 — "not measured" and "sub-millisecond" must not both persist as 0.
+        # `write_hold_measurements` is 0 iff no write transaction was opened
+        # (contended, refused, skipped); `write_hold_ms_max` is then OMITTED
+        # rather than sent as a zero that an average would silently absorb.
+        hold_measurements = int(result.get("write_hold_measurements") or 0)
+        hold_measured = hold_measurements > 0
+        fields = {
+            "rows_attempted": _int_or_none(result.get("tokens_considered")),
+            "rows_committed": written,
+            "rows_skipped": _int_or_none(result.get("tokens_omitted")),
+            "batch_count": _int_or_none(result.get("batches_committed")),
+            "retry_count": int(result.get("lock_retry_events") or 0),
+            "external_calls": _int_or_none(result.get("external_calls")),
+            "lock_wait_ms": _int_or_none(result.get("lock_wait_ms")),
+            "lock_wait_measurements": _int_or_none(
+                result.get("lock_wait_measurements")),
+            # The distribution, not just the scalars. `LockWaitAccounting`'s own
+            # docstring is explicit that a threshold must be read off the
+            # histogram tail and never off a scalar — so the histogram is what
+            # has to survive the pass, or the gate is calibrated from the one
+            # source its author warned against.
+            "lock_wait_histogram_ms": result.get("lock_wait_histogram_ms"),
+            "batch_lock_wait_ms_max": _int_or_none(
+                result.get("batch_lock_wait_ms_max")),
+            "batch_lock_wait_warnings": _int_or_none(
+                result.get("batch_lock_wait_warnings")),
+            "batch_lock_wait_aborts": _int_or_none(
+                result.get("batch_lock_wait_aborts")),
+            "run_row_lock_wait_ms": _int_or_none(
+                _phase_wait(LOCK_WAIT_PHASE_RUN_ROW)),
+            "finalize_lock_wait_ms": _int_or_none(
+                result.get("finalize_lock_wait_ms")),
+            "write_hold_measured": hold_measured,
+            "write_hold_ms_max": (
+                _int_or_none(result.get("write_hold_ms_max"))
+                if hold_measured else None
+            ),
+            # THE SLO COUNTER THIS GATE EXISTS TO HAND THE CONTROLLER. It was
+            # computed by `as_summary` and then thrown away at the emit.
+            "write_hold_slo_violations": _int_or_none(
+                result.get("write_hold_slo_violations")),
+            "adaptive_batching_active": result.get("adaptive_batching_active"),
+            "duration_ms": _int_or_none(result.get("duration_ms")),
+            **_adaptive_cfg,
+        }
+        return {k: v for k, v in fields.items() if v is not None}
+
+    def _finish(result: dict) -> dict:
+        """The single terminal funnel: record the gate history, then persist
+        the pass record. Both call sites of `_record_health` go through here,
+        so no terminal outcome — including every pre-flight skip and refusal —
+        can escape unrecorded."""
+        recorded = _record_health(result)
+        _emit_pass_telemetry(recorded)
+        return recorded
+
     def _record_health(result: dict) -> dict:
         """Annotate EVERY governed outcome with its review verdict, append it
         to the rolling history, and trip the latch when the trend appears.
@@ -5418,7 +5588,7 @@ def run_scheduled_reconciliation(
         # CRYPTO-RECONCILER-GUARDED-TIMER-001: a refusal is an OUTCOME, and a
         # skipped run is data, not silence. Config refusals (`invalid_*`) are
         # annotated but not counted — see `guard.records_feed_gate`.
-        return _record_health(refused)
+        return _finish(refused)
 
     if cap < 1:
         # SQLite treats LIMIT -1 as "no limit", so an unvalidated cap is an
@@ -5516,6 +5686,26 @@ def run_scheduled_reconciliation(
             "invalid_time_budget_seconds",
             f"time_budget_seconds {resolved_time_budget} must be > 0",
         )
+    # GATE2-WRITER-TELEMETRY-001 — the adaptive shape is now resolved AND
+    # validated, so record what was actually in force. This is the config the
+    # write-hold SLO has to be calibrated against: `initial_per_token_cost`
+    # is the uncalibrated seed the whole gate is waiting on, and a recorded
+    # distribution is meaningless without the seed that produced it. Populated
+    # here rather than at the emit so a refusal AFTER this point still carries
+    # it, and a refusal BEFORE it carries nothing rather than a fabricated zero.
+    _adaptive_cfg.update({
+        k: v for k, v in {
+            "adaptive_batch_size_max": int(batch),
+            "adaptive_time_budget_ms": (
+                None if resolved_time_budget is None
+                else int(resolved_time_budget * 1000)
+            ),
+            "adaptive_initial_per_token_cost_ms": (
+                None if resolved_initial_cost is None
+                else int(resolved_initial_cost * 1000)
+            ),
+        }.items() if v is not None
+    })
     # CRYPTO-RECONCILER-LOCK-WAIT-BUDGET-001 — the LOCK-WAIT budget. This is
     # NOT `time_budget_seconds` (which bounds how long a transaction may
     # HOLD the write lock) and the two must never be conflated. None keeps
@@ -5917,7 +6107,7 @@ def run_scheduled_reconciliation(
     # relabelling above (`truncated`, `backlog_expiring`) has already
     # happened, so the recorded row is the status the operator will read, not
     # an earlier draft of it.
-    return _record_health(summary)
+    return _finish(summary)
 
 
 def _reconciliation_should_abort(session: Session) -> bool:
