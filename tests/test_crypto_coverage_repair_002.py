@@ -1122,6 +1122,62 @@ def test_the_pass_queries_never_scan_the_member_table(big_cohort):
 
 
 @pytest.mark.asyncio
+async def test_the_lane_never_files_its_own_band_edge_as_out_of_band(
+    session, monkeypatch,
+):
+    """LOW (band edge). The plan is fixed at pass START; the tick is stamped
+    after the FETCH. So a token planned with seconds of band left can be
+    answered HONESTLY up to `max_duration_seconds` after its band closed —
+    measured overshoot 1.21s — and the row was written with an `observed_at`
+    outside its own band. The pass then reported `observed: 1` while the report
+    reported `out_of_band: 1` for the same row.
+
+    The interpretive cost is the point: `out_of_band_rate` is the governance
+    signal for MANUAL-LANE CONTAMINATION, and a signal that also fires benignly
+    from this lane's own clock cannot carry that meaning.
+
+    Driven deterministically by advancing the logical clock past `window_end`
+    between planning and staging, which is exactly what a slow fetch does."""
+    # window_end = anchor + 6h + band; put it one second after `now`
+    anchor = (
+        NOW
+        - timedelta(hours=6)
+        - timedelta(minutes=sparse.SPARSE_BAND_MINUTES)
+        + timedelta(seconds=1)
+    )
+    add_birth(session, 1, anchor=anchor)
+    session.commit()
+
+    real = sparse._logical_clock
+    monkeypatch.setattr(
+        sparse, "_logical_clock",
+        lambda now, started: (lambda: now + timedelta(seconds=2)),
+    )
+    r = await run_pass(
+        session, adapter=FakeAdapter({token_id(1): [pair(token_id(1))]}), now=NOW,
+    )
+    monkeypatch.setattr(sparse, "_logical_clock", real)
+
+    assert r["status"] in sparse.HEALTHY_STATUSES, r.get("error")
+    assert r["due_observations"] == 1, "the 6h band was not planned as due"
+    assert r["band_closed_during_pass"] == 1, (
+        "the band closed between plan and fetch and the skip was not counted"
+    )
+    assert r["observations_recorded"] == 0
+    assert session.query(CryptoHorizonObservation).count() == 0, (
+        "an observation was written outside its own band by this lane's clock"
+    )
+
+    # and the report agrees with the pass rather than contradicting it: no
+    # `out_of_band` row exists to dilute the contamination signal
+    rep = sparse.build_observation_coverage_report(
+        session, settings=settings(), now=NOW + timedelta(hours=48),
+    )
+    assert rep["by_horizon"]["6h"]["out_of_band"] == 0
+    assert rep["by_horizon"]["6h"]["observed"] == 0
+
+
+@pytest.mark.asyncio
 async def test_the_pass_reports_whether_the_working_set_index_exists(session):
     """B5. The plan-assertion test above CANNOT catch a missing migration 0029:
     it runs against a `create_all` schema, which always has the index. And

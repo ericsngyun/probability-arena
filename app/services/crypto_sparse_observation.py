@@ -476,6 +476,9 @@ def _base_result(status: str, config: SparseObservationConfig, started: datetime
         "outcome_counts": {},
         "batches_committed": 0,
         "deferred_observations": 0,
+        # LOW: horizons whose band closed BETWEEN pass start and the fetch, so
+        # the honest answer arrived out of band and was not written at all.
+        "band_closed_during_pass": 0,
         "retryable_request_failures": 0,
         "request_failures_reattempted": 0,
         "stop_reason": None,
@@ -1152,16 +1155,44 @@ async def _run_locked(
     recorded = 0
     batches = 0
     retried = 0
+    band_closed = 0
     meter = _WriteMeter()
 
     def _stage(batch: list[_Fetched]):
         """Stage one batch's rows. Called once per commit ATTEMPT — see
         `_commit_with_retry`: a rollback expunges everything staged, so the
         rows must be rebuilt, not merely re-committed."""
-        staged = {"outcomes": {}, "ticks": 0, "recorded": 0, "retried": 0}
+        staged = {
+            "outcomes": {}, "ticks": 0, "recorded": 0, "retried": 0,
+            "band_closed": 0,
+        }
         for item in batch:
             member = members.get(item.token_address)
+            observed_at = item.fetched_at or clock()
             for entry in due_by_token.get(item.token_address, []):
+                # THE LANE MUST NOT PENALISE ITS OWN BAND EDGE.
+                #
+                # The plan is fixed at pass START; the tick is stamped after the
+                # FETCH. So a token planned with seconds of band left can be
+                # answered honestly up to `max_duration_seconds` after its band
+                # closed — measured overshoot 1.21s — and the row was written
+                # with an `observed_at` outside its own band. The pass then said
+                # `observed: 1` while the report said `out_of_band: 1` for the
+                # same row.
+                #
+                # That matters beyond the disagreement. `out_of_band_rate` is
+                # the governance signal for MANUAL-LANE CONTAMINATION (an
+                # `observe_once` planning at the fractional tape tolerance), and
+                # a signal that also fires benignly from this lane's own clock
+                # cannot carry that meaning. So the band is re-checked against
+                # the FETCH timestamp, and a horizon whose band closed during
+                # the pass is not written at all: it becomes an honest
+                # `scheduling_miss` — this lane genuinely did not look inside
+                # the band — counted here so the skip is never silent.
+                window_end = _aware(entry.window_end)
+                if window_end is not None and observed_at > window_end:
+                    staged["band_closed"] += 1
+                    continue
                 existing = retry_rows.get((item.token_address, entry.horizon))
                 # read BEFORE the call: `_record_observation` replaces
                 # `raw_payload` wholesale. After a rollback the row is expired
@@ -1171,7 +1202,7 @@ async def _run_locked(
                 status, _cause, tick = service._record_observation(
                     session, cohort.id, member, entry, item.selected, item.basis,
                     item.candidates, item.request_failed,
-                    item.fetched_at or clock(), existing=existing,
+                    observed_at, existing=existing,
                     audit_candidate_limit=AUDIT_CANDIDATE_LIMIT,
                     tick_source=TICK_SOURCE,
                 )
@@ -1201,12 +1232,14 @@ async def _run_locked(
             recorded += staged["recorded"]
             ticks += staged["ticks"]
             retried += staged["retried"]
+            band_closed += staged["band_closed"]
             for name, count in staged["outcomes"].items():
                 outcomes[name] = outcomes.get(name, 0) + count
     except IntegrityError as exc:
         session.rollback()
         _record_write_progress(
             result, batches, recorded, ticks, retried, outcomes, meter,
+            band_closed,
         )
         result["error"] = (
             "an observation row for this (cohort, token, horizon) already "
@@ -1219,6 +1252,7 @@ async def _run_locked(
         if _is_db_locked(exc):
             _record_write_progress(
                 result, batches, recorded, ticks, retried, outcomes, meter,
+                band_closed,
             )
             result["error"] = (
                 "database is locked; observation write phase abandoned. The "
@@ -1235,6 +1269,7 @@ async def _run_locked(
     result["batches_committed"] = batches
     result["request_failures_reattempted"] = retried
     result["persisted"] = result["persisted"] or recorded > 0
+    result["band_closed_during_pass"] = band_closed
     result["write_lock"] = meter.snapshot()
     if stop_reason != STOP_COMPLETE:
         result["status"] = STATUS_PARTIAL
@@ -1291,7 +1326,7 @@ class _WriteMeter:
 
 def _record_write_progress(
     result: dict, batches: int, recorded: int, ticks: int, retried: int,
-    outcomes: dict, meter: "_WriteMeter",
+    outcomes: dict, meter: "_WriteMeter", band_closed: int = 0,
 ) -> None:
     """Carry the DURABLE write-phase counts into a refusal result. Every one of
     these is incremented only after a batch's commit returned (see
@@ -1303,6 +1338,7 @@ def _record_write_progress(
     result["request_failures_reattempted"] = retried
     result["outcome_counts"] = dict(outcomes)
     result["persisted"] = bool(result.get("persisted")) or recorded > 0
+    result["band_closed_during_pass"] = band_closed
     result["write_lock"] = meter.snapshot()
 
 
