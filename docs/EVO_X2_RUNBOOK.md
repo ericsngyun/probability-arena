@@ -2392,6 +2392,24 @@ Do **not** use `app.telemetry.sink.read_events` on EVO. It calls
 **420 MB peak Python heap on a 60 MB file** (7.0x amplification, 8.5 s). It is
 a test helper. Stream with `jq` instead, as above.
 
+**`_lock_tally` reads the same way, and unlike `read_events` it is a consumer
+that actually runs on EVO.** `scripts/sqlite_analyze_maintenance.py::
+_lock_tally` does `path.read_text()` on the whole file — measured **406 MB peak
+heap on a 58 MB file**. That is a second and independent reason to check the
+size above: `read_events` is a test helper you can simply decline to run, while
+this one sits on the ANALYZE maintenance path. **Not fixed** — recorded so the
+size check is understood as protecting a real consumer.
+
+**`lock_events` is cumulative and monotonic.** `_lock_tally` counts every line
+in the file with no time window, and nothing rotates the file before 001E, so
+the tally only ever grows. The two consumers differ in exactly this: the
+ANALYZE record takes a **bounded before/after delta** (`delta.lock_events`),
+while the Kalshi DEMO session's `current_lock_events > 6` stop condition in
+`docs/KALSHI_DEMO_READONLY_VALIDATION_2026_08.md` reads the **cumulative**
+number — so once it crosses, it stays crossed for the life of the file. Only
+the delta is bounded. Owned by 001E along with rotation; recorded here so it is
+not rediscovered mid-session.
+
 Measured cost of the append itself, against a real competing SQLite writer on
 this repo's dev Mac: **p50 0.10 ms, p95 0.32 ms** while a co-tenant *held* the
 RESERVED lock — statistically identical to the idle-host figure, which is the
@@ -2421,13 +2439,35 @@ starts climbing by roughly one per pass (~4/day at the 6-hourly cadence) and
 will cross 6 within two days — reading as new contention when nothing has
 contended.
 
-Nothing moves today: both writers ship default-OFF and no timer is installed.
-But this must be resolved **before the flag is flipped**, not after. Either
-teach `_lock_tally` to scope its count to `writer_name in {tick_aggregation,
-backup}`, or move it onto the phase-attributed `batch_lock_wait_ms_max`, which
-is the only figure that means contention. Do not simply raise the threshold —
-that discards the signal instead of fixing its denominator. This is a
-maintenance-script change and is deliberately **not** made on this branch.
+**RESOLVED — the count is now scoped by `writer_name`.** `lock_events` counts
+only `tick_aggregation` and `backup` (`LOCK_EVENT_WRITERS` in
+`scripts/sqlite_analyze_maintenance.py`), which is the population the `> 6`
+constant was read off. **The threshold was NOT raised.** Raising a limit to
+accommodate a miscount destroys the safeguard; the defect was never the limit,
+it was the population being counted under it.
+
+**Why scoping and not `batch_lock_wait_ms_max`.** Moving the count onto the
+phase-attributed field was the other candidate fix, and on the measured numbers
+it does not work as stated: the same eight healthy, uncontended passes measure
+`batch_lock_wait_ms_max` of 3/3/2/1/1/1/6/2 ms, so `> 0` on that field counts
+them exactly as the flat predicate did. Making it work would need a millisecond
+threshold, and the only one available is the reconciler's own breaker constant
+— importing that into the count that governs the reconciler would let guarded
+code widen its own boundary, the same inversion the histogram validation was
+deliberately kept structural to avoid. Scoping needs no constant at all.
+
+**The reconciler is scoped out of the governed count, not hidden.** The tally
+also reports `lock_event_scope`, `out_of_scope_events` and
+`out_of_scope_flat_predicate_hits`, so a `crypto_tape` pass that genuinely
+contends is still visible in the ANALYZE record — it simply cannot move a
+number calibrated on a different population.
+
+**THE DEADLINE WAS THE CALIBRATION SESSION, NOT THE TIMER.** An earlier
+statement of this hazard said it had to be resolved "before the flag is
+flipped". That was late by one step: the session that derives
+`initial_per_token_cost_seconds` is itself about eight attended `--force`
+passes, and under the old predicate those alone crossed `> 6` before any timer
+existed. The scoping had to land first, and did.
 
 ### `TimeoutStartSec` vs the finalize ladder
 

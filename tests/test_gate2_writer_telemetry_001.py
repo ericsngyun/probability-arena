@@ -25,7 +25,10 @@ test_crypto_reconciler_guarded_timer_001.py. Nothing here simulates contention.
 """
 from __future__ import annotations
 
+import importlib.util
+import json
 import os
+import re
 import sqlite3
 import time
 from datetime import datetime, timedelta, timezone
@@ -172,6 +175,52 @@ def _events() -> list[dict]:
     events, malformed = read_events(get_sink().path)
     assert malformed == 0, "the sink wrote a line it cannot read back"
     return events
+
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_MAINTENANCE_SCRIPT = _REPO_ROOT / "scripts" / "sqlite_analyze_maintenance.py"
+
+
+def _maintenance_module():
+    """`scripts/` is not a package and the script is deliberately not importable
+    by application code, so it is loaded by path. Loaded rather than
+    re-implemented on purpose: the whole point of the C2 tests is to exercise
+    the REAL `_lock_tally` an operator runs, not a copy of its predicate that
+    can drift away from it."""
+    spec = importlib.util.spec_from_file_location(
+        "_sqlite_analyze_maintenance_under_test", _MAINTENANCE_SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+# --- the runbook's calibration filter, reduced to comparable facts ----------
+#
+# The section carries the SAME filter twice: an abstract `AND` predicate and the
+# fenced ```sh `jq` command an operator copies and runs. A pin on one leaves the
+# other free to drift, so both are reduced to this shape and required to agree.
+_CALIBRATION_STATUSES = frozenset(
+    {"ok", "partial", "truncated", "backlog_expiring"})
+
+
+def _filter_facts(block: str) -> dict:
+    """Normalize either filter form to the same comparable facts.
+
+    Whitespace is flattened first because the `jq` command is wrapped across
+    five lines and the abstract predicate is not; every assertion below must be
+    about the filter's MEANING, never about its line breaks."""
+    flat = re.sub(r"\s+", " ", block)
+    return {
+        "filters_on_run_status": "run_status" in flat,
+        "statuses": frozenset(
+            re.findall(r"\b(?:ok|partial|truncated|backlog_expiring)\b", flat)),
+        # `batch_count > 0` and `(.batch_count // 0) > 0` are the same fact
+        "requires_batch_count_positive": bool(
+            re.search(r"batch_count\b.{0,24}?>\s*0", flat)),
+        # the clause whose INVERSION selects exactly the unmeasured passes
+        "requires_write_hold_measured_true": bool(
+            re.search(r"write_hold_measured\s*==\s*true", flat)),
+    }
 
 
 def _run(db, **kw) -> tuple[dict, list[dict]]:
@@ -1006,26 +1055,108 @@ class TestRunbookIsActionable:
             "### Where the per-pass record now lands (GATE2-WRITER-TELEMETRY-001)"
         )[1].split("### `TimeoutStartSec`")[0]
 
+    def _fenced_blocks(self) -> list[str]:
+        """Only the segments INSIDE a fence. `split("```")` alternates
+        outside/inside, so the odd indices are the code blocks — selecting on
+        the whole split would let surrounding prose masquerade as a block,
+        which is the failure mode this whole section is being repaired for."""
+        parts = self._section().split("```")
+        assert len(parts) % 2 == 1, "unbalanced ``` fences in this section"
+        return parts[1::2]
+
+    def _runnable_filter_block(self) -> str:
+        """THE BLOCK AN OPERATOR COPIES AND RUNS, selected by its ```sh fence
+        and cross-checked by the literal `jq`.
+
+        THIS IS THE THIRD ITERATION OF ONE FAILURE CLASS, so the selector is
+        written to be the thing that cannot drift. Version 1 pinned the clause
+        names anywhere in the SECTION, and deleting a clause from the filter
+        survived because the name was still in the prose bullet above it.
+        Version 2 pinned a BLOCK — by `"run_status" in b and "AND" in b`. There
+        are TWO filter blocks, and only the abstract predicate spells `AND` in
+        uppercase; the `jq` command uses lowercase `and`, so the selector never
+        matched the executable one. Every mutation of the real command survived
+        that pin, including inverting it to `.write_hold_measured == false`,
+        which makes the calibration query select exactly the UNMEASURED passes
+        — the zero-inflation bias this milestone exists to close, in its
+        purest form.
+
+        A fence is a structural property of the artifact, not a token that
+        happens to appear inside it."""
+        blocks = [b for b in self._fenced_blocks()
+                  if b.lstrip().startswith("sh") and "jq" in b]
+        assert len(blocks) == 1, (
+            "expected exactly one ```sh jq calibration command in this "
+            f"section, found {len(blocks)} — the pin has lost its anchor"
+        )
+        return blocks[0]
+
+    def _abstract_filter_block(self) -> str:
+        """The prose-side predicate. Selected by what it IS (a fenced block
+        stating the filter that is not the shell command), so that deleting
+        either block is a failure rather than a silent narrowing to one."""
+        blocks = [b for b in self._fenced_blocks()
+                  if "run_status" in b and "jq" not in b]
+        assert len(blocks) == 1, (
+            "expected exactly one abstract filter predicate block, found "
+            f"{len(blocks)}"
+        )
+        return blocks[0]
+
     def test_the_calibration_filter_is_stated(self):
-        """PINNED AT THE FILTER BLOCK, NOT AT THE SECTION. A first version of
-        this test asserted the three clause names appeared anywhere in the
-        section — and a mutation that deleted `write_hold_measured` from the
-        filter itself SURVIVED, because the name still appeared in the prose
-        bullet above it. The block an operator copies is the artifact under
-        test, so that is what is read."""
-        section = self._section()
-        blocks = [
-            b for b in section.split("```")
-            if "run_status" in b and "AND" in b
-        ]
-        assert blocks, "the filter block is gone"
-        for clause in ("run_status", "batch_count", "write_hold_measured"):
-            assert any(clause in b for b in blocks), (
-                f"the filter block omits {clause}"
-            )
-        assert any("backlog_expiring" in b for b in blocks)
-        # the two false-zero cases the filter exists to exclude are named
-        assert "write_hold_measured == true" in section
+        """PINNED AT THE RUNNABLE BLOCK. Every clause below has been proved to
+        matter by mutation: inverting `write_hold_measured` selects only the
+        passes that measured nothing, and deleting any one of the four clauses
+        silently widens the calibration corpus."""
+        facts = _filter_facts(self._runnable_filter_block())
+        assert facts["filters_on_run_status"], (
+            "the runnable filter no longer filters on run_status — failed, "
+            "refused and skipped passes are back in the calibration corpus"
+        )
+        assert facts["statuses"] == _CALIBRATION_STATUSES, (
+            "the runnable filter's run_status set drifted: "
+            f"{sorted(facts['statuses'])}"
+        )
+        assert facts["requires_batch_count_positive"], (
+            "the runnable filter no longer requires batch_count > 0 — passes "
+            "that committed no batch at all are back in the corpus"
+        )
+        assert facts["requires_write_hold_measured_true"], (
+            "THE ZERO-INFLATION CLAUSE IS GONE OR INVERTED. Without "
+            "`write_hold_measured == true` the query averages passes that "
+            "measured NOTHING into the mean, pulling "
+            "initial_per_token_cost_seconds too aggressive; inverted, it "
+            "selects those passes and nothing else."
+        )
+
+    def test_the_runnable_filter_is_scoped_to_one_writer(self):
+        """The sink is SHARED with the 001A writers (`tick_aggregation`,
+        `backup`) and will be shared with writer B. An unscoped query averages
+        other writers' passes into this writer's per-token cost."""
+        flat = re.sub(r"\s+", " ", self._runnable_filter_block())
+        assert re.search(r'writer_name\s*==\s*"crypto_tape"', flat), (
+            "the runnable filter no longer scopes to writer_name == "
+            '"crypto_tape" — it now averages across every writer in a shared '
+            "file"
+        )
+
+    def test_the_two_filter_blocks_cannot_diverge(self):
+        """THE PIN THAT MAKES THE PIN ABOVE HOLD. Stating the filter twice —
+        once as a predicate an operator reads and once as a command an operator
+        runs — means a pin on either one leaves the other free to drift, and
+        the drift is invisible precisely because both are still present and
+        both still look right. Both are reduced to the same facts and required
+        to agree, so a mutation of either is a failure of this test."""
+        abstract = _filter_facts(self._abstract_filter_block())
+        runnable = _filter_facts(self._runnable_filter_block())
+        assert abstract == runnable, (
+            "the abstract filter predicate and the runnable jq command "
+            f"disagree:\n  predicate: {abstract}\n  command:   {runnable}"
+        )
+
+    def test_the_prose_names_the_case_the_filter_exists_to_exclude(self):
+        # the two false-zero cases the filter exists to separate are named
+        assert "write_hold_measured == true" in self._section()
 
     def test_the_self_contradictory_cli_instruction_is_gone(self):
         """It said "read the fields with `python -m app.cli` — there is no
@@ -1070,47 +1201,125 @@ class TestRunbookIsActionable:
             "consumer, and the deferred-enforcement decision must be revisited"
         )
 
-    def test_a_healthy_pass_would_register_as_a_lock_event_in_that_tally(
+    def test_uncontended_reconciler_passes_contribute_zero_lock_events(
         self, filedb
     ):
-        """THE INTERACTION THAT MUST BE RESOLVED BEFORE THE FLAG IS FLIPPED.
+        """C2 (security re-review). THE REAL `_lock_tally`, FED REAL PASSES.
 
-        `_lock_tally` counts any event with `lock_wait_ms > 0` or
-        `retry_count > 0` as a lock event. That predicate is correct for the
-        two 001A writers. It is NOT correct for a reconciler pass: a healthy,
-        uncontended pass reports a non-zero `lock_wait_ms` from once-per-pass
-        `run_row` and `finalize` bookkeeping samples, which are instrument and
-        not contention — the same distinction the four separate phase fields
-        exist to preserve.
+        A healthy, uncontended reconciler pass reports a non-zero
+        `lock_wait_ms` purely from once-per-pass `run_row` and `finalize`
+        bookkeeping samples — instrument, not contention, which is the exact
+        distinction the four separate phase fields exist to preserve. The flat
+        `lock_wait_ms > 0 or retry_count > 0` predicate re-flattened it, so
+        several uncontended passes crossed the governed `> 6` stop condition
+        on their own. The calibration session is itself ~8 attended `--force`
+        passes, so the deadline for this was that session, not the timer.
 
-        So enabling the reconciler would push `lock_events` past its governed
-        `> 6` stop condition within days while nothing had contended. Nothing
-        moves today (both writers are default-OFF, no timer installed), and the
-        fix belongs to the maintenance script, not here. This test exists so
-        the interaction cannot be silently forgotten, and it is written to FAIL
-        LOUDLY if a later change makes it stop being true."""
-        summary, events = _run(filedb)
-        event = events[0]
-        counted_as_lock_event = (
-            (event.get("lock_wait_ms") or 0) > 0
-            or (event.get("retry_count") or 0) > 0
+        The tally is loaded from the script and driven over the sink file the
+        real writer actually wrote, so nothing here is a re-implementation."""
+        maintenance = _maintenance_module()
+        summary = None
+        for _ in range(8):
+            summary, events = _run(filedb, force=True)
+        path = get_sink().path
+        assert len(events) == 8, "the passes did not all persist a record"
+
+        # The premise: under the OLD predicate every one of these counts.
+        flat_hits = sum(
+            1 for e in events
+            if (e.get("lock_wait_ms") or 0) > 0 or (e.get("retry_count") or 0) > 0
         )
-        assert counted_as_lock_event, (
-            "a healthy pass no longer trips the tally's predicate — re-read "
-            "the runbook's 'BEFORE YOU ENABLE THE RECONCILER' section, the "
-            "hazard it describes may be resolved or may have moved"
+        assert flat_hits > 6, (
+            "these passes no longer trip the flat predicate, so this test is "
+            "no longer proving anything — re-derive the hazard before "
+            "deleting it (measured 8/8 at the time of the fix)"
         )
-        # and the reason it is a FALSE positive: the contention figure is zero
-        assert summary["lock_wait_phases"]["run_row"]["measurements"] >= 1, (
-            "the non-zero wait comes from bookkeeping, not contention"
+        # ...and none of them contended: the batch phase is the only figure
+        # that means contention, and the guard never fired.
+        assert int(summary.get("batch_lock_wait_aborts") or 0) == 0
+        assert int(summary.get("batch_lock_wait_warnings") or 0) == 0
+
+        tally = maintenance._lock_tally(path)
+        assert tally["lock_events"] == 0, (
+            "uncontended reconciler passes are being counted as lock events "
+            f"again: {tally}"
+        )
+        # scoped out, NOT hidden — the ANALYZE record still shows them
+        assert tally["out_of_scope_events"] == 8
+        assert tally["out_of_scope_flat_predicate_hits"] == flat_hits
+        assert "crypto_tape" not in tally["lock_event_scope"]
+
+    def test_a_genuinely_contended_pass_still_counts(self, tmp_path):
+        """The other half: scoping the population must not turn the tally off.
+        A `tick_aggregation` record that really waited on somebody else's write
+        lock is exactly what the `> 6` condition was calibrated on, and it
+        still counts."""
+        maintenance = _maintenance_module()
+        path = tmp_path / "sqlite-writes.jsonl"
+        contended = _valid_event(
+            writer_name="tick_aggregation", writer_class="scheduled_oneshot",
+            operation_name="aggregate_ticks", lock_wait_ms=4200,
+            outcome="retried_success", retry_count=2,
+        )
+        path.write_text(json.dumps(contended) + "\n")
+
+        tally = maintenance._lock_tally(path)
+        assert tally["lock_events"] == 1, (
+            "a real contended 001A operation stopped counting — the scoping "
+            f"has turned the safeguard off rather than fixing it: {tally}"
+        )
+        assert tally["last_lock_event"]["writer_name"] == "tick_aggregation"
+        assert tally["out_of_scope_events"] == 0
+
+    def test_a_contended_reconciler_pass_is_still_visible(self, tmp_path):
+        """Scoped OUT of the governed count is not the same as invisible. A
+        `crypto_tape` pass that genuinely lost the write lock still shows up in
+        the ANALYZE record — it just cannot move a number that was calibrated
+        on a different population."""
+        maintenance = _maintenance_module()
+        path = tmp_path / "sqlite-writes.jsonl"
+        path.write_text(json.dumps(_valid_event(
+            writer_name="crypto_tape", run_status="skipped_contention",
+            outcome="failed_lock", lock_wait_ms=206_284,
+            batch_lock_wait_ms_max=206_284, lock_failures=1,
+        )) + "\n")
+
+        tally = maintenance._lock_tally(path)
+        assert tally["lock_events"] == 0
+        assert tally["out_of_scope_events"] == 1
+        assert tally["out_of_scope_flat_predicate_hits"] == 1, (
+            "a contended reconciler pass has been made invisible rather than "
+            "un-counted"
         )
 
-    def test_the_enable_time_hazard_is_written_down(self):
+    def test_the_tally_scope_is_not_a_raised_threshold(self):
+        """The one fix that was ruled out. Raising `> 6` to accommodate the
+        miscount would have discarded the signal instead of fixing the
+        population it is counted over."""
+        maintenance = _maintenance_module()
+        assert maintenance.LOCK_EVENT_WRITERS == frozenset(
+            {"tick_aggregation", "backup"})
+        script = _MAINTENANCE_SCRIPT.read_text()
+        assert "THE THRESHOLD IS NOT RAISED" in script
+
+    def test_the_enable_time_hazard_and_its_resolution_are_written_down(self):
         section = self._section()
         assert "_lock_tally" in section, (
             "the pre-existing consumer of this file is not named in the runbook"
         )
         assert "BEFORE YOU ENABLE" in section
+        # the resolution, and the timing correction that came with it
+        assert "LOCK_EVENT_WRITERS" in section
+        assert "THE THRESHOLD WAS NOT RAISED." in section.upper()
+        assert "CALIBRATION SESSION, NOT THE TIMER" in section.upper()
+
+    def test_the_growth_section_names_the_second_whole_file_reader(self):
+        """`read_events` is a test helper an operator can decline to run.
+        `_lock_tally` slurps the same way and sits on the ANALYZE maintenance
+        path, so the size check protects a real consumer."""
+        section = self._section()
+        assert "406 MB" in section and "58 MB" in section
+        assert "cumulative and monotonic" in section
 
     def test_the_emit_is_the_last_thing_the_pass_does(self, filedb, monkeypatch):
         """The BEHAVIOURAL half of the correction above, and the reason the
