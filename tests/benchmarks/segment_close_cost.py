@@ -71,15 +71,25 @@ There is NO `if metrics` branch anywhere in the loop: `NULL_METRICS` (CP4)
 implements the identical surface as no-ops precisely so both arms execute the
 same code and the comparison isolates the metrics WORK rather than a branch.
 
-TWO INDEPENDENT ESTIMATORS OF THE SAME QUANTITY
+THREE INDEPENDENT ESTIMATORS OF THE SAME QUANTITY
 
     E1 (direct)      one extra `monotonic_ns()` after the two metric calls,
                      present in EVERY arm, so the clock read cancels. Gives a
-                     per-frame instrumentation-block cost.
-    E2 (throughput)  wall time of the whole timed loop, per event.
+                     per-frame instrumentation-block cost. SHARP, but it sees
+                     only what happens between those two clock reads.
+    E2 (throughput)  wall time of the whole timed loop, per event. Sees
+                     everything, including second-order allocator and GC
+                     effects E1 structurally cannot -- and is also the
+                     estimator a noisy neighbour destroys first.
+    E3 (cpu-time)    `process_time` of the same loop, per event. Counts only
+                     THIS process's threads (producer plus closer, so GIL
+                     contention still lands in it) and therefore keeps E2's
+                     coverage while dropping most of E2's sensitivity to
+                     whatever else the host is running.
 
 They are computed from the same run and reported side by side. Agreement is
-the evidence that neither is an artefact of its own scaffolding.
+the evidence that none is an artefact of its own scaffolding; E1 alone would
+be a measurement of the instrumentation's inside only.
 
 DESIGN AGAINST THERMAL AND PAGE-CACHE DRIFT. Arm order is SHUFFLED inside
 every repetition from a seeded RNG, so no arm systematically runs on a warmer
@@ -355,6 +365,12 @@ def cp5_one_run(*, n: int, arm: str, max_segment_records: int,
             "loop_cpu_s": loop_cpu,
             "ev_per_s": n / loop_wall if loop_wall else None,
             "ns_per_event": 1e9 * loop_wall / n,
+            # CPU time, not wall. On a host running someone else's 100%-CPU
+            # job, wall time per event measures the neighbour as much as it
+            # measures us; `process_time` counts only THIS process's threads
+            # (producer plus closer, so GIL contention still shows). It is
+            # the estimator that survives a contended rig.
+            "cpu_ns_per_event": 1e9 * loop_cpu / n,
             "close_wall_s": close_wall,
             "append_p50_ns": _pct(append_sorted, 0.50),
             "append_p95_ns": _pct(append_sorted, 0.95),
@@ -428,6 +444,64 @@ def path_compare_cost_ns(iterations: int = 200_000) -> dict:
             "p95_ns": _pct(s, 0.95), "mean_ns": sum(samples) / iterations}
 
 
+class _SeamProbe:
+    """Reproduces `collector.py`'s `_metric_frame` wrapper, to price it.
+
+    CP3 and CP4 do not currently agree on the seam. `collector.py:1032-1042`
+    calls `observe_frame(**kwargs)` / `observe_event(name)` inside a
+    `try/except`; `collector_metrics.py` exposes `on_frame(...)` /
+    `on_append(...)` and expects to be called directly (its own docstring
+    shows the orchestrator doing so). Nothing in `app/` bridges the two --
+    `CollectorMetrics` has no caller outside its tests.
+
+    That matters to CP5 because the two shapes do not cost the same. The
+    wrapper builds a keyword dict, pushes an exception handler and adds a
+    Python-level call frame per invocation, and that cost is real
+    instrumentation cost that the direct-call measurement does not contain.
+    Rather than assume it away or silently measure the cheaper shape, it is
+    priced here.
+    """
+
+    def __init__(self) -> None:
+        self.errors = 0
+        self.n = 0
+
+    def observe_frame(self, *, event_type, archived, append_ns, rotations):
+        self.n += 1
+
+    def wrapped(self, **kwargs) -> None:
+        try:
+            self.observe_frame(**kwargs)
+        except Exception:                       # noqa: BLE001
+            self.errors += 1
+
+
+def seam_wrapper_cost_ns(iterations: int = 200_000) -> dict:
+    """Direct call vs `collector.py`'s try/except + `**kwargs` wrapper."""
+    probe = _SeamProbe()
+    mono = time.monotonic_ns
+    direct = [0] * iterations
+    wrapped = [0] * iterations
+    gc.collect()
+    for i in range(iterations):
+        t0 = mono()
+        probe.observe_frame(event_type="orderbook_delta", archived=True,
+                            append_ns=1234, rotations=0)
+        t1 = mono()
+        probe.wrapped(event_type="orderbook_delta", archived=True,
+                      append_ns=1234, rotations=0)
+        t2 = mono()
+        direct[i] = t1 - t0
+        wrapped[i] = t2 - t1
+    d, w = sorted(direct), sorted(wrapped)
+    return {"iterations": iterations,
+            "direct_p50_ns": _pct(d, 0.50), "wrapped_p50_ns": _pct(w, 0.50),
+            "direct_mean_ns": sum(direct) / iterations,
+            "wrapped_mean_ns": sum(wrapped) / iterations,
+            "wrapper_overhead_p50_ns": _pct(w, 0.50) - _pct(d, 0.50),
+            "wrapper_overhead_mean_ns": (sum(wrapped) - sum(direct)) / iterations}
+
+
 def _load_snapshot() -> dict:
     try:
         one, five, fifteen = os.getloadavg()
@@ -444,6 +518,7 @@ def run_cp5(*, n: int, reps: int, max_segment_records: int, seed: int,
     load_before = _load_snapshot()
     clock = clock_pair_cost_ns()
     pathcmp = path_compare_cost_ns()
+    seam = seam_wrapper_cost_ns()
 
     print(f"CP5 instrumentation-overhead gate  "
           f"n={n} reps={reps} max_segment_records={max_segment_records} "
@@ -454,8 +529,19 @@ def run_cp5(*, n: int, reps: int, max_segment_records: int, seed: int,
     print(f"  path!=path : p50={pathcmp['p50_ns']:.0f}ns "
           f"p95={pathcmp['p95_ns']:.0f}ns mean={pathcmp['mean_ns']:.0f}ns "
           f"(charged to BOTH arms; includes one clock pair)")
+    print(f"  seam wrap  : direct p50={seam['direct_p50_ns']:.0f}ns vs "
+          f"try/except+**kwargs p50={seam['wrapped_p50_ns']:.0f}ns "
+          f"(+{seam['wrapper_overhead_p50_ns']:.0f}ns) -- NOT in the arms below")
     print(f"  load before: {load_before}")
     print()
+    if reps <= 0:
+        # Calibration-only run. Useful on its own: these four numbers are the
+        # floor and the units of everything else, and they are cheap.
+        return {"summary": {"calibration_only": True, "clock_pair": clock,
+                            "path_compare": pathcmp, "seam_wrapper": seam,
+                            "load_before": load_before,
+                            "verdict": "CALIBRATION ONLY -- NO GATE VERDICT"},
+                "runs": []}
 
     # Warmup: page cache, import-time laziness, the closer thread's first
     # spawn. Discarded, and stated as discarded.
@@ -498,16 +584,20 @@ def run_cp5(*, n: int, reps: int, max_segment_records: int, seed: int,
     # PAIRED differences, within a repetition. This is the headline estimator:
     # anything that moves a whole repetition -- a background build, a thermal
     # step, page-cache state -- moves all three arms together and cancels.
-    e1_signal, e2_signal, e1_floor, e2_floor = [], [], [], []
+    e1_signal, e2_signal, e3_signal = [], [], []
+    e1_floor, e2_floor, e3_floor = [], [], []
     for rep in range(reps):
         real = by["real"][rep]
         na, nb = by["null_a"][rep], by["null_b"][rep]
         null_instr = (na["instr_p50_ns"] + nb["instr_p50_ns"]) / 2
         null_nsev = (na["ns_per_event"] + nb["ns_per_event"]) / 2
+        null_cpu = (na["cpu_ns_per_event"] + nb["cpu_ns_per_event"]) / 2
         e1_signal.append(real["instr_p50_ns"] - null_instr)
         e2_signal.append(real["ns_per_event"] - null_nsev)
+        e3_signal.append(real["cpu_ns_per_event"] - null_cpu)
         e1_floor.append(nb["instr_p50_ns"] - na["instr_p50_ns"])
         e2_floor.append(nb["ns_per_event"] - na["ns_per_event"])
+        e3_floor.append(nb["cpu_ns_per_event"] - na["cpu_ns_per_event"])
 
     # Denominator: the append cost the overhead is a percentage OF. Taken from
     # the null arms, because dividing by an inflated append would flatter the
@@ -516,17 +606,21 @@ def run_cp5(*, n: int, reps: int, max_segment_records: int, seed: int,
     append_p50_null = sum(r["append_p50_ns"] for r in null_runs) / len(null_runs)
     append_mean_null = sum(r["append_mean_ns"] for r in null_runs) / len(null_runs)
     nsev_null = sum(r["ns_per_event"] for r in null_runs) / len(null_runs)
+    cpu_nsev_null = sum(r["cpu_ns_per_event"] for r in null_runs) / len(null_runs)
 
     e1 = _mean_ci95(e1_signal)
     e2 = _mean_ci95(e2_signal)
+    e3 = _mean_ci95(e3_signal)
     f1 = _mean_ci95([abs(x) for x in e1_floor])
     f2 = _mean_ci95([abs(x) for x in e2_floor])
+    f3 = _mean_ci95([abs(x) for x in e3_floor])
 
     summary = {
         "n": n, "reps": reps, "seed": seed,
         "max_segment_records": max_segment_records,
         "clock_pair": clock,
         "path_compare": pathcmp,
+        "seam_wrapper": seam,
         "load_before": load_before, "load_after": load_after,
         "load_1m_over_runs": sorted(
             r["load"].get("load_1m") for r in runs
@@ -534,12 +628,16 @@ def run_cp5(*, n: int, reps: int, max_segment_records: int, seed: int,
         "append_p50_ns_null": append_p50_null,
         "append_mean_ns_null": append_mean_null,
         "ns_per_event_null": nsev_null,
+        "cpu_ns_per_event_null": cpu_nsev_null,
         "e1_overhead_ns": e1[0], "e1_ci95_ns": e1[1],
         "e2_overhead_ns": e2[0], "e2_ci95_ns": e2[1],
+        "e3_overhead_ns": e3[0], "e3_ci95_ns": e3[1],
         "noise_floor_e1_ns": f1[0], "noise_floor_e1_ci95_ns": f1[1],
         "noise_floor_e2_ns": f2[0], "noise_floor_e2_ci95_ns": f2[1],
+        "noise_floor_e3_ns": f3[0], "noise_floor_e3_ci95_ns": f3[1],
         "e1_pct_of_append_p50": 100.0 * e1[0] / append_p50_null,
         "e2_pct_of_append_p50": 100.0 * e2[0] / append_p50_null,
+        "e3_pct_of_append_p50": 100.0 * e3[0] / append_p50_null,
         "e2_pct_of_producer_step": 100.0 * e2[0] / nsev_null,
     }
 
@@ -573,12 +671,11 @@ def run_cp5(*, n: int, reps: int, max_segment_records: int, seed: int,
                       for a in ("real", "null_a", "null_b")))
     print()
     print("  ESTIMATORS (paired, per repetition)")
-    print(f"    E1 direct     : {e1[0]:+.1f} ns/event  95% CI +/-{e1[1]:.1f}")
-    print(f"    E2 throughput : {e2[0]:+.1f} ns/event  95% CI +/-{e2[1]:.1f}")
-    print(f"    noise floor E1: {f1[0]:.1f} ns  (|null_b - null_a|, "
-          f"95% CI +/-{f1[1]:.1f})")
-    print(f"    noise floor E2: {f2[0]:.1f} ns  (|null_b - null_a|, "
-          f"95% CI +/-{f2[1]:.1f})")
+    for lbl, est, flr in (("E1 direct    ", e1, f1),
+                          ("E2 throughput", e2, f2),
+                          ("E3 cpu-time  ", e3, f3)):
+        print(f"    {lbl} : {est[0]:+10.1f} ns/event  95% CI +/-{est[1]:.1f}"
+              f"   noise floor {flr[0]:.1f} +/-{flr[1]:.1f}")
     print()
     print(f"  DENOMINATOR: append p50 (null arms) = {append_p50_null:.0f} ns; "
           f"append mean = {append_mean_null:.0f} ns; "
@@ -587,8 +684,12 @@ def run_cp5(*, n: int, reps: int, max_segment_records: int, seed: int,
           f"{summary['e1_pct_of_append_p50']:+.2f}%")
     print(f"    E2 as % of append p50      : "
           f"{summary['e2_pct_of_append_p50']:+.2f}%")
+    print(f"    E3 as % of append p50      : "
+          f"{summary['e3_pct_of_append_p50']:+.2f}%")
     print(f"    E2 as % of producer step   : "
           f"{summary['e2_pct_of_producer_step']:+.2f}%")
+    print(f"  CPU per event (null arms)  : {cpu_nsev_null:.0f} ns "
+          f"(vs {nsev_null:.0f} ns wall -- the gap is the contended host)")
     print(f"  load after: {load_after}")
 
     # -- the verdict, computed, not asserted ---------------------------------
@@ -622,9 +723,10 @@ def run_cp5(*, n: int, reps: int, max_segment_records: int, seed: int,
 
     a1 = _assess(e1, f1, "E1 direct")
     a2 = _assess(e2, f2, "E2 throughput")
-    summary["estimators"] = [a1, a2]
+    a3 = _assess(e3, f3, "E3 cpu-time")
+    summary["estimators"] = [a1, a2, a3]
 
-    resolved = [a for a in (a1, a2) if a["resolved"]]
+    resolved = [a for a in (a1, a2, a3) if a["resolved"]]
     if resolved:
         # The binding number is the LARGEST upper bound among the estimators
         # that actually resolved the effect -- the most pessimistic thing the
@@ -635,7 +737,8 @@ def run_cp5(*, n: int, reps: int, max_segment_records: int, seed: int,
         # Nothing resolved. The tightest resolution limit is then the whole
         # result: "the overhead is below X", stated with the floor that makes
         # X mean something.
-        binding = min((a1, a2), key=lambda a: a["upper_bound_pct_of_append_p50"])
+        binding = min((a1, a2, a3),
+                      key=lambda a: a["upper_bound_pct_of_append_p50"])
         basis = f"{binding['label']} (UNRESOLVED -- reported as an upper bound)"
 
     upper_pct = binding["upper_bound_pct_of_append_p50"]
@@ -664,7 +767,7 @@ def run_cp5(*, n: int, reps: int, max_segment_records: int, seed: int,
     summary["verdict"] = verdict
     summary["verdict_reason"] = why
     print()
-    for a in (a1, a2):
+    for a in (a1, a2, a3):
         state = "RESOLVED" if a["resolved"] else "UNRESOLVED"
         print(f"  {a['label']:>14}: {state}  point={a['mean_ns']:+.1f}ns "
               f"resolution limit={a['resolution_limit_ns']:.1f}ns  "
@@ -701,8 +804,12 @@ def main() -> int:
             Path(args.json).write_text(json.dumps(out, indent=2))
             print(f"\nwrote {args.json}")
         # A failed gate is a failed run. It exits non-zero so a wrapper cannot
-        # record "the benchmark ran" as "the benchmark passed".
-        return 0 if out["summary"]["verdict"] == "GATE PASSED" else 1
+        # record "the benchmark ran" as "the benchmark passed". A
+        # calibration-only run asserts nothing and so cannot pass either.
+        verdict = out["summary"]["verdict"]
+        if verdict.startswith("CALIBRATION ONLY"):
+            return 0
+        return 0 if verdict == "GATE PASSED" else 1
 
     modes = ({"true": [True], "false": [False], "both": [False, True]}
              [args.commit_to_head])
