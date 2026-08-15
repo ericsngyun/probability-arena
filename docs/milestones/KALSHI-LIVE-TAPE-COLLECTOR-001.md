@@ -371,7 +371,175 @@ and nothing else in the shared schema changes.
 
 ## 6. Component design
 
-TBD
+### 6.1 Dependency direction
+
+    CLI (app/cli.py: kalshi-collect-once)
+      -> app/realtime/collector.py        [NEW - the session orchestrator]
+           -> app/realtime/ws_transport.py [NEW - the only socket in the package]
+           -> app/realtime/auth.py         [EXISTING - signer, unchanged]
+           -> app/realtime/kalshi.py       [EXISTING - allowlists, frame builders, unchanged]
+           -> app/realtime/book.py         [EXISTING - make_envelope, SubscriptionState, Router]
+           -> app/realtime/archive.py      [EXISTING - EventArchive.append/close, unchanged]
+           -> app/realtime/collector_metrics.py [NEW - measurement, off the critical path]
+
+Strictly downward. Nothing existing imports anything new. `archive.py`, `segment.py`,
+`canonical.py`, `book.py` and `auth.py` are **not modified by this milestone** (one
+exception, stated in 6.6: a single name added to `app/telemetry/schema.py:WRITER_NAMES`).
+That is deliberate: those files carry the reviewed guarantees, and a bridge milestone
+that edits them has already lost the argument that the guarantees are unchanged.
+
+### 6.2 `ws_transport.py` — the only socket
+
+    class KalshiWebsocketTransport(Transport):
+        def __init__(self, *, environment: str, signer: RequestSigner,
+                     open_timeout_s: float, ping_interval_s: float | None,
+                     max_queue: int, read_timeout_s: float) -> None
+        async def connect(self) -> None       # handshake with signed headers
+        async def send(self, message: dict) -> None   # GOVERNED, see below
+        def __aiter__(self)                   # yields parsed dict frames
+
+Contract and invariants:
+
+- **`connect()`** resolves the URL from `WS_HOSTS[environment]`
+  (`app/realtime/kalshi.py:50-56`) — never from a caller-supplied string — and obtains
+  headers from `signer.headers_for(purpose=AuthPurpose.WEBSOCKET_HANDSHAKE)`. There is
+  no `url` parameter. The connect URI and the headers are never logged (the
+  TENNIS-LIVE-FEED-002 precedent, `docs/SAFETY_BOUNDARIES.md:259`: failures reported by
+  exception type name only).
+- **`send()`** is the new structural control described in section 4: `cmd` must be in
+  `("subscribe", "unsubscribe", "update_subscription")`, any `params["channels"]` is
+  re-run through `assert_channels_allowed`, and any other shape raises `CapabilityError`.
+  No `send_text`/`send_bytes` exists. The underlying connection object is private and no
+  collector code touches it.
+- **`__aiter__`** yields *parsed dicts*. A frame that is not JSON, or not a dict, is
+  counted as `malformed_frames` and skipped — it is not an envelope and must never be
+  passed to `make_envelope`, which would archive a nonsense record.
+- **Backpressure is made explicit at the library boundary.** `websockets` buffers
+  incoming frames in an internal queue whose bound is `max_queue`. This is the single
+  most important knob in the whole design and section 8 is about it. **ASSUMPTION TO
+  VERIFY:** that the installed `websockets` version exposes `max_queue` on the client
+  connect API and that exceeding it applies TCP backpressure rather than dropping
+  frames. `docs/KALSHI_DEMO_READONLY_VALIDATION_2026_08.md:213` records `websockets 16.0`
+  as available; the checkpoint that introduces the transport must confirm the parameter's
+  name and semantics against the installed version before anything is built on it.
+
+### 6.3 `collector.py` — the session orchestrator
+
+    @dataclass(frozen=True)
+    class CollectorConfig:
+        environment: str            # "demo" | "production"; production is separately gated
+        archive_root: Path          # MUST already be initialized (read_genesis)
+        market_tickers: tuple[str, ...]   # explicit, never "all markets"
+        channels: tuple[str, ...]         # default ("orderbook_delta", "ticker")
+        max_seconds: int            # HARD CAP. No unbounded session exists.
+        max_events: int             # second independent hard cap
+        max_reconnects: int         # third; exhausting it ends the session cleanly
+        dry_run: bool               # connect + read + measure, NEVER append
+
+    @dataclass(frozen=True)
+    class CollectorResult:
+        status: str                 # ok | capped_time | capped_events | capped_reconnects
+                                    # | refused_* | archive_error | transport_error
+        events_received: int
+        events_archived: int
+        events_rejected: int        # typed archive rejections, never silent
+        frames_malformed: int
+        reconnects: int
+        subscription_generations: int
+        segments_committed: int
+        started_at: str
+        finished_at: str
+        measurement_path: str | None
+        boundary_note: str          # the OBSERVE_ONLY statement, carried in every result
+
+The loop, in order, per frame:
+
+1. `receive_time = utcnow()`, `receive_mono = monotonic_ns()` — captured BEFORE any
+   processing, so `data_age_us` means what `book.py` says it means.
+2. `envelope = make_envelope(...)` — existing code, unchanged.
+3. `router.dispatch(record)` — OPTIONAL, controlled by `--validate-sequence`
+   (default on). A `SubscriptionError` is recorded and triggers recovery (6.4); it does
+   **not** stop the archive append. **Archive first, interpret second**: a frame we could
+   not order is still evidence, and the whole reason the archive stores `raw` verbatim
+   is that a later question must be answerable from the archive.
+   *Ordering decision:* `archive.append()` is called BEFORE `dispatch()`, so a dispatch
+   exception can never cost us the record.
+4. `archive.append(envelope)` — synchronous, blocking, on this thread.
+5. `metrics.observe(...)` — in-memory counters and pre-sized histograms only. No I/O.
+
+Threading: **one producer thread/task per subscription** (5.2 invariant 2). If more than
+one subscription is ever needed, each gets its own `EventArchive`-visible partition and
+its own `SubscriptionState`, never a shared `seq` space.
+
+### 6.4 Reconnect and subscription generations
+
+The existing model is already correct and must be driven, not re-invented:
+
+- On a sequence GAP or REGRESSION, `SubscriptionRouter.dispatch` raises
+  `SubscriptionError` and has already unpublished every book
+  (`book.py:770-772`). The collector then attempts recovery path 1:
+  `build_get_snapshot(cmd_id, sid, market_tickers)` — with the tickers, per the
+  wire-confirmed code-14 error (`kalshi.py:326-331`) — and calls
+  `subscription.begin_recovery()`.
+- On a socket close/error, the collector reconnects and calls
+  `subscription.supersede(market_tickers=...)` (`book.py:696-707`), because the new
+  stream's `seq` numbers are in a different namespace. The new generation number rides
+  into every subsequent envelope so the archive record carries
+  `subscription_generation` (`archive.py:633`) and replay can tell a straggler from a gap.
+- **Reconnect gaps are unmeasured by design in the replay lane** (`cli.py:717-719`:
+  "NOT MEASURED: reconnect/observation gaps. Every percentile above is conditioned on
+  being connected."). The collector closes exactly that gap by recording, in its own
+  measurement stream, `disconnected_at` / `reconnected_at` per reconnect. It does not
+  change the replay lane's disclosure.
+- Reconnect backoff is bounded and jittered, capped by `max_reconnects`. There is no
+  infinite retry loop (the TENNIS-LIVE-FEED-002 precedent: "no reconnect loop and no
+  timer").
+
+### 6.5 Credential wiring — exactly one new call site
+
+    def load_observer_signer(*, environment: str, reported_scopes) -> ReadOnlyRequestSigner
+
+Lives in `collector.py` and is the ONLY code that reads
+`KALSHI_OBSERVER_API_KEY_ID` / `KALSHI_OBSERVER_CREDENTIAL_PATH`. It calls
+`ReadOnlyRequestSigner.from_path` (`auth.py:402`) and nothing else. `reported_scopes`
+has no default in `from_path` and must come from a real `/trade-api/v2/api_keys`
+response via `credential_audit.audit_scopes` (`credential_audit.py:49`) using
+`AuthPurpose.API_KEY_METADATA` — **not** from a config value, because a hard-coded
+`["read"]` would defeat `verify_scopes` entirely.
+
+If either variable is absent, the collector refuses with
+`status="refused_no_credential"` and makes no connection. It never falls back to
+`UnsignedTransportSigner` on a live host — that seam exists for fixtures and replay
+(`kalshi.py:286-292`) and silently degrading to it would open an unauthenticated
+session while reporting success.
+
+### 6.6 The one change to shared code
+
+`app/telemetry/schema.py:66-74` — add `"kalshi_live_tape"` to `WRITER_NAMES`.
+
+That is a one-line change to a closed label set, which is exactly the documented
+registration mechanism. **It is flagged here as an architectural change**: it widens a
+safety-boundary enum that five other writers share. It carries no new field, no new
+enum member elsewhere, and no change to `ALLOWED_FIELDS` or `REQUIRED_FIELDS`.
+
+### 6.7 CLI surface
+
+    python -m app.cli kalshi-collect-once \
+      --environment demo \
+      --archive <root> \
+      --tickers TICKER[,TICKER...] \
+      [--channels orderbook_delta,ticker] \
+      [--max-seconds 300] [--max-events 100000] [--max-reconnects 3] \
+      [--dry-run] [--format text|json]
+
+- `--dry-run` connects, reads, validates sequence, and measures, but performs **zero**
+  archive appends. It is the honest smoke test.
+- No flag enables a scheduled path, because no scheduled path exists (that is 001B).
+  A feature flag `ENABLE_KALSHI_LIVE_TAPE` (default false) gates any FUTURE scheduled
+  entry point only; manual invocation is always allowed, matching the repo's existing
+  pattern (`docs/SAFETY_BOUNDARIES.md:257`, POLY-001).
+- Every result — including refusals — carries the boundary note, matching the TAPE_NOTE
+  pattern in `docs/SAFETY_BOUNDARIES.md:241`.
 
 ## 7. Measurement plan
 
