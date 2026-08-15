@@ -49,7 +49,43 @@ remains a separate, separately-accepted milestone.
 
 ## 3. Scope and non-goals
 
-TBD
+### In scope
+
+- A real websocket `Transport` implementation satisfying `app/realtime/kalshi.py:366`,
+  using the already-vendored `websockets>=12.0` (`requirements.txt:9`; precedent:
+  `app/services/tennis_livefeed.py:135-138`).
+- Credential wiring: the one permitted path from `KALSHI_OBSERVER_API_KEY_ID` /
+  `KALSHI_OBSERVER_CREDENTIAL_PATH` to `ReadOnlyRequestSigner.from_path`
+  (`app/realtime/auth.py:402`) and `headers_for(purpose=WEBSOCKET_HANDSHAKE)`
+  (`app/realtime/auth.py:510`). **Today nothing in `app/` reads those variables at all.**
+- A collector session loop: connect -> handshake -> subscribe -> read -> normalize -> archive,
+  bounded by an explicit `--max-seconds` and an explicit market-ticker list.
+- Reconnect and subscription-generation handling, driving the EXISTING
+  `SubscriptionState.supersede` / `begin_recovery` (`app/realtime/book.py:689-707`).
+- A measurement lane (section 7) that is structurally off the archive's critical path.
+- A `kalshi-collect-once` CLI, default-off flag, dry-run, and NO systemd unit installed
+  by this milestone.
+
+### Non-goals (explicitly deferred)
+
+- **No timer, no daemon, no MarketOps hook, no systemd unit installed.** Per
+  `docs/SAFETY_BOUNDARIES.md:72-74`: "No timer, no service, no daemon and no MarketOps
+  hook exists for the observer, and installing one is a separate approved milestone
+  (KALSHI-REALTIME-OBSERVATION-001B)." This milestone is the collector; scheduling it is
+  001B and stays 001B.
+- **No SQLite writes.** The collector writes to the archive filesystem tree and to the
+  JSONL measurement sink. It opens no database session. This keeps it entirely outside
+  the SQLITE-LOCK-TELEMETRY contention story and the backup-coordination lane.
+- **No book publication into any consumer.** `SubscriptionRouter` may be run in-process to
+  validate sequence integrity, but no book state is exported, persisted to the DB, or
+  read by any forecast/signal/MarketOps path.
+- **No REST reconciliation loop.** `reconcile_with_rest` (`app/realtime/archive.py:1091`)
+  stays a replay-time function.
+- **No rotation-default change in this milestone.** Retuning `DEFAULT_MAX_SEGMENT_*` from
+  the measurement is a follow-up whose input is this milestone's output. Shipping the
+  measurement and the retune together would mean the retune was never validated against
+  an independent number.
+- **Production environment is not the default and is gated separately** (open question Q1).
 
 ## 4. Capability boundary
 
