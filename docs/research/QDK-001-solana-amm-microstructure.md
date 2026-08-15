@@ -586,3 +586,54 @@ point. It currently favours "we stopped observing" over "the tokens died."
 
 ---
 
+## 10. DISCARD list: classical CLOB constructs that do not transfer
+
+This section exists because the failure mode it prevents is specific and
+expensive: importing a CLOB feature library, computing 40 features, finding no
+signal, and concluding the market is efficient — when in fact 30 of the features
+were measuring objects that do not exist.
+
+Each row states what the construct is, **why** it fails here, and what — if
+anything — replaces it.
+
+### 10.1 DISCARD ENTIRELY — the object does not exist
+
+| construct | why it does not transfer | replacement |
+|---|---|---|
+| **Queue position / time priority** | There is no queue. A swap is applied to the pool's state function; there is nothing to be in front of. Within a slot, ordering is set by the leader's scheduler and by fee-based prioritization, not by arrival time at a matching engine. | **Nothing structural.** The nearest analogue is *transaction landing*, which is a §4 uncertainty, not a state variable. |
+| **Queue imbalance** (bid depth vs ask depth at the touch) | Requires two sides with independent depths. A CPMM has **one** state \((x,y)\) that serves both directions; "bid depth" and "ask depth" are not free parameters — they are both determined by the same reserves. Any computed imbalance is an artifact of the computation. | **Nothing.** Depth is symmetric by construction: A1/A2. |
+| **Cancellation rate / order-book flickering** | There are no resting orders, hence no cancellations. "Spoofing" in the CLOB sense is not expressible. | **Nothing.** The nearest economically similar behaviour is **liquidity add/remove** (C7, T3), which is a genuinely different phenomenon: it is capital movement, not intent signalling. |
+| **The microprice** \((p_b q_a + p_a q_b)/(q_a+q_b)\) | Defined as a depth-weighted blend of the two best quotes. With one reserve pair there is one marginal price, and the weights collapse. Computing it returns the mid by construction. | **The marginal price** \(y/x\) is already the correct "fair" price. For an execution-relevant price, use the **quote-derived executable price** (T2, `executable_price_equiv`), which is a genuinely different and better number. |
+| **Bid-ask spread** | There is no spread. The venue quotes one curve; the "spread" a trader experiences is \(2f\) plus the round-trip impact, which §2.5(a) shows is \(\approx 2f\) instantaneously. | **The fee, doubled** — plus the decay asymmetry of §2.5(b), which is where the real cost is and which has no CLOB analogue at all. |
+| **Order-book slope / depth-at-k-levels** | Levels do not exist. | **The curve itself.** Depth at any size is the closed form of §2 — strictly more informative than a level ladder, because it is exact and continuous. |
+| **Effective/realized spread, price improvement** | All defined relative to a quoted spread that does not exist. | **Nothing.** Do not compute these. |
+
+### 10.2 DISCARD AS COMPUTED — the concept survives, the estimator does not
+
+| construct | why the estimator fails | replacement |
+|---|---|---|
+| **Kyle's λ, and every regression-estimated price-impact coefficient** | λ estimates \(\partial p/\partial(\text{signed volume})\) statistically, because in a CLOB impact is not observable ex ante. **Here it is a closed form.** Regressing price changes on volume to recover a coefficient we can compute exactly from \((x,y,f)\) is strictly worse: it adds estimation error to an identity, and it will absorb liquidity-decay effects into what looks like an impact coefficient. | **§2's \(S(\tau,f)\) directly.** The exact identity, evaluated at the pool state. |
+| **Amihud illiquidity** \(|r|/\text{volume}\) | Same objection: a proxy for a quantity we can compute. It is also badly contaminated here — §2.6 shows the reported \(|r|\) is largely *self-generated impact*, so Amihud partly measures the trade-size distribution rather than illiquidity. | **A1/A2 (TVL and implied reserve) and \(\tau\).** These are the actual illiquidity. |
+| **Roll's implied spread from autocovariance** | Assumes bid-ask bounce between two quotes. There is no bounce; consecutive prints walk a deterministic curve. The estimator will return noise, or a negative variance, and mean something different from what it means in a CLOB. | **\(2f\).** It is known exactly. |
+| **Realized volatility from provider mid** | Not wrong so much as *misnamed*: at our pool sizes it predominantly measures the impact footprint of individual swaps (§2.6). | **B3, renamed `price_churn`.** Keep the number, drop the interpretation. |
+| **VPIN / order-flow toxicity as usually computed** | Requires signed volume (Block C, tier **T3**, out of bounds) and volume-bucketing calibrated to a market maker's inventory problem that no AMM LP faces in the same form. See §8. | **LVR-style reasoning** and the AMM-native adverse-selection framing of §8. |
+
+### 10.3 TRANSFERS, BUT ONLY WITH A CHANGED DEFINITION
+
+| construct | what changes |
+|---|---|
+| **Order-flow imbalance (OFI)** | The *concept* — net signed pressure — is exactly right and is arguably the single most valuable feature in the whole schema (C4). What changes is that it must be built from **swap direction against the pool**, not from book updates, and that this requires T3. **We cannot compute it today.** It should not be quietly approximated from unsigned `volume_24h_usd`; an unsigned aggregate carries no directional information whatsoever, and pretending otherwise is fabrication of exactly the kind this repository's absence vocabulary exists to prevent. |
+| **Trade arrival intensity / clustering** | Survives as a concept (§6), but the continuous-time formalism must be re-examined against Solana's discrete slotting before it is adopted. |
+| **Adverse selection** | Survives, but with a different victim and a different mechanism (§8). |
+| **Volume-synchronised time / trade clocks** | Survives, and may be *more* natural here than calendar time given the extreme lifecycle compression of §7 — but requires T3 to construct properly. A crude T0 version can be built from cumulative `volume_24h_usd`. |
+
+### 10.4 The one-line summary
+
+> **Discard everything that presumes a queue. Keep everything that presumes
+> flow. Replace every statistical impact estimator with the closed form, and
+> spend the effort saved on the two things that are genuinely uncertain: which
+> state your transaction lands against (§4), and where the token is in its
+> lifecycle (§7).**
+
+---
+
