@@ -1,0 +1,52 @@
+==========================================================================
+E1 EXPLORATORY ADDENDUM — NOT PREREGISTERED, GRADUATES NOTHING
+==========================================================================
+
+--------------------------------------------------------------------------
+DISAGREEMENT d = logit(p) - logit(q), and the raw gap p - q
+--------------------------------------------------------------------------
+TRAIN    n= 6471  mean d=+0.0995  sd d=1.0286
+         |d| median 0.4177  p75 0.8955  p90 1.6067  p99 3.8642
+         |p-q| median 0.0716  mean 0.1004  max 0.9300
+         share |p-q| > 0.05 : 0.619   > 0.10 : 0.374
+HOLDOUT  n= 3814  mean d=+0.0674  sd d=0.9622
+         |d| median 0.4075  p75 0.8138  p90 1.4838  p99 3.5778
+         |p-q| median 0.0700  mean 0.0969  max 0.6750
+         share |p-q| > 0.05 : 0.619   > 0.10 : 0.367
+corr(z_q, d) TRAIN = -0.7281
+
+--------------------------------------------------------------------------
+EVENT OVERLAP ACROSS THE CHRONOLOGICAL SPLIT
+--------------------------------------------------------------------------
+events in both splits            14 of 537 holdout
+holdout rows in a shared event   65 (1.704% of holdout)
+train rows in a shared event     28
+
+--------------------------------------------------------------------------
+STRUCTURE OF d — is it information, or a recoding of q?  (TRAIN)
+--------------------------------------------------------------------------
+mean |logit q| = 1.3388    mean |logit p| = 0.9298
+OLS  d   ~ a + b*z_q :  a=-0.0944  b=-0.4319
+OLS  z_p ~ a + b*z_q :  a=-0.0944  b=+0.5681   R^2=0.6612
+share of forecasts on the same side of 0.5 as the market: 0.8761
+b < 1 means p is a SHRUNK copy of q: two thirds of the variance of
+our forecast is explained by the price it is supposed to beat, and
+most of d is mechanical attenuation toward 0.5 rather than a view.
+
+--------------------------------------------------------------------------
+EXPLORATORY ALTERNATIVE — OFFSET MODEL (market pinned at raw price)
+      logit P(Y=1) = logit(q) + beta_d * d      [1 free parameter]
+--------------------------------------------------------------------------
+beta_d (offset, TRAIN) = +0.06856   event-clustered boot 95% CI [-0.06298, +0.19035]   includes 0
+
+model                                           Brier   log loss
+(a) market alone  q                          0.179173   0.528599
+(o) offset  logit(q) + b_d*d                 0.179033   0.528355
+
+paired  (o) offset - (a) market alone   [NEGATIVE favours offset]
+    brier    -0.000140   95% CI [-0.000404, +0.000127]   includes 0
+    logloss  -0.000244   95% CI [-0.000974, +0.000492]   includes 0
+
+==========================================================================
+EXPLORATORY. Does not alter the preregistered E1 verdict.
+==========================================================================

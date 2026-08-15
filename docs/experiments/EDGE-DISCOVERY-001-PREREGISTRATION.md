@@ -257,3 +257,36 @@ all six horizons as preregistered — the correction is **not** narrowed to the
 well-covered horizons, since narrowing it after seeing coverage would inflate
 the family-wise error rate. Coverage is a property of the tick-bucket record,
 not of the forecasts, so it is non-differential with respect to `d`.
+
+### D-3 — E1 additions, logged pre-report (2026-08-15)
+
+The E1 test in §2 was run **exactly as written** — same model, same TRAIN-only
+fit, same single HOLDOUT evaluation, same PASS criterion, event-clustered CIs.
+Nothing below altered it. Logged anyway, before the numbers were reported.
+
+1. **Market-only model added as a decomposition control.** §2 specifies only
+   the two-term model and the three scored predictors. A third TRAIN fit,
+   `α + β_q·z_q`, is reported alongside them so that "two-term beats raw `q`"
+   can be split into a **market-recalibration** effect (`α + β_q·z_q` vs raw
+   `q`) and an **agent-information** effect (two-term vs `α + β_q·z_q`).
+   Without it, a win driven purely by `β_q ≠ 1` would be misread as a finding
+   about the forecaster when it is a finding about the market. This is an
+   addition to the reported quantities, not a change to the PASS criterion.
+
+2. **CI machinery.** §1 permits either machinery; the **cluster bootstrap**
+   (2,000 event resamples for coefficients with refit, 10,000 for the paired
+   holdout differences) is the headline, with a **CR1 cluster-robust sandwich**
+   reported beside the train coefficients as an independent cross-check. The
+   two agree closely.
+
+3. **One exploratory alternative, clearly quarantined.** An offset model
+   `logit(q) + β_d·d` (market pinned at its raw price, one free parameter) is
+   reported in `docs/evidence/qdk-001/e1_exploratory_addendum.py` and labelled
+   **exploratory, not preregistered**. It exists because it is the most
+   favourable honest test of the agent — it cannot be penalised by base-rate
+   drift or by a failed recalibration of `q`. It graduates nothing and did not
+   inform the verdict. It is also null.
+
+4. **Interpreter.** The repo `.venv` has no `numpy`; the analysis was run on
+   `/usr/local/bin/python3` (numpy 2.1.3). No package was installed. Scripts
+   are numpy-only and stdlib-CSV based; no statistical library was relied on.
