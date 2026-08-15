@@ -915,11 +915,110 @@ batching artifact to self-excitation and report a large branching ratio.
 > **Any claimed self-excitation on Solana swap data must first be shown to
 > exceed what the batching alone produces.** The correct null is not a
 > homogeneous Poisson process in continuous time; it is a **batched** Poisson
-> process on the slot lattice. We are not aware of published work establishing
-> that comparison for Solana, and §12 records that as an unfilled gap rather
-> than as a claim.
+> process on the slot lattice.
 
-### 6.5 The mitigating fact — for most of our tokens, arrivals are sparse
+**This concern is not speculative — the identification failure it describes has
+been demonstrated in print.** Filimonov & Sornette (arXiv:1308.6756,
+*Quantitative Finance* 15(8)) show, VERIFIED from the fetched abstract, that
+
+> "the calibration of the Hawkes process on mixtures of pure Poisson process
+> with changes of regime leads to completely spurious apparent critical values
+> for the branching ratio (n~1) while the true value is actually n=0."
+
+They add that regime shifts "systematically lead to a significant upward bias in
+the estimation of the branching ratio," and — directly on point for us — they
+flag "**grouping of messages to packets by the stock exchange**" as a
+timestamp-quality hazard.
+
+> **Read those two sentences against a memecoin tape.** A memecoin's life *is* a
+> sequence of regime changes: launch burst → decay → pump → rug (§7.2's S0–S5).
+> A process with **zero** self-excitation but changing regimes calibrates to a
+> near-critical Hawkes. **So the single most likely outcome of fitting a Hawkes
+> model to memecoin swap flow is a large, stable, entirely spurious branching
+> ratio** — and Solana slots are precisely the message-grouping hazard they
+> name, industrialised.
+
+For calibration on how much confidence any branching ratio deserves: Hardiman,
+Bercot & Bouchaud (arXiv:1302.1405) report near-critical \(n \approx 1\) for
+E-mini futures; Filimonov & Sornette explicitly reject that conclusion.
+**The field does not agree on the branching ratio of the most-studied futures
+contract in the world.** That is the right prior for what one estimated on a
+two-hour-old memecoin would mean.
+
+### 6.5 The empirical evidence, such as it is — and it points the wrong way
+
+Two verified findings, both discovered after the structural argument above was
+written, and both of which strengthen it.
+
+**(a) The one study of AMM swap inter-arrival times found same-side arrivals
+approximately EXPONENTIAL.** Jaimungal, Saporito, Souza & Thamsten
+(arXiv:2304.02180) — note the abstract does not mention Hawkes at all; this is
+from §2.2 of the body, "Cross-exciting nature of swap flow", VERIFIED by
+fetching the HTML:
+
+> "buy swaps tend to arrive more rapidly after sell swaps than after buy swaps
+> suggesting the cross-exciting nature of swap arrivals" … "The inter-arrival
+> times for buy-buy and sell-sell swaps are approximately exponentially
+> distributed, while the inter-arrival times for buy-sell and sell-buy swaps
+> exhibit heavier tails."
+
+Reported intensities: buy→buy 0.037, sell→buy 0.070, buy→sell 0.085, sell→sell
+0.034.
+
+> **This is close to the opposite of the equity-LOB stylised fact that motivates
+> Hawkes modelling in the first place.** Same-side arrivals look Poisson — *no
+> self-excitation*. What excitation exists is **cross**-side, and the authors
+> attribute it to arbitrage rebalancing rather than to informed clustering.
+> One paper, one Ethereum pool, so treat it as a hypothesis rather than a
+> settled result — **but it is the only direct evidence that exists, and it
+> points against the model.**
+
+**(b) Eight state-of-the-art temporal point-process models could not predict
+on-chain AMM event timing usably.** Jia, You, Luo, Liu & Sun (arXiv:2604.20374),
+8.9M on-chain events across Uniswap V3, Aave, Morpho and Pendle, Jan 2024–Sep
+2025. VERIFIED from the fetched body:
+
+- They measure time in **block heights**, not wall-clock, because that
+  "guarantees proper order of executions and evades anomalies of wall-clock
+  time."
+- **Uniswap V3's median inter-event interval is 1 block.** The modal observation
+  is therefore a **tie** — the timestamp carries almost no within-block
+  information, which is §6.2's objection appearing in real data.
+- Concurrency was severe enough that they abandoned per-type modelling and
+  represented "each unique co-occurrence as a single categorical label, yielding
+  31 distinct event-type combinations."
+- Benchmarking NHP, RMTPP, SAHP, THP, AttNHP, IntensityFree, FullyNN and
+  ODETPP, standard training "produces large block height errors… severely limits
+  usability."
+
+> **That is on Ethereum, at 12-second blocks. Solana's 400 ms slots make the tie
+> problem worse relative to typical memecoin inter-arrival times, not better.**
+
+**(c) The estimation theory agrees that binning breaks the standard estimator.**
+Shlomovich, Cohen, Adams & Patel (arXiv:2001.07160, published in *JCGS*) state
+existing methods are "capable of producing severely biased and highly variable
+parameter estimates" on binned data; the multivariate follow-up
+(arXiv:2108.12357, *Statistics and Computing*) is explicitly motivated by
+"synchronous events due to data aggregation or rounding" and shows "competing
+methodologies produce substantially biased results." Chen, Kwan & Stindl
+(arXiv:2401.11075) treat discretisation as an incomplete-data problem requiring
+a particle filter to recover an unbiased likelihood.
+
+**A verified negative that is itself a finding.** A targeted search found **no
+published Hawkes fit to DEX or AMM swap arrivals, none to Solana, pump.fun or
+memecoin trade arrivals, no marked/multivariate Hawkes carrying
+liquidity-add/liquidity-remove marks on an AMM, and no paper analysing whether
+Solana's slot batching breaks point-process estimation.** The entire
+Hawkes-in-crypto literature sits on *centralised exchange* tick data (Fabre &
+Muni Toke, arXiv:2401.09361; Mark, Sila & Weber) or on *block* arrivals
+(Luo, Krishnamurthy & Blasch, arXiv:2203.16666 — Bitcoin PoW block arrivals,
+which do **not** transfer to Solana's deterministic leader schedule).
+
+> **Anyone fitting a Hawkes model to Solana swap flow is not standing on a
+> literature. They are first, with all that implies** — and §6.4 says the first
+> result they get is likely to be a spurious near-critical branching ratio.
+
+### 6.6 The mitigating fact — for most of our tokens, arrivals are sparse
 
 The above is the case against. Here is the case that it may not bind, and it
 comes from our own numbers.
@@ -951,9 +1050,11 @@ wanted Hawkes in the first place:
 > local rate is high.** A token averaging one swap per minute may fire twenty
 > swaps in four seconds during a burst. The average rate says the lattice is
 > fine; the *conditional* rate during the events of interest says it is not.
-> **§6.3's objection therefore survives §6.5 intact.**
+> **§6.3's objection therefore survives §6.6 intact**, and §6.5(a)'s finding
+> that same-side AMM arrivals look exponential removes much of the motivation
+> for reaching for a self-exciting model at all.
 
-### 6.6 Recommendation
+### 6.7 Recommendation
 
 1. **Do not adopt continuous-time Hawkes as the default formalism for Solana
    swap flow.** It is the right instinct and the wrong clock.
@@ -968,7 +1069,13 @@ wanted Hawkes in the first place:
    a real trade-off to be made deliberately, not by default.
 4. **Whatever is fitted, benchmark it against a batched-Poisson null** (§6.4),
    not against a continuous-time Poisson null.
-5. **Recognise that none of this is estimable by us today.** Every input —
+5. **Add a second, harder null: a REGIME-SWITCHING Poisson process.** This is
+   the direct lesson of Filimonov & Sornette (§6.4) and it is not optional here,
+   because memecoin lifecycles are regime changes by definition. A branching
+   ratio that does not survive comparison against a regime-switching Poisson
+   null is not evidence of self-excitation — it is evidence of §7's lifecycle,
+   which we already know about and can measure far more cheaply.
+6. **Recognise that none of this is estimable by us today.** Every input —
    direction-typed swap counts (C3), signed flow (C4), sizes (C5), liquidity
    events (C7) — sits at tier **T3**, outside our declared capability boundary
    (§5.0). **This section is therefore a design conclusion, not a research
