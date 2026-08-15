@@ -12,11 +12,13 @@ on branch `SOLANA-ROUTE-OBSERVATION-001-scope` @ `f894e82`, which is based on th
 stale `8790a25` and **must not be merged** — its diff deletes work that has since
 landed. This document supersedes it; only the doc content was carried forward.
 
-**EVO-X2 was not contacted for this document.** The host is now reachable and
-the sparse observation lane is live, but this agent made no measurement on it.
-Every number below is either read out of this repository (cited by file and
-line) or explicitly labelled **PENDING MEASUREMENT** with the exact query that
-would settle it (§14). Nothing is asserted as measured that was not.
+**This agent never contacted EVO-X2.** The host is reachable and the sparse
+observation lane is live, but every EVO number in this document was **supplied
+to** this agent, not gathered by it, and is recorded in §14.1 with its date,
+cohort and sample size so it can be judged as supplied evidence. Everything else
+is either read out of this repository (cited by file and line) or explicitly
+labelled **PENDING MEASUREMENT** with the exact query that would settle it
+(§14.2). Nothing is asserted as measured that was not.
 
 ---
 
@@ -44,8 +46,9 @@ Eric, 2026-08-14 (item B4):
 
 Two conditions in that instruction are **gates on starting, not decoration**:
 "once 6h mechanics are demonstrably healthy" and "24h jobs are being scheduled
-correctly". Neither was verified by this agent. They are CP-0 entry conditions
-(§9) and are PENDING MEASUREMENT (§14, M1/M2).
+correctly". This agent verified neither itself. **Both were subsequently
+measured on EVO and both PASS** — the evidence, its date and its sample size are
+in §14.1, and the gates are re-confirmed at CP-0 rather than inherited (§9).
 
 ### 0.2 What the scope doc got right and this document keeps
 
@@ -64,7 +67,7 @@ sparse lane's exact-token identity gate, and the refusal to re-inflate
 | **Q4 — paper simulation is forbidden, so route observation has no permitted consumer.** | **ANSWERED, conditionally.** The same amendment permits `PAPER_SIMULATION`: **modeled** fills and **modeled** P&L only, each artifact carrying an explicit model identifier and a modeled-vs-observed basis. MVP-005B still governs whether such a lane is BUILT. This milestone still builds **no** fill (§11). |
 | The whole design assumed **no** quote endpoint: route composition was a *proxy* from the DexScreener pool inventory, and price impact was a *declared model* over provider TVL. | With `READ_ONLY_ROUTE_QUOTE` permitted, route composition, output amount, price impact and fee become **OBSERVED from the quote response** rather than modeled. The proxy design is demoted to a fallback (§8.4) used only if quoting turns out to be unavailable or not free. |
 | Data model centred on `est_impact_bps_at_notional_*` — a modeled number. | The primary record is now an **observed quote record** (§5). Modeled impact columns are not the point of this milestone and are deferred. |
-| "EVO-X2 was not contacted; the host is unreachable pending a Tailscale re-auth." | EVO is reachable and the sparse observation lane is **live**. This agent still made no measurement; the open items are now PENDING MEASUREMENT with named queries (§14) rather than unreachable. |
+| "EVO-X2 was not contacted; the host is unreachable pending a Tailscale re-auth." | EVO is reachable and the sparse observation lane is **live and prospectively activated** (2026-08-15). This agent still contacted nothing; measurements were **supplied** and are recorded as such in §14.1. Three of the first draft's pending items are now settled — both entry gates and, decisively, the liquidity distribution, which **overturned the notional ladder's anchor** (§4.2). |
 | Scope doc **Q3** — is a notional-parameterized probe acceptable? | **Resolved by the acceptance.** Eric's instruction says "Capture for fixed predeclared paper notionals". §4 is the preregistration that discharges it. |
 | Scope doc **Q6** — a bounded paid SolanaTracker exception for slippage validation. | **Refused by the amendment**, not merely deprioritized: neither mode may use a paid trade/orderflow feed or SolanaTracker. It is no longer an open question; it would require a further amendment. |
 
@@ -217,7 +220,7 @@ each of those is still a parameter whose only function is to bind the quote to
 an executing account. If a venue *requires* such a parameter to return a quote,
 then under this boundary **that venue cannot be quoted**, and the correct output
 is the typed non-observation `quote_requires_account_binding` — not a workaround.
-Whether the candidate endpoint requires it is PENDING MEASUREMENT (§14, M4).
+Whether the candidate endpoint requires it is PENDING MEASUREMENT (§14.2, M4).
 
 **From F9 — "no quote" is an acceptable answer.** If the only reachable quote
 endpoint requires a key or a paid tier, the milestone terminates at CP-0 with
@@ -252,8 +255,10 @@ Eric's instruction: *"Use fixed notionals declared BEFORE evaluating results. Do
 not optimize notionals after seeing favorable execution."*
 
 This section discharges that instruction. **It is declared before any quote has
-been requested, because none has: no provider call has been made for this
-milestone by anyone.**
+been requested, because none has: no quote request has been made for this
+milestone by anyone.** (The sparse observation lane's own DexScreener calls are
+a different lane and a different capability; no route-quote endpoint has been
+contacted.)
 
 ### 4.1 The ladder — V2, re-anchored on the measured distribution
 
@@ -404,7 +409,7 @@ would quietly become "fixed predeclared *token* amounts of varying value". A
 stablecoin denomination makes each rung an integer constant that cannot move.
 
 - The mint address and its decimal count are **PENDING VERIFICATION** at CP-0
-  from a free public source (§14, M5). Nothing in this repository records them,
+  from a free public source (§14.2, M5). Nothing in this repository records them,
   so this document does not assert them.
 - Once verified, the four integers are computed **once**, written into the
   ladder record, and enter the ladder digest (§4.5). They are never recomputed
@@ -632,7 +637,7 @@ Therefore:
   payloads at 27% of the production database with zero readers; re-inflating
   them here is the mistake this repository has just finished undoing. The digest
   (§6) is what preserves integrity, and it is 32 bytes.
-- The exact current DB headroom is **PENDING MEASUREMENT** (§14, M3); the cap
+- The exact current DB headroom is **PENDING MEASUREMENT** (§14.2, M3); the cap
   must be set from that number, not from this document's arithmetic.
 
 ---
@@ -724,6 +729,13 @@ These mirror the sparse lane's proven pattern
 because a chain-correct, well-formed response *about a different token* would
 otherwise parse, score, and persist cleanly — a wrong number being worse than a
 missing one for a lane whose only product is honest evidence.
+
+**This is not a hypothetical.** Measured on the live sparse lane (§14.1): **3 of
+42 observations (7%) had the provider return foreign-base pairs**, filtered
+before selection, and **0 rows** show a tick whose `token_address` differs from
+its observation's. Roughly one response in fourteen would have carried another
+token's price without the gate. A quote endpoint has no more reason than
+DexScreener to be trusted on identity, so the same gate applies here.
 
 ### 7.1 Identity — a quote for token T must concern token T
 
@@ -874,10 +886,14 @@ confirmation · **3** dual confirmation.
 
 ### CP-0 — Entry gates and endpoint reconnaissance. **NO PRODUCTION CODE.** (Tier 2)
 
-Two entry gates from Eric's own instruction, neither verified by this document:
+Two entry gates from Eric's own instruction. **Both were subsequently measured
+and both PASS** (§14.1) — they are retained here because CP-0 must re-confirm
+them at the moment it runs, not inherit a reading from an earlier day:
 
-- **G1** — 6h sparse-lane mechanics demonstrably healthy (§14, M1).
-- **G2** — 24h jobs being scheduled correctly (§14, M2).
+- **G1** — 6h sparse-lane mechanics demonstrably healthy. **MET** as measured
+  2026-08-15: 18/18 exact-identity in-window observations, two clean passes.
+- **G2** — 24h jobs being scheduled correctly. **MET**: 182/182 members
+  reachable at 24h, 0 transient.
 
 Then, by **hand-invoked, single-token, hard-capped, local** requests — not on
 EVO, not scheduled, not behind any flag, nothing persisted to the production
@@ -890,8 +906,8 @@ database:
    min/threshold output, price impact, per-hop fee, route, pools, split, context
    slot? Each answer is a committed fixture, not a claim in prose.
 3. The published rate limit, and whether it is compatible with the per-pass cap.
-4. The declared entry mint's address and decimals (§14, M5).
-5. Current DB headroom against the 3,072 MiB gate (§14, M3).
+4. The declared entry mint's address and decimals (§14.2, M5).
+5. Current DB headroom against the 3,072 MiB gate (§14.2, M3).
 
 **Deliverable:** committed fixtures plus a findings section appended to this
 document. **Gate:** any of 1–3 failing terminates the milestone as a successful
@@ -981,7 +997,7 @@ is Tier 3 rather than Tier 2. Then a report emitting exactly one verdict:
 | **R3 — HIGH** | **Silent decimal truncation under a valid digest.** Already observed in this repository on ordinary venue JSON (KALSHI-ARCHIVE-REPLAY-INTEGRITY-001). Base-unit amounts are exactly the shape that triggers it. | Reuse `app/realtime/canonical.py`; no float in the parse path or the digest preimage; an explicit CP-2 test on a value that truncates under `float`. |
 | **R4 — MED** | **The ladder drifts.** Rungs get "tuned" once results are in, and the preregistration silently becomes a narrative. | `ladder_digest` on every row; SC-6; the report prints the digest next to the verdict; multi-digest windows are reported invalid rather than reconciled; the one amendment window closes at the first quote (§4.5). |
 | **R5 — MED** | **Cherry-picking moves up a level** — the notionals are frozen but the token population is not. | §4.4 preregisters the population, the deterministic order, and the cap; truncation is typed. |
-| **R6 — MED** | **Database growth** on a database already past its 3,072 MiB gate: 8 rows per observation is a real multiplier. | Small declared per-pass cap; no raw body persisted; bounded route column with a typed `route_too_large`; cap set from the measured headroom (§14, M3), not from this document's arithmetic. |
+| **R6 — MED** | **Database growth** on a database already past its 3,072 MiB gate: 8 rows per observation is a real multiplier. | Small declared per-pass cap; no raw body persisted; bounded route column with a typed `route_too_large`; cap set from the measured headroom (§14.2, M3), not from this document's arithmetic. |
 | **R7 — MED** | **Rate limiting or an unannounced free-tier change** turns most of the window into failures. | Failures are first-class rows (§5.1), so the window still produces a measurement — of quote availability, which is a legitimate answer to the milestone's question. Cap sized against the published limit at CP-0. |
 | **R8 — MED** | **The endpoint requires an account binding**, and someone supplies a "harmless" placeholder address to get it working. | §3.3 forbids all four variants by name; the typed outcome `quote_requires_account_binding` exists precisely so the honest path is the easy path; CP-5 boundary reviewer checks `request_params` in the digest preimage. |
 | **R9 — MED** | **Token-2022 transfer fees / hooks silently invalidate every quote** (§8.1, 5d). | Recorded as an absence on **every** row, permanently, rather than omitted. An unknown recorded on every row is honest; an unknown omitted is not. It also bounds the strongest verdict this milestone can reach. |
@@ -1118,20 +1134,35 @@ Consequences for this plan, stated so nobody discovers them at CP-2:
 Ordered by how much they block. The scope doc's Q1, Q3, Q4 and Q6 are **closed**
 (§0.3) and are not repeated.
 
-**Q-A — TIER 2, and it blocks CP-0.** *Do you consider G1 and G2 met?* Your
-instruction conditioned the start on "6h mechanics demonstrably healthy" and
-"24h jobs being scheduled correctly". This agent did not contact EVO and
-therefore cannot assert either. §14 M1/M2 name the exact checks. **I will not
-self-certify your entry gates.**
+**Q-A — ANSWERED, no longer blocking.** *Do you consider G1 and G2 met?* Both
+were measured on EVO after the first draft and both **PASS** (§14.1): 18/18
+exact-identity in-window 6h observations across two clean passes, and 182/182
+members reachable at 24h. I did not self-certify them and still have not — the
+evidence was supplied, and it is recorded with its date, cohort and sample size
+rather than absorbed as an assumption. **The only thing left for you here is to
+confirm you read the same numbers as clearing your own gate.**
 
-**Q-B — TIER 2, and it blocks CP-1 (the ladder freeze).** *Do you accept the
-ladder $25 / $100 / $500 / $2,000, denominated in stablecoin base units?* The
-justification (§4.2) rests on two constants already in this repository —
-`crypto_min_liquidity_usd = 5000.0` and the $1,000,000 quality-score saturation
-point — and **not** on a measured liquidity distribution, because measuring one
-would have required contacting EVO. If you want the rungs anchored on the
-observed distribution instead, that measurement (§14, M6) must happen before
-CP-1, since after the first quote the ladder is frozen absolutely.
+**Q-B — TIER 2, and it blocks CP-1 (the ladder freeze). REVISED.** *Do you
+accept ladder **V2**, $10 / $50 / $150 / $500, denominated in stablecoin base
+units?* The first draft proposed V1 ($25 / $100 / $500 / $2,000) anchored on two
+repository constants. The measured distribution (§4.2) shows both anchors were
+in the wrong place: 62% of the real population sits below the $5,000 floor, the
+median pool is $2,860, and the deepest observed pool is 6x below the $1,000,000
+saturation point. V1's top rung was **70% of the median pool and 126% of the
+thinnest** — a block trade, not a quote. V2 puts the discriminating rung at ~5%
+of the measured median and keeps every rung under ~31% of even the thinnest
+observed pool.
+
+Two things about V2 you should weigh before approving:
+
+- The sample is **n=42 from ~3 hours**, and it is a distribution of *observed*
+  pools, not of all births — a bias that most likely runs **upward**, i.e. the
+  true population may be thinner still, which would argue for these rungs or
+  smaller, never larger (§4.2.1).
+- **The single amendment window is now spent** (§4.5.1). V2 is the last version
+  that can be chosen on non-quote grounds. Waiting for a larger sample delays
+  every downstream checkpoint and does not remove the observed-pools bias, which
+  is structural rather than a sample-size problem.
 
 **Q-C — TIER 2, request-budget and interpretation.** *One entry mint, or two?*
 The design declares a single stablecoin entry mint so each rung is an exact
@@ -1171,27 +1202,63 @@ shortcut.
 
 ---
 
-## 14. Pending measurements and assumptions — nothing below is established
+## 14. Measurements — settled, and still pending
 
-Collected in one place so none of it is mistaken for a finding. **This agent
-made no measurement on EVO-X2 and no provider call of any kind.** Each item
-names the check that would settle it; each is a request to Eric or to the CP-0
-implementer, not a claim.
+Three items that were pending in the first draft are now **MEASURED and
+settled**; the rest remain open. **This agent still made no measurement on
+EVO-X2 and no provider call of any kind** — the measurements in §14.1 were
+supplied to it, and are recorded here as supplied evidence with their date and
+scope, not as something it verified itself.
+
+### 14.1 SETTLED — the entry gates and the liquidity distribution
+
+**M1 — 6h sparse-lane mechanics healthy (Eric's gate G1): PASS.** Measured on
+EVO at `2a5f701`. Sparse observation activated prospectively
+2026-08-15T01:48:36Z; rolling cohort **8** created once at 02:47:01Z; two
+natural passes (02:47, 03:47), both `status=ok`, `stop_reason=complete`. Of 18
+provider attempts, **18 exact token matches and 18 in-window observations** — 0
+identity mismatches, 0 empty responses, 0 provider failures, 0
+`no_liquidity_state`, 0 duplicates. `solana_tracker_calls=0` on every pass.
+End-to-end effect across the two reconciler runs bracketing the 02:47 pass:
+`survived_6h` 37→48, `survived_24h` 4→9, `provider_gap` 758→709.
+
+**M2 — 24h jobs scheduling correctly (gate G2): PASS.** 24 observations already
+recorded; **182 of 182 members reachable at 24h**; 0 transient.
+
+**M6 — the liquidity distribution of the quoted population: MEASURED.** Cohort
+8, n=42, `liquidity_usd` at observation. The full percentile table is in §4.2,
+where it re-anchored the ladder. Headline: **median $2,860, 62% below the
+$5,000 floor V1 was anchored on, maximum $167,041 — 6x below the $1,000,000
+saturation point V1 used as its deep-end anchor.**
+
+**A fourth result worth recording, because it settles a design argument rather
+than a gate.** The exact-token identity gate was verified live in SQL: **0 rows
+where a tick's `token_address` differs from its observation's**, and **3 of 42
+observations (7%) had the provider return foreign-base pairs that were filtered
+before selection.** The identity gate in §7.1 is therefore not a defensive
+hypothesis — it fires on roughly one response in fourteen, and without it those
+three observations would have carried another token's price. That rate is the
+strongest single argument in this document for applying the same gate to quote
+endpoints.
+
+### 14.2 STILL PENDING — nothing below is established
+
+Each item names the check that would settle it; each is a request to Eric or to
+the CP-0 implementer, not a claim.
 
 | id | item | status | how to settle it |
 |---|---|---|---|
-| **M1** | 6h sparse-lane mechanics are healthy (Eric's gate G1) | **PENDING MEASUREMENT** | on EVO: recent sparse-pass results — statuses, per-pass `external_calls`, the 6h observed/miss split, and zero provider-policy violations |
-| **M2** | 24h jobs are being scheduled correctly (gate G2) | **PENDING MEASUREMENT** | on EVO: 24h member-horizons planned vs bands opened vs observed; that no band closed unobserved for a schedulable reason |
-| **M3** | Current database size and headroom against the 3,072 MiB gate | **PENDING MEASUREMENT** | on EVO: DB size now and the recent daily growth rate; the per-pass cap (§5.7) is set from this, not from this document |
-| **M4** | Whether the candidate free public quote endpoint requires a key or an account/user parameter | **UNVERIFIED — no call was made** | CP-0 item 1. If it does, the milestone terminates with `quote_unobtainable_free` (§3.3) |
+| **M3** | Current database size and headroom against the 3,072 MiB gate | **PENDING MEASUREMENT** | on EVO: DB size now and the recent daily growth rate; the per-pass cap (§5.7) is set from this, not from this document's arithmetic |
+| **M4** | Whether the candidate free public quote endpoint requires a key or an account/user parameter | **UNVERIFIED — no quote request has been made** | CP-0 item 1. If it does, the milestone terminates with `quote_unobtainable_free` (§3.3) |
 | **M5** | The declared entry mint's address and decimal count | **UNVERIFIED — not recorded anywhere in this repository** | CP-0 item 4, from a free public source. The ladder integers (§4.3) cannot be computed until this is settled |
-| **M6** | The liquidity distribution of the population the sparse lane is actually observing | **PENDING MEASUREMENT** | on EVO: the distribution of observed pool liquidity across sparse-lane observations. Needed only if Q-B says the ladder should be anchored on observed data instead of the repo's own constants |
 | **M7** | Which of the §5.3 fields the quote response actually carries | **UNVERIFIED** | CP-0 item 2, as committed fixtures |
 | **M8** | The endpoint's published rate limit, and its compatibility with the per-pass cap | **UNVERIFIED. No figure is quoted anywhere in this document** | CP-0 item 3 |
 | **M9** | Whether any free source exposes token-2022 transfer-fee / transfer-hook state | **UNVERIFIED** | CP-0, as a one-line check against a provider already integrated. If not, the absence is recorded on **every** row, permanently, and it bounds the strongest verdict CP-7 can reach |
 | **M10** | Solana base fee, priority fee, associated-token-account rent | **NOT VERIFIED, AND DELIBERATELY NOT QUOTED.** Fetching a priority fee is forbidden (§3.2 F6) | out of scope; recorded so its absence is not mistaken for an oversight |
+| **M11** | Whether the n=42 liquidity distribution holds as the cohort grows | **OPEN BY CONSTRUCTION** | it will be re-measured at CP-7, but §4.2.1 pre-commits that a mismatch is **reported as a limitation, not used to retune the ladder** |
 
-**No pricing figure, no rate limit, no latency, no row count, and no liquidity
-statistic appears as a measured value anywhere in this document.** Where a
-number appears, it is either a repository constant with a file-and-line citation
-or a declared design choice.
+**No quote endpoint figure — no pricing, no rate limit, no latency — appears as
+a measured value anywhere in this document.** The only measured numbers here are
+the EVO sparse-lane results in §14.1, recorded with their date, cohort, and
+sample size. Every other number is a repository constant with a file-and-line
+citation or a declared design choice.
