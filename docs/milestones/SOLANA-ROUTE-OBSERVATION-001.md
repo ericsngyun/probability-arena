@@ -1009,3 +1009,88 @@ Consequences for this plan, stated so nobody discovers them at CP-2:
   treat a suspiciously-euphemistic module name as evidence of exactly that.
 - Its validation includes proving the ban still bites: a deliberately-added
   second use outside the exempted file must still fail the audit.
+
+---
+
+## 13. Open questions for Eric
+
+Ordered by how much they block. The scope doc's Q1, Q3, Q4 and Q6 are **closed**
+(§0.3) and are not repeated.
+
+**Q-A — TIER 2, and it blocks CP-0.** *Do you consider G1 and G2 met?* Your
+instruction conditioned the start on "6h mechanics demonstrably healthy" and
+"24h jobs being scheduled correctly". This agent did not contact EVO and
+therefore cannot assert either. §14 M1/M2 name the exact checks. **I will not
+self-certify your entry gates.**
+
+**Q-B — TIER 2, and it blocks CP-1 (the ladder freeze).** *Do you accept the
+ladder $25 / $100 / $500 / $2,000, denominated in stablecoin base units?* The
+justification (§4.2) rests on two constants already in this repository —
+`crypto_min_liquidity_usd = 5000.0` and the $1,000,000 quality-score saturation
+point — and **not** on a measured liquidity distribution, because measuring one
+would have required contacting EVO. If you want the rungs anchored on the
+observed distribution instead, that measurement (§14, M6) must happen before
+CP-1, since after the first quote the ladder is frozen absolutely.
+
+**Q-C — TIER 2, request-budget and interpretation.** *One entry mint, or two?*
+The design declares a single stablecoin entry mint so each rung is an exact
+integer that cannot drift with the SOL price (§4.3). The cost: many memecoin
+routes are SOL-quoted, so a stablecoin-in route may carry an extra hop that a
+real entry would not. That bias is **conservative** (an extra hop can only cost
+more) and is visible in `route_hops`. Adding a parallel SOL-denominated ladder
+would remove the bias but **doubles the request count** and reintroduces
+price-driven notional drift. My recommendation is one mint plus the recorded hop
+count; the call is yours.
+
+**Q-D — TIER 2, verifiability vs growth.** *Evaluate SC-1 live, or persist a
+per-pass ledger?* §10.2 states the tradeoff. Live evaluation costs no schema and
+makes SC-1 unverifiable after the fact; persisting costs a second table on a
+database already past its growth gate. I lean live, and I want the weakening
+recorded as a limitation of the result rather than waved off.
+
+**Q-E — TIER 3, and it blocks CP-2.** *Do you authorize GATE-FU2, the narrow AST
+safety-audit unban?* It weakens an automated control that today protects every
+file in `app/`. It is dual-confirmation by design. Without it, the correct state
+of the repository is a failing safety audit, and the implementation cannot land.
+
+**Q-F — TIER 2, scope discipline.** *If CP-0 finds no free unauthenticated quote
+endpoint, do we stop at `quote_unobtainable_free` (my recommendation), or open
+the fallback proxy milestone (§8.4)?* CP-0 is designed so stopping is a clean,
+unembarrassing outcome. I want the fallback to be a **separately named**
+milestone if it happens, so a proxy result is never later read as this
+milestone's success.
+
+**Q-G — TIER 2, sequencing.** *Should the CP-7 activation window overlap the
+first 24h sparse observations maturing, or follow them?* Your instruction says
+"begin this milestone immediately while the first 24h observations mature",
+which I read as authorizing the design and build to proceed in parallel — not as
+authorizing the live window to open before CP-0..CP-6 pass. Confirming that
+reading matters, because it is the difference between parallel work and a
+shortcut.
+
+---
+
+## 14. Pending measurements and assumptions — nothing below is established
+
+Collected in one place so none of it is mistaken for a finding. **This agent
+made no measurement on EVO-X2 and no provider call of any kind.** Each item
+names the check that would settle it; each is a request to Eric or to the CP-0
+implementer, not a claim.
+
+| id | item | status | how to settle it |
+|---|---|---|---|
+| **M1** | 6h sparse-lane mechanics are healthy (Eric's gate G1) | **PENDING MEASUREMENT** | on EVO: recent sparse-pass results — statuses, per-pass `external_calls`, the 6h observed/miss split, and zero provider-policy violations |
+| **M2** | 24h jobs are being scheduled correctly (gate G2) | **PENDING MEASUREMENT** | on EVO: 24h member-horizons planned vs bands opened vs observed; that no band closed unobserved for a schedulable reason |
+| **M3** | Current database size and headroom against the 3,072 MiB gate | **PENDING MEASUREMENT** | on EVO: DB size now and the recent daily growth rate; the per-pass cap (§5.7) is set from this, not from this document |
+| **M4** | Whether the candidate free public quote endpoint requires a key or an account/user parameter | **UNVERIFIED — no call was made** | CP-0 item 1. If it does, the milestone terminates with `quote_unobtainable_free` (§3.3) |
+| **M5** | The declared entry mint's address and decimal count | **UNVERIFIED — not recorded anywhere in this repository** | CP-0 item 4, from a free public source. The ladder integers (§4.3) cannot be computed until this is settled |
+| **M6** | The liquidity distribution of the population the sparse lane is actually observing | **PENDING MEASUREMENT** | on EVO: the distribution of observed pool liquidity across sparse-lane observations. Needed only if Q-B says the ladder should be anchored on observed data instead of the repo's own constants |
+| **M7** | Which of the §5.3 fields the quote response actually carries | **UNVERIFIED** | CP-0 item 2, as committed fixtures |
+| **M8** | The endpoint's published rate limit, and its compatibility with the per-pass cap | **UNVERIFIED. No figure is quoted anywhere in this document** | CP-0 item 3 |
+| **M9** | Whether any free source exposes token-2022 transfer-fee / transfer-hook state | **UNVERIFIED** | CP-0, as a one-line check against a provider already integrated. If not, the absence is recorded on **every** row, permanently, and it bounds the strongest verdict CP-7 can reach |
+| **M10** | Solana base fee, priority fee, associated-token-account rent | **NOT VERIFIED, AND DELIBERATELY NOT QUOTED.** Fetching a priority fee is forbidden (§3.2 F6) | out of scope; recorded so its absence is not mistaken for an oversight |
+
+**No pricing figure, no rate limit, no latency, no row count, and no liquidity
+statistic appears as a measured value anywhere in this document.** Where a
+number appears, it is either a repository constant with a file-and-line citation
+or a declared design choice.
