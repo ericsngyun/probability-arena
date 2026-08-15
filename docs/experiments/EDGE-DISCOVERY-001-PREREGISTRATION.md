@@ -224,3 +224,36 @@ Any departure from this document must be recorded here, with reason and
 timestamp, **before** the affected result is reported. An unlogged deviation
 invalidates the affected experiment — the EDGE-SELECTION retirement was itself
 an unlogged deviation and that is not repeated here.
+
+### D-1 — split counts differ from the planning figures (2026-08-15, pre-results)
+
+§1 states TRAIN n = 6,685 / HOLDOUT n = 3,600. The frozen extract gives
+**TRAIN 6,471 / HOLDOUT 3,814**. Total (10,285), event count (1,482) and the
+split *rule* (`created_at < 2026-08-02`) are unchanged.
+
+Cause: the planning script (`shape.py`) derived the date from an index
+percentile over a float array; the extractor applies the literal date rule to
+tuple-keyed buckets, which matches marginally differently at bucket boundaries.
+**The preregistered object is the RULE, not the descriptive counts** — the rule
+was applied exactly as written and was not re-chosen after seeing anything. No
+outcome column was read at either step. Logged rather than silently corrected.
+
+### D-2 — E2 horizon coverage is uneven, and two horizons are near-unusable
+
+Measured on the frozen extract, before any E2 statistic was computed:
+
+| horizon | rows with `q_{t+h}` | coverage |
+|---|---|---|
+| 5m  | 3,934 | 38.2% |
+| 15m | 9,083 | **88.3%** |
+| 30m | 8,183 | **79.6%** |
+| 1h  | 6,285 | 61.1% |
+| 3h  |   641 | 6.2% |
+| 6h  |   292 | 2.8% |
+
+Consequence: the 3h and 6h horizons are **underpowered by construction** and
+will be reported as such rather than as null results. The Holm family remains
+all six horizons as preregistered — the correction is **not** narrowed to the
+well-covered horizons, since narrowing it after seeing coverage would inflate
+the family-wise error rate. Coverage is a property of the tick-bucket record,
+not of the forecasts, so it is non-differential with respect to `d`.
