@@ -1597,3 +1597,114 @@ The binding constraint is therefore **not sample size**. It is:
 
 ---
 
+## 12. Bibliography, with verification status
+
+**Verification convention for this section.** A source is **VERIFIED** only if
+its primary artifact was fetched and the claim attributed to it was read in it.
+Anything short of that bar is labelled, and where a widely repeated claim failed
+verification it is recorded in §12.4 rather than quietly dropped.
+
+### 12.1 Protocol and program sources — VERIFIED
+
+| # | source | URL | what it establishes here |
+|---|---|---|---|
+| P1 | `UniswapV2Library.sol` (`getAmountOut` / `getAmountIn`) | https://github.com/Uniswap/v2-periphery/blob/master/contracts/libraries/UniswapV2Library.sol | The fee-on-input convention of §2.1. `getAmountIn` rounds **up** (`+1`); the exact-input path does not. |
+| P2 | Uniswap v2 Core whitepaper (Adams, Zinsmeister, Robinson, 2020) | https://app.uniswap.org/whitepaper.pdf | 30 bps LP fee; the optional 5 bps protocol fee, initially off. |
+| P3 | Raydium constant-product reference | https://docs.raydium.io/algorithms/constant-product.md | Raydium implements §2.1's exact form, with explicit rounding rules and a `k_after >= k_before` post-condition. |
+| P4 | Raydium fee comparison | https://docs.raydium.io/reference/fee-comparison.md | §3.6's fee table, **and the x/10,000 vs x/1,000,000 encoding trap.** |
+| P5 | Meteora DLMM formulas | https://docs.meteora.ag/core-products/dlmm/formulas.md | §3.5: discrete bins \(P_i=(1+s/10^4)^i\), **constant-sum within a bin**, volatility-scaled dynamic fee. |
+| P6 | Orca Whirlpools spec | https://docs.orca.so/llms.txt | Fee tiers by tick spacing (0.01%–2.00%); 87/12/1 fee split; Q64.64 sqrt-price. |
+| P7 | pump.fun program README | https://github.com/pump-fun/pump-public-docs/blob/main/docs/PUMP_PROGRAM_README.md | §3.1 curve constants; "based on Uniswap V2 … synthetic x and y reserves"; completion at `real_token_reserves == 0`. |
+| P8 | pump.fun fee program README | https://github.com/pump-fun/pump-public-docs/blob/main/docs/FEE_PROGRAM_README.md | §3.4: **the mcap-tiered fee schedule, and that 1% is only the `feeConfig == null` fallback.** |
+| P9 | PumpSwap README | https://github.com/pump-fun/pump-public-docs/blob/main/docs/PUMP_SWAP_README.md | §3.4: migration to PumpSwap, LP burn, disabled legacy `withdraw`-to-Raydium path. |
+| P10 | Agave `validator.rs` | https://github.com/anza-xyz/agave/blob/master/core/src/validator.rs | §4.1: `CentralSchedulerGreedy` is the default; prio-graph `CentralScheduler` is **deprecated**. |
+| P11 | Agave `greedy_scheduler.rs` | https://github.com/anza-xyz/agave/blob/master/core/src/banking_stage/transaction_scheduler/greedy_scheduler.rs | §4.1: priority-order greedy scheduling under `ThreadAwareAccountLocks`. |
+| P12 | Solana SDK `clock/src/lib.rs` | https://github.com/anza-xyz/solana-sdk/blob/master/clock/src/lib.rs | §4.2: **400 ms slot as a compile-time assert**, 4 consecutive leader slots, forward-at-2, hold-20. |
+| P13 | Jito low-latency transaction send docs | https://docs.jito.wtf/lowlatencytxnsend/ | §4.3: 5-transaction atomic bundles, **50 ms parallel auctions**, tip/CU-efficiency ordering, 1,000-lamport minimum tip. |
+| P14 | Jupiter slippage docs | https://developers.jup.ag/docs/swap/advanced/slippage.md | §4.4: RTSE estimates **at order time, baked into the transaction**; Router default `slippageBps=50`; `otherAmountThreshold`. |
+| P15 | Raydium swap user flow | https://docs.raydium.io/user-flows/swap.md | §4.4: `minimumAmountOut` formula, `ExceededSlippage` revert, the "2–5%" meme-token UI default. |
+| P16 | SIMD-0191 (Activated) | https://github.com/solana-foundation/solana-improvement-documents/blob/main/proposals/0191-enable-transaction-loading-failure-fees.md | §4.4: **failed transactions are included in the block and still incur fees.** |
+| P17 | Solana fees documentation | https://solana.com/docs/core/fees | §4.4: 5,000 lamports/signature base fee; the priority-fee formula. |
+| P18 | Solana Alpenglow page | https://solana.com/upgrades/alpenglow | §4.2: ~150 ms finality target, Q3 2026 mainnet target, two prerequisites activated. **No slot-duration change stated.** |
+
+### 12.2 Measurement literature — VERIFIED
+
+| # | source | URL | what it establishes here |
+|---|---|---|---|
+| M1 | Gerzon, Weintraub, In, Mislove, Nita-Rotaru, *"Quantifying the Threat of Sandwiching MEV on Jito: A Measurement of Solana's Leading Validator Client"*, **ACM IMC '25** | DOI [10.1145/3730567.3764493](https://doi.org/10.1145/3730567.3764493) · PDF https://cnitarot.github.io/papers/imc26_solana.pdf | §4.3 in full: 521,903 sandwich instances costing >$7.7M (2025-02-09→2025-06-09); >$2.4M spent on defensive bundling; >86% of bundles single-transaction; 97% of top-500 validators Jito-compatible; Jito's mempool opened Aug 2022 and was suspended Mar 2024 without reducing activity. **The authors state their figures are lower bounds** (length-3 bundles only, ~2.77% of daily bundles, SOL-denominated trades only). |
+
+### 12.3 Repository sources — the basis of every measured number here
+
+| # | source | what it supplies |
+|---|---|---|
+| R1 | `docs/milestones/SOLANA-ROUTE-OBSERVATION-001.md` §4.2, §14.1 | The cohort-8 observation-time liquidity distribution (n=42) and the birth-time distribution (n=170); M12's 4.75× decay; M13's 41.4% enrolment ceiling; M14's zero death count; M15's single-window caveat. **These were supplied measurements — that document explicitly records that its author made no EVO measurement and no provider call, and neither did this one.** |
+| R2 | `docs/milestones/SOLANA-ROUTE-OBSERVATION-001.md` §3.2, §5.3–§5.5, §8.1 | The typed-absence vocabulary reused in §5.1; the observable/unobservable split; the F9 per-trade-feed prohibition that defines tier T3. |
+| R3 | `app/services/crypto_sparse_observation.py` | `SPARSE_HORIZONS`; enrolment eligibility; the 15m/1h/6h/24h coverage figures and the ~83-minute median last tick quoted in §7.4. |
+| R4 | `app/models.py` | `CryptoPriceTick`, `CryptoTokenBirthEvent`, `CryptoHorizonObservation`, `CryptoTokenLifecycleSnapshot`, `CryptoTokenActorObservation`, `CryptoTokenSurvivalOutcome` — the columns Blocks A–F map onto. |
+| R5 | `app/services/crypto_risk_engine.py` | The §8.3 thresholds: `max_top_holder_pct` 20.0, `max_sniper_pct` 20.0, `max_insider_pct` 15.0, `max_bundler_pct` 25.0, `min_liquidity_usd` 5000.0. |
+
+### 12.4 CITATIONS THAT DID NOT CHECK OUT — do not repeat these
+
+Included because the brief asked for it explicitly, and because several of these
+are near-universal in secondary sources.
+
+| claim | status | what is true instead |
+|---|---|---|
+| **pump.fun "graduates at ~$69,000 market cap"** | **FAILED VERIFICATION** — appears in no primary artifact we could locate | A SOL-price-dependent restatement of the 85 SOL constant, implying a SOL price that has not held for some time. **The invariant is 85.00536 SOL** (§3.2), token-denominated and exact. |
+| **pump.fun trading fee is 1%** | **STALE** | 1% is `global.feeBasisPoints`, used **only** when the `FeeConfig` PDA is absent. Current bonding-curve total is **1.25%** (§3.4). |
+| **PumpSwap launched March 2025** | **DATE UNVERIFIED** (substance verified) | That PumpSwap replaced Raydium as the migration destination is VERIFIED (P9). The date is not. |
+| **Raydium CPMM has 4 fee tiers up to 4%; CLMM has 8 tiers including 2%; split is 84/12/4** | **CONTRADICTED** by Raydium's current docs (P4) | CPMM: 3 tiers, max 1%. CLMM: 4 tiers, max 1%. Split 88% LP / 12% protocol. Widely circulated but stale. |
+| **Solana transaction ordering is deterministic FIFO** | **FALSE** (P10, P11) | Priority-ordered greedy scheduling with account-lock-aware deferral. Realized order depends on contention, not on arrival. |
+| **Solana's priority score is fee-per-compute-unit; prio-graph look-ahead is N=256** | **UNVERIFIED** — the authoritative Anza write-up was unreachable from this environment | Read `transaction_priority_id.rs` before asserting either. Note also that the prio-graph scheduler is now the **deprecated** path. |
+| **"No public mempool, therefore no sandwiching on Solana"** | **FALSE**, and measured to be false (M1) | Sandwiching proceeds via private orderflow into Jito bundles; the attacker never needs a mempool because the victim's transaction is routed to them. |
+| **Alpenglow will change slot duration** | **NOT STATED** by the primary source (P18) | It targets ~150 ms *finality*. Secondary sources give contradicting mainnet dates; treat anything beyond "not on mainnet as of 2026-08-14" as unverified. |
+| **Orca's tick price base is \(1.0001^i\)** | **UNVERIFIED** — Orca's own concepts page omits the formula | Read `programs/whirlpool/src/math/tick_math.rs` before asserting it. |
+| **pump.fun `MAX_MIGRATE_FEES`** | **INTERNALLY INCONSISTENT IN THE PRIMARY SOURCE** — the README states `pool_migration_fee` is 15,000,001, "less than `MAX_MIGRATE_FEES == 15_000_000`", which is arithmetically false | Read the IDL before building on either number. This is an error in pump.fun's own documentation, recorded so the next reader does not spend time on it. |
+
+### 12.5 A gap this document did not close
+
+**Academic literature on AMM microstructure, LVR, and point-process models of
+DEX flow was not verified to this document's standard, and is therefore not
+cited as support anywhere above.** Specifically:
+
+- §8.1 names **loss-versus-rebalancing (LVR)** as the AMM-native adverse-selection
+  concept. The term is used there as **background framing, not as a supported
+  citation** — no paper was fetched and read to confirm the attribution. Anyone
+  building on §8 should verify it directly. *(The commonly given attribution is
+  Milionis, Moallemi, Roughgarden and Zhang; **that attribution is unverified
+  here and should not be repeated on this document's authority.**)*
+- §6 states that no published work establishes a **batched-Poisson null** for
+  Solana swap arrivals. That is a statement about what we did not find, **not a
+  verified claim that no such work exists**, and should be read as an invitation
+  to look rather than as a settled negative.
+- No empirical pump.fun survival or graduation-rate study is cited, because none
+  was verified. **Every base rate in §7 and §9 comes from our own production
+  data** — the right source for our purposes, but a single 25-hour window (M15)
+  that should not be generalised.
+
+> **The gap is recorded rather than papered over, and it is worth being precise
+> about what it costs.** None of the load-bearing conclusions here depend on the
+> unverified literature: §2 and §3 are derivations from verified protocol
+> constants, §7 and §9 are arithmetic over our own measurements, and §4's
+> execution claims rest on the verified primary sources in §12.1–§12.2. **The
+> literature would add context and priors; it would not change a number.**
+
+---
+
+## Closing note on scope
+
+This document is research. It contains no production code, defines no executable
+path, and authorises nothing. Every capability it touches — bonding-curve
+progress observation (§9.5), denser sampling (§11.3), any per-swap feed (§5.0
+tier T3) — is named as requiring its own scoped, approved milestone, and none is
+assumed.
+
+The hard boundary of `AGENTS.md` and `docs/SAFETY_BOUNDARIES.md` applies
+throughout: market and liquidity **observation** only. Nothing here is EV, a
+side, a size, an order, a recommendation, or a trade direction. The notional
+figures in §2, §3 and §9 are properties of a **measurement instrument** — probe
+sizes chosen to match the depth of the thing being measured, in the same sense
+as `SOLANA-ROUTE-OBSERVATION-001` §4.2 — and are explicitly not position sizes,
+not sizing recommendations, and not derived from any signal, conviction, or
+capital base.
+
