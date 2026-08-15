@@ -1375,8 +1375,156 @@ Two rules on this schema:
 
 ## 8. Where the handed premise is wrong
 
-*(to be filled)*
+The central thesis — *naive `edge = p − q` then Kelly-size is insufficient* — **survives
+fully**, and is better supported than the brief knew (Examples 4 and 5 are published
+counterexamples; Raven-Agent measured edge-proportional sizing at −55.5%). The following are
+corrections to the surrounding scaffolding, ordered by how much they change the design.
+
+**1. Proper betting is an allocator, not a sizing rule — so it is not Kelly's competitor.**
+**s**_G is defined only up to positive rescaling (Theorem 13). The theory fixes direction and
+relative weights; total exposure is exogenous. The brief's candidate list puts
+"proper-scoring-rule betting" and "full/fractional/conservative Kelly" in one flat set, but
+they occupy different axes and compose. The bake-off must be a grid — allocator × scale × gate
+— not a list. (§3.4, §4.2)
+
+**2. The decomposition does not explain how an accurate forecaster loses money.** The brief
+presents `Profit = ScoreGap + D_G − L_ρ` as the mechanism of loss. It is the opposite: under
+proper betting D_G ≥ 0 always, so a positive score gap yields positive profit unless L_ρ
+swamps both terms. The losses in the brief's framing come from *other strategies* (Kelly,
+max-margin) via separate counterexamples. Building architecture on the misread would lead us
+to look for the loss in the wrong term. (§1.1)
+
+**3. "Raw margin" and "Brier proper betting" are the same allocator in binary markets.**
+**s**_Brier = 2(p − q). Two of the brief's competing candidates are one candidate. The real
+contrast is Log-vs-linear weighting and multi-outcome events. (§4.2)
+
+**4. The forecast-object citation does not support forecasts-as-distributions.** BLF computes
+a posterior variance and discards it; its output is a scalar. Inter-trial spread is small
+(0.27 logits median) and was a measured no-op in 791/791 folds — it captures prompt
+sensitivity, not epistemic uncertainty. The brief's most attractive sizing rule, conservative
+Kelly on a belief quantile, therefore has **no validated source of spread**. It is not a
+detail to be filled in; it is a prerequisite research task. (§5.3)
+
+**5. The update equation handed to us is the cited paper's rejected branch.** Not the shipped
+method, and it uses one global tempering coefficient rather than per-source w_i. Adopting it
+is still defensible — on determinism grounds, which the paper did not weigh — but that must be
+a deliberate choice against a measured 3.5-point Brier penalty. (§5.1)
+
+**6. The conditional-calibration table as specified is mis-designed.** It lists "market price"
+and "price region" as separate conditioning variables (they are one), and it proposes binning
+price where the cited paper deliberately uses a continuous 2-parameter logistic per cell —
+which is precisely why 200 observations can suffice. (§6.3)
+
+**7. The conditional-calibration effect is one domain, not a general phenomenon.** By model-free
+ECE, only Politics is meaningfully miscalibrated; every other domain's reliability component
+rounds to 0.000–0.001. Roughly 46% of the slope variance is structural signal and a permutation
+null already reaches R² = 0.329. The framing "market calibration is conditional" is true but
+oversells a single-domain, possibly single-election-cycle result. (§6.2)
+
+**8. Our own repo cannot fit that table, and sample size is the third-ranked reason.** The
+binding constraints are (i) our lanes are sports, the domain the paper finds already
+calibrated, and (ii) `MarketForecastRecord` records no contemporaneous market price, so ΔS is
+not computable at all today. **We currently cannot measure whether we have an edge, by any
+definition.** (§6.4)
+
+**9. Coherence "arbitrage" is mostly not tradable, and the brief under-weights how mostly.**
+Break-even ε = edge/(edge + basket cost) means a 2¢ arb dies at a **2%** chance the legs fail
+to offset. The at-the-money taker fee hurdle alone is 3.5¢ for two legs and 6.3¢ for ten.
+Cross-venue semantic equivalence cannot clear this bar at realistic edge sizes; it should be
+marked do-not-build, not deferred. (§7.5)
+
+**10. The biggest omission: the premise assumes we have an edge to transform.** Every track is
+about *converting* forecasting skill into P&L. But the best published agentic forecaster beats
+market prices by +2.3 BI **non-significantly**; every other system is at or below the market;
+six frontier LLMs trading Kalshi with real money all lost 16–31%. If ΔS ≈ 0, then
+profit ≈ D − L_ρ, and Corollary 15 shows those cancel exactly in the idealized case. **The
+decision mathematics is not the binding constraint. The existence of an edge is.** (§5.6)
+
+**11. A methodological caution, not a correction.** The brief supplied three arXiv IDs with
+confident paraphrases. All three papers exist and two of the three paraphrases were materially
+wrong in ways that would have propagated into design: the update equation was the rejected
+branch, and every calibration figure was v1 of a paper whose v2 changed all of them. The brief
+was right to ask for verification. **This should be the standing rule, not a one-off**: a
+citation is not usable until someone has read the equation.
+
+---
 
 ## 9. Open questions and recommended sequencing
 
-*(to be filled)*
+### 9.1 The one-paragraph summary
+
+Proper betting (∇G(**p**) − ∇G(**q**)) is the correct, and provably unique, way to turn a
+forecasting edge into a position — but it is an **allocator**, it needs a separate **scale**
+rule (fractional Kelly as a ceiling, conservative Kelly once spreads are calibrated), it needs
+a **gate** (Corollary 19's abstain band, free from the theory), and it converts a *negative*
+edge into a loss just as faithfully. Meanwhile the evidence that we — or anyone — has a
+positive edge against Kalshi prices is absent. **The recommended posture is: build the
+measurement apparatus first, prove ΔS > 0 on paper second, and only then argue about
+allocators.**
+
+### 9.2 Sequencing
+
+**Phase 0 — make edge measurable (blocking everything else).**
+1. Add `market_price_at_forecast` (plus bid/ask/spread/quote-age) to `MarketForecastRecord`.
+   Nothing in Tracks 1–5 is measurable without it. Cheapest high-value change in this document.
+2. Segment the historical corpus by `forecaster_name` / `calibration_tags` and quantify how
+   many of the 17,073 forecasts are midpoint-anchored (p ≡ q). Any historical Brier computed
+   over those rows measures the market, not us.
+3. Land the **live tape writer** on the Probability lane. It gates coherence checking (§7.3),
+   L_ρ measurement, and the backfill of q.
+
+**Phase 1 — measure ΔS, cheaply, before any trading machinery.**
+4. Compute empirical ΔS = mean[S(p,y) − S(q,y)] per domain, with **event-clustered** standard
+   errors, under Corollary 17. This is far lower-variance than P&L (§4.6) and answers the only
+   question that matters.
+5. Pre-register via `PROSPECTIVE-EXPERIMENT-REGISTRY-002A`, with an out-of-time split as a hard
+   gate. Note that 002B and floor-enforcement at evaluation are prerequisites, not follow-ups.
+6. **If ΔS ≤ 0 everywhere, stop.** That is a legitimate and valuable outcome, and it is what
+   the external evidence predicts.
+
+**Phase 2 — the cheapest candidate strategy, which needs no forecaster.**
+7. Fit the global 2-parameter recalibration p\* = σ(â + b̂ · logit q) and test **trading the
+   recalibration itself**, prospectively and out-of-time (§6.6). It requires no LLM, no research
+   pipeline, and is falsifiable. It is also a **competitor** to our forecasting stack: if we do
+   not beat a free price transform, we should trade the transform.
+
+**Phase 3 — the bake-off, paired, on one shared forecast stream.**
+8. Grid: allocator × scale × gate, with `C-abstain` as a real arm and Corollary 19's band as a
+   floor under all arms. Start on **Log**, not Brier (§3.3). Cap α ≤ 0.25 on any Kelly arm
+   (§4.1). Selection gate before sizing function (§5.6).
+9. Promotion requires **ΔS > 0 and net P&L > 0**, never P&L alone (Example 6).
+
+**Phase 4 — coherence, narrowest first.**
+10. Intra-venue complement pairs only. Measure how often the 3.5¢ fee hurdle is cleared on
+    executable prices. **If it never is, stop there** — that result is worth having.
+11. Threshold ladders, then partitions. Cross-venue equivalence: do not build.
+
+### 9.3 Open questions this document could not close
+
+- **What fraction of the 17,073 forecasts are midpoint-anchored?** Not answerable from source;
+  needs a database query. It determines whether we have any edge history at all.
+- **What is our effective N** — the count of *distinct resolved events*, not records? The
+  ~50× SE inflation from event clustering makes this the real sample size.
+- **What is L_ρ on Kalshi at our size?** Every offline result in the prophets paper assumes
+  L_ρ = 0, and Corollary 15 says D_G and L_ρ cancel exactly in the idealized case. Unmeasured,
+  and it is the whole backtest-to-live gap.
+- **How do we calibrate a belief *spread*?** Blocks conservative Kelly. Inter-trial variance is
+  demonstrably not it.
+- **What is L_max**, the logit clip on the Log allocator? A real parameter, currently unchosen.
+- **Does the Politics calibration effect survive out-of-time?** The paper has no time split at
+  all, and its window is dominated by one election cycle.
+- **Confirm the Kalshi fee formula against the primary fee schedule PDF.** Sourced here from
+  secondary references plus a corroborating quote in arXiv 2602.19520 (§9.2: "0.07 C p(1−p)
+  (rounded up)"); the primary PDF returned HTTP 429 and was not read.
+
+### 9.4 Sources
+
+- Gu, Kagan, Sun, Wu, Xu — *When do prophets profit in prediction markets?*
+  https://arxiv.org/abs/2607.06166 · https://arxiv.org/html/2607.06166v1
+- Le — *Decomposing Crowd Wisdom: Domain-Specific Calibration Dynamics in Prediction Markets*
+  https://arxiv.org/html/2602.19520v1 (v1) · https://arxiv.org/html/2602.19520v2 (v2, cite this one)
+- Murphy — *Agentic Forecasting using Sequential Bayesian Updating of Linguistic Beliefs*
+  https://arxiv.org/html/2604.18576
+- *Beyond Forecasting: The Belief-to-Trade Layer in Prediction-Market Agents*
+  https://arxiv.org/html/2607.03015v1
+- Kalshi fee schedule (secondary; primary PDF not retrieved) https://kalshi.com/docs/kalshi-fee-schedule.pdf
