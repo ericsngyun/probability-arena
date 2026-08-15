@@ -851,15 +851,431 @@ cannot afford.**
    discovery, and execution control — and **not** out-of-sample predictive edge over
    simpler features, which none of the canonical LOB Hawkes papers claims.
 
-## 6. Execution modelling
+## 6. Execution modelling — the core deliverable
 
 ### 6.1 The EV identity
-### 6.2 C_execution from the actual book
-### 6.3 P(fill | ...) — the fill-probability model
-### 6.4 E[return post-fill | filled] — the markout model
-### 6.5 The negative fill-probability/return relationship
+
+    EV(s, venue_state) = E[terminal value]·s
+                       − C_execution(s | book)
+                       − E[impact](s)
+                       − E[adverse selection](s)
+                       − fees(s, P)
+                       − latency_risk(s)
+
+For a Kalshi YES contract the terminal value is in `{0, 1}` dollars, so
+`E[terminal value] = p̂`, our probability estimate. **Everything else on that line is
+subtracted from `p̂`, and on this venue the subtractions are larger than any
+microstructure signal.** All quantities below are **cents per contract** unless stated.
+
+Term by term, with what supplies each:
+
+| Term | Source | Observable? |
+|---|---|---|
+| `p̂` | the forecast lane, **not** this document | — |
+| `C_execution(s)` | the ladder walk against the actual book (6.2) | **yes, exactly** |
+| `E[impact](s)` | `β ≈ c/D` from §3.1, applied to our own order's OFI contribution | yes, fitted |
+| `E[adverse selection](s)` | conditional markout given fill (6.5) | partly (6.4) |
+| `fees(s, P)` | the venue schedule, a deterministic function (6.6) | **yes, exactly** |
+| `latency_risk(s)` | expected mid drift over our decision-to-arrival window (6.7) | partly — clock offset is unmeasured |
+
+The critical structural property: **`C_execution` is a function of `s`, not a constant, and
+it is convex in `s` on a discrete ladder.** That is what makes the mandate's claim true —
+the same signal at different notionals can have opposite sign — and 6.2 works it out
+numerically.
+
+### 6.2 `C_execution` from the actual book, never from an assumption
+
+`C_execution(s)` is the ladder walk and nothing else:
+
+    remaining ← s ;  cost ← 0
+    for each populated ask level (p_k, q_k) ascending from the touch:
+        take ← min(remaining, q_k)
+        cost ← cost + p_k · take
+        remaining ← remaining − take
+        if remaining == 0: return VWAP = cost / s
+    return UNFILLABLE(shortfall = remaining)        # typed, NOT an extrapolated price
+
+Three rules that must be enforced in code, not merely intended:
+
+1. **`UNFILLABLE` is a typed outcome, never a price.** If the visible ladder cannot fill
+   `s`, the answer is not "the last price plus a bit". It is a refusal carrying the
+   shortfall. A model that extrapolates past the visible book is inventing liquidity, and
+   on Kalshi the ladder frequently ends well before $1.00.
+2. **The book used must be publishable and fresh.** `is_publishable == False` or
+   `book_staleness > bound` ⇒ no quote, absence reason `BOOK_UNPUBLISHED` / `STALE`.
+3. **Hidden/iceberg liquidity is assumed to be zero.** We have no evidence Kalshi has any,
+   and assuming zero is the conservative direction for a cost estimate. Flagged as
+   UNVERIFIED; if it exists, our costs are overstated, which is the safe error.
+
+**Worked example — the same signal changing sign with size.** Say `p̂ = 56¢`, and the ask
+ladder is **40 contracts at 52¢, then 200 at 55¢**. Fees per the Kalshi taker formula
+(6.6), computed per fill price:
+
+| Size `s` | Fill | VWAP | Gross edge/contract | Fee/contract | **Net/contract** | **Total EV** |
+|---|---|---|---|---|---|---|
+| 40 | 40@52 | 52.00 | 4.00¢ | 1.75¢ | **+2.25¢** | **+90¢** |
+| 100 | 40@52 + 60@55 | 53.80 | 2.20¢ | 1.74¢ | **+0.46¢** | **+46¢** |
+| 240 | 40@52 + 200@55 | 54.50 | 1.50¢ | 1.74¢ | **−0.24¢** | **−58¢** |
+
+**The identical signal is worth +90¢ at 40 contracts and −58¢ at 240.** The sign flips
+between them. Note also that total EV is *maximised at the top-of-book size*, not at some
+larger "optimal" size — because on a 1¢ grid, stepping one level up costs a full 100 bp of
+notional at once. There is no smooth impact curve here to trade off against; there is a
+staircase.
+
+**Design rule:** the sizing decision is `s* = argmax_s EV(s)` computed by walking the
+actual ladder at decision time, evaluated on the tabulated `fill_cost_curve(s)` from
+schema group B. It is **never** a fixed notional, never a fraction of some assumed ADV,
+and never derived from a Kelly fraction applied to `p̂` alone. A Kelly-style sizing rule
+that ignores `C_execution(s)` will systematically recommend sizes past the sign flip.
+
+### 6.3 `P(fill | ·)` — the fill-probability model
+
+This and 6.4 are **different problems** and must be separate models with separate
+validation. Conflating them is the specific error section 6.5 is about.
+
+**Features available to us at submission time** (all from schema §2.3, all archivable):
+`Q_near` (size resting at our chosen price), `Q_opp`, `queue_imbalance`, `spread_ticks`,
+`distance_from_touch` (0 = joining the touch, +1 = one tick behind, −1 = improving inside
+the spread), `OFI(Δt)`, `signed_trade_imbalance(Δt)`, `order_arrival_intensity`,
+`cancellation_intensity`, `realized_vol`, `event_rate_ewma[τ]`, `time_to_close`, and the
+resting horizon `T` we are willing to commit to.
+
+**Structure.** `P(fill within T)` is the probability that either hazard fires:
+
+- **H1, consumption:** cumulative opposite-side taker volume at or through our price
+  reaches our queue-ahead. This is the "good-looking" fill.
+- **H2, run-through:** the price moves through our level. This is the adverse fill.
+
+A hazard-rate formulation is the right shape — `P(fill) = 1 − exp(−∫₀^T h(u|x) du)` — and
+it makes the horizon `T` explicit, which a static logistic does not. Albers et al.'s fitted
+form is a useful prior for the level-1 case and is worth recording because of how *simple*
+it turned out to be: on 232,897 live Binance orders they fit
+`z = β₀ + β₁Q_near + β₂Q_opp + β₃·imb` with **β₀ = 0.5649, β₁ = 0.0159, β₂ = 0.1013,
+β₃ = −0.3166, R² = 0.946** (queue sizes normalised by their 99th percentiles; `Q_opp` was
+*not* significant at 5%, p = 0.065). Their conclusion, quoted: *"fill probabilities are
+relatively easy to predict based on queue sizes… calling into question the need for
+black-box machinery."* **Do not spend modelling effort here.** The hard part is 6.4.
+
+**The Kalshi-specific obstruction, and it is serious.** Kalshi's WebSocket is **L2**: the
+`orderbook_delta` message carries `side`, `price_dollars` and a single net `delta_fp` for
+one price level. There are **no order IDs and no per-order events.** Consequences:
+
+- **Queue-ahead at submission is observable**: it is exactly the current `Q_near`.
+- **Queue-ahead thereafter is NOT observable.** When a level shrinks by `δ` through
+  cancellation, we cannot tell whether the cancellations came from *ahead of* or *behind*
+  our position. Our queue-ahead therefore evolves as an **interval**, not a number:
+  `Q_ahead ∈ [max(0, Q_ahead − δ), Q_ahead]`.
+- Albers et al. recovered exact queue position at fill by exploiting a **Binance
+  idiosyncrasy** — the public trade feed publishes all maker fills for a taker order in
+  execution-priority order with unique identifiers. **Kalshi's `trade` channel publishes
+  aggregate prints only.** That technique does not port. This is the single largest
+  data gap in this document.
+
+**How to handle it honestly.** Model queue-ahead under a named, stated assumption *and*
+report the bracket:
+
+    A-UNIFORM (point estimate): cancellations are uniformly distributed across the
+        queue, so a cancellation of δ from a level of size Q reduces our queue-ahead
+        in expectation by δ · (Q_ahead / Q).
+    OPTIMISTIC bound:  all cancellations came from ahead of us.
+    PESSIMISTIC bound: no cancellation came from ahead of us.
+
+**And then state the thing nobody will want to hear: A-UNIFORM cannot be validated from
+observation alone.** Identifying it requires placing orders and observing our own fills,
+which `OBSERVE_ONLY` forbids and which this document does not propose. It is a permanently
+unfalsifiable parameter under the current capability boundary.
+
+**Therefore: a paper maker fill can never be a single number.** Every maker fill in the
+shared paper ledger must carry `(p_fill_optimistic, p_fill_point, p_fill_pessimistic)` and
+every downstream paper P&L must be reported as a **bracket**. A single-point maker P&L
+would be a modelled quantity presented as a measured one, which is exactly the failure mode
+the repo's archive and reconciliation lanes have spent multiple milestones eliminating.
+*Taker* fills do not have this problem — `C_execution` is exact from the visible ladder —
+which is a real argument for making the first prospective paper P&L a **taker-only**
+measurement, despite taker being the more expensive execution mode.
+
+### 6.4 `E[return post-fill | filled]` — the markout model
+
+A different model, a different target, a different validation set.
+
+    markout_maker(h) = D · (M_{t_fill + h} − P_fill)
+    where D = +1 if we bought YES, −1 if we sold YES
+
+Horizons: report a **vector** of `h`, not one. Albers et al. use 1s for the markout table
+and 5s for the fill-vs-return analysis; at Kalshi's event rates, clock-time horizons of
+1–5s will frequently contain **zero** book events, so **event-time horizons are mandatory
+alongside clock time**: markout at the next mid change, at the 5th, at the 20th, plus
+clock-time 10s / 60s / 300s. A markout evaluated across an interval with no book event is
+absent with reason `STALE`, never zero.
+
+Features: everything in 6.3 *plus* everything only knowable at fill time — which side the
+consuming taker was on, whether the fill was part of a sweep, the book state immediately
+after. The essential asymmetry: `P(fill)` is predicted from **submission-time** state;
+markout is predicted from **fill-time** state, and the two state distributions are
+systematically different. That difference *is* the adverse selection.
+
+### 6.5 The negative fill-probability/return relationship — VERIFIED, and it is stronger than a correlation
+
+**Citation checks out.** Jakob Albers, Mihai Cucuringu, Sam Howison, Alexander Y.
+Shestopaloff, "The Market Maker's Dilemma: Navigating the Fill Probability vs. Post-Fill
+Returns Trade-Off", arXiv:2502.18625 (v1 2025-02-25, v2 2025-11-23).
+<https://arxiv.org/abs/2502.18625> The mandate's description matches on every count.
+
+**Design (VERIFIED).** A genuine **live** experiment on the Binance USDT-margined BTC
+perpetual — not a backtest, not synthetic orders, not passive observation of others'
+orders. Continuous-quoting mode, 12–19 February 2024: **232,897 minimum-size maker orders,
+127,051 filled (54.6%)**, always at the touch, cancel-and-repost whenever the level ceased
+to be top-of-book. A periodic-quoting robustness run (172,800 orders, August 2024) gave
+"essentially identical" results. The design's purpose is to eliminate **signal bias**: an
+order is cancelled *if and only if* its price level stopped being top-of-book, never for a
+discretionary reason.
+
+Their own calibration of why passive observation is misleading: prior work reports **< 2%**
+fill probability for one-tick-spread balanced-queue orders inferred from historical
+book data, versus **50%** in their live experiment for the same configuration — the gap
+being entirely other traders' cancellation behaviour. **Any fill model we estimate purely
+from observed book data will be biased low in the same way**, and we should expect that
+bias to be large.
+
+**The finding. VERIFIED, and the core of it is mechanical, not statistical.** Conditional
+on the immediate post-terminal-time mid-price change, the fill probability of a
+top-of-book maker order is **exactly 0 when that change is favourable and exactly 1 when it
+is zero or adverse.** If the next move is against you, you fill with certainty; if it is in
+your favour, your level ceased to be top-of-book and your order was cancelled unfilled.
+
+**Does it hold? YES — and it holds by construction, for any venue, on any CLOB.** The
+mechanism is the *cancel-and-repost policy*, not anything about Binance. Any policy that
+requotes on a price move induces exactly this selection. So this is not an empirical
+regularity that might fail to replicate on Kalshi; it is a property of the policy.
+
+For a policy that does **not** requote — post and leave it — the selection is weaker but
+the same sign: you are filled by flow that came at you, so the fill-time state distribution
+is tilted adverse. The deepest statement of it predates all of this by 29 years:
+**Handa & Schwartz (1996)**, *Journal of Finance* 51(5):1835–1861, "Limit Order Trading" —
+a limit order carries two risks, that adverse information triggers an *undesirable*
+execution, and that favourable news means the *desirable* execution is not obtained. A
+resting limit order is a free option written to the market, and it is exercised precisely
+when the writer is wrong. See also **Glosten & Milgrom (1985)**, *JFE* 14(1):71–100, for
+why the spread exists at all under information asymmetry.
+
+**Magnitudes (VERIFIED).** Average 1-second markout in basis points, excluding the maker
+rebate, by queue configuration and queue position at fill:
+
+| Queue config | QP 0–0.1 | 0.1–0.4 | 0.4–0.75 | 0.75–1 |
+|---|---|---|---|---|
+| Large near, small opposite (favourable imbalance) | **−0.058** | −0.586 | −0.743 | −0.775 |
+| Large near, large opposite | −0.296 | −0.882 | −0.967 | **−1.157** |
+| Small near, small opposite | −0.562 | −0.711 | −0.622 | −0.677 |
+| Small near, large opposite (adverse imbalance) | −0.539 | −0.645 | −0.686 | −0.763 |
+
+**Every cell is negative.** Unconditionally: **−0.8 bp, or −0.3 bp net of rebate.** The
+best cell in the entire table — front of a large near-side queue with a small opposite
+queue — is −0.058 bp, essentially breakeven *before* the rebate. And note the interaction:
+when the near-side queue is **small**, queue position barely matters at all (−0.539 to
+−0.763 across all four bins), because there is little liquidity behind you either way.
+Queue position only buys protection inside a large near-side queue — and you cannot get
+front-of-queue in a large queue by joining one, only by having joined it when it was small.
+
+**What their strategies did (VERIFIED, and worth quoting for calibration):** naive
+market making — post both sides at the touch, repost on price move — lost **~60% of
+capital in ~3 days**, annualised **Sharpe −109.0**, −0.4307 bp per trade net. Imbalance-
+following maker: −0.4705 bp. Imbalance *taker*: −1.9621 bp net despite roughly +1 bp per
+round trip **before** fees — killed outright by the 1.5 bp taker fee. Their words for the
+naive strategy: *"a recipe for poverty."*
+
+**Their proposed rescue, and its honest limits.** Post **against** the prevailing book
+imbalance, but only when a model predicts the imbalance is about to *reverse* — that way
+you get the high fill probability of an adverse-imbalance order together with favourable
+drift. Fitting a logistic on 173 submission-time features over 182,381 high-fill-probability
+orders, 5-second returns cross into positive territory at a reversal threshold of ≈0.36 —
+**at 69 orders per day**, down from 21,689. At the thresholds where the effect is
+statistically comfortable (0.24–0.30) returns are still **negative** (−0.62, −0.32 bp).
+The authors explicitly present this "not as a definitive solution, but to illustrate the
+mechanics," under what they call the **Unprofitability Principle**: ease of prediction ×
+ease of exploitation < c.
+
+**Caveats they state (VERIFIED):** minimum order size throughout, with results expected to
+**deteriorate** with size, since the taker's market impact is the maker's adverse
+selection; best-tier fees assumed (taker 1.5 bp, maker −0.5 bp rebate) and "any strategy
+results would only deteriorate with less favourable fees"; latency treated as negligible,
+with a proper treatment stated to "reinforce our conclusions"; **L2 data only**, which is
+why they could not do rigorous intermediate-time fill-probability updating — the same
+limitation we have. Independent corroboration in a completely different asset class:
+**DeLise (2024)** reports the same negative maker drift in **US Treasuries**.
+
+**Porting the magnitudes to Kalshi — do this carefully, because the naive scaling is
+wrong.** Their tick is ~0.02–0.03 bp; ours is 100 bp. Rescaling −0.8 bp by tick size would
+give an absurd answer. **Adverse selection scales with volatility over the fill horizon,
+not with tick size.** Their −0.8 bp at a 1-second horizon is a modest fraction of BTC's
+1-second realised volatility. The correct port is therefore: *estimate `E[adverse
+selection]` on Kalshi as a fitted fraction of that contract's own realised volatility over
+the empirical time-to-fill*, using `normalized_vol` from schema group E. Order of magnitude
+expectation on an active Kalshi contract, where mid moves in 1¢ steps: **~0.5–1 tick, i.e.
+0.5–1¢ per side.** This is INFERRED and is a measurement task, not a result.
+
+### 6.6 Fees — the term that dominates everything else
+
+**Kalshi taker fee: `ceil_to_cent(0.07 · C · P · (1−P))` dollars, peaking at 1.75¢ per
+contract at P = 0.50. Maker fee (where charged): `ceil_to_cent(0.0175 · C · P · (1−P))`,
+peaking at ~0.44¢.** Status: **INFERRED from secondary sources** (section 10); the maker
+fee in particular is reported as applying to *some* markets only. **This must be read from
+Kalshi's own published fee schedule before any use, and re-read on a cadence — a fee
+schedule change silently invalidates every threshold in this document.**
+
+Three consequences, in order of importance.
+
+**(a) The fee is larger than the tick, and larger than the documented signal.** At
+P = 0.50 the taker fee is **1.75 ticks**. Now take the single strongest short-horizon
+result in the literature — Gould & Bonart's large-tick regime, `P(up) ≈ 0.85` at extreme
+queue imbalance — and give it the most generous possible reading: a perfect one-tick-ahead
+prediction, traded costlessly at the mid. Its expected value is
+`0.85·(+1¢) + 0.15·(−1¢) = +0.70¢ per contract.`
+
+That is **less than the round-trip maker fee (0.875¢) and one fifth of the round-trip
+taker fee (3.50¢)** at mid-range prices. **The best-case documented microstructure edge
+does not cover Kalshi's round-trip cost.** This is the most important number in this
+document.
+
+**The conclusion that follows is a reframing of the whole track: on Kalshi, microstructure
+is not a standalone alpha source. Its job is to make `C_execution` smaller and to avoid
+adverse fills on a position we were going to take anyway for a probability-forecast
+reason.** Any proposal to trade a pure microstructure signal on Kalshi should be measured
+against the 0.70¢-versus-0.875¢ comparison above and, absent a specific reason it does not
+apply, declined.
+
+**(b) The ceiling rounding creates a minimum economic order size.** The fee is rounded up
+to the next whole cent **on the order**, not per contract, so the overhead is
+`≤ 1/C` cents per contract. Per-contract taker cost at P = 0.50: **2.00¢ at C = 1**,
+1.80¢ at C = 10, 1.75¢ at C = 100. At P = 0.03 it is worse in relative terms: the marginal
+rate is 0.21¢ but a 1-contract order still pays the 1¢ minimum — **~5× the marginal rate.**
+Rule: **require C ≥ 10, prefer C ≥ 20**, and make rounding overhead an explicit line in the
+EV computation rather than an approximation.
+
+**(c) The fee curve pushes toward the tails, and the tails are where the estimators are
+worst.** `P(1−P)` falls by a factor of ~8 between P = 0.50 and P = 0.03, so a tail contract
+is dramatically cheaper to trade. But tail contracts have the thinnest books, the widest
+spreads, the fewest events, and the least reliable micro-price and imbalance estimates
+(§3.4, §4.2). **The venue's cost structure and its information structure point in opposite
+directions.** This tension is real, has no clean resolution, and should be stated in any
+strategy proposal rather than resolved by picking whichever side favours the proposal.
+
+**(d) Holding to settlement avoids the exit fee entirely.** A directional
+probability-forecast position held to resolution pays fees **once**. A microstructure
+round trip pays **twice**. That asymmetry is another argument for microstructure as an
+execution-quality tool rather than a signal.
+
+### 6.7 Latency risk
+
+Under `OBSERVE_ONLY` there is no order path, so "latency risk" here means exactly one
+thing: **the risk that a decision is made against a book that has already moved.**
+
+    L = data_age_us  +  decision_compute_time  +  (unmeasured) submit-to-venue time
+    latency_risk ≈ E[ |ΔM| over L ]  ≈  normalized_vol · sqrt(L)
+
+Two honest disclosures:
+
+1. **`data_age_us` is a biased estimate of true age because our host-vs-venue clock offset
+   is NOT MEASURED** (`app/cli.py:717-722` records this explicitly for the replay lane).
+   Until it is measured, `latency_risk` carries an unquantified bias of unknown sign.
+2. **Observation gaps are not latency, they are blindness.** `subscription_generation`
+   changes and the `[disconnected_at, reconnected_at]` intervals from the collector's own
+   measurement stream mark periods where we had no book at all. A decision timestamped
+   inside a gap is not a high-latency decision; it is an invalid one, and must be typed
+   absent.
+
+Encoding: a hard gate, not a penalty term. **Refuse to quote when `book_staleness > bound`
+or `is_publishable == False` or the timestamp falls inside an observation gap.** A refusal
+is a valid, recordable decision outcome; a decision on a stale book is not.
+
+---
 
 ## 7. The maker/taker decision rule
+
+All in cents per contract, YES side, buying. `p̂` = probability estimate ×100; `b`, `a` =
+best bid/ask; `s = a − b`; `f_T`, `f_M` = taker and maker fee per contract at the relevant
+fill price; `A = E[adverse selection | filled] ≥ 0`; `P_f = P(fill within T)`; `κ` = the
+opportunity cost of not getting the position at all.
+
+    EV_taker        = p̂ − VWAP_ask(size) − f_T
+    EV_maker|fill   = p̂ − b − f_M − A
+    EV_maker        = P_f · (p̂ − b − f_M − A) − (1 − P_f) · κ
+
+**Per filled contract, maker beats taker by**
+
+    EV_maker|fill − EV_taker = s + (f_T − f_M) − A
+
+At P = 0.50 with a 1¢ spread this is `1 + 1.31 − A = 2.31 − A` cents. **Maker wins unless
+adverse selection exceeds ~2.3 ticks**, which is well above our order-of-magnitude estimate
+of 0.5–1 tick (6.5). Note how different this is from Albers et al.'s venue, where the
+maker's advantage is a 2 bp fee differential against 0.8 bp of adverse selection — a close
+call. **On Kalshi the maker/taker gap is dominated by the fee differential (1.31¢) and the
+spread (1¢), not by adverse selection.** Maker is the correct default by a wide margin.
+
+**But per *filled* contract is the wrong comparison**, because the taker fills with
+certainty and the maker does not. With `κ = 0` (we are indifferent to missing a trade):
+
+    TAKE  if   EV_taker  >  [ P_f / (1 − P_f) ] · ( s + f_T − f_M − A )
+
+At `P_f = 0.5`, `s = 1`, `A = 1`: take only if `EV_taker > 1.31¢`, i.e. only if
+`p̂ − a > 3.06¢`. **The taker threshold at mid-range prices is roughly a 3-tick edge.**
+That is a high bar, and it is the correct one.
+
+### The decision rule
+
+    0. GATES (any failure ⇒ NO ACTION, typed reason; these are not penalties)
+       is_publishable ∧ book_staleness ≤ bound ∧ not in observation gap
+       ∧ lifecycle_state == open
+       ∧ both sides non-empty
+       ∧ size ≥ C_min (fee-rounding floor, 6.6b)
+       ∧ spread_regime ∈ {TOUCHING, NARROW}      # §3.4: no prediction in WIDE books
+
+    1. SIZE.  s* = argmax_s EV_taker(s) over the tabulated fill_cost_curve.
+              If max EV_taker(s) ≤ 0 for all s, no taker action is available at any size.
+
+    2. MAKER FIRST.  Compute EV_maker at the best posting price. Post if
+              EV_maker > 0  ∧  EV_maker ≥ EV_taker.
+
+    3. TAKE ONLY IF the threshold above is cleared AND the signal's decay horizon is
+              short relative to the modelled time-to-fill. Paying 1.75¢ to convert a
+              probabilistic fill into a certain one is only rational when the edge would
+              be gone before the maker order fills.
+
+    4. OTHERWISE NO ACTION.  This is the expected outcome most of the time and must be
+              a first-class, recorded decision — not an absence of one.
+
+### Encoding the "never optimise maker execution for fill rate alone" rule
+
+This is the design constraint the mandate asks for, and it needs to be structural rather
+than advisory, because fill rate is the metric everyone reaches for by default: it is easy
+to compute, it is always available, and it goes up when you make your policy worse.
+
+1. **Fill rate is a diagnostic, never an objective.** The maker objective is
+   `Σ_placements [ P_f(x) · (E[markout | fill, x] − f_M) ] − (1−P_f(x))·κ`. A policy that
+   raises `P_f` while lowering that sum is worse. Encode by *type*: the optimiser accepts
+   only an objective function returning expected **value**, and `P_f` alone is not of that
+   type.
+2. **A strictly positive conditional-markout precondition.** Reject any maker placement
+   whose modelled `E[markout | fill] − f_M` is not strictly positive, **regardless of
+   `P_f`**. A high-fill placement with negative conditional markout is not a "good fill
+   with bad luck"; it is the adversely selected fill the whole of 6.5 is about. This
+   precondition is what makes "never optimise for fill rate" enforceable rather than
+   aspirational.
+3. **A mandatory monotonicity guard in evaluation.** Regress realised markout on predicted
+   `P_f` across placements. Under the Albers/Handa–Schwartz mechanism, the *unconditional*
+   slope should be **negative** — that is the expected, healthy signature. A policy is
+   fill-chasing when it has selected placements that sit at the wrong end of that curve.
+   Report the slope and the mean conditional markout by `P_f` decile on **every**
+   evaluation, and fail the evaluation if the highest-`P_f` decile is being preferentially
+   selected without a reversal signal justifying it.
+4. **Ban naive market making explicitly.** Two-sided quoting at the touch with
+   requote-on-move is the exact strategy Albers et al. measured at Sharpe −109. It should
+   be named as a prohibited baseline in the paper ledger so that nobody rediscovers it.
+5. **Report maker P&L as a bracket, always** (6.3). A single-point maker P&L conceals an
+   unfalsifiable queue-position assumption.
+6. **Prefer taker for the first prospective measurement.** Its cost is exact from the
+   visible ladder and carries no unidentifiable parameter. It is more expensive and more
+   honest, and for a first trustworthy paper P&L, honest beats cheap.
 
 ## 8. Does NOT transfer to AMMs
 
