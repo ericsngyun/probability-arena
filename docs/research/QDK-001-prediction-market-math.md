@@ -306,7 +306,239 @@ This resolves the bake-off's design: the candidate space is not one-dimensional.
 
 ## 4. Track 3 — Belief-to-trade transforms: the bake-off
 
-*(to be filled)*
+### 4.1 Why Kelly on a point estimate is dangerous — concretely
+
+Classical binary Kelly at YES price q with belief p: **f\* = (p − q)/(1 − q)**, the fraction
+of bankroll staked. Expected log-growth under the *true* p\*:
+
+&nbsp;&nbsp;&nbsp;&nbsp;g(f) = p\*·log(1 − f + f/q) + (1 − p\*)·log(1 − f)
+
+Two properties do the damage. **[INFERRED — standard results, numerically verified below]**
+
+**(a) Sensitivity explodes at extreme prices.** ∂f\*/∂p = 1/(1 − q). A *fixed* miscalibration
+in p becomes an unbounded error in stake as q → 1:
+
+| q | error in f\* per 0.01 error in p |
+|---|---|
+| 0.50 | 0.020 of bankroll |
+| 0.90 | 0.100 of bankroll |
+| 0.98 | 0.500 of bankroll |
+
+Concretely, with **no true edge at all** (p\* = q) and a constant +0.05 overconfidence:
+
+| q | claimed p | f\* | true log-growth per bet | wealth after 200 bets |
+|---|---|---|---|---|
+| 0.50 | 0.55 | 0.100 | −0.00503 | ×0.37 |
+| 0.70 | 0.75 | 0.167 | −0.00640 | ×0.28 |
+| 0.90 | 0.95 | **0.500** | **−0.02065** | **×0.016** |
+| 0.95 | 1.00 | **1.000** | ruin | 0 |
+| 0.98 | 1.03 | **2.500** | ruin (levered) | 0 |
+
+A five-point overstatement — well inside the noise of any LLM forecast — stakes **half the
+bankroll** on a market with zero edge at q = 0.90, and destroys 98.4% of capital over 200
+such bets. At q ≥ 0.95 the same overstatement calls for the entire bankroll or leverage.
+This is the mechanism behind the paper's −99.9% Kelly column, and it explains why it appears
+for *four of five* models rather than only the bad ones.
+
+**(b) The tolerance for overstatement is a factor of exactly 2.** g(f) = 0 at f = 0 and again
+at f ≈ 2f\*. Verified numerically at q = 0.50, true edge 2¢, claimed 5¢:
+
+| stake | true log-growth |
+|---|---|
+| 1.0 × f\*_true | +0.000800 |
+| 1.9 × | +0.000150 |
+| **2.0 ×** | **−0.000003** ← zero-growth boundary |
+| 2.5 × | −0.001012 |
+| 3.0 × | −0.002429 |
+
+> **If our stated edge is more than twice our true edge, full Kelly has negative growth.**
+> Not sub-optimal growth — negative. An agent claiming 5¢ of edge where 2¢ exists is already
+> past the cliff. No LLM forecasting pipeline should be assumed to be within 2× on edge.
+
+**(c) Fractional Kelly is the direct antidote, with a clean rule.** Since the zero-growth
+boundary is at 2×, **α-fractional Kelly tolerates overstatement up to a factor of 2/α**:
+
+| α | survives claimed/true edge up to | at 2.5× overstatement (q=0.5, ex. above) |
+|---|---|---|
+| 1.00 (full) | 2.0× | g = −0.001012 (losing) |
+| 0.50 | 4.0× | g = +0.000750 |
+| 0.25 | 8.0× | g = +0.000688 |
+| 0.10 | 20.0× | g = +0.000350 |
+
+Note the shape: going from full Kelly to half-Kelly turns a loss into ~94% of the *optimal*
+growth. Going from half to quarter costs almost nothing more. **The cost of caution is
+second-order; the cost of overconfidence is first-order.** Given the repo's own track record
+of edges evaporating on out-of-sample review (`edge-auto-observation-plan`,
+`outcome-post-drain-baseline`), α ≤ 0.25 is the defensible starting point.
+
+### 4.2 The candidate space is two-dimensional (three, with gating)
+
+Per §3.4, allocation and scale are separable. Enumerating them as one flat list — which the
+brief does — mixes incommensurable things. Correct factorization:
+
+**Axis A — allocator** (direction and *relative* weight across simultaneous markets):
+| ID | Rule | Net YES exposure, binary |
+|---|---|---|
+| `A-brier` | proper, quadratic | ∝ 2(p − q) |
+| `A-log` | proper, logarithmic | ∝ logit(p) − logit(q), clipped at L_max |
+| `A-sph` | proper, spherical | ∝ p/‖**p**‖ − q/‖**q**‖ |
+| `A-margin` | raw margin (the naive baseline under test) | ∝ (p − q) |
+| `A-maxmargin` | all capital on the single largest \|p − q\| | — |
+| `A-invmargin` | inverse margin | ∝ 1/\|p − q\| |
+| `A-uniform` | equal weight on every market passing the gate | 1 |
+| `A-tadj` | time-adjusted EV: margin ÷ days-to-resolution | ∝ (p − q)/T |
+
+`A-brier` and `A-margin` differ only by the constant 2 and are *the same allocator* once
+normalized to a budget. That is worth stating plainly: **the brief lists "proper-scoring-rule
+betting" and "raw margin" as competing candidates, but for the Brier rule in a binary market
+they are identical.** The genuine contrast between proper and naive is (i) Log vs. linear
+weighting, and (ii) multi-outcome events, where the naive rule has no principled way to
+weight across the K legs and the proper rule does.
+
+**Axis B — scale** (total bankroll fraction the whole book represents):
+| ID | Rule |
+|---|---|
+| `B-fixed` | fixed fraction of bankroll per period (control) |
+| `B-kelly` | full Kelly on the point estimate |
+| `B-frac(α)` | α-fractional Kelly, α ∈ {0.5, 0.25, 0.1} |
+| `B-cons(γ)` | **conservative Kelly**: Kelly on the γ-quantile of the belief distribution, pulled toward q |
+| `B-cap` | any of the above, then hard-capped at c% of bankroll per market and d% per correlated cluster |
+
+**Axis C — gate** (whether to trade at all):
+| ID | Rule |
+|---|---|
+| `C-none` | trade everything |
+| `C-spread` | **Corollary 19 abstain band**: no trade when 1 − q⁻ ≤ p ≤ q⁺ |
+| `C-calib` | conditional-calibration gate (§6) |
+| `C-cohere` | coherence-violation gate (§7) |
+| `C-abstain` | ABSTAIN always — the null arm |
+
+`C-spread` is not optional. It falls directly out of the theory once bid-ask is admitted
+(Corollary 19) and it is the *only* candidate here that is a theorem rather than a heuristic.
+It should be a floor under every arm, not an arm.
+
+### 4.3 Conservative Kelly deserves top billing
+
+`B-cons(γ)` is the most promising candidate in the whole set and the brief is right to name
+it. Given a belief *distribution* rather than a point (Track 4), let p_γ be the γ-quantile on
+the side facing the price:
+
+&nbsp;&nbsp;&nbsp;&nbsp;p_γ = Q_γ(P) if trading YES (γ small, e.g. 0.25); p_γ = Q_{1−γ}(P) if trading NO
+&nbsp;&nbsp;&nbsp;&nbsp;f = max(0, (p_γ − q)/(1 − q))
+
+Three things fall out at once **[INFERRED]**:
+
+1. **Sizing and abstention unify.** If the credible interval straddles q, then p_γ < q, f
+   clips to 0, and the trade is declined *automatically*. No separate abstain threshold to
+   tune.
+2. **Uncertainty is priced, not discarded.** A wide belief with a large nominal margin gets
+   sized down relative to a tight belief with a small margin — the opposite of what
+   `A-margin` does, and the correct direction.
+3. **It degrades gracefully into fractional Kelly.** For a symmetric belief distribution with
+   scale σ, p_γ ≈ p − z_γ·σ, so f ≈ f\* − z_γ·σ/(1−q): an *additive* haircut proportional to
+   uncertainty, rather than fractional Kelly's *multiplicative* one. Additive is better
+   behaved here because it bites hardest exactly where §4.1(a) says the danger is — it does
+   not shrink a confident small-margin bet as aggressively as α-Kelly does.
+
+Its weakness: it is only as good as the calibration of the belief *spread*, which is far
+harder to validate than the calibration of the mean. An LLM ensemble's inter-trial variance
+is a measure of prompt sensitivity, not of epistemic uncertainty, and is typically far too
+small. **`B-cons` must not ship until the spread itself has been calibrated out-of-sample**
+(§5.5). Until then it is overconfidence with a safety-blanket.
+
+### 4.4 The evaluation metric
+
+Realized P&L alone is **disqualified as the primary metric** by Example 6 (§2.1): a strategy
+with no accuracy edge can post positive expected profit. A bake-off scored on P&L will
+sometimes crown a directional-beta arm and we will not be able to tell.
+
+**Primary metric.** Net paper P&L per unit of capital-at-risk-day, after Kalshi fees and
+modeled slippage against the recorded book, evaluated on prospectively-generated forecasts
+only.
+
+**Mandatory co-reported decomposition** (Corollary 17 makes this computable from realized
+outcomes without knowing **p**\*):
+
+&nbsp;&nbsp;&nbsp;&nbsp;ROI = ΔS + D − L_ρ,&nbsp;&nbsp; ΔS = Σ_i [S(p_i, y_i) − S(q_i, y_i)] / Σ_i cost_i,&nbsp;&nbsp; D = Σ_i D_G(q_i, p_i) / Σ_i cost_i
+
+An arm is only **promotable** if **ΔS > 0**. An arm with ROI > 0 driven entirely by D is
+harvesting convexity rent, not skill, and per §2.2 that rent is precisely what L_ρ eats in a
+real CLOB. **This single rule is the most valuable thing the paper gives us**, because it
+converts an unfalsifiable claim ("we have edge") into a measurable, pre-registerable one.
+
+**Secondary / guardrail metrics:**
+- Max drawdown, and time-to-recovery.
+- **Concentration**: share of total P&L from the top 5 trades. An arm whose P&L is one lucky
+  resolution is not an arm.
+- Realized L_ρ: fill price vs. mid at decision time. This is the backtest-to-live gap and
+  must be measured, not assumed.
+- Abstention rate. `C-abstain` returns exactly 0 with zero variance and **must be in the
+  comparison table**, otherwise the bake-off can only rank ways of losing money.
+
+### 4.5 What would make each candidate win
+
+| Candidate | Wins if… | Loses if… |
+|---|---|---|
+| `A-log` | ΔS < 0 or noisy; losses concentrated at high margin | we have a real, stable edge (leaves money on the table) |
+| `A-brier` | ΔS > 0 and stable across margin bins | ΔS < 0 — it *amplifies* the loss (Table 4 Regime B) |
+| `A-margin` | never distinguishable from `A-brier` in binary markets | — (it is `A-brier`) |
+| `A-maxmargin` | never; published counterexample (Example 5) + worst offline column | — |
+| `A-tadj` | capital turnover is the binding constraint, not edge | edge is scarce; it will chase short-dated noise |
+| `B-kelly` | our forecasts are within 2× on edge | they are not (assume they are not) |
+| `B-frac(0.25)` | edge exists but magnitude is untrustworthy | edge is precisely known (rare) |
+| `B-cons(γ)` | belief *spreads* are calibrated | spreads are miscalibrated → false confidence |
+| `C-abstain` | ΔS ≤ 0 in every domain | ΔS > 0 somewhere |
+
+**The honest prior is that `C-abstain` wins the first round.** The repo's forecasting track
+record (`outcome-post-drain-baseline`: Brier worsened to 0.1908 on the representative sample;
+tennis negative skill; soccer's edge an artifact) contains no demonstrated positive score gap
+against *any* benchmark, let alone against a market price. A bake-off that cannot return
+"none of these" is not an experiment.
+
+### 4.6 How much data does the bake-off need?
+
+Power at 80%, α = 0.05 two-sided, N = number of resolved trades **[INFERRED]**:
+
+*Absolute test — is one arm's mean per-trade ROI different from zero?*
+
+| true effect | sd=0.30 | sd=0.50 | sd=0.80 | sd=1.00 |
+|---|---|---|---|---|
+| 2% | 1,767 | 4,906 | 12,559 | 19,623 |
+| 5% | 283 | 785 | 2,010 | 3,140 |
+| 10% | 71 | 197 | 503 | 785 |
+
+Per-trade return sd for binary contracts is brutal: near q = 0.5 a YES buy pays −100%/+100%,
+so sd ≈ 1.0. Near q = 0.9 it is ≈ 0.33. **Realistically sd ∈ [0.5, 1.0], so detecting a
+genuine 5% per-trade edge needs on the order of 1,000–3,000 resolved trades.** At a plausible
+tens-of-trades-per-day cadence this is months, not weeks. Anyone promising a verdict in two
+weeks is promising noise.
+
+*Paired test — is allocator X better than allocator Y on the **same** forecasts?* Far cheaper,
+because the forecast noise cancels:
+
+| effect | sd_diff=0.10 | sd_diff=0.20 | sd_diff=0.40 |
+|---|---|---|---|
+| 2% | 197 | 785 | 3,140 |
+| 5% | 32 | 126 | 503 |
+| 10% | 8 | 32 | 126 |
+
+> **Design consequence: run every arm on one shared forecast stream and compare pairwise.**
+> The bake-off should be a *paired* design over identical forecasts — which is exactly what
+> the brief specified — precisely because it cuts the required N by roughly an order of
+> magnitude. Do not run arms on separate forecast streams.
+
+Corollary: the **ΔS** channel is cheaper to measure than the P&L channel, because scores are
+bounded and lower-variance than returns. We can establish whether a score gap exists long
+before we can establish whether an arm is profitable. **Sequence the work that way**: prove
+ΔS > 0 first, on paper, and only then bake off allocators.
+
+### 4.7 Registration
+
+This experiment is precisely what `PROSPECTIVE-EXPERIMENT-REGISTRY-002A`'s typed predicate
+schema exists for: pre-register the arm list, the promotion rule (ΔS > 0 *and* net P&L > 0),
+both window ends, and the minimum-N floor from §4.6, before the first trade. Note the standing
+blocker: registration is deferred pending 002B, and nothing yet enforces floors at evaluation
+time. **Fitting that enforcement is a prerequisite of this bake-off, not a follow-up.**
 
 ## 5. Track 4 — Forecasts as distributions
 
