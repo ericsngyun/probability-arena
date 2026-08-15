@@ -173,6 +173,15 @@ impact formula is **twice that**: \(\tau = 35\%\). Reading the §4.1 table as if
 it were \(\tau\) understates entry cost by roughly a factor of two at every
 rung.
 
+**To be fair to that document, it does not make this error and explicitly warns
+against it**: §4.2 states that "every percentage above is a notional-to-TVL
+*ratio*, not a predicted price impact," and that converting one to the other
+"requires a curve model, and this milestone deliberately does not carry one."
+This section supplies exactly that missing curve model, and the factor of 2 is
+the first thing it contributes. The warning is aimed at a **future reader** who
+sees "17%" beside a rung and takes it for a cost — which is a very easy mistake
+to make and, at N4, a 17-point one.
+
 *Caveats on the inference, stated because they bound it:* it holds exactly for
 uniform constant-product pools (Raydium AMM v4/CPMM, PumpSwap, Uniswap-V2-style
 venues). It does **not** hold for concentrated-liquidity pools (Orca Whirlpools,
