@@ -1479,4 +1479,127 @@ Worth stating, because the section above is mostly caveats:
 
 ## 10. Citation ledger
 
+### 10.1 Checked and correct
+
+| # | Citation | URL | Status |
+|---|---|---|---|
+| C1 | Cont, Kukanov, Stoikov, "The Price Impact of Order Book Events", arXiv:1011.6402; *J. Financial Econometrics* 12(1):47–88 (2014), DOI 10.1093/jjfinec/nbt003 | <https://arxiv.org/abs/1011.6402> | **VERIFIED** — ID, authors, venue, formula, all numbers |
+| C2 | Gould, Bonart, "Queue Imbalance as a One-Tick-Ahead Price Predictor in a Limit Order Book", arXiv:1512.03492; *Market Microstructure and Liquidity* 2(2):1650006 (2016) | <https://arxiv.org/abs/1512.03492> | **VERIFIED** — the mandate's arXiv ID is correct |
+| C3 | Xu, Gould, Howison, "Multi-Level Order-Flow Imbalance in a Limit Order Book", arXiv:1907.06230; *MML* 4(3&4) (2020) | <https://arxiv.org/abs/1907.06230> | **VERIFIED** |
+| C4 | Cont, Cucuringu, Zhang, "Cross-impact of order flow imbalance in equity markets", arXiv:2112.13213; *Quantitative Finance* 23(10):1373–1393 (2023) | <https://arxiv.org/abs/2112.13213> | **VERIFIED** |
+| C5 | Albers, Cucuringu, Howison, Shestopaloff, "The Market Maker's Dilemma: Navigating the Fill Probability vs. Post-Fill Returns Trade-Off", arXiv:2502.18625 | <https://arxiv.org/abs/2502.18625> | **VERIFIED** — matches the mandate's description on every count |
+| C6 | Bacry, Mastromatteo, Muzy, "Hawkes processes in finance", arXiv:1502.04592 | <https://arxiv.org/abs/1502.04592> | **VERIFIED** |
+| C7 | Bacry, Muzy, "Hawkes model for price and trades high-frequency dynamics", arXiv:1301.1135 | <https://arxiv.org/abs/1301.1135> | **VERIFIED** |
+| C8 | Large, "Measuring the resiliency of an electronic limit order book", *J. Financial Markets* 10(1):1–25 (2007) | DOI 10.1016/j.finmar.2006.09.001 | **VERIFIED** — and it is a ten-variate Hawkes model, as recalled |
+| C9 | Filimonov, Sornette, "Apparent criticality and calibration issues in the Hawkes self-excited point process model", arXiv:1308.6756; *Quant. Finance* 15(8) | <https://arxiv.org/abs/1308.6756> | **VERIFIED** — source of the spurious-criticality result |
+| C10 | Lallouache, Challet, "The limits of statistical significance of Hawkes processes fitted to financial data", arXiv:1406.3967 | <https://arxiv.org/abs/1406.3967> | **VERIFIED** |
+| C11 | Achab, Bacry, Muzy, Rambaldi, "Analysis of order book flows using a nonparametric estimation of the branching ratio matrix", arXiv:1706.03411; *QF* 18(2) | <https://arxiv.org/abs/1706.03411> | **VERIFIED** — source of ρ(Γ) ≈ 0.98 |
+| C12 | Hardiman, Bercot, Bouchaud, "Critical reflexivity in financial markets", arXiv:1302.1405; *EPJ B* 86:442 | <https://arxiv.org/abs/1302.1405> | **VERIFIED** |
+| C13 | Kirchner, "An estimation procedure for the Hawkes process" (INAR(p) ≈ VAR(p)), arXiv:1509.02017 | <https://arxiv.org/abs/1509.02017> | **VERIFIED** |
+| C14 | Ozaki, "Maximum likelihood estimation of Hawkes' self-exciting point processes", *AISM* 31:145–155 (1979) | DOI 10.1007/BF02480272 | **VERIFIED** — the O(N) recursion |
+| C15 | Muni Toke, Pomponio, "Modelling Trades-Through in a Limit Order Book Using Hawkes Processes" (2012), HAL hal-00745554 | <https://hal.science/hal-00745554v1> | **VERIFIED** — but bivariate only, and finds cross-excitation *weak* |
+| C16 | "Forecasting High Frequency Order Flow Imbalance using Hawkes Processes", arXiv:2408.03594; *Comp. Economics* 67(1) | <https://arxiv.org/abs/2408.03594> | **VERIFIED** — the SPA-test table; note the thin evidence base (one trading day) |
+| C17 | Handa, Schwartz, "Limit Order Trading", *J. Finance* 51(5):1835–1861 (1996) | DOI 10.1111/j.1540-6261.1996.tb05228.x | **VERIFIED** |
+| C18 | Glosten, Milgrom, "Bid, ask and transaction prices in a specialist market with heterogeneously informed traders", *JFE* 14(1):71–100 (1985) | DOI 10.1016/0304-405X(85)90044-3 | **VERIFIED** |
+| C19 | Rambaldi, Filimonov, Lillo, "Detection of intensity bursts using Hawkes processes", arXiv:1610.05383 | <https://arxiv.org/abs/1610.05383> | **VERIFIED** |
+| C20 | Blakely, "High resolution microprice estimates … hyperdimensional vector Tsetlin Machines", arXiv:2411.13594 (2024) | <https://arxiv.org/abs/2411.13594> | **VERIFIED as existing.** Treat the result as a lead: 6 days, 2 tickers, single author |
+
+### 10.2 Corrections — citations or common beliefs that do NOT check out
+
+| # | Claim | Correction |
+|---|---|---|
+| X1 | arXiv:1512.03492 is Lipton/Pesavento/Sotiropoulos, or Cartea/Donnelly/Jaimungal | **Wrong.** It is **Gould & Bonart**. (The mandate's own attribution was correct; this corrects a widespread misattribution.) |
+| X2 | Gould & Bonart used **LSE** stocks | **Wrong.** **Nasdaq**, via LOBSTER, 10 US stocks, all of 2014 |
+| X3 | Gould & Bonart use `I = Q_bid/(Q_bid+Q_ask) ∈ [0,1]` | **They use the signed `(Q_b − Q_a)/(Q_b + Q_a) ∈ [−1,1]` form** and explicitly contrast it with the `[0,1]` form in a footnote. Stoikov's micro-price uses the `[0,1]` form. **These are different variables and mixing them silently is a real bug.** The schema names which is which |
+| X4 | Gould & Bonart report a pseudo-R² | **No pseudo-R² appears anywhere in the paper.** The metrics are AUC and mean squared residual |
+| X5 | Stoikov's micro-price is on arXiv | **It is not.** *Quantitative Finance* 18(12):1959–1966 (2018), DOI 10.1080/14697688.2018.1489139, and SSRN 2970694. Code: <https://github.com/sstoikov/microprice> |
+| X6 | The micro-price is `lim_{k→∞} E[M_{t+k}]` in clock time | **Wrong, and the error matters.** The limit is over successive **mid-price-change events** `τ_i`. That is why it is horizon-independent |
+| X7 | Lu & Abergel, "High-dimensional Hawkes processes for limit order books", arXiv:1706.xxxxx | **The paper is real; the arXiv ID is not.** *Quantitative Finance* 18(2):249–264 (2018), DOI 10.1080/14697688.2017.1403142; preprint on HAL, **not arXiv**. arXiv:1706.03411 is a *different* paper (C11) in the same issue at adjacent pages. **Do not cite Lu & Abergel with an arXiv number** |
+| X8 | Cont et al. (2014) showed deeper book levels do not matter | **Superseded and explained.** Xu et al. show the opposite; the difference is OLS + in-sample R² versus Ridge + out-of-sample RMSE under severe multicollinearity (§3.2) |
+| X9 | Deeper MLOFI coefficients decay quickly | **Refuted for large-tick names, where they slightly *increase* with level** (§3.2) |
+
+### 10.3 Sourcing caveats — read from a secondary or primary-adjacent source
+
+| # | Item | Caveat |
+|---|---|---|
+| S1 | The Stoikov micro-price construction (§4.1) | Journal text and SSRN are **paywalled and were not read.** Verified against Stoikov's own conference deck (same theorems, same BAC/CVX March-2011 data): <https://www.ma.imperial.ac.uk/~ajacquie/Gatheral60/Slides/Gatheral60%20-%20Stoikov.pdf>. Items marked † in §4.1 should be confirmed against the journal text |
+| S2 | Cont et al. (C1) and Gould–Bonart (C2) numeric tables | Read from the **arXiv preprints**; the published JFE (2014) and MML (2016) versions are paywalled. CKS's arXiv v3 predates the journal version by ~3 years, so table values could in principle have been revised in review |
+| S3 | **Kalshi fee formulas** — taker `ceil(0.07·C·P·(1−P))`, maker `ceil(0.0175·C·P·(1−P))` | **INFERRED from secondary sources only** (<https://pm.wiki/learn/kalshi-fees-explained>, <https://marketmath.io/platforms/kalshi>, <https://whirligigbear.substack.com/p/makertaker-math-on-kalshi>). Sources agree on the taker coefficient and the 1.75¢ peak; they disagree on whether maker fees apply universally or only to some markets. **§6.6 and §7 both depend on these numbers. Read the venue's own schedule before relying on any threshold in this document, and re-read on a cadence — a schedule change silently invalidates them** |
+| S4 | Kalshi `trade` and `ticker` channel payload field lists (§9.1) | **INFERRED from a third-party mirror of the venue docs.** Field naming is consistent with the `*_fp` / `*_dollars` conventions our own code already handles, which is corroborating but not proof. **UNVERIFIED on our own wire** — the demo capture was 4 records and contained no trade print. Verify in the first live session |
+| S5 | Hawkes finite-sample bias floor of "200–400 events" | **Primary source not opened.** Order of magnitude only, and it is a *univariate* figure |
+| S6 | Lu & Abergel's "very poor convexity properties of the MLE" | Quoted from indexed abstract text, not from the publisher's page |
+
+### 10.4 Stated non-findings
+
+Recorded because an absence of evidence is itself information:
+
+- **No paper was found benchmarking Hawkes-derived order-flow features against EWMA /
+  rolling-count intensity features for short-horizon price prediction, out of sample.** After
+  15+ years of LOB Hawkes work, that gap is notable. It is not a negative result and is not
+  presented as one.
+- **No Hawkes literature exists on any prediction market or betting exchange** — Kalshi,
+  Polymarket, Betfair, sports exchanges. Nothing found.
+- **No published fill-probability model was found for a prediction-market CLOB.**
+
+---
+
 ## 11. Open questions and next steps
+
+### 11.1 Decisions needed before any implementation
+
+| # | Question | Why it blocks | Owner |
+|---|---|---|---|
+| Q1 | **Should `trade` be in the default collector subscription?** | Most of schema groups C and D are unpopulated without it (§9.4.1). It is already allowlisted and already entitled, so this is configuration, not a boundary change — but it changes archive volume against unmeasured rotation constants | KALSHI-LIVE-TAPE-COLLECTOR-001 |
+| Q2 | **Where does `time_to_close` come from?** | Arguably the most important conditioning variable for an expiring contract, and it is not on the WebSocket. A one-shot read-only REST metadata fetch is inside the capability boundary but outside the collector milestone's stated non-goals. **Do not add a REST loop silently** | Needs an explicit decision |
+| Q3 | **Verify the Kalshi fee schedule from the venue's own publication.** | §6.6 and §7 are quantitatively built on it, and it is currently INFERRED (S3) | Before any EV threshold is used |
+| Q4 | **Confirm the `trade` and `market_lifecycle_v2` payload shapes on our own wire.** | S4. Cheap — one live session with `--channels` set | First live session |
+| Q5 | **Does Kalshi coalesce multiple order events into one `delta_fp`?** | Determines whether `order_arrival_intensity` is a count or an undercount (§9.2) | First live session, measurable |
+| Q6 | **Does hidden/iceberg liquidity exist on Kalshi?** | If it does, `C_execution` is overstated. Assumed zero, the conservative direction | Measurable by comparing trade prints against pre-trade visible depth |
+
+### 11.2 Measurements this document is waiting on
+
+1. **The production event rate**, per contract and across the universe. Every sample-size
+   claim here is conditioned on a number we have never measured (only 4 records over ~2
+   minutes on DEMO). Until then, treat every "expect this to be absent" judgement as a
+   hypothesis.
+2. **The empirical distribution of `spread_regime`** across the Kalshi universe. §3.4 and
+   §4.3 restrict most modelling to `TOUCHING`/`NARROW`. If those regimes are rare, the
+   addressable universe is much smaller than the contract count suggests, and that should
+   be known before anything is built.
+3. **`E[adverse selection]` as a fraction of `normalized_vol`** (§6.5). The port of the
+   Albers magnitudes to Kalshi is INFERRED and needs its own estimate.
+4. **The Hawkes-vs-EWMA horse race** (§5.6.3) — a day's work against the archive once a
+   tape exists, and it settles the question with our own data. **It is a measurement, not
+   a modelling commitment.**
+5. **The clock-offset bound** (§6.7). Currently NOT MEASURED, biasing `data_age_us` by an
+   unknown sign.
+
+### 11.3 What this document deliberately does not do
+
+- It designs no production code, proposes no order placement, and enables nothing. The
+  capability boundary (`OBSERVE_ONLY`, read-only GETs, the closed channel allowlist) is
+  unchanged and untouched by anything here.
+- It does not produce `p̂`. The forecast lane owns `E[terminal value]`; this document owns
+  everything subtracted from it.
+- It does not propose a strategy. §6.6(a) is the reason: the best-case documented
+  microstructure edge does not cover the venue's round-trip fee, so the honest output of
+  this track is an **execution-quality layer** for positions taken on forecast grounds —
+  not a signal.
+
+### 11.4 The three findings to carry forward
+
+1. **The fee is the dominant term, and it is larger than the documented signal.** At
+   P = 0.50, round-trip maker fees (0.875¢) exceed the 0.70¢ expected value of a *perfect*
+   one-tick-ahead prediction at Gould & Bonart's strongest measured effect size; round-trip
+   taker fees (3.50¢) are five times it. Microstructure on Kalshi is an execution-cost
+   tool, not an alpha source. Any proposal that says otherwise should be measured against
+   this comparison.
+2. **Maker execution must never be optimised for fill rate, and the reason is mechanical
+   rather than statistical.** Under a requote-on-move policy, `P(fill | favourable next
+   move) = 0` and `P(fill | adverse next move) = 1` **by construction**, on any CLOB. §7
+   gives six structural encodings, of which the load-bearing one is the strictly-positive
+   conditional-markout precondition applied *regardless* of `P_f`.
+3. **Queue position at fill is unobtainable on Kalshi**, and the assumption needed to
+   model it cannot be validated under `OBSERVE_ONLY`. Therefore **maker paper P&L must be
+   reported as a bracket**, and the first prospective paper P&L should be **taker-only** —
+   more expensive, exactly computable, and free of unidentifiable parameters.
