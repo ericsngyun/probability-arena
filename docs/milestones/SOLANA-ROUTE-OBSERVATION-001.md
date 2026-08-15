@@ -364,27 +364,77 @@ other requires a curve model, and this milestone deliberately does not carry one
 The ratios are used only to choose probe sizes, which is a question about the
 instrument, not about the answer.
 
-### 4.2.1 The measurement's limits, and what would make me revisit the ladder
+### 4.2.1 Why the anchor is measured at QUOTE time — and a retraction
 
-Recorded honestly, because a ladder calibrated on a weak sample is still a
-ladder calibrated on a sample:
+**A claim in the previous draft of this section was wrong, and the measurement
+is what showed it.** That draft argued the observation-time distribution was
+biased **upward** — that a token only enters it if the provider returned a
+usable, identity-matching pair carrying a liquidity state, so the true
+population must be thinner and the rungs should if anything be smaller. Both
+halves of that were unsupported. The retraction is recorded rather than quietly
+edited out, because a wrong reason for a right ladder is still a wrong reason,
+and the next reader needs to know which argument is load-bearing.
 
-- **n = 42**, drawn from roughly the first three hours of a lane activated on
-  2026-08-15. This is a small sample and a short window.
-- **It is a distribution of OBSERVED pools, not of all births.** A token only
-  enters it if the provider returned a usable, identity-matching pair with a
-  liquidity state at observation time. Tokens whose pools died, never carried a
-  liquidity state, or failed identity are absent. **That bias most likely runs
-  UPWARD** — the observed sample is probably deeper than the true birth
-  population — which argues for rungs at or below these values, not above them.
-  Sample growth does **not** remove this bias; it is structural.
-- Nothing here says the distribution is stable. Memecoin liquidity regimes shift.
+Two effects act on the distribution. They run in opposite directions, and their
+measured magnitudes are not comparable.
 
-**What would make me revisit — and the cost of waiting.** The honest statement
-is that revisiting has a hard deadline: **the ladder must freeze before CP-1**,
-and CP-1 gates every checkpoint after it. Waiting for n to grow delays the whole
-milestone while the 24h observations mature without a quote lane, and it does
-not fix the observed-pools bias. More importantly, once quoting begins there is
+**Effect 1 — liquidity DECAY. Dominant, and it runs DOWNWARD.** Measured on EVO,
+`crypto_token_birth_events`, last 25h:
+
+```
+initial_liquidity_usd at BIRTH, eligible births (n=170)
+  p0 $1,414   p25 $10,059   p50 $13,586   p75 $21,712   p90 $33,392   p100 $348,926
+
+liquidity_usd at OBSERVATION, cohort 8 (n=42)
+  p0 $1,592   p25 $ 1,936   p50 $ 2,860   p75 $11,578   p90 $17,655   p100 $167,041
+```
+
+Median liquidity falls **$13,586 → $2,860, a 4.75x drop (~79%)**. The observed
+distribution is not a survivor-biased-upward sample of the birth population; it
+is a **decayed snapshot** of it.
+
+The decay is also **not uniform, and it bites hardest exactly where the ladder
+has to discriminate**: p25 falls 5.20x and p50 4.75x, while p75, p90 and p100
+fall only 1.88x, 1.89x and 2.09x. The thin end thins fastest, which strengthens
+rather than weakens the case for rungs calibrated to the thin band.
+
+**Effect 2 — survivor exclusion. Real in principle, currently ZERO.** The
+mechanism the previous draft posited would operate by excluding
+`no_liquidity_state` and `provider_no_pair` observations from the liquidity
+distribution. Cohort 8 has **0 of each across all observations recorded to date
+(63 at the time of measurement)**. Nothing has been excluded that way yet. The
+mechanism is genuine and will begin operating as tokens die, but it is currently
+not operative at all and is an order of magnitude smaller than decay. It is
+tracked, not assumed.
+
+**Therefore the anchor is correct because it is measured at quote time.** A
+quote ladder must be anchored on the liquidity that exists **at the moment you
+would trade**, and the observation-time distribution measures exactly that.
+Anchoring on birth-time liquidity would have overstated depth by ~4.75x at the
+median and produced rungs far too large — which is recognisably the direction
+V1's `$5,000` constant was already pulling: $5,000 is 1.75x the observation-time
+median and 0.37x the birth-time median, i.e. it reads as a birth-time-shaped
+threshold applied to a quote-time question. **$2,860 is the right anchor, and V2
+does not need to shrink further.**
+
+### 4.2.2 The sample's limits — these stand on their own
+
+- **n = 42**, drawn from roughly the first three hours of a lane activated
+  2026-08-15. Small sample, short window, one day.
+- **The decay figure is cross-sectional, not longitudinal.** The birth
+  distribution (n=170 over 25h) and the observation distribution (n=42) are
+  different samples, not the same tokens tracked through time. The 4.75x is a
+  difference between two snapshots, not a matched per-token decay curve. It is
+  sufficient for the anchoring decision — which only needs to know what depth
+  exists at quote time, and that is measured directly — but it is not a decay
+  *model*, and this document does not build one.
+- Nothing here says the distribution is stable. Memecoin liquidity regimes
+  shift, and Effect 2 is expected to grow.
+
+**What would make me revisit — and the cost of waiting.** Revisiting has a hard
+deadline: **the ladder must freeze before CP-1**, and CP-1 gates every
+checkpoint after it. Waiting for n to grow delays the whole milestone while the
+24h observations mature without a quote lane. And once quoting begins there is
 no legitimate revisit at all: a ladder re-anchored on data that includes quote
 results is not a preregistration, it is a narrative.
 
@@ -393,9 +443,9 @@ So the pre-committed rule is asymmetric on purpose:
 - **Before CP-1** the rungs may still be re-anchored, on Eric's decision, on
   grounds containing no quote result (§4.5).
 - **After the first quote, the ladder does not move.** If the realized
-  distribution over the CP-7 window turns out to have a median outside roughly
-  [0.5x, 2x] of $2,860, that mismatch is **reported as a stated limitation of
-  the result** — the instrument is not retuned to flatter the measurement.
+  distribution over the CP-7 window has a median outside roughly [0.5x, 2x] of
+  $2,860, that mismatch is **reported as a stated limitation of the result** —
+  the instrument is not retuned to flatter the measurement.
 
 ### 4.3 Denomination — exact integers, no price feed, no drift
 
@@ -446,6 +496,50 @@ cherry-picking one level up. So:
   can never be mistaken for a complete population.
 - **Forbidden:** excluding a token because its quote failed, looked bad, or was
   slow. A failed quote is a row with a typed failure state, not an absence.
+
+### 4.4.1 The coverage ceiling — a FINDING for Eric, not something this milestone fixes
+
+Measured on EVO, `crypto_token_birth_events`, last 25h:
+
+```
+births observed in 25h:                411
+  with first_evidence_at:              411  (100.0%)
+  with initial_liquidity_usd > 0:      170  ( 41.4%)   <- the binding filter
+  ELIGIBLE (both):                     170  ( 41.4%)
+enrolled in cohort 8:                  187
+```
+
+**The enrolment ceiling is 41.4% of births, and the binding constraint is that
+58.6% of births never acquire an `initial_liquidity_usd` at all.** That is an
+enrolment-**eligibility** fact, not an observation failure: those births are not
+missed, not retried, and not recoverable by observing harder. Every one of them
+is outside the population before any provider call is made.
+
+Consequences that reach past this milestone:
+
+- **Any denominator-coverage claim must be stated against 41.4%, not 100%.** A
+  lane reporting "100% of eligible births observed" is reporting against a
+  denominator that has already discarded 58.6% of births. Both numbers are
+  honest; only one of them is the coverage a reader assumes.
+- **This is the ceiling on what CRYPTO-COVERAGE-REPAIR-002 can ever repair.**
+  Reconciliation cannot recover a birth that never had a liquidity state to
+  begin with.
+- **This milestone does not fix it and does not try.** The quote population is
+  the sparse lane's population (§4.4), so it inherits the ceiling exactly. The
+  ladder, the verdict, and every rate this milestone reports are conditional on
+  that 41.4%, and the CP-7 report must say so on its face rather than in a
+  footnote.
+
+Two cautions about reading these counts, so they are not over-differenced:
+
+- **187 enrolled vs 170 eligible is not a contradiction.** The two counts are
+  taken over different windows — a 25h birth window against a cohort whose
+  enrolment window admits births outside it — so the difference is a windowing
+  artifact and not evidence of 17 ineligible enrolments. Confirming that is a
+  question for the sparse lane's own accounting, not for this milestone.
+- Whether 58.6% is stable, or an artifact of one day and one provider, is
+  **unmeasured**. It is recorded here as a finding to be confirmed, not as a
+  constant.
 
 ### 4.5 FROZEN — and what unfreezing costs
 
@@ -1134,6 +1228,15 @@ Consequences for this plan, stated so nobody discovers them at CP-2:
 Ordered by how much they block. The scope doc's Q1, Q3, Q4 and Q6 are **closed**
 (§0.3) and are not repeated.
 
+**F-1 — a FINDING, not a question, and it outlives this milestone.** Only
+**41.4% of births are enrolment-eligible**, because **58.6% never acquire an
+`initial_liquidity_usd`** (§4.4.1). That is the ceiling on what
+CRYPTO-COVERAGE-REPAIR-002 can ever repair, and every denominator-coverage claim
+downstream — including this milestone's — must be stated against 41.4%, not
+100%. This milestone inherits the ceiling and does not fix it. Flagging it
+because a "100% of eligible births observed" headline is true and, read without
+this number, misleading.
+
 **Q-A — ANSWERED, no longer blocking.** *Do you consider G1 and G2 met?* Both
 were measured on EVO after the first draft and both **PASS** (§14.1): 18/18
 exact-identity in-window 6h observations across two clean passes, and 182/182
@@ -1155,10 +1258,13 @@ observed pool.
 
 Two things about V2 you should weigh before approving:
 
-- The sample is **n=42 from ~3 hours**, and it is a distribution of *observed*
-  pools, not of all births — a bias that most likely runs **upward**, i.e. the
-  true population may be thinner still, which would argue for these rungs or
-  smaller, never larger (§4.2.1).
+- The sample is **n=42 from ~3 hours** (§4.2.2). My first draft additionally
+  argued the sample was biased **upward**; that was measured and is **wrong**,
+  and I have retracted it in §4.2.1. The dominant effect is **decay running
+  downward** — median liquidity falls $13,586 at birth to $2,860 at horizon,
+  4.75x — and the survivor-exclusion effect I posited is currently **zero**. The
+  anchor is right *because* it is measured at the moment you would trade, and
+  V2 does not need to shrink further.
 - **The single amendment window is now spent** (§4.5.1). V2 is the last version
   that can be chosen on non-quote grounds. Waiting for a larger sample delays
   every downstream checkpoint and does not remove the observed-pools bias, which
@@ -1231,6 +1337,20 @@ where it re-anchored the ladder. Headline: **median $2,860, 62% below the
 $5,000 floor V1 was anchored on, maximum $167,041 — 6x below the $1,000,000
 saturation point V1 used as its deep-end anchor.**
 
+**M12 — birth-time liquidity and the decay between birth and horizon:
+MEASURED.** `crypto_token_birth_events`, last 25h, eligible births n=170:
+median `initial_liquidity_usd` **$13,586**, falling to **$2,860** at observation
+— **4.75x (~79%)**, and 5.20x at p25 against only 1.88x at p75. This **refuted a
+claim in an earlier draft of this document** that the observed sample was biased
+upward; the retraction is in §4.2.1. It also confirms that the anchor must be
+taken at quote time, not at birth.
+
+**M13 — the enrolment coverage ceiling: MEASURED.** Of 411 births in 25h, 411
+(100.0%) carry `first_evidence_at` but only **170 (41.4%)** carry an
+`initial_liquidity_usd > 0`, which is the binding eligibility filter. Recorded
+as finding **F-1** (§4.4.1, §13) because it bounds every downstream coverage
+claim and is not something this milestone fixes.
+
 **A fourth result worth recording, because it settles a design argument rather
 than a gate.** The exact-token identity gate was verified live in SQL: **0 rows
 where a tick's `token_address` differs from its observation's**, and **3 of 42
@@ -1255,7 +1375,9 @@ the CP-0 implementer, not a claim.
 | **M8** | The endpoint's published rate limit, and its compatibility with the per-pass cap | **UNVERIFIED. No figure is quoted anywhere in this document** | CP-0 item 3 |
 | **M9** | Whether any free source exposes token-2022 transfer-fee / transfer-hook state | **UNVERIFIED** | CP-0, as a one-line check against a provider already integrated. If not, the absence is recorded on **every** row, permanently, and it bounds the strongest verdict CP-7 can reach |
 | **M10** | Solana base fee, priority fee, associated-token-account rent | **NOT VERIFIED, AND DELIBERATELY NOT QUOTED.** Fetching a priority fee is forbidden (§3.2 F6) | out of scope; recorded so its absence is not mistaken for an oversight |
-| **M11** | Whether the n=42 liquidity distribution holds as the cohort grows | **OPEN BY CONSTRUCTION** | it will be re-measured at CP-7, but §4.2.1 pre-commits that a mismatch is **reported as a limitation, not used to retune the ladder** |
+| **M11** | Whether the n=42 liquidity distribution holds as the cohort grows | **OPEN BY CONSTRUCTION** | it will be re-measured at CP-7, but §4.2.2 pre-commits that a mismatch is **reported as a limitation, not used to retune the ladder** |
+| **M14** | When the survivor-exclusion effect starts operating, and how large it gets | **CURRENTLY ZERO — 0 `no_liquidity_state` and 0 `provider_no_pair` across all cohort-8 observations to date** | re-count both at CP-7. It is expected to grow as tokens die; it is tracked rather than assumed, and it does not currently affect the anchor (§4.2.1) |
+| **M15** | Whether the 58.6% no-initial-liquidity share is stable or a one-day artifact | **UNMEASURED beyond the single 25h window** | re-measure over a longer window; F-1's magnitude depends on it, though the existence of the ceiling does not |
 
 **No quote endpoint figure — no pricing, no rate limit, no latency — appears as
 a measured value anywhere in this document.** The only measured numbers here are
