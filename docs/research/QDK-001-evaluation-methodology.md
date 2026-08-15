@@ -481,19 +481,475 @@ a convention.
 
 ## §5. The prospective evaluation protocol, end to end
 
-*(to be filled)*
+Eight phases. The ordering is the protocol — a phase may not be skipped, reordered, or
+run concurrently with a later one. Phases 0–1 use historical data and can only kill
+(§4). Phases 2–6 are the confirmatory path. Phases 7–8 are downstream gates that this
+document specifies but does not open.
+
+```
+  P0 FEASIBILITY ──► P1 PRE-SCREEN ──► P2 REGISTER ──► P3 COLLECT ──► P4 MATURE
+   (historical,        (historical,      (commit,        (dark,         (wait for
+    power only)         kill only)        no data seen)   no looks)      labels)
+                                                                            │
+       ┌────────────────────────────────────────────────────────────────────┘
+       ▼
+  P5 EVALUATE ──► P6 REPLICATE ──► P7 MODELED PAPER P&L ──► P8 CAPITAL GATE
+   (evaluator      (independent      (SAFETY_BOUNDARIES      (§13; not
+    computes,       second window)    PAPER_SIMULATION)       opened here)
+    one verdict)
+```
+
+### 5.1 P0 — Feasibility and power (historical, non-inferential)
+
+**Purpose:** determine whether the experiment *can* conclude before anyone commits to
+running it. This phase exists because our registry already proved its value: 002C
+measured arrival rates and blocked two of three drafts before they wasted a window —
+baseball 410.7 arrivals/day (≈1.2 days to a 500 floor, FEASIBLE), tennis 1.2/day
+(≈164 days against a 180-day window, MARGINAL), soccer 0.0/day since 2026-07-23
+(NOT FEASIBLE).
+
+**Outputs, all required before P2:**
+
+| Output | Definition |
+|---|---|
+| `arrival_rate` | Registered-universe members per calendar day, measured over ≥14 days |
+| `attrition_curve` | Fraction of enrolled members reaching each declared horizon with a real observation |
+| `expected_scoreable_n` | `arrival_rate × window_days × P(reaches terminal horizon)` |
+| `time_to_floor` | Days until `expected_scoreable_n` ≥ `sample_floor` |
+| `minimum_detectable_effect` | The smallest effect the floor can resolve at the corrected alpha (§11) |
+
+**Binding rule.** If `time_to_floor` exceeds the declared window, registration is
+**refused**, not attempted-and-abandoned. The `minimum_detectable_effect` must be
+declared in the registration record and must be *smaller than the hypothesized effect* —
+an experiment powered only to detect an effect larger than the one you predict is a
+coin flip wearing a lab coat.
+
+The attrition curve is not optional decoration. Our crypto lane's real numbers are
+brutal: 24h coverage of **4.6%**, with a median last tick ~83 minutes after birth
+(`docs/milestones/CRYPTO-COVERAGE-REPAIR-002.md`). Any 24h-horizon crypto experiment
+whose power analysis assumes it observes what it enrolls is off by more than an order of
+magnitude.
+
+### 5.2 P1 — Pre-screen (historical, kill-only)
+
+Run the hypothesis against history under the **most favourable** admissible assumptions:
+full contamination allowed, frictionless, no attrition. Then apply the Asymmetry Rule.
+
+- **Fails the pre-screen** → the hypothesis is retired. Record the refutation. No
+  prospective cost is incurred. This is the cheap kill and it should catch most ideas.
+- **Passes the pre-screen** → **nothing has been established.** The result is recorded as
+  `pre_screen_survived` and carries *zero* evidential weight into P5. It may not be cited,
+  aggregated, or reported as support.
+
+The pre-screen must additionally run the **cost-first check** that F5 says we skipped: if
+the hypothesis is already negative after the registered cost model at frictionless-best
+assumptions, it dies here. Every one of the six EDGE candidates would have died at this
+step, weeks earlier and for free.
+
+Time-consistent splitting (§6) applies to the pre-screen. A pre-screen that leaks is
+*more* favourable to the hypothesis, which under the Asymmetry Rule makes a failure even
+more damning — but a leaky pre-screen that *passes* tells you nothing you did not already
+know, so the splitting discipline is still worth its cost.
+
+### 5.3 P2 — Registration (the commitment)
+
+The registration record (§9) is completed and cryptographically committed **before any
+prospective data exists**. The commitment covers hypothesis, typed population predicates,
+universe, horizons, primary metric, cost model, sizing rule, sample floor, stopping rule,
+multiplicity family, and evaluation date.
+
+`start_time` is assigned by the registry, never by the author — this is already enforced
+(`experiment_registry.py` rejects author-supplied `start_time`) and it is the single most
+important anti-gaming property in the current implementation. Registration also pins the
+digests of the evaluation code, the metric code, the predicate schema, and the field
+registry, so that a later change to how a metric is computed is *detectable* rather than
+silent.
+
+**Only members whose decision timestamp is strictly after `start_time` are eligible.**
+This is enforced by the `gte_registration_time` predicate operator, not by a filter an
+analyst remembers to apply.
+
+### 5.4 P3 — Collection (dark, and genuinely no looks)
+
+Data accumulates. **The interim-look budget is zero by default.**
+
+If interim looks are required (for an operational reason, e.g. confirming the collector
+is alive), they are declared *at registration* with a count and a purpose, and they may
+return only **liveness** fields: arrival count, coverage fraction, error states. They may
+**not** return the primary metric, any secondary metric, any per-arm breakdown, or any
+quantity from which those are recoverable. An implementation that cannot enforce that
+separation must return nothing.
+
+This is where F9's lesson bites hardest. The failure was not that someone peeked; it was
+that the decision moment was chosen by a human who had seen the data. Making looks
+metric-blind removes the ability to choose the moment.
+
+### 5.5 P4 — Maturation
+
+The experiment transitions to `matured` when the declared stopping condition is met —
+evaluated **by the evaluator against the clock and the data**, not asserted by the author.
+
+A live defect must be fixed before this protocol is trusted: today the evaluator permits
+evaluation from `collecting` and even `registered`, recording it merely as a deviation
+(`experiment_results.py:831`), which contradicts both the 001 design ("Evaluation is
+refused before the `matured` state") and `status()`'s own
+`evaluation_permitted = state in (MATURED, EVALUATED)`. **The protocol requires the strict
+form: evaluation from a non-matured state is refused, not annotated.**
+
+**Metric admissibility (from F6).** A primary metric must be a bounded, unit-declared
+quantity with a defined aggregation. An unbounded ratio of a signed quantity to a
+selected-small denominator — the `closure` metric — is **not admissible as a primary
+metric** in any form. It may be reported as descriptive.
+
+### 5.6 P5 — Evaluation (one run, one verdict, evaluator-computed)
+
+The evaluator recomputes everything from the committed record. The author supplies only
+`experiment_id`, `confirm`, and operator notes — no population, count, metric, end time,
+or verdict. The existing implementation already has this signature lock and it should be
+preserved exactly.
+
+Evaluation order, with verdict precedence running top to bottom (integrity beats
+arithmetic, always):
+
+1. **Chain integrity** — event chain and result chain verified; broken chain → refuse.
+2. **Code and canon drift** — pinned digests recompared. Unknown drift is material.
+   *(Live gap: `canon_digests` are pinned but never compared, and `SAFETY_BOUNDARIES.md`
+   has already drifted undetected. §10 requires this closed.)*
+3. **Population reconstruction** — membership rebuilt from forecast-time fields only,
+   independently recomputed, and refused on disagreement.
+4. **Composition / representativeness** (F8) — evaluated sample composition vs registered
+   universe composition. Material drift blocks a favourable verdict.
+5. **Attrition accounting** (F7) — disposition buckets must sum to the enrolled count.
+6. **Stopping-rule satisfaction** (F9) — window bounds checked against the real clock;
+   evaluation outside the declared window is a deviation that downgrades **in both
+   directions**.
+7. **Sample floors** (F3) — total and per-arm, evaluator-computed. Below floor →
+   `inconclusive_sample_floor`, and `supports_hypothesis` is unreachable.
+8. **Cost application** (F5) — net computed before gross is displayed (§7).
+9. **The number, with its interval** (F2, F6) — cluster bootstrap, multiplicity-corrected
+   (§11).
+10. **Control check** (F4) — each anomaly condition evaluated and **reported separately**,
+    combined as a conjunction. The control must be mechanism-independent and specified
+    without reference to any in-sample ranking.
+
+The **first terminal verdict is pinned** and never moves; re-evaluation is permitted only
+with an explicit recorded reason and is stamped `superseded_by_protocol`. This closes the
+peek-until-favourable route and is already implemented.
+
+### 5.7 P6 — Replication
+
+**A single passing experiment is not a finding.** F4 established why: the entire
+eight-cohort ranking on one window was noise, and the prereg's own trigger required
+"successive" windows. A confirmatory claim requires a **second, independent, separately
+registered window** with the same committed record, a non-overlapping population, and its
+own evaluation.
+
+The replication carries no multiplicity discount of its own — it is one pre-declared test
+of one hypothesis — but its registration must cite the first experiment's digest, so the
+family is traceable (§11).
+
+### 5.8 P7 — Modeled paper P&L
+
+Only after P6. Governed entirely by `docs/SAFETY_BOUNDARIES.md`: modeled fills only, every
+artifact carrying its model identifier and modeled-vs-observed basis, no real fills,
+orders, positions, or capital, and no dollar EV. Note that this phase is *also* gated by
+`ADR-004` sequencing, which this document does not amend.
+
+### 5.9 P8 — Capital gate
+
+See §13. Not opened by this document.
+
+---
 
 ## §6. Time-consistent validation: purge, embargo, walk-forward
 
-*(to be filled)*
+This section governs the **P1 pre-screen** and **cost-model fitting**. Per §4 it is not a
+route to confirmation, and no arrangement of splits converts a backtest into confirmatory
+evidence. It exists because a leaky pre-screen wastes the one cheap kill we get.
+
+### 6.1 Why naive k-fold is invalid here — four reasons, not one
+
+The usual statement is "time series are ordered". That is the weakest of the four:
+
+1. **Label overlap.** A label formed over `[t, t+H]` shares its formation window with
+   every neighbouring label within `H`. Random folds put a training label and a test label
+   that were computed from *the same future price path* on opposite sides of the split.
+   The test set is then partly a function of the training labels.
+2. **Serial correlation of features.** Adjacent snapshots are near-duplicates. Random
+   splitting scatters near-duplicates across folds, so the test fold measures memorization,
+   not generalization.
+3. **Entity clustering.** This is the one our data punishes hardest and the one k-fold
+   ignores entirely. Dozens of Kalshi markets belong to **one game**; many observations
+   belong to **one token**. The independent unit is the *event*, not the row. Our discovery
+   window was "all `sports_baseball`" with persistence "mostly 1 snapshot (203 of 217)" —
+   effective sample size far below nominal.
+4. **Regime non-stationarity.** Prevalence itself moved 0.3743 → 0.4258 across one drain,
+   and the baseline follow-through "swung positive with no system change". k-fold averages
+   across regimes and reports the average as if it were stable.
+
+### 6.2 Purge and embargo, with lengths for our horizons
+
+**Purge** removes from the training set every observation whose *label formation window*
+overlaps the test window — it addresses reason 1. Purge length = the full label horizon.
+
+**Embargo** removes an additional buffer *after* the test window before training resumes —
+it addresses reasons 2 and 4, and the general fact that information propagates for longer
+than the label takes to form.
+
+**Both are applied at the cluster level, not the row level** (reason 3). Purging a row
+while its sibling markets on the same game remain in training accomplishes nothing.
+
+| Lane | Label horizon `H` | Purge | Embargo | Cluster unit | Total gap |
+|---|---|---|---|---|---|
+| Kalshi intraday follow-through | 60 min | 60 min | **24 h** | **game / event** | ~25 h |
+| Kalshi market resolution (calibration) | to settlement (hours–days) | full declared max horizon | **7 d** | **event** | horizon + 7 d |
+| Solana survival, short bands | 15 min / 1 h | = band | **6 h** | **token** | ≤ 7 h |
+| Solana survival, long bands | 6 h / 24 h | = band | **48 h** | **token + launch-hour cohort** | ≤ 72 h |
+
+**Rationale for the embargoes, which are deliberately longer than the textbook default:**
+
+- *Kalshi 24h.* The natural clustering unit is a slate. Markets on a given day share
+  weather, lineups, injury news, and one liquidity regime. An embargo shorter than a full
+  daily cycle leaves same-slate contamination intact. The 60-minute label horizon is a red
+  herring for embargo purposes.
+- *Kalshi calibration 7d.* Resolution-horizon labels can settle days later, and the
+  research packet feeding a forecast draws on a news window that is itself days wide.
+- *Solana 48h on long bands.* Launch cohorts are correlated: tokens born in the same hours
+  share a market regime, and frequently a deployer. The cluster unit therefore includes the
+  **launch-hour cohort**, not just the token. 48h is two full 24h label spans, which is the
+  minimum that guarantees no test-window token's label window touches a training token's.
+
+**Where a length is uncertain, the protocol requires the longer value.** Under the
+Asymmetry Rule an over-long embargo costs sample (making a kill harder to achieve, i.e.
+conservative in the direction of *not* killing) while a too-short one manufactures false
+survival. The asymmetry of the error justifies the asymmetry of the default.
+
+### 6.3 Walk-forward
+
+Use **rolling-origin** (fixed-width training window) rather than anchored/expanding for
+anything microstructural, because reason 4 dominates: an expanding window increasingly
+averages over dead regimes. Use **anchored/expanding** for calibration measurement, where
+the quantity of interest is a long-run property and more data genuinely helps.
+
+Each fold reports its own n, its own composition, and its own interval. **A walk-forward
+result is reported as the vector of fold results plus the worst fold — never as the mean
+across folds alone.** A mean across folds is exactly how "one fleeting 48h window printed
+`blocked: False`" became a candidate: the aggregate hid that the result lived in one fold.
+
+### 6.4 The combinatorial-purging caution
+
+Combinatorially recombining purged folds raises the number of effective trials, and every
+one of those trials is a look at the data. If it is used, the trial count enters the
+declared family size for §11. This is F1 in a new costume: a method that multiplies looks
+is a search, and a search must be declared.
+
+---
 
 ## §7. Transaction-cost realism: gross, net, and the headline rule
 
-*(to be filled)*
+### 7.1 The rule
+
+> **Net is the only headline number.** Gross is reported adjacent to it, always, and never
+> alone. A result stated gross-only, or a summary that carries gross without net, is out
+> of protocol and is not produced.
+
+This is a direct structural fix for F5, and it is reinforced by both citations: the field
+audit found **1/19** studies disclosing any cost model, and PolyBench's celebrated
+"2 of 7 profitable" is a **no-fee, five-levels-deep, small-size** figure whose own authors
+report that profitability "violently contracts" with size. Our own history is more
+pointed: after fees, `cohorts_positive_after_costs: NONE`.
+
+The requirement that costs be *charged from a model of the actual book or route* rather
+than a flat fee is not pedantry. A flat fee is a constant; it shifts every result equally
+and preserves the ranking. A depth-aware cost is a *function of the position*, and it
+reorders results — small-edge/deep-book opportunities survive it while
+large-edge/thin-book ones do not. Since our crypto lane's median observed pool is **$2,860**
+and the pre-registered notional ladder's third rung is $150 (~5% of that pool), the cost
+term is not a rounding correction. It is the dominant term.
+
+### 7.2 The cost model is a registered object
+
+`cost_model` is a required field of the registration record (§9), committed with the
+hypothesis and pinned by digest. It declares, per venue, every cost term and the
+**basis** of each — `OBSERVED`, `MODELED`, or `BOUNDED` — inheriting the typed-absence
+doctrine already established for route quotes: "`0`, `0.0`, `""`, `"unknown"`, `-1`, and
+'the previous pass's value' are all **forbidden** stand-ins. Zero is an affirmative claim;
+absence is not a claim."
+
+**Kalshi** (the machinery for this already exists in `app/services/edge_cost.py`):
+
+| Term | Basis | Note |
+|---|---|---|
+| Half-spread | OBSERVED | from the snapshot spread, tick fallback |
+| Taker fee | MODELED | round trip at both entry and horizon; no maker rebates, no rounding down |
+| Executable touch | OBSERVED | ask→bid or bid→ask by side; rows without usable touch quotes are **uncovered, never guessed** |
+| Queue position, partial fill, market impact | **absent** | must be declared as a BOUNDED omission, not silently zero |
+
+**Solana** (from the route-quote design; note that most of this is *not yet built*):
+
+| Term | Basis | Note |
+|---|---|---|
+| Price impact at notional | OBSERVED | from the quote response, never recomputed from our own mid |
+| Route/pool fees | OBSERVED where the venue reports it | "No default fee, no assumed bps, no per-dex fee table" |
+| Priority fee, base fee | **BOUNDED — non-closable** | fetching a priority fee is *forbidden* by the safety boundary |
+| Token-2022 transfer fee / hooks | **BOUNDED — non-observable** | "If present and unaccounted, every quote is wrong by an unknown multiplicative factor" |
+| Realized slippage, landing probability, MEV | **BOUNDED — non-observable** | require submitting a transaction |
+
+### 7.3 Non-closable cost terms get a declared adverse bound, never a zero
+
+Several Solana terms cannot be measured within our boundary and never will be. The
+protocol's answer is neither to ignore them nor to abandon the lane:
+
+> Every non-observable cost term carries a **declared adverse bound**, registered before
+> data is seen. Net is computed **twice**: at the observed/modeled terms alone
+> (`net_partial`) and with every bounded term charged at its adverse bound
+> (`net_conservative`). **`net_conservative` is the headline.**
+
+This converts an unknown into a stated worst case, which is a claim that can be
+falsified later, rather than into a silent zero, which cannot.
+
+### 7.4 The cost-kill multiple
+
+Because a meaningful part of the cost stack is bounded rather than measured, a single net
+number under-states the fragility. Every result therefore reports one robustness scalar:
+
+> **κ (cost-kill multiple)** = the multiple of the total modeled cost at which the net
+> result crosses zero.
+
+Interpretation, and a hard gate:
+
+- **κ < 1** — already dead. The result is negative at the modeled cost.
+- **1 ≤ κ < 2** — **not robust; may not support a confirmatory claim.** Our cost stack has
+  non-closable terms and a 25h-window-old liquidity estimate; a result that dies if costs
+  are twice the model has not survived our own measurement error.
+- **κ ≥ 2** — reportable, with κ stated on the artifact.
+
+κ is cheap to compute, hard to game (the evaluator computes it), and it is exactly the
+number that would have made the EDGE candidates' fragility legible before the cost model
+was written: at frictionless +0.10..+0.30 going to −0.03..−0.21 under one fee assumption,
+their κ was well below 1.
+
+### 7.5 Provenance
+
+Every net number is a modeled fill and therefore carries, on the artifact itself, its
+model identifier and its modeled-vs-observed basis, per `docs/SAFETY_BOUNDARIES.md`. §0
+states why this protocol treats that as a measurement requirement: **a net number whose
+cost basis is untraceable is not a weaker result, it is not a result.** And per the same
+boundary, size is a stated *input*, never an output — nothing in this protocol may derive,
+optimize, rank, or recommend a size from a modeled result.
+
+---
 
 ## §8. Universe construction and survivorship
 
-*(to be filled)*
+Severity ordering: this is the most dangerous section for the Solana lane and the section
+where our own worst measurement error (F8) actually happened.
+
+### 8.1 The decision-time rule
+
+> The universe is fixed at a **single declared decision timestamp** per member, using
+> **only information observable at or before that timestamp**, and membership is decided
+> by a **closed typed predicate** over an allowlisted set of fields each carrying
+> `available_at`. No prose rule, no analyst filter, no post-hoc exclusion.
+
+This is already the right shape in-repo and should be preserved rather than reinvented:
+13 allowlisted fields, every one carrying `available_at="forecast_creation"`,
+`immutable_after_forecast=True`, and an evaluator that reconstructs membership
+independently and refuses on disagreement. Anything absent from the field registry is
+**refused**, so the guard fails closed against fields nobody thought to blacklist.
+
+For Solana the decision timestamp is **enrollment, anchored on `first_evidence_at`, with
+no fallback** — deliberately not `observed_at`, which is the tape run time rather than a
+birth time. The available information is birth-event fields only. Critically, the sparse
+lane applies **no liquidity, volume, risk, venue, or boost filter** within the eligible
+population, precisely to keep the denominator honest, and its cap is applied by
+deterministic id order and "**never** by any property of the token".
+
+### 8.2 The denominator is stated against 41.4%, on the face of every result
+
+**VERIFIED:** of 411 births in a 25h window, 411 had `first_evidence_at` but only **170
+(41.4%)** had `initial_liquidity_usd > 0`. The binding constraint is that **58.6% of
+births never acquire an `initial_liquidity_usd` at all** — which makes them
+enrollment-*ineligible*, not observation-failures: "those births are not missed, not
+retried, and not recoverable by observing harder."
+
+Two rules follow:
+
+1. **Every rate is reported against 41.4% of births, never 100%, and the ceiling appears
+   on the face of the report rather than in a footnote.** A "90% coverage" claim over a
+   denominator that has already discarded 58.6% of births is a 37% claim.
+2. **The 58.6% exclusion is itself a selection event and must be characterized, not just
+   disclosed.** Tokens that never acquire a liquidity reading are unlikely to be a random
+   sample of births — they plausibly skew toward the shortest-lived and least liquid. This
+   biases the enrolled population toward *survivors* before enrollment even begins. Its
+   stability is currently **UNMEASURED beyond one 25h window and one provider**, and any
+   confirmatory Solana claim must treat that as a declared limitation.
+
+### 8.3 Dead members stay in the denominator — the disposition ledger
+
+> Once enrolled, a member **never leaves the denominator**. It moves to a typed
+> disposition, and the dispositions must **sum exactly to the enrolled count**. The
+> evaluator computes the sum and refuses the result if it does not balance.
+
+This is the structural fix for F7 — the silent drop of markets that stopped quoting — and
+it is the single mechanical check that makes survivorship bias visible instead of
+invisible.
+
+Disposition buckets (extending the existing survival vocabulary):
+
+| Disposition | Meaning |
+|---|---|
+| `observed_at_horizon` | A real in-band observation exists. The only bucket that produces a label. |
+| `died_liquidity_removed` | Liquidity fell below `0.3 ×` initial (`SURVIVAL_LIQUIDITY_FRACTION`) |
+| `died_volume` | 24h volume below `$500` at ≥6h after birth (`DEAD_VOLUME_24H_USD`) |
+| `graduated_or_migrated` | Moved off the launchpad DEX set |
+| `never_observed_evidence_gap` | We failed to observe. **Our failure, not the token's outcome.** |
+| `horizon_unreached_censored` | Still alive, horizon not yet due — right-censored |
+
+**The critical distinction, already correct in our code and worth protecting: NULL is not
+death.** "NULL = not yet measurable or gap, never a guess." Collapsing
+`never_observed_evidence_gap` into `died_*` would let an observation failure masquerade as
+a finding — and given our measured 24h coverage of **4.6%**, that collapse would
+manufacture a ~95% "death rate" out of a monitoring gap.
+
+**Consequence that must be stated plainly:** at 4.6% coverage at 24h, a 24h-horizon
+Solana experiment is currently **not evaluable**, and P0 (§5.1) should refuse to register
+it. The honest 24h denominator is not the enrolled cohort; it is the 54 of 1,182 finalized
+outcomes carrying a real 24h observation. This protocol's job here is to make that refusal
+automatic rather than to let an under-powered experiment run and produce a number.
+
+### 8.4 Representativeness is a computed, blocking check
+
+The structural fix for F8. Every result carries a composition statement comparing the
+**evaluated sample** against the **registered universe** across every declared
+stratification field, and the evaluator **blocks a favourable verdict on material drift**.
+
+Three specific tests, each drawn from a real failure:
+
+- **Prevalence drift.** Report `ō` for the evaluated sample and for the universe. Brier's
+  irreducible term is `ō(1−ō)`, so a prevalence shift moves the headline for a reason that
+  has nothing to do with skill — this is exactly the 0.1800 → 0.1908 move. **Any Brier-like
+  metric must be reported alongside its base-rate baseline, and skill-vs-baseline is the
+  comparable quantity, never raw Brier.**
+- **Composition/domain share.** Our scored sample is ~85.3% baseball, so "overall Brier" is
+  approximately "baseball Brier", and daily cohorts run `top_domain_share` 0.99–1.00 —
+  "baseball-only comparisons wearing a date label". Per-stratum n and share are mandatory.
+- **Degenerate strata.** Soccer's Brier of 0.003297 on n=34 with 97% "no" outcomes "was
+  never a measurement". A stratum whose prevalence is within 5% of 0 or 1, or below its
+  declared floor, is reported as `inconclusive` and **may not contribute to a headline**.
+
+The instruments for this already exist in-repo (`SCORED_SAMPLE_IS_NOT_REPRESENTATIVE`,
+`RELIABILITY_SAMPLE_NOT_REPRESENTATIVE`, `COMPOSITION_SHIFT_DOMINATES`). They were
+branch-only and undeployed during the EDGE episode. **Deploying them is a precondition of
+this protocol, not an enhancement to it.**
+
+### 8.5 No cross-population comparison
+
+"**The new aggregate must not be compared with the old one directly.**" A metric computed
+over a different population is a different quantity, not a better estimate of the same
+one. Longitudinal claims must re-baseline, because prevalence is non-stationary
+(0.3743 → 0.4258 over one drain). The evaluator enforces this by refusing to compare
+results whose `population_digest` differs.
 
 ## §9. The preregistration record schema
 
