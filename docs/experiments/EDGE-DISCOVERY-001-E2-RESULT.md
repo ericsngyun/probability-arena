@@ -18,6 +18,17 @@ against it. The negative net numbers below are *costs*, not direction.
   **before** any statistic here was computed, commit `448c6d0`).
 - Script: `docs/evidence/qdk-001/e2_leadlag.py` — raw output
   `docs/evidence/qdk-001/e2_leadlag_results.json`.
+- **Interpreter and numerics.** The analysis script is **pure Python standard
+  library** and was run on `/Users/ericyun/code-stuff/probability-arena/.venv/bin/python`
+  (CPython 3.12.3), which has **neither numpy nor scipy** installed; installing
+  was not authorised. This changed no part of the specification — drawing `E`
+  events with replacement is exactly the multinomial cluster draw of D-3(6). All
+  point estimates, per-observation cost floors, `n`, event counts and direction
+  signs were then **independently cross-checked against a separate numpy
+  implementation** written from the preregistration text rather than from the
+  script (`/usr/local/bin/python3`, numpy 2.1.3). **Worst absolute disagreement
+  across every checked quantity: 1.8 × 10⁻¹⁶** — floating-point noise. The
+  bootstrap intervals are from the stdlib implementation only.
 - Authorises no capital, no orders, no execution. §6's stopping rule is
   unaffected by E2 alone.
 
