@@ -874,11 +874,171 @@ unchanged). See §12.
 
 ## 9. Selection bias — you observe the sizes traders chose
 
-*(pending)*
+This is the single largest methodological weakness of the whole approach, it is
+**not** fixed by collecting more data, and it deserves more than a caveat.
+
+### 9.1 The identification problem, named
+
+In a designed experiment the input `x` is chosen independently of the response.
+`SOLANA-ROUTE-OBSERVATION-001` §4 is exactly that: a frozen ladder of four
+notionals applied to every token regardless of what the token looks like.
+
+An observational swap corpus is the opposite. Traders **see the pool before they
+size**, so size is chosen *as a function of* the state you are trying to
+condition on. This is the classical simultaneity problem — the same reason a
+demand curve cannot be estimated from a scatter of equilibrium prices and
+quantities — and it means a naive regression of realized impact on size is
+estimating a mixture of the AMM's cost function and the traders' sizing policy.
+
+### 9.2 Quantified against this project's own ladder
+
+The concrete damage is a **collapse of support in the variable that matters**.
+The relevant covariate is not size but `size / TVL`, since that is what a
+constant-product curve responds to.
+
+- **Designed ladder (SRO-001 §4.1, V2):** $10 / $50 / $150 / $500 against a
+  measured median pool of $2,860 → `size/TVL` spans **0.35% to 17%**, a **~50x
+  range**, chosen deliberately to be non-degenerate.
+- **Observational corpus, if traders target a slippage budget:** a trader
+  tolerating 0.5–2% impact on a constant-product pool is choosing
+  `size/TVL ≈ 0.005–0.02` → a **~4x range**.
+
+So the corpus would carry **roughly an order of magnitude less variation in the
+covariate than the designed ladder**, while carrying orders of magnitude more
+rows. **Rows are not information here.** And the loss is concentrated in exactly
+the worst place: **there would be almost no observations near the top rung**,
+because nobody voluntarily accepts 17% impact — which is precisely where a fill
+model is least certain and where a bad extrapolation is most expensive.
+
+Four more selection effects, each with its sign:
+
+| effect | mechanism | direction |
+|---|---|---|
+| **landed-only** | you see fills that executed; swaps that aborted on a slippage limit are absent | biases realized slippage **down** — the worst outcomes are censored |
+| **trader composition** | early memecoin flow is dominated by bots and snipers with atypical size, latency and fee behaviour | fits a model of **bot** execution, not of a discretionary entry |
+| **life-stage clustering** | memecoin volume is violently front-loaded, and SRO-001 §4.2.1 measures median liquidity falling **$13,586 → $2,860 (4.75x)** from birth to observation | the corpus's pool-state distribution is **not** the distribution at the 6h/24h horizons this project actually cares about |
+| **inherited enrolment ceiling** | scoping collection to the sparse lane's tokens inherits its 41.4% birth-eligibility ceiling (SRO-001 §4.4.1) | every rate is conditional on 41.4%, and must be stated against that denominator |
+
+Two of these are partially rescuable, and it is worth being precise about which:
+
+- **The landed-only bias is measurable, not merely acknowledged.** Failed
+  transactions are returned by `getTransaction` with a non-null `err` and a
+  charged `fee` (VERIFIED, §3.3c). So the **abort rate** is directly observable
+  even though the counterfactual price is not. That converts an invisible
+  censoring into a quantified one — a strictly better position than the quote
+  lane, which cannot see aborts at all.
+- **The memecoin caveat cuts the other way on the tail.** Memecoin traders are
+  frequently *not* slippage-disciplined (tolerances of 10–50% are routine), and
+  panic exits are size-insensitive. The 4x figure above may therefore be
+  pessimistic. **This is an empirical question, and it is cheap to settle**:
+  §13-C7 is the check.
+
+### 9.3 The reframe that makes the bias much less damaging
+
+The strongest response is not a statistical correction but a change in what the
+corpus is asked to do.
+
+**We are not fitting `impact = f(size, state)` from scratch.** For a
+constant-product pool `f` is *known analytically* — `x·y = k` gives the exact
+output for any input, and §5 recovers `x` and `y` exactly. The same is true of
+pump.fun's curve given §5.4. The corpus's job is therefore to measure the
+**residual** between the analytic prediction and what actually happened:
+
+```
+residual = realized_price − analytic_price(pre_state, amount_in)
+```
+
+That residual is where the interesting, unmodellable content lives — fee tiers,
+Token-2022 transfer fees, routing across multiple pools, same-block contention,
+and sandwich extraction — and there is good reason to expect it to be far **less
+size-dependent** than the impact itself. **Endogeneity in `size` damages
+structure estimation badly and residual estimation much less**, because the
+residual's leading terms are proportional or additive rather than curvature.
+
+Consequences that should be built in from the start:
+
+- Report **per-stratum n by `size/TVL` decile**, always. A stratum with n<30 is
+  reported as too thin, in the same spirit as this repository's existing
+  `too_thin_to_calibrate` labels.
+- Declare an explicit **extrapolation boundary** — the observed support of
+  `size/TVL` — and refuse to emit a modeled number outside it, rather than
+  emitting one with a wide interval. This repository's EDGE-SELECTION-001
+  experience is directly on point: candidates that looked good in-sample
+  inverted out-of-sample, and the negative control beat them.
+- Treat the corpus as **calibrating and falsifying a known model**, never as
+  discovering one.
+
+---
 
 ## 10. VERDICT
 
-*(pending)*
+> **YES — read-only realized-execution ground truth IS obtainable on Solana,
+> for free, without ever constructing, simulating, signing, or submitting a
+> transaction. All six links hold. The crux (L3) holds more strongly than the
+> proposal assumed: pre-trade pool state does not require a prior-slot lookup at
+> all, because the AMM's own vault balances are inside the swap transaction's
+> `preTokenBalances`.**
+
+The evidence chain, with its weakest joint named:
+
+| link | verdict | strength |
+|---|---|---|
+| L1 — `getTransaction` returns fee + pre/post SOL and token balances | **HOLDS** | **VERIFIED** in the official RPC reference, field by field |
+| L2 — swaps identifiable without a paid decoder | **HOLDS** | **VERIFIED + INFERRED** — the detector is a balance-delta statement needing no IDL and no allowlist |
+| L3 — pre-trade pool state recoverable | **HOLDS for constant-product and pump.fun; PARTIAL for CLMM/DLMM** | **VERIFIED** in Agave's `collect_token_balances`, which iterates every account key |
+| L4 — availability | **HOLDS PROSPECTIVELY ONLY** | **VERIFIED** architecture; retrospective backfill is **NOT OBTAINABLE** (paid archival) |
+| L5 — rate limits permit a useful rate | **HOLDS FOR TARGETED COLLECTION** | **VERIFIED** limits; the firehose fails on the 100 MB/30 s data cap |
+| L6 — MEV detectable | **HOLDS at population level; NOT for our own extraction** | **INFERRED** from VERIFIED per-transaction capture semantics |
+
+**The weakest joint is not any of the six. It is §9** — the corpus records the
+sizes traders chose, not a designed ladder, and that costs roughly an order of
+magnitude of covariate support in exactly the region where a fill model is least
+certain. The mitigation is the §9.3 reframe: use the corpus to measure the
+**residual** of an analytically known curve, not to discover the curve.
+
+### 10.1 What this does and does not dissolve
+
+**Dissolved:** *"validating a fill model requires realized slippage, which
+requires a paid per-trade feed."* The premise is false. Realized execution of
+third parties is public consensus data, free, and richer than a trade feed
+(which typically reports price and size but **not** the pre-trade pool state
+that makes them meaningful).
+
+**Not dissolved, and unchanged:**
+
+- **Landing probability and slot delay** (SRO-001 §8.1 row 7). Unobservable
+  without submitting. Untouched.
+- **Our own MEV extraction** (row 8b). Untouched.
+- **`PaperFill` remains a MODELED artifact.** SRO-001 §8.3's finding — *"Any
+  `PaperFill` this project ever writes is a MODEL OUTPUT, never a
+  measurement"* — **stands, in full.** Nothing here makes a fill observed.
+
+What changes is the *quality of the model's basis*, and it changes materially:
+the slippage component of a modeled fill moves from **ASSUMED** to
+**CALIBRATED AGAINST OBSERVED THIRD-PARTY EXECUTION**. Under
+`PAPER_SIMULATION`, every artifact must carry a modeled-vs-observed basis; today
+that basis would have to say "slippage: MODELED, assumed". With this corpus it
+can say "slippage: MODELED, calibrated against N observed realized fills in
+stratum S". **That is the difference between a boundary field that is honest but
+vacuous and one that carries information.**
+
+### 10.2 The bonus nobody asked for — it makes SRO-001's own verdict falsifiable
+
+`SOLANA-ROUTE-OBSERVATION-001` SC-5 requires the report to reach one of
+`execution_quote_trustworthy` / `…_with_stated_gaps` / `…_not_trustworthy`, and
+§1 of that document defines the objective as deciding "**whether a trustworthy
+`ExecutionQuote` … can be built**".
+
+As scoped, that milestone has **no way to test trustworthiness** — only field
+completeness, digest reproducibility, and failure rates. It can establish that a
+quote was recorded faithfully; it cannot establish that the quote was *right*.
+
+A realized-execution corpus supplies the missing comparator: **did the venue's
+reported `price_impact` for size X on pool P match what actually happened to
+real traders at comparable size on P in the same minutes?** That is a direct,
+free, read-only falsification test of the quote endpoint, and it turns SC-5 from
+a completeness audit into a genuine validation. **This is arguably a larger
+result for that milestone than the calibration corpus itself.**
 
 ## 11. Prospective collection design (only if the verdict is YES)
 
