@@ -617,9 +617,239 @@ is flagged as such.
 
 ## 5. Hawkes processes for order flow — assessment
 
-### 5.1 The model
-### 5.2 Stability and estimation cost
-### 5.3 Verdict
+**Verdict up front: RECOMMEND AGAINST, for this venue, for this purpose, now.** Not
+because the model is wrong — it is a good model — but because at Kalshi's event rates the
+fitted object would be a measurement of our own misspecification, and because the feature
+basis it produces is one we can get for free without any of its failure modes. The
+reasoning is below; the single decisive point is 5.4.
+
+### 5.1 The model — VERIFIED
+
+The marked multivariate exponential-kernel Hawkes intensity, as the mandate states it:
+
+    λ_i(t) = μ_i + Σ_j Σ_{τ_k^j < t} α_ij · exp(−β_ij (t − τ_k^j))
+
+is the standard un-normalised form and is correct. (A notational trap worth naming:
+Bacry–Mastromatteo–Muzy write the kernel as `αβe^{−βt}`, so *their* `α` is the kernel
+**integral**, not the jump size. Two papers using "α" for different quantities is a real
+source of silent error.) The natural dimension set for our purposes is the one the mandate
+lists — aggressive buy, aggressive sell, bid placement, ask placement, bid cancellation,
+ask cancellation, large trade, liquidity removal — so `D = 8`.
+
+Citations, audited:
+
+| Source | Status |
+|---|---|
+| Bacry, Mastromatteo, Muzy, "Hawkes processes in finance", arXiv:1502.04592 | **VERIFIED** — correct ID and authors. <https://arxiv.org/abs/1502.04592> |
+| Bacry & Muzy, "Hawkes model for price and trades high-frequency dynamics", arXiv:1301.1135 | **VERIFIED** — correct ID. <https://arxiv.org/abs/1301.1135> |
+| Large (2007), "Measuring the resiliency of an electronic limit order book", *J. Financial Markets* 10(1):1–25 | **VERIFIED** — and it is indeed a **ten-variate** Hawkes model on the LSE book |
+| Muni Toke & Pomponio, "Modelling Trades-Through in a Limit Order Book Using Hawkes Processes" (2012), HAL hal-00745554 | **VERIFIED** — but note it is only **bivariate**, and its headline finding is that **cross-excitation between bid and ask trades-through is weak** |
+| Lu & Abergel, "High-dimensional Hawkes processes for limit order books" | **PAPER REAL, arXiv ID DOES NOT CHECK OUT.** *Quantitative Finance* 18(2):249–264 (2018), DOI 10.1080/14697688.2017.1403142; the preprint is on HAL, **not arXiv**. arXiv:1706.03411 is a *different* paper (Achab, Bacry, Muzy & Rambaldi on the branching-ratio matrix) published in the same QF issue at adjacent pages, which is the likely source of the confusion. **Do not cite Lu & Abergel with an arXiv number.** |
+
+Lu & Abergel are worth quoting anyway, because the authors of the flagship
+high-dimensional LOB Hawkes paper report two things that undercut the case for it: real
+books exhibit **inhibition effects** (which a linear Hawkes with `α ≥ 0` structurally
+cannot represent), and calibration suffers from the "**very poor convexity properties of
+the MLE**".
+
+### 5.2 Stability — VERIFIED
+
+The process is asymptotically stationary **iff the spectral radius of the branching matrix
+is strictly less than 1**, where for exponential kernels
+
+    Γ_ij = ∫₀^∞ α_ij e^{−β_ij t} dt = α_ij / β_ij ,    condition: ρ(Γ) < 1
+
+Note it is the **spectral radius**, not any convenient matrix norm; using `‖Γ‖_∞` as a
+proxy gives a conservative and wrong constraint.
+
+Empirically, fitted LOB models sit **against** the boundary:
+
+| Study | Reported branching ratio |
+|---|---|
+| Achab, Bacry, Muzy, Rambaldi (arXiv:1706.03411), 12-dim DAX futures book | **ρ(Γ) ≈ 0.98**; exogenous fraction only "a few percent" |
+| Bacry–Mastromatteo–Muzy review, calibrated financial models generally | **‖Φ‖ ≈ 0.9–0.95** |
+| Hardiman, Bercot, Bouchaud (arXiv:1302.1405), E-mini S&P mid-price changes | **n ≈ 1**, stable 1998–2011, power-law kernel |
+| Lallouache & Challet (arXiv:1406.3967), FX, restricted to defensible windows | **n ≈ 0.8** |
+
+The mandate's recollection of ~0.7–0.9 is right, and the high end is the more common
+finding. **This matters:** an estimator whose target sits at 0.9–1.0 is operating in the
+exact region where finite-sample bias is documented to be worst, and where a misspecified
+baseline is indistinguishable from true excitation (5.4).
+
+### 5.3 Estimation cost and data requirements — VERIFIED
+
+**Compute is not the constraint.** The exponential kernel admits Ozaki's (1979) O(1)
+recursion on the excitation state,
+
+    R(q) = e^{−β(t_q − t_{q−1})} · (1 + R(q−1)),   R(0) = 0,   λ(t_q) = μ + α·R(q)
+
+collapsing the log-likelihood from O(N²) to **O(N)** (O(N·D²) in D dimensions), with the
+compensator integral telescoping in closed form. A Hawkes MLE on a Kalshi contract runs in
+milliseconds. **Anyone arguing for Hawkes on computational-elegance grounds is answering a
+question we do not have.**
+
+**Parameter count.** `D + D² + D² = D + 2D²`. At `D = 8` that is **136 parameters** — the
+mandate's arithmetic is confirmed. The usual mitigations (one `β` per row → 80; one global
+`β` → 73) help, but a *marked* model then adds the mark distribution on top, and the LOB
+literature says the marks you need — order-size distributions — are multimodal, spiky at
+round lots, and history-dependent. That is a second model, not a few extra parameters.
+
+**Data requirements: the literature gives an upper bound on the usable window, not a
+comfortable lower bound on events, and the two do not meet.**
+
+- **Lallouache & Challet (arXiv:1406.3967)**, on FX — chosen precisely because it runs 24h
+  with no session breaks — find that fits which *look* convincing largely fail statistical
+  tests. What survives three simultaneous tests: **two exponentials fitted to one hour at a
+  time**. "Longer periods could not be fitted within statistical satisfaction because of
+  the non-stationarity of the endogenous process." On one of the highest-event-rate markets
+  in existence, the defensible calibration window is **one hour**.
+- **Filimonov & Sornette (arXiv:1308.6756)** recommend **10–30 minute windows**, never
+  concatenated; show finite samples **systematically underestimate** `n` because pre-window
+  ancestors are unobserved; show kernel misspecification alone produces **Δn ≳ 0.2**; and
+  show that removing as little as **0.17%** of extreme inter-event durations moves `n̂` from
+  ≈0.7 to apparent criticality.
+- **Edge effects are quantitatively worse than the stationary window.** For a power-law
+  kernel with ε = 0.15 they compute `T₀.₉₅ ≈ 1.1×10⁷ s` (≈489 trading days). The window
+  needed to avoid edge truncation **exceeds any window over which the process is actually
+  stationary.** That is an irreconcilable tension, not a tuning problem.
+- A widely repeated finite-sample-bias rule of thumb — large bias for `n > 0.9`, small bias
+  above roughly **200–400 events** — could **not** be traced to a primary source. Treat it
+  as an order of magnitude only, and note that it is a *univariate* figure.
+- Known problems, all confirmed: **non-convex likelihood** with local minima; **`β` is the
+  badly identified parameter**, which is why the universal practice is to fix `β` on a grid
+  and estimate only `α`; **edge effects**; and, if timestamps are binned rather than exact,
+  the exact likelihood becomes **intractable** and requires particle methods.
+
+**Nonparametric alternatives need MORE data, not less.** Bacry–Muzy Wiener–Hopf estimates
+the whole kernel *shape* — strictly more to estimate than two parameters. The Achab et al.
+NPHC method is the smart compromise (it estimates only the `D²` kernel *integrals* via
+integrated cumulants, skipping shape entirely, and scales to D = 12–16) — but it was run on
+**338 days × 300,000+ events/day**. It is a large-sample method. Nonparametric is not an
+escape hatch for a sparse venue.
+
+**The arithmetic for us.** At an optimistic 5 book updates/minute/contract, an 8-hour
+session yields ~2,400 events. Split across `D = 8` types, ~300 per type against **136
+parameters** — roughly 2 events per marginal parameter, before splitting into the pairwise
+coincidence cells that actually identify `α_ij`. Filimonov–Sornette's recommended 10–30
+minute window would contain **50–150 events in total**, below even the unverified 200–400
+univariate floor. **There is no version of this arithmetic that works at D = 8.**
+
+### 5.4 The two decisive arguments
+
+**(1) A Hawkes intensity IS an affine function of EWMA event counts.** Define
+
+    S_ij(t) = Σ_{τ_k^j < t} exp(−β_ij (t − τ_k^j))
+
+`S_ij` is *exactly* an exponentially weighted count of type-`j` events with decay `β_ij`,
+updatable by the same Ozaki recursion. Then
+
+    λ_i(t) = μ_i + Σ_j α_ij · S_ij(t)
+
+Since everyone fixes `β` on a grid anyway (5.3), the model **is linear in EWMA features**
+and the `α_ij` are regression coefficients. Kirchner's INAR(p) result (arXiv:1509.02017) is
+the discrete-time statement of the same fact, with consistency and asymptotic normality
+proved: bin the timeline and the multivariate Hawkes becomes a **standard VAR(p) on bin
+counts fit by conditional least squares**.
+
+So the honest question is not "Hawkes features versus EWMA features" — they are the same
+feature basis. It is: **given that basis, do we fit the coefficients by point-process MLE
+against the arrival-rate likelihood, or discriminatively against the target we actually
+care about?** For prediction, discriminative fitting on the real objective is the
+textbook-dominant choice. Hawkes MLE optimises a *different* loss, constrains coefficients
+to be non-negative and spectrally stable — which is a **misspecification penalty** given
+that Lu & Abergel report real inhibition effects — and buys a generative simulator we do
+not currently need.
+
+The one direct empirical comparison found (arXiv:2408.03594, *Computational Economics*
+67(1)) benchmarks Hawkes variants against Poisson and a plain VAR on minute counts under
+Hansen's SPA test. Higher p means "not demonstrably outperformed":
+
+| Model | SPA p-value |
+|---|---|
+| Sum-of-exponentials Hawkes | 0.743 |
+| Conditional-law Hawkes (nonparametric) | 0.257 |
+| **Plain VAR on minute counts** | **0.101** |
+| **Single-exponential Hawkes** | **0.002** |
+| Power-law Hawkes | 0.000 |
+| Poisson | 0.000 |
+
+The plain VAR is **not rejected at 5%**. The single-exponential Hawkes — the model anyone
+would actually build first — is **decisively rejected**. The evidence base is one trading
+day of NIFTY futures (315 usable minute observations), so this is not a strong result; but
+it is the closest thing that exists, and it points the wrong way for Hawkes. Note also
+what the winner is: *sum*-of-exponentials, i.e. **multiple timescales**, which is exactly
+what a multi-halflife EWMA set gives us for free.
+
+**(2) Kalshi's data-generating process is the exact one for which Hawkes reports a
+spurious near-critical branching ratio.** Filimonov & Sornette, verbatim:
+
+> "calibration of the Hawkes process on mixtures of pure Poisson process with changes of
+> regime leads to completely spurious apparent critical values for the branching ratio
+> (n ≃ 1) while the true value is actually n = 0."
+
+A dormant Kalshi contract that wakes up on news **is** a Poisson process with a regime
+change. This is not an analogy. If we fit a constant-`μ` Hawkes to our tape and obtain
+`n̂ = 0.95`, we will have learned nothing about self-excitation in Kalshi order flow — and
+the trap is that it will look like a strong, exciting, publishable finding.
+
+The standard fixes all fail for us in a specific way:
+
+- **Short windows** (10–30 min): too few events at our rates.
+- **Deterministic intraday seasonality** `μ(t) = μ·s(t)`: Kalshi does have time-of-day
+  structure, but the dominant non-stationarity is **event-driven and idiosyncratic per
+  contract** (a goal, a data release, a resolution), which no repeatable daily profile
+  touches.
+- **Locally stationary Hawkes** (Roueff & von Sachs; Mammen & Müller): time-varying
+  baseline *and* fertility — strictly more parameters, strictly more data.
+- **Explicit burst detection** (Rambaldi, Filimonov & Lillo, arXiv:1610.05383): possible,
+  and note their FX finding that **only a small fraction of detected bursts are associated
+  with news arrival**.
+
+The circularity is inescapable: separating "the baseline moved" from "the process excited
+itself" requires *many* clusters, because both produce the same observable. At Kalshi rates
+we will not have them. **The fix that would make the model honest is precisely the fix we
+cannot afford.**
+
+### 5.5 Two further facts worth recording
+
+- **There is no Hawkes literature on prediction markets.** Kalshi, Polymarket, Betfair,
+  sports betting exchanges — nothing found. We would be first. That is a reason for
+  caution, not enthusiasm: nobody has shown this works at these rates. The most relevant
+  adjacent work, a large Polymarket order-book microstructure study
+  (arXiv:2604.24366; 30.3 billion events, 385,198 markets, 52 days), **does not use
+  Hawkes or any self-exciting point process at all** — and reports the heterogeneity we
+  should expect: random-stratum markets saw between **100 and 24,378 trades** over the
+  window, with **53 of 600** sampled markets having no usable depth data.
+- **Even at Euronext rates and D = 2**, Muni Toke & Pomponio found cross-excitation
+  *weak*. Cross-excitation — the `D²` off-diagonals — is the entire reason to want a
+  *multivariate* Hawkes. It is also the first thing to die at low event rates, because
+  `α_ij` is identified only by observed j→i coincidences inside the decay window, and at a
+  handful of events per minute across 8 types most `(i,j)` cells have single-digit or zero
+  coincidences.
+
+### 5.6 Recommendation
+
+**Do not build a Hawkes model in this track.** Instead:
+
+1. **Ship `event_rate_ewma[τ]` for τ ∈ {1s, 10s, 60s} per event type** (schema group E).
+   This is the `S_ij(t)` basis, it is O(1) per event, it has no estimation step, no
+   convergence condition, no branching ratio to be spuriously near-critical, and it is
+   defined from the first event rather than requiring a fit.
+2. **Fit coefficients discriminatively against the actual target** (next mid change,
+   markout, fill), not against an arrival-rate likelihood.
+3. **Keep the door open with a cheap, decisive experiment.** Once the tape exists, run:
+   (i) EWMA features alone, (ii) EWMA features with Hawkes-MLE-fitted coefficients,
+   (iii) a persistence baseline — compared out-of-sample on our own target. Expectation
+   from 5.4: (ii) does not separate from (i). That is a day's work against the archive and
+   it settles the question with our own data rather than by analogy to markets running
+   10,000× our event rate. **It is a measurement, not a modelling commitment.**
+4. **Revisit only if** all of: `D` drops to 2–4; we find contract families with thousands
+   of events inside a defensibly stationary window; and the requirement turns out to be
+   *generative* (a fill/queue simulator, or the state process for an optimal-execution
+   control problem) rather than predictive. That is where the literature's demonstrated
+   value actually lives — descriptive realism, resiliency measurement, causal-structure
+   discovery, and execution control — and **not** out-of-sample predictive edge over
+   simpler features, which none of the canonical LOB Hawkes papers claims.
 
 ## 6. Execution modelling
 
