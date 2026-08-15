@@ -255,70 +255,142 @@ This section discharges that instruction. **It is declared before any quote has
 been requested, because none has: no provider call has been made for this
 milestone by anyone.**
 
-### 4.1 The ladder
+### 4.1 The ladder — V2, re-anchored on the measured distribution
 
-Four rungs, USD-equivalent, spanning roughly two orders of magnitude:
+Four rungs, USD-equivalent. **These are the V2 rungs. V1 ($25 / $100 / $500 /
+$2,000) was written before the liquidity distribution was measured and is
+superseded; both versions are recorded in §4.5.**
 
-| rung | USD-equivalent | share of the repo's own $5,000 "minimum interesting liquidity" | share of the $1,000,000 quality-score saturation point |
-|---|---|---|---|
-| **N1** | **$25** | 0.5% | 0.0025% |
-| **N2** | **$100** | 2% | 0.01% |
-| **N3** | **$500** | 10% | 0.05% |
-| **N4** | **$2,000** | 40% | 0.2% |
+| rung | USD | % of the **median** observed pool ($2,860) | % of p25 ($1,936) | % of p75 ($11,578) | % of p95 ($67,119) |
+|---|---|---|---|---|---|
+| **N1** | **$10** | 0.35% | 0.52% | 0.086% | 0.015% |
+| **N2** | **$50** | 1.7% | 2.6% | 0.43% | 0.074% |
+| **N3** | **$150** | 5.2% | 7.7% | 1.3% | 0.22% |
+| **N4** | **$500** | 17% | 26% | 4.3% | 0.75% |
 
-Spacing is approximately half-decade (4x, 5x, 4x). Four points across two decades
-is the minimum that can distinguish a roughly linear impact curve from a
-convex one; three points cannot, and five costs 25% more requests for a
-discrimination the first four already provide.
+Spacing 5x / 3x / 3.3x, spanning 50x. Four points is the minimum that can
+distinguish a roughly linear cost curve from a convex one; three cannot, and a
+fifth costs 25% more requests — each rung is two requests, entry and exit — for
+a discrimination the first four already provide.
 
-### 4.2 Why these four, from the liquidity the repository already commits to
+### 4.2 Why these four — from the MEASURED liquidity of the quoted population
 
-The two anchors are **in this repository**, not invented for this document:
+**The V1 anchor was wrong, and the measurement is what showed it.** V1 was
+justified against `crypto_min_liquidity_usd = 5000.0` (`app/config.py:369`,
+`:561`) as "the project's committed view of the thin end", and against the
+$1,000,000 saturation point in `active_pair_quality_score`
+(`app/services/crypto_horizon.py:432`) as the deep end. Both anchors turn out to
+be in the wrong place for the population this milestone actually quotes.
 
-- `app/config.py:369` `crypto_min_liquidity_usd: float = 5000.0` and
-  `app/config.py:561` `crypto_risk_min_liquidity_usd: float = 5000.0` — the
-  scout and risk lanes both treat **$5,000 of pool liquidity** as the threshold
-  below which a token is not worth acting on. That is this project's already-
-  committed opinion about the thin end of the distribution.
-- `app/services/crypto_horizon.py:432` `min(liq, 1_000_000) / 10_000` — the
-  pair-quality score **saturates at $1,000,000**. That is this project's
-  already-committed opinion about where additional depth stops mattering.
+Measured over the real quoted population — rolling cohort 8, n=42,
+`liquidity_usd` at observation:
 
-The sparse observation lane deliberately applies **no** liquidity threshold at
-all (it preserves the whole eligible birth population as its denominator), so
-the population being quoted spans from far below $5,000 to far above it. A
-ladder anchored only at the top would be uninformative on most of the
-population; one anchored only at the bottom would never reach the sizes an entry
-would actually use.
+```
+p0    $  1,592      p50   $  2,860      p90   $ 17,655
+p5    $  1,633      p75   $ 11,578      p95   $ 67,119
+p10   $  1,661                          p100  $167,041
+p25   $  1,936      mean  $ 12,780
+>= $5,000:   16 (38%)      >= $100,000:  1 (2%)
+>= $25,000:   3 (7%)       >= $500,000:  0 (0%)
+```
 
-Rung by rung:
+Three facts from that distribution drive the re-anchoring:
 
-- **N1 $25 — the fixed-cost probe.** Deliberately below any plausible entry. Its
-  job is to isolate the size-**independent** components of cost (network base
-  fee, any flat aggregator fee, any account-creation cost the venue quotes) from
-  the size-**dependent** impact. It is the control rung. If price impact is
-  already material at $25, the pool is untradeable at every larger size, and
-  that is a finding, not a failure.
-- **N2 $100 — the smallest plausibly-real size.** The rung at which fixed Solana
-  costs plausibly stop dominating the total. 2% of the $5,000 floor.
-- **N3 $500 — the discriminating rung.** Exactly 10% of the project's own
-  minimum-interesting-liquidity constant. For the thinnest pool this repository
-  considers worth looking at, a $500 print is unambiguously material; for a
-  $1M pool it is noise. **If any single rung decides the milestone, it is this
-  one**, because it is where the impact curve should separate tokens.
-- **N4 $2,000 — the deep-end probe.** 40% of the $5,000 floor — which is to say,
-  catastrophic in a thin pool, and that catastrophe *is* the measurement — and
-  0.2% of the saturation point, i.e. still small where depth is real.
+1. **62% of the population is BELOW the $5,000 floor.** The sparse lane applies
+   no liquidity threshold by design, so its population is not the population the
+   scout and risk lanes were tuned for. Anchoring on $5,000 anchored on a
+   threshold that most of the sample fails.
+2. **The $1,000,000 saturation point does no work at all.** The deepest observed
+   pool is $167,041 — 6x below it, and nothing is within an order of magnitude
+   of $500,000. An anchor no observation approaches is not an anchor.
+3. **The distribution is sharply right-skewed and the bottom half is one
+   regime.** p0 $1,592 to p50 $2,860 is a 1.8x spread across the entire bottom
+   half, while p75 to p100 spans 14x. Mean ($12,780) is 4.5x median. So most of
+   the population lives in a narrow thin band, and a ladder must discriminate
+   *inside that band* or it discriminates nothing.
 
-**What is explicitly NOT claimed:** that these are good position sizes, that
-they are sizes we intend to trade, or that they were derived from any signal,
-conviction, capital base, or token-specific input. They are **fixed constants of
-the measurement instrument**, chosen from two constants already in the
-repository, in the same sense that a bid-ask spread is a property of a book. No
-code reads them to decide anything. `docs/SAFETY_BOUNDARIES.md` keeps portfolio
-sizing forbidden and this changes nothing about that: "a size is a stated INPUT
-of the simulation… it is not a sizing recommendation, and nothing may derive,
-optimize, rank, or recommend a size from a modeled result."
+Against the median, V1's top two rungs were not quotes: **N3 $500 was 17% of the
+median pool and N4 $2,000 was 70% of it — 126% of the thinnest observed pool.**
+A quote for more than the pool contains is a hypothetical block trade, and it
+returns a catastrophic answer for a structural reason (pool exhaustion) rather
+than an informative one. Every thin token would have returned the same
+uninformative verdict.
+
+**The design criterion, made explicit: a rung must be non-degenerate.** It must
+produce a spread of answers across the population rather than the same answer
+for nearly everyone. Applying it:
+
+- **N1 $10 — the fixed-cost control rung.** 0.35% of the median pool and 0.63%
+  of the thinnest one, so impact should be negligible everywhere and what
+  remains is the size-**independent** cost floor: network fee, any flat venue
+  fee, any account-creation cost the venue quotes. Deliberately below any
+  plausible entry. V1 put this rung at $25 — 1.6% of the thinnest pool, where
+  impact is no longer negligible and the control is contaminated.
+- **N2 $50 — the smallest plausibly-real size.** Spans 3.1% of the thinnest pool
+  down to 0.03% of the deepest: two orders of magnitude of ratio across the
+  population, which is what non-degeneracy requires.
+- **N3 $150 — the discriminating rung, set at ~5% of the MEDIAN observed pool.**
+  This is the anchor that replaces the $5,000 constant. 5% of the median is
+  large enough that impact must be measurable on a typical token and small
+  enough that it is still a trade someone could plausibly make. Across the
+  population it ranges 9.4% (p0) to 0.09% (p100). **If any single rung decides
+  this milestone, it is this one.**
+- **N4 $500 — the bounded top rung.** Bounded deliberately: at 17% of the median
+  and 31% of the thinnest observed pool, it is aggressive but still a quote, not
+  a pool-draining hypothetical. It is also the only rung that says anything
+  about the deep tail, where it is a mere 4.3% (p75) and 0.75% (p95). V1's
+  $2,000 exceeded the thinnest pool's entire TVL; **no V2 rung exceeds ~31% of
+  even the thinnest observed pool.**
+
+**What is still explicitly NOT claimed:** that these are good position sizes,
+that we intend to trade them, or that they were derived from any signal,
+conviction, or capital base. They are fixed constants of the measurement
+instrument, now calibrated to the depth of the thing being measured — the same
+sense in which you choose a probe size to match the circuit. No code reads them
+to decide anything, and `docs/SAFETY_BOUNDARIES.md` keeps portfolio sizing
+forbidden: "a size is a stated INPUT of the simulation… it is not a sizing
+recommendation, and nothing may derive, optimize, rank, or recommend a size from
+a modeled result."
+
+**A note on what the ratios are and are not.** Every percentage above is a
+notional-to-TVL *ratio*, not a predicted price impact. Converting one to the
+other requires a curve model, and this milestone deliberately does not carry one
+— impact is OBSERVED from the quote response (§5.3) or it is a typed absence.
+The ratios are used only to choose probe sizes, which is a question about the
+instrument, not about the answer.
+
+### 4.2.1 The measurement's limits, and what would make me revisit the ladder
+
+Recorded honestly, because a ladder calibrated on a weak sample is still a
+ladder calibrated on a sample:
+
+- **n = 42**, drawn from roughly the first three hours of a lane activated on
+  2026-08-15. This is a small sample and a short window.
+- **It is a distribution of OBSERVED pools, not of all births.** A token only
+  enters it if the provider returned a usable, identity-matching pair with a
+  liquidity state at observation time. Tokens whose pools died, never carried a
+  liquidity state, or failed identity are absent. **That bias most likely runs
+  UPWARD** — the observed sample is probably deeper than the true birth
+  population — which argues for rungs at or below these values, not above them.
+  Sample growth does **not** remove this bias; it is structural.
+- Nothing here says the distribution is stable. Memecoin liquidity regimes shift.
+
+**What would make me revisit — and the cost of waiting.** The honest statement
+is that revisiting has a hard deadline: **the ladder must freeze before CP-1**,
+and CP-1 gates every checkpoint after it. Waiting for n to grow delays the whole
+milestone while the 24h observations mature without a quote lane, and it does
+not fix the observed-pools bias. More importantly, once quoting begins there is
+no legitimate revisit at all: a ladder re-anchored on data that includes quote
+results is not a preregistration, it is a narrative.
+
+So the pre-committed rule is asymmetric on purpose:
+
+- **Before CP-1** the rungs may still be re-anchored, on Eric's decision, on
+  grounds containing no quote result (§4.5).
+- **After the first quote, the ladder does not move.** If the realized
+  distribution over the CP-7 window turns out to have a median outside roughly
+  [0.5x, 2x] of $2,860, that mismatch is **reported as a stated limitation of
+  the result** — the instrument is not retuned to flatter the measurement.
 
 ### 4.3 Denomination — exact integers, no price feed, no drift
 
@@ -375,8 +447,8 @@ cherry-picking one level up. So:
 The ladder record is:
 
 ```
-ladder_id      : "SRO001-LADDER-V1"
-rungs_usd      : [25, 100, 500, 2000]
+ladder_id      : "SRO001-LADDER-V2"
+rungs_usd      : [10, 50, 150, 500]
 entry_mint     : <verified at CP-0>
 entry_decimals : <verified at CP-0>
 rungs_base_units : [<computed once at CP-1>]
@@ -385,28 +457,57 @@ population_rule: "all sparse-lane observations in pass, ascending observation id
 ladder_digest  : sha256 over the canonical encoding of the above
 ```
 
+### 4.5.1 The amendment record — V1 superseded by V2
+
+The one amendment window described below has now been **used**. Nothing was
+edited in place; both versions stand on the record.
+
+| | V1 | V2 |
+|---|---|---|
+| `ladder_id` | `SRO001-LADDER-V1` | `SRO001-LADDER-V2` |
+| `rungs_usd` | `[25, 100, 500, 2000]` | `[10, 50, 150, 500]` |
+| anchor | `crypto_min_liquidity_usd = 5000.0` and the $1,000,000 quality-score saturation point | the measured median observed pool ($2,860), n=42, cohort 8 |
+| status | **SUPERSEDED, never used to request a quote** | **PROPOSED — freezes at CP-1 on Eric's approval (Q-B)** |
+| `ladder_digest` | computed and recorded at CP-1 alongside V2, so the supersession is auditable | computed at CP-1 |
+
+**Reason for the amendment, stated so it can be judged:** V1's anchors were two
+repository constants that the measured distribution shows are in the wrong
+place for this population — 62% of it sits below the $5,000 floor, and nothing
+comes within 6x of the $1,000,000 saturation point. V1's top rung was 70% of the
+median pool and 126% of the thinnest, which is a block trade rather than a
+quote (§4.2).
+
+**This amendment is legitimate under the rule below for one specific reason: it
+contains no quote result.** A liquidity distribution is not an execution
+outcome. No quote has been requested by anyone for this milestone, so there is
+nothing about favourable execution to have optimized toward. That is exactly the
+case the window was written for — and it is now spent.
+
+**The window is closed.** Any further change to the rungs requires a new,
+explicit decision from Eric, recorded here as a V3 with its reason, and it
+remains impossible after the first quote regardless of who asks.
+
+### 4.5.2 The freeze
+
 **These notionals are FROZEN. Changing them after any quote has been evaluated
 invalidates the measurement**, and there is no version of that change that
 merely "improves" it: a ladder chosen after seeing which rungs produced
 favourable execution is not a measurement of execution cost, it is a report of
-which sizes happened to look good, and it cannot be distinguished from the
-former after the fact by anyone reading the results.
+which sizes happened to look good, and no one reading the results afterwards can
+tell the two apart.
 
 Enforcement, not intention:
 
 - `ladder_digest` is written on **every persisted quote row** (§5). SC-6 fails
   the milestone if any row disagrees with the preregistered value.
-- The final report prints the ladder digest next to the verdict. A verdict
-  whose rows carry more than one ladder digest is **reported as invalid**, not
+- The final report prints the ladder digest next to the verdict. A verdict whose
+  rows carry more than one ladder digest is **reported as invalid**, not
   reconciled.
-- **One amendment window exists, and it closes at the first quote.** Between
-  CP-0 and CP-1 the rungs may be amended **once**, on Eric's explicit written
-  approval, and only on grounds that contain no quote result — for example, the
-  CP-0 liquidity distribution showing the population is entirely outside the
-  ladder's useful range. Any such amendment is recorded here **as a new
-  `ladder_id` alongside the old one, with both digests and the reason**; nothing
-  is edited in place. After the first quote request is issued, the ladder is
-  frozen absolutely and this window does not reopen.
+- **One amendment window existed, between CP-0 and CP-1, requiring Eric's
+  explicit approval and grounds containing no quote result. It has been used
+  (§4.5.1) and does not reopen.** After the first quote request is issued the
+  ladder is frozen absolutely.
+
 
 ---
 
