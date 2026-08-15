@@ -297,9 +297,12 @@ bursts draining ~7,000/s.**
 
 ### 5.3 The envelope and the normalization path
 
-- `EventEnvelope` (`app/realtime/book.py:54-86`) — raw + normalized + full time lineage;
-  `data_age_us` is INTEGER microseconds by canonical-representability requirement
-  (`:76-80`).
+- `EventEnvelope` (`app/realtime/book.py`) — raw + normalized + full time lineage;
+  `data_age_us` is INTEGER microseconds by canonical-representability requirement.
+  Since KALSHI-TAPE-GENERATION it also carries the two capture-time epochs,
+  `connection_generation` and `subscription_generation` (§6.4.1); before that it
+  carried neither, and both of the archive's pinned generation columns were
+  permanently null.
 - `make_envelope(...)` (`app/realtime/book.py:93-155`) — already handles Kalshi's
   non-uniform timestamping (`ts_ms` first; `ticker` sends epoch SECONDS in `ts` while
   `orderbook_delta` sends an ISO string — wire-confirmed at `:97-106`).
@@ -475,7 +478,10 @@ The loop, in order, per frame:
 
 1. `receive_time = utcnow()`, `receive_mono = monotonic_ns()` — captured BEFORE any
    processing, so `data_age_us` means what `book.py` says it means.
-2. `envelope = make_envelope(...)` — existing code, unchanged.
+2. `envelope = make_envelope(...)` — existing code, plus the two capture-time
+   epochs the session holds (§6.4.1). They are stamped HERE because nothing
+   downstream can reconstruct which connection or which subscription
+   generation a frame arrived under.
 3. `router.dispatch(record)` — OPTIONAL, controlled by `--validate-sequence`
    (default on). A `SubscriptionError` is recorded and triggers recovery (6.4); it does
    **not** stop the archive append. **Archive first, interpret second**: a frame we could
@@ -501,10 +507,76 @@ The existing model is already correct and must be driven, not re-invented:
   wire-confirmed code-14 error (`kalshi.py:326-331`) — and calls
   `subscription.begin_recovery()`.
 - On a socket close/error, the collector reconnects and calls
-  `subscription.supersede(market_tickers=...)` (`book.py:696-707`), because the new
+  `subscription.supersede(market_tickers=...)` (`book.py`), because the new
   stream's `seq` numbers are in a different namespace. The new generation number rides
   into every subsequent envelope so the archive record carries
-  `subscription_generation` (`archive.py:633`) and replay can tell a straggler from a gap.
+  `subscription_generation` and replay can tell a straggler from a gap.
+
+#### 6.4.1 KALSHI-TAPE-GENERATION — the epoch this section assumed and never had
+
+**The paragraph above asserted something that was not true.** `EventEnvelope`
+defined neither `connection_id` nor `subscription_generation`, while
+`archive.append` wrote both through `raw.get(...)` on an `asdict()` of that
+envelope, so **both pinned columns were permanently `None`** — and
+`SubscriptionRouter.dispatch` read that null straight back into
+`SubscriptionState.accept(generation=...)`. Nothing ever rode into an envelope.
+
+The consequence is exactly the one the tape exists to prevent: after a
+reconnect the venue's `seq` restarts, the generation change is invisible,
+`accept()` sees a discontinuity, and `_unpublish_all("sequence fault")` drops
+every book. A sequence hole is the **only** drop detector available (CP0: the
+installed library never silently drops and exposes no drop counter), so a
+routine reconnect was indistinguishable from data loss, and **CP8's verify line
+could not have passed as written.**
+
+Scope amendment: `book.py` and `archive.py` were previously off-limits for this
+milestone and were opened for this fix. `kalshi.py` remains unmodified (§6.1).
+This is required data semantics, not feature creep: a reconnect and a sequence
+discontinuity are different phenomena and must remain distinguishable in the
+durable tape.
+
+What now exists:
+
+- **Two monotonic capture-time epochs**, stamped by the collector onto every
+  envelope and written into the record's existing pinned columns:
+  `connection_generation` advances when a socket comes up (`connect()` has
+  returned); `subscription_generation` advances **only when a new successful
+  subscription generation begins** — `_begin_subscription_epoch()`, called once
+  per accepted subscribe, never per connect attempt and never per frame. A
+  reconnect whose `connect()` fails consumes no subscription epoch.
+- **One number, not two that agree.** `_begin_subscription_epoch` moves the
+  session's stamp *and* every `SubscriptionState` onto the same value
+  (`supersede(generation=...)`), and `_router_for` births a new sid's state at
+  the current epoch. The value replay validates is the value the collector
+  held.
+- **Sequence continuity is evaluated WITHIN a generation.** In
+  `SubscriptionState.accept`: a **greater** generation is a BOUNDARY — it
+  re-bases the stream and each book's position, is counted as
+  `generation_advances`, and does **not** unpublish anything; a **lower**
+  generation is still a straggler fault; a gap **inside** a generation still
+  raises. The drop detector is not blinded, which is the property test class
+  `TestAGenuineGapStillFaults` exists to hold.
+- **The venue's `seq` is not overloaded.** It stays the venue's number; the
+  epoch is ours and is carried beside it.
+- **Nothing is inferred at read time.** An epoch that is not on the record is
+  not reconstructed from one.
+- **Backward compatibility.** Absent/`None` is the documented sentinel
+  `GENERATION_UNKNOWN` — never `0`, which would be a fabricated epoch. A
+  pre-milestone record reads as "generation unknown", the generation check is
+  skipped, and ordering falls back to pure `seq` continuity exactly as before.
+  `ENVELOPE_SCHEMA_VERSION` is bumped **1 → 2** deliberately, so a reader can
+  tell "written before the field existed" from "the writer had no epoch". The
+  durable record schema (`segment.RECORD_FIELDS`) is **unchanged**: it always
+  carried both columns, and this change only stops writing null into them.
+- **Durability and ordering are untouched.** `append()` is still synchronous
+  and caller-threaded; no close or rotation semantics are involved.
+
+Known limitation, deliberately not fixed here: the subscription epoch is
+monotonic **within one collection session**. Two sessions appended to the same
+archive restart it, so replaying across a session boundary sees a lower
+generation and faults — as it already did before this change, via a `seq`
+regression instead. Making it monotonic across sessions requires persisting the
+epoch, which is a separate decision.
 - **Reconnect gaps are unmeasured by design in the replay lane** (`cli.py:717-719`:
   "NOT MEASURED: reconnect/observation gaps. Every percentile above is conditioned on
   being connected."). The collector closes exactly that gap by recording, in its own
@@ -894,6 +966,16 @@ by a firewall rule on the host) and confirm the recovery path.
 *Verify:* `supersede()` ran, generation incremented, a fresh snapshot re-based the books,
 the observation gap is recorded with both timestamps, and the replay lane reports the
 generation change rather than a spurious sequence fault.
+
+> **Unblocked by KALSHI-TAPE-GENERATION (§6.4.1).** This verify line could not
+> have passed before: the generation never reached an envelope, so the replay
+> lane had nothing to report a generation change *with*. The offline half is
+> now proven in `tests/test_kalshi_tape_generation_001.py` — a real collector
+> session over a lost socket, with the venue sequence restarting, replays with
+> `faults=[]`, `generation_advances=1`, `gaps=0` and every book still
+> publishable, while the same tape with the generation stripped still faults.
+> CP8 remains outstanding for the part only a live socket can show: the
+> observation gap's two timestamps, and a real venue-side reconnect.
 
 **CP9 — The measurement session and the report.**
 The longest DEMO session the operator authorizes (see Q2), followed by
