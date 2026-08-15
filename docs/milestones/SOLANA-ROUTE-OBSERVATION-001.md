@@ -243,3 +243,167 @@ path parameter precisely so a second route cannot be reached by one call. See
 - It **does not loosen** the "Swaps / transaction construction / signing (Jupiter
   or any DEX)" row of `docs/SAFETY_BOUNDARIES.md`. `READ_ONLY_ROUTE_QUOTE` sits
   *adjacent* to that row and "loosens no part of it".
+
+---
+
+## 4. THE PREDECLARED NOTIONALS — this section is the preregistration
+
+Eric's instruction: *"Use fixed notionals declared BEFORE evaluating results. Do
+not optimize notionals after seeing favorable execution."*
+
+This section discharges that instruction. **It is declared before any quote has
+been requested, because none has: no provider call has been made for this
+milestone by anyone.**
+
+### 4.1 The ladder
+
+Four rungs, USD-equivalent, spanning roughly two orders of magnitude:
+
+| rung | USD-equivalent | share of the repo's own $5,000 "minimum interesting liquidity" | share of the $1,000,000 quality-score saturation point |
+|---|---|---|---|
+| **N1** | **$25** | 0.5% | 0.0025% |
+| **N2** | **$100** | 2% | 0.01% |
+| **N3** | **$500** | 10% | 0.05% |
+| **N4** | **$2,000** | 40% | 0.2% |
+
+Spacing is approximately half-decade (4x, 5x, 4x). Four points across two decades
+is the minimum that can distinguish a roughly linear impact curve from a
+convex one; three points cannot, and five costs 25% more requests for a
+discrimination the first four already provide.
+
+### 4.2 Why these four, from the liquidity the repository already commits to
+
+The two anchors are **in this repository**, not invented for this document:
+
+- `app/config.py:369` `crypto_min_liquidity_usd: float = 5000.0` and
+  `app/config.py:561` `crypto_risk_min_liquidity_usd: float = 5000.0` — the
+  scout and risk lanes both treat **$5,000 of pool liquidity** as the threshold
+  below which a token is not worth acting on. That is this project's already-
+  committed opinion about the thin end of the distribution.
+- `app/services/crypto_horizon.py:432` `min(liq, 1_000_000) / 10_000` — the
+  pair-quality score **saturates at $1,000,000**. That is this project's
+  already-committed opinion about where additional depth stops mattering.
+
+The sparse observation lane deliberately applies **no** liquidity threshold at
+all (it preserves the whole eligible birth population as its denominator), so
+the population being quoted spans from far below $5,000 to far above it. A
+ladder anchored only at the top would be uninformative on most of the
+population; one anchored only at the bottom would never reach the sizes an entry
+would actually use.
+
+Rung by rung:
+
+- **N1 $25 — the fixed-cost probe.** Deliberately below any plausible entry. Its
+  job is to isolate the size-**independent** components of cost (network base
+  fee, any flat aggregator fee, any account-creation cost the venue quotes) from
+  the size-**dependent** impact. It is the control rung. If price impact is
+  already material at $25, the pool is untradeable at every larger size, and
+  that is a finding, not a failure.
+- **N2 $100 — the smallest plausibly-real size.** The rung at which fixed Solana
+  costs plausibly stop dominating the total. 2% of the $5,000 floor.
+- **N3 $500 — the discriminating rung.** Exactly 10% of the project's own
+  minimum-interesting-liquidity constant. For the thinnest pool this repository
+  considers worth looking at, a $500 print is unambiguously material; for a
+  $1M pool it is noise. **If any single rung decides the milestone, it is this
+  one**, because it is where the impact curve should separate tokens.
+- **N4 $2,000 — the deep-end probe.** 40% of the $5,000 floor — which is to say,
+  catastrophic in a thin pool, and that catastrophe *is* the measurement — and
+  0.2% of the saturation point, i.e. still small where depth is real.
+
+**What is explicitly NOT claimed:** that these are good position sizes, that
+they are sizes we intend to trade, or that they were derived from any signal,
+conviction, capital base, or token-specific input. They are **fixed constants of
+the measurement instrument**, chosen from two constants already in the
+repository, in the same sense that a bid-ask spread is a property of a book. No
+code reads them to decide anything. `docs/SAFETY_BOUNDARIES.md` keeps portfolio
+sizing forbidden and this changes nothing about that: "a size is a stated INPUT
+of the simulation… it is not a sizing recommendation, and nothing may derive,
+optimize, rank, or recommend a size from a modeled result."
+
+### 4.3 Denomination — exact integers, no price feed, no drift
+
+**The entry input mint is a single declared USD stablecoin mint, and each rung is
+expressed as an EXACT INTEGER of that mint's base units.**
+
+This matters more than it looks. If the ladder were denominated in SOL, each
+rung's dollar value would drift with the SOL price, the notional would silently
+differ between the first pass and the last, and "fixed predeclared notionals"
+would quietly become "fixed predeclared *token* amounts of varying value". A
+stablecoin denomination makes each rung an integer constant that cannot move.
+
+- The mint address and its decimal count are **PENDING VERIFICATION** at CP-0
+  from a free public source (§14, M5). Nothing in this repository records them,
+  so this document does not assert them.
+- Once verified, the four integers are computed **once**, written into the
+  ladder record, and enter the ladder digest (§4.5). They are never recomputed
+  at runtime and never derived from a live price.
+
+**Bidirectionality — the exit rung is DERIVED, and derived from an OBSERVED
+quantity.** For each rung, the exit-side quote's input amount is the **exact
+integer `amount_out` returned by that same rung's entry quote in that same
+pass**. This is the definitional round trip: it asks "if I put $X in and got Y
+tokens, what do I get back for exactly those Y tokens?"
+
+- The exit input amount is therefore **DERIVED**, labelled as such (§5), and is
+  a **typed absence** whenever the entry quote for that rung was a
+  non-observation. There is no fallback exit amount, and in particular the
+  previous pass's `amount_out` is never substituted.
+- This is not "optimizing a notional after seeing execution". The exit amount is
+  fully determined by a rule fixed here, before any quote exists; no human or
+  agent chooses it, and it cannot be re-chosen to look better.
+- Without this, `ExitQuote` stays exactly as unobtainable as it is today (§2),
+  so bidirectionality is preregistered rather than optional.
+
+### 4.4 The population is preregistered too — otherwise the ladder is theatre
+
+Freezing the notionals while leaving token selection free would move the
+cherry-picking one level up. So:
+
+- **Population:** every token-horizon observation the sparse lane records in the
+  pass, in a deterministic order (ascending observation id), with **no**
+  liquidity, quality, venue, risk, or outcome filter — matching the sparse
+  lane's own denominator-preserving rule.
+- **Bound:** a declared per-pass cap `ROUTE_QUOTE_MAX_TOKENS_PER_PASS`, applied
+  by that deterministic order and **never** by any property of the token. A
+  truncation is recorded as `population_truncated` with the true count, so a cap
+  can never be mistaken for a complete population.
+- **Forbidden:** excluding a token because its quote failed, looked bad, or was
+  slow. A failed quote is a row with a typed failure state, not an absence.
+
+### 4.5 FROZEN — and what unfreezing costs
+
+The ladder record is:
+
+```
+ladder_id      : "SRO001-LADDER-V1"
+rungs_usd      : [25, 100, 500, 2000]
+entry_mint     : <verified at CP-0>
+entry_decimals : <verified at CP-0>
+rungs_base_units : [<computed once at CP-1>]
+direction_rule : "exit input = entry amount_out, same rung, same pass"
+population_rule: "all sparse-lane observations in pass, ascending observation id, capped"
+ladder_digest  : sha256 over the canonical encoding of the above
+```
+
+**These notionals are FROZEN. Changing them after any quote has been evaluated
+invalidates the measurement**, and there is no version of that change that
+merely "improves" it: a ladder chosen after seeing which rungs produced
+favourable execution is not a measurement of execution cost, it is a report of
+which sizes happened to look good, and it cannot be distinguished from the
+former after the fact by anyone reading the results.
+
+Enforcement, not intention:
+
+- `ladder_digest` is written on **every persisted quote row** (§5). SC-6 fails
+  the milestone if any row disagrees with the preregistered value.
+- The final report prints the ladder digest next to the verdict. A verdict
+  whose rows carry more than one ladder digest is **reported as invalid**, not
+  reconciled.
+- **One amendment window exists, and it closes at the first quote.** Between
+  CP-0 and CP-1 the rungs may be amended **once**, on Eric's explicit written
+  approval, and only on grounds that contain no quote result — for example, the
+  CP-0 liquidity distribution showing the population is entirely outside the
+  ladder's useful range. Any such amendment is recorded here **as a new
+  `ladder_id` alongside the old one, with both digests and the reason**; nothing
+  is edited in place. After the first quote request is issued, the ladder is
+  frozen absolutely and this window does not reopen.
