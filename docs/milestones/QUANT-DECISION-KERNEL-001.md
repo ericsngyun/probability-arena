@@ -2191,7 +2191,281 @@ can be reordered without cost.
 
 ## 9. Evaluation and preregistration
 
-*(section pending)*
+### 9.1 The Operative-Field Invariant
+
+Our registry's original leakage guard was a prose blocklist, and review defeated
+it with a synonym. The fix was applied to membership — a closed typed predicate
+schema — but it was **not applied as a rule**, and the same mistake recurred one
+layer down when a `selection_method` prose scan accepted "hand picked after
+looking at results". **A defect that recurs after being fixed is a missing
+invariant, not a missing patch.**
+
+> **The Operative-Field Invariant.** Every field the evaluator reads is **typed
+> and closed** — an enum, a number, a timestamp, or a predicate over an
+> allowlisted field registry. Every prose field is **non-operative and provably
+> unread**, enforced by an AST test asserting that no evaluator branch depends on
+> it.
+>
+> **A field that is required but unread is FORBIDDEN.** It is a recorded promise,
+> and recorded promises are how "a good filing cabinet with a strong lock and no
+> inspector" happens.
+
+The precedent already exists in-repo: operator notes are bounded, secret-scanned,
+and covered by an AST test asserting no branch reads them. That pattern becomes
+the rule for all prose.
+
+The third clause is not cosmetic. The current manifest carries **eight required
+fields that no evaluator code reads** — `domain_sample_floors`,
+`evaluation_horizons`, `missing_data_policy`, `canceled_void_policy`,
+`conflict_policy`, `stale_score_policy`, `invalidating_conditions`, and
+`multiple_testing_policy`. Each must become **typed-and-read** or be **demoted to
+explicit non-operative rationale**. There is no third option, because the middle
+state is precisely what lets an author believe a promise is binding when it is
+not.
+
+### 9.2 Registry defects that must close before any confirmatory claim
+
+Verified against the current implementation in this session where marked.
+
+| # | defect | status | consequence |
+|---|---|---|---|
+| **D1** | Evaluation permitted from `collecting` and `registered`, recorded only as a deviation | in-repo | **Reopens the peek-and-lock route.** Nothing forces maturation before a terminal verdict is pinned, and it contradicts `status()`'s own `evaluation_permitted = state in (MATURED, EVALUATED)` |
+| **D2** | `canon_digests` pinned but never compared | **VERIFIED this session** — written at `experiment_registry.py:500` over `CANON_FILES = ("docs/PROJECT_CANON.md", "docs/SAFETY_BOUNDARIES.md")`; `_evaluation_code_drift` at `:802` reads only `evaluation_code_digests` | **Real, present, undetected drift** in the document that defines the safety boundary: pinned `d6c38783…`, current `c5cb2936…`, undetected for 8 days while `status()` reported clean |
+| **D3** | The "universe created before registration" check is skipped at its only call site | in-repo | The universe guarantee is unreachable from the register path |
+| **D4** | `_evaluation_code_drift` resolves paths against `Path.cwd()` | **VERIFIED this session** — `status()` calls it with no `repo_root` | Raises from another directory instead of reporting drift |
+| **D5** | A dead `if False and …` branch in registration validation | in-repo | Harmless today; load-bearing the moment validation changes |
+| **D6** | The `record-result` text renderer raises on a renamed field, and text is the default format with no test | in-repo | The default invocation of the enforcement command tracebacks |
+| **D7** | Eight required manifest fields never read | in-repo | §9.1 |
+| **D8** | `multiple_testing_policy` is free text validated only as non-empty | in-repo | **No multiple-testing correction of any kind exists in `app/`** |
+| **D9** | Exceeding the event/result caps makes chain verification report "not intact" | in-repo | Permanently bricks an experiment rather than refusing the append |
+| **D10** | `primary_metric.name` is never cross-checked against its definition or the hypothesis | in-repo | Already latent in a live registered experiment: `name: "mean_brier"` with a *skill* formula as its definition and a hypothesis stated in skill terms — **three different quantities in one immutable record** |
+
+D10 deserves emphasis because the manifest is immutable: the evaluator will
+compute one quantity while the hypothesis asserts another, and it cannot be fixed
+afterwards. **A registration whose metric name, definition, and hypothesis are
+not mutually consistent must be rejected at registration.**
+
+### 9.3 What the evaluator must enforce
+
+**The enforcement principle:** *the evaluator computes; the author confirms.* The
+author supplies only the experiment id, a confirmation, and non-operative notes.
+Every quantity that could change a verdict — population, membership, n, metric,
+cost, interval, window satisfaction — is recomputed from the committed record.
+**A value an author can supply is a value an author can choose.**
+
+Verdict precedence runs **integrity, then drift, then data quality, then
+stopping, then floors, then the number** — integrity beats arithmetic always:
+
+1. Chain integrity — broken chain, refuse.
+2. **Code *and canon* drift** — both compared (D2).
+3. Population reconstruction — rebuilt from forecast-time fields only,
+   independently recomputed, refused on disagreement.
+4. **Representativeness** — evaluated-sample composition against registered
+   universe composition across the declared stratification fields; material drift
+   **blocks a favourable verdict**; degenerate strata (prevalence within 5% of 0
+   or 1) are reported `inconclusive` and may not contribute to a headline.
+5. **Disposition balance** — the buckets must sum **exactly** to the enrolled
+   count, and the evaluator refuses an unbalanced result. Once enrolled, a member
+   never leaves the denominator; it moves to a typed disposition. **NULL is not
+   death**: collapsing "we failed to observe" into "it died" would, at 4.6% 24h
+   coverage, manufacture a ~95% death rate out of a monitoring gap.
+6. Stopping-rule satisfaction — from the clock and the data, with out-of-window
+   evaluation stamped a deviation **in both directions**. A protocol that only
+   polices favourable deviations teaches you to reach negative conclusions
+   sloppily, and the habit does not stay in the negative direction.
+7. **Sample floors, total and per-arm**, evaluator-computed.
+8. **Cost** — `net_conservative` computed before gross is displayed; refuse any
+   artifact carrying gross without net; compute kappa and refuse a confirmatory
+   claim below the floor.
+9. The number, **with a multiplicity-adjusted cluster-bootstrap interval** as the
+   headline. The raw interval never appears without it.
+10. Control check — each anomaly condition evaluated and reported **separately**,
+    combined as a **conjunction**. A guard that reports one boolean cannot be
+    audited, and the last one was wired as an OR and did not trip. The control
+    must be **mechanism-independent and specified without reference to any
+    in-sample ranking** — the previous "negative control" was a data-derived
+    worst cohort, and its out-of-sample inversion to best-in-class was exactly
+    the regression to the mean you would predict.
+
+**Multiplicity.** The family is *"every confirmatory test over the same
+population in one epoch, **plus every variant evaluated on overlapping data
+during the search that produced them**"*, so
+`m = family_size_declared + search_history.variants_evaluated`. The second term
+is the whole point: a family counting only registered experiments counts six
+candidates and misses the eighteen-policy search that generated them — and the
+real prior search was **39+ variants over one ~260-row window**. Holm–Bonferroni
+for confirmatory claims; Benjamini–Hochberg only to rank pre-screen candidates
+for registration, where an FDR-surviving result is *a reason to register*, never
+a finding.
+
+**Secondary metrics go into a sealed section the verdict function provably cannot
+read**, enforced by an AST test. This converts "ECE is descriptive only and
+cannot be promoted" from a prose promise into a structural property. Without it,
+a null primary plus an interesting secondary is the most natural rationalization
+available — and it is the one the registry's own founding document predicted we
+would reach for.
+
+**Interim looks default to zero and are metric-blind.** They may return liveness
+fields only — arrival count, coverage fraction, error states — never the primary
+metric, any secondary metric, any per-arm breakdown, or any quantity from which
+those are recoverable. An implementation that cannot enforce that separation must
+return nothing. The point is not that someone might peek; it is that **a decision
+moment chosen by a human who has seen the data is not a stopping rule**. An
+undeclared look **invalidates** the experiment rather than downgrading it,
+because unlike a window deviation it is unbounded in how much it can inflate the
+result.
+
+**One protocol rule that is not arithmetic and is stronger than the arithmetic.**
+A single passing experiment is not a finding. A confirmatory claim requires a
+**second, independently registered, non-overlapping replication**, because
+replication is robust to the one thing the correction is not: an **undeclared
+prior search**. A search can inflate one window; it cannot easily inflate two
+disjoint prospective windows in the same direction. Undeclared search remains the
+protocol's known hole and should be treated as a known hole rather than a solved
+problem.
+
+### 9.4 The sample-size reality, stated plainly
+
+Per-trade Sharpe for a fixed-stake binary is `(p−q)/sqrt(p(1−p))` — **the price
+cancels**. Required n for a one-sided test at alpha = 0.05, 80% power:
+
+| net edge | base n | **x DEFF 2.2** | **x DEFF and Bonferroni-20** |
+|---|---|---|---|
+| 0.5 pp | 61,820 | 136,003 | 292,850 |
+| **1 pp** | **15,451** | **33,991** | **73,191** |
+| 2 pp | 3,858 | 8,488 | 18,276 |
+| 3 pp | 1,712 | 3,765 | 8,107 |
+
+> ### 15,451 trades to detect a 1pp net edge; 33,991 with correlation; 73,191 with multiplicity. **Plan on 30,000–75,000 prospectively-recorded executable decisions.**
+
+The minimum detectable edge is the more useful planning instrument, because it
+answers "what can I conclude from the sample I will actually have?":
+
+| n | MDE | interpretation |
+|---|---|---|
+| **36** | **20.7 pp** | the MVP-005A paired sample. **Detects nothing real.** |
+| 100 | 12.4 pp | — |
+| 500 | 5.6 pp | larger than any plausible gross edge |
+| 1,000 | 3.9 pp | about the round-trip cost wedge at q = 0.50 |
+| 2,000 | 2.8 pp | |
+| 5,000 | 1.8 pp | |
+| 15,451 | 1.00 pp | |
+| 100,000 | 0.39 pp | |
+
+> **The gate recorded as "crossed" had no resolving power.** MVP-005A's paired
+> n = 36 could only ever have detected a **20.7 percentage-point** edge — roughly
+> twenty times coarser than the effect anyone is looking for.
+
+**Read the n=1,000 row against the cost wedge.** At `q = 0.50` you must be right
+by **3.75 percentage points** more often than the market to net 1pp, so a
+thousand prospective trades can only detect an edge roughly equal to the cost of
+trading. Below about n = 2,000 the experiment cannot see anything smaller than
+its own friction.
+
+**The feasibility arithmetic, and it is the uncomfortable part:**
+
+| qualifying trades/day | n=3,858 (2pp) | n=15,451 (1pp) | n=33,991 | n=73,191 |
+|---|---|---|---|---|
+| 1 | 10.6 yr | 42 yr | 93 yr | 200 yr |
+| **10** | **1.1 yr** | **4.2 yr** | **9.3 yr** | **20 yr** |
+| 50 | 77 d | 309 d | 1.9 yr | 4.0 yr |
+| 100 | 39 d | 155 d | 340 d | 2.0 yr |
+
+> **At 10 qualifying trades per day, the full-correction 1pp test takes twenty
+> years.** And the qualifying rate is *after* abstention: at a 95% abstention rate
+> — reasonable, since `EXECUTION_COST_EXCEEDS_EDGE` alone will remove most
+> candidates — **50 qualifying trades per day requires observing 1,000 candidates
+> per day.**
+
+**The correct conclusion is not to abandon the programme and not to lower the
+bar.** It is to **stop treating "build the trading system" as the milestone** and
+start treating "raise the candidate rate and shrink the confidence interval" as
+the milestone, because those are what the timeline is actually made of. It is
+also the strongest argument for §8's C1: **`ΔS` is a much cheaper channel than
+P&L, and it answers the only question that matters first.**
+
+*(On sequential testing: anytime-valid confidence sequences permit continuous
+monitoring without inflating type-I error and cut expected sample size by roughly
+30–50% **under a strong alternative** — but under a **weak** alternative, which
+§0's negative prior makes the relevant case, they require **more** samples than
+the fixed-sample test, because the price of optional stopping is paid up front.
+Use them for the *safety* property — stopping early on evidence of harm — not as
+a way to make the number smaller.)*
+
+### 9.5 Backtesting admissibility
+
+> **The Asymmetry Rule.** A historical backtest may produce a *negative* result
+> that binds, and may **never** produce a *positive* result that binds.
+
+Three independent reasons, each individually sufficient, all biased in the
+**same** direction — toward inflating measured skill. **Outcome contamination**
+is unfalsifiable and unbounded for a frontier model, and every proposed
+mitigation reduces to hoping the model cannot re-identify an event from its
+structure — when a model good enough to *forecast* an event from its structure is
+good enough to *recognize* it; the mitigation and the capability are the same
+capability. **Context leakage** through a retrieval path assembled now, from
+sources edited, re-dated and back-linked since. And **no counterfactual book**: a
+historical snapshot tells you what the book *was*, not what it would have been
+had we traded into it, so a backtested fill is a model scored against another
+model.
+
+This makes backtesting a **cheap, fast killing field** — the correct place to
+send a hypothesis first, precisely because it is rigged in the hypothesis's
+favour. Our own history demonstrates it: the useful output of the entire
+EDGE-SELECTION lane was a *refutation*, and the cost model killed the same
+cohorts faster and cheaper still. **Run the cost-first check before anything
+else: every one of the six EDGE candidates would have died there, weeks earlier
+and for free.**
+
+Historical data remains admissible for exactly two non-inferential uses:
+**cost-model calibration** — a claim about the market's microstructure with no
+LLM in the loop, so contamination is irrelevant — and **power and feasibility
+analysis**, since arrival rates and attrition curves are properties of the
+data-generating process. The second is the highest-leverage use of history we
+have, because it prevents registering an experiment that cannot conclude: it
+already blocked two of three drafts, measuring baseball at 410.7 arrivals/day
+(feasible), tennis at 1.2/day (marginal), and soccer at 0.0/day (not feasible).
+
+**Note the one place the Asymmetry Rule reverses**, because it determines what
+first capital would ever be for. For *skill*, contamination inflates, so a
+positive backtest proves nothing. For *costs*, every unmeasured term is charged
+adversely, so the modeled cost is a conservative **upper** bound — which means a
+fill-model validation **can only bring good news or a corrected model, never a
+hidden loss** of the kind that killed the EDGE candidates. If real capital is
+ever authorized, the coherent first deployment is therefore an experiment whose
+**primary metric is fill-model error, not P&L**, at a size where total loss is
+operationally irrelevant and is budgeted as the cost of the measurement.
+**No amount of paper trading closes the fill-model gap. The only instrument that
+measures a fill is a fill.**
+
+### 9.6 Time-consistent validation, where it applies
+
+Purge and embargo govern the pre-screen and cost-model fitting only. Naive k-fold
+is invalid here for four reasons, and "time series are ordered" is the weakest of
+them; the one our data punishes hardest is **entity clustering** — dozens of
+Kalshi markets belong to one game, many observations belong to one token, and
+**the independent unit is the event, not the row**.
+
+| lane | label horizon | purge | embargo | cluster unit |
+|---|---|---|---|---|
+| Kalshi intraday follow-through | 60 min | 60 min | **24 h** | game / event |
+| Kalshi resolution calibration | to settlement | full declared max | **7 d** | event |
+| Solana short bands | 15 min / 1 h | = band | 6 h | token |
+| Solana long bands | 6 h / 24 h | = band | **48 h** | **token + launch-hour cohort** |
+
+Both are applied **at the cluster level, not the row level** — purging a row
+while its sibling markets on the same game remain in training accomplishes
+nothing. Where a length is uncertain the protocol takes the **longer** value,
+because under the Asymmetry Rule an over-long embargo costs sample (making a kill
+harder, i.e. conservative) while a too-short one manufactures false survival.
+And a walk-forward result is reported as **the vector of fold results plus the
+worst fold**, never as the mean across folds — a mean across folds is exactly how
+"one fleeting 48h window printed a favourable flag" became a candidate.
+
+These lengths are **reasoned from cluster structure, not measured from an
+autocorrelation decay**, and re-deriving them empirically is §12's
+highest-value methodological follow-up.
+
 
 ## 10. Lane ranking — a recommendation for Eric, not a decision
 
