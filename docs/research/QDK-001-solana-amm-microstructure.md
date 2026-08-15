@@ -275,3 +275,168 @@ code.
 
 ---
 
+## 5. The AMM state vector, as a typed feature schema
+
+### 5.0 The observability tiers, declared first
+
+Every feature below is tagged with the tier that *actually supplies it*, because
+the difference between "this is the right feature" and "we can compute this" is
+where most research plans quietly fail.
+
+| tier | source | in bounds today? | marginal cost |
+|---|---|---|---|
+| **T0** | already-persisted rows (`crypto_price_ticks`, `crypto_token_birth_events`, `crypto_token_risk_assessments`, `crypto_token_lifecycle_snapshots`) | **yes** — pure SQL, zero provider calls | ~0 |
+| **T1** | one additional DexScreener read per token per pass, via the existing read-only adapter | **yes**, bounded by `OBSERVE_MAX_CALLS` and the sparse lane's cadence | 1 provider call |
+| **T2** | route/quote endpoint response | **pending** — the subject of `SOLANA-ROUTE-OBSERVATION-001`, currently at CP-0 with M4 unverified | 2 calls per rung-direction |
+| **T3** | per-swap on-chain feed (swap events with signer, direction, size, slot) | **NO — explicitly out of bounds.** `SOLANA-ROUTE-OBSERVATION-001` §3.2 F9 forbids the paid per-trade feed; §8.1 row 6 records realized slippage as consequently unobservable | n/a |
+
+**The single most important line in this section:** almost every feature that
+classical microstructure would call "flow" lives in **T3**, and T3 is closed.
+That is a declared capability boundary, not an engineering gap. The schema below
+is therefore explicit about which parts of the state vector are **structurally
+unavailable to us today** rather than merely unimplemented.
+
+### 5.1 The schema
+
+Absence vocabulary reuses the closed set frozen in
+`SOLANA-ROUTE-OBSERVATION-001` §5.4 (`not_returned_by_venue`,
+`venue_returned_null`, `venue_returned_unparseable`, `derivation_input_absent`,
+`no_response`, `request_not_issued`, `population_truncated`), extended with
+three this schema needs and that lane does not: **`feed_not_available`** (the
+quantity requires T3), **`insufficient_history`** (a window statistic whose
+window is not yet full), and **`pre_graduation`** (the quantity is undefined
+while the token is still on a bonding curve).
+
+#### Block A — pool state (the AMM's actual state variables)
+
+| # | feature | definition | tier | update freq | cost | typed absence |
+|---|---|---|---|---|---|---|
+| A1 | `pool_tvl_usd` | provider-computed pool TVL, \(L\) | T0/T1 | per observation | ~0 / 1 call | `venue_returned_null` |
+| A2 | `quote_reserve_usd_est` | \(L/2\) — DERIVED, valid **only** for uniform CPMM (§2.3) | T0 | per observation | ~0 | `derivation_input_absent`; **must be absent for CLMM/DLMM venues** |
+| A3 | `reserve_base`, `reserve_quote` | true on-chain reserves, base units | **T3** | per slot | n/a | `feed_not_available` — **never estimated into this column** |
+| A4 | `fee_bps` | the pool's fee tier | T1 | static per pool | ~0 | `not_returned_by_venue`; **never a per-dex default table** — that is precisely the fabrication `SOLANA-ROUTE-OBSERVATION-001` §5.3 forbids |
+| A5 | `dex_id` | venue label, verbatim and unmapped | T0 | static | ~0 | `venue_returned_null` |
+| A6 | `pool_kind` | `cpmm` / `clmm` / `dlmm` / `bonding_curve` / `unknown` | INFERRED from A5 | static | ~0 | `unknown` is a first-class value, not an absence |
+| A7 | `pool_age_seconds` | now − `pair_created_at` | T0 | continuous | ~0 | `derivation_input_absent` |
+| A8 | `tvl_log_return_Δ` | \(\ln L_t - \ln L_{t-\Delta}\) | T0 | per observation pair | ~0 | `insufficient_history` |
+| A9 | `tvl_drawdown_from_peak` | \(1 - L_t/\max_{s\le t} L_s\) over persisted ticks | T0 | per observation | ~0 | `insufficient_history` |
+
+**A2 and A6 together carry the §2.3 caveat.** A2 must be typed-absent whenever
+A6 is not `cpmm`, because for concentrated-liquidity venues the \(L/2\)
+conversion has unbounded error. Emitting A2 for an Orca Whirlpool would be
+exactly the class of silent wrongness this repository has spent several
+milestones removing.
+
+#### Block B — price and volatility
+
+| # | feature | definition | tier | update freq | cost | typed absence |
+|---|---|---|---|---|---|---|
+| B1 | `price_usd` | provider mid | T0/T1 | per observation | ~0 | `venue_returned_null` |
+| B2 | `log_return_Δ` | \(\ln p_t - \ln p_{t-\Delta}\) | T0 | per pair | ~0 | `insufficient_history` |
+| B3 | `price_churn_window` | stdev of B2 over a window — **deliberately not named `realized_vol`** | T0 | per window | ~0 | `insufficient_history` |
+| B4 | `price_change_5m`, `price_change_1h` | provider-reported | T0 | per observation | ~0 | `venue_returned_null` |
+| B5 | `market_cap`, `fdv` | provider-reported | T0 | per observation | ~0 | `venue_returned_null` |
+| B6 | `fdv_to_tvl` | B5 / A1 — how much notional claim sits above how much real depth | T0 | per observation | ~0 | `derivation_input_absent` |
+
+> **B3 carries a hard warning, and the name change is the warning.** Realized
+> volatility computed from a provider mid on a thin AMM is **not** the
+> volatility of an efficient price. §2.6 shows a single $500 swap moves the
+> median pool's marginal price by 82%. What B3 measures at these pool sizes is
+> predominantly **the impact footprint of individual swaps**, not information
+> arrival. It remains a legitimate feature — it proxies "how big are trades
+> relative to the pool" — but calling it volatility imports every classical
+> volatility intuition, all of which are wrong here.
+
+#### Block C — flow (the block where our position is weakest)
+
+| # | feature | definition | tier | update freq | cost | typed absence |
+|---|---|---|---|---|---|---|
+| C1 | `volume_5m/1h/24h_usd` | provider-reported, **unsigned aggregate** | T0/T1 | per observation | ~0 | `venue_returned_null` |
+| C2 | `volume_to_tvl` | C1 / A1 — turnover; the best T0 flow proxy we have | T0 | per observation | ~0 | `derivation_input_absent` |
+| C3 | `swap_count_by_direction` | buys and sells counted separately | **T3** | per slot | n/a | `feed_not_available` |
+| C4 | `net_signed_flow` | \(\sum\) buy notional − \(\sum\) sell notional | **T3** | per slot | n/a | `feed_not_available` |
+| C5 | `trade_size_distribution` | quantiles of per-swap notional | **T3** | per window | n/a | `feed_not_available` |
+| C6 | `unique_signers_window` | distinct swapping addresses | **T3** | per window | n/a | `feed_not_available` |
+| C7 | `liquidity_add_events`, `liquidity_remove_events` | LP mint/burn events, signed and sized | **T3** | per slot | n/a | `feed_not_available` |
+| C8 | `tvl_jump_unexplained` | a change in A1 too large to be explained by C1's volume — a **detected but unattributed** liquidity event | T0 | per observation pair | ~0 | `insufficient_history` |
+
+**C8 is the honest T0 substitute for C7, and it is worth building.** We cannot
+see LP burn events, but a pool whose TVL falls 60% across an interval in which
+reported volume was $200 did not lose that TVL to trading — the arithmetic does
+not close. That is a **liquidity-removal detector built entirely from data we
+already persist**, and it is the closest thing to a rug signal available inside
+our current boundary. It is a *detector*, not an *attribution*: it cannot
+distinguish an LP withdrawal from a single enormous swap the provider
+under-reported, and the feature must carry that ambiguity rather than resolve it.
+
+#### Block D — venue dispersion
+
+| # | feature | definition | tier | update freq | cost | typed absence |
+|---|---|---|---|---|---|---|
+| D1 | `pair_count` | number of pools for the token | T0 | per observation | ~0 | `venue_returned_null` |
+| D2 | `single_venue` | D1 == 1 | T0 | per observation | ~0 | `derivation_input_absent` |
+| D3 | `tvl_herfindahl` | \(\sum_i (L_i/\sum_j L_j)^2\) across pools | T1 | per observation | 1 call | `derivation_input_absent` |
+| D4 | `best_pair_share` | largest pool's share of total TVL | T1 | per observation | 1 call | `derivation_input_absent` |
+| D5 | `route_hops`, `route_split` | from the quote response | **T2** | per quote | 1 quote | `route_not_returned` |
+
+`CryptoTokenLifecycleSnapshot` already carries D1, D2 and `best_pair_address`,
+so D3/D4 extend existing persisted structure rather than adding capability.
+
+#### Block E — holder and actor structure
+
+All of Block E is **already modelled** in `CryptoTokenLifecycleSnapshot` and
+`CryptoTokenActorObservation`. Tier T1, from persisted risk-assessment rows.
+Coverage is the open question; the schema is not.
+
+| # | feature | note |
+|---|---|---|
+| E1 | `top10_holder_pct` | concentration; the standard rug prior |
+| E2 | `creator_pct` / `creator_holding_pct` | the creator's remaining claim on the float |
+| E3 | `sniper_pct`, `bundler_pct`, `insider_pct` | **provider-labelled cohorts. Their definitions are the provider's, not ours, and must never be treated as ground truth** — they are a vendor's heuristic with an unpublished threshold |
+| E4 | `holder_count` and its growth rate | the only genuine *adoption* series available at T0/T1 |
+| E5 | `known_creator_cluster_ref`, `repeated_cohort_ref` | **currently placeholders with no behavior** (`app/models.py`: "placeholders for later cross-token cohort analysis (no behavior today)"). §9 argues this is the highest-value unbuilt feature in the schema. |
+
+#### Block F — lifecycle state (see §7 for why this block dominates)
+
+| # | feature | definition | tier | typed absence |
+|---|---|---|---|---|
+| F1 | `lifecycle_stage` | the regime label of §7 | INFERRED from A/B/C | `unknown` is first-class |
+| F2 | `bonding_curve_state` | already a column on `CryptoTokenBirthEvent` | T1 | `venue_returned_null` |
+| F3 | `curve_progress_pct` | fraction of the bonding curve sold | T1/T3 | `not_applicable` post-graduation |
+| F4 | `graduated_or_migrated` | already a column on `CryptoTokenSurvivalOutcome` | T0 | NULL = not yet measurable |
+| F5 | `token_age_seconds` | now − `first_evidence_at` | T0 | `derivation_input_absent` |
+| F6 | `tvl_decay_ratio` | \(L_{\text{birth}} / L_{t}\) — **the variable §2.5(b) proves dominates execution cost** | T0 | `derivation_input_absent` |
+| F7 | `mint_authority_enabled`, `freeze_authority_enabled` | already on `CryptoTokenBirthEvent` | T0 | NULL-honest |
+
+**F6 deserves its own line.** It is computable today from two columns we already
+persist (`CryptoTokenBirthEvent.initial_liquidity_usd` and
+`CryptoHorizonObservation.liquidity_usd`), it costs one division, and §2.5(b)
+shows it drives realized execution cost more strongly than any impact term.
+**It is the highest value-per-unit-effort feature in this schema.**
+
+### 5.2 What the schema says about our current observation design
+
+Blocks A, B, D, E and F are substantially computable from data we already hold.
+Block C is not — and the sparse observation lane's design makes Block C harder
+in a specific way worth stating plainly.
+
+`app/services/crypto_sparse_observation.py` buys **exactly two observations per
+token, at 6h and 24h** (`SPARSE_HORIZONS`), because the coverage cliff it exists
+to repair sits there (15m/1h coverage was already 80.9%/81.1%). That is the
+right decision *for repairing a survival-label denominator*. It is close to the
+worst possible sampling design *for microstructure*, which needs many
+observations close together, not two observations eighteen hours apart.
+
+**This is not a criticism of the lane — it is the correct read of what the lane
+is for.** But the consequence is sharp:
+
+> **INFERRED, and load-bearing for sequencing: no amount of analysis over the
+> sparse lane's output will produce a flow model.** Two points per token support
+> lifecycle and decay features (A8, A9, F6) very well and support nothing in
+> Block C at all. A flow model needs a different acquisition design, and the
+> honest first question is whether the T0/T1 lifecycle features alone carry
+> enough signal to justify building one. §9 argues they might, and that this is
+> the correct order of work.
+
+---
+
