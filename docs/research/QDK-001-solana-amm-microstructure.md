@@ -440,3 +440,149 @@ is for.** But the consequence is sharp:
 
 ---
 
+## 7. Lifecycle as the dominant regime variable
+
+In equity or FX microstructure, "regime" is a slow-moving nuisance parameter —
+something you control for. Here it is the **fastest-moving and largest-magnitude
+variable in the system**, and treating it as a control rather than as state is
+the second-biggest modelling error available in this domain (the first is §1).
+
+### 7.1 The evidence that lifecycle dominates
+
+Three measurements from our own production lane, all recorded in
+`docs/milestones/SOLANA-ROUTE-OBSERVATION-001.md` §14.1:
+
+**(1) Liquidity decays by 4.75× at the median between birth and horizon** (M12,
+`crypto_token_birth_events` vs cohort 8, 25h window). §2.5(b) then shows this
+single variable costs a $500 round trip 22% of notional with the price
+unchanged — **larger than every other execution cost combined**.
+
+**(2) The decay is strongly non-uniform, and it fans the cross-section out.**
+
+| percentile | birth | observation | decay |
+|---|---|---|---|
+| p25 | $10,059 | $1,936 | **5.20×** |
+| p50 | $13,586 | $2,860 | **4.75×** |
+| p75 | $21,712 | $11,578 | 1.88× |
+| p90 | $33,392 | $17,655 | 1.89× |
+| p100 | $348,926 | $167,041 | 2.09× |
+
+Reading the *dispersion* rather than the levels gives the sharper result:
+
+| dispersion measure | at birth | at observation | change |
+|---|---|---|---|
+| p75 / p25 | **2.16×** | **5.98×** | **2.77× wider** |
+| p90 / p25 | 3.32× | 9.12× | 2.75× wider |
+
+> **VERIFIED (arithmetic over the M12 measurement). At birth these tokens look
+> nearly alike — the interquartile liquidity ratio is 2.16×. By the 6h/24h
+> horizon they have separated to 5.98×.** The lifecycle is not a uniform decay
+> applied to a population; it is a **sorting process** that takes a
+> homogeneous-looking birth cohort and fans it out by roughly 2.8× in
+> dispersion.
+
+This reframes the predictive question, and it is the most useful thing in this
+document for deciding what to work on:
+
+> **The research question is not "what will the price do?" It is "can the sort
+> be predicted at birth, before the fan-out has happened?"** That is a
+> classification problem over the Block E/F features, on a population we already
+> enrol, with an outcome (`tvl_decay_ratio`, F6) we can already compute. It is
+> falsifiable, it needs no new capability, and it requires not one Block C flow
+> feature.
+
+**(3) An implied median liquidity half-life of 2.7–10.7 hours.** If decay is
+approximately exponential, a 4.75× median fall implies a half-life of 2.67 h had
+every observation sat at the 6h mark, and 10.68 h had every one sat at 24h.
+Cohort 8 mixes both horizons, so the honest statement is a **bracket, not a
+point estimate**:
+
+> **INFERRED: median pool liquidity half-life is between roughly 2.7 and 10.7
+> hours.** The bracket is wide because the sample (n=42) mixes two horizons and
+> the exponential form is assumed rather than fitted. Narrowing it is cheap — it
+> needs only that observations be attributed to their horizon, which
+> `CryptoHorizonObservation.horizon` already records — and it would be one of
+> the more valuable small measurements available to this project.
+
+### 7.2 The stage model
+
+Six stages. The boundaries are chosen to be **observable transitions**, not
+narrative ones.
+
+| stage | definition | observable marker | our coverage |
+|---|---|---|---|
+| **S0 — pre-liquidity** | token exists; no pool state ever observed | `initial_liquidity_usd` NULL or ≤ 0 | **58.6% of births** — see §7.3 |
+| **S1 — bonding curve** | trading against the launchpad curve, pre-graduation | `bonding_curve_state`, `first_dex_id` = launchpad | F2/F3; coverage unmeasured |
+| **S2 — graduation** | curve completes; liquidity migrates to an AMM pool | `graduated_or_migrated`; a new `pair_address` under a different `dex_id` | F4 exists as a column |
+| **S3 — post-graduation peak** | the AMM pool at maximum TVL | \(\arg\max_s L_s\) over persisted ticks | A9 computes it |
+| **S4 — decay** | sustained TVL decline from peak | A8 < 0 sustained; F6 rising | **where our 6h/24h observations almost all sit** |
+| **S5 — death or removal** | TVL collapses, or LP is withdrawn | `no_liquidity_state`, `provider_no_pair`, or C8 firing | M14: **0 occurrences** in cohort 8 to date |
+
+**S4 is where our data lives, and that is a sampling fact worth naming.** The
+sparse lane observes at 6h and 24h; §7.1(3) puts the median half-life at 2.7–10.7
+hours. So **our observations are taken between roughly one and nine half-lives
+after birth** — deep in S4, well past the S3 peak, and long after whatever sort
+determined the outcome had already happened. We are measuring the *result* of
+the sorting process, not the process.
+
+### 7.3 The 58.6% that never enter the model at all
+
+`SOLANA-ROUTE-OBSERVATION-001` §14.1 M13: of 411 births in 25 hours, all 411
+carry `first_evidence_at`, but only **170 (41.4%)** carry an
+`initial_liquidity_usd > 0` — the binding enrolment filter in
+`crypto_sparse_observation.enrolment_rejection_reason`.
+
+The milestone records this as coverage finding **F-1**, a limitation. This
+document takes a different view of the same number:
+
+> **INFERRED — a reframe rather than a disagreement: the 58.6% is not only a
+> coverage gap, it is the largest single lifecycle observation in the dataset.**
+> A token that never acquires an observable liquidity state is an S0 token that
+> never reached S1/S2 in any way a provider surfaced. That is an *outcome*, and
+> it is the **modal** outcome. Treating it purely as missing data discards the
+> majority class of the very lifecycle this section argues is the dominant
+> variable.
+
+Two caveats that keep this from being over-claimed:
+
+1. **It may be a provider artifact rather than a token fact.** The absence is in
+   DexScreener's response, not on chain. A token that traded briefly and died
+   between provider polls is indistinguishable from one that never traded at
+   all. Separating them needs either denser polling (T1 cost) or chain data (T3,
+   out of bounds).
+2. **M15 explicitly flags the 58.6% as measured over a single 25-hour window**
+   and therefore possibly a one-day artifact. The *existence* of the ceiling is
+   established; its *magnitude* is not.
+
+The direction is still clear enough to state: **any lifecycle model built only
+on the 41.4% is conditioned on having already survived the largest filter in the
+system**, and its base rates will be optimistic by an amount nobody has yet
+measured.
+
+### 7.4 The observation cliff is itself lifecycle evidence
+
+The `crypto_sparse_observation.py` module docstring records the production
+coverage that motivated the lane: **15m 80.9%, 1h 81.1%, 6h 16.8%, 24h 4.6%**,
+with the median token's *last* tick arriving ~83 minutes after birth.
+
+That was diagnosed — correctly, for the lane's purposes — as an **observation**
+failure: the background scout stops ticking aged tokens. The same numbers admit
+a second reading that matters here:
+
+> **INFERRED: an ~83-minute median last tick, set against a 2.7–10.7 hour median
+> liquidity half-life, is also consistent with the scout losing interest at
+> roughly the moment the token stops being interesting.** The two explanations —
+> "we stopped observing" and "there was progressively less to observe" — are not
+> mutually exclusive, and no measurement we currently hold separates them.
+
+This is a genuine confound in every coverage number the project reports. It is
+worth naming because the sparse lane's design **resolves it**: the lane observes
+on a schedule anchored to birth, independent of whether the token still looks
+interesting. Comparing the sparse lane's 6h/24h answer rate against the scout's
+is therefore a clean natural experiment separating observation failure from
+token death — and M14's finding of **0 `no_liquidity_state` and 0
+`provider_no_pair` across all cohort-8 observations to date** is the first data
+point. It currently favours "we stopped observing" over "the tokens died."
+
+---
+
