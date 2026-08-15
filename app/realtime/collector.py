@@ -71,6 +71,7 @@ from pathlib import Path
 
 from app.config import get_settings
 from app.realtime.archive import ArchiveError, EventArchive
+from app.realtime.archive_head import ArchiveHeadError
 from app.realtime.auth import ReadOnlyRequestSigner
 from app.realtime.book import (
     SubscriptionError,
@@ -1251,7 +1252,10 @@ class _Session:
                 # `archive-init --confirm`.
                 self._archive = EventArchive(self.config.archive_root,
                                              environment=self.config.environment)
-            except (ArchiveError, OSError) as exc:
+            # `ArchiveHeadError` is the uninitialized-root HALT and is NOT an
+            # `ArchiveError`; catching only the latter turned the one refusal
+            # this path exists to report into an untyped crash.
+            except (ArchiveError, ArchiveHeadError, OSError) as exc:
                 return self._result(STATUS_ARCHIVE_ERROR, started_at,
                                     f"{type(exc).__name__}: {exc}", 0, 0)
         try:

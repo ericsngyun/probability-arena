@@ -527,10 +527,11 @@ class TestKeyMaterialStaysInAuth:
     def test_32_the_collector_stays_inside_the_reviewed_dependency_direction(self):
         """Section 6.1: strictly downward, and NOTHING existing imports the new.
 
-        AMENDED AT CP3, and deliberately widened by exactly the six modules
-        section 6.1's diagram already draws — the archive it appends to, the
-        book/envelope it normalizes with, the canonical clock format, the
-        fixed-point parsers, and the transport's typed error. The list is still
+        AMENDED AT CP3, and deliberately widened by exactly the modules section
+        6.1's diagram already draws — the archive it appends to (and the head
+        module that owns the uninitialized-root HALT), the book/envelope it
+        normalizes with, the canonical clock format, the fixed-point parsers,
+        and the transport's typed error. The list is still
         an equality, not a subset, so the amendment cannot be re-used to admit a
         seventh module quietly.
 
@@ -549,9 +550,9 @@ class TestKeyMaterialStaysInAuth:
                 mods.add(node.module)
         app_mods = {m for m in mods if m.startswith("app.")}
         assert app_mods == {"app.config", "app.realtime.archive",
-                            "app.realtime.auth", "app.realtime.book",
-                            "app.realtime.canonical", "app.realtime.fixedpoint",
-                            "app.realtime.kalshi",
+                            "app.realtime.archive_head", "app.realtime.auth",
+                            "app.realtime.book", "app.realtime.canonical",
+                            "app.realtime.fixedpoint", "app.realtime.kalshi",
                             "app.realtime.ws_transport"}, app_mods
         # Anti-vacuity: the permitted things must EXIST. An empty or unparsed
         # module would satisfy every ban below without satisfying anything else.
