@@ -35,8 +35,8 @@ in `app/`, and the DEMO session recorded in
 out-of-repo script. A credential loader that lives outside the repository is a
 credential loader nobody reviews.
 
-Three properties are load-bearing and are asserted structurally in
-`tests/test_kalshi_live_tape_cp2_001.py`:
+Three properties of the CREDENTIAL half are load-bearing and are asserted
+structurally in `tests/test_kalshi_live_tape_cp2_001.py`:
 
 **This module never touches key material.** It passes a key id and a filesystem
 path to `app.realtime.auth`, which is the only file in the repository permitted
@@ -65,6 +65,7 @@ the key id.
 from __future__ import annotations
 
 import asyncio
+import random
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -804,12 +805,16 @@ STATUS_CAPPED_EVENTS = "capped_events"
 STATUS_CAPPED_RECONNECTS = "capped_reconnects"
 STATUS_STOPPED = "stopped"
 STATUS_ARCHIVE_ERROR = "archive_error"
-STATUS_TRANSPORT_ERROR = "transport_error"
 
+# Section 6.3's draft list also carried a `transport_error` status. There is no
+# such outcome and there should not be one: EVERY socket failure enters the
+# bounded reconnect ladder, so it either recovers or ends as
+# `capped_reconnects`, which additionally says how many attempts were spent. A
+# status nothing can ever produce reads as a measured possibility, which is the
+# same defect `latency_envelope` removed when it deleted a permanently empty hop.
 SESSION_STATUSES = (STATUS_OK, STATUS_CAPPED_TIME, STATUS_CAPPED_EVENTS,
                     STATUS_CAPPED_RECONNECTS, STATUS_STOPPED,
-                    STATUS_ARCHIVE_ERROR, STATUS_TRANSPORT_ERROR,
-                    REFUSED_NO_CREDENTIAL)
+                    STATUS_ARCHIVE_ERROR, REFUSED_NO_CREDENTIAL)
 
 # Carried on every result, including refusals — the TAPE_NOTE pattern of
 # `docs/SAFETY_BOUNDARIES.md:241`. A boundary statement that lives only in a
@@ -1225,8 +1230,6 @@ class _Session:
         base = self.config.reconnect_backoff_base_s
         if base <= 0:
             return
-        import random
-
         delay = min(base * (2 ** max(0, self.reconnects - 1)),
                     self.config.reconnect_backoff_max_s)
         # Jittered and CAPPED, and the loop that calls it is bounded by
