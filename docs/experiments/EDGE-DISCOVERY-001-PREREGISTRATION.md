@@ -353,3 +353,51 @@ selection on the pooled figure. Mitigation, fixed now: `s` is determined on
 **TRAIN only** and applied unchanged to HOLDOUT, so the holdout net figure
 carries no direction selection. This is disclosed rather than hidden, and the
 two-sided raw-statistic CI is reported for every horizon regardless of `s`.
+
+### D-3 (E3) — E3 bucket definitions, resolved before any ΔS was computed (2026-08-15)
+
+§4 names ten slices but does not define the bucket boundaries for the
+continuous ones. The boundaries below were fixed and committed **before the E3
+script was written or run**, and no outcome column (`y`) was read at any point
+in choosing them. Only covariate marginals were inspected.
+
+1. **forecaster** — as recorded (`baseball_evidence`, `soccer_evidence`).
+2. **sport / league** — from the `market_ticker` series prefix:
+   `KXMLB*` → **MLB**, `KXWC*` → **WC** (FIFA World Cup), `KXMLS*` → **MLS**.
+   Note this slice is near-collinear with (1) by construction.
+3. **time-to-resolution** — **TRAIN quintiles of `hours_to_close`**. Fixed
+   wall-clock buckets (<1h/1–3h/3–6h/6–24h/24h+) were considered and rejected
+   *before* running: 92% of rows sit under 3h, so fixed buckets would place
+   three of five cells under the n≥200 floor and forfeit the slice. Quintiles
+   are also what slices 5–7 use, so the family is internally consistent.
+4. **market-probability decile** — TRAIN deciles of `q`.
+5. **`|p − q|` magnitude** — TRAIN quintiles.
+6. **spread** — TRAIN quintiles of `spread_avg`.
+7. **depth / liquidity** — TRAIN quintiles of `liquidity_avg`.
+8. **favourite vs underdog** — `q > 0.5` vs `q <= 0.5`.
+9. **forecast direction** — three cells, `p > q`, `p < q`, and `p == q`
+   (92 exact ties exist; they are given their own cell rather than being
+   silently folded into a side).
+10. **resolution-clarity tier** — **NOT RUN.** No typed field supplies it.
+    `ranking.resolution_clarity_score()` is an explicit placeholder returning
+    the constant 0.5 for every market, and
+    `DomainMarketInventorySnapshot.resolution_clarity_proxy` is a
+    domain/series-cluster aggregate for scouting, not a per-market property of
+    these forecasts. Per §4 this is recorded as not-run rather than improvised.
+
+All cut points are computed on **TRAIN only** and applied unchanged to HOLDOUT.
+Where a quantile edge repeats (e.g. `spread_avg` has heavy ties at 1.0),
+duplicate edges are collapsed, so a slice may yield fewer than its nominal
+number of cells; actual boundaries and counts are reported.
+
+Two further points of procedure, also fixed in advance:
+
+- **Evaluability** requires the n≥200 **and** ≥50-event floors to be met in
+  **both** TRAIN and HOLDOUT. A cell evaluable in only one split cannot be
+  discovered-then-confirmed, so it is `underpowered`, not a result.
+- **BH family** = every evaluable cell, pooled across all slices, as §4 says.
+  BH at q=0.10 is applied to the HOLDOUT p-values for the confirmation stage
+  and, separately, to the TRAIN p-values for the discovery stage. Interval
+  reporting for any BH-selected set uses FCR-adjusted intervals at level
+  1 − R·q/m (Benjamini & Yekutieli 2005), which is what "FDR-corrected CI" is
+  taken to mean.
