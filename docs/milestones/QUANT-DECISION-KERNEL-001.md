@@ -1397,7 +1397,140 @@ require an amendment. It requires a different milestone.
 
 ## 6. The decision record schema
 
-*(section pending)*
+### 6.1 The reconciliation, field by field
+
+The brief specified a decision record with eighteen fields. Several are now
+unsupportable — either because a cut removed the quantity, or because the
+capability boundary forbids the field, or because the field names a quantity that
+cannot be identified from observation. **Removing them is not tidying. A field
+that cannot be honestly populated is a field that will be dishonestly
+populated.**
+
+| brief's field | verdict | why |
+|---|---|---|
+| instrument | **KEEP** | — |
+| **side** | **REMOVE** | `docs/SAFETY_BOUNDARIES.md`: evidence artifacts may not "carry or imply a side, an entry instruction, or an action". Side may exist only *inside* a `PAPER_SIMULATION` as a declared modeled input, on an artifact carrying a model identifier and a modeled-vs-observed basis. It is not a field of an observation record. |
+| p_market | **KEEP — the single highest-value field in the schema** | Without it `ΔS` is not computable and §0's whole finding stands unmeasured. |
+| p_model | **KEEP** | — |
+| p_conservative | **KEEP, but typed-absent by default** | Requires a *measurable* dispersion. Self-reported posterior width is unfalsifiable from outcome data — a layer reporting ±2pp and one reporting ±15pp produce identical likelihoods for every outcome sequence provided their means agree. And the one measured proxy is weak: median across-trial spread of 0.27 logits, with shrinkage a measured **no-op in 791/791 folds**. Inter-trial spread measures prompt sensitivity, not epistemic uncertainty. The field carries `dispersion_source` in `{bootstrap_refit, ensemble_disagreement, regime_residual, none}`; `none` means the value is **absent**, never equal to `p_model`. |
+| **EV** | **REMOVE and RENAME** | Dollar EV is forbidden with **no unlocking milestone defined**. Replaced by dimensionless `edge_gross_prob_points` and `edge_net_prob_points` — never a dollar amount, never a currency unit. |
+| expected execution | **KEEP as `execution_cost`** | With a per-term `basis` in `{OBSERVED, MODELED, BOUNDED}` and an `adverse_bound` on every BOUNDED term. CLOB: exact ladder walk. AMM: closed form plus residual. |
+| liquidity loss | **KEEP on CLOB, RENAME on AMM** | On a CLOB this is the liquidity-loss term of the profit decomposition and is computable from the full ladder. On an AMM there is no order book to integrate a price-impact function over — the analogous quantity is curve impact, and it is a *different object*. Recording both under one name would be an equivocation. `clob_liquidity_loss` and `amm_impact_cost` are separate fields, each absent on the other venue. |
+| fill probability | **KEEP, HEAVILY RESTRICTED** | CLOB taker: `not_applicable` — the visible ladder fills or it returns `UNFILLABLE`. CLOB maker: a **BRACKET** `(optimistic, point, pessimistic)`, never a scalar, because queue position at fill is unobtainable (§3.4b). AMM: this is *landing probability* and it is **`requires_submission`** — permanently typed-absent. Do not fabricate it, and do not let the maker bracket's existence suggest the AMM one is merely unbuilt. |
+| expected post-fill alpha | **KEEP on CLOB only** | This is `markout(h)` and it requires the `trade` channel. Report a **vector** of horizons — and at Kalshi's event rates a clock-time horizon of 1–5s will frequently contain **zero** book events, so **event-time horizons are mandatory alongside clock time** and a markout across an interval with no book event is `stale`, never zero. On an AMM there is no maker and no analogue: absent. |
+| **CVaR** | **REMOVE from the per-position record** | §3.3. Two-point loss means `CVaR = f` exactly, and negative when the tail probability exceeds `1−p`. Replaced by a book-level EVaR constraint, which is not a per-decision field. |
+| **drawdown contribution** | **REMOVE as a per-position number** | Per-position drawdown contribution is not well-defined; the operative objects are the book-level `lambda_dd` and the state-dependent wealth multiplier. The record carries a **reference** to the book-state artifact and its version, not a number of its own. |
+| **portfolio correlation** | **REPLACE with cluster membership** | A scalar correlation per position is not identifiable. The operative object is `cluster_id` + `graph_version` + `graph_coverage` in `{analysed_unrelated, analysed_related, not_analysed}`, with `not_analysed` forcing abstention. **The null hypothesis for correlation is DEPENDENCE**: an unresolved relation counts as correlated. In inference the cost of wrongly assuming dependence is lost power; in risk the cost of wrongly assuming independence is the blow-up. |
+| **recommended notional** | **REMOVE** | Portfolio sizing is forbidden with no implementation surface, and "recommended" is a recommendation. |
+| **max notional** | **REPLACE with `notional_ladder_ref`** | Size is a **declared input**, referenced by the digest of a frozen preregistered ladder (the `SOLANA-ROUTE-OBSERVATION-001` §4 pattern), never an output. |
+| exit policy | **KEEP, with a hard guard** | Must reference an **executable exit quote**, never a reported mid. Carries `exit_mark_basis` in `{executable_exit_quote, ladder_walk, NOT_MARKABLE}`. §7.3. |
+| reason codes | **KEEP — mandatory, typed, closed, ordered** | Free text is forbidden: prose is paraphrase-bypassable and cannot be aggregated. All binding codes are retained, not just the first. |
+| evidence hash | **KEEP** | — |
+| model version | **KEEP, EXTENDED** | Plus the `PAPER_SIMULATION` modeled-vs-observed basis **per field**, not per artifact. |
+
+### 6.2 Fields the brief did not ask for and the research demands
+
+| field | why it is not optional |
+|---|---|
+| **`delta_t_to_resolution`** | `g` is per **resolution**, not per unit time. An edge of 0.005 nats resolving in an hour and one resolving in six months differ by a factor of about 4,000. **This is the single largest economic omission in the original form.** It changes which position gets a cluster budget, and it interacts with §9.4: a 2pp edge on six-month markets cannot accumulate 30,000 observations in any human timeframe, so **long-horizon markets are unvalidatable regardless of their edge.** |
+| **`kappa`** | The cost-kill multiple (§7.4). Hard gate at 2. |
+| **`net_partial`, `net_conservative`** | Net computed twice — observed and modeled terms alone, then again with every BOUNDED term charged at its adverse bound. **`net_conservative` is the headline.** |
+| **`regime`** | The conditioning variable. No number in this record means the same thing across regimes. |
+| **`staleness_ms`, `observation_gap_member`** | A decision inside an observation gap is invalid, not high-latency. |
+| **`abstained`, `denominator_member`** | Every candidate enters the denominator whether abstained or not. A prospective record containing only taken decisions is a selected sample and cannot support §9's acceptance test. |
+| **`is_extrapolation`** | True when an input sits outside the calibrator's or the cost model's fitted support. Refuse rather than widen the interval. |
+| **`search_history_ref`** | Ties the record to the declared variant count that enters the multiplicity family (§9.3). |
+
+### 6.3 The record
+
+`QDK-EVAL-1`. **This is an evaluation artifact, not an instruction.** It carries
+no side, no dollar amount, no recommended size, and no action.
+
+```
+EvaluationRecord
+  # --- identity and provenance ---
+  record_id, venue_id, instrument_ref, evaluated_at
+  model_id, model_version                  # PAPER_SIMULATION requirement
+  basis_by_field: {field -> OBSERVED|MODELED|BOUNDED}   # per FIELD, not per artifact
+  evidence_digest                          # sha256 over the canonical preimage
+  search_history_ref, registry_experiment_id
+
+  # --- belief and market ---
+  p_market               {value, bid, ask, mid, source, quote_age_ms, basis}
+  p_model                {value, forecaster_name, forecaster_version,
+                          prompt_version, is_midpoint_anchored: bool}
+  p_calibrated           {value, calibrator_id, fit_through, is_extrapolation}
+  p_conservative         Result[{value, alpha, dispersion_source}, Absence]
+  edge_gross_prob_points  dimensionless probability points
+  edge_net_prob_points    dimensionless, after execution_cost
+
+  # --- execution, per notional rung of the referenced ladder ---
+  notional_ladder_ref    digest of the frozen preregistered ladder
+  per_rung: [ {
+      rung_id,
+      execution_cost     {terms: [{name, value, basis, adverse_bound?}],
+                          total_partial, total_conservative,
+                          unfillable_shortfall?},
+      clob_liquidity_loss  Result[value, Absence]    # CLOB only
+      amm_impact_cost      Result[value, Absence]    # AMM only
+      fill                 CLOB taker: not_applicable
+                           CLOB maker: {optimistic, point, pessimistic}
+                           AMM:        Absence(requires_submission)
+      post_fill_markout    Result[[{horizon, kind: clock|event, value}], Absence]
+      kappa                cost-kill multiple at this rung
+      sign_flip_size       the size at which net edge crosses zero, if inside the ladder
+  } ]
+
+  # --- time and exit ---
+  delta_t_to_resolution  {expected, p90, source}
+  exit_policy            {rule_id, exit_mark_basis:
+                          executable_exit_quote|ladder_walk|NOT_MARKABLE}
+
+  # --- portfolio context, by reference only ---
+  cluster_id, graph_version,
+  graph_coverage         analysed_unrelated | analysed_related | not_analysed
+  book_state_ref         {version, lambda_calib, lambda_dd, wealth_multiplier}
+
+  # --- state and quality ---
+  regime                 venue-specific closed enum
+  staleness_ms, observation_gap_member: bool
+
+  # --- the decision, which is an evaluation ---
+  outcome                EVALUABLE | NO_TRADE
+  reason_codes           [closed enum], ordered, ALL binding codes retained
+  abstained              bool
+  denominator_member     bool          # always true; recorded so it cannot be dropped
+```
+
+### 6.4 Four invariants on this record
+
+1. **`basis_by_field` is per field.** A single artifact-level "modeled" tag lets
+   an observed quantity and an assumed one sit side by side indistinguishably.
+   The boundary's requirement is that the basis travels *with the number*, and at
+   the sample sizes of §9.4 it is the only thing that stops thirty thousand
+   modeled fills built on an optimistic assumption from measuring the assumption
+   and being mistaken for evidence.
+2. **`per_rung` is a list, not a scalar, and the ladder is referenced by
+   digest.** A single "the" execution cost hides that the cost curve is a
+   function of size and that the sign can flip inside the ladder (§4.4).
+3. **`outcome = NO_TRADE` is reachable from the schema itself**, not by a
+   sentinel value in a numeric field. §7.1.
+4. **`denominator_member` is always `true` and is recorded anyway.** It exists so
+   that any future filtering of the denominator is a visible schema-level act
+   rather than a silent `WHERE` clause.
+
+### 6.5 What must NOT appear, restated as a schema rule
+
+No `side`. No `dollar_ev`, `expected_value_usd`, or any currency-denominated
+expectation. No `recommended_size`, `target_size`, or `max_size` as an *output*.
+No `order_type`, `limit_price`, `time_in_force`. No `position`, `fill`, `trade`,
+or `pnl` table outside an accepted `PAPER_SIMULATION` lane. No wallet, key,
+signature, blockhash, priority fee, nonce, or transaction/instruction field.
+
+**Including "disabled" and "placeholder" versions** — `docs/SAFETY_BOUNDARIES.md`
+bans those explicitly, and a placeholder column is how a boundary erodes without
+anyone deciding to erode it.
+
 
 ## 7. Gates, guards and the scalars that make a result legible
 
