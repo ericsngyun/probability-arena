@@ -292,7 +292,325 @@ Two consequences, stated so neither is discovered mid-build:
 
 ## 3. CUT LIST — components that must not be built
 
-*(section pending)*
+Five components from the original architecture are **cut**. Each is recorded
+here with the number that kills it, so that a future reader who has the idea
+again finds the refutation rather than the idea.
+
+The test applied to each: *is there a measurement that makes this component's
+expected value negative or unidentifiable, rather than merely small?*
+
+### 3.1 Cross-venue semantic coherence arbitrage — DO NOT BUILD
+
+**The killing arithmetic.** Break-even on a coherence basket is
+`ε* = edge / (edge + basket_cost)`. For a 2¢ arbitrage on a $0.98 basket that is
+`0.02 / 1.00 = 2%`. **A 2-cent coherence arbitrage is destroyed by a 2% chance
+the legs fail to offset.**
+
+On top of that, the fee hurdle alone — before spread, before depth, before leg
+risk — is:
+
+| structure | taker hurdle |
+|---|---|
+| at-the-money complement pair (0.50 / 0.50) | **3.50¢** |
+| complement at 0.70 / 0.30 | 2.94¢ |
+| 3-leg exhaustive partition | 4.67¢ |
+| 5-leg | 5.60¢ |
+| **10-leg** | **6.30¢** |
+
+Kalshi's fee peaks *at the money*, which is exactly where the interesting
+coherence violations are, and the hurdle **grows with leg count** (roughly
+`1 − 1/N`), so wide partitions are worse rather than better despite offering more
+apparent violations.
+
+**Why the residual risk is not diversifiable.** The failure modes that make legs
+not offset — resolution-criteria mismatch, different settlement source, timezone
+boundary, void-vs-settle on the degenerate case, different dispute/oracle
+process, semantic near-equivalence — are **adversarially selected**. The cases
+where two propositions come apart are precisely the weird cases, and weird cases
+are when prices move. No LLM semantic matcher should be credited with 98%
+precision on that tail.
+
+**The cut, precisely.** `cross_venue_equivalence` and any LLM-established
+equivalence are **do-not-build**, not "deferred". What survives is narrower and
+should be built first if any of it is built: **intra-venue structured families**
+— complement pairs on one ticker family, threshold ladders (implication chains),
+exhaustive partitions within one event — where the binding is `exact`, ε ≈ 0,
+and mechanically verifiable. Measure how often those clear the 3.50¢ hurdle on
+**executable** prices; if they never do, stop there, and that result is worth
+having.
+
+*(Source: `QDK-001-prediction-market-math.md` §7.4–§7.5, §7.8. The fee
+coefficient is now primary-verified — see §3.4 and §11.)*
+
+### 3.2 Hawkes processes — NO, on both lanes
+
+**The algebraic argument, which applies to both venues.** With an exponential
+kernel, define `S_ij(t) = Σ_{τ_k^j < t} exp(−β_ij(t − τ_k^j))`. That is *exactly*
+an exponentially-weighted count of type-`j` events with decay `β_ij`. Then
+
+```
+λ_i(t) = μ_i + Σ_j α_ij · S_ij(t)
+```
+
+Since everyone fixes `β` on a grid anyway, **a Hawkes intensity is an affine
+function of EWMA event counts**, and the `α_ij` are regression coefficients.
+Kirchner (arXiv:1509.02017) proves the discrete-time statement: bin the timeline
+and multivariate Hawkes becomes a VAR(p) on bin counts fit by conditional least
+squares. So the honest question is not "Hawkes features versus EWMA features" —
+they are the same basis. It is whether to fit the coefficients against an
+arrival-rate likelihood or against the target we actually care about. For
+prediction, discriminative fitting on the real objective dominates.
+
+**The identification argument, which is decisive.** Filimonov & Sornette
+(arXiv:1308.6756), verbatim:
+
+> "calibration of the Hawkes process on mixtures of pure Poisson process with
+> changes of regime leads to completely spurious apparent critical values for the
+> branching ratio (n ≃ 1) while the true value is actually n = 0."
+
+**Both of our data-generating processes are that mixture.** A memecoin's life
+*is* a sequence of regime changes (launch burst → decay → pump → rug). A dormant
+Kalshi contract that wakes on news *is* a Poisson process with a regime change.
+Fitting a constant-`μ` Hawkes to either tape yields a large, stable, exciting,
+**entirely spurious** near-critical branching ratio — and it will look like a
+strong finding.
+
+**The venue-specific arguments, each independently sufficient.**
+
+- *Solana:* the excitation of interest is bot response, whose kernel mass sits at
+  lags of **one slot or less** (400 ms), which is precisely the region the slot
+  lattice cannot resolve. A kernel that is entirely sub-resolution cannot be
+  recovered by any amount of estimator care. Separately, the only direct study of
+  AMM swap inter-arrivals (arXiv:2304.02180) finds **same-side arrivals
+  approximately exponential** — no self-excitation — with what excitation exists
+  being *cross*-side and attributed to arbitrage rebalancing.
+- *Kalshi:* at `D = 8` the model has `D + 2D² = 136` parameters. At an optimistic
+  5 book updates/minute/contract an 8-hour session yields ~2,400 events, ~300 per
+  type — roughly **2 events per marginal parameter** before splitting into the
+  pairwise coincidence cells that identify `α_ij`. Filimonov–Sornette's
+  recommended 10–30 minute calibration window would contain **50–150 events in
+  total**. There is no version of this arithmetic that works.
+
+**The substitute, which is what the schema carries instead:**
+
+> `event_rate_ewma[τ]` at **three halflives** per event type, fit
+> **discriminatively** against the actual target (next mid change, markout,
+> realized cost) — never against an arrival-rate likelihood.
+
+It is O(1) per event, has no estimation step, no convergence condition, no
+branching ratio to be spuriously near-critical, and is defined from the first
+event rather than requiring a fit. Note also that the one direct empirical
+comparison found (arXiv:2408.03594, SPA test) has *sum*-of-exponentials Hawkes
+winning and **single-exponential Hawkes decisively rejected (p = 0.002)** while
+a plain VAR on minute counts is not rejected — and "sum of exponentials" is
+exactly "multiple timescales", which a multi-halflife EWMA set gives for free.
+
+**One cheap experiment stays open, and it is a measurement not a commitment.**
+Once a tape exists: compare (i) EWMA features alone, (ii) the same features with
+Hawkes-MLE-fitted coefficients, (iii) a persistence baseline, out of sample on
+our own target. Expected outcome: (ii) does not separate from (i). A day's work,
+and it settles the question with our own data rather than by analogy to markets
+running 10,000× our event rate.
+
+*(Sources: `QDK-001-clob-microstructure-execution.md` §5;
+`QDK-001-solana-amm-microstructure.md` §6.)*
+
+### 3.3 `f_CVaR` in the per-position `min` — REMOVE
+
+The loss distribution of a single binary position is **two-point**:
+`+f` with probability `1 − p`, `−f·b` with probability `p`. Therefore for any
+`α ≤ 1 − p`:
+
+```
+VaR_α = CVaR_α = f          exactly
+```
+
+**`f_CVaR` as a per-position term is a flat position cap wearing a risk-measure
+costume.** It contains no information the cap did not already contain.
+
+And it is worse than uninformative outside that region. At `p = 0.93` with
+`α = 0.20 > 1 − p = 0.07` the "tail" contains *winning* outcomes and CVaR goes
+**negative** (simulated: −0.0102) — the constraint reports the position as a
+source of guaranteed profit and binds on nothing. **The sign of `α − (1 − p)`
+silently switches the constraint between a flat cap and a no-op, and nothing in
+the notation warns you.**
+
+The same degeneracy applies to a long-only memecoin position: downside is bounded
+by the stake and the fat tail is on the **upside**, where a loss-based measure
+does not look. Simulated for a 90%-total-loss / 9.5%-modest-gain /
+0.5%-Pareto(1.2) payoff, `CVaR95` estimates to the **full stake with zero
+sampling variance at every n from 50 to 5,000**.
+
+**What replaces it.** A book-level `EVaR_α(book) ≤ D_max` constraint, not a
+per-position term — and with the honest caveat that *the entire informational
+content of a book-level tail constraint is the estimate of ρ*: at ρ ≥ 0.6 the
+5% tail is "everything loses at once" and `CVaR_α = Σf`, i.e. it degenerates back
+into a gross-exposure cap. That makes correlation measurement a **prerequisite**
+for the tail constraint, not a parallel concern.
+
+*(Source: `QDK-001-risk-and-sizing.md` §4.2–§4.3, §9.2.)*
+
+### 3.4 CLOB microstructure as a standalone alpha source — REMOVE
+
+**VERIFIED against Kalshi's primary fee schedule (effective 2026-07-07, verified
+in this session — this supersedes the secondary-sourcing caveat carried by
+`QDK-001-clob-microstructure-execution.md` §10.3 S3 and
+`QDK-001-risk-and-sizing.md` §11.4):**
+
+```
+taker fee = round up( M × 0.07 × C × P × (1−P) )     peak 1.75¢/contract at P = 0.50
+maker:      M defaults to 0                          i.e. maker fees are typically zero
+```
+
+Now take the single strongest short-horizon result in the microstructure
+literature — Gould & Bonart's large-tick regime, `P(up) ≈ 0.85` at extreme queue
+imbalance — and give it the most generous possible reading: a **perfect**
+one-tick-ahead prediction, traded costlessly at the mid. Its expected value is
+
+```
+0.85 × (+1¢) + 0.15 × (−1¢) = +0.70¢ per contract
+```
+
+against a **round-trip taker fee of 3.50¢** at mid-range prices. The best-case
+documented microstructure edge is **one fifth** of the venue's round-trip taker
+cost.
+
+> **On Kalshi, microstructure is an execution-cost tool, not an alpha source.**
+> Its job is to make `C_execution` smaller and to avoid adverse fills on a
+> position taken for a probability-forecast reason. Any proposal to trade a pure
+> microstructure signal should be measured against 0.70¢-versus-3.50¢ and,
+> absent a specific reason it does not apply, declined.
+
+**One correction the primary schedule forces, and it changes the reasoning
+without changing the conclusion.** The research track computed the maker leg at
+`0.0175 · C · P · (1−P)` (25% of taker, peak ≈0.44¢) and concluded that maker
+beats taker per filled contract by `s + (f_T − f_M) − A ≈ 2.31 − A` cents. With
+**M defaulting to 0** the maker fee term vanishes and the maker's
+per-filled-contract advantage is *larger*, not smaller. **Maker is therefore not
+killed by fees. It is killed by adverse selection and by the unobservability of
+queue position** (§3.4b). The taker-only recommendation survives — but for a
+different reason than the research doc gave, and the distinction matters because
+"fees make maker uneconomic" is false and would be corrected by the first person
+who reads the schedule.
+
+**3.4b — why maker is nonetheless off the table for the first measurement.**
+Kalshi's websocket is **L2**: `orderbook_delta` carries `side`, `price_dollars`
+and a single net `delta_fp` per price level, with **no order IDs and no
+per-order events**. Consequences:
+
+- Queue-ahead *at submission* is observable — it is exactly `Q_near`.
+- Queue-ahead *thereafter* is not: when a level shrinks by `δ` we cannot tell
+  whether the cancellations came from ahead of or behind us. Our position evolves
+  as an **interval**, `Q_ahead ∈ [max(0, Q_ahead − δ), Q_ahead]`.
+- The technique Albers et al. used to recover exact queue position at fill
+  exploits a **Binance idiosyncrasy** (a public trade feed publishing all maker
+  fills for a taker order in execution-priority order with unique identifiers).
+  Kalshi's `trade` channel publishes **aggregate prints only**. It does not port.
+- The uniform-cancellation assumption needed to model it **cannot be validated
+  from observation alone** — identifying it requires placing orders and observing
+  our own fills, which is forbidden. It is a permanently unfalsifiable parameter
+  under this capability boundary.
+
+Therefore: **maker paper P&L must be reported as a bracket**
+`(optimistic, point, pessimistic)`, never a single number, and **the first
+prospective paper P&L is taker-only** — more expensive, exactly computable from
+the visible ladder, and free of unidentifiable parameters. Honest beats cheap.
+
+Also note the mechanical fill/return relationship, which holds *by construction
+on any CLOB* rather than as an empirical regularity: under a requote-on-move
+policy, `P(fill | favourable next move) = 0` and `P(fill | adverse next move) = 1`.
+Fill rate is therefore a **diagnostic and never an objective**, and naive
+two-sided quoting at the touch with requote-on-move — measured at annualized
+Sharpe **−109**, "a recipe for poverty" — should be named as a **prohibited
+baseline** so nobody rediscovers it.
+
+*(Source: `QDK-001-clob-microstructure-execution.md` §6.3, §6.5, §6.6, §7,
+§11.4; fee schedule primary-verified in this session.)*
+
+### 3.5 The N4 $500 Solana rung — economically incoherent
+
+For a uniform constant-product pool the invariant forces both sides to hold equal
+value at the pool's marginal price, so the quantity that enters the impact
+formula is
+
+```
+τ = 2 · notional / L
+```
+
+**not** `notional / L`. `SOLANA-ROUTE-OBSERVATION-001` §4.1 tabulates N4 $500 as
+"17% of the median pool"; the operative `τ` is **35%**. (That document explicitly
+warns against reading its percentages as impacts — §4.2 — so this is supplying
+the missing curve model, not correcting an error.)
+
+At the measured median observation-time pool of **$2,860** (cohort 8, n=42):
+
+| rung | notional | entry cost at p25 $1,936 | at **p50 $2,860** | at p75 $11,578 |
+|---|---|---|---|---|
+| N1 | $10 | 1.28% | 0.95% | 0.42% |
+| N2 | $50 | 5.42% | 3.75% | 1.11% |
+| N3 | $150 | 15.75% | 10.74% | 2.84% |
+| **N4** | **$500** | **51.90%** | **35.22%** | 8.89% |
+
+And the capacity arithmetic, taking the *strongest* version of the opportunity
+(all ~170 eligible births per 25h traded, along the measured median liquidity
+decay path):
+
+| clip | 5% gross edge | **10% gross edge** | 20% edge | 50% edge |
+|---|---|---|---|---|
+| $10 | +$67/day | +$152 | +$322 | +$832 |
+| $50 | +$156 | **+$581** | +$1,431 | +$3,981 |
+| $150 | −$793 | +$482 | +$3,032 | +$10,682 |
+| **$500** | −$14,646 | **−$10,396** | −$1,896 | +$23,604 |
+
+> **At a 10% gross edge — which would be extraordinary — the $500 clip loses
+> $10,396/day while the $50 clip makes $581/day. Same signal, same population,
+> opposite sign, purely from sizing.** A $500 clip is unprofitable even at a 20%
+> gross edge.
+
+**The cut:** N4 is removed from the ladder. The interior optimum is
+**$50–$150**, and it is interior — bigger is strictly worse and the arithmetic
+changes sign between $150 and $500. Note that removing a rung from a **frozen
+preregistered ladder** is not a free edit: `SOLANA-ROUTE-OBSERVATION-001` §4.5
+freezes it and §4.5.1 records the V1→V2 supersession openly. This must be a
+**declared V3 amendment with its own record**, made *before* any quote is
+evaluated, not a quiet drop.
+
+**The deeper finding this exposes, which matters more than the rung.** The
+dominant execution cost on this asset class is **not** entry impact. An
+instantaneous round trip on a constant-product curve costs only `2f`
+*independent of size*, because impact is recovered on the way back down the same
+curve. The money goes to **liquidity decay** — entering on a fat curve and
+exiting on a thin one. At the measured median 4.75× decay from birth to horizon,
+with the token's true price **completely unchanged**:
+
+| notional | entry slip | exit slip | **net round trip** |
+|---|---|---|---|
+| $10 | 0.40% | 0.94% | −1.04% |
+| $50 | 0.99% | 3.63% | −3.16% |
+| $150 | 2.46% | 9.87% | **−8.11%** |
+| $500 | 7.61% | 27.38% | **−22.23%** |
+
+Liquidity decay is a **lifecycle** variable, not a market-impact variable, and it
+is the one uncertainty source of the five that is observable inside our current
+boundary. That is where the AMM engine's effort belongs.
+
+*(Source: `QDK-001-solana-amm-microstructure.md` §2.3–§2.5, §9.1–§9.2.)*
+
+### 3.6 Cut-list summary
+
+| # | component | killed by |
+|---|---|---|
+| 1 | Cross-venue semantic coherence arbitrage | ε* = 2% on a 2¢ arb; 3.50¢–6.30¢ fee hurdle peaking at the money |
+| 2 | Hawkes processes, both lanes | intensity ≡ affine in EWMA counts; regime-switching Poisson calibrates to n≈1 with true n=0; sub-slot kernel (Solana); 136 params on ~50–150 events (Kalshi) |
+| 3 | `f_CVaR` in the per-position `min` | two-point loss ⇒ CVaR = f exactly; negative when α > 1−p |
+| 4 | CLOB microstructure as standalone alpha | a perfect one-tick prediction is 0.70¢ vs a 3.50¢ round-trip taker fee |
+| 5 | The N4 $500 Solana rung | τ = 2·notional/L ⇒ 35% of the median pool; −$10,396/day at a 10% gross edge |
+
+Two things are **not** on this list and should not be inferred onto it. The
+**AMM engine** is not cut — §3.5 cuts one rung and redirects the engine's effort
+from impact to decay. **Intra-venue coherence on exact bindings** is not cut —
+§3.1 cuts the cross-venue and LLM-established cases only.
+
 
 ## 4. Architecture: two state engines, one decision interface
 
