@@ -533,3 +533,163 @@ Therefore:
   (§6) is what preserves integrity, and it is 32 bytes.
 - The exact current DB headroom is **PENDING MEASUREMENT** (§14, M3); the cap
   must be set from that number, not from this document's arithmetic.
+
+---
+
+## 6. The evidence digest — what exactly is hashed
+
+Eric's capture list ends with "evidence digest". Its job is narrow and worth
+stating precisely: **to make it demonstrable that a recorded quote was not
+altered, filled in, or re-attributed after the fact.**
+
+### 6.1 Two digests, because one cannot do both jobs
+
+| digest | over what | what it proves | recomputable later? |
+|---|---|---|---|
+| `response_body_digest` | the **exact response bytes as received**, hashed **before parsing** | our parse is attributable to a specific body; a parser change can be re-audited against a body captured in a dry run | **No** — the body is not persisted (§5.7). It is a commitment, not a re-derivation. |
+| `evidence_digest` | the **canonical encoding of the persisted field set**, including `response_body_digest` | the persisted row is exactly what was persisted at observation time | **Yes** — this is what SC-4 checks |
+
+Chaining the body digest *into* the evidence digest is what stops the second
+from degenerating into "a hash of whatever we decided to store". Neither digest
+alone is sufficient: hashing only the body gives a number nobody can recompute
+from the database; hashing only the persisted fields proves nothing about
+fidelity to the wire.
+
+### 6.2 The exact preimage of `evidence_digest`
+
+A **closed** key set — adding, removing or renaming a key requires bumping
+`digest_version`, which is itself in the preimage:
+
+```
+digest_version            (constant, e.g. "sro001.v1")
+ladder_id, ladder_digest
+chain, token_address, horizon, observation_id
+rung_id, direction
+request:
+  route_name              (the single permitted route constant, §7.4)
+  token_in, token_out
+  input_amount            (exact integer, as canonical integer text)
+  request_params          (the complete, closed set of parameters actually sent)
+observed_at               (canonical datetime)
+http_status
+request_latency_ms
+response_body_digest
+parsed:
+  amount_out, min_or_threshold_out, price_impact, fees,
+  route, dexes_pools, route_split, route_hops, context_slot
+derived:
+  executable_price_equiv
+quote_state
+freshness_basis
+absent_fields             (the full typed-absence map, §5.4)
+```
+
+### 6.3 The rules that make it mean something
+
+1. **Encoding is `app/realtime/canonical.py`**, not a new one. Deterministic key
+   order, `Decimal` as canonical decimal text that round-trips to identical
+   bytes, integers as integers, **no floats anywhere in the preimage**. A second
+   canonicalization in this repository would be a second chance to disagree with
+   the first.
+2. **`request_params` is the complete set actually sent**, not the set we
+   intended to send. This is what makes the digest evidence that the quote was
+   for *this size, this pair, this route*, and it is also what would expose a
+   forbidden parameter (§3.2 F8) rather than hiding it.
+3. **Absences are in the preimage, not omitted.** Committing to "we did not
+   observe `price_impact`" is what makes a later backfill detectable. If
+   absences were simply left out, filling one in afterwards would be
+   indistinguishable from having observed it.
+4. **Nothing database-assigned is in the preimage** — no row id, no
+   `created_at`. Otherwise SC-4 could not recompute the digest from the row.
+5. **The digest is computed once, at observation time, in the same pass**, and
+   never recomputed on read. A recompute-on-read digest proves only that the
+   code is self-consistent.
+6. A row whose digest cannot be computed is **not written**. There is no
+   `digest = NULL` row and no `digest = "pending"`.
+
+### 6.4 What it does not prove
+
+It does not prove the venue told the truth, that the route was executable, or
+that a transaction would have landed. It proves only that **we recorded what we
+recorded, when we said we did.** That is the entire claim, and overstating it
+would be the same category of error this milestone exists to avoid.
+
+---
+
+## 7. Identity and freshness invariants
+
+These mirror the sparse lane's proven pattern
+(`app/services/crypto_sparse_observation.py`, `_identity_matched`), which exists
+because a chain-correct, well-formed response *about a different token* would
+otherwise parse, score, and persist cleanly — a wrong number being worse than a
+missing one for a lane whose only product is honest evidence.
+
+### 7.1 Identity — a quote for token T must concern token T
+
+- **Endpoint mints are compared byte-exactly** against the requested mints,
+  case-sensitive. Base58 addresses are case-significant; a case-insensitive
+  compare is a real collision risk, not pedantry.
+- **Direction-aware:** for `direction = entry`, the response's output mint must
+  be exactly T; for `direction = exit`, the response's input mint must be
+  exactly T. A response where T appears on the *other* side is **not** identity —
+  it prices some other asset — exactly as a quote-side pair is not identity in
+  the sparse lane.
+- **The other endpoint is checked too:** it must be exactly the declared entry
+  mint. A quote from a different stablecoin is a different measurement.
+- **Intermediate hops are exempt by design.** A route may legitimately pass
+  through arbitrary mints; identity is a property of the two endpoints only.
+  Stated explicitly so a reviewer does not reject correct multi-hop routes.
+- On failure: `quote_state = identity_mismatch`, **no quantity field is
+  persisted at all**, and the row's numbers are absences with reason
+  `venue_returned_unparseable`. As in the sparse lane, an identity mismatch is
+  indistinguishable from an upstream contract violation, so it is re-attemptable
+  within the pass under a hard attempt cap — it is not silently retried forever.
+
+### 7.2 Freshness — a stale quote is a typed non-observation, not a number
+
+A quote is perishable in a way a price tick is not: it asserts what a *specific
+size* would get *right now*.
+
+- **`request_latency_ms` ceiling.** A declared, frozen ceiling. A response that
+  arrives after it describes a chain state we can no longer bound, so
+  `quote_state = stale_context` and **no quantity field is persisted**. The
+  latency is still recorded, because the latency distribution is itself evidence
+  about whether quoting is viable.
+- **Entry/exit pairing bound.** The exit quote's input is derived from the entry
+  quote's output (§4.3). If the interval between the two requests exceeds a
+  declared bound, the pair is not a round trip and the **exit** row is
+  `stale_context`. The entry row remains valid; one stale half does not
+  retroactively invalidate an honest observation.
+- **`context_slot`, when the venue returns it**, gives a second, better freshness
+  handle: the slot delta between paired entry and exit quotes. Beyond a declared
+  bound, `stale_context`.
+- **`freshness_basis`** is a recorded field valued `context_slot` or
+  `latency_only`. When the venue does not return a slot, the weaker basis is
+  **recorded as weaker**, never presented as if the stronger check had run. No
+  RPC call is made to obtain a slot (§5.2).
+
+### 7.3 No substitution, ever
+
+No quote is reused across passes, rungs, or directions. Every row's numbers come
+from that row's own response. There is no backfill, no interpolation, no
+nearest-in-time substitution, and no "the last quote was basically the same".
+A pass with no answer produces failure-state rows, which is the honest signal.
+
+### 7.4 The route lock and the forbidden-response refusal
+
+Two structural defenses for SC-7, both of which must exist in code rather than
+in discipline:
+
+- **Route lock.** Exactly one route constant exists in the module. The client's
+  public surface has **no path or endpoint parameter**, so a second route — in
+  particular the build/swap sibling (§3.2 F1) — cannot be reached by supplying
+  an argument. This is the same containment shape already proven in
+  `app/realtime/auth.py`, where the signable input carries no method and no path
+  precisely so one call cannot reach a second route.
+- **Forbidden-response refusal.** If a response contains any field carrying
+  transaction or instruction bytes — we never ask for them, but a venue can
+  change what it returns — the client **refuses the entire response**: it
+  persists `quote_state = refused_forbidden_response`, persists no quantity
+  field, does not retain the bytes, and does not compute a body digest over
+  them. "We only ignored the field we were not allowed to have" is not a
+  boundary; refusing the response is.
