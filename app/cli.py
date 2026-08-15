@@ -8465,6 +8465,12 @@ async def agent_context() -> int:
     print("forbidden capabilities (see docs/SAFETY_BOUNDARIES.md):")
     for capability in canon.FORBIDDEN_CAPABILITIES:
         print(f"  - {capability}")
+    print(
+        "narrowly permitted with conditions (SAFETY-BOUNDARY-ROUTE-QUOTE-001; "
+        "NEITHER IS IMPLEMENTED and neither is an authorized milestone):"
+    )
+    for mode in canon.NARROWLY_PERMITTED_MODES:
+        print(f"  ~ {mode}")
 
     print("expected services (EVO-X2):")
     for service in canon.EXPECTED_SERVICES_EVO_X2:
