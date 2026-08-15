@@ -407,3 +407,129 @@ Enforcement, not intention:
   `ladder_id` alongside the old one, with both digests and the reason**; nothing
   is edited in place. After the first quote request is issued, the ladder is
   frozen absolutely and this window does not reopen.
+
+---
+
+## 5. The evidence record
+
+One row per **(observation, rung, direction)**. Every field in Eric's capture
+list appears below with its source, its OBSERVED / DERIVED / MEASURED-LOCAL
+classification, and its typed non-observation.
+
+### 5.1 A deliberate divergence from the sparse lane, stated non-silently
+
+The sparse observation lane writes **no row** when a request fails. **This lane
+writes a row.** The divergence is deliberate: the sparse lane's product is an
+honest denominator of token observations, and a failed request there is not an
+observation about the token. This lane's product is *whether quoting is possible
+at all*, so **the failure rate is the primary evidence** — a quote that could not
+be obtained is exactly the finding the milestone exists to record. A failed
+attempt therefore produces a row whose `quote_state` is a failure state and
+whose every quantity field is a typed absence.
+
+This is an architectural difference from the pattern being reused, and it is
+recorded here rather than discovered in review.
+
+### 5.2 Identity, timing and request fields
+
+| field | O/D | source | typed non-observation |
+|---|---|---|---|
+| `observation_id` | — | FK to the sparse-lane observation this quote accompanies; inherits its (cohort, token, horizon) uniqueness | never absent — no row exists without it |
+| `chain`, `token_address`, `horizon` | — | denormalized from the observation | never absent |
+| `rung_id` | — | one of `N1`..`N4` (§4.1) | never absent |
+| `direction` | — | `entry` or `exit` | never absent |
+| `ladder_id`, `ladder_digest` | — | §4.5, constant per row | never absent; a row without them is not written |
+| `observed_at` | MEASURED-LOCAL | the request instant on the logical clock, matching the sparse lane's `_logical_clock` discipline | never absent |
+| `quote_state` | — | closed vocabulary, §5.5 | never absent |
+| `http_status` | OBSERVED | the response status; absent when no response arrived | `no_response` |
+| `request_latency_ms` | MEASURED-LOCAL | monotonic clock around the request; a property of **our measurement**, not of the venue | absent only when the request was never issued (`request_not_issued`) |
+| `context_slot` | OBSERVED | **only** if the quote response itself carries it. **No separate RPC call is made to obtain a slot** — that would add a provider for a field the venue may already give us free, and it sits adjacent to the forbidden blockhash/nonce fetches (§3.2 F6). | `not_returned_by_venue` |
+| `evidence_digest` | DERIVED | §6 | never absent on a row with a response |
+
+### 5.3 Quantity fields — Eric's capture list
+
+| field | O/D | source | typed non-observation |
+|---|---|---|---|
+| `token_in` | — | the declared entry mint (entry) or the observed token (exit) | never absent |
+| `token_out` | — | the observed token (entry) or the declared entry mint (exit) | never absent |
+| `input_amount` | **entry: declared** / **exit: DERIVED** | entry = the frozen rung integer (§4.3); exit = the exact `amount_out` integer of the same rung's entry quote in the same pass | exit side: `derivation_input_absent` when that entry quote is not an observation. **No fallback, and never the previous pass's value.** |
+| `amount_out` | OBSERVED | the venue's quoted output, **exact integer base units** | `not_returned_by_venue` / `venue_returned_unparseable` |
+| `min_or_threshold_out` | OBSERVED | the venue's minimum/threshold output **where provided**; many venues provide it only when a slippage tolerance is supplied | `not_returned_by_venue`. **A missing threshold is never synthesized from a slippage assumption** — that would be a modeled number in an observed column. |
+| `executable_price_equiv` | **DERIVED** | `amount_out / input_amount`, decimal-normalized by both mints' decimals | `derivation_input_absent` if `amount_out` is absent **or** either decimals value is unverified. §4.3 M5. |
+| `price_impact` | OBSERVED | the venue's reported price-impact figure, stored as canonical decimal **text** | `not_returned_by_venue`. **Never computed from our own mid price and presented in this column** — a derived impact is a different quantity and would need its own DERIVED field and a model id. |
+| `fees` | OBSERVED | whatever fee components the venue reports (platform fee, per-hop pool fee), each stored with its own label; the set of components is **whatever the venue named**, never a filled-in template | per component: `not_returned_by_venue`. **No default fee, no assumed bps, no per-dex fee table.** |
+| `route` | OBSERVED | the ordered hop list from the response | `route_not_returned`; if no route exists for the size, `no_route_for_size` (a real, informative answer, not a failure) |
+| `dexes_pools` | OBSERVED | per hop: the venue's pool/market identifier and its dex label, verbatim | `not_returned_by_venue`; an unrecognized dex label is stored **verbatim and unmapped** — never bucketed into a guessed family |
+| `route_split` | OBSERVED | per-branch proportions where the venue reports a split | `not_returned_by_venue`. **A single-branch route is recorded as a single branch, never as "100%" invented across an absent field.** |
+| `route_hops` | DERIVED | count of hops in `route` | `derivation_input_absent` when `route` is absent |
+
+### 5.4 Typed absence is a closed vocabulary, and it is the only permitted absence
+
+**A missing field is a typed absence, never an interpolated or defaulted
+number.** Concretely, and enforced by test at CP-2:
+
+- Absences live in one bounded, fixed-key structure `absent_fields`, mapping a
+  field name to exactly one reason from this closed set:
+  `not_returned_by_venue` · `venue_returned_null` · `venue_returned_unparseable`
+  · `derivation_input_absent` · `route_not_returned` · `no_route_for_size` ·
+  `no_response` · `request_not_issued` · `route_too_large` ·
+  `quote_requires_account_binding` · `population_truncated`.
+- **Free text is not permitted** in that structure. An unanticipated shape is
+  `venue_returned_unparseable`, which is honest, rather than a new sentence,
+  which is unbounded cardinality.
+- `0`, `0.0`, `""`, `"unknown"`, `-1`, and "the previous pass's value" are all
+  **forbidden** stand-ins. Zero is an affirmative claim; absence is not a claim.
+- A field that is absent has its column NULL **and** an entry in `absent_fields`.
+  Neither alone is valid: a NULL with no reason is indistinguishable from a bug,
+  and a reason with a non-NULL value is a contradiction. CP-2 tests both
+  directions.
+
+### 5.5 `quote_state` — the closed state vocabulary
+
+`quoted_ok` · `quoted_no_route` · `quote_partial_fields` · `request_failed` ·
+`response_unparseable` · `identity_mismatch` · `stale_context` ·
+`quote_requires_account_binding` · `skipped_cap` · `skipped_flag_off` ·
+`refused_forbidden_response` (§7.4).
+
+Only `quoted_ok` and `quoted_no_route` are answers. `quoted_no_route` is a real
+answer — the venue says no route exists for that size — and is one of the more
+informative outcomes this milestone can record.
+
+### 5.6 Numeric typing — the truncation class is already known here
+
+Amounts are large integers in base units and price impact is a small decimal.
+**Neither may pass through a Python `float` at any point**, including parsing.
+KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 found silent decimal truncation of ordinary
+venue JSON *under a valid digest* — a digest computed over already-truncated
+values proves only that the truncation was not altered afterwards.
+
+The repository already has the fix: `app/realtime/canonical.py` parses with
+`parse_float=Decimal` / `parse_int=int` and emits `Decimal` as canonical decimal
+text that round-trips to the same bytes. This lane **reuses that module** rather
+than introducing a second canonicalization. Amounts are stored as exact integers
+(or canonical integer text); impact and fee rates as canonical decimal text.
+CP-2 carries an explicit test that a value which would truncate under `float`
+survives intact.
+
+### 5.7 Storage shape and growth
+
+Row arithmetic: 4 rungs × 2 directions = **8 rows per token-horizon
+observation**. The sparse lane's own planning rate implies on the order of a
+thousand observations per day, which would be on the order of 8,000 rows/day if
+every observation were quoted — on a database already past its 3,072 MiB gate.
+
+Therefore:
+
+- `ROUTE_QUOTE_MAX_TOKENS_PER_PASS` is a declared, deliberately small cap for
+  the activation window (§4.4), applied by deterministic order and never by any
+  property of the token, with truncation recorded as `population_truncated`.
+- The **route structure is stored in one bounded canonical column with a hard
+  byte cap**. Exceeding the cap yields the typed absence `route_too_large` — it
+  is **not** truncated and presented as complete. (R7 in the scope doc's
+  fabrication catalogue: truncation presented as completeness.)
+- **No raw response body is persisted.** RAW-PAYLOAD-STORAGE-001 measured raw
+  payloads at 27% of the production database with zero readers; re-inflating
+  them here is the mistake this repository has just finished undoing. The digest
+  (§6) is what preserves integrity, and it is 32 bytes.
+- The exact current DB headroom is **PENDING MEASUREMENT** (§14, M3); the cap
+  must be set from that number, not from this document's arithmetic.
