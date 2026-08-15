@@ -1150,7 +1150,285 @@ aggregated.
 
 ## 8. Track 7 — The definition of ready, and the sample-size answer
 
-_(to be filled)_
+The stated bar: *"demonstrable positive expectancy after realistic execution
+costs, prospectively measured, with calibrated uncertainty and bounded
+probability of ruin."* Four clauses, four gates, and one uncomfortable number.
+
+### 8.1 First, a correction to what the existing evidence shows
+
+`docs/OUTCOME_SYNC_POST_DRAIN_BASELINE_2026_08.md` reports, on all 12,945 scored
+forecasts: `baseball_evidence:v1` n=7,983, Brier 0.1868, **skill +0.2286**;
+`soccer_evidence:v1` skill +0.2434; overall coverage 100% and the sample
+representative.
+
+Those are **skill against the base rate**, not against the market price. Section
+2.1's identity is unambiguous about which one matters:
+
+```
+achievable growth = KL(p ‖ q)          q = the MARKET price
+```
+
+Beating a base rate is nearly free and is worth exactly zero. **None of the
+repository's existing skill numbers bear on whether an edge exists.** The one
+measurement that *is* against the market — edge-precheck gap follow-through — is
+negative, and `docs/EDGE_SELECTION_RETIREMENT_2026_07_10.md` retired all six
+pre-registered candidates after they failed out-of-sample while the `spread_only`
+negative control outperformed them.
+
+**The prior going into this programme should therefore be that `e_net ≤ 0`.**
+That prior is what makes the sample size large: you need enough data to
+distinguish a small positive number from zero, starting from a belief that it is
+zero.
+
+And a companion number that puts the existing evidence in scale. The MVP-005A
+gate crossed on a **paired n = 36**. The minimum edge detectable at n=36
+(one-sided 5%, 80% power, `q=0.50`) is:
+
+```
+MDE = (z₀.₉₅ + z₀.₈₀)·√(p(1−p)) / √n = 2.4866 × 0.5 / 6 = 0.207
+```
+
+> **A sample of 36 can only detect a 20.7 percentage-point edge.** Every
+> conclusion so far has been drawn at a resolution roughly 20× coarser than the
+> effect being looked for.
+
+### 8.2 Gate 1 — "after realistic execution costs": the wedge
+
+Kalshi taker fee is `0.07 · C · P · (1−P)`, rounded up to the cent; maker is 25%
+of that. Combined with a half-spread `s`:
+
+| q | fee/contract | fee (pp) | one-way with `s`=1¢ | gross edge needed for `e_net`=1pp (round-trip) | for 2pp |
+|---:|---:|---:|---:|---:|---:|
+| 0.10 | $0.0063 | 0.63 | 1.63 | 2.63 | 3.63 |
+| 0.25 | $0.0131 | 1.31 | 2.31 | 3.31 | 4.31 |
+| **0.50** | **$0.0175** | **1.75** | **2.75** | **3.75** | **4.75** |
+| 0.75 | $0.0131 | 1.31 | 2.31 | 3.31 | 4.31 |
+| 0.90 | $0.0063 | 0.63 | 1.63 | 2.63 | 3.63 |
+
+(Consistent with the repository's own `kalshi_fee_rate_assumption = 0.07` charged
+round-trip at both measurement ends in COST-MODEL-001.)
+
+**At `q = 0.50` you must be right by 3.75 percentage points more often than the
+market to net 1 pp.** A 5 pp gross edge — enormous — nets 1.25 pp. This alone
+justifies treating `e_net ∈ [0.5 pp, 3 pp]` as the plausible design range, and it
+makes `EXECUTION_COST_EXCEEDS_EDGE` the abstention code that will fire most often.
+
+The 1¢ half-spread is optimistic. Where the spread is 3–4¢ (common outside the
+most liquid Kalshi series), the wedge exceeds any realistic edge and the correct
+answer is that **the venue is untradeable for this strategy**, which is a finding,
+not a failure.
+
+### 8.3 Gate 1, continued — how many trades
+
+For a fixed unit stake buying YES at `q` with true probability `p`, the per-trade
+return on stake is `+b` with probability `p` and `−1` otherwise. Then
+
+```
+mean = (p−q)/q          sd = √(p(1−p))/q          SR = (p−q)/√(p(1−p))
+```
+
+The `q` cancels — **per-trade Sharpe depends only on the edge and the outcome
+variance.** Required `n` for a one-sided test at α=0.05:
+
+| q | e_net | SR/trade | n @80% | n @90% | n @80%, Bonferroni-20 |
+|---:|---:|---:|---:|---:|---:|
+| 0.50 | 0.5 pp | 0.01000 | 61,820 | 85,630 | 133,114 |
+| 0.50 | **1 pp** | 0.02000 | **15,451** | 21,402 | 33,269 |
+| 0.50 | 2 pp | 0.04003 | 3,858 | 5,344 | 8,308 |
+| 0.50 | 3 pp | 0.06011 | 1,712 | 2,371 | 3,685 |
+| 0.50 | 5 pp | 0.10050 | 613 | 848 | 1,318 |
+| 0.90 | 1 pp | 0.03494 | 5,064 | 7,014 | 10,904 |
+| 0.90 | 2 pp | 0.07372 | 1,138 | 1,576 | 2,450 |
+| 0.10 | 1 pp | 0.03196 | 6,053 | 8,385 | 13,034 |
+| 0.25 | 1 pp | 0.02280 | 11,896 | 16,477 | 25,614 |
+| 0.75 | 1 pp | 0.02341 | 11,277 | 15,621 | 24,283 |
+
+Extreme prices are *cheaper* to validate for the same absolute edge (less outcome
+variance) — but 8.2 shows they also have the smallest fee wedge, so this is the
+one place where the two effects point the same way. Mid-price markets are the
+worst of both.
+
+**Then the two corrections that are not optional.**
+
+**Correlation.** Section 6.1: `DEFF = 1 + (m−1)ρ` where `m` is cluster size and
+`ρ` the within-cluster correlation of *P&L*, which by 6.2(c) is driven by model
+error, not by event correlation.
+
+| m | ρ=0.1 | ρ=0.2 | ρ=0.3 | ρ=0.5 |
+|---:|---:|---:|---:|---:|
+| 5 | 1.40 | 1.80 | **2.20** | 3.00 |
+| 10 | 1.90 | 2.80 | 3.70 | 5.50 |
+| 20 | 2.90 | 4.80 | 6.70 | 10.50 |
+
+**Multiplicity.** If `k` strategies/regimes/thresholds were examined, the test
+level is `α/k`. Twenty hypotheses is conservative for a research programme; the
+EDGE-SELECTION-001 prereg alone carried 6 candidates + baseline + control.
+
+**Composite** (`q=0.50`, clusters of 5 at ρ=0.3, 20 hypotheses):
+
+| e_net | base n | × DEFF 2.2 | × DEFF **and** Bonferroni-20 |
+|---:|---:|---:|---:|
+| 0.5 pp | 61,820 | 136,003 | 292,850 |
+| **1 pp** | 15,451 | 33,991 | **73,191** |
+| 2 pp | 3,858 | 8,488 | 18,276 |
+| 3 pp | 1,712 | 3,765 | 8,107 |
+
+### 8.4 **The sample-size answer**
+
+> ### 15,000 prospective trades to detect a 1 pp net edge under the most favourable assumptions; **30,000–75,000** once correlation and multiplicity are handled honestly; **3,800–18,000** if the true net edge is 2 pp.
+>
+> **Plan on 30,000–75,000 prospectively-recorded executable decisions.** Anything
+> below ~4,000 cannot distinguish a 2 pp edge from noise, and anything below ~600
+> cannot distinguish a 5 pp edge — an edge larger than any that has ever survived
+> out-of-sample here.
+
+The **minimum detectable edge** table is the more useful planning instrument,
+because it answers "what can I conclude from the sample I will actually have?"
+(`q=0.50`, one-sided 5%, 80% power, no corrections — so these are optimistic
+floors):
+
+| n | MDE (probability points) | interpretation |
+|---:|---:|---|
+| 36 | **20.7 pp** | the MVP-005A paired sample. Detects nothing real. |
+| 100 | 12.4 pp | — |
+| 500 | 5.6 pp | larger than any plausible gross edge |
+| 1,000 | 3.9 pp | ≈ the round-trip cost wedge at q=0.50 |
+| 2,000 | 2.8 pp | |
+| 5,000 | 1.8 pp | |
+| 10,000 | 1.24 pp | |
+| 15,451 | 1.00 pp | |
+| 50,000 | 0.56 pp | |
+| 100,000 | 0.39 pp | |
+
+**Read the n=1,000 row against 8.2.** A thousand prospective trades can only
+detect an edge roughly equal to the round-trip cost of trading. Below about
+`n = 2,000` the experiment cannot see anything smaller than its own friction.
+
+### 8.5 The acceptance test, written out
+
+**Preconditions (must all hold before the counting window opens):**
+
+| # | requirement | threshold |
+|---|---|---|
+| P1 | Pre-registration in the existing registry, with a locked timestamp, typed predicates, and both window ends pinned | per REGISTRY-002A |
+| P2 | Regime cells declared **in advance**, with the model version fixed | no post-hoc slicing; `k` for the multiplicity correction is declared here and is binding |
+| P3 | Calibration slope `β̂` estimated per regime cell | n ≥ 500 per cell, CI half-width ≤ 0.2 |
+| P4 | Cost model fixed and stated: fee formula, half-spread source, fill assumption | every artefact carries the model identifier + modeled-vs-observed basis required by `PAPER_SIMULATION` |
+| P5 | `λ` fixed in advance from `λ_calib × λ_dd`; `α_quantile` fixed; halt levels fixed | changing any of them starts a new window |
+| P6 | Abstention denominator instrumented | every candidate recorded, typed, whether taken or not |
+
+**Gate 1 — positive expectancy after realistic costs.**
+
+- Primary statistic: mean per-trade net return on stake, `r̄`.
+- `n ≥ n_required` from 8.3 at the pre-registered `e_net` and the declared `k`
+  and `DEFF` — **`DEFF` estimated from the realised residual correlation, not
+  assumed.** If realised `DEFF` exceeds the pre-registered value, `n_required`
+  rises and the window extends.
+- Reject `H₀: E[r] ≤ 0` at one-sided `α/k`, with a **cluster-robust** standard
+  error (clusters = Probability-Graph components, Section 6.4), not an i.i.d. one.
+- **And** the point estimate must exceed a pre-registered economically-meaningful
+  floor, not merely be significantly positive. Significance at `n = 75,000` is
+  compatible with an edge too small to survive a 1¢ change in the spread.
+
+**Gate 2 — prospectively measured.**
+
+- All observations after the registry lock. Zero in-sample observations admitted.
+- Abstained candidates counted; the reason-code distribution reported.
+- No mid-window parameter change. Any change → new window, prior data discarded
+  for this test (retained for exploration only).
+
+**Gate 3 — calibrated uncertainty.**
+
+- Per regime cell: `β̂ ∈ [0.85, 1.15]` with CI half-width ≤ 0.2, **on the
+  prospective sample**, not the fitting sample.
+- Reliability: ECE ≤ 0.05 with ≥ 8 populated bins per cell.
+- One-sided coverage check on `p_conservative` (3.7 rule 4): realised frequency
+  exceeds `p_α` at least `1−α` of the time, within binomial CI.
+- **Skill measured against the market price `q`, never against a base rate.** The
+  headline statistic is mean `KL(p ‖ q)` realised as log-score advantage, and it
+  must be positive with the same significance treatment as Gate 1 — it is the
+  same quantity (2.1), so consistency between Gate 1 and Gate 3 is itself a
+  validity check. **Disagreement between them means the cost model is wrong.**
+
+**Gate 4 — bounded probability of ruin.**
+
+- Declared max drawdown `1−α_dd` and tolerance `ε`; `λ_dd` derived from 5.2, not
+  chosen.
+- Realised max drawdown from the epoch's `W₀` within the predicted distribution
+  (a one-sided check against `α_dd^(2/λ−1)`).
+- Book-level EVaR within budget over the whole window, with **the count of tail
+  observations reported** (4.5 rule 2).
+- `K_eff ≥ K_min` realised, computed from residual correlation.
+- No halt breached; if the soft halt fired, the window is void.
+
+**All four gates, or the answer is not ready.** There is no partial credit and no
+"promising" state — that vocabulary is already prohibited from authorising
+anything elsewhere in this repository, and the same applies here.
+
+### 8.6 Feasibility — the honest arithmetic
+
+Days to accumulate `n` qualifying decisions:
+
+| qualifying trades/day | n=3,858 (2 pp, no corr.) | n=15,451 (1 pp) | n=33,991 (1 pp + DEFF) | n=73,191 (full) |
+|---:|---:|---:|---:|---:|
+| 1 | 10.6 yr | 42 yr | 93 yr | 200 yr |
+| 5 | 2.1 yr | 8.5 yr | 18.6 yr | 40 yr |
+| 10 | 1.1 yr | 4.2 yr | 9.3 yr | 20 yr |
+| 25 | 154 d | 1.7 yr | 3.7 yr | 8.0 yr |
+| 50 | 77 d | 309 d | 1.9 yr | 4.0 yr |
+| 100 | 39 d | 155 d | 340 d | 2.0 yr |
+
+And the qualifying rate is *after* abstention. If the gates in Section 7 abstain
+on 95% of candidates — a reasonable expectation given that
+`EXECUTION_COST_EXCEEDS_EDGE` alone will remove most of them — then **50
+qualifying trades per day requires observing 1,000 candidates per day.**
+
+> **The honest verdict: on a single venue at a realistic candidate rate, with a
+> 1 pp net edge, the acceptance test takes years. It is feasible in months only
+> if (a) the true net edge is ≥ 2 pp, or (b) candidate throughput is in the
+> hundreds per day, or (c) both.**
+>
+> This is not a reason to abandon the programme. It is a reason to **stop
+> treating "build the trading system" as the milestone** and start treating
+> "raise the candidate rate and shrink the confidence interval" as the milestone,
+> because those are what the timeline is actually made of.
+
+### 8.7 What this implies about sequencing
+
+The numbers point at a specific, cheaper order of operations.
+
+1. **Measure skill against the market price now, on the 12,945 forecasts already
+   scored.** Compute mean `KL(p ‖ q)` where a contemporaneous `q` exists. This
+   costs no new data, needs no trading, and Section 2.1 says it is *the same
+   quantity* as growth. If it is not positive, nothing downstream can be.
+2. **Fit `β̂` per regime** (3.2). At n ≈ 1,000 per cell you get ±0.16. This is
+   ~15× cheaper in sample than the P&L test and it produces `λ_calib` directly.
+3. **Measure residual correlation** (6.2c) on the same existing data. It yields
+   `DEFF`, which determines the sample size of everything after it — so measuring
+   it *first* is the difference between planning for 15,000 and discovering at
+   trade 15,000 that you needed 73,000.
+4. **Measure the cost wedge and the abstention distribution** before any trade.
+   If `EXECUTION_COST_EXCEEDS_EDGE` fires on 99% of candidates, the programme's
+   binding constraint is venue selection and the whole sizing layer is premature.
+5. **Only then** open a prospective window, with `n_required` computed from
+   measured `DEFF` and a pre-registered `e_net` — not assumed.
+
+**On sequential testing.** SPRT / anytime-valid confidence sequences (e-values)
+permit continuous monitoring without inflating type-I error, and reduce *expected*
+sample size under a strong alternative by roughly 30–50%. They do **not** change
+the order of magnitude here, and under a weak alternative — which the negative
+prior of 8.1 makes the relevant case — they require **more** samples than the
+fixed-sample test, because the price of optional stopping is paid up front. Use
+them for the *safety* property (the ability to stop early on evidence of harm),
+not as a way to make the number smaller.
+
+**On the `PAPER_SIMULATION` requirement.** The boundary's demand that every
+modeled fill carry a model identifier and a modeled-vs-observed basis is not
+bureaucratic overhead — at these sample sizes it is the only thing that makes the
+programme meaningful. Thirty thousand modeled fills built on an optimistic fill
+assumption measure the assumption, not the edge, and would produce a confident
+positive result. The requirement that the basis travels *with the number* is
+precisely what stops 30,000 such observations from being mistaken for evidence.
 
 ## 9. Challenge to the formula
 
