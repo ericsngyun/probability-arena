@@ -45,6 +45,58 @@ Both modes are **free public endpoints only**: no paid RPC, no paid trade/orderf
 
 **The policy and the automated control disagree on purpose.** The AST safety audit (`frontier-eval-report --include-safety`) still bans `swap`, `jupiter`, `paper_trad`, `expected_value`, `position_siz`, `portfolio`, `place_order`, `submit_order` and `create_order` as identifiers anywhere in `app/`, so an implementation of either mode named the obvious way will FAIL the audit. That is the correct outcome: open a separate, narrowly-reviewed change unbanning the exact fragment in the exact file when an implementation actually needs it — never rename an identifier to slip past the scan, and never broaden the allowlist past the one file that needs it.
 
+## Research doctrine (binding — earned empirically, not asserted)
+
+These three rules are the output of EDGE-DISCOVERY-001. Violating one has
+already cost this project months.
+
+1. **No signal graduates because it looks predictive.** Every signal must defeat
+   the strongest available **contemporaneous market baseline** before any
+   execution engineering or capital allocation begins. Beating a base rate, a
+   naïve model, or a prior version of ourselves is level-1 evidence and bears on
+   nothing. The hierarchy is:
+   `beats base rate < beats naïve model < beats MARKET PRICE < survives executable price < survives fees/slippage < prospective positive expectancy`.
+   Only the last two bear on capital.
+2. **A signal can be real, replicating, and still uneconomic.** Always report the
+   **executable cost floor beside the effect size**. EDGE-DISCOVERY-001's E2
+   found a genuine, out-of-sample-replicating 2.36pt one-hour lead against a
+   3.36pt floor — a real discovery and a useless trade. Never display a Sharpe,
+   an accuracy, or a coefficient naked.
+3. **Before declaring a dataset unavailable, exhaustively inspect raw, derived,
+   aggregate, archival and observability stores.** `MarketPriceTickBucket` held
+   the executable market price the whole time and had survived a pruning
+   milestone; finding it turned "years of new collection" into a 90-second query.
+
+**Metric-naming rule:** `brier_skill_vs_base_rate` is level-1 evidence and must
+never be presented as market-relative skill. Its rename, and the addition of
+`brier_skill_vs_market`, are deferred to a **declared amendment window** because
+`app/services/forecast_reliability.py` is pinned at `experiment_registry.py:422`
+— editing it is a drift event against a live registered experiment.
+
+### Current research status (2026-08-15)
+
+**Sports forecasting: STOPPED, not deleted.** All four preregistered
+EDGE-DISCOVERY-001 experiments failed
+(`docs/experiments/EDGE-DISCOVERY-001-VERDICT.md`). Current forecasts have **zero
+authorization path to capital**. The models are retained at low frequency as
+**scientific controls and regression benchmarks**. **Do not spend effort making
+them more accurate.** The mechanism is understood: `logit(p) = −0.094 +
+0.568·logit(q)`, R² = 0.661 — the model is the market, blurred.
+
+**Scope of that verdict:** it covers **sports**, the domain markets are already
+best-calibrated in (measured: `β_q = 1.013`). It does **not** show that LLMs
+cannot have prediction-market edge, and must not be generalised that way.
+
+**Next programmes, in order:** implement `KALSHI-LIVE-TAPE-COLLECTOR-001` →
+preregister `MARKET-MICROSTRUCTURE-EDGE-001` (target future market movement, not
+settlement) → collect prospective tape → simple state baselines before any
+sophisticated model → `STRUCTURAL-PROBABILITY-EDGE-001` → information-arrival →
+and only after a net edge exists, the quantitative decision kernel.
+
+**Solana** continues as an **execution-science laboratory**, not a P&L venue:
+`QUOTE → EXPECTED FILL → REALIZED FILL → MODEL ERROR`. Judge it by
+`Ĉ(s) − C_realized(s)`, not by capacity.
+
 ## Testing expectations
 
 `docs/TESTING_POLICY.md` in one line: everything green, no live LLM/web calls in unit tests (mock every provider), gated live tests skip by default, migrations get up/down tests, and run the safety grep before declaring done:
