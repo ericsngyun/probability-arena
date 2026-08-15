@@ -1344,9 +1344,49 @@ decision it was built to inform does not exist.
 
 **What survives is the economics, not the metric.** An LP is still adversely
 selected: it systematically ends up long the asset that is falling and short the
-asset that is rising, because arbitrageurs trade against a stale curve. That is
-a real, measurable, AMM-native cost, and the literature's name for it is
-**loss-versus-rebalancing (LVR)** — see §12.
+asset that is rising, because arbitrageurs trade against a stale curve.
+
+That cost has a name and a founding paper. **VERIFIED** — Milionis, Moallemi,
+Roughgarden & Zhang, "Automated Market Making and Loss-Versus-Rebalancing"
+(arXiv:2208.06046), abstract fetched verbatim:
+
+> "Our central contribution is a 'Black-Scholes formula for AMMs'. We identify
+> the main adverse selection cost incurred by LPs, which we call
+> 'loss-versus-rebalancing' (LVR, pronounced 'lever'). LVR captures costs
+> incurred by AMM LPs due to stale prices that are picked off by better informed
+> arbitrageurs. We derive closed-form expressions for LVR applicable to all
+> automated market makers."
+
+**Why LVR is a better-posed object than VPIN, and this is the point of the
+section.** VPIN and PIN are **latent-variable estimators** — they infer an
+unobserved informed-trader intensity from observable counts through a
+likelihood, and they inherit trade-classification error, boundary solutions and
+numerical pathology (§10.2, §12.6). **LVR is a realized accounting quantity**:
+you compute it by comparing an LP's realized P&L against a rebalancing portfolio
+at observed prices. There is no classification step to corrupt and no likelihood
+to get stuck in.
+
+> **If you want an adverse-selection number on an AMM, LVR is strictly the
+> better-founded construct — and the verified empirical picture it produces is
+> uniformly bad for LPs.** Fritsch & Canidio (arXiv:2404.05803) find arbitrage
+> losses "exceed the fees earned by liquidity providers across many of the
+> largest AMM liquidity pools (on Uniswap)"; Cartea, Drissi & Monga
+> (*Applied Mathematical Finance* 30(2)) find, on Uniswap v3 and Binance data,
+> that "liquidity provision in CFMs is a loss-leading activity."
+>
+> **Note that this is a statement about the LP side, and we are on the taker
+> side.** It does not translate into a taker edge — one party losing to
+> arbitrageurs does not make a third party's round trip profitable. It is
+> included because it identifies *who* the informed counterparty is (arbitrage
+> flow against stale curves), which is what §8.2 needs.
+
+One directional result worth carrying: Fritsch & Canidio report that moving from
+12-second to 100 ms block times reduces arbitrage losses by **20–70%**, and
+Milionis, Moallemi & Roughgarden (arXiv:2305.14604) find faster chains mean
+smaller LP losses. **Solana's 400 ms slots are therefore a materially
+lower-adverse-selection environment for LPs than Ethereum** — which is a point
+in favour of the venue and against the assumption that everything about
+memecoins is worse than everything about ordinary DeFi.
 
 ### 8.2 The four toxicity channels that actually exist here
 
@@ -1753,7 +1793,45 @@ anything — replaces it.
 | **Amihud illiquidity** \(|r|/\text{volume}\) | Same objection: a proxy for a quantity we can compute. It is also badly contaminated here — §2.6 shows the reported \(|r|\) is largely *self-generated impact*, so Amihud partly measures the trade-size distribution rather than illiquidity. | **A1/A2 (TVL and implied reserve) and \(\tau\).** These are the actual illiquidity. |
 | **Roll's implied spread from autocovariance** | Assumes bid-ask bounce between two quotes. There is no bounce; consecutive prints walk a deterministic curve. The estimator will return noise, or a negative variance, and mean something different from what it means in a CLOB. | **\(2f\).** It is known exactly. |
 | **Realized volatility from provider mid** | Not wrong so much as *misnamed*: at our pool sizes it predominantly measures the impact footprint of individual swaps (§2.6). | **B3, renamed `price_churn`.** Keep the number, drop the interpretation. |
-| **VPIN / order-flow toxicity as usually computed** | Requires signed volume (Block C, tier **T3**, out of bounds) and volume-bucketing calibrated to a market maker's inventory problem that no AMM LP faces in the same form. See §8. | **LVR-style reasoning** and the AMM-native adverse-selection framing of §8. |
+| **VPIN / order-flow toxicity as usually computed** | Three independent reasons, any one sufficient. (i) It requires signed volume (Block C, tier **T3**, out of bounds). (ii) Its volume-bucketing is calibrated to a market maker's inventory problem that no AMM LP faces. (iii) **It has been refuted in its home market** — see below. | **LVR** (§8.1), which is a *realized* quantity rather than a latent-variable estimate. |
+
+**On (iii), because "refuted" is a strong word and it is the correct one.**
+Andersen & Bondarenko, *Review of Finance* 19(1) (working paper CREATES RP
+2013-43, fetched), using CME best-bid-offer files to construct near-perfect
+trade classification, conclude verbatim:
+
+> "when VPIN is constructed from accurate classification, it behaves in a
+> diametrically opposite way to BVC-VPIN. We also find the latter to have
+> forecast power for short-term volatility solely because it generates
+> systematic classification errors that are correlated with trading volume and
+> return volatility. When controlling for trading intensity and volatility, the
+> BVC-VPIN measure has no incremental predictive power for future volatility.
+> **We conclude that VPIN is not suitable for capturing order flow toxicity.**"
+
+Their earlier *Journal of Financial Markets* 17(1) paper adds that VPIN "only
+reached an all-time high **following** the flash crash" and that "its predictive
+content stems from a mechanical relation with trading intensity." Easley, López
+de Prado & O'Hara published a rejoinder (*JFM* 17(C): 47–52) disputing the
+framing; the published exchange does not appear to contain an incremental-power
+test controlling for volume and volatility.
+
+> **Note the shape of the failure, because it is the same shape as §9.6's.** The
+> metric appeared predictive because it was mechanically correlated with volume,
+> and volume is correlated with volatility. Andersen & Bondarenko put it
+> generally: "any variable correlated with volatility will, inevitably, possess
+> non-trivial forecast power for future volatility… This merely confirms that
+> volatility begets volatility." **That is exactly the trap §9.6 warns about in
+> our own setting**, arrived at independently in a different market a decade
+> earlier. It is the single best argument in this document for controlling on
+> contemporaneous volume and liquidity in *every* study §11 proposes.
+
+*(For completeness, PIN — VPIN's structural ancestor — carries its own
+estimation pathologies: Lin & Ke (*JFM* 14) find "approximately 44% of PIN
+estimates for recent stock market data may have been subject to a downward
+bias"; Yan & Zhang (*JBF* 36(2)) document boundary-solution bias; Duarte & Young
+(*JFE* 91(2)) find the information-asymmetry component of PIN is **not** priced
+while the illiquidity component is — the asset-pricing analogue of the same
+critique.)*
 
 ### 10.3 TRANSFERS, BUT ONLY WITH A CHANGED DEFINITION
 
@@ -1910,7 +1988,15 @@ The binding constraint is therefore **not sample size**. It is:
 **Verification convention for this section.** A source is **VERIFIED** only if
 its primary artifact was fetched and the claim attributed to it was read in it.
 Anything short of that bar is labelled, and where a widely repeated claim failed
-verification it is recorded in §12.4 rather than quietly dropped.
+verification it is recorded — protocol claims in **§12.4**, academic ones in
+**§12.6** — rather than quietly dropped. Two sections are deliberately lists of
+things this document does *not* rely on; that is the point of them.
+
+**Peer-reviewed items are marked as such.** Several important sources are
+unrefereed preprints, one class of which (A27, A28) is single-author with no
+listed affiliation. They are used because their data is released and their
+direction is corroborated elsewhere, **not** because they carry the weight of
+the peer-reviewed entries, and every use of them says so.
 
 ### 12.1 Protocol and program sources — VERIFIED
 
@@ -1969,33 +2055,125 @@ are near-universal in secondary sources.
 | **Orca's tick price base is \(1.0001^i\)** | **UNVERIFIED** — Orca's own concepts page omits the formula | Read `programs/whirlpool/src/math/tick_math.rs` before asserting it. |
 | **pump.fun `MAX_MIGRATE_FEES`** | **INTERNALLY INCONSISTENT IN THE PRIMARY SOURCE** — the README states `pool_migration_fee` is 15,000,001, "less than `MAX_MIGRATE_FEES == 15_000_000`", which is arithmetically false | Read the IDL before building on either number. This is an error in pump.fun's own documentation, recorded so the next reader does not spend time on it. |
 
-### 12.5 A gap this document did not close
+### 12.5 Academic literature — VERIFIED
 
-**Academic literature on AMM microstructure, LVR, and point-process models of
-DEX flow was not verified to this document's standard, and is therefore not
-cited as support anywhere above.** Specifically:
+Each entry was fetched and the attributed claim read, unless a narrower status
+is stated. **Quality flags are given because several key items are unrefereed
+single-author preprints and should not be read as carrying the weight of the
+peer-reviewed entries.**
 
-- §8.1 names **loss-versus-rebalancing (LVR)** as the AMM-native adverse-selection
-  concept. The term is used there as **background framing, not as a supported
-  citation** — no paper was fetched and read to confirm the attribution. Anyone
-  building on §8 should verify it directly. *(The commonly given attribution is
-  Milionis, Moallemi, Roughgarden and Zhang; **that attribution is unverified
-  here and should not be repeated on this document's authority.**)*
-- §6 states that no published work establishes a **batched-Poisson null** for
-  Solana swap arrivals. That is a statement about what we did not find, **not a
-  verified claim that no such work exists**, and should be read as an invitation
-  to look rather than as a settled negative.
-- No empirical pump.fun survival or graduation-rate study is cited, because none
-  was verified. **Every base rate in §7 and §9 comes from our own production
-  data** — the right source for our purposes, but a single 25-hour window (M15)
-  that should not be generalised.
+**Point processes and the estimation problem (§6):**
 
-> **The gap is recorded rather than papered over, and it is worth being precise
-> about what it costs.** None of the load-bearing conclusions here depend on the
-> unverified literature: §2 and §3 are derivations from verified protocol
-> constants, §7 and §9 are arithmetic over our own measurements, and §4's
-> execution claims rest on the verified primary sources in §12.1–§12.2. **The
-> literature would add context and priors; it would not change a number.**
+| # | source | URL | status |
+|---|---|---|---|
+| A1 | Filimonov & Sornette, "Apparent criticality and calibration issues in the Hawkes self-excited point process model" (*Quantitative Finance* 15(8)) | https://arxiv.org/abs/1308.6756 | **VERIFIED** — the spurious-\(n\approx1\) result under regime switching, and the message-grouping hazard. §6.4's load-bearing citation. |
+| A2 | Hardiman, Bercot & Bouchaud, "Critical reflexivity in financial markets" (*EPJ B* 86:442) | https://arxiv.org/abs/1302.1405 | **VERIFIED** — the near-critical E-mini claim that A1 rejects. Cited only to show the field disagrees. |
+| A3 | Jaimungal, Saporito, Souza & Thamsten, "Optimal Trading in Automated Market Makers with Deep Learning" | https://arxiv.org/abs/2304.02180 | **VERIFIED from the body** (§2.2), not the abstract, which does not mention Hawkes. The exponential same-side inter-arrival finding. |
+| A4 | Jia, You, Luo, Liu & Sun, "Towards Event-Aware Forecasting in DeFi" | https://arxiv.org/abs/2604.20374 | **VERIFIED** — median inter-event interval of 1 block; eight neural TPPs failing to reach usable timing accuracy. |
+| A5 | Shlomovich, Cohen, Adams & Patel, "Parameter Estimation of Binned Hawkes Processes" (*JCGS*) | https://arxiv.org/abs/2001.07160 | **VERIFIED** — "severely biased and highly variable" estimates on binned data. |
+| A6 | Shlomovich, Cohen & Adams, multivariate aggregated Hawkes (*Statistics and Computing*) | https://arxiv.org/abs/2108.12357 | **VERIFIED** — motivated by "synchronous events due to data aggregation or rounding". |
+| A7 | Chen, Kwan & Stindl, "Estimating the Hawkes process from a discretely observed sample path" | https://arxiv.org/abs/2401.11075 | **VERIFIED** — discretisation as an incomplete-data problem. |
+| A8 | Bacry, Mastromatteo & Muzy, "Hawkes processes in finance" | https://arxiv.org/abs/1502.04592 | **VERIFIED** — the standard review; background only. |
+| A9 | Luo, Krishnamurthy & Blasch, "Hawkes Process Modeling of Block Arrivals in Bitcoin Blockchain" | https://arxiv.org/abs/2203.16666 | **VERIFIED** — and cited as **not transferring**: PoW block arrivals differ fundamentally from Solana's deterministic leader schedule. |
+| A10 | SIMD-0525, "Reduce Slot Times" (**Draft**) | https://github.com/solana-foundation/solana-improvement-documents/blob/main/proposals/0525-reduce-slot-times.md | **VERIFIED** — 400→200 ms proposal; "quantization error" framing (§4.2). |
+
+**AMM adverse selection (§8):**
+
+| # | source | URL | status |
+|---|---|---|---|
+| A11 | Milionis, Moallemi, Roughgarden & Zhang, "Automated Market Making and Loss-Versus-Rebalancing" | https://arxiv.org/abs/2208.06046 | **VERIFIED, abstract fetched verbatim.** The LVR definition quoted in §8.1. **The "σ²/8" instantaneous-rate expression is NOT in the abstract and was NOT verified — this document does not use it.** |
+| A12 | Milionis, Moallemi & Roughgarden, "…Arbitrage Profits in the Presence of Fees" (*FC* 2025) | https://arxiv.org/abs/2305.14604 | **VERIFIED** — faster chains ⇒ smaller LP losses. |
+| A13 | Fritsch & Canidio, "Measuring Arbitrage Losses and Profitability of AMM Liquidity" | https://arxiv.org/abs/2404.05803 | **VERIFIED** — losses exceed fees on many large Uniswap pools; 100 ms vs 12 s blocks reduces losses 20–70%. |
+| A14 | Cartea, Drissi & Monga, "Predictable Losses of Liquidity Provision…" (*Applied Mathematical Finance* 30(2)) | https://econpapers.repec.org/RePEc:taf:apmtfi:v:30:y:2023:i:2:p:69-93 | **VERIFIED** — "liquidity provision in CFMs is a loss-leading activity". Note "predictable loss" is a **distinct** decomposition from LVR, not a synonym. |
+| A15 | Lehar, Parlour & Zoican, "Fragmentation and optimal liquidity supply on decentralized exchanges" | https://arxiv.org/abs/2307.13772 | **VERIFIED** — small LPs converge to high-fee pools to mitigate adverse selection. **This is Lehar–Parlour–Zoican on fragmentation, NOT the Lehar & Parlour AMM-vs-LOB paper**, which remains unverified (§12.6). |
+
+**Toxicity metrics and their refutation (§10.2):**
+
+| # | source | URL | status |
+|---|---|---|---|
+| A16 | Easley, López de Prado & O'Hara, "Flow Toxicity and Liquidity in a High Frequency World" (*RFS* 25(5)) | https://www.stern.nyu.edu/sites/default/files/assets/documents/con_035928.pdf | **VERIFIED** — the VPIN claim. *The same title page discloses that the authors have applied for a patent on VPIN and hold a financial interest in it.* |
+| A17 | Andersen & Bondarenko, "VPIN and the flash crash" (*JFM* 17(1)) | https://ideas.repec.org/p/aah/create/2011-50.html | **VERIFIED via the CREATES working paper**; the published abstract was paywalled. |
+| A18 | Andersen & Bondarenko, "Assessing Measures of Order Flow Toxicity…" (*Review of Finance* 19(1)) | https://pure.au.dk/ws/files/68359010/rp13_43.pdf | **VERIFIED, abstract read off the PDF.** The strongest form of the critique, quoted in §10.2. |
+| A19 | Easley, López de Prado & O'Hara, "VPIN and the Flash Crash: A rejoinder" (*JFM* 17(C)) | https://ideas.repec.org/a/eee/finmar/v17y2014icp47-52.html | **VERIFIED** — cited so the dispute is represented from both sides. |
+| A20 | Lin & Ke (*JFM* 14); Yan & Zhang (*JBF* 36(2)); Duarte & Young (*JFE* 91(2)) | RePEc listings | **VERIFIED (abstracts)** — PIN's floating-point, boundary-solution and pricing pathologies (§10.2 footnote). |
+
+**Solana / memecoin empirics (§7.5, §9):**
+
+| # | source | URL | status & quality |
+|---|---|---|---|
+| A21 | Gerzon et al., ACM IMC '25 — Jito sandwiching | https://cnitarot.github.io/papers/imc26_solana.pdf | **VERIFIED, pages 1–2 read. Peer-reviewed.** Also the source of the archival-node cost and the "only prior study dates to 2022" admission (§7.5). |
+| A22 | Mancino, "The Memecoin Phenomenon" | https://arxiv.org/abs/2512.11850 | **VERIFIED. Peer-reviewed (IEEE ISCC 2025).** <2% migration; pump.fun = 40–67.4% of Solana DEX transactions. |
+| A23 | Alhaidari et al., "SolRPDS" | https://arxiv.org/abs/2504.07132 | **VERIFIED. Peer-reviewed (ACM CODASPY 2025).** 3.69B transactions → 22,195 rug-pattern tokens. |
+| A24 | Chen et al., "From Hype to Collapse: Rug Pull Scams on Solana" | https://arxiv.org/abs/2603.24625 | **VERIFIED.** Preprint; established authors. 76.4% flagged at 0.26% audited FPR. |
+| A25 | Hu, Tekin, Xu & Liu, "MELT" (Georgia Tech) | https://arxiv.org/abs/2602.13480 | **VERIFIED.** Preprint. 36.5% of supply coordinated. **Title changed from "MemeTrans" at v2 — cite the v2 title.** |
+| A26 | Marino, Naviglio, Tarantelli & Lillo, "Predicting the success of new crypto-tokens: the Pump.fun case" | https://arxiv.org/abs/2602.14860 | **ABSTRACT VERIFIED; the 655,770 / 4,338 / 0.63% figures are from a secondary summary and were NOT fetched from the body.** Preprint, but Lillo is a first-rank microstructure academic. |
+| A27 | Kamat, "Pump.fun Graduation Regime Windows" | https://arxiv.org/abs/2607.02823 | **VERIFIED.** ⚠️ **Unrefereed, single author, no listed affiliation.** Data released on Zenodo (CC-BY-4.0), which is a point in its favour. 3.18× disagreement with A26 unexplained. |
+| A28 | Kamat, "Coordinated Sniper Cohorts on Pump.fun" | https://arxiv.org/abs/2607.02795 | **VERIFIED (v3).** ⚠️ Same quality caveats as A27. The +130.9% → +16.1% contamination result in §9.6. **v1 carried a different title — cite v3.** |
+| A29 | Heimbach, Pahari & Schertenleib, "Non-Atomic Arbitrage in Decentralized Finance" | https://arxiv.org/abs/2401.01622 | **VERIFIED. Peer-reviewed (IEEE S&P 2024).** >25% of top-5 DEX volume; 11 searchers ⇒ >80%; **$132B per the v3 abstract — secondary summaries saying $137B are wrong.** |
+
+**Methodological skepticism (§9.6, §11.2):**
+
+| # | source | URL | status |
+|---|---|---|---|
+| A30 | Bailey, Borwein, López de Prado & Zhu, "Pseudo-Mathematics and Financial Charlatanism" (*Notices of the AMS* 61(5)) | https://scholarworks.wmich.edu/math_pubs/40/ | **VERIFIED** — overfitting under memory effects gives **negative** expected out-of-sample returns. |
+| A31 | Harvey, Liu & Zhu, "…and the Cross-Section of Expected Returns" (*RFS* 29(1); NBER WP 20592) | https://www.nber.org/papers/w20592 | **VERIFIED from the NBER title page.** t-ratio > 3.0; "most claimed research findings in financial economics are likely false." *(Authors are Harvey, Liu and **Heqing** Zhu; some listings misname the third author.)* |
+| A32 | Bailey & López de Prado, "The Deflated Sharpe Ratio" (*JPM* 40(5)) | https://www.davidhbailey.com/dhbpapers/deflated-sharpe.pdf | **VERIFIED** — selection bias under multiple testing. |
+| A33 | Cong, Li, Tang & Yang, "Crypto Wash Trading" (*Management Science* 69(11)) | https://arxiv.org/abs/2108.10984 | **VERIFIED** — >70% of reported volume on unregulated exchanges. Cited as a warning about volume-based inputs generally; **it is a CEX finding and does not directly indict on-chain Solana data.** |
+| A34 | Hudson & Urquhart, "Technical trading and cryptocurrencies" (*Annals of OR* 297) | https://centaur.reading.ac.uk/85715/8/Hudson-Urquhart2019_Article_TechnicalTradingAndCryptocurre.pdf | **VERIFIED** — ~15,000 rules with multiple-hypothesis correction; **no out-of-sample predictability for Bitcoin**, survivors are the smaller, less liquid coins where costs are worst. |
+| A35 | Fieberg, Liedtke & Zaremba, "Cryptocurrency anomalies and economic constraints" (*IRFA* 94) | https://ideas.repec.org/a/eee/finana/v94y2024ics1057521924001509.html | **VERIFIED** — anomalies "originate from micro-cap coins of negligible economic importance"; alpha extracted "largely from short positions"; effects "fade over time". |
+
+### 12.6 What remains unverified
+
+**Named papers this document deliberately does NOT cite, because they were not
+fetched.** Each was searched for and could not be confirmed. **Do not repeat any
+of these on this document's authority.**
+
+| paper | why it is absent |
+|---|---|
+| **Lehar & Parlour on AMMs vs limit order books** | Not fetched; co-authorship on the specific AMM-vs-LOB piece unconfirmed. A *different* paper — Lehar–Parlour–**Zoican** on fragmentation — **is** verified as A15 and is not a substitute. |
+| **Barbon & Ranaldo**, "On The Quality Of Cryptocurrency Markets: Centralized Versus Decentralized Exchanges" | Not fetched. Authors, venue and claims unconfirmed. |
+| **Capponi & Jia** on AMM adoption/economics | Not fetched. *(A different Capponi paper — Capponi & Zhu on latency auctions, arXiv:2512.10094 — was verified but is not used here.)* |
+| **Angeris & Chitra**, "Improved Price Oracles: Constant Function Market Makers" | Not fetched. |
+
+**Specific numbers deliberately not used, despite being easy to find:**
+
+- **The LVR "σ²/8" instantaneous-rate expression.** The LVR paper is verified
+  (A11) but that expression is not in its abstract and the body was not read.
+  **This document states LVR's definition and never its closed form.**
+- **"Over 60% of Solana block compute units consumed by arbitrage."** Relayed by
+  vendor blogs from a claimed Jito figure; no primary Jito publication reached.
+- **Deployer-funded sniping statistics** (~15,000 SOL/month extracted, 4,600
+  sniper wallets, 87% of snipes profitable, 85% exiting within five minutes).
+  Industry blogs only, no primary report. **These circulate widely and are
+  unsourced.**
+- **A Solana-specific Hawkes branching ratio.** A search summary attributed
+  system-wide \(n=0.80\) figures to Fabre & Muni Toke (arXiv:2401.09361); the
+  abstract contains no branching ratio and a full-text search found nothing
+  extractable. **Do not cite this.**
+- **Any academic measurement of the bot / wash-trade / MEV share of Solana DEX
+  volume.** None found. The nearest verified proxies (A29 Heimbach, A33 Cong)
+  are **off-Solana** and are labelled as such wherever used.
+
+**Verified negatives — searched for, genuinely absent, and reported as findings
+rather than as gaps** (§6.5): no published Hawkes fit to DEX or AMM swap
+arrivals; none to Solana, pump.fun, or memecoin trade arrivals; no marked or
+multivariate Hawkes carrying liquidity-add/remove marks on an AMM; and no
+analysis of whether Solana's slot batching breaks point-process estimation.
+§6.4's call for a batched-Poisson null therefore stands as **an unfilled gap in
+the literature, not merely an unfilled gap in our reading** — though it remains,
+strictly, a statement about what a bounded search did not find.
+
+> **What the literature changed, and what it did not.** It **changed** §6, which
+> now rests on demonstrated identification failure (A1) and direct contrary
+> evidence on AMM inter-arrival times (A3) rather than on structural argument
+> alone; it **changed** §7.5 and §9, which now carry external base rates and the
+> finding that we observe only 1.6–3.7% of launches; and it **corroborated**
+> §9.6's contamination warning from two independent directions (A28, A29).
+>
+> It did **not** change a single number in §2 or §3, which are derivations from
+> verified protocol constants, nor in §2.4–§2.6, §7.1 or §9.2, which are
+> arithmetic over our own measurements. **The load-bearing quantitative spine of
+> this document never depended on the literature, and still does not.**
 
 ---
 
