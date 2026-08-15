@@ -554,7 +554,211 @@ Section 2.3 describes.
 
 ## 4. Track 3 — Tail risk: CVaR and EVaR as constraints
 
-_(to be filled)_
+### 4.1 Definitions
+
+Let `L` be the loss (positive = bad) as a fraction of the modelled bankroll, and
+`α` the tail probability.
+
+```
+VaR_α(L)  = inf { t : P(L ≤ t) ≥ 1−α }                    (a quantile; NOT coherent — not subadditive)
+CVaR_α(L) = E[ L | L ≥ VaR_α(L) ]                          (coherent; Rockafellar–Uryasev)
+          = min_t { t + (1/α)·E[(L − t)⁺] }                (the convex-program form)
+EVaR_α(L) = inf_{z>0} (1/z)·ln( E[e^{zL}] / α )            (coherent; Ahmadi-Javid 2012)
+```
+
+Relations: `VaR_α ≤ CVaR_α ≤ EVaR_α`. EVaR is the tightest bound obtainable from
+the Chernoff inequality, and its dual representation is a KL-divergence
+(relative-entropy) ball — which is why it and the DRO framing of Section 3.5 are
+the same object seen from two sides.
+
+Why the Rockafellar–Uryasev form matters: `CVaR_α` is **jointly convex in the
+position vector and `t`**, so a CVaR constraint over `K` positions is a convex
+constraint and the resulting sizing problem is a convex program. So is EVaR's.
+This is the technical reason both are usable and VaR is not.
+
+### 4.2 Finding: **CVaR on a single position is degenerate and carries no information**
+
+Simulated, 300,000 draws per row:
+
+| position | P(loss) | α=0.01 | α=0.05 | α=0.20 | α=0.40 |
+|---|---:|---|---|---|---|
+| `p=0.55, q=0.50, f=0.1000` | 0.45 | CVaR = **0.1000** | 0.1000 | 0.1000 | 0.1000 |
+| `p=0.93, q=0.90, f=0.3000` | 0.07 | CVaR = **0.3000** | 0.3000 | −0.0102 | −0.0102 |
+| `p=0.13, q=0.10, f=0.0333` | 0.87 | CVaR = **0.0333** | 0.0333 | 0.0333 | 0.0333 |
+
+The loss distribution of a single binary position is a **two-point** distribution:
+`{ +f with prob 1−p ; −f·b with prob p }`. Therefore, for any `α ≤ 1−p`:
+
+```
+VaR_α = CVaR_α = f          exactly.
+```
+
+> **`f_CVaR` as a per-position term in the sizing formula reduces to `f ≤ CVaR_limit`
+> — a flat position cap wearing a risk-measure costume.** It contains no
+> information the cap did not already contain.
+
+And it is worse than uninformative outside that region: at `p=0.93` with
+`α = 0.20 > 1−p = 0.07`, the "tail" contains winning outcomes and `CVaR` goes
+**negative** (−0.0102), i.e. the constraint reports the position as a source of
+guaranteed profit and binds on nothing. **The sign of `α − (1−p)` silently
+switches the constraint between a flat cap and a no-op**, and nothing in the
+formula's notation warns you.
+
+The same degeneracy applies to a long-only memecoin position: downside is bounded
+by the stake and the fat tail is on the **upside**, where a loss-based measure
+does not look. Simulated: for a payoff that is 90% total-stake-loss, 9.5% modest
+gain, 0.5% Pareto(1.2) large gain, the estimated `CVaR95` is **0.0200 = the full
+stake, with zero sampling variance at every n from 50 to 5,000**. Estimating it
+is trivial and tells you nothing you did not know before placing it.
+
+**Design consequence: drop `f_CVaR` from the per-position `min`.** The tail
+constraint belongs at the **book and window level** and nowhere else. See
+Section 9.
+
+### 4.3 Where CVaR *does* carry information: the aggregate under a common factor
+
+`K` positions each at `f = 0.02`, `p = 0.55`, `q = 0.50`, outcomes driven by a
+latent Gaussian factor with pairwise correlation `ρ`. 300,000 draws per row.
+
+| K | ρ | Σf | sd(L) | CVaR95 | CVaR99 | EVaR95 | **CVaR95 / Σf** | P(all lose) |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 10 | 0.00 | 0.200 | 0.0629 | 0.0931 | 0.1300 | 0.1301 | **0.465** | 0.00039 |
+| 10 | 0.10 | 0.200 | 0.0790 | 0.1386 | 0.1665 | 0.1596 | 0.693 | 0.00338 |
+| 10 | 0.30 | 0.200 | 0.1041 | 0.1732 | 0.2000 | 0.1914 | 0.866 | 0.02458 |
+| 10 | 0.60 | 0.200 | 0.1361 | 0.2000 | 0.2000 | 0.2017 | **1.000** | 0.09986 |
+| 25 | 0.00 | 0.500 | 0.0993 | 0.1448 | 0.2020 | 0.1922 | **0.290** | 0.00000 |
+| 25 | 0.10 | 0.500 | 0.1577 | 0.2678 | 0.3348 | 0.3161 | 0.536 | 0.00003 |
+| 25 | 0.30 | 0.500 | 0.2359 | 0.3967 | 0.4728 | 0.4380 | 0.793 | 0.00400 |
+| 25 | 0.60 | 0.500 | 0.3270 | 0.5000 | 0.5000 | 0.5000 | **1.000** | 0.05035 |
+| 25 | 0.90 | 0.500 | 0.4232 | 0.5000 | 0.5000 | 0.5037 | 1.000 | 0.21857 |
+| 50 | 0.30 | 1.000 | 0.4549 | 0.7849 | 0.9178 | 0.8447 | 0.785 | 0.00098 |
+| 50 | 0.60 | 1.000 | 0.6455 | 0.9832 | 1.0000 | 0.9916 | 0.983 | 0.03011 |
+
+Read the `CVaR95 / Σf` column. It is the **only** thing a tail constraint
+actually measures in this setting: *what fraction of deployed capital the 5%
+tail takes.*
+
+- At `ρ = 0` and `K = 25`, it is 0.290 — diversification is real and the CVaR
+  constraint is genuinely less binding than a gross-exposure cap.
+- **At `ρ ≥ 0.6` it is exactly 1.000.** The 5% tail is "everything loses at
+  once", so `CVaR_α = Σf` and **the tail constraint degenerates into a gross-
+  exposure cap again.**
+
+> **The entire informational content of `f_CVaR` is the estimate of `ρ`.** If
+> correlation is high, CVaR tells you nothing a gross cap did not; if it is low,
+> CVaR's value is exactly the diversification credit it grants — and granting a
+> diversification credit on a mis-estimated `ρ` is the classic way to blow up.
+> This makes Track 5 (correlation detection) a **prerequisite** for Track 3, not
+> a parallel concern.
+
+**On EVaR.** EVaR ≥ CVaR in every row, by 10–27% at small `K` and converging to
+CVaR as the tail saturates. Its case is:
+
+- ✅ Convex in the position vector, so the constrained sizing problem stays a
+  convex program (same as CVaR).
+- ✅ A **conservative** bound, which is the right direction of error for a
+  constraint whose input (`ρ`) is the least reliable number in the system.
+- ✅ Its dual is a KL ball, so an EVaR budget is literally a statement about how
+  much the true distribution may differ from the estimated one in relative
+  entropy — the honest way to price model error into a tail constraint.
+- ❌ **It is not more robust to estimate.** The MGF `E[e^{zL}]` is exponentially
+  dominated by the largest observations, so at the optimising `z` it is driven by
+  the same handful of tail points that make CVaR noisy. Claims that EVaR "uses
+  the whole sample and is therefore more stable" do not survive contact with the
+  optimising `z`. Its advantages are conservatism and tractability, not
+  estimation stability.
+
+**Recommendation: use EVaR as the operational tail constraint, at the book level,
+with `ρ` from Track 5 rather than from the return sample.**
+
+### 4.4 Estimating a tail from few observations — the quiet failure
+
+This is where such systems fail silently, so it gets numbers.
+
+**First, the arithmetic that everyone skips.** A sample of `n` backs `CVaR_α`
+with `⌈α·n⌉` observations:
+
+| n | points behind CVaR95 | points behind CVaR99 |
+|---:|---:|---:|
+| 50 | 2 | 1 |
+| 100 | 5 | 1 |
+| 250 | 12 | 2 |
+| 500 | 25 | 5 |
+| 1,000 | 50 | 10 |
+| 5,000 | 250 | 50 |
+
+**A `CVaR99` computed from 250 observations is the average of two numbers.** It
+will be reported to four decimal places.
+
+**Second, sampling error and bias.** 800 bootstrap replicates per cell against a
+1,000,000-draw ground truth, for the `K=25, ρ=0.3` book:
+
+| n | CVaR95 bias | CVaR95 rel. sd | CVaR99 bias | CVaR99 rel. sd |
+|---:|---:|---:|---:|---:|
+| 50 | −3.7% | 12.5% | −8.1% | 11.1% |
+| 100 | −0.3% | 8.3% | −2.8% | 7.8% |
+| 250 | +0.1% | 5.5% | −2.9% | 5.2% |
+| 500 | +1.1% | 4.1% | −1.5% | 3.6% |
+| 1,000 | +1.3% | 3.0% | −1.1% | 2.8% |
+| 5,000 | +0.5% | 1.6% | −0.1% | 1.1% |
+
+The bias is **downward** at small `n` for `CVaR99` — the empirical estimator
+understates the tail exactly when you have least data. That is the wrong
+direction for a safety constraint.
+
+**Third — and this is the real failure mode — the regime you have not sampled.**
+Take the same book, plus a rare common-shock regime (frequency 0.6%: a venue-wide
+resolution shock, a SOL crash, a launchpad-wide rug) in which every position
+loses. True `CVaR95` rises 0.3971 → 0.4278 and true `CVaR99` to 0.5000. Measured:
+
+| n | CVaR95 bias | CVaR99 bias | **P(sample contains zero shock events)** |
+|---:|---:|---:|---:|
+| 50 | −7.3% | −10.1% | **0.590** |
+| 100 | −3.8% | −4.4% | 0.361 |
+| 250 | −3.4% | −3.7% | 0.092 |
+| 500 | −2.4% | −2.3% | 0.003 |
+| 1,000 | −2.2% | −2.2% | 0.000 |
+| 5,000 | −1.6% | −1.8% | 0.000 |
+
+At `n = 50`, **59% of samples contain no instance of the regime that defines the
+tail**, and those samples produce a confident, low-variance, systematically-too-
+small CVaR. The bias does not vanish even at `n = 5,000`.
+
+Generally, `P(no instance of a regime of frequency π in n draws) = (1−π)ⁿ`:
+
+| π (regime freq.) | n=100 | n=250 | n=500 | n=1,000 | n=5,000 |
+|---|---:|---:|---:|---:|---:|
+| 1/50 (2%) | 0.133 | 0.006 | 0.000 | 0.000 | 0.000 |
+| 1/100 (1%) | 0.366 | 0.081 | 0.007 | 0.000 | 0.000 |
+| 1/250 (0.4%) | 0.670 | 0.368 | 0.135 | 0.018 | 0.000 |
+| 1/1,000 (0.1%) | 0.905 | 0.779 | 0.606 | 0.368 | 0.007 |
+
+**A once-a-year event in a system that produces 250 observations a year is absent
+from the sample 37% of the time.** No estimator fixes this. It is an
+identification problem, not an efficiency problem.
+
+### 4.5 What to do instead
+
+Given 4.2–4.4, the honest treatment of the tail term:
+
+1. **Never estimate the tail purely empirically at these sample sizes.** Use a
+   **scenario floor**: an explicitly enumerated, hand-specified set of common-mode
+   scenarios (all positions in a correlated cluster lose; the venue voids a
+   series; the shared underlying resolves against the book) with **assigned**
+   probabilities, unioned with the empirical distribution. The tail constraint
+   binds on `max(empirical, scenario)`. This converts an unestimable quantity
+   into a stated assumption, which can at least be argued about.
+2. **Report the number of tail observations alongside every tail estimate.** A
+   `CVaR99` backed by 2 points must be labelled as such, on the artefact, in the
+   same spirit as the `PAPER_SIMULATION` modeled-vs-observed basis requirement.
+   A tail number without its supporting count is the same category of error the
+   safety boundary already forbids for modeled P&L.
+3. **Prefer EVaR** for conservatism and convexity (4.3), and set its budget from
+   the drawdown statement (Section 5), not from the sample.
+4. **Gate on regime coverage, not on the estimate.** If the prospective sample
+   for a regime is below the size at which a `π = 1/250` event would be expected
+   to appear, the abstention code is `TAIL_UNVERIFIED_FOR_REGIME` — the tail
+   constraint is not "satisfied", it is **unmeasured**, and those are different.
 
 ## 5. Track 4 — Drawdown and ruin
 
