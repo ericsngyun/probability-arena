@@ -637,3 +637,115 @@ anything — replaces it.
 
 ---
 
+## 11. What our data can and cannot support today
+
+This section converts the rest of the document into an inventory and a ranked
+set of studies. Every study named here is **falsifiable, bounded, and stated
+with the measurement that would refute it**.
+
+### 11.1 The inventory
+
+| we have | we do not have |
+|---|---|
+| ~411 births / 25h, all with `first_evidence_at` | signed swap flow (C3–C7) at any price |
+| ~170 / 25h eligible births carrying `initial_liquidity_usd > 0` | true on-chain reserves (A3) |
+| birth-time liquidity, price, volume, market cap, FDV | per-swap sizes, signers, slots |
+| two observations per token (6h, 24h) with liquidity/price/volume | realized slippage (permanently — §8.1 row 6 of the milestone) |
+| holder/actor structure where the risk provider supplied it (Block E) | landing probability, MEV extraction (unobservable without executing) |
+| a survival-outcome table with per-horizon labels | executable quotes (T2, pending CP-0) |
+| provenance, `missing_info`, and honest NULLs throughout | dense intraday sampling of any single token |
+
+### 11.2 Studies runnable TODAY at zero provider cost
+
+Ranked by value per unit of effort. All are pure SQL plus arithmetic over
+already-persisted rows.
+
+**S-1. Compute F6 (`tvl_decay_ratio`) for every enrolled token and describe its
+distribution.**
+*Why first:* §2.5(b) shows this variable dominates realized execution cost, and
+it is two existing columns and one division. *Refutable claim:* the decay
+distribution is unimodal and heavy-tailed with median ≈ 4.75×. *What would
+refute it:* bimodality, which would mean "decays" and "rugs" are distinct
+populations that must be modelled separately rather than as one distribution —
+an outcome that would be **more** interesting than the expected one.
+
+**S-2. Narrow the half-life bracket by attributing decay to horizon.**
+*Why:* §7.1(3) reports 2.7–10.7 h only because cohort 8 mixes horizons.
+`CryptoHorizonObservation.horizon` already records which is which. *Refutable
+claim:* a single exponential fits both horizons. *What would refute it:* a 6h-
+implied half-life materially shorter than the 24h-implied one, which would mean
+decay **decelerates** — survivors stabilise — and that would make lifecycle
+stage even more decision-relevant than §7 claims.
+
+**S-3. The birth-to-outcome sort: can the fan-out be predicted?**
+*Why:* §7.1(2) is the central finding of this document. *Design:* classify
+tokens into decay quartiles at 6h/24h using **only** birth-time features
+(initial liquidity, initial volume, FDV/TVL, mint & freeze authority, social
+link count, and Block E holder structure where present). *Refutable claim:* the
+classifier beats the base rate out of sample. *What would refute it:* it does
+not — which is a genuinely useful negative result and would redirect effort to
+§9's other candidates. **Pre-register the feature set and the split before
+looking**, per this repository's existing prospective-experiment registry
+discipline.
+
+**S-4. Build and characterise C8 (`tvl_jump_unexplained`).**
+*Why:* it is the only rug/liquidity-removal detector available inside our
+current capability boundary. *Refutable claim:* a TVL fall not explicable by
+reported volume identifies a distinct population. *What would refute it:* the
+"unexplained" residual is dominated by provider volume-reporting error, in which
+case the detector fires everywhere and means nothing. **This is the likeliest
+outcome and should be checked first**, by looking at the residual on tokens
+whose TVL is stable.
+
+**S-5. Separate observation failure from token death.**
+*Why:* §7.4's confound contaminates every coverage number the project reports.
+*Design:* compare the sparse lane's birth-anchored 6h/24h answer rate against
+the background scout's. *Refutable claim:* the scout's coverage cliff is
+observational, not real. *Status:* M14's 0 `no_liquidity_state` / 0
+`provider_no_pair` is the first data point and currently supports the claim, on
+a very small sample.
+
+### 11.3 Studies that need T1 (bounded extra provider calls)
+
+**S-6. Denser sampling on a small deliberately-chosen sub-cohort.** Even hourly
+sampling on 20 tokens for 24 hours would give the first real *trajectory* data
+this project has ever had, and would let A8/A9/B3/C2 be computed as series
+rather than as two-point differences. **Cost is the whole question** and must be
+set against `OBSERVE_MAX_CALLS` and the existing lane's budget; this is a
+proposal for Eric, not a plan.
+
+**S-7. Fill Block D (`tvl_herfindahl`, `best_pair_share`).** Requires the
+multi-pair response the adapter can already return.
+
+### 11.4 What is closed, and will stay closed
+
+- **All of Block C except C8** requires T3, a per-swap feed, which
+  `SOLANA-ROUTE-OBSERVATION-001` §3.2 F9 forbids. Section 6's question about
+  Hawkes processes is therefore, for us, **currently unanswerable with data** —
+  it is a design question about what we would do *if* the boundary changed.
+- **Realized slippage** is permanently unobservable within the boundary (§8.1
+  row 6). There is no ground truth to validate a fill model against. This is
+  stated in the milestone as "a permanent limitation of the result, not a gap
+  more work will close," and this document agrees.
+- **Landing probability and MEV extraction** are unobservable without submitting
+  a transaction, which is out of scope by construction.
+
+### 11.5 The sample-size reality
+
+At ~170 eligible births per 25 hours, a 30-day accumulation gives on the order
+of **5,000 labelled tokens** — comfortably enough for S-3's classification study
+with a held-out split, and enough to estimate decay quantiles precisely.
+
+The binding constraint is therefore **not sample size**. It is:
+
+1. **Label coverage.** Historical 24h survival coverage was 4.6%; the sparse
+   lane exists to fix this prospectively, and M1 measured `survived_24h` moving
+   4 → 9 across two passes. Whether it reaches a usable rate is the open
+   question, and it is already being measured.
+2. **The 58.6% selection filter** (§7.3), which no amount of accumulation fixes.
+3. **Feature depth**, not row count — we have many tokens observed twice, not
+   few tokens observed many times, and §5.2 explains why that ordering is
+   correct for the lane's purpose and wrong for microstructure.
+
+---
+
