@@ -885,21 +885,29 @@ class SubscriptionRouter:
         self.subscription = subscription
         self.grid = grid
         self.books: dict[str, OrderBook] = {}
+        # The epoch this router's books are positioned in. Compared against the
+        # subscription's on every accepted message rather than inferred from
+        # who called what: the generation advances by TWO different routes —
+        # `supersede()` in the live lane, where the collector knows a
+        # resubscription happened, and the record's own stamp in the replay
+        # lane, where only the tape knows. One reconciliation point covers both.
+        self._books_generation = subscription.generation
 
     def book_for(self, ticker: str) -> "OrderBook":
         book = self.books.get(ticker)
         if book is None:
             book = self.books[ticker] = OrderBook(ticker, grid=self.grid)
-            # Born into the epoch the subscription is on, so a book created
-            # after a reconnect is not silently attributed to generation 0.
-            book.subscription_generation = self.subscription.generation
+            # Born into the epoch the books are positioned in, so a book
+            # created after a reconnect is not silently attributed to
+            # generation 0 — and is not re-based a second time by `_rebase_all`.
+            book.subscription_generation = self._books_generation
         return book
 
     def _unpublish_all(self, reason: str) -> None:
         for book in self.books.values():
             book._halt(f"subscription {self.subscription.sid}: {reason}")
 
-    def _rebase_all(self, generation: int) -> None:
+    def _rebase_all(self) -> None:
         """A new subscription generation began — rebase, do NOT unpublish.
 
         The counterpart to `_unpublish_all`, and the distinction is the point
@@ -908,8 +916,12 @@ class SubscriptionRouter:
         nothing else. Collapsing the two made an ordinary reconnect look
         exactly like data loss.
         """
+        generation = self.subscription.generation
+        if generation == self._books_generation:
+            return
         for book in self.books.values():
             book.begin_subscription_generation(generation)
+        self._books_generation = generation
 
     def _accept(self, record: dict, *, is_snapshot: bool = False) -> str:
         """`subscription.accept` plus the generation-boundary bookkeeping.
@@ -918,7 +930,6 @@ class SubscriptionRouter:
         the snapshot that opens a new generation is the very message whose
         `seq` is from the new namespace.
         """
-        before = self.subscription.generation
         try:
             return self.subscription.accept(
                 sid=record.get("sid"), seq=record.get("seq"),
@@ -931,8 +942,7 @@ class SubscriptionRouter:
             # that reason — but their positions still belong to the epoch that
             # ended, and leaving them would make the next snapshot look like a
             # rewind.
-            if self.subscription.generation != before:
-                self._rebase_all(self.subscription.generation)
+            self._rebase_all()
 
     def dispatch(self, record: dict) -> dict:
         """Apply one archived/live envelope. Ordering, then routing, then apply.
