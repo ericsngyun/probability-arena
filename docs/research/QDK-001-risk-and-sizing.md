@@ -766,11 +766,245 @@ _(to be filled)_
 
 ## 6. Track 5 — Correlation and concentration
 
-_(to be filled)_
+### 6.1 The ceiling on diversification is `1/ρ`
+
+For `K` equicorrelated positions of equal size, the variance of the average is
+`σ²(1/K + (1−1/K)ρ)`, so the **effective number of independent positions** is
+
+```
+K_eff = K / (1 + (K−1)·ρ)        →   1/ρ   as K → ∞
+```
+
+| K | ρ=0.05 | ρ=0.1 | ρ=0.2 | ρ=0.3 | ρ=0.6 |
+|---:|---:|---:|---:|---:|---:|
+| 10 | 6.90 | 5.26 | 3.57 | 2.70 | 1.56 |
+| 25 | 11.4 | 7.35 | 4.24 | 3.05 | 1.62 |
+| 50 | 14.3 | 8.47 | 4.59 | 3.18 | 1.64 |
+| 100 | 16.8 | 9.17 | 4.78 | 3.26 | 1.66 |
+| ∞ (**ceiling**) | **20.0** | **10.0** | **5.0** | **3.33** | **1.67** |
+
+> **At ρ = 0.3 you can never hold more than 3.33 independent bets, no matter how
+> many markets you enter.** Entering 100 markets instead of 25 buys you 0.21 of
+> an effective position.
+
+This single fact governs everything downstream: the tail constraint (4.3), the
+drawdown budget (Section 5), and — decisively — the required sample size
+(Section 8.3), where it appears as the design effect `1 + (m−1)ρ`.
+
+### 6.2 Three distinct correlation mechanisms, only one of which is usually instrumented
+
+**(a) Logical / definitional.** Two markets are about the same proposition, or
+one implies the other. "Team A wins" vs "Team A wins by more than 3". "Fed cuts
+in March" vs "Fed cuts by June". Correlation is near ±1 and is *deterministic* —
+it is not a statistical quantity to be estimated but a fact to be read off the
+market definitions.
+
+**(b) Statistical / common factor.** Shared drivers with no logical link. On the
+memecoin side: SOL price, aggregate risk appetite, a single launchpad, a single
+deployer cluster, one bridge, one RPC-visible liquidity source. On the
+prediction-market side: one weather system across many event contracts, one
+referee, one court ruling, one macro print. Estimable in principle, but 4.4's
+sample-size arithmetic applies — and cluster identity changes faster than the
+clusters can be measured.
+
+**(c) Model-error correlation — the one nobody instruments.** Even if the *events*
+are independent, **your P&L across them is correlated through your own error**.
+If ten positions were taken because the same feature fired, and that feature is
+mis-signed in the current regime, all ten lose together. The events were
+independent; the losses were not.
+
+This is both the most dangerous mechanism and, uniquely, the **cheapest to
+measure**, because it needs no new data:
+
+```
+residual r_i = Y_i − p̂_i        (already available for every scored forecast)
+ρ_model = corr( r_i , r_j )     across positions grouped by feature / model
+                                 version / regime / time bucket
+```
+
+> **Recommendation: make residual correlation the primary correlation instrument.**
+> It uses data this repository already holds (12,945 scored forecasts), it
+> directly captures the failure that actually happens, and it does not require
+> identifying the causal factor. Mechanisms (a) and (b) are then upper bounds and
+> sanity checks on it.
+
+There is direct local precedent for why (c) matters: per
+`docs/EDGE_SELECTION_RETIREMENT_2026_07_10.md`, all six EDGE-SELECTION-001
+candidates failed out-of-sample **together**, and the `spread_only` negative
+control outperformed them. Six "independent" candidate policies producing one
+correlated failure is mechanism (c) in its pure form.
+
+### 6.3 Detecting semantically correlated markets that look independent
+
+Ordered by reliability:
+
+1. **Venue metadata (free, exact).** Same event/series ticker, same underlying,
+   same resolution source, same settlement date. Catches most of (a) at zero cost.
+   Never skip it in favour of something cleverer.
+2. **The existing cross-venue normalizer.** POLY-002 / POLY-PRECISION-001 already
+   produce `comparable_market_candidate` labels — "these two markets are about
+   the same proposition" is *exactly* a correlation edge, and the precision
+   hardening (outcome-side alignment, market-scope gates, entity-anchored
+   scorelines) already solved the hard part. **This is a correlation detector
+   that already exists in the repository and is currently used only for
+   observation.** Its `unresolved_semantic_match` label is, for risk purposes,
+   the most important output, not the least — see rule 5 below.
+3. **Shared-entity / shared-resolution-source graph.** Named-entity overlap,
+   identical resolution source, overlapping resolution windows. Cheap, high
+   recall, moderate precision.
+4. **Embedding similarity.** High recall, poor precision, and it will happily
+   link markets that share vocabulary but not risk. Use it to **propose** edges
+   only; never to accept one.
+5. **The fail-closed rule, which is the whole design.**
+
+   > **The null hypothesis for correlation is DEPENDENCE, not independence.**
+   >
+   > A pair whose relationship is unresolved is treated as **correlated**. This
+   > inverts the statistical convention deliberately: in inference the cost of
+   > wrongly assuming dependence is lost power; in risk the cost of wrongly
+   > assuming independence is the blow-up. POLY-PRECISION-001 already applies
+   > this logic in the opposite direction (ambiguity degrades to
+   > `unresolved_semantic_match`, never to a forced match); the risk layer must
+   > read that same label as *correlated until proven otherwise*.
+
+### 6.4 Consuming the Probability Graph
+
+A parallel track builds a Probability Graph of market relationships. What the
+sizing layer needs from it, and the one rule that must not be broken:
+
+**Required edge types** (typed, not free-text — the same discipline as
+REGISTRY-002A's typed predicate schema):
+
+| edge | meaning | correlation treatment |
+|---|---|---|
+| `IMPLIES(A→B)` | A true ⇒ B true | treat as one position |
+| `MUTUALLY_EXCLUSIVE(A,B)` | at most one true | negative correlation; **may reduce risk, but see the asymmetry rule** |
+| `SAME_UNDERLYING(A,B)` | same event, different framing | one position |
+| `SHARES_RESOLUTION_SOURCE(A,B)` | same oracle/source/adjudicator | correlated *operationally* even if logically independent |
+| `SHARES_FACTOR(A,B,f)` | common driver `f` | ρ from the factor loading |
+| `UNRESOLVED_RELATION(A,B)` | a candidate relation the graph could not type | **counts as correlated** |
+
+**Consumption:**
+
+1. **Cluster** = connected component under any edge with confidence ≥ threshold,
+   **including `UNRESOLVED_RELATION`**. Clusters, not positions, are the unit the
+   book budgets.
+2. **Cluster budget.** Each cluster receives a fraction of the total risk budget;
+   positions inside it share that fraction. This is what replaces `f_concentration`
+   in the `min` (Section 9).
+3. **Coverage is a first-class output.** The graph must report, for each market,
+   whether it was *analysed and found unrelated* or *not analysed*. These are
+   different and the difference is the whole safety property. Absence of an edge
+   is not evidence of independence unless coverage says the market was examined.
+   Unexamined ⇒ abstention code `GRAPH_COVERAGE_UNKNOWN`.
+4. **THE ASYMMETRY RULE — the single most important line in this section:**
+
+   > **The Probability Graph may only ever REDUCE allowed size. It may never
+   > increase it.**
+   >
+   > A graph edge that reveals correlation shrinks the budget. A graph *silence*
+   > — or even a positive `INDEPENDENT` finding, or a `MUTUALLY_EXCLUSIVE` edge
+   > that mathematically justifies a hedging credit — must **not** be permitted to
+   > grow any position. Section 4.3 showed that the entire value of a tail
+   > constraint is the diversification credit it grants, and Section 4.4 showed
+   > that the correlation estimate behind that credit is the least reliable
+   > number in the system. A one-directional graph is wrong in the direction that
+   > costs growth; a two-directional graph is wrong in the direction that costs
+   > the bankroll.
+
+5. **Version and freshness.** A cluster assignment carries the graph version and
+   its computation time. A stale graph is `STALE_STATE`, not a usable graph — the
+   memecoin lane's clusters (one launchpad, one deployer) change on a timescale of
+   hours.
+
+### 6.5 The aggregate constraint, concretely
+
+```
+per cluster c:     Σ_{i ∈ c} f_i  ≤  B_c
+book level:        Σ_i f_i        ≤  B_total
+                   EVaR_α(book)   ≤  D_max        (Section 4.3, Section 5)
+K_eff(book)        ≥  K_min                        (6.1; refuse a book that is
+                                                    secretly one position)
+```
+
+with `B_c` set so that a total loss of the cluster is survivable under the
+Section 5 drawdown statement. Given `λ_dd ≈ 0.14` (5.2) and `K_eff` capped at
+`1/ρ`, the arithmetic is unforgiving: **at ρ = 0.3, a book of any size behaves
+like 3.33 positions, so a cluster budget of `B_c ≈ λ_dd/K_eff ≈ 0.14/3.33 ≈ 4%`
+of the modelled bankroll is the order of magnitude the constraint permits** — not
+the 20–25% of correlated exposure that trading folklore suggests.
+
+---
 
 ## 7. Track 6 — Abstention as a first-class action
 
-_(to be filled)_
+### 7.1 The default
+
+```
+DECISION := NO_TRADE  unless every gate below returns PASS.
+```
+
+`NO_TRADE` is the initial value, not the else-branch. Every gate must
+affirmatively pass; a gate that errors, times out, or cannot evaluate returns
+`ABSTAIN`, never `PASS`. This is the same fail-closed discipline the repository
+already applies elsewhere — `CryptoDiscoveryService.scan_once` raises
+`MissingPolicyError` rather than proceeding without a provider policy, and
+CRYPTO-COVERAGE-REPAIR-002 records a band that closed unobserved as a permanent
+reported miss rather than interpolating. The sizing layer must be built the same
+way.
+
+### 7.2 The reason-code set
+
+Every abstention emits a **typed** code plus its evidence. Free-text reasons are
+forbidden for the same reason REGISTRY-002A replaced prose leakage guards with a
+closed typed predicate schema: prose is paraphrase-bypassable and cannot be
+aggregated.
+
+| code | condition | why it is not negotiable |
+|---|---|---|
+| `CALIBRATION_UNKNOWN_FOR_REGIME` | fewer than 500 scored forecasts in this regime cell, or `β̂` CI half-width > 0.2 | 3.2/3.7 — without `β̂` you cannot compute `λ_calib`, and Section 2.3 shows unbiased noise alone flips the sign of growth |
+| `CALIBRATION_FAILED_FOR_REGIME` | `β̂` significantly < 0 or the regime shows negative skill | the repository has a live instance: tennis (`OUTCOME_SYNC_POST_DRAIN_BASELINE_2026_08`) |
+| `LIQUIDITY_BELOW_THRESHOLD` | resting size at the touch < the size implied by `f_actual`, or depth unmeasured | a size you cannot fill is a modelled fill, and a modelled fill presented as an edge is precisely the failure `PAPER_SIMULATION` guards against |
+| `EXECUTION_COST_EXCEEDS_EDGE` | `e_net = e − half_spread − fee(q) ≤ 0` | Section 8.2: at `q=0.50` the round-trip wedge is ~3.5–4.75 pp, larger than most real edges |
+| `EDGE_BELOW_MINIMUM` | `e_net` below the smallest edge the sample size can ever validate | an edge you cannot measure is an edge you cannot claim; Section 8.4 |
+| `TAIL_CONSTRAINT_BINDING` | book EVaR at limit | 4.3 |
+| `TAIL_UNVERIFIED_FOR_REGIME` | prospective sample too small to have seen a `π=1/250` regime | 4.4 — "unmeasured" ≠ "satisfied" |
+| `CORRELATED_EXPOSURE_AT_LIMIT` | cluster budget `B_c` exhausted | 6.5 |
+| `GRAPH_COVERAGE_UNKNOWN` | Probability Graph did not analyse this market | 6.4 rule 3 — absence of an edge is not evidence of independence |
+| `STALE_STATE` | quote, forecast, graph, or calibration older than its regime's freshness bound | the repository's own `FOLLOWTHROUGH-001` found stale-or-chasing measurement to be a real, named failure mechanism |
+| `MODEL_VERSION_UNTESTED_IN_REGIME` | the model version has no prospective record in this regime | a model validated elsewhere is an untested model here; the EDGE-SELECTION-001 retirement is what this looks like when it is skipped |
+| `SIZE_ROUNDS_ABOVE_LIMIT` | integer/lot rounding would push realised fraction above `f_actual` | 2.4 — rounding up is systematically risk-increasing |
+| `RESOLUTION_CRITERIA_AMBIGUOUS` | the market's resolution rule is not machine-checkable, or the resolution source is disputed | model-misspecification risk lives entirely outside `p` |
+| `REGIME_SHIFT_SUSPECTED` | recent residual distribution differs from the calibration window | 6.2(c): your errors have become correlated |
+| `BUDGET_EXHAUSTED` | book-level `B_total` at limit | — |
+| `KILL_SWITCH_ACTIVE` | manual halt, or drawdown stop from 5.4 triggered | — |
+
+### 7.3 Properties the abstention layer must have
+
+1. **Abstention is not a failure to be minimised.** The rate of `NO_TRADE` is not
+   a KPI to drive down. A system abstaining on 99% of candidates is behaving
+   correctly if 99% of candidates fail a gate. Any pressure to "increase
+   coverage" must go through changing a threshold explicitly, with the change
+   recorded — never through weakening a gate's evaluation.
+2. **Abstentions must be counted, typed, and reported.** The distribution of
+   reason codes is the single most informative diagnostic the system produces.
+   If `EXECUTION_COST_EXCEEDS_EDGE` is 95% of abstentions, the programme's
+   problem is the cost model, not the forecaster — and that is worth knowing
+   before spending two years collecting trades.
+3. **Abstention must be recorded prospectively and count toward the denominator.**
+   A prospective record that only contains taken trades is a selected sample and
+   cannot support the Section 8 acceptance test. Every candidate — abstained or
+   not — is an observation.
+4. **Reason codes must be ordered and the first binding one reported**, with all
+   binding codes retained. Order: `KILL_SWITCH_ACTIVE` → `STALE_STATE` →
+   `CALIBRATION_*` → `MODEL_VERSION_UNTESTED_IN_REGIME` → `GRAPH_COVERAGE_UNKNOWN`
+   → `EXECUTION_COST_EXCEEDS_EDGE` → `EDGE_BELOW_MINIMUM` → `LIQUIDITY_*` →
+   `TAIL_*` → `CORRELATED_EXPOSURE_AT_LIMIT` → `BUDGET_EXHAUSTED` →
+   `SIZE_ROUNDS_ABOVE_LIMIT`. Cheapest and most fundamental first.
+5. **No gate may be bypassed by a flag.** A "force" path is how every one of
+   these systems eventually fails. If a gate must be relaxed, the threshold
+   changes and the change is versioned into the prospective record — which
+   invalidates the prior sample for the acceptance test, as it should.
 
 ## 8. Track 7 — The definition of ready, and the sample-size answer
 
