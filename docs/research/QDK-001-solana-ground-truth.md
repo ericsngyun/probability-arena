@@ -1040,18 +1040,220 @@ free, read-only falsification test of the quote endpoint, and it turns SC-5 from
 a completeness audit into a genuine validation. **This is arguably a larger
 result for that milestone than the calibration corpus itself.**
 
-## 11. Prospective collection design (only if the verdict is YES)
+## 11. Prospective collection design
 
-*(pending)*
+**A sketch to be judged, not a plan to be executed.** It would need its own
+accepted milestone, its own checkpoints, and its own review. §1.3 applies.
+
+### 11.1 Shape
+
+Reuse the sparse observer's proven shape rather than inventing a second one:
+default-OFF flag, bounded pass, deterministic population, typed non-observations,
+denominator-preserving selection, no raw payload persisted.
+
+```
+population : the tokens the sparse lane already tracks (inherits its
+             41.4% enrolment ceiling — stated, not hidden)
+per pass   : for each tracked token, in deterministic order:
+               1. getSignaturesForAddress(pool_or_mint, until=<high-water mark>)
+               2. for each new signature with err == null:
+                    getTransaction(sig, {maxSupportedTransactionVersion: 0,
+                                         encoding: "jsonParsed",
+                                         commitment: "confirmed"})
+               3. derive the §5.6 record; persist or record a typed absence
+cadence    : polling interval chosen so the per-pass request count stays
+             inside a declared budget (§7.3), never the other way round
+```
+
+### 11.2 The record
+
+One row per detected swap: `signature`, `slot`, `block_time`, `venue_program_id`
+(verbatim, unmapped if unrecognized), `pool_id`, `mint_in`, `mint_out`,
+`amount_in`, `amount_out` (exact integer base units), `network_fee_lamports`,
+`pool_pre_in`, `pool_pre_out`, `pool_post_in`, `pool_post_out`,
+`pool_state_completeness` ∈ `{complete, partial_clmm, partial_dlmm, unknown}`,
+`mev_class` ∈ `{clean, sandwiched, same_block_contended, undetermined}`,
+`token_conservation_gap` (the §4.2 transfer-fee detector), and an
+`evidence_digest` over the canonical encoding.
+
+Non-negotiables carried over from this repository's scar tissue:
+
+- **Exact integers only.** `amount` strings parsed as integers; `uiAmount` never
+  read. Reuse `app/realtime/canonical.py` (`parse_float=Decimal`,
+  `parse_int=int`) — one canonicalization, not two (KALSHI-ARCHIVE-REPLAY-
+  INTEGRITY-001).
+- **Typed absence, closed vocabulary**, never `0`, never carried forward, never
+  interpolated. A `null` `preTokenBalances` makes the row unusable; it does not
+  make the balance zero.
+- **No raw response bodies persisted.** A body digest chained into the row
+  digest, per SRO-001 §6.1. RAW-PAYLOAD-STORAGE-001 measured raw payloads at 27%
+  of the production DB with zero readers.
+- **`getFirstAvailableBlock` recorded per pass**, so the retention horizon is
+  observed rather than assumed (§6.2).
+- **403 is a stop condition for the pass**, not a retry (§7.4).
+
+### 11.3 Storage, and the constraint that should shape the cadence
+
+The database is already past its 3,072 MiB gate. At 2,000–5,000 rows/day this
+lane is small compared to `market_price_ticks`, but the cap must be set from a
+measured headroom number rather than from arithmetic in a document — the same
+requirement SRO-001 §5.7 places on itself.
+
+### 11.4 What must NOT be built
+
+No `PaperFill`, `PaperOrder`, `Position`, or `RealizedPaperPnL` row, table,
+column, or placeholder. `docs/SAFETY_BOUNDARIES.md` bans "disabled" and
+"placeholder" versions explicitly. The corpus is evidence; the consumer that
+turns evidence into a modeled fill is MVP-005B's question, not this one's.
+
+---
 
 ## 12. What this means for SOLANA-ROUTE-OBSERVATION-001
 
-*(pending)*
+`docs/milestones/SOLANA-ROUTE-OBSERVATION-001.md` is **PLAN ONLY — ACCEPTED, NOT
+BUILT**, so nothing below requires undoing anything. These are documentation
+corrections to a plan, and they should be made openly rather than reinterpreted
+later — the same standard that document sets for itself in §0.3 and §4.2.1.
+
+### 12.1 The central limitation: NARROW, do not uphold, and do not fully retract
+
+§8.2 currently reads:
+
+> **This milestone therefore has no ground truth to validate against and cannot
+> acquire one within its boundary.** That is a permanent limitation of the
+> result, not a gap more work will close.
+
+Two claims are packed together and they have different verdicts:
+
+| claim | verdict |
+|---|---|
+| *This milestone, as scoped, has no ground truth to validate against.* | **UPHELD.** A quote-only lane genuinely cannot validate itself. |
+| *…and cannot acquire one **within its boundary**.* | **RETRACTED.** This says the safety boundary forecloses ground truth. It does not. The **scope** does. `getTransaction` on a free public endpoint is read-only retrieval of settled history and crosses none of the enumerated prohibitions (§1.1). |
+
+**Recommended edit:** replace "within its boundary" with "within its scope", and
+add a forward reference to this document. The distinction is load-bearing: as
+written, a future reader concludes that ground truth requires an amendment, and
+therefore never looks. It does not require an amendment. It requires a different
+milestone.
+
+### 12.2 Row-by-row corrections to §8.1
+
+| row | current | recommended |
+|---|---|---|
+| **2 — depth** | "OBSERVABLE only as a provider-computed USD aggregate; **true reserves remain unparsed and unverified**" | **RETRACT.** True reserves *are* observable, exactly, in base units, from `preTokenBalances`/`postTokenBalances` on any pool that has traded — free, and verified by the `post = pre + delta` identity. This is a strict upgrade over a provider USD aggregate. |
+| **5d — Token-2022 transfer fee** | "NOT OBSERVABLE … a **silent-wrongness** risk" | **NARROW.** Measurable on any observed swap as the gap between the taker's debit and the vault's credit (§4.2). It stays unobservable *from a quote*, but it stops being silent once realized fills are read. |
+| **6 — realized slippage** | "NOT OBSERVABLE prospectively. Retrospective measurement needs a per-trade feed, which is **paid and now explicitly forbidden**" | **RETRACT the reasoning; NARROW the claim.** Third-party realized execution is observable prospectively and free; no per-trade feed is needed. What remains unobservable is *our own* quote-to-fill slippage, because we place no order. |
+| **8 — MEV / sandwich** | "NOT OBSERVABLE WITHOUT SUBMITTING A TRANSACTION" | **SPLIT.** 8a population extraction rate/magnitude: **OBSERVABLE read-only, as a lower bound** (§8). 8b our own extraction: **NOT OBSERVABLE** — unchanged. |
+| **5b — priority fee** | "NOT AVAILABLE — fetching a priority fee is explicitly forbidden" | **UPHELD.** F6 is unambiguous. Third-party tips are *visible* as lamport deltas but attributing them needs a tip-account allowlist, and none of that changes the prohibition on fetching one for a transaction of ours. |
+| **7 — landing probability** | "NOT OBSERVABLE WITHOUT SUBMITTING" | **UPHELD**, in full. |
+| **3, 4, 5a — impact, route, pool fee** | "OBSERVED from the quote response" | **UPHELD**, and now independently checkable against realized fills (§10.2). |
+
+§8.3's finding — *"Any `PaperFill` this project ever writes is a MODEL OUTPUT,
+never a measurement"* — is **UPHELD in full** and should not be softened. §8.2's
+statements about landing (7) and our own extraction (8b) being unobservable by
+construction are likewise **UPHELD**.
+
+### 12.3 The strategic consequence
+
+SRO-001 §2 states that a negative verdict "tells the roadmap that the first
+trustworthy prospective paper P&L is **not** reachable on free public data, and
+that the next decision is a spend decision for Eric, not an engineering task for
+an agent."
+
+**That inference no longer follows.** Even if the quote lane returns
+`quote_unobtainable_free` at CP-0, a free read-only path to realized execution
+evidence exists. The correct response to a negative quote verdict is therefore
+**not** a spend decision — it is this lane.
+
+The two are also complementary rather than alternative, and they are ordered:
+
+- The **quote lane** answers *what would a trade of size X cost right now* —
+  forward-looking, at our chosen sizes, on a designed ladder with no selection
+  bias, but **unvalidatable on its own**.
+- The **realized-execution lane** answers *what did trades actually cost* —
+  backward-looking, at sizes traders chose, with real selection bias (§9), but
+  **it is the only thing that can validate the other**.
+
+Neither alone closes the `ExecutionQuote` node honestly. Run in parallel, the
+designed ladder supplies the covariate support the corpus lacks, and the corpus
+supplies the falsification the ladder lacks. **If only one can be built first,
+the realized-execution lane is the higher-value one**, because it is the one
+that can tell you whether the other is lying — and because it works even if the
+quote endpoint turns out to require a key.
+
+### 12.4 One inherited caveat, restated
+
+Anything built here inherits the sparse lane's **41.4% birth-eligibility
+ceiling** (SRO-001 §4.4.1). Every coverage or rate claim must be stated against
+that denominator on its face, not in a footnote.
+
+---
 
 ## 13. Open questions and human-run checks
 
-*(pending)*
+**No RPC call was made by this agent.** Each check below is free, read-only,
+unauthenticated, and involves no transaction construction. They are listed in
+the order that would kill the idea fastest if it is wrong.
+
+| id | question | check |
+|---|---|---|
+| **C1** | *(kills the crux)* Does `preTokenBalances` really contain the pool's vault balances on a real memecoin swap? | Take any recent Raydium or PumpSwap swap signature from a block explorer. `curl` `getTransaction` with `{"encoding":"jsonParsed","maxSupportedTransactionVersion":0}` against `api.mainnet-beta.solana.com`. Confirm ≥4 `preTokenBalances` entries, two of them owned by a PDA that is not the signer, with equal-and-opposite deltas to the taker. |
+| **C2** | Do the balances reconcile exactly? | On the same response, assert `post = pre + delta` on every vault, and that per-mint deltas net to zero (except for transfer-fee mints). Any mismatch is a parse bug or a Token-2022 fee — both informative. |
+| **C3** | §5.4 offsets — does the pump.fun derivation actually reproduce the on-chain curve? | For a live pump.fun mint: `getAccountInfo` the bonding-curve PDA (`["bonding-curve", mint]`) and the `Global` account `4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf`; decode `virtual_*`/`real_*`; compare against the same account's lamport and token balances in a `getTransaction` for a swap in the same slot range. This pins the rent and migration-reserve offsets, which are **INFERRED**. |
+| **C4** | *(kills the rate plan)* How large is a `getBlock` response really? | One `getBlock` with `transactionDetails:"full"` on a recent slot; measure the response bytes. Compare against 100 MB / 30 s. This is the weakest number in §7.2. |
+| **C5** | What is the real public-endpoint retention horizon today? | `getFirstAvailableBlock`, then convert to wall-clock via `getBlockTime`. Repeat on a few days to see whether it drifts. Settles §6.2, which is currently **UNVERIFIED**. |
+| **C6** | Do the three UNVERIFIED program IDs (§4.3) resolve? | `getAccountInfo` each; confirm `executable: true`. Or simply let §4.2's detector run and read the program IDs off the corpus, which is the better answer. |
+| **C7** | *(sizes §9's damage)* What is the real distribution of `size/TVL` in observed swaps? | On a sample of collected rows, histogram `amount_in / pool_pre_in`. If the p5–p95 range spans ≳20x the bias is much milder than §9.2's pessimistic case; if it spans ≲4x, §9.3's residual reframe is mandatory rather than advisable. |
+| **C8** | Are `logMessages` truncated in practice on busy memecoin swaps? | Look for a truncation marker on a large routed swap. Only matters if the log channel is ever used as a corroborator (§4.4). |
+| **C9** | Is `getBlock`'s `transactions` array in execution order? | Reconstruct order from the balance chain on a multi-swap block and compare to array order. If they agree, array order is a cheap shortcut; if not, §8.1's balance-chain method is required. Currently **INFERRED**. |
+| **C10** | Does the venue mix of *this project's* tokens fall in the venues where L3 fully succeeds? | Group a collected sample by `venue_program_id` and by `pool_state_completeness`. §5.5 *assumes* the alignment; it should be measured. |
+
+Beyond the checks, three genuinely open questions:
+
+1. **Is the residual (§9.3) actually size-independent?** The whole rescue of §9
+   rests on it. It is testable only once a corpus exists.
+2. **Does the public endpoint tolerate sustained 1 req/s from one IP?** The
+   documented limit says yes; "subject to abuse" and "may change without prior
+   notice" say measure it.
+3. **How much of the memecoin tape is CLMM/DLMM?** If it is large, §5.5's
+   partial state is a bigger problem than this document assumes. C10.
+
+---
 
 ## 14. Sources
 
-*(pending)*
+Read in this session. Everything tagged **VERIFIED** traces to one of these.
+
+**Official Solana / Anza documentation**
+
+- `getTransaction` — https://solana.com/docs/rpc/http/gettransaction
+- JSON structures / transaction status metadata — https://solana.com/docs/rpc/json-structures
+- `getBlock` — https://solana.com/docs/rpc/http/getblock
+- `getSignaturesForAddress` — https://solana.com/docs/rpc/http/getsignaturesforaddress
+- `getAccountInfo` — https://solana.com/docs/rpc/http/getaccountinfo
+- `getFirstAvailableBlock` — https://solana.com/docs/rpc/http/getfirstavailableblock
+- RPC overview (429/403, "not intended for production applications") — https://solana.com/docs/rpc
+- Clusters & public endpoint rate limits — https://solana.com/docs/references/clusters
+- Setting up an RPC node (`--limit-ledger-size`, BigTable) — https://docs.anza.xyz/operations/setup-an-rpc-node
+
+**Agave validator source (primary, read directly)**
+
+- `ledger/src/token_balances.rs` — `collect_token_balances` (the §5.2 crux) — https://raw.githubusercontent.com/anza-xyz/agave/v2.1.0/ledger/src/token_balances.rs
+- `validator/src/cli.rs` — `--enable-rpc-transaction-history`, `--enable-rpc-bigtable-ledger-storage`, `--log-messages-bytes-limit` — https://raw.githubusercontent.com/anza-xyz/agave/v2.1.0/validator/src/cli.rs
+- `message/src/account_keys.rs` — key-index resolution order — https://raw.githubusercontent.com/anza-xyz/solana-sdk/master/message/src/account_keys.rs
+
+**Venue documentation**
+
+- Raydium program addresses — https://docs.raydium.io/reference/program-addresses
+- pump.fun program README (bonding curve, virtual/real reserve invariant, `Global` account) — https://github.com/pump-fun/pump-public-docs/blob/main/docs/PUMP_PROGRAM_README.md
+
+**Secondary / UNVERIFIED**
+
+- RPC custom error codes (`-32001`, `-32004`, `-32007`, `-32009`) — read via a secondary rendering of `solana_client::rpc_custom_error`, not the primary source
+- Orca Whirlpool, Meteora DLMM and PumpSwap program IDs — third-party sources only
+- "~3–4 days" public-endpoint transaction history — third-party sources only; **not adopted as a number** in this document
+
+**Repository documents**
+
+- `docs/SAFETY_BOUNDARIES.md`, amendment SAFETY-BOUNDARY-ROUTE-QUOTE-001 (2026-08-14)
+- `docs/milestones/SOLANA-ROUTE-OBSERVATION-001.md`
