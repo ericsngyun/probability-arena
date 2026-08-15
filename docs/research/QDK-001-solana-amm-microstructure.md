@@ -1620,12 +1620,17 @@ stating why.
 > qualitatively easier and better-posed question, and it is the only candidate
 > here where predictability, depth, and event structure all point the same way.
 >
-> **Two honest caveats.** F3 requires reading curve state, which is a capability
-> we do not currently have and which would need its own scoped, approved
-> milestone — this document does not authorise it and does not assume it.
-> And "the event is forecastable" is **not** the same as "the price move around
+> **Three honest caveats.** F3 requires reading curve state, which is a
+> capability we do not currently have and which would need its own scoped,
+> approved milestone — this document does not authorise it and does not assume
+> it. "The event is forecastable" is **not** the same as "the price move around
 > it is forecastable"; the latter is unestablished and should not be assumed
-> from the former.
+> from the former. And **the base rate is punishing**: §7.5's verified
+> graduation rates of 0.198%–0.63% mean our ~395 births/day contain roughly
+> **0.8–2.5 eventual graduations**, so a study of graduation on our data
+> accumulates positive cases at single digits per day. **This is a multi-month
+> measurement, not a multi-week one**, and anyone proposing it should budget
+> accordingly rather than discovering the sample-size problem later.
 
 ### 9.6 What to reject, and why the rejection is stronger than usual
 
