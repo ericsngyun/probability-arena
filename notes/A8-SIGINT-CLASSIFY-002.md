@@ -95,10 +95,83 @@ hardware. Identity violations: 0 at EVERY point on the curve.
 ## VERDICT
 (c) LOAD-SENSITIVE THRESHOLD CALIBRATION, with the individual failing trials
 being textbook (b). Definitively NOT (a).
-Recommended fix (NOT applied -- task is classification only): make the bomber
-fire on submit-loop PROGRESS (a randomly chosen submit index) instead of a
+Fix APPLIED (classification-only constraint lifted by the coordinator for this
+test-harness-only change): the bomber fires on submit-loop PROGRESS (a
+randomly chosen submit index drawn from the same seeded rng) instead of a
 wall-clock sleep, so every interrupt is guaranteed to land inside the region
 under test. Strictly stronger than the status quo -- it also closes the
 false-negative the script's own comment at fault_trial.py:154-165 warns about.
+See "POST-FIX" below.
+
+## FOLLOW-UP TICKET (SECONDARY FINDING) -- NOT A BUG, NOT FIXED HERE
+`close()` spends ~1.2 s of its 1.29 s in UN-DEFERRED, read-only
+re-verification (`segment.py:2253` read_segment_records, `:2259`
+verify_chain). The deferral at `:2230` covers only flush/`_fh.close()`/fsync.
+Consequence: an operator's Ctrl-C during shutdown RELIABLY costs the manifest,
+because the un-deferred window is by far the largest part of close().
+
+The behaviour is CORRECT AND FAIL-SAFE and matches `close.__doc__` exactly:
+no manifest, uncommitted, never falsely CLOSED, bytes intact and
+chain-verified. It is a RECOVERY-ERGONOMICS gap, not a correctness defect:
+an in-process `close()` retry does not work --
+
+    first close() interrupted: KeyboardInterrupt   state=CLOSING
+    RETRY close() -> SegmentError: event-file durability failed:
+        AttributeError("'NoneType' object has no attribute 'flush'")
+
+because `_fh` has already been closed and cleared. Publishing those records
+therefore needs out-of-process, `archive-recover-head`-style tooling. Worth
+its own ticket; explicitly OUT OF SCOPE here, and NO `app/` change was made.
+
+## POST-FIX PROOF (progress-gated bomber)
+Same 6-trial campaign, same test counting semantics, 20 runs each.
+
+UNLOADED  : 20/20 PASS. published==n_trials every run (6/6), hang=0,
+            bombs_missed=0 (240/240 bombs landed in the loop),
+            IDENTITY_VIOLATIONS=0. Delivery lag 0-51 submit iterations past
+            the target -- i.e. the interrupt lands within ~51 of 20,000
+            iterations of where it was aimed, against 3,000 iterations of
+            runway. Margin is ~59x and denominated in progress, not seconds.
+
+LOADED 16x: (the exact load that failed the OLD form 5/5)
+  runs 0,3..19  PASS 6/6 published, hang=0
+  run 1         published(2)==n_trials(2), hang=4   <- see residual below
+  run 2         published(4)==n_trials(4), hang=2   <- see residual below
+  ALL 20 runs: published == n_trials, bombs_missed=0, IDENTITY_VIOLATIONS=0.
+  Delivery lag 0-98 iterations. NOT ONE trial failed to publish, loaded.
+
+Before/after on the identical load: old form 5,5,4,1,4 published out of 6 ->
+new form 6/6 (or n/n) in all 20. The publication assertion is now load-
+insensitive because the schedule is progress-denominated.
+
+pytest: `tests/test_kalshi_async_accounting_harness_001.py` 3 passed 1 skipped
+(29.6s); with KALSHI_ASYNC_ACCOUNTING_CAMPAIGN=1, 4 passed (413s) -- the
+24-trial, 3-interrupt campaign included.
+
+## RESIDUAL LIMITATION (reported, not hidden)
+Under 16x CPU load the 25 s `subprocess.run` timeout still expires for some
+trials (runs 1 and 2 above: 4 and 2 hangs). This is PRE-EXISTING, unrelated to
+the bomber change -- a 20,000-submit trial simply takes longer than 25 s of
+wall clock when the machine is 2x oversubscribed -- and the test already
+classifies it separately via `assert n_trials >= REAL_FAULT_TRIALS // 2`,
+whose own message calls it "timing mis-calibration, not a finding". Run 1's
+2 usable trials would trip that guard. So the PUBLICATION assertion is now
+load-insensitive, but the campaign can still be starved of usable trials on a
+badly oversubscribed machine. Fixing that means raising the subprocess timeout
+or shrinking --n-submits; it is a different knob and was deliberately NOT
+touched here.
+
+Also residual by construction: delivery is at the main thread's next
+bytecode-boundary check after `os.kill` (plus, inside `submit()`'s deferred
+commitment region, at that region's exit), so an interrupt lands NEAR its
+target index, not exactly on it. Measured 0-98 iterations against 3,000 of
+runway, and `bombs_missed` makes any escape from the region a loud failure
+rather than a silent pass.
+
+Related wording nit, also not fixed: the assertion messages in the test say a
+non-publishing trial leaves records "unpublishable". That noun is inaccurate.
+The records are intact, chain-verified and RECOVERABLE -- merely uncommitted.
+The property being guarded is real; the word overstates the damage. Recorded
+in the test's docstring rather than silently reworded.
 
 
