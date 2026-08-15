@@ -942,4 +942,74 @@ records that the collector exists and is not scheduled.
 
 ## 11. Open questions for Eric
 
-TBD
+**Q1 — Demo only, or is a production session in scope? (Tier 2 decision.)**
+The whole point is to kill a guess about PRODUCTION rates, and a demo session measures
+demo liquidity, which may be an order of magnitude off. But a production session needs a
+production read-scoped credential and touches the production WS host, which
+`app/realtime/kalshi.py:52-55` records as never having been reached. Recommendation:
+merge CP0-CP9 demo-only, and treat CP10 as a separate single-confirm decision once the
+demo numbers exist. **If you want production rates in THIS milestone, say so now** — it
+changes the credential provisioning and the risk profile, not the code.
+
+**Q2 — How long may a session run, and how many markets? (Tier 1 or 2.)**
+`max_seconds` is a hard cap with no default I am willing to pick for you. A 5-minute
+session cannot satisfy the p99 sample gate; a multi-hour session on a shared host is a
+different operational question. Related: how many market tickers, and which? The tape is
+only as representative as the subscription. Recommendation: one 30-minute session during
+a known-active window, on 5-10 liquid tickers chosen by you, as the first real
+measurement — then decide about longer.
+
+**Q3 — Default channel set.**
+Recommendation: `orderbook_delta` + `ticker` only. `trade` and `market_lifecycle_v2` are
+inside the safety allowlist and are legitimate market data, but they add volume without a
+downstream reader today, and volume is the scarce resource in section 8. Confirm, or say
+you want all four from the start.
+
+**Q4 — Where does the tape live on EVO-X2?**
+The archive is a filesystem tree, not SQLite, so it does not interact with the backup
+coordination or the SQLite growth alert. But it is not free: at a measured rate it will
+produce compressed GB. Candidates: under `/mnt/data` alongside the backups, or the
+existing observation directory. This needs your decision because it also decides who
+prunes it and under what retention — and this milestone deliberately defines **no
+retention policy** for tape segments. **Naming that as an open hole rather than
+inventing a retention rule is the honest move; a tape with an unowned growth curve is
+how the SQLite growth alert story started.**
+
+**Q5 — Does `kalshi_live_tape` get added to `WRITER_NAMES`? (Architectural change,
+flagged.)**
+Section 6.6. It is one line in a closed safety-boundary enum shared by five writers. The
+alternative is that the collector files nothing in the shared telemetry file and is
+invisible to the existing operator tooling. Recommendation: add it.
+
+**Q6 — What happens if CP0 finds that the library drops frames instead of applying
+backpressure?**
+Section 8.1's argument depends on overload becoming a visible disconnect rather than a
+silent drop. If the installed library silently drops, the options are to bound the
+inbound buffer at 1 and accept that stall equals TCP backpressure, or to select a
+different client. I would want your call before building on either. This is the single
+finding most likely to change the design, which is why it is CP0.
+
+**Q7 — Retune the rotation defaults in this milestone or the next?**
+This design says next (section 3, non-goals), so that the retune is validated against an
+independently produced number. If you would rather land the retune with the measurement
+that motivates it, that is a defensible call and changes the checkpoint list, not the
+architecture.
+
+### Assumptions to verify (not decisions — flagged so nothing here is mistaken for fact)
+
+1. The installed `websockets` client exposes an inbound-buffer bound, and exceeding it
+   applies TCP backpressure rather than dropping frames. (CP0.)
+2. The library exposes inbound queue depth and/or a drop counter. If not, `reader_lag`
+   is unavailable and must be reported as a gap, not as zero. (CP0.)
+3. Kalshi disconnects a stalled consumer rather than buffering indefinitely, and the
+   close code is observable. Never observed by this repo. (CP8 / first overload.)
+4. Two `monotonic_ns()` calls per event are negligible against append cost on the target
+   host. (CP5.)
+5. A material fraction of segment-close cost holds the GIL and therefore steals from the
+   reader. Strongly suggested by the 2.5 s idle vs 14.8 s contended measurement
+   (`segment.py:195-196`), but not directly measured. (CP5.)
+6. The production WS host string at `app/realtime/kalshi.py:51` is correct. It has never
+   been reached. (CP10.)
+7. The measured 3,440 events/s append figure was taken on `SegmentWriter` with a
+   test-shaped record; a real `orderbook_snapshot` for a deep book may canonicalize more
+   slowly. The per-record size histogram in section 7 is what will tell us. (CP7.)
