@@ -860,7 +860,11 @@ class SubscriptionState:
         to agree is how the tape ended up with a null column in the first
         place. It may never move backwards.
         """
-        target = self.generation + 1 if generation is None else int(generation)
+        # `coerce_generation`, not `int()`: `int(True)` is 1, and an epoch
+        # that came from a corrupt value must not be indistinguishable from a
+        # real first generation.
+        target = (self.generation + 1 if generation is None
+                  else coerce_generation(generation))
         if target <= self.generation:
             raise SubscriptionError(
                 f"sid {self.sid}: supersede to generation {target} from "

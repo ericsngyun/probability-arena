@@ -407,6 +407,8 @@ class TestAGenuineGapStillFaults:
             state.supersede(generation=2)
         with pytest.raises(bk.SubscriptionError):
             state.supersede(generation=3)
+        with pytest.raises(bk.SubscriptionError):
+            state.supersede(generation=True)                 # int(True) == 1
         assert state.generation == 3
         assert state.supersede(generation=4) == 4            # anti-vacuity
 
