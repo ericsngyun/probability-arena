@@ -257,3 +257,60 @@ all six horizons as preregistered — the correction is **not** narrowed to the
 well-covered horizons, since narrowing it after seeing coverage would inflate
 the family-wise error rate. Coverage is a property of the tick-bucket record,
 not of the forecasts, so it is non-differential with respect to `d`.
+
+### D-3 — E2 cost-floor aggregation and Holm CI construction, specified (2026-08-15, pre-results)
+
+§3 requires `|E[sign(d)·Δq]|` to exceed "the executable cost floor (half-spread
++ taker fee at that price, §5)" with "a Holm-corrected CI excluding zero". It
+does not say how a **per-observation** floor aggregates into that comparison,
+nor how a Holm-corrected *interval* is constructed from a step-down procedure.
+Both are specified here, written and committed **before any E2 statistic was
+computed** (script `docs/evidence/qdk-001/e2_leadlag.py`, committed in the same
+commit as this entry):
+
+1. **The floor is computed per observation at its own price and spread**, never
+   as a global constant. `floor_i = half_spread_i + taker_fee_i`, with
+   `half_spread_i = (yes_ask_c − yes_bid_c) / 200` in probability units and
+   `taker_fee_i = ceil_to_cent(1 × 0.07 × 1 × P_i × (1−P_i))` in dollars, which
+   equals probability units for a $1-notional contract.
+2. **Two fee prices are reported.** *Primary* prices the fee at the mid `q_i`
+   (internally consistent: the half-spread term already carries the
+   mid→executable crossing cost). *Adverse* prices it at the executable price
+   actually paid for the implied direction — buy YES at the ask, buy NO at
+   `(100 − bid)/100` — per §5's instruction that any assumption be declared as
+   an adverse bound, never a zero. **The adverse floor governs the verdict.**
+3. **The PASS statistic is the net excess** `N_h = E[s·sign(d)·Δq_h − floor]`,
+   which is the per-observation comparison of move against floor and is
+   algebraically `|E[sign(d)·Δq_h]| − E[floor]` at the point estimate. PASS
+   requires the Holm-corrected event-clustered CI on `N_h` to exclude zero from
+   above. The CI on the raw `E[sign(d)·Δq_h]` is reported alongside it.
+4. **A round-trip floor** `2 × floor_i` is reported as a stricter sensitivity,
+   since a mid-to-mid move must be both entered and exited. It is *not* the
+   preregistered criterion; §3 specifies a one-way floor and that is what the
+   verdict uses.
+5. **Holm CIs.** Holm's rejection decision is taken from the six bootstrap
+   p-values. The accompanying interval for each hypothesis is reported at its
+   Holm level `1 − α/(m−k+1)` at rank `k`, the standard step-down reading; the
+   most stringent hypothesis is therefore judged at the Bonferroni level.
+6. **Inference method, stated as required:** cluster bootstrap resampling the
+   1,482 **events** with replacement, **B = 10,000** replicates (≥2,000
+   required), percentile intervals, two-sided bootstrap p-values. Every
+   statistic is a ratio of cluster-additive sums, so replicates are exact from
+   multinomial event counts.
+7. No logit is taken in E2 (`d = p − q` in probability space, per §3), so the
+   §1 clipping guard does not bind; clipping count is therefore zero by
+   construction and reported as not-applicable.
+
+### D-4 — E2 direction is data-chosen, because only existence was preregistered (2026-08-15, pre-results)
+
+§3 preregisters **existence, not direction**, and states that a negative value
+is a finding. The raw statistic is therefore tested **two-sided**, which is
+fully preregistered and needs no adjustment.
+
+The net-excess statistic `N_h`, however, needs a sign `s` to subtract a cost
+floor from — you cannot pay a cost floor without choosing a side. `s` is taken
+from the point estimate on the set being analysed, which is a mild in-sample
+selection on the pooled figure. Mitigation, fixed now: `s` is determined on
+**TRAIN only** and applied unchanged to HOLDOUT, so the holdout net figure
+carries no direction selection. This is disclosed rather than hidden, and the
+two-sided raw-statistic CI is reported for every horizon regardless of `s`.
