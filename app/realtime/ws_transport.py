@@ -60,6 +60,7 @@ from typing import Any, Awaitable, Callable
 from websockets.asyncio.client import connect as _websockets_connect
 from websockets.exceptions import ConnectionClosed, PayloadTooBig
 
+from app.realtime.fixedpoint import loads_exact
 from app.realtime.kalshi import (
     ENVIRONMENTS,
     RECOVERY_ACTION_GET_SNAPSHOT,
@@ -667,7 +668,9 @@ class KalshiWebsocketTransport(Transport):
         which would archive a record whose `raw` is not a venue message.
         """
         self.counters.frames_received += 1
-        if isinstance(raw, (bytes, bytearray, memoryview)):
+        if type(raw) is bytes:
+            payload = raw
+        elif isinstance(raw, (bytes, bytearray, memoryview)):
             payload = bytes(raw)
         elif isinstance(raw, str):
             # Strict: a str that cannot be encoded (a lone surrogate) is a
@@ -683,9 +686,9 @@ class KalshiWebsocketTransport(Transport):
             return None
         self.counters.bytes_received += len(payload)
 
-        # Local import keeps the float-refusing parser's home visible at the one
-        # place it is used, rather than as a bare name at the top of the file.
-        from app.realtime.fixedpoint import loads_exact
+        # `loads_exact`, never bare `json.loads`: every venue number becomes a
+        # Decimal here, which is the only place it can be done without the
+        # precision loss having already happened (`segment.py:585-589`).
         try:
             value = loads_exact(payload)
         except (ValueError, TypeError, RecursionError):
