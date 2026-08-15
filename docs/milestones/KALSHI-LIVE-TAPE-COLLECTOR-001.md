@@ -543,7 +543,121 @@ enum member elsewhere, and no change to `ALLOWED_FIELDS` or `REQUIRED_FIELDS`.
 
 ## 7. Measurement plan
 
-TBD
+**The measurement is the deliverable.** The tape is the by-product. If a session
+produces a clean archive and no defensible rate distribution, the milestone has failed.
+
+### 7.1 The one rule: metric writes are never in the archive's critical path
+
+`archive.append()` is synchronous and lock-serialised (5.2). Anything that adds latency
+inside the per-frame loop shows up as archive latency, and a measurement that inflates
+the thing it measures is worse than no measurement.
+
+Therefore, in the per-frame path (`collector.py`, step 5 of 6.3) the ONLY permitted
+operations are:
+
+- integer counter increments;
+- `time.monotonic_ns()` deltas (two calls per frame, around `append` only);
+- a bucket increment into a PRE-ALLOCATED fixed-width histogram array;
+- a byte-length integer added to a pre-allocated histogram.
+
+Explicitly forbidden in that path: any `os.write`, any `json.dumps`, any list append
+that grows without bound, any string formatting, any lock other than the archive's own,
+any allocation proportional to event count.
+
+Flushing to disk happens on a **separate thread** on a fixed wall-clock cadence
+(default 10 s), reading a snapshot of the counters. One `os.write()` per 10 s against a
+stream that may be running at thousands of events/s is four orders of magnitude off the
+hot path. The flusher uses the exact `TelemetrySink._write_line` technique
+(`sink.py:114-141`): `O_APPEND|O_WRONLY|O_CREAT|O_NOFOLLOW`, one unbuffered write, short
+write counts as a drop and is never resumed, never raises into the collector.
+
+### 7.2 Two streams, deliberately
+
+| Stream | File | Cadence | Schema |
+|---|---|---|---|
+| A. Interval metrics | `kalshi-live-tape.jsonl`, same telemetry dir as `sink.telemetry_dir()` | one record / 10 s | NEW, bounded, defined below |
+| B. Session record | existing `sqlite-writes.jsonl` | one record / session | EXISTING envelope, `writer_name="kalshi_live_tape"` via `emit_writer_pass` |
+
+Stream B exists so the collector is visible to the operator tooling that already reads
+that file (`scripts/sqlite_analyze_maintenance.py::_lock_tally`, per
+`writer_pass.py:250-255`). It carries only fields already in `ALLOWED_FIELDS`:
+`duration_ms`, `outcome`, `run_status`, `retry_count` (reconnects), `external_calls`,
+`rows_attempted` / `rows_committed` / `rows_skipped` (received / archived / rejected). It
+carries **no** rate, size, or latency field, because none exists in that envelope and
+section 5.4 explains why none should be added.
+
+Stream A is a separate file with a separate schema for the reasons in 5.4. It reuses the
+sink's write technique but not its validator. Its own validator is equally strict and
+equally closed: a fixed field list, integers and pre-computed bucket labels only, no
+market ticker, no raw payload, no exception message. **A ticker is high-cardinality
+market identity and must not enter the telemetry directory** — the interval record
+carries `markets_subscribed` (a count), never a list. Bucket labels follow the existing
+`_HISTOGRAM_KEY_RE` convention (`schema.py:267`) so a later reader can share one parser.
+
+### 7.3 The interval record (field list; bucket labels abbreviated)
+
+    schema_version          1
+    session_id              uuid4, minted once per session
+    environment             demo | production
+    interval_index          monotonic integer
+    interval_started_at     ISO-8601 Z
+    interval_ended_at       ISO-8601 Z
+    interval_wall_ms        integer, actual elapsed (never assumed 10000)
+
+    events_received         integer
+    events_archived         integer
+    events_rejected         integer   typed archive rejections
+    frames_malformed        integer   not JSON, or not a dict
+
+    event_bytes_total       integer
+    event_bytes_histogram   bucket-label -> count
+    append_us_histogram     bucket-label -> count
+    append_us_max           integer
+    append_calls            integer
+
+    rotations_started       integer
+    rotation_failures       integer
+    closer_outstanding_max  integer   peak of EventArchive._closer.outstanding()
+
+    reader_lag_frames_max   integer   see 7.4
+    reader_stall_ms_max     integer   longest single gap between two reads
+    disconnects             integer
+    reconnects              integer
+    subscription_generation integer
+    sequence_gaps           integer
+    sequence_regressions    integer
+    sequence_duplicates     integer
+
+    markets_subscribed      integer   a COUNT, never a ticker list
+    metric_flush_drops      integer   the measurement's own honesty field
+
+### 7.4 How each required quantity is obtained, and its distortion risk
+
+| Quantity | Method | Distortion control |
+|---|---|---|
+| **events/sec average** | `events_received / interval_wall_ms` per interval, then over the session | `interval_wall_ms` is measured, not assumed; a stalled flusher cannot inflate a rate |
+| **p95 / p99 burst rate** | Percentiles over the per-interval rate SERIES at 10 s, plus a second 1 s-resolution counter ring (600 slots, pre-allocated, integer writes only) for sub-interval bursts | 10 s buckets alone would smooth away the burst that matters. The 1 s ring is a fixed-size integer array; it allocates nothing per event |
+| **event sizes** | `len(raw_frame_bytes)` at the transport boundary, before JSON parsing | Measured on the WIRE bytes, so it is comparable to bandwidth. Record size on disk is a different number and is derived separately from segment manifests |
+| **archive append latency** | `monotonic_ns()` immediately before and after `archive.append(envelope)`, into a pre-allocated histogram | Two clock reads per event. **Assumption to verify:** that this is a low-tens-of-nanoseconds cost on the target host and therefore negligible against a measured append. Checkpoint 5 measures the instrumentation overhead explicitly by running the same fixture load with instrumentation on and off |
+| **rotation frequency** | `EventArchive.rotations` delta per interval, plus `_live_segment_id` transitions | Read from the archive's own counters, not inferred from the filesystem |
+| **archive close latency** | Wall time of the CLOSER thread's work per segment, obtained via a callback on `_on_rotation_closed`, plus `wait_for_rotations` duration at session end | Close is already OFF the producer thread (`archive.py:496-512`). Measuring it must not put it back on: the timing is taken on the closer thread |
+| **dropped events** | Three separate counters that must never be merged: `events_rejected` (archive said no, typed), `frames_malformed` (unparseable), and `transport_dropped` (the library's own drop counter, if it exposes one) | A single "dropped" number would hide which layer failed. **Assumption to verify:** whether the installed `websockets` exposes a drop/overflow counter at all; if it does not, that is a measurement GAP and must be reported as one, not zeroed |
+| **backpressure / lag** | `reader_lag_frames_max` from the library's inbound queue depth if exposed; ALWAYS also `reader_stall_ms_max` — the longest wall gap between consecutive successful reads — which needs no library support | Stall time is the property that actually matters and is measurable regardless. **If queue depth is not exposed, say so; do not report zero lag** |
+
+### 7.5 The report
+
+`kalshi-tape-measure-report --session <id>` reads stream A (streaming, never
+`read_events`-style slurping — see `sink.py:236-240`) and prints:
+
+- the rate distribution with an explicit sample-count gate reusing the existing
+  `MIN_SAMPLES_FOR = {"p50": 3, "p95": 20, "p99": 100}` rule (`archive.py:947`) — a p99
+  from 12 intervals is not printed, it is refused;
+- the three rotation constants re-derived from the measurement, each with the margin
+  against the measured close cost, and an explicit VERDICT per constant:
+  `consistent_with_measurement` / `too_loose` / `too_tight` / `insufficient_sample`;
+- a NOT MEASURED section, in the style of `cli.py:717-722`, naming everything the
+  session could not establish (production rates from a demo session; overnight/peak
+  behaviour from a daytime session; any quantity whose library support was absent).
 
 ## 8. Failure and backpressure handling
 
