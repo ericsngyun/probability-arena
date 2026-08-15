@@ -1347,3 +1347,85 @@ One additional guard, not a correction but a trap worth pinning: **§6.4's bound
 policy forbids the `async for ws in connect(...)` form**, which carries its own unbounded
 `while True` retry loop (12.6 row 5). CP1 must drive reconnects from the collector's own
 `max_reconnects`-bounded loop, and `max_queue=None` must never be passed (12.2).
+
+---
+
+## 13. CP5 findings — instrumentation-overhead gate
+
+**VERDICT: GATE PASSED**, on the direct estimator, with a stated limit on what
+was and was not resolvable. Measured 2026-08-15 via
+`tests/benchmarks/segment_close_cost.py --mode cp5 --cp5-records 40000
+--cp5-reps 8`. **No measured code was modified** — the benchmark file is the
+only change in this checkpoint.
+
+### The number
+
+| estimator | point | 95% CI | noise floor | status |
+|---|---|---|---|---|
+| **E1 direct** | **+901.0 ns/event** | ±166.1 | 93.8 ±90.8 | **RESOLVED** (~9.6× S/N) |
+| E2 throughput | +58,778 ns/event | ±290,670 | 137,034 ±92,705 | UNRESOLVED |
+| E3 cpu-time | −2,960 ns/event | ±64,767 | 72,953 ±57,509 | UNRESOLVED |
+
+Denominator: append p50 (null arms) = **329,190 ns**.
+**E1 = +0.27% of append p50; upper 95% bound 0.32%** — inside the
+small-single-digit-percent requirement.
+
+### What was NOT resolved, and why no re-run fixes it
+
+E2 and E3 are unresolved, and **that is structural, not a host-quality problem.**
+E2's noise floor is 137,034 ns/event against a 901 ns signal; since variance
+falls as 1/√n, resolving it would need on the order of **22,000× more
+repetitions**. Inferring a 0.3% effect from ~27-second throughput runs is not
+achievable at any plausible rep count or host quietness. A "clean re-run" was
+considered and rejected for this reason rather than for cost.
+
+So the claim this checkpoint supports is precisely:
+
+> The **direct** cost of `on_frame` + `on_append` is 0.27% of append (upper
+> bound 0.32%). The **systemic** effect — cache pressure, allocation, flusher
+> contention — is unresolved on any rig available, with **no positive evidence
+> of a problem** (E3's point estimate is negative, i.e. the instrumented arm was
+> nominally faster).
+
+### Rig, and a contamination that was caught
+
+Load during the run: 1m 7.45 → 6.77, 5m 7.57 → 8.21, on **8 CPUs** — an
+oversubscribed host. `CPU per event 602,847 ns vs 674,447 ns wall`: the ~10.6%
+gap **is** the contention, measured rather than assumed.
+
+Mid-run, an **orphaned `while True: pass` process leaked by the CP1 agent** was
+found pinning a full core for ~2 hours (reparented to launchd, so it survived
+its agent's exit) and was killed. Two consequences are recorded here rather than
+tidied away:
+
+1. **CP4's indicative "~395 ns/event ≈ 0.14%" was measured in that same window
+   and should not be relied on.** It was already labelled "not the gate"; it is
+   now downgraded further to "measured on a known-contaminated rig".
+2. **The two-null-arm design is what caught this.** `null_a` vs `null_b`
+   measures the noise floor directly, and it exposed a ~200,000 ns/ev floor
+   against a ~900 ns signal. A single-null benchmark would have reported
+   scheduler noise as an overhead result and passed the gate for the wrong
+   reason.
+
+### An actionable constraint for CP3↔CP4 wiring
+
+```
+seam wrap: direct p50 = 125 ns   vs   try/except + **kwargs p50 = 375 ns  (+250 ns)
+```
+
+A defensive `try/except` + `**kwargs` wrapper at the metrics seam costs **250 ns
+— 28% of the entire 901 ns budget.** When the orchestrator wires
+`CollectorMetrics`, it must be a **direct call**, not a defensive wrapper.
+`NULL_METRICS` already implements the identical surface as no-ops precisely so
+neither arm needs an `if metrics` branch in the hot path.
+
+### Method notes worth keeping
+
+- Arms **interleaved and order-varied** within each rep, so thermal state and
+  page-cache warmth are not attributed to instrumentation.
+- **Two null arms**, so the noise floor is measured rather than assumed.
+- The clock-pair quantum (p50 42 ns) and the `path != path` rotation check
+  (p50 167 ns, charged to **both** arms) are reported separately, so neither is
+  silently folded into the result.
+- Segment rotation is inside the measured window (2–3 rotations per run), so the
+  closer thread competes during measurement as it will in production.
