@@ -661,7 +661,146 @@ carries `markets_subscribed` (a count), never a list. Bucket labels follow the e
 
 ## 8. Failure and backpressure handling
 
-TBD
+This is the central risk of the milestone and it gets the most space.
+
+### 8.1 The decision: `append()` stays INLINE in the reader coroutine
+
+The collector calls `archive.append(envelope)` directly in the coroutine that reads the
+socket. It does **not** hand events to a background writer thread and it does **not**
+put a queue in front of the archive.
+
+Consequences, stated plainly:
+
+- Append latency IS reader stall. A slow append directly stops us reading the socket.
+- Backpressure propagates to TCP, and from there to the venue.
+- Overload therefore ends in a **disconnect**, which is loud, timestamped, and produces
+  a `seq` discontinuity the existing `SubscriptionState` detects
+  (`book.py:681-684`) and the replay lane reports as a fault.
+
+**Alternative rejected: a bounded internal queue plus a writer thread.** That is
+precisely the architecture `KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 A1` removed after eleven
+review rounds (`segment.py:1499-1518`), for a correctness reason that applies here
+verbatim: a producer could be told an event was ACCEPTED while the event had already
+left the only place that made it recoverable. It also measured SLOWER (1,927 vs 3,440
+events/s). Re-adding it would convert a detectable disconnect into a silent drop — the
+exact trade this codebase has already refused once.
+
+**Alternative rejected: a separate collector process per subscription writing to the same
+archive.** `EventArchive` supports concurrent writers safely (flock + candidate-id
+advance, `archive.py:466-495`), but archive order would stop meaning wire order
+(5.2 invariant 2), and the whole point of the tape is a faithful ordering.
+
+### 8.2 The overload ladder, and what the collector does at each rung
+
+| Rung | Condition | Behaviour | Recorded as |
+|---|---|---|---|
+| 0 | append p99 well under inter-arrival time | nothing | ordinary intervals |
+| 1 | transient burst; library inbound buffer absorbs it | nothing; buffer drains | `reader_lag_frames_max` rises |
+| 2 | sustained arrival above append throughput; buffer reaches `max_queue` | library stops reading the socket; TCP receive window closes | `reader_stall_ms_max` rises sharply |
+| 3 | venue reacts to the stalled consumer | connection closes (**assumption to verify**: Kalshi may instead buffer, or disconnect with a specific close code — this has never been observed by this repo) | `disconnects` +1, `disconnected_at` recorded |
+| 4 | collector reconnects, `supersede()`, `get_snapshot` | new generation; books rebuilt from a fresh snapshot | `reconnects` +1, `subscription_generation` +1, and an explicit **observation gap** record |
+| 5 | reconnects exceed `max_reconnects` | session ENDS, `status="capped_reconnects"` | terminal record, non-zero exit |
+
+Rung 5 is a design commitment: **a collector that cannot keep up stops and says so.**
+It never degrades into a partial tape whose gaps are invisible.
+
+### 8.3 The gap is data loss and must be named as such
+
+Between rung 3 and rung 4 the venue continued to publish and we were not connected. Those
+events are gone. The collector records `disconnected_at` / `reconnected_at` and the
+report prints an `observation_gap_seconds` total. It is never reported as "no events in
+that period", and no rate percentile is computed across a gap boundary — a gap splits
+the rate series, exactly as `latency_envelope`'s coverage block already refuses to imply
+continuity (`cli.py:717-719`).
+
+### 8.4 FINDING — can the append contract keep up with Kalshi burst rates?
+
+**Honest answer: unknown, and nobody in this repository knows.** The only Kalshi rate
+ever measured here is "4 records over ~2 minutes, DEMO" (`segment.py:208-209`). The
+`~500 events/s assumed peak` (`segment.py:207`) is an assumption with no measurement
+behind it. That is the gap this milestone exists to close, so the design must not
+pretend to have closed it in advance.
+
+What IS measured, and the arithmetic it implies:
+
+- Synchronous append: **3,440 events/s** on `SegmentWriter`, sustained 2,500-5,000/s,
+  bursts draining ~7,000/s (`segment.py:1514-1517`).
+- Segment close: **~145 ms CPU per 1,000 records** at `commit_to_head=True`
+  (`segment.py:196-198`).
+
+At `DEFAULT_MAX_SEGMENT_RECORDS = 13_000`, a segment closes every `13000 / R` seconds at
+rate `R`, and each close costs about **1.9 s of CPU**. The closer thread keeps up only
+while `13000 / R > 1.9`, i.e. **R below roughly 6,900 events/s** — and that is the same
+order of magnitude as the measured burst-drain ceiling of ~7,000/s. **The rotation
+defaults and the append ceiling do not have an order of magnitude between them; the
+margin is under 2x.** Any measured Kalshi peak in the low thousands per second puts the
+system inside that margin.
+
+Two aggravating factors the arithmetic above does not include:
+
+1. **"Off the producer thread" is not free under the GIL.** The closer thread's work is
+   substantially Python-level (`read_segment_records` parses every record;
+   `verify_segment` reads the segment a third time), and Python-level work contends with
+   the reader coroutine for the GIL. The archive's own measurement already shows the
+   shape of this: 2.5 s wall at 13,000 records on an idle machine, **14.8 s wall at
+   20,000 under CPU contention** (`segment.py:195-196`, `archive.py:500-501`).
+   **Assumption to verify:** what fraction of close cost holds the GIL. Checkpoint 5
+   measures reader stall during a close, directly.
+2. **Rotation itself costs the producer thread something.** `_writer_for` constructs the
+   successor inline (`archive.py:466-490`): `presence()` stat calls per candidate id,
+   an flock, a file open. That cost lands on ONE append — the one that triggers the
+   rotation. Design refinement: the metrics must keep **two** append histograms,
+   `append_us_histogram` and `append_us_rotation_histogram`, or the session maximum is
+   unattributable and will be misread as ordinary append latency.
+
+### 8.5 If the finding turns out badly
+
+If the measured venue rate approaches the ceiling in 8.4, the options — in the order
+this design prefers them, and NONE of which are in scope for this milestone — are:
+
+1. **Subscribe to fewer markets.** The subscription is explicit; the tape does not have
+   to be the whole venue. This is the cheapest lever and it costs no guarantee.
+2. **Lower `DEFAULT_MAX_SEGMENT_RECORDS`.** Smaller segments close faster and the closer
+   keeps up at a higher rate, at the cost of more manifests and more head commits.
+   This is a retune, not a redesign, and it is the follow-up milestone this one feeds.
+3. **Drop `market_lifecycle_v2` / `trade` from the default channel set** if they prove to
+   be a material share of volume without a downstream reader.
+4. **Separate processes per market group**, accepting that cross-group ordering is not
+   preserved (and saying so in the archive metadata).
+
+Explicitly NOT on that list: a queue in front of the archive, per-record sampling, or
+"drop events when busy". Any of those would make the tape's completeness unverifiable,
+which is the one property the whole archive design exists to provide.
+
+### 8.6 Other failure modes and their handling
+
+- **Per-record rejection** (`writer.submit()` returns a `RejectReason`, surfaced as
+  `ArchiveError` at `archive.py:648-649`): counted in `events_rejected`, the raw frame's
+  reject reason is recorded, and the session CONTINUES. One pathological payload must
+  not end a session.
+- **Partition-level / filesystem failure** (`ArchiveError` from `_writer_for`,
+  `ENOSPC`, an unwritable env dir per `_check_partition_writable`,
+  `archive.py:537-563`): the session STOPS with `status="archive_error"`. Continuing
+  would produce a tape with an unrecorded hole.
+- **Rotation failure**: `EventArchive` deliberately does not wedge — the successor is
+  already admitting and the failure lands in `rotation_failures`
+  (`archive.py:519-522`). The collector surfaces a non-empty `rotation_failures` as a
+  session-level WARNING and a non-zero exit, because an uncommitted segment is not
+  evidence.
+- **SIGINT / SIGTERM**: one handler sets a stop flag; the loop finishes the current
+  frame, exits, and calls `archive.close()` inside a `finally`. `close()` is the commit
+  point (`archive.py:653-657`) and it must run. **Note the known hazard from the archive
+  work: CPython delivers signals only on the main thread**, so the handler must be
+  installed on the main thread and must not do work itself.
+- **SIGKILL / host crash**: the loss window is the unflushed tail (`flush_every=256`)
+  plus the entire uncommitted segment. This is the archive's documented contract
+  (`segment.py:1829-1838`), not something the collector can improve, and the milestone
+  report must state the window in events at the MEASURED rate rather than in the
+  abstract.
+- **Clock skew**: `EventArchive.partition` refuses a naive datetime
+  (`archive.py:407-412`). The collector always passes `utcnow()`. Host clock offset stays
+  the replay lane's declared NOT MEASURED item (`cli.py:720-722`); the collector does not
+  invent a correction.
 
 ## 9. Implementation checkpoints
 
