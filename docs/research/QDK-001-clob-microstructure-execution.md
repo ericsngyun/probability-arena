@@ -1279,11 +1279,203 @@ to compute, it is always available, and it goes up when you make your policy wor
 
 ## 8. Does NOT transfer to AMMs
 
+Solana memecoins trade on constant-product AMMs and bonding curves. There is no book, no
+queue, no resting order, and no maker/taker distinction in the sense used above. Anyone
+porting this schema sideways should read this list first.
+
+**Structurally absent — these constructs have no referent on an AMM:**
+
+| Construct | Why it does not exist |
+|---|---|
+| Queue position, queue-ahead, FIFO priority | There is no queue. A swap executes atomically against the curve at the moment of inclusion. |
+| Queue imbalance `I` | There is no two-sided book. The nearest analogue, the reserve ratio, **is the price itself**, so it is not a predictor of the price — it is the thing being predicted. |
+| OFI, MLOFI, integrated OFI | These are built from **placements and cancellations**. An AMM emits neither. |
+| Cancellation intensity | Nothing to cancel. |
+| Order-arrival intensity | No orders arrive. LP add/remove events exist but are a different, far slower process. |
+| Liquidity replenishment / resilience | The curve does not deplete and refill; it reprices continuously. A pool's depth changes only when an LP acts. |
+| Microprice | Requires a bid, an ask and a spread to correct for. There is no bid-ask bounce to de-noise; the AMM spot price is the marginal price, already unique. |
+| Effective spread, realised spread | There is no quoted spread to measure against. |
+| Bid/ask, spread, spread regime, depth slope at the touch | No touch. |
+| Sweep detection | A "sweep" is multi-level book consumption. One swap consumes one continuous curve. |
+| `P(fill \| queue position)` | An LP is not "filled". Any trade crossing the LP's range trades against it, unconditionally. Fill probability is not a decision variable. |
+| Maker/taker fee differential | LPs earn a pool fee; swappers pay it. There is no rebate/fee choice at order time. |
+| Stale-book state, book publishability, sequence-gap unpublishing | Chain state is canonical and totally ordered by slot. Different failure model entirely. |
+
+**The information asymmetry, stated once more because it is the important one:** the
+strongest verified result in this document — that book events explain short-horizon price
+moves roughly twice as well as trades (§3.1, R² 65% vs 32%) — **is unavailable on an AMM
+by construction.** An AMM emits only swap flow, which is the weaker variable. There is no
+clever reconstruction that recovers the stronger one, because the information is never
+created. A CLOB track and an AMM track are therefore not two implementations of one
+design; they have different achievable ceilings.
+
+**Transfers, but with different mathematics:**
+
+| Construct | How it changes |
+|---|---|
+| `C_execution(s)` | Becomes **exact and closed-form** from pool reserves and the curve — *easier* than on a CLOB, not harder. But add priority fees and the possibility of a failed/reverted transaction, which have no CLOB analogue. |
+| Price impact | Deterministic given reserves, not a fitted `β`. The CKS `β ≈ c/D` relation is replaced by the curve's own algebra. |
+| Adverse selection | Transfers in spirit, as **loss-versus-rebalancing (LVR)** for LPs. Entirely different derivation; do not reuse any number from §6.5. |
+| Signed trade imbalance, trade count, volume acceleration | Transfer directly, and are among the few features that do. |
+| Realised volatility, vol-of-vol, normalised volatility | Transfer, though the `p(1−p)` normalisation is Kalshi-specific and must be dropped. |
+| Trade toxicity / VPIN | Transfers; taker direction is inferable from the swap direction. |
+| Regime labels, time-of-day, event-time | Transfer as concepts, with different cut points. |
+| Latency risk | Transfers as a *concept* and nothing more: the CLOB version is stale-book risk; the AMM version is slot inclusion, MEV sandwiching, and priority-fee competition. |
+
+**One direction that transfers and is worth carrying over:** the discipline of §6.2 — that
+execution cost comes from the actual state of the venue at decision time, and that
+"cannot fill" is a typed outcome rather than an extrapolated price — is venue-independent
+and should be the shared contract between the two tracks.
+
+---
+
 ## 9. Realism pass — what our collector can actually feed
 
-### 9.1 What Kalshi exposes
+**A feature schema that cannot be populated is worse than no schema**, because it makes a
+plan look complete when it is not. This section is the check.
+
+### 9.1 What Kalshi exposes, and what we have evidence for
+
+Read from `docs/milestones/KALSHI-LIVE-TAPE-COLLECTOR-001.md` (design-only; **no
+production collector code exists yet** — `app/realtime/kalshi.py:366` declares a
+`Transport` interface whose only implementation is `FixtureTransport`), plus
+`app/realtime/{kalshi,book,fixedpoint,canonical}.py`, plus
+`docs/KALSHI_DEMO_READONLY_VALIDATION_2026_08.md`.
+
+**Channel allowlist, closed in code** (`app/realtime/kalshi.py:99-107`):
+`orderbook_delta`, `ticker`, `trade`, `market_lifecycle_v2`. Everything else — including
+every private channel and every channel a future venue release adds — is refused at frame
+construction. All four are entitled to an exactly-`["read"]` key: **VERIFIED on the demo
+wire** (each received a `subscribed` ack on its own sid).
+
+| Channel | Payload | Evidence status |
+|---|---|---|
+| `orderbook_delta` (snapshot) | `yes_dollars_fp[]`, `no_dollars_fp[]` — **full ladders**, `[price, count]` pairs, both already YES-scaled under `use_yes_price=true` | **VERIFIED on our wire.** Empty book omits both keys |
+| `orderbook_delta` (delta) | `side` ∈ {yes,no}, `price_dollars`, **`delta_fp` — one signed net change at one price level** | **VERIFIED on our wire** |
+| `ticker` | last price, `yes_bid`/`yes_ask` with sizes, volume, open interest, last trade size | Bid/ask + sizes **VERIFIED on our wire**; the fuller field list is INFERRED from venue docs |
+| `trade` | `trade_id`, `market_ticker`, `yes_price`, `no_price`, `count`, **`taker_side`**, `ts` | **Entitlement VERIFIED** (sid 3 acked). **Payload shape UNVERIFIED on our wire** — INFERRED from a third-party mirror of the venue docs. The demo capture was 4 records and contained no trade print |
+| `market_lifecycle_v2` | open/close/settle transitions | Entitlement VERIFIED; payload UNVERIFIED on our wire |
+
+**Structural facts that shape everything in section 9.2:**
+
+1. **The book is FULL DEPTH.** Both ladders arrive whole and are maintained as
+   `dict[price_units, contract_units]` (`app/realtime/book.py:212-213`). On a 1¢ grid there
+   are at most 99 levels. **Multi-level features are not depth-limited by the feed** — a
+   genuine advantage over the L2-top-N feeds most of the literature uses.
+2. **It is L2, not L3.** No order IDs, no per-order events, one net `delta_fp` per level.
+3. **`seq` is subscription-global, not per-market** (VERIFIED on the wire), and
+   **non-orderbook frames consume a sequence number** — an `error` frame took seq 4 between
+   deltas at seq 3 and seq 5. Any feature pipeline that re-derives ordering must use
+   `SubscriptionState`, not its own counter.
+4. **`use_yes_price=true` means the NO ladder is ALREADY YES-scaled — no complement is
+   applied.** This was the most serious defect found in demo validation: the earlier code
+   complemented it, producing an ask that was uncrossed, plausible, and **two cents wrong on
+   every quote**. Any independent feature implementation must not re-introduce it.
+5. **Venue timestamps are not uniform:** `ts` is an ISO string on `orderbook_delta` and
+   epoch **seconds** on `ticker`; `ts_ms` is unambiguous on both and is read first.
+6. **Only measured rate on record: 4 records over ~2 minutes (DEMO).** Everything about
+   sample sizes in this document is conditioned on a production rate we have never measured.
+
 ### 9.2 Feature-by-feature mapping
-### 9.3 Features we must NOT put in the schema
+
+Legend: **YES** = computable from an archived tape with the default subscription;
+**YES+trade** = requires `trade` in the subscription (which is **not** the planned default —
+the milestone's default is `orderbook_delta` + `ticker`, and `trade` requires an explicit
+`--channels`); **DERIVED-APPROX** = computable but only under a stated assumption;
+**NO** = not obtainable from Kalshi at any subscription.
+
+| Feature | Feasible? | Notes |
+|---|---|---|
+| `best_bid/ask`, sizes, `spread`, `mid`, `queue_imbalance`, `weighted_mid` | **YES** | Already implemented (`book.py:464-501`) |
+| `depth[m]`, `cum_depth_within(k)`, `depth_slope`, `depth_convexity`, `book_pressure_k` | **YES** | Full ladder available; ≤ 99 levels |
+| `fill_cost_curve(s)` / `C_execution` | **YES, exactly** | The strongest feature in the schema. The visible ladder is the whole ladder |
+| `microprice` | **YES**, with a fit | Needs a pooled `g(I,S,price_regime)` table; absent in `WIDE` books by design (§4.3) |
+| `OFI`, `MLOFI[m]`, `integrated_OFI` | **YES** | Our deltas are close to the CKS/XGH primitive. **But `e_n` must be computed on the reconstructed best-quote sequence, not by summing `delta_fp`** — a delta at a non-best level that *becomes* best changes the estimator (§3.2 cascade rule) |
+| `signed_trade_imbalance` | **YES+trade** | **Better than the literature's version: `taker_side` is given, so no Lee–Ready classification error.** Exact, not estimated |
+| `trade_count`, `trade_volume` | **YES+trade** | |
+| `order_arrival_intensity` | **DERIVED-APPROX** | We observe *positive net level changes*, not order arrivals. If the venue coalesces two arrivals into one delta, we undercount. **UNVERIFIED whether Kalshi coalesces — this is a measurement task for the first live session** |
+| `cancellation_intensity` | **DERIVED-APPROX, and needs `trade`** | A negative delta is a cancellation *or* a trade consumption. Separating them requires joining book deltas to trade prints by `(price, size, timestamp)` — approximate at ms resolution, and ambiguous when several events collide. Without `trade` subscribed, absence reason `REQUIRES_JOIN_UNAVAILABLE` |
+| `sweep_flag`, `sweep_depth_ticks` | **YES+trade** | On a 1¢ grid a sweep spans few levels; the size test (print > pre-trade touch size) is the more useful one |
+| `replenishment_time`, `resilience_ratio` | **YES** | Book-only; no trade join needed |
+| `effective_spread`, `realized_spread(h)`, `price_impact(h)`, `markout(h)` | **YES+trade** | All need the trade print's price and direction |
+| `beta_impact` (`ΔP = β·OFI`, `β ≈ c/D`) | **YES**, with a fit | Sample size is the constraint, not data availability |
+| `toxicity_vpin` | **YES+trade**, but expect `WINDOW_UNDERFILLED` | Volume buckets fill glacially on a dormant contract. Likely unpopulated for most of the universe |
+| `realized_vol`, `normalized_vol` | **YES** | Report event-time and clock-time separately |
+| `vol_of_vol` | **YES in principle, expect absent in practice** | Needs ≥ 10 sub-windows each meeting their own floor. On most contracts this will never populate |
+| `volume_acceleration` | **YES** (book events) / **YES+trade** (traded volume) | |
+| `event_rate_ewma[τ]` | **YES** | O(1), defined from the first event, no fit. The Hawkes substitute (§5.6) |
+| `spread_regime`, `depth_regime`, `activity_regime`, `price_regime` | **YES** | The conditioning variables the whole document depends on |
+| `lifecycle_state` | **YES**, needs `market_lifecycle_v2` subscribed | Not in the planned default subscription |
+| **`time_to_close`** | **NO from WebSocket** | Scheduled close time is REST market metadata. **The collector milestone explicitly has no REST reconciliation loop** (`reconcile_with_rest` stays a replay-time function). This is a real gap — see 9.4 |
+| `time_of_day`, `day_of_week` | **YES** | From the envelope's receive clock |
+| `event_clock_phase` | **NO** for most contract families | Game clock / release schedule is external. `VENUE_DOES_NOT_EXPOSE` |
+| `data_age_us`, `book_staleness`, `is_publishable`, `subscription_generation` | **YES** | All already on the envelope / router (`book.py:76-80`, `archive.py:633`) |
+| `observation_gap` | **YES**, from collector metrics | The collector milestone records `disconnected_at`/`reconnected_at` per reconnect precisely to close the replay lane's acknowledged blind spot |
+| `clock_offset_bound` | **NO today** | Explicitly NOT MEASURED (`app/cli.py:717-722`). Biases `data_age_us` by an unknown sign |
+| **Queue position at fill** | **NO** | No order IDs; the `trade` channel publishes aggregate prints, not per-maker fills in priority order. Albers et al.'s Binance recovery technique does not port. See §6.3 |
+| **Own-order state** | **NO, and correctly so** | `fill`, `user_orders`, `market_positions` are in `FORBIDDEN_CHANNELS` and are refused at frame construction. Not a gap — a boundary |
+| **Order-level cancel/replace attribution** | **NO** | L2 only |
+| **Hidden / iceberg liquidity** | **UNVERIFIED whether any exists** | Assumed zero, which is the conservative direction (§6.2) |
+
+### 9.3 Features that must NOT go in the schema
+
+A feature whose only possible answer is `VENUE_DOES_NOT_EXPOSE` should not be a column.
+Excluded on that ground:
+
+- **Queue position at fill** and anything derived from it (queue-position deciles,
+  front-of-queue indicators, priority-adjusted fill models). Present instead as the
+  **bracket** of §6.3, which is a different and honest object.
+- **Order-level cancellation attribution** (cancel-ahead vs cancel-behind), and any
+  "cancellation aggressiveness by trader type" feature.
+- **Any own-order, own-position, or own-fill feature.** Structurally forbidden by the
+  capability boundary, not merely unavailable.
+- **Cross-venue features** (Polymarket price, sportsbook line). Not forbidden, but out of
+  scope for this track and not producible by this collector — putting them in the schema
+  now would make it look populated when it is not.
+- **`event_clock_phase`** as a general column. Admit it only per contract family, once a
+  family-specific source exists.
+
+### 9.4 The three gaps that need a decision, in priority order
+
+1. **`trade` is not in the planned default subscription — and a large fraction of this
+   schema depends on it.** Without `trade`: no signed trade imbalance, no effective or
+   realised spread, no price impact, no markout, no toxicity, no sweep detection, and
+   `cancellation_intensity` degrades to `REQUIRES_JOIN_UNAVAILABLE`. That is most of
+   schema groups C and D. **Recommendation: `trade` should be in the default subscription
+   for any session intended to feed this schema.** It is already on the allowlist and
+   already entitled, so this is a configuration decision, not a boundary change. The cost
+   is additional archive volume against unmeasured rotation constants — which the
+   collector's own measurement plan is designed to settle. Flag it as a decision the
+   collector milestone should take explicitly rather than inherit from a default.
+2. **`time_to_close` has no source in this design.** For a contract that expires, time to
+   expiry is arguably the *most* important conditioning variable there is, and it is not on
+   the WebSocket. Options: subscribe `market_lifecycle_v2` and derive what we can; or
+   accept a one-shot REST metadata fetch at session start (a read-only GET, inside the
+   existing boundary, but explicitly outside the collector milestone's stated non-goals).
+   **Do not silently add a REST loop** — this needs a decision, not an implementation.
+3. **The production event rate is unknown.** Every sample-size claim in this document is
+   conditioned on it. The only measurement on record is 4 records in ~2 minutes on DEMO.
+   Until the collector's measurement lane runs, treat every "expect this to be absent"
+   judgement here as a hypothesis.
+
+### 9.5 What is genuinely strong about our position
+
+Worth stating, because the section above is mostly caveats:
+
+- **Full-depth ladders.** Most published microstructure work uses top-N L2 feeds and treats
+  depth beyond level 10 as unobservable. We get all ≤ 99 levels. `C_execution` is therefore
+  **exact**, not modelled — which is precisely what the mandate demands of it, and which
+  most practitioners cannot achieve.
+- **Exact taker direction.** `taker_side` removes Lee–Ready classification error from every
+  trade-sign feature. A meaningful chunk of the empirical microstructure literature spends
+  its error budget on that classifier.
+- **A digest-chained, replay-deterministic archive already exists.** The feature pipeline
+  can be validated by replaying evidence rather than by re-collecting it — proven by the
+  demo replay producing identical digests, checksums and book state with
+  `external_calls=0`.
+- **Sequence integrity is settled at the subscription level and already fails closed.** The
+  `BOOK_UNPUBLISHED` absence mode of §2.2 is not something we have to build; it falls out
+  of `SubscriptionRouter` (`book.py:733-795`).
 
 ## 10. Citation ledger
 
