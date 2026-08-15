@@ -2469,16 +2469,368 @@ highest-value methodological follow-up.
 
 ## 10. Lane ranking — a recommendation for Eric, not a decision
 
-*(section pending)*
+**This is a recommendation for Eric. It is not a decision and this document does
+not take one.** The reason it needs a human is that the two lanes are ranked
+differently by two defensible criteria, and the memory index and the evaluation
+protocol currently point in **opposite** directions.
+
+### 10.1 The tension, stated without softening
+
+The paper-execution ledger ranks **Solana #1** on dependency grounds: its
+dependency chain is shorter, because the Probability lane still has no live tape
+writer.
+
+The evaluation protocol points the other way, and it does so on its own logic
+rather than on preference:
+
+| | Solana | Kalshi |
+|---|---|---|
+| arrival rate | ~395 births/day, ~40% enrollable | **410.7 baseball arrivals/day** |
+| **evaluability** | **24h coverage 4.6%** — a 24h-horizon experiment is currently **not evaluable**, and P0 should *refuse to register it* | resolved binary outcomes with 100% scoring coverage on 12,945 forecasts |
+| calibration instruments | none deployed for this lane | deployed, plus representativeness instruments that exist and were branch-only during the last failure |
+| live registered experiment | none | **yes** |
+| capacity | **$50–$150 clips**; even a 10% sustained gross edge is a few hundred dollars a day (§3.5) | fee-bound, but not capacity-bound at any size we would trade |
+| what it can answer | **"can we model execution?"** — and it is the *only* lane with free realized-fill ground truth | **"do we have an edge?"** — and it is the only lane where `ΔS` is computable at all |
+| what it cannot answer | whether we have an edge — no market-relative benchmark exists for a memecoin | what a fill actually costs — queue position at fill is unobtainable, so maker P&L is a bracket forever |
+
+### 10.2 The recommendation
+
+> **Rank Kalshi first for the edge question, and start the Solana collector's
+> approval track immediately anyway.**
+
+The two are not competing for the same resource. Kalshi's Phase-0 rungs are
+queries and one additive migration — days of work on data that is not going
+anywhere. The Solana collector's cost is **calendar**: its corpus cannot be
+backfilled, so the expensive thing is the *waiting*, and the waiting starts when
+approval lands, not when code lands.
+
+Three supporting reasons, and one honest counter-argument.
+
+**(a) The evaluation protocol will keep refusing Solana long-horizon
+experiments, correctly and unhelpfully.** At 4.6% 24h coverage the honest
+denominator is not the enrolled cohort. This is a coverage problem the sparse
+lane exists to fix prospectively, and until it does, a 24h Solana claim is not
+evaluable at any sample size.
+
+**(b) Solana's capacity ceiling caps the value of winning.** Even at an
+extraordinary 10% sustained gross edge, the optimal $50 clip across every
+eligible birth yields **$581/day**. That is a real number and it is not a number
+that justifies unbounded engineering — and it should be stated before, not after,
+the work.
+
+**(c) Kalshi is where `ΔS` is even defined.** Growth equals the log-score
+advantage over the market price (§0.1a). A memecoin has no market-implied
+probability of anything, so there is no `q` and no `ΔS`. **The lane that can
+answer the project's first question is Kalshi, and it is not close.**
+
+**The counter-argument, which is real.** Solana is the lane where the *execution*
+side can actually be validated against ground truth, and the CLOB lane's
+execution model has a **permanently unfalsifiable parameter** in queue position.
+So if the question is "can we ever trust a modeled fill?", Solana answers it and
+Kalshi does not. That is exactly why the recommendation is not "deprioritise
+Solana" but "**start its approval clock now and let it accumulate while Kalshi
+answers the edge question**".
+
+### 10.3 What would change this recommendation
+
+- **P0.0 returns near-zero join coverage AND P0.2 confirms PAIRED = 0.** Then
+  Kalshi's `ΔS` measurement needs a non-anchored forecaster running prospectively
+  against a recorded quote, which is a longer chain than it looks, and the
+  relative ranking narrows.
+- **The Solana collector's Tier-3 approval is refused.** Then the Solana lane has
+  no ground truth and no path to one, and it becomes a pure lifecycle-prediction
+  lane — still worth running, but no longer the execution-validation lane.
+- **The sparse lane's prospective 24h coverage rises materially.** That is being
+  measured now, and it is the single number that would most improve Solana's
+  standing.
+
 
 ## 11. Where the research disagrees with itself
 
-*(section pending)*
+Recorded rather than averaged, because a synthesis that smooths over a
+contradiction hides the place where someone is wrong.
+
+**11.1 — Is realized slippage observable on Solana? The tracks directly
+contradict each other.**
+`SOLANA-ROUTE-OBSERVATION-001` §8.1 row 6 and §11.4 of the AMM track both state
+that realized slippage is **permanently unobservable within the boundary**, and
+the AMM track explicitly says it *agrees* with the milestone. The ground-truth
+track says that is false, and demonstrates why.
+
+**Resolution: the word "realized slippage" is doing two jobs.** *Third-party*
+realized execution is free, read-only, and richer than a paid trade feed (which
+typically reports price and size but **not** the pre-trade pool state that makes
+them meaningful). *Our own* quote-to-fill slippage remains unobservable, because
+we place no order. Both tracks are right about their own referent and the
+equivocation is in the shared name. This document uses `requires_submission` for
+the second and never the first.
+
+**11.2 — The AMM track's tier table is now stale, and it matters.**
+Following from 11.1: features C3–C7 (`swap_count_by_direction`,
+`net_signed_flow`, trade-size distribution, unique signers, LP add/remove events)
+are classified there as tier T3 / `feed_not_available`, on the grounds that they
+need a paid per-trade feed. **They do not.** The balance-delta detector derives
+direction, size, signer, and counterparty from free `getTransaction` responses.
+
+The claim "Block C is structurally closed" is therefore **false**, and §5.3
+reclassifies it. Two honest qualifications: it is rate-limited and scoped to
+tracked tokens rather than a firehose, so it is not the unconstrained T3 the
+table imagined; and it needs an approval that does not yet exist. But
+"structurally closed" and "pending approval and a rate budget" are very different
+statuses, and code written under the first assumption would be wrong.
+
+**11.3 — The Kalshi fee schedule: three tracks marked it secondary; it is now
+primary-verified, and the correction changes a conclusion's reasoning.**
+`QDK-001-clob-microstructure-execution.md` §10.3 S3 and
+`QDK-001-risk-and-sizing.md` §11.4 both flag the fee formula as INFERRED from
+secondary sources, and the prediction-market track lists confirming it as an open
+question. The primary schedule (effective 2026-07-07, verified this session)
+confirms the taker coefficient and the 1.75¢ peak — **and shows the maker
+multiplier `M` defaults to 0**, i.e. maker fees are typically zero, not 25% of
+taker.
+
+**Consequence:** every maker/taker threshold computed from a 0.44¢ maker fee is
+wrong in the maker's favour, and the sentence "fees make maker uneconomic" is
+false. §3.4 restates the taker-only recommendation on its correct basis — adverse
+selection and unobservable queue position — and the round-trip *maker* fee hurdle
+of 0.875¢ used in the microstructure-is-not-alpha comparison should be read as
+**zero**, which makes the taker comparison (0.70¢ versus 3.50¢) the load-bearing
+one.
+
+**11.4 — Kelly's role: the two tracks say different things and both are right.**
+The risk track concludes Kelly is a **ceiling, not the allocator**; the
+prediction-market track concludes proper betting is the **allocator** and Kelly
+is the **scale**. These are not in conflict — they are two axes, and the
+candidate space is a grid `(allocator × scale × gate)` rather than a flat list.
+§7.1 composes them. Note the corollary the prediction track supplies: for a
+binary market, the Brier-rule proper bet and the naive raw-margin rule are the
+**same allocator**, differing only by a factor of 2, so two of the brief's
+"competing candidates" are one candidate.
+
+**11.5 — Conservative Kelly: the most attractive sizing rule and the least ready
+to ship.** The prediction-market track calls it "the most promising candidate in
+the whole set"; the same track then shows the only measured dispersion proxy is a
+no-op (791/791 folds) and the risk track shows a self-reported posterior width is
+**unfalsifiable from outcome data**. Not a contradiction, but the enthusiasm
+ordering differs enough to mislead a reader who reads one section. §6.1 resolves
+it: `p_conservative` is **typed-absent** unless a measured dispersion exists, and
+building the dispersion is prerequisite research, not a detail of the sizing rule.
+
+**11.6 — Backtesting admissibility versus the allocator bake-off.** The
+evaluation track rules historical backtesting inadmissible for confirmation
+whenever the decision function contains an LLM. The prediction-market track
+designs a bake-off across allocators on a shared forecast stream. **These are
+compatible if and only if the distinction is made explicit:** with the forecast
+stream *frozen*, an allocator's decision function contains no LLM, so a
+retrospective allocator comparison over prospectively-generated forecasts is
+admissible where LLM-forecast backtesting is not. **But it multiplies looks**, so
+every arm enters `search_history` and the multiplicity family. This nuance is
+absent from both tracks and needs to be stated before anyone runs the grid.
+
+**11.7 — Sample size: the headline number is for the wrong claim if quoted
+loosely.** The risk track's 30,000–75,000 is the **P&L** requirement; the
+prediction track says `ΔS` is much cheaper and the risk track separately says
+calibration is ~15× cheaper in sample. Quoting the headline as the gate for the
+edge measurement would be a category error, and §8's C1 is the correction.
+
+**11.8 — The enrolment ceiling: 41.4% versus 59.8%.** The route-observation
+milestone measures 41.4% enrollable over one 25h window (n=411); a larger
+7,447-birth sample gives 59.8% NULL, i.e. ~40% enrollable. The evaluation track
+already flags this. **Use "roughly 40%" as the durable claim** and 41.4% as one
+window's reading, and note the source document flags its own stability as
+UNMEASURED.
+
+**11.9 — MEV: the tracks agree on the verdict and disagree on the emphasis.**
+The ground-truth track establishes that population-level extraction is observable
+as a lower bound; the AMM track establishes that MEV is **not the dominant
+adverse-selection channel** — structural liquidity decay is, at −22% of notional
+on a $500 round trip at the measured median, with the token's price unchanged.
+Both hold. The practical ordering is the AMM track's: *the domain's folklore is
+systematically biased toward the two things that are least accessible — sniping
+and MEV — and away from the two that are most measurable — decay and
+concentration.*
+
+**11.10 — Two claims that are secondary-sourced and were used anyway, flagged
+here so they are not inherited as fact.** The public-endpoint transaction-history
+retention figure commonly repeated as "3–4 days" is **not adopted as a number**
+by the ground-truth track and is not adopted here — retention is an operator
+configuration, not a protocol guarantee. And three Solana program IDs (PumpSwap,
+Orca Whirlpool, Meteora DLMM) are secondary-sourced; they are **not a blocker**,
+precisely because the balance-delta detector does not depend on them — they are
+labels applied after detection.
+
 
 ## 12. Open questions and decisions needed before any build
 
-*(section pending)*
+### 12.1 Decisions that need Eric, in priority order
+
+| # | decision | tier | why it blocks |
+|---|---|---|---|
+| **Q1** | **Lane ranking.** §10 recommends Kalshi first for the edge question with the Solana approval clock started immediately. The memory index currently ranks Solana #1 on dependency grounds. These conflict and the conflict should be resolved explicitly rather than drift. | 2 | sets Phase-0 emphasis |
+| **Q2** | **Approve the read-only Solana realized-fill collector's milestone, and the `BANNED_IDENTIFIER_FRAGMENTS` decision it needs.** No code, no call — an approval to *write* the milestone and take the naming decision. | **3 — dual confirm** | it is the only rung where waiting destroys data |
+| **Q3** | **Accept that enabling the `canon_digests` comparison will immediately fail a live registered experiment.** The drift is real and 8 days old. It must be a declared amendment with a recorded reason, not a silent re-pin. | 2 | blocks trusting any confirmatory verdict |
+| **Q4** | **Amend the frozen Solana notional ladder to V3, dropping N4 $500** (§3.5), *before* any quote is evaluated. | 2 | the ladder is a preregistration; a quiet drop would void it |
+| **Q5** | **Should `trade` be in the default Kalshi collector subscription?** Without it there is no signed trade imbalance, no effective or realised spread, no price impact, no markout, no sweep detection. It is already allowlisted and already entitled, so this is configuration, not a boundary change — but it changes archive volume against unmeasured rotation constants. | 2 | most of blocks K-C and K-D are unpopulated without it |
+| **Q6** | **Where does `time_to_close` come from?** For an expiring contract it is arguably the most important conditioning variable, and it is not on the websocket. A one-shot read-only REST metadata fetch is inside the capability boundary but outside the collector milestone's stated non-goals. **Do not add a REST loop silently.** | 2 | a whole conditioning dimension |
+| **Q7** | **Is `min_liquidity_usd = 5000` intended to exclude 62% of the observed population?** A threshold most of the population fails is selecting a different population, not discriminating within one. | 1 | changes the AMM denominator |
+
+### 12.2 Open questions this document could not close
+
+1. **Is the AMM residual actually size-independent?** The entire rescue of the
+   selection-bias problem (§5.5) rests on it, and it is testable only once a
+   corpus exists. **If it is not, the corpus calibrates far less than claimed.**
+2. **What is the real `size/TVL` support in observed swaps?** If p5–p95 spans 20×
+   or more the selection bias is mild; if it spans 4× or less the residual
+   reframe is mandatory rather than advisable. One histogram on the first sample.
+3. **What fraction of our own tokens trade on venues where the pre-trade state is
+   fully recoverable?** §5.3 assumes the alignment between "where memecoins trade
+   in their first hours" and "where the constant-product derivation works". It
+   should be measured — one `GROUP BY dex_id` — not assumed.
+4. **What is the retrospective `q` join coverage?** P0.0. Possibly the single
+   highest-value unanswered question in the document.
+5. **What is our effective N** — the count of *distinct resolved events*, not
+   records? Event clustering has been measured elsewhere at roughly **50× the
+   naive Fisher errors**, so this is the real sample size and it is unknown.
+6. **What are the empirically correct purge and embargo lengths?** §9.6's values
+   are reasoned from cluster structure, not measured from an autocorrelation
+   decay. Answerable from data we already have.
+7. **What is `L_ρ` on Kalshi at our size?** Every offline result in the
+   proper-betting literature assumes it is zero, and the theory says the
+   divergence rent and `L_ρ` cancel exactly in the idealized case. It is the whole
+   backtest-to-live gap and it is unmeasured.
+8. **How do we calibrate a belief *spread*?** It blocks conservative Kelly, and
+   inter-trial variance is demonstrably not it.
+9. **What is the production Kalshi event rate?** Every sample-size judgement in
+   the CLOB engine is conditioned on a number measured exactly once, at 4 records
+   in ~2 minutes on DEMO.
+10. **Does the public Solana endpoint tolerate sustained ~1 req/s from one IP?**
+    The documented limit says yes; "subject to abuse" and "may change without
+    prior notice" say measure it.
+11. **How is a multiplicity `family_id` scoped in practice?** "Same population,
+    one epoch" is a definition, not a procedure. Two experiments over baseball a
+    month apart — one family or two? Too narrow reintroduces uncorrected
+    multiplicity; too broad makes every experiment unpowered.
+12. **Is the ~40% Solana enrolment exclusion stable, and what is its
+    composition?** One window, one provider. If it is provider-specific, a second
+    provider changes the ceiling and every Solana denominator with it.
+13. **Does the Kalshi venue coalesce multiple order events into one delta?** It
+    determines whether `order_arrival_intensity` is a count or an undercount.
+14. **What is the clock-offset bound?** Currently NOT MEASURED, biasing
+    `data_age_us` by an unknown sign.
+
+### 12.3 What this document explicitly does not do
+
+It designs no production code, proposes no order placement, and enables nothing.
+It does not produce a forecast. It does not propose a strategy — §3.4's
+comparison is the reason: the best-case documented microstructure edge does not
+cover the venue's round-trip fee, so the honest output of that track is an
+**execution-quality layer** for positions taken on forecast grounds, not a
+signal. It authorizes no milestone, opens no gate, and satisfies none of
+`ADR-004`'s sequencing conditions, which remain unchanged.
+
+And it should be said out loud rather than discovered: **this protocol makes
+research slower and some hypotheses unaskable.** That is the intended trade. A
+sufficiently short-lived opportunity cannot be validated this way, and the honest
+response to such an opportunity is to decline it rather than lower the bar.
+
 
 ## 13. Evidence ledger
 
-*(section pending)*
+Four tiers, and the tier is stated wherever a number is used.
+
+- **VERIFIED (this session)** — read directly out of this repository or a primary
+  source during the writing of this document, with the location given.
+- **VERIFIED (research track)** — verified in one of the six QDK-001 tracks
+  against a primary source that track fetched and read.
+- **SUPPLIED** — measured elsewhere and handed to this document. Not verified by
+  its author.
+- **SECONDARY / INFERRED** — plausible, commonly asserted, or derived. Not
+  confirmed against a primary source. **Do not build on these without checking.**
+
+### 13.1 VERIFIED in this session, against this repository
+
+| claim | location |
+|---|---|
+| `MarketForecastRecord` has **no** contemporaneous market-price column | `app/models.py:214`, full column list read |
+| `forecast_reliability.py` computes `brier_skill_vs_base_rate` and **contains no market baseline** | `app/services/forecast_reliability.py:234`, plus 360, 393, 449, 464 |
+| `canon_digests` is **written and never compared** | written at `app/services/experiment_registry.py:500` over `CANON_FILES = ("docs/PROJECT_CANON.md", "docs/SAFETY_BOUNDARIES.md")`; `_evaluation_code_drift` at `:802` reads only `refs.get("evaluation_code_digests")` |
+| `_evaluation_code_drift` resolves against `Path.cwd()` and `status()` calls it with no `repo_root` | `experiment_registry.py:802`, `:843` |
+| `MarketPriceTickBucket` carries `open_bid`, `close_bid`, `open_ask`, `close_ask`, OHLC mid, `spread_avg`, `domain`, `tick_count`, in 300s buckets keyed `(market_ticker, bucket_start, bucket_seconds)` | `app/models.py:319` |
+| `MarketPriceTick` carries `yes_bid`, `yes_ask`, `midpoint`, `spread`, indexed on `(market_ticker, observed_at)` | `app/models.py:295` |
+| The forbidden-capability table, and the two amendments' exact wording | `docs/SAFETY_BOUNDARIES.md` |
+| `SOLANA-ROUTE-OBSERVATION-001` is PLAN ONLY, ACCEPTED, NOT BUILT, at CP-0 | that document's status block and §9 |
+| `KALSHI-LIVE-TAPE-COLLECTOR-001` is DESIGN ONLY; the only `Transport` implementation is `FixtureTransport` | that document's status block and §1 |
+
+### 13.2 VERIFIED in this session, against a primary external source
+
+| claim | note |
+|---|---|
+| Kalshi taker fee `round up(M × 0.07 × C × P × (1−P))`, peak **1.75¢** at P = 0.50; **maker `M` defaults to 0** | Kalshi primary fee schedule, effective 2026-07-07. **Supersedes** the secondary-sourcing caveats in `QDK-001-clob-microstructure-execution.md` §10.3 S3 and `QDK-001-risk-and-sizing.md` §11.4 |
+| AMM vault balances are present in a swap's `preTokenBalances`; pool vault deltas and trader deltas conserve to the base unit; realized price computes directly | two real mainnet swaps on our own cohort-8 token. **SUPPLIED to this document** — the writing agent made no RPC call. Supersedes checks C1/C2 of `QDK-001-solana-ground-truth.md` §13 |
+
+### 13.3 SUPPLIED — measured elsewhere, not verified here
+
+| claim | source of the measurement |
+|---|---|
+| **PAIRED = 0** — market-anchored `template_baseline` rows pair with zero source-backed forecasts | supplied this session |
+| `SAFETY_BOUNDARIES.md` pinned `d6c38783…`, current `c5cb2936…`, drifted 8 days undetected | supplied; the *mechanism* is verified in §13.1 |
+| Cohort-8 observation-time liquidity distribution (n=42): p25 $1,936, p50 $2,860, p75 $11,578, p95 $67,119 | `SOLANA-ROUTE-OBSERVATION-001` §4.2, itself supplied to that document |
+| Birth-to-horizon liquidity decay 4.75× at the median; IQR ratio 2.16× → 5.98× | same, §14.1 M12 |
+| 411 births / 25h, 170 (41.4%) enrollable; 59.8% NULL over 7,447 births | same §14.1 M13; the larger figure from the query-plan document |
+| 12,945 forecasts scored, coverage 100%, baseball skill +0.2286 (n=7,983), soccer +0.2434, tennis negative — **all against the base rate** | `docs/OUTCOME_SYNC_POST_DRAIN_BASELINE_2026_08.md` |
+| All six EDGE-SELECTION-001 candidates inverted out of sample; `spread_only` control best of eight | `docs/EDGE_SELECTION_RETIREMENT_2026_07_10.md` |
+| `cohorts_positive_after_costs: NONE` | COST-MODEL-001 |
+| MVP-005A gate crossed on paired n = 36 | `docs/SAFETY_BOUNDARIES.md`, EV-calculation row |
+| 410.7 baseball arrivals/day; tennis 1.2/day; soccer 0.0/day | registry 002C feasibility measurement |
+| 24h Solana observation coverage 4.6%; median last tick ~83 min after birth | `crypto_sparse_observation` module docstring and CRYPTO-COVERAGE-REPAIR-002 |
+| Only measured Kalshi rate: 4 records in ~2 minutes on DEMO | `segment.py`, demo validation |
+
+### 13.4 Derived in a research track — arithmetic, reproducible, not a measurement
+
+`g(f*) = KL(p‖q)`; 2× Kelly is exactly zero growth; the `1/(1−q)²` estimation
+penalty; `λ = ½` giving 74.9% of growth at 50% of volatility; full Kelly's median
+peak drawdown of 89.4%; one-period Bayesian Kelly equalling Kelly at the
+posterior mean; `VaR = CVaR = f` for a single binary; `K_eff ≤ 1/ρ`; per-trade
+Sharpe `(p−q)/sqrt(p(1−p))`; `n = 15,451` and its corrections; MDE 20.7pp at
+n = 36; `τ = 2·notional/L`; the entry-cost, round-trip, capacity, and
+mark-to-market tables of §3.5 and §7.3; the 14.6958× bonding-curve ceiling; the
+fee/edge comparisons of §3.4.
+
+**These are properties of models, not measurements of markets.** Every one of
+them is exact arithmetic given its inputs, and every one of them inherits the
+tier of its inputs.
+
+### 13.5 SECONDARY or INFERRED — do not inherit as fact
+
+| claim | status |
+|---|---|
+| Public Solana endpoint transaction-history retention ("3–4 days") | **not adopted as a number** by the research track or by this document. Retention is an operator configuration, not a protocol guarantee |
+| PumpSwap, Orca Whirlpool, Meteora DLMM program IDs | secondary only. **Not a blocker** — the balance-delta detector does not depend on them |
+| Solana RPC custom error codes (`-32001`, `-32004`, `-32007`, `-32009`) | read from a secondary rendering |
+| 2,000–5,000 usable Solana swap records/day | **INFERRED**, dominated by an unmeasured swaps-per-signature yield |
+| Kalshi `trade` and `market_lifecycle_v2` payload shapes | INFERRED from a third-party mirror; **UNVERIFIED on our own wire** — the demo capture was 4 records and contained no trade print |
+| Kalshi adverse selection ≈ 0.5–1 tick per side | **INFERRED** from a volatility-scaled port of a Binance measurement. A measurement task, not a result |
+| `DEFF = 2.2` (m = 5, ρ = 0.3) and `k = 20` hypotheses | illustrative design values. **Every sample size in §9.4 scales linearly with the first**, which is why P0.4 measures it |
+| ~95% abstention rate | inferred from the cost wedge exceeding most edges. Measurable before any trade — P0.6 |
+| `α ∈ [0.10, 0.25]`, `β̂ ∈ [0.85, 1.15]`, n ≥ 500 per regime cell | judgment, anchored to a simulated CI table |
+| Purge/embargo lengths of 24h / 7d / 48h | reasoned from cluster structure, **not measured** from an autocorrelation decay |
+| Solana priority-score formula; prio-graph look-ahead depth | **UNVERIFIED** — the authoritative write-up was unreachable. And the prio-graph scheduler is now the deprecated path |
+| pump.fun "graduates at ~$69,000 market cap" | **FAILED VERIFICATION.** The invariant is 85.00536 SOL, token-denominated and exact |
+| pump.fun trading fee of 1% | **STALE.** 1% is the legacy fallback used only when the fee-config account is absent; the current bonding-curve total is **1.25%** |
+| "Solana transaction ordering is deterministic FIFO" | **FALSE.** Priority-ordered greedy scheduling under account-lock-aware deferral |
+| "No public mempool, therefore no sandwiching on Solana" | **FALSE, and measured to be false** — 521,903 instances costing >$7.7M over four months, via private orderflow into bundles |
+
+### 13.6 The standing rule this document inherits
+
+Two of the three arXiv citations handed to the prediction-market track were
+materially mis-paraphrased in ways that would have propagated into design: an
+update equation that was the cited paper's **rejected** branch, and a full set of
+calibration figures from **v1** of a paper whose **v2** changed all of them.
+
+> **A citation is not usable until someone has read the equation.** That is the
+> standing rule, not a one-off.
+
+The same applies inside this document: every number above traces to a tier, and a
+number whose tier is SECONDARY or INFERRED may inform a design and may not
+support a claim.
+
