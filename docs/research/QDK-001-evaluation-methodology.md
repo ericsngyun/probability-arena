@@ -1271,16 +1271,193 @@ vulnerability, and why replication is non-negotiable rather than a nice-to-have.
 
 ## §12. Structural fix table: failure mode to mechanism
 
-*(to be filled)*
+The test for each row is: **could the failure recur if a competent, well-intentioned
+operator simply forgot to be careful?** If yes, the fix is not structural and does not
+count.
+
+| # | Failure | Structural mechanism | Enforced by | § |
+|---|---|---|---|---|
+| **F1** | Selection on evaluation data; ~39+ variants over one window | `search_history` is a required typed field and enters the multiplicity family size `m` | Evaluator computes the correction from the record | §9.2, §11.2 |
+| **F2** | No alpha, no interval, no correction | Confirmatory decisions operate on a **Holm-adjusted cluster-bootstrap interval**; point-vs-threshold comparison is not a decision rule | Evaluator | §11.3 |
+| **F3** | n≥75 declared, primary locked at n=26; per-arm n never recorded | Evaluator computes total **and per-arm** n; below floor → `inconclusive_sample_floor`, `supports_hypothesis` unreachable | Evaluator | §10.4(1) |
+| **F4** | Control derived from in-sample worst cohort; anomaly clause wired as OR | `control_spec.derived_from_in_sample_ranking` is a validated constant `false`, rejected at registration; `anomaly_conditions` combined as a **conjunction**, each reported separately | Registration + evaluator | §9.2, §10.4(6) |
+| **F5** | Costs bolted on after locking; every cohort `cost_killed` | `cost_model` is required at registration (**registration refused without it**); P1 runs a cost-first kill; net computed before gross; κ gate | Registration + evaluator | §5.2, §7, §9.2 |
+| **F6** | Unbounded ratio metric, mislabelled `_pct`, reported as a bare mean | `primary_metric` must declare unit, aggregation, and `bounded: true`; unbounded ratios inadmissible as primary; interval mandatory | Registration + evaluator | §5.5, §9.2 |
+| **F7** | Markets that stopped quoting silently left the denominator | **Disposition ledger must sum to the enrolled count**; evaluator refuses an unbalanced result | Evaluator | §8.3, §10.4(2) |
+| **F8** | 903 alphabetically-selected forecasts presented as a population | Composition drift computed against the registered universe across `stratification_fields`; material drift **blocks** a favourable verdict; degenerate strata `inconclusive` | Evaluator | §8.4, §10.4(3) |
+| **F9** | Decision taken 5 days early, on an undeclared window, unlogged | Evaluator determines stopping satisfaction from the clock; out-of-window evaluation stamped a deviation **in both directions**; evaluation refused from non-matured states | Evaluator | §5.6, §10.3(D1), §10.4(5) |
+| **—** | *Paraphrase bypass (the meta-failure)* | **Operative-Field Invariant**: read fields typed and closed, prose fields provably unread by AST test, required-but-unread fields forbidden | Registration + AST test | §9.1 |
+
+Two honest notes on this table. First, F1's fix is the weakest of the nine, because it
+depends on an author truthfully declaring a prior search — see §14. Second, several rows
+require deploying instruments that already exist but were branch-only during the failures
+they would have caught; deploying them is a **precondition** of this protocol, not an
+enhancement.
+
+---
 
 ## §13. What evidence would justify real capital
 
-*(to be filled)*
+**This section states an evidence bar. It does not open a gate, and satisfying every item
+below authorizes nothing.** Real fills, orders, positions, and capital remain forbidden
+with no implementation surface, dollar EV remains forbidden with no unlocking milestone
+defined, and `ADR-004`'s sequencing (calibration → accepted EV design → accepted paper
+trading) is unchanged. Crossing any of those requires its own separately reviewed
+milestone and Eric's explicit decision. What follows is what such a proposal would need to
+carry to be worth reading.
+
+### 13.1 Prerequisites (necessary, nowhere near sufficient)
+
+1. `ADR-004`'s chain satisfied on its own terms: a challenger forecaster demonstrably
+   beating the baseline on resolved outcomes over a meaningful sample, then an explicitly
+   accepted EV design, then explicitly accepted paper trading.
+2. The §10.3 defects D1–D10 closed, with D2 (undetected canon drift) and D1 (evaluation
+   from non-matured states) closed *first* — a registry that can be evaluated before
+   maturation cannot certify anything.
+3. The representativeness instruments deployed, not branch-only.
+
+### 13.2 The evidential bar
+
+| # | Requirement | Threshold |
+|---|---|---|
+| E1 | **Two independent prospective confirmations** | Separately registered, non-overlapping populations, both terminal-verdict supporting (§5.7) |
+| E2 | **Net, not gross** | `net_conservative` positive — every bounded cost term charged at its declared adverse bound (§7.3) |
+| E3 | **Cost robustness** | κ ≥ 2 on both confirmations (§7.4) |
+| E4 | **Multiplicity-corrected** | Holm-adjusted interval excludes zero in the predicted direction, with `m` declared including search history (§11) |
+| E5 | **Floors met** | Total and per-arm sample floors met without amendment; `minimum_detectable_effect` < observed effect |
+| E6 | **Representative** | No material composition drift; no degenerate stratum contributing to the headline (§8.4) |
+| E7 | **Denominator honest** | Every rate stated against the real enrollment ceiling; disposition ledger balanced (§8.2–8.3) |
+| E8 | **Calibrated on the traded population** | Calibration demonstrated on the *subpopulation actually traded*, not the overall sample. Our overall Brier is ~85% baseball; a strategy trading something else is uncalibrated regardless of the aggregate |
+| E9 | **Prospective modeled P&L** | A sustained `PAPER_SIMULATION` record over ≥ one full replication window, every artifact carrying its model identifier and modeled-vs-observed basis |
+| E10 | **Operational integrity** | No unexplained data gaps, no chain-integrity failures, no unlogged protocol deviations across the entire evidence period |
+| E11 | **Pre-registered stop** | A drawdown stop, a kill switch, and a maximum size registered **before** any capital, with the same commitment machinery as a hypothesis |
+
+### 13.3 The fill-model problem, and what the first capital is actually for
+
+There is one requirement the list above cannot satisfy, and pretending otherwise would
+reproduce F5 at a larger scale. Our own route-observation design states it without hedging:
+
+> "**This milestone therefore has no ground truth to validate against and cannot acquire
+> one within its boundary.** That is a permanent limitation of the result, not a gap more
+> work will close." … "**Any `PaperFill` this project ever writes is a MODEL OUTPUT, never
+> a measurement.**"
+
+Realized slippage is not observable prospectively. Landing probability, slot delay, and
+MEV extraction are not observable without submitting a transaction. Priority fees are not
+merely unmeasured — fetching them is *forbidden*. So E9's modeled P&L, however long it
+runs, is a model scored against a model. **No amount of paper trading closes the fill-model
+gap. The only instrument that measures a fill is a fill.**
+
+The correct conclusion is not "trade anyway and hope", and it is not "never trade". It is
+that the first real capital, if it is ever authorized, should be **framed as a measurement
+rather than as a bet**:
+
+> **The first deployment is an experiment whose primary metric is fill-model error, not
+> P&L, pre-registered under this protocol like any other, at a size where the total loss of
+> the capital is operationally irrelevant and is budgeted as the cost of the measurement.**
+
+Its success criterion is that realized execution falls within the declared adverse bounds
+of the registered cost model — i.e. that κ computed from *realized* costs is consistent
+with κ computed from modeled ones. Only after the fill model has been validated against
+real fills does a P&L-primary deployment become a coherent thing to propose.
+
+This ordering matters because it is the one place where the Asymmetry Rule reverses. For
+*skill*, contamination inflates and so a positive backtest proves nothing. For *costs*,
+every unmeasured term is charged adversely and so the modeled cost is a conservative upper
+bound — which means the fill-model experiment can only bring good news or a corrected
+model, and never a hidden loss of the kind that killed the EDGE candidates.
+
+---
 
 ## §14. Known limitations of this protocol
 
-*(to be filled)*
+Stated plainly, in descending order of severity. A protocol that does not enumerate its
+own failure modes is asking to become F9.
+
+1. **Undeclared prior search is undetectable.** This is the most serious residual
+   vulnerability. `search_history` is self-reported. An author who ran 40 variants and
+   declares 1 defeats §11 entirely, and no mechanism in this document catches it. The only
+   real mitigations are cultural (search under the registry, not beside it) and structural
+   (§5.7 replication, which is robust to it). **Treat this as the protocol's known hole,
+   not as a solved problem.**
+
+2. **The commitment binds the honest.** Tamper-evident, not tamper-proof: an actor with
+   write access can rewrite the manifest and the chain. The defense is that "the evidence
+   lands in a git diff", which works against carelessness and self-deception — the actual
+   threat model — and not against a determined party. Adding external timestamping (§9.3)
+   narrows but does not close this.
+
+3. **The fill model has no ground truth and structurally cannot get one** within the safety
+   boundary (§13.3). Every net number in this protocol is conservative-by-construction
+   rather than validated.
+
+4. **The 58.6% enrollment exclusion is characterized but not corrected.** We can state the
+   ceiling; we cannot say what those births would have done. Its stability is UNMEASURED
+   beyond a single 25h window from a single provider. Any Solana claim inherits this as a
+   declared limitation.
+
+5. **Solana 24h experiments are currently not evaluable at all** (4.6% coverage). This
+   protocol's response is to refuse registration at P0 rather than to run and report. That
+   is correct but it is a refusal, not a solution — the observation gap is a separate
+   problem this document does not solve.
+
+6. **Purge and embargo lengths are reasoned, not measured.** The 24h/7d/48h values in §6.2
+   are justified by cluster structure (slates, launch cohorts) rather than by a measured
+   autocorrelation decay. They should be re-derived empirically once enough clean
+   prospective data exists. §15 carries this as an open question.
+
+7. **Holm assumes the tests are the tests you declared.** Every correction regime is only
+   as good as `m`, which returns to limitation 1.
+
+8. **This protocol makes research slower and some hypotheses unaskable.** That is the
+   intended trade, not an oversight. But it should be said out loud: a sufficiently
+   short-lived opportunity cannot be validated this way, and the honest response to such an
+   opportunity is to decline it rather than to lower the bar. `ADR-004` already says the
+   quiet part: "**If challengers never beat the baseline, the correct outcome is improving
+   models — not lowering the gate.**"
+
+9. **Nothing here has been implemented or tested.** This is a design document. The
+   mechanisms in §10.4 are specified, not built, and specifications have a poor record
+   against reality in this repo — the 002B review found five live routes to a favourable
+   verdict in a design that had already been reviewed.
+
+---
 
 ## §15. Open questions
 
-*(to be filled)*
+1. **Measured autocorrelation decay.** What are the empirically correct purge and embargo
+   lengths for each lane? §6.2's values are conservative reasoning from cluster structure.
+   This is answerable from data we already have, and it is the highest-value follow-up.
+
+2. **Is the 58.6% exclusion stable, and what is its composition?** One window, one
+   provider. If it is provider-specific, a second provider changes the enrollment ceiling
+   and every Solana denominator with it.
+
+3. **What closes the crypto observation gap?** 4.6% coverage at 24h makes the entire long-
+   horizon crypto lane unevaluable. Until that changes, §5.1 will keep refusing these
+   experiments — correctly, and unhelpfully.
+
+4. **External timestamping: which anchor?** RFC-3161, OpenTimestamps, or a public
+   append-only log. Each has different operational cost and different failure modes for an
+   offline EVO host.
+
+5. **Should `experiment_version` supersession be built or removed?** It is required,
+   validated for presence, and enforced by nothing. Under §9.1's own invariant, it is
+   currently forbidden — so it must be implemented or deleted.
+
+6. **Does the Asymmetry Rule need an exception for negative-result publication bias?** If
+   backtests may only kill, we will accumulate refutations and few confirmations, and the
+   temptation will be to weaken P1 until something survives. A pre-declared kill rate worth
+   monitoring: if P1 kills nothing, P1 is not working.
+
+7. **How is `family_id` scoped in practice?** "Same population, one epoch" is a definition,
+   not a procedure. Two experiments over baseball forecasts a month apart — one family or
+   two? Scoping too narrowly reintroduces uncorrected multiplicity; too broadly makes
+   every experiment unpowered.
+
+8. **Which lane goes first?** The memory index ranks the Solana paper-P&L milestone highest
+   on dependency grounds, but §8.3 shows Solana is the lane where this protocol most often
+   returns "not evaluable". Kalshi/forecasting has the arrival rate (410.7/day baseball),
+   the deployed calibration instruments, and a registered live experiment. The evaluation
+   protocol's own logic points at the forecasting lane first — which contradicts the
+   current roadmap ranking and deserves an explicit decision rather than a drift.
