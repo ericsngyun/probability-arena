@@ -525,8 +525,23 @@ class TestKeyMaterialStaysInAuth:
             assert banned not in emitters, banned
 
     def test_32_the_collector_stays_inside_the_reviewed_dependency_direction(self):
-        """Section 6.1: strictly downward. The credential lane may reach config,
-        auth and the allowlists — and nothing else in `app/`."""
+        """Section 6.1: strictly downward, and NOTHING existing imports the new.
+
+        AMENDED AT CP3, and deliberately widened by exactly the modules section
+        6.1's diagram already draws — the archive it appends to (and the head
+        module that owns the uninitialized-root HALT), the book/envelope it
+        normalizes with, the canonical clock format, the fixed-point parsers,
+        and the transport's typed error. The list is still
+        an equality, not a subset, so the amendment cannot be re-used to admit a
+        seventh module quietly.
+
+        It is net-STRONGER than the CP2 form in two ways: the banned list now
+        also names the database and service layers (section 3: the collector
+        opens no SQLite session and touches no MarketOps path), and the
+        anti-vacuity assertions below require the permitted modules to actually
+        be imported — so a collector that had been gutted, or a parse that
+        silently produced nothing, fails here instead of passing.
+        """
         mods = set()
         for node in ast.walk(COLLECTOR_SRC):
             if isinstance(node, ast.Import):
@@ -534,8 +549,19 @@ class TestKeyMaterialStaysInAuth:
             elif isinstance(node, ast.ImportFrom) and node.module:
                 mods.add(node.module)
         app_mods = {m for m in mods if m.startswith("app.")}
-        assert app_mods == {"app.config", "app.realtime.auth",
-                            "app.realtime.kalshi"}, app_mods
+        assert app_mods == {"app.config", "app.realtime.archive",
+                            "app.realtime.archive_head", "app.realtime.auth",
+                            "app.realtime.book", "app.realtime.canonical",
+                            "app.realtime.fixedpoint", "app.realtime.kalshi",
+                            "app.realtime.ws_transport"}, app_mods
+        # Anti-vacuity: the permitted things must EXIST. An empty or unparsed
+        # module would satisfy every ban below without satisfying anything else.
+        assert "app.realtime.auth" in app_mods
+        assert "app.realtime.archive" in app_mods
+        assert len([n for n in ast.walk(COLLECTOR_SRC)
+                    if isinstance(n, ast.FunctionDef)]) > 5
         for banned in ("solana", "solders", "web3", "eth_account", "websockets",
-                       "requests", "httpx", "aiohttp"):
+                       "requests", "httpx", "aiohttp", "sqlalchemy",
+                       "app.db", "app.models", "app.services", "app.crud",
+                       "app.telemetry"):
             assert not any(m.startswith(banned) for m in mods), banned
