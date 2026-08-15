@@ -89,7 +89,108 @@ remains a separate, separately-accepted milestone.
 
 ## 4. Capability boundary
 
-TBD
+### The governing text, quoted
+
+`docs/SAFETY_BOUNDARIES.md:21-30` (Amendment KALSHI-READONLY-AUTH-001):
+
+> **Permitted, narrowly:** RSA private-key loading solely to sign authenticated
+> **read-scoped Kalshi market-data** requests under capability mode
+> `OBSERVE_ONLY`.
+>
+> **Still forbidden, with no implementation surface:** wallets; custody; key
+> generation; transaction signing; order signing; blockchain signing; order
+> creation, cancellation or amendment; API-key creation, rotation or deletion;
+> write-scoped credentials; and any general-purpose `sign(method, path)` API.
+
+`docs/SAFETY_BOUNDARIES.md:233` (Always true, phase-independent):
+
+> All external interaction is read-only (GETs); Kalshi credentials are not required and
+> not stored; the optional WS client sends channel subscriptions only.
+
+`docs/SAFETY_BOUNDARIES.md:65` (the exact signable input the amendment opened):
+
+> signable input | `timestamp_ms + "GET" + "/trade-api/ws/v2"`. There is no method
+> parameter and no path parameter on the public surface
+
+`docs/SAFETY_BOUNDARIES.md:72-74`:
+
+> `ENABLE_*` flags do not gate this: nothing runs it. No timer, no service, no
+> daemon and no MarketOps hook exists for the observer, and installing one is a
+> separate approved milestone (KALSHI-REALTIME-OBSERVATION-001B).
+
+This milestone **runs it, manually and boundedly**. It does not install a timer, a
+service, a daemon, or a MarketOps hook — that half of the sentence stays true and 001B
+stays required.
+
+### Channels: in scope and banned
+
+The allowlist and the banlist are already CODE, not prose — `app/realtime/kalshi.py:99-107`:
+
+    ALLOWED_CHANNELS  = ("orderbook_delta", "ticker", "trade", "market_lifecycle_v2")
+    FORBIDDEN_CHANNELS = ("fill", "market_positions", "user_orders", "communications",
+                          "order_group_updates")
+
+**In scope for this milestone:** `orderbook_delta`, `ticker`, `trade`, `market_lifecycle_v2`
+— all four are market data broadcast to any read-scoped subscriber; none is
+account-scoped. The default subscription SHOULD be `orderbook_delta` + `ticker` only
+(see Q3); `trade` and `market_lifecycle_v2` require an explicit `--channels` argument.
+
+**Banned:** every channel in `FORBIDDEN_CHANNELS` — the private/authenticated-user
+streams — plus every channel not in `ALLOWED_CHANNELS`, including any channel a future
+venue release adds. The allowlist is closed, so a new private channel is refused by
+default rather than after someone remembers to ban it.
+
+### Why misconfiguration cannot reach a private channel
+
+Four independent structural reasons, all of which already exist and none of which this
+milestone may weaken:
+
+1. **`build_subscribe` is the only way to construct a subscribe frame**
+   (`app/realtime/kalshi.py:298`), and its first act is
+   `assert_channels_allowed(channels)` (`:144`), which raises `CapabilityError` on a
+   `FORBIDDEN_CHANNELS` member and again on anything outside `ALLOWED_CHANNELS`.
+   A config string, an env var, or a CLI argument naming `fill` therefore fails at frame
+   construction, before a socket write.
+   *Design rule for the collector:* the transport's `send()` must accept ONLY dicts
+   produced by `build_subscribe` / `build_get_snapshot` / `build_unsubscribe` /
+   `build_resubscribe`. No raw-dict send path may exist.
+2. **The signer cannot sign anything else.** `AuthPurpose` is a closed two-member enum
+   (`app/realtime/kalshi.py:77-78`) mapped to constant `(method, path)` pairs at
+   `:82-85`; `route_for_purpose` refuses a non-`AuthPurpose` argument (`:88-93`). There
+   is no path parameter to misconfigure. A private channel over a DIFFERENT route is
+   unreachable because the route is not an input.
+3. **The credential is scope-verified before use and fails closed on silence.**
+   `verify_scopes` (`app/realtime/kalshi.py:190`) treats an ABSENT scopes field as a
+   HALT, rejects `list` subclasses and non-`str` members, and halts on `write`.
+   A mis-provisioned order-capable key is refused at startup, not at first order.
+4. **Only `GET` exists.** `ALLOWED_HTTP_METHODS = ("GET",)` (`:109`) and
+   `assert_method_allowed` (`:136`) gate the canonical signing string. There is no
+   POST/PUT/PATCH/DELETE code path in the package.
+
+### The one new hole this milestone must close
+
+A real transport introduces a genuinely new capability the fixture transport never had:
+**an open socket that can send arbitrary bytes.** Points 1-4 above constrain what the
+repo can CONSTRUCT; they do not constrain what a socket can WRITE. The collector must
+therefore add one structural control of its own:
+
+- `KalshiWebsocketTransport.send()` accepts a dict, asserts `cmd` is in a closed set
+  `("subscribe", "unsubscribe", "update_subscription")`, re-runs
+  `assert_channels_allowed` on any `params["channels"]` present, and refuses anything
+  else. It exposes no `send_text` / `send_bytes` / `send_raw`, and the underlying
+  `websockets` connection object is held in a closure or a private attribute that no
+  collector code reads (the same containment reasoning `auth.py` applies to the key, per
+  `docs/SAFETY_BOUNDARIES.md:70`).
+- The safety grep in `AGENTS.md` must stay clean; a new test asserts that no
+  `FORBIDDEN_CHANNELS` string is reachable from any collector configuration surface.
+
+**Reversibility tiers.** Connect + subscribe + append against **demo**: Tier 1
+(autonomous — read-only, bounded, no venue state change, evidence is append-only and a
+bad session is a discardable segment). First **production** connection: Tier 2 (single
+confirm — same read-only semantics, but production evidence and a production credential).
+Any change to `ALLOWED_CHANNELS`, `AuthPurpose`, `ALLOWED_HTTP_METHODS`, or the
+`SAFETY_BOUNDARIES` amendment: Tier 3 (dual confirm, boundary amendment required).
+Installing a systemd unit/timer: out of scope entirely — that is 001B.
 
 ## 5. Survey of what already exists
 
