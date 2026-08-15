@@ -523,6 +523,27 @@ fee-per-compute-unit) and the prio-graph look-ahead depth. The authoritative
 Anza write-up was not reachable from our environment. **Do not assert either
 without reading `transaction_priority_id.rs`.**
 
+**A dating trap worth naming, because the word "greedy" means two different
+things in two eras.** Widely-circulated secondary descriptions — e.g. Helius,
+"Each thread operates its own queue, prioritizing packets independently without
+knowledge of the packets being processed by the other threads" and "the current
+implementation of the scheduler does not guarantee that transactions with higher
+priority fees will be included in a given block" — describe the **pre-v1.18**
+multi-threaded scheduler, in which each banking thread had an *independent*
+queue and no global view. The **central scheduler** introduced in Agave v1.18
+(May 2024) uses a single scheduling thread *with* a global view. The current
+default, `CentralSchedulerGreedy` (P10, P11), is "greedy" in the sense of taking
+transactions in priority order as they become schedulable — **not** in the old
+sense of independent per-thread queues.
+
+> **Any claim about Solana ordering must be dated.** A pre-2024 description and
+> a 2026 one disagree about something as basic as whether a global priority view
+> exists. This document's §4.1 conclusion rests on reading current Agave master
+> (P10, P11) rather than on any secondary source. **We did not verify whether
+> `CentralSchedulerGreedy` is default-on in every deployed configuration in
+> 2026, nor the exact intra-slot determinism guarantee** — both should be
+> checked against current release notes before anything depends on them.
+
 ### 4.2 Concurrent swaps in the same slot are the dominant fill uncertainty
 
 **VERIFIED:** Solana's slot target is 400 ms — and this is not folklore, it is a
@@ -556,6 +577,20 @@ Two consequences that are directly load-bearing:
 > at tier **T3**. **The one thing we would most need to model fills is the one
 > thing our capability boundary excludes.** That is a clean, honest statement of
 > where the wall is.
+
+**SIMD-0525 — the 400 ms constant has a scheduled expiry.** VERIFIED
+(https://github.com/solana-foundation/solana-improvement-documents/blob/main/proposals/0525-reduce-slot-times.md),
+**status: Draft.** It proposes reducing slot time 400 ms → 200 ms in stages
+(350/300/250/200) and halving leader windows from 1.6 s to 0.8 s. Its stated
+motivation includes achieving "a smaller slot-time **quantization error**."
+
+> **Two things follow, and the second is the important one.** First, any model
+> whose parameters are fitted on a 400 ms lattice has a known expiry date, so
+> the lattice constant should be a configuration value and never a hard-coded
+> assumption. Second — **the platform's own design documents describe slot time
+> as quantization error.** That is precisely §6.2's framing, stated by the
+> people who build the scheduler. The discreteness this document treats as a
+> modelling obstacle is understood as an obstacle by Solana itself.
 
 **ALPENGLOW — VERIFIED status, and it does not change this.** The Alpenglow
 upgrade (https://solana.com/upgrades/alpenglow) targets ~150 ms finality versus
