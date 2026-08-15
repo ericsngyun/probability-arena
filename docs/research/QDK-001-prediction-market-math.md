@@ -546,7 +546,230 @@ time. **Fitting that enforcement is a prerequisite of this bake-off, not a follo
 
 ## 6. Track 5 — Conditional calibration
 
-*(to be filled)*
+### 6.1 Citation check: VERIFIED, but PIN THE VERSION
+
+- v1: https://arxiv.org/html/2602.19520v1 — 23 Feb 2026
+- v2: https://arxiv.org/html/2602.19520v2 — **04 Aug 2026, post-referee, substantially revised**
+- Nam Anh Le, "Decomposing Crowd Wisdom: Domain-Specific Calibration Dynamics in Prediction Markets"
+
+**Every headline figure in the brief is a v1 figure, and v2 changed all of them.** This is a
+live sourcing hazard, so it is recorded in full:
+
+| | v1 | v2 |
+|---|---|---|
+| Dataset | 292M trades / 327k contracts | **353M / 429k** (the brief's number) |
+| Components | four | **five** (a common size main effect κ(s) split out) |
+| Polymarket size effect | +0.113 [−0.151, +0.395], n.s. | **+0.281 [+0.026, +0.542], significant** |
+| Posterior predictive coverage | 96.3% (208/216) | 99.5% (215/216) |
+| Structural share of variance | not reported | **45.6% [31%, 62%]** |
+
+The brief's "~353M Kalshi/Polymarket trades" is v2's headline. Note it is inflated relative
+to what is analyzed: **58.7M Kalshi + 135.6M Polymarket = 194.3M trades enter the calibration
+analysis after price filtering, and every headline result is Kalshi-only (58.7M).** Polymarket
+is a replication check on 3 of 6 domains. The dataset changed between versions only because
+the Polymarket snapshot was regenerated with a larger long tail of bespoke markets.
+
+### 6.2 Does the claim hold? Yes — with a much smaller actionable core than advertised
+
+**[VERIFIED]** Calibration is *not* a universal `price = probability` map. Kalshi
+recalibration slopes by domain × time-to-resolution (b > 1 = underconfidence, prices
+compressed toward 50%; b < 1 = overconfidence):
+
+| Domain | 0–1h | 6–12h | 24–48h | 2d–1w | 1w–1mo | 1mo+ |
+|---|---|---|---|---|---|---|
+| **Politics** | 1.34 | 1.55 | 1.52 | **1.83** | **1.83** | 1.73 |
+| Sports | 1.10 | 1.01 | 1.08 | 1.04 | 1.24 | 1.74 |
+| Crypto | 0.99 | 1.01 | 1.21 | 1.12 | 1.09 | 1.36 |
+| Finance | 0.96 | 0.97 | **0.82** | 1.07 | 1.42 | 1.20 |
+| **Weather** | **0.69** | 0.87 | 0.97 | 1.20 | 1.20 | 1.37 |
+| Entertainment | 0.81 | 0.92 | 0.84 | 1.07 | 1.11 | 0.96 |
+
+The effect is real, domain-specific, horizon-dependent, and **not monotone** — Politics dips
+to 0.93 at 1–3h, Finance to 0.82 at 24–48h. The paper shows the Politics dip is a **Simpson's
+paradox** from subcategory mix (Trump Administration, 63% of trades at slope 1.08, dilutes
+Electoral College at 1.81 and Other Politics at 2.17), not a regime shift.
+
+**But now the finding that reframes everything.** The model-free reliability decomposition
+(v2 Table 6, contract-weighted):
+
+| Domain | ECE | **Reliability** | Brier |
+|---|---|---|---|
+| **Politics** | **0.117** | **0.024** | 0.119 |
+| Entertainment | 0.022 | 0.001 | 0.160 |
+| Finance | 0.016 | 0.000 | 0.156 |
+| Weather | 0.016 | 0.000 | 0.172 |
+| Sports | 0.008 | 0.000 | 0.185 |
+| Crypto | 0.007 | 0.000 | 0.174 |
+
+> **Outside Politics, every domain's reliability component rounds to 0.000–0.001. There is
+> essentially nothing to recalibrate.** The "conditional calibration" story, stripped of the
+> logit-slope framing that magnifies small deviations, is really a single-domain story:
+> **Kalshi political markets are underconfident; everything else is well calibrated.**
+
+Two further deflations from v2, both important and both absent from any summary of the paper:
+
+1. **Only ~46% of the observed slope variation is structural signal.** *"the event-clustered
+   measurement variance accounts for roughly half of the raw cell-to-cell dispersion...
+   the four structural components explain 45.6% of the total observed variance (95% CrI
+   [31%, 62%])."* The famous 87.3% is the share of *observed* variation captured, noise
+   included.
+2. **A permutation null gets R² = 0.329** (95th pct 0.406, max 0.531 over 5,000 permutations)
+   from randomly reassigning slopes across cells. A 72-parameter model on 216 points is
+   expected to explain a third of the variance from nothing at all.
+
+### 6.3 The brief's proposed table has a design error — adopt the paper's design instead
+
+The brief proposes learning
+`P(resolve YES | market price, domain, time-to-resolution, liquidity regime, price region)`.
+Two problems:
+
+1. **"market price" and "price region" are the same variable.**
+2. More substantively: **the paper has no price dimension in its cell grid at all**, and its
+   reason is the right one. The grid is domain (6) × horizon (9) × size (4) = 216 cells, and
+   within each cell **price enters as a continuous regressor in a 2-parameter logistic**:
+
+&nbsp;&nbsp;&nbsp;&nbsp;**Stage 1:** logit P(y_i = 1) = a + b · logit(p_i)&nbsp;&nbsp;(per cell, L2 with C = 10)
+&nbsp;&nbsp;&nbsp;&nbsp;**Stage 2:** θ(d,τ,s) = μ(τ) + α_d + κ(s) + β_d(τ) + γ_d(s) + ε&nbsp;&nbsp;(θ = the stage-1 slope b̂)
+&nbsp;&nbsp;&nbsp;&nbsp;**Recalibration map for consumers (v2 Eq. 18):** **p\* = σ(â + b̂ · logit p)**
+
+Binning price would require populating a histogram; the logistic fits **two parameters**.
+That is why 200 observations can suffice per cell where a binned table would need thousands.
+**Take the parametric form.** Note v2 explicitly *retracts* v1's slope-only variant
+`p^θ/(p^θ+(1−p)^θ)` as a "slope-only illustration" and insists the intercept be retained —
+intercepts are not negligible (Crypto mean |a| = 0.41, max 1.667).
+
+Sample floor, verbatim: *"excludes markets with fewer than 10 trades, requires at least 200
+trades per analysis cell."* All 216 Kalshi cells cleared it; none were dropped.
+
+### 6.4 Can our data fit this? No — and sample size is only the third-biggest reason
+
+The brief cites 17,073 forecasts / 24,500 scored records. **[UNVERIFIED locally — no database
+is present in this worktree; taken as given.]** Assessing feasibility:
+
+**Reason 1 — domain mix (fatal).** Our forecasting lanes are sports: dedicated
+`baseball_forecasting`, `tennis_forecasting`, `soccer_forecasting` services. **Sports is the
+domain the paper measures as essentially perfectly calibrated** (ECE 0.008, reliability
+0.000, slopes 0.90–1.10 out to a week). We would be fitting a recalibration table in the one
+place there is nothing to recalibrate, and would correctly recover b ≈ 1. **Infinite data
+does not fix this.** The actionable domain — Politics — is the one where our repo has no
+forecaster at all. This is a *coverage* problem, not a statistics problem, and it should be
+the headline of any feasibility answer.
+
+**Reason 2 — our forecasts are anchored to the market midpoint (structural).**
+`TemplateBaselineForecaster` in `app/services/forecasting.py:166`, by its own docstring:
+
+> Deterministic neutral prior. Anchors to the market midpoint when a two-sided quote exists
+> (public consensus as prior), otherwise 0.50. **Adds no independent information** — and says
+> so in its own skeptic notes.
+
+with `probability = round((yes_bid + yes_ask)/2/100, 4)` clipped to `[0.02, 0.98]`.
+`LLMForecaster` **falls back to this baseline on any failure** (line ~508) and is gated behind
+`ENABLE_LLM_FORECASTING`. So an unknown but likely large share of the 17,073 forecasts satisfy
+**p ≡ q**. Consequences, and they cut both ways:
+
+- **Bad for edge measurement:** where p ≡ q, the score gap ΔS is identically zero and the
+  proper-betting position **s**_G is identically zero. Those records contain *no information
+  about our forecasting skill* and must be excluded from any ΔS estimate. Any historical
+  Brier number computed over them is a measurement of the market, attributed to us.
+- **Good for market calibration:** where p ≡ q, fitting `logit(y) = a + b·logit(p)` over our
+  records *is* fitting the **market's** calibration curve. These rows are a free
+  market-calibration dataset. The `[0.02, 0.98]` clip censors the extremes — tolerable, since
+  the paper filters to 5–95¢ anyway.
+
+**This split must be made before any number is quoted.** `forecaster_name`,
+`forecaster_version` and `calibration_tags` (the baseline writes `anchored_to_market_mid`)
+make it mechanical.
+
+**Reason 3 — the price at forecast time is not recorded.** `MarketForecastRecord` (models.py:214)
+stores `estimated_probability`, `confidence`, and rich reasoning fields, but **no contemporaneous
+market price**; the docstring is explicit that the table "carries no EV, sizing, or
+trade-recommendation fields by design." `ForecastScoreRecord` scores against the outcome, not
+against the market. So **ΔS = S(p,y) − S(q,y) is not computable from the existing corpus**
+without joining `MarketPriceTick` by (ticker, time) — and per
+`paper-execution-ledger-and-ranked-roadmap` the Probability lane has **no live tape writer**,
+so that coverage is unlikely to exist historically. Adding a `market_price_at_forecast` column
+is the single cheapest high-value change identified in this document, and it is a prerequisite
+for measuring anything in Track 1.
+
+**Reason 4 — no trade-size dimension.** The paper's size axis is contract count
+(Single / 2–10 / 11–100 / >100). We observe `volume_24h` and `liquidity_proxy` on ticks, not
+per-trade size. The size axis is unavailable in the paper's form; a liquidity-regime
+substitute is *not* the same construct and its findings would not transfer.
+
+**Reason 5 — sample size, and effective N is far below nominal N.** Only now the count:
+- 24,500 ÷ 216 cells ≈ **113 records/cell, below the paper's own 200 floor** before any
+  discount.
+- The paper's smallest realized cell is 472 trades (Weather); Sports is 22,518 — **one of its
+  cells is comparable to our entire corpus.**
+- The binding constraint is clustering, not raw count: *"they are on the order of **50 times
+  the naive Fisher errors** that assume independent trades."* Politics has **850 event
+  clusters** in 64.7M trades. Our records cluster the same way — repeated forecasts on one
+  ticker, and both sides of one event, are near-perfectly dependent. Effective N for us is
+  the number of **distinct resolved events**, which is a small fraction of 17,073.
+
+### 6.5 What we should actually build
+
+Given the above, the defensible design is far smaller than the brief's:
+
+1. **Fit ONE global 2-parameter recalibration first**: p\* = σ(â + b̂ · logit q) over all
+   resolved markets, using midpoint-anchored records as market-price observations. Report b̂
+   with **event-clustered** standard errors, never naive ones.
+2. **Add at most 3 coarse horizon buckets** (`<24h`, `1d–1w`, `>1w`) and **at most 2 domain
+   groups**. That is ≤ 6 cells, not 216. The paper's own leave-one-domain and leave-one-size
+   checks "perform poorly, so the decomposition summarizes the observed grid rather than
+   extrapolating" — so cells we cannot populate must not be interpolated.
+3. **Report the permutation null alongside every R².** If our R² does not clearly exceed a
+   shuffled baseline, we have nothing.
+4. **Hard gate: train-early / test-late.** The paper has *no* time-split anywhere — its only
+   statement on stability is *"whether these patterns are stable over time is an open
+   question."* Its Politics result is drawn from a window dominated by the 2024 US election
+   cycle and may be a one-cycle estimate. **A calibration table that is not validated
+   out-of-time is the exact failure mode this repo already recorded once**
+   (`edge-auto-observation-plan`: prereg candidates failed out-of-sample, inverted, and lost
+   to the negative control). Out-of-time validation is a gate, not a follow-up.
+5. **Do not add a price-bin dimension.** Use the continuous logistic.
+
+### 6.6 The most promising testable hypothesis in this document
+
+Follow the logic through. If the market price q is miscalibrated with a known (â, b̂), then
+
+&nbsp;&nbsp;&nbsp;&nbsp;p_recal = σ(â + b̂ · logit q)
+
+is a **forecast derived from the price alone** — no research, no LLM, no evidence pipeline.
+Feed p_recal into the Track 3 machinery and you have a complete strategy with no forecasting
+dependency whatsoever. On the paper's own numbers, a 70¢ political contract one week out maps
+to ≈83%: **~13 percentage points of gross edge against a mean fee of ~1.2–1.3¢/contract.**
+
+This deserves to be flagged as the highest expected-value item here **and** hedged hard:
+
+- The paper is **purely descriptive**. It contains no backtest, no P&L, no spread modelling,
+  no execution assumptions. Fees appear once, only to rule them out as an *explanation* of the
+  calibration differences — not to assess profitability.
+- The 13pp figure is **my arithmetic on the paper's in-sample fit**, not a result the paper
+  states. **[INFERRED — treat as a ceiling on an untested hypothesis.]**
+- It is in-sample, over a window dominated by one election cycle, with no out-of-time check.
+- It requires **Politics** markets — the domain we currently do not forecast — and 94% of
+  Kalshi political volume comes from large trades, so the price we can actually hit may not
+  be the price in the dataset.
+- If it were both real and this easy, its persistence needs an explanation. The paper does not
+  offer one.
+
+**Recommendation: test it on paper, prospectively, out-of-time, as its own arm in the §4
+bake-off — before building any LLM forecasting apparatus for Kalshi.** It is cheap, it needs
+no research pipeline, and it is falsifiable in a way the rest of the stack is not. If it fails
+out-of-time, that is strong evidence that the conditional-calibration structure does not
+survive, which should change our priors about the whole enterprise.
+
+### 6.7 Consequence for Tracks 1–3: recalibration RAISES our bar
+
+One asymmetry worth stating explicitly. If p_recal is a better forecast than q, then the
+relevant benchmark for our agent is no longer the raw price. Theorem 8's guarantee is stated
+against **q**, the price we trade at — that part is unchanged. But the *question of whether we
+have an edge worth pursuing* becomes: **do we beat σ(â + b̂ · logit q), which is free?**
+
+If the answer is no, the correct strategy is to trade p_recal and skip the forecaster
+entirely. **Conditional calibration is not a bonus layered on top of our forecasts; it is a
+competitor to them**, and it must appear in the bake-off as an arm with its own ΔS.
 
 ## 7. Track 6 — Coherence / arbitrage engine (Probability Graph)
 
