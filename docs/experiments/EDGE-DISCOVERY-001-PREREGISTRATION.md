@@ -401,3 +401,48 @@ Two further points of procedure, also fixed in advance:
   reporting for any BH-selected set uses FCR-adjusted intervals at level
   1 − R·q/m (Benjamini & Yekutieli 2005), which is what "FDR-corrected CI" is
   taken to mean.
+
+### D-3 (E4) — E4 excludes crossed quotes (`close_ask < close_bid`) (2026-08-15, pre-results)
+
+§5 fixes the executable prices but does not say what to do when the recorded quote is
+**crossed**. 111 of 10,285 rows (1.08%) have `yes_ask_c < yes_bid_c` — 72 TRAIN, 39
+HOLDOUT, median cross depth 6¢, max 84¢. These are bucket-aggregation artifacts
+(`close_bid` and `close_ask` need not come from the same tick), not real books.
+
+They are **excluded from the tradable universe** because including them would hand the
+strategy a *negative* spread cost — an entry price below the midpoint — i.e. manufactured
+edge from a recording artifact. Exclusion is the adverse choice for the strategy and
+therefore the safe one. Locked books (`ask == bid`, 114 rows) are retained: zero spread
+cost is a legitimate quote, not an artifact.
+
+### D-4 (E4) — E4 adopts Corollary 19's abstain band as the primary trade filter (2026-08-15, pre-results)
+
+§5 names the strategies and the executable prices but not the entry condition. E4 uses the
+bid-ask form of proper betting given by **Corollary 19** of arXiv 2607.06166 (quoted in
+`docs/research/QDK-001-prediction-market-math.md` §1.2): buy YES iff `p > ask`, buy NO iff
+`p < bid`, otherwise abstain.
+
+This is *favourable* to the strategies (it suppresses trades that are negative-edge under
+`p` by construction), so the naive alternative — trade on `sign(p − q)` and cross the
+spread — is reported alongside it in every table rather than being dropped. The naive
+variant is uniformly worse, so the choice does not manufacture the verdict.
+
+### D-5 (E4) — E4 declares the fee block size `C = 100` contracts (2026-08-15, pre-results)
+
+The preregistered fee formula `round_up(M × 0.07 × C × P × (1−P))` leaves `C` free, and the
+round-up is applied to the **whole order**, so `C` materially changes the per-contract fee:
+at `C = 1` every trade pays a minimum of 1¢ regardless of price. E4's primary is
+`C = 100` (a ~$34 average ticket, the realistic small-order case); the adverse `C = 1`
+variant is reported in full beside it and is worse by ~0.48¢/contract. `M = 1` (taker,
+default) universally — per-market fee multipliers are not present in the frozen extract, so
+the default is used and declared as an assumption, not read from market state.
+
+### D-6 (E4) — E4 scale convention (2026-08-15, pre-results, specification not departure)
+
+`s_G` is defined only up to a positive scalar (Theorem 13), so §5's strategy list does not
+by itself determine a P&L magnitude. E4 fixes the scale as **1 contract per trade** for the
+headline (equal weight) and additionally reports an allocator-weighted figure with weights
+normalised to mean 1 contract. No positive rescaling λ can change the sign of either
+statistic, which is stated in the result document so that no arbitrary scale drives the
+verdict. Fractional-Kelly λ therefore cancels in both normalised statistics; a separate
+absolute-sizing table ($1,000 per trade, non-compounding) is reported where λ does bite.
