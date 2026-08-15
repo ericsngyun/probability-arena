@@ -1610,6 +1610,50 @@ reported price 82% (§2.6). So:
 > defence is knowing the mechanism in advance — which is the entire reason §2
 > is in this document.
 
+**This is not a hypothetical, and the size of the effect has been measured on
+pump.fun itself.** Kamat (arXiv:2607.02795, ~1.58M buyer transactions across
+166,098 launches) studied whether coordinated sniper cohorts drive early buyer
+flow. The naive first-30-minute buyer-count lift is **+130.9%**. After
+propensity-score matching and contamination adjustment — because *the cohorts'
+own transactions are part of the flow being measured* — the estimate falls to
+**+16.1%**, and the SOL-inflow lift to a negligible **+6.3%**.
+
+> **A naive estimate overstated the matched one by roughly 8×, through exactly
+> the mechanism §9.6 describes: the thing being counted was partly the thing
+> doing the counting.** *(Quality flag: unrefereed, single author, no listed
+> affiliation — cite the v3 title, which differs from v1. Treat the magnitude
+> as indicative and the direction as the lesson.)*
+
+**A second contamination, from a different direction.** Heimbach, Pahari &
+Schertenleib (arXiv:2401.01622, **IEEE S&P 2024**) find that **more than a
+quarter of the volume on Ethereum's five largest DEXes** is non-atomic
+(CEX–DEX) arbitrage, and that **eleven searchers account for over 80% of it**
+($132B).
+
+> **INFERRED, and directly relevant to Block C: a large fraction of what looks
+> like "order flow" on a DEX is a handful of arbitrage bots reacting to an
+> off-chain price.** Any flow model fitted to raw swaps is substantially
+> modelling those bots rather than a population of traders — and their behaviour
+> is a function of the CEX price, which is not in our state vector at all. This
+> is a further reason §5.1 marks C3–C7 as tier T3 rather than as an approximable
+> gap: even with the feed, the signed flow would need decomposing before it
+> meant what one wants it to mean.
+
+**And the meta-warning, which changes how S-3 should be run.** Bailey, Borwein,
+López de Prado & Zhu (*Notices of the AMS* 61(5)) prove that "high simulated
+performance is easily achievable after backtesting a relatively small number of
+alternative strategy configurations," and — the sentence that matters most —
+that **"under memory effects, backtest overfitting leads to negative expected
+returns out-of-sample, rather than zero performance."**
+
+> **An overfit selection rule on a memory-bearing series is not neutral; it is
+> systematically worse than random.** Combined with Harvey, Liu & Zhu's argument
+> (NBER WP 20592 / *RFS* 29(1)) that a new factor needs a t-ratio above 3.0 and
+> that "most claimed research findings in financial economics are likely false,"
+> this is the concrete justification for §11.2's instruction to **pre-register
+> S-3's feature set and split before looking** — and for treating a null result
+> there as a genuine, publishable-internally outcome rather than a failure.
+
 ### 9.7 The highest-value unbuilt feature
 
 `app/models.py` carries `repeated_cohort_ref` and `known_creator_cluster_ref` on
@@ -1629,15 +1673,35 @@ It is also, unlike almost everything in §5's Block C, **buildable from public
 addresses we already persist** (`CryptoTokenBirthEvent.creator_address`), and it
 requires no new provider and no per-swap feed.
 
-*The caveats, because this is the claim most likely to be over-sold:*
-creator-address reuse may be low (an operator who rotates addresses defeats it
-entirely, and any operator sophisticated enough to be worth tracking has an
-obvious incentive to rotate); the repository has no measurement of reuse rate;
-and clustering public addresses is a technique whose reliability degrades exactly
-against the adversaries it most wants to catch. **The first step is not to build
-the feature — it is the one-line measurement of how often
-`creator_address` repeats across our 411 births/25h.** If reuse is rare, the
-whole line of work is closed cheaply and that is a good outcome.
+**Published work now partially answers the obvious objection.** The natural
+caveat is that a sophisticated operator rotates addresses, defeating the whole
+approach. Two verified results suggest persistence is nonetheless detectable at
+scale:
+
+- Kamat (arXiv:2607.02795) identifies **1,012 persistent co-firing wallet
+  cohorts** across 166,098 launches in a two-week window — i.e. rings that
+  recur, and are identifiable as recurring.
+- Hu et al. "MELT" (arXiv:2602.13480, Georgia Tech) release bundle-level data
+  "identifying multi-account single entities" and report **36.5% of token supply
+  held by coordinated accounts on average**.
+
+*(Both are preprints; the Kamat item is unrefereed and single-author. And note
+§9.6: the same author's naive coordination estimate was 8× its matched value, so
+read "1,012 cohorts exist" as the robust part and any effect size as the fragile
+part.)*
+
+*The caveats that remain, because this is the claim most likely to be
+over-sold:* the above establishes that *trader* rings persist, which is not the
+same as establishing that **creator** addresses repeat — the feature our schema
+would key on. Clustering public addresses is also a technique whose reliability
+degrades exactly against the adversaries it most wants to catch, and any
+operator worth tracking has an obvious incentive to rotate.
+
+> **So the first step is still not to build the feature — it is the one-line
+> measurement of how often `creator_address` repeats across our 411 births/25h.**
+> That is a single `GROUP BY` over a column we already persist. If reuse is
+> rare, the whole line of work closes cheaply, and that is a good outcome. This
+> should be added to §11.2 as a zero-cost study.
 
 ### 9.8 The summary judgement
 
@@ -1732,6 +1796,25 @@ with the measurement that would refute it**.
 
 Ranked by value per unit of effort. All are pure SQL plus arithmetic over
 already-persisted rows.
+
+**S-0. Count the venue mix in our own `dex_id` column.**
+*Why zeroth:* §3.5 shows three incompatible impact mathematics coexist in this
+market — smooth constant product (Raydium AMM v4/CPMM, PumpSwap), stepped
+constant-sum (Meteora DLMM), and concentrated liquidity (Orca Whirlpools,
+Raydium CLMM). §2's formula is the **wrong functional form**, not a small
+approximation, for the latter two. Until we know the mix, we do not know what
+fraction of our own data §2 even applies to. *Cost:* one `GROUP BY`.
+*Refutable claim:* the population is overwhelmingly uniform-CPMM, so §2 governs
+nearly all of it. *What would refute it:* a material DLMM/CLMM share, which
+would make `pool_kind` (A6) and the typed absence of A2 mandatory before any
+impact number is computed, not optional.
+
+**S-0b. Count `creator_address` repeats across births.**
+*Why:* §9.7 argues creator/wallet clustering is the highest-value unbuilt
+feature, and this single `GROUP BY` decides whether the line of work is open at
+all. *Refutable claim:* creator addresses recur often enough to carry
+cross-token information. *What would refute it:* near-total uniqueness, which
+closes §9.7 cheaply and is a perfectly good outcome.
 
 **S-1. Compute F6 (`tvl_decay_ratio`) for every enrolled token and describe its
 distribution.**
