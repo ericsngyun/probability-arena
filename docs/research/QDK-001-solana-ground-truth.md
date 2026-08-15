@@ -264,11 +264,333 @@ parsing.**
 
 ## 4. Link 2 — identifying swaps per venue without a paid decoder
 
-*(pending)*
+### 4.1 The framing that makes this easy, and why the obvious framing is wrong
+
+The obvious approach is: enumerate venue program IDs, decode each venue's swap
+instruction with its IDL, read the amounts out of the instruction data. That
+approach is what makes people buy a decoder, and it has three failure modes that
+all point the same way: it needs an IDL per venue, it breaks when a venue
+upgrades its instruction layout, and — worst — **it needs an allowlist, so any
+venue you failed to enumerate is silently invisible.** On a memecoin tape where
+new venues appear continuously, an allowlist-shaped detector produces a corpus
+whose *absences* are undetectable.
+
+**Invert it.** A swap is not defined by which program ran it. A swap is defined
+by what moved:
+
+> In one confirmed transaction, one party's holding of mint A decreased and
+> their holding of mint B increased, and some counterparty account set moved the
+> opposite way.
+
+That is entirely a statement about `preTokenBalances` / `postTokenBalances` and
+`preBalances` / `postBalances`. It requires **no instruction decoding, no IDL,
+no discriminator table, and no allowlist** — and it therefore detects swaps on
+venues nobody has heard of. (INFERRED, from the VERIFIED field semantics in §3.)
+
+### 4.2 The detector, stated concretely
+
+For a transaction with `err == null`:
+
+1. Build `token_delta[(owner, mint)] = post.amount − pre.amount` over
+   `postTokenBalances` ∪ `preTokenBalances`, using the raw `amount` strings as
+   exact integers. An account present in only one list is an open or close and
+   its missing side is `0` **for that account's own balance** — this is the one
+   place a zero is a fact rather than an assumption, because an SPL token
+   account that does not exist holds nothing.
+2. Build `lamport_delta[account] = postBalances[i] − preBalances[i]`, resolving
+   `i` as `static ++ loaded.writable ++ loaded.readonly` (§3.3d). Wrapped SOL
+   appears on the token side instead; native SOL appears here.
+3. The **taker** is the fee payer (account index 0) in the common case, or more
+   robustly, the signer whose deltas form exactly one negative/one positive mint
+   pair. `mint_in` is the mint they lost, `mint_out` the mint they gained.
+4. The **counterparty vault set** is the accounts whose deltas are
+   equal-and-opposite in the same two mints and which are **not** signers. Their
+   `owner` field (from the token-balance element) is the pool authority PDA.
+
+`token_delta` sums must net to zero per mint across the transaction **except**
+for mints with transfer fees or mint/burn — which is itself the detector for the
+Token-2022 transfer-fee case that
+`docs/milestones/SOLANA-ROUTE-OBSERVATION-001.md` §8.1 row 5d flags as a
+**silent-wrongness** risk. Under the balance method that risk stops being silent:
+if the taker lost 100 and the vault gained 98, the 2 is measured, not assumed
+away. **This is a strict improvement over the quote-based lane**, which can only
+record 5d as an unresolvable absence. (INFERRED.)
+
+### 4.3 Venue labelling is free, and is a *result* rather than an input
+
+`jsonParsed` returns, for instructions it cannot decode, "partially decoded
+objects with `accounts`, `data`, and `programId` fields" (VERIFIED, §3.2). So
+**the program ID always comes back, whether or not anything can decode the
+instruction.** Combined with `innerInstructions` — which is where the actual
+token transfers of a routed swap live — you can attribute each swap to the
+program that invoked the transfers, with zero decoding.
+
+That turns venue coverage from an allowlist into a measurement: group the
+collected corpus by `programId`, sort by count, and label the head by hand once.
+A venue you have never heard of shows up as an unlabelled program ID with a
+share of the tape — **visible, quantified, and honestly unnamed** — instead of
+as a hole.
+
+For reference, the majors' program IDs, with provenance stated because these
+addresses are load-bearing and a wrong one silently mislabels a whole venue:
+
+| venue | program ID | provenance |
+|---|---|---|
+| Raydium AMM v4 (hybrid + OpenBook) | `675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8` | **VERIFIED** — `docs.raydium.io/reference/program-addresses` |
+| Raydium CPMM (standard AMM) | `CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C` | **VERIFIED** — same page |
+| Raydium CLMM (concentrated) | `CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK` | **VERIFIED** — same page |
+| Raydium LaunchLab | `LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj` | **VERIFIED** — same page |
+| pump.fun bonding curve | `6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P` | **VERIFIED** — `pump-fun/pump-public-docs`, `PUMP_PROGRAM_README.md` |
+| PumpSwap AMM | `pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA` | **UNVERIFIED** — secondary sources only in this session |
+| Orca Whirlpool | `whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc` | **UNVERIFIED** — secondary sources only in this session |
+| Meteora DLMM | `LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo` | **UNVERIFIED** — secondary sources only in this session |
+
+The three UNVERIFIED rows are **not a blocker**, precisely because §4.2 does not
+depend on them: they are labels applied after detection, and §13 gives the
+one-line check that confirms each against the chain itself.
+
+### 4.4 Why not parse logs
+
+Log parsing (`Program log: ray_log: …`, `Program data: <base64>` Anchor events)
+is the other common route, and it is genuinely richer for some venues —
+pump.fun's Anchor event, if present, would carry post-trade reserves directly.
+It is rejected as the **primary** basis for three reasons:
+
+1. **Logs are truncatable.** `--log-messages-bytes-limit`, "Maximum number of
+   bytes written to the program log before truncation" (VERIFIED). A truncated
+   log yields a *partial* parse, which is the fabrication shape this repository
+   most wants to avoid — a plausible number derived from incomplete evidence.
+2. **`logMessages` is contractually nullable** (VERIFIED, §3.2). Balances are
+   the same contract, but a lane that depends on logs has two nullable
+   dependencies instead of one.
+3. **Log formats are venue-private and unversioned.** Balances are consensus
+   state.
+
+Logs remain useful as a **corroborating** channel — an independent second
+derivation of the same fill that should agree with the balance derivation, and
+whose disagreement is a bug signal. That is how they should be used if used at
+all. (INFERRED.)
+
+---
 
 ## 5. Link 3 — THE CRUX: is pre-trade pool state recoverable read-only?
 
-*(pending)*
+**Answer: YES for constant-product venues, from the same transaction, with no
+second call. PARTIAL for concentrated-liquidity venues. And the reason it works
+is stronger than the proposal assumed.**
+
+### 5.1 Why this looked hard
+
+`getAccountInfo` has **no historical-slot parameter** (VERIFIED). Its
+`minContextSlot` is "the minimum slot that the request can be evaluated at" — a
+*freshness floor*, not a time machine. There is no read-only way to ask a
+standard RPC node "what did this pool account contain at slot N in the past."
+
+So the obvious route to pre-trade state — read the pool account as of the slot
+before the swap — **does not exist on free infrastructure**, and does not exist
+on paid infrastructure either without an account-state archive, which is a
+distinct and expensive product. If pre-trade state required that, L3 would fail.
+
+### 5.2 It does not require that, because the pre-state is inside the swap
+
+**VERIFIED, from the Agave validator source** (`ledger/src/token_balances.rs`,
+`collect_token_balances`):
+
+```rust
+for (index, account_id) in account_keys.iter().enumerate() {
+    if transaction.message().is_invoked(index) || is_known_spl_token_id(account_id) {
+        continue;
+    }
+
+    if let Some(TokenBalanceData { mint, ui_token_amount, owner, program_id }) =
+        collect_token_balance_from_account(bank, account_id, mint_decimals)
+    { … }
+}
+```
+
+and `collect_token_balance_from_account` returns `Some(...)` for any account
+whose owner is a known SPL token program.
+
+Read that loop precisely. It iterates **every account key of the transaction** —
+not only the signer's, not only writable ones — skipping only top-level invoked
+program IDs and the token programs themselves, and records a balance for each
+one that is an SPL token account.
+
+**Therefore `preTokenBalances` contains the AMM's own vault balances, at the
+instant immediately before this swap executed, in the same response that
+reports the swap.** The pool's vaults are necessarily in the account key list —
+a swap cannot debit a vault it did not reference — so they are necessarily
+recorded.
+
+This is a materially better result than the proposal's phrasing ("pair that with
+pool reserve state immediately prior") suggests, and the difference matters:
+
+- **No second RPC call.** Pre-state costs zero additional requests, which
+  changes §7's rate arithmetic by roughly a factor of two.
+- **No prior-slot lookup, and no dependence on prior-slot availability.**
+- **Intra-block ordering is handled for free.** If three swaps hit the same pool
+  in one block, each one's own `preTokenBalances` reflects the state after the
+  preceding two, because balances are captured per transaction in execution
+  order. A design that reconstructed state from "the last observation of the
+  pool" would get all but the first of those wrong. This is also what makes §8's
+  sandwich detection possible at all.
+- **It is self-verifying.** `post = pre + delta` must hold on every vault. A
+  violation means the parse is wrong, not that the chain is.
+
+`preBalances` / `postBalances` do the same job for native SOL vaults and for
+program-owned accounts that hold lamports rather than tokens, subject to the
+index-resolution rule in §3.3d.
+
+### 5.3 What "pre-trade state" means per venue — the honest split
+
+The pre-trade *reserves* being observable is not the same as the pre-trade
+*state* being sufficient. What a fill model needs is whatever quantity the pool
+prices against.
+
+| venue class | what prices the swap | recoverable from the transaction alone? |
+|---|---|---|
+| **Constant-product AMM** (Raydium AMM v4, Raydium CPMM, PumpSwap, Orca legacy pools) | the two vault balances, `x·y = k` | **YES, fully.** Both vaults are in `preTokenBalances`. Pre-trade mid, depth, and the theoretical impact of the observed size are all computable from the same response. |
+| **pump.fun bonding curve** | `virtual_sol_reserves`, `virtual_token_reserves` — *synthetic* quantities in the curve account, **not** vault balances | **YES, derivably** — see §5.4. This is the case that looked fatal and is not. |
+| **Concentrated liquidity** (Orca Whirlpool, Raydium CLMM) | in-range liquidity `L`, `sqrt_price`, and the tick array — i.e. the *shape* of liquidity, not its total | **NO, not fully.** Vault balances give total value locked, which does not determine the price curve. §5.5. |
+| **Meteora DLMM** (discretized bins) | per-bin liquidity and the active bin | **NO, not fully.** Same reason. §5.5. |
+
+### 5.4 pump.fun — the hard case, and why it resolves
+
+pump.fun prices against *virtual* reserves, so vault balances alone are not the
+state. But pump's own public documentation makes the derivation exact
+(**VERIFIED**, `PUMP_PROGRAM_README.md`):
+
+> "On each `buy` operation, `virtual_sol_reserves` and `real_sol_reverses`
+> increase with the same lamports amount according to the bonding curve formula,
+> while `virtual_token_reserves` and `real_token_reserves` decrease with the same
+> coin amount."
+>
+> "On each `sell` operation, `virtual_sol_reserves` and `real_sol_reverses`
+> decrease with the same lamports amount […] while `virtual_token_reserves` and
+> `real_token_reserves` increase with the same coin amount."
+
+The virtual and real reserves move by **identical** amounts, always. So virtual
+reserves differ from real reserves by a constant fixed at curve creation:
+
+```
+virtual_sol_reserves   = real_sol_reserves   + initial_virtual_sol_reserves
+virtual_token_reserves = real_token_reserves + (initial_virtual_token_reserves
+                                               − initial_real_token_reserves)
+```
+
+and both `initial_*` constants live in the single `Global` account
+`4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf` (VERIFIED, PDA of `["global"]`),
+readable by one free `getAccountInfo`. `real_sol_reserves` is tracked by the
+bonding curve account's lamport balance, which is in `preBalances`;
+`real_token_reserves` is tracked by the curve's token account, which is in
+`preTokenBalances`.
+
+**Result: the full pre-trade bonding-curve pricing state is recoverable from the
+swap transaction plus two global constants.** (INFERRED from the VERIFIED
+invariant; the derivation is arithmetic, not assumption.)
+
+Three cautions, stated rather than glossed:
+
+- The `Global` constants are **mutable** — `set_params` "allows updating all the
+  `Global` account fields" (VERIFIED). They must be read and stamped with the
+  slot at which they were read, and a corpus spanning a `set_params` change is
+  wrong unless it is segmented. Treating them as compile-time constants is a
+  silent-wrongness bug.
+- The mapping from account **lamport balance** to `real_sol_reserves`, and from
+  **token account balance** to `real_token_reserves`, involves fixed offsets
+  (rent-exempt minimum; the migration reserve, i.e.
+  `token_total_supply − initial_real_token_reserves`). Those offsets are
+  **INFERRED**, not verified, and §13 gives the check that pins them: read one
+  live bonding curve with `getAccountInfo` and compare its decoded fields
+  against the balances the same transaction reported.
+- A cleaner alternative exists and should be preferred if it validates: the
+  program's own Anchor trade event, if emitted, carries the post-trade reserves
+  directly. It is **UNVERIFIED** here — the public README documents no events —
+  and it is log-borne, so §4.4's truncation objection applies. It is a
+  corroborator, not a foundation.
+
+### 5.5 Concentrated liquidity — the honest failure, and its size
+
+For Orca Whirlpool, Raydium CLMM and Meteora DLMM, the pre-trade vault balances
+*are* observable exactly as above, but they **do not determine the price
+response**. Two pools with identical TVL and identical spot price can have
+wildly different impact for the same size depending on how liquidity is
+distributed across ticks or bins. The tick/bin arrays live in program-owned
+accounts whose *pre-trade contents* are not in `preTokenBalances` (they are not
+token accounts) and cannot be read historically (§5.1).
+
+What remains recoverable for these venues, honestly:
+
+- **`sqrt_price` / active bin immediately before the swap** — INFERRED as
+  recoverable, because it is implied by the realized price of the *first*
+  infinitesimal amount and, more practically, by chaining: the post-state of the
+  previous swap on the same pool is the pre-state of this one, and a forward
+  collector sees both. But this requires an unbroken chain from a known
+  anchor and degrades on any gap.
+- **The realized `(size → price)` point itself** — fully recoverable. You simply
+  do not get to know *why*.
+
+**So for CLMM/DLMM the corpus is a set of realized outcomes without their full
+causal state.** That is a genuine, permanent limitation on free data, and it
+must be recorded per-row as a typed state-completeness flag —
+`pool_state_complete` vs `pool_state_partial_clmm` — rather than averaged into
+the same bucket as the constant-product rows. **A calibration that pools them is
+fitting a curve to points whose x-coordinate is partly unknown**, and it will
+look better than it is.
+
+The practical mitigation is not a workaround but a scoping decision: pump.fun
+and constant-product Raydium/PumpSwap pools are where new memecoins actually
+trade in their first hours, which is the population this project's sparse lane
+already observes. **The venues where L3 fully succeeds are the venues that
+matter for this project's population** — an alignment worth confirming
+empirically (§13) rather than assuming.
+
+### 5.6 The realized-price computation, field by field
+
+For a constant-product or bonding-curve swap with `err == null`:
+
+```
+taker            = fee payer / the signer with exactly one (−mint_in, +mint_out) pair
+amount_in        = −token_delta[(taker, mint_in)]        exact integer, base units
+amount_out       = +token_delta[(taker, mint_out)]       exact integer, base units
+realized_price   = amount_out / amount_in                exact rational, decimal-normalized
+                                                          by both mints' `decimals`
+network_fee      = meta.fee                              lamports, VERIFIED field
+pool_pre_in      = preTokenBalances[vault_in].amount     exact integer
+pool_pre_out     = preTokenBalances[vault_out].amount    exact integer
+pre_mid          = pool_pre_out / pool_pre_in            (constant-product only)
+realized_slippage_vs_pre_mid = realized_price / pre_mid − 1
+slot             = result.slot
+block_time       = result.blockTime
+```
+
+Notes that keep this honest:
+
+- **`realized_price` is gross of the network fee and net of every in-protocol
+  fee.** The pool's fee, the venue's platform fee, and any creator fee are all
+  already inside `amount_out` because they were taken before the taker received
+  anything. That is *the right thing* for calibrating an execution model: it is
+  the all-in price the taker actually got. The proposal's formula, "(Δ quote
+  token + fees) / (Δ base token)", would **double-count** those in-protocol fees
+  if `fees` were read as the pool fee. `meta.fee` is the *network* fee only
+  (VERIFIED: "Fee charged for the transaction, in lamports") and is a separate,
+  additive, size-independent cost that belongs in a separate column, not inside
+  the price.
+- **`realized_slippage_vs_pre_mid` is not the same quantity as the slippage a
+  trader experiences versus their own quote.** It is impact versus the pre-trade
+  mid — which is exactly what an AMM fill model needs, and is *better* than
+  quote-versus-fill for calibration because it has no dependence on when the
+  trader fetched their quote. Calling it "realized slippage" without
+  qualification would be an equivocation; the column should be named for what it
+  is.
+- **Priority fees are invisible here.** `meta.fee` covers the transaction fee.
+  Jito-style tips are ordinary SOL transfers to a tip account and appear as
+  lamport deltas, so they are *detectable*, but attributing them requires an
+  allowlist of tip accounts. Recording them as an unattributed lamport outflow
+  is honest; asserting a tip is not. And §1 forbids fetching a priority fee for
+  a transaction of our own regardless. (INFERRED.)
+- Every quantity above is an exact integer or an exact rational. Nothing needs a
+  float, and per §3.3a nothing may use one.
 
 ## 6. Link 4 — retention and availability on free endpoints
 
