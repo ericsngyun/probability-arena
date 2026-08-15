@@ -41,6 +41,64 @@ SIDE_NO = "no"
 # stale generation knows its view is not merely old but discontinuous.
 GEN_INITIAL = 0
 
+# --- capture-time epochs ----------------------------------------------------------
+#
+# KALSHI-TAPE-GENERATION. Two monotonic epochs are stamped onto every envelope
+# AT CAPTURE TIME, because neither can be recovered afterwards from the tape:
+#
+#   connection_generation    advances when a socket is established
+#   subscription_generation  advances when a new SUCCESSFUL subscription
+#                            generation begins — not on every connect attempt,
+#                            not on every frame
+#
+# Only `subscription_generation` has ordering semantics. The venue's `seq`
+# restarts with each new subscription, so sequence continuity is only meaningful
+# WITHIN one generation; a generation boundary EXPLAINS a discontinuity instead
+# of being a fault. Without the field, a routine reconnect and real data loss
+# are the same observation — and since a sequence hole is the only drop detector
+# this system has (CP0: the websockets library never silently drops and exposes
+# no drop counter), that ambiguity is not recoverable later. The epoch is never
+# inferred at read time for exactly that reason.
+#
+# THE SENTINEL. `None` — never 0 — means "generation unknown". A record written
+# before these fields existed (`normalized_event.schema_version == 1`) carries
+# neither key, so `.get()` yields `None`, and every reader below treats that as
+# unknown: the generation check is skipped, ordering falls back to pure `seq`
+# continuity, and nothing pretends the record was generation 0. 0 would be a
+# fabricated epoch, and a fabricated epoch would let an old record silently
+# supersede a live one.
+GENERATION_UNKNOWN = None
+
+
+def coerce_generation(value):
+    """One place that decides what a generation field MEANS.
+
+    Absent/`None` is the documented unknown sentinel. A real generation is a
+    non-negative `int`; `bool` is excluded because `True == 1` would make a
+    corrupt record read as generation 1. Anything else is a malformed record
+    and raises, rather than being silently rounded into a plausible epoch.
+    """
+    if value is GENERATION_UNKNOWN:
+        return GENERATION_UNKNOWN
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise SubscriptionError(
+            f"generation {value!r} is neither an int nor the documented "
+            "unknown sentinel (absent/None); a record whose epoch cannot be "
+            "read is refused rather than assigned a plausible one")
+    if value < 0:
+        raise SubscriptionError(
+            f"generation {value!r} is negative; epochs are monotonic from 0")
+    return value
+
+
+def subscription_generation_of(record: dict):
+    """The subscription epoch a stored/live record was captured under.
+
+    Returns `GENERATION_UNKNOWN` for pre-KALSHI-TAPE-GENERATION records, which
+    is exactly how those records must read: unknown, not zero.
+    """
+    return coerce_generation(record.get("subscription_generation"))
+
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -79,6 +137,16 @@ class EventEnvelope:
     # carrying a venue timestamp fail its own digest and vanish on read.
     data_age_us: int | None            # venue_time -> receive, when derivable
     implementation_version: str
+    # CAPTURE-TIME EPOCHS. Defaulted to `GENERATION_UNKNOWN` rather than 0 so an
+    # envelope built by something that genuinely has no epoch (a fixture, a
+    # legacy import) says "unknown" instead of claiming the first generation.
+    # `archive.py` writes both into the record's pinned columns; before this
+    # existed it read `raw.get("connection_id")` and
+    # `raw.get("subscription_generation")` off an envelope that defined
+    # NEITHER, so both columns were permanently null and `dispatch` read that
+    # null straight back as "no generation information".
+    connection_generation: int | None = GENERATION_UNKNOWN
+    subscription_generation: int | None = GENERATION_UNKNOWN
     raw: dict = field(default_factory=dict)
     normalized: dict = field(default_factory=dict)
 
@@ -87,12 +155,23 @@ class EventEnvelope:
 
 
 IMPLEMENTATION_VERSION = "kalshi-realtime-observer/001A"
-ENVELOPE_SCHEMA_VERSION = 1
+# 1 -> 2 (KALSHI-TAPE-GENERATION): the envelope gained `connection_generation`
+# and `subscription_generation`. Bumped DELIBERATELY, because the version is
+# what makes the sentinel legible: in a v1 record the absence of
+# `subscription_generation` means "written before the field existed, generation
+# unknown", and in a v2 record it means the writer explicitly had no epoch. A
+# reader that could not tell those apart would have to guess, which is the
+# after-the-fact reconstruction this tape exists to make unnecessary. The
+# durable RECORD schema (`segment.RECORD_FIELDS`) is untouched: it has always
+# had both columns, and this change only stops writing null into them.
+ENVELOPE_SCHEMA_VERSION = 2
 
 
 def make_envelope(*, venue: str, environment: str, channel: str, message: dict,
                   receive_time: datetime, receive_mono: int,
-                  normalized: dict | None = None) -> EventEnvelope:
+                  normalized: dict | None = None,
+                  connection_generation=GENERATION_UNKNOWN,
+                  subscription_generation=GENERATION_UNKNOWN) -> EventEnvelope:
     msg = message.get("msg") or {}
     # `ts_ms` FIRST. The venue's stamping is not uniform across channels —
     # confirmed on the DEMO wire 2026-08-08:
@@ -151,6 +230,10 @@ def make_envelope(*, venue: str, environment: str, channel: str, message: dict,
         normalize_monotonic_ns=monotonic_ns(),
         data_age_us=age_us,
         implementation_version=IMPLEMENTATION_VERSION,
+        # Validated here, at capture, so a nonsense epoch can never reach the
+        # durable tape and be indistinguishable from a real one later.
+        connection_generation=coerce_generation(connection_generation),
+        subscription_generation=coerce_generation(subscription_generation),
         raw=message, normalized=normalized or {},
     )
 
@@ -214,11 +297,19 @@ class OrderBook:
         self.sid: int | None = None
         self.last_seq: int | None = None
         self.generation = GEN_INITIAL
+        # The SUBSCRIPTION epoch this book's position belongs to — a different
+        # thing from `self.generation`, which counts this book's own
+        # resynchronisations. Unknown until a router tells it one.
+        self.subscription_generation = GENERATION_UNKNOWN
         self.synced = False
         self.integrity_reason: str | None = "awaiting snapshot"
         self.snapshot_receive_time: datetime | None = None
         self.stats = {"snapshots": 0, "deltas": 0, "duplicates": 0, "gaps": 0,
-                      "regressions": 0, "resyncs": 0, "rejected_pre_snapshot": 0}
+                      "regressions": 0, "resyncs": 0, "rejected_pre_snapshot": 0,
+                      # A reconnect is counted, never merged into `gaps`: they
+                      # are different phenomena and the whole point of the
+                      # epoch is that they stay distinguishable.
+                      "generation_boundaries": 0}
 
     # -- integrity ---------------------------------------------------------------
 
@@ -458,6 +549,26 @@ class OrderBook:
     def mark_resynchronised(self) -> None:
         self.stats["resyncs"] += 1
 
+    def begin_subscription_generation(self, generation) -> None:
+        """A NEW subscription generation began. Rebase, do not halt.
+
+        Clears the per-book sequence POSITION and nothing else — no ladder is
+        touched and the book is NOT unpublished, because a reconnect is a
+        legitimate discontinuity rather than evidence of loss. What must go is
+        the position: after a reconnect the venue's `seq` restarts, so
+        `apply_snapshot`'s anti-rewind guard would compare two numbers from
+        different namespaces and refuse the very snapshot that re-bases the
+        book. That guard stays fully armed WITHIN a generation, which is where
+        at-least-once redelivery can actually rewind applied state.
+
+        Only a genuine, strictly-increasing epoch stamped at capture time
+        reaches here (`SubscriptionState.accept`), and the tape's digest chain
+        is what makes that stamp trustworthy on replay.
+        """
+        self.subscription_generation = coerce_generation(generation)
+        self.last_seq = None
+        self.stats["generation_boundaries"] += 1
+
     # -- derived views -----------------------------------------------------------
 
     @property
@@ -618,7 +729,10 @@ class SubscriptionState:
         self.state_reason: str | None = SUB_AWAITING_SNAPSHOT
         self.stats = {"accepted": 0, "duplicates": 0, "gaps": 0,
                       "regressions": 0, "wrong_sid": 0, "stale_generation": 0,
-                      "missing_seq": 0, "recoveries": 0}
+                      "missing_seq": 0, "recoveries": 0,
+                      # Reconnects, counted separately from every fault
+                      # counter beside them.
+                      "generation_advances": 0}
 
     # -- lifecycle -------------------------------------------------------------
     def _fail(self, reason: str, detail: str) -> None:
@@ -633,16 +747,35 @@ class SubscriptionState:
         message from a superseded generation carries a sequence from a
         different stream, so comparing it first would produce a meaningless
         verdict about a message we were going to discard anyway.
+
+        **Sequence continuity is evaluated WITHIN a generation.** The three
+        cases are different phenomena and are kept apart:
+
+        * `generation < self.generation` — a straggler from a stream we have
+          already left. Still a fault: its `seq` is from a dead namespace.
+        * `generation > self.generation` — a RECONNECT. The venue's `seq`
+          restarts, so the boundary EXPLAINS the discontinuity instead of
+          being one. Not a fault, and it does not unpublish anything.
+        * `GENERATION_UNKNOWN` — a record written before the epoch existed.
+          The check is skipped and ordering falls back to pure `seq`
+          continuity, exactly as it behaved before the field.
+
+        The one thing this must not do is blind the drop detector: a gap
+        *inside* a generation still raises, and only a strictly-greater,
+        capture-time epoch re-bases the stream.
         """
         if sid is None or int(sid) != self.sid:
             self.stats["wrong_sid"] += 1
             self._fail(SUB_WRONG_SID,
                        f"message belongs to subscription {sid}, not {self.sid}")
-        if generation is not None and int(generation) != self.generation:
-            self.stats["stale_generation"] += 1
-            self._fail(SUB_STALE_GENERATION,
-                       f"message is from generation {generation}, this "
-                       f"subscription is on {self.generation}")
+        generation = coerce_generation(generation)
+        if generation is not GENERATION_UNKNOWN and generation != self.generation:
+            if generation < self.generation:
+                self.stats["stale_generation"] += 1
+                self._fail(SUB_STALE_GENERATION,
+                           f"message is from generation {generation}, this "
+                           f"subscription is on {self.generation}")
+            self._begin_generation(generation)
         if seq is None:
             self.stats["missing_seq"] += 1
             self._fail(SUB_MISSING_SEQ,
@@ -693,16 +826,49 @@ class SubscriptionState:
         self.last_seq = None
         self.stats["recoveries"] += 1
 
-    def supersede(self, *, market_tickers=None) -> int:
+    def _begin_generation(self, generation: int) -> None:
+        """Move to a new epoch and await its first snapshot.
+
+        Deliberately NOT `begin_recovery()`: a reconnect is not a recovery
+        from a fault, and merging the two would make the counters unable to
+        answer the only question that matters here — was that a reconnect or
+        a drop? The position is dropped because it belongs to the previous
+        namespace; the state is "awaiting snapshot" because a new generation
+        must be re-based by a snapshot before any delta can be ordered.
+        """
+        if generation <= self.generation:
+            raise SubscriptionError(
+                f"sid {self.sid}: refusing to begin generation {generation} "
+                f"from {self.generation}; epochs are monotonic and a "
+                "backwards one would re-base the stream onto dead state")
+        self.generation = generation
+        self.last_seq = None
+        self.healthy = False
+        self.state_reason = SUB_AWAITING_SNAPSHOT
+        self.stats["generation_advances"] += 1
+
+    def supersede(self, *, market_tickers=None, generation=None) -> int:
         """Start a new generation, e.g. after a full resubscription.
 
         The generation is what makes a straggler from the old stream
         identifiable: its sequence numbers are from a different namespace, and
         without this they would look like an ordinary gap.
+
+        `generation` may be given explicitly so the collector's session-wide
+        epoch — the number it also stamps onto every archived envelope — is the
+        SAME number this object validates against. Two counters merely intended
+        to agree is how the tape ended up with a null column in the first
+        place. It may never move backwards.
         """
-        self.generation += 1
+        target = self.generation + 1 if generation is None else int(generation)
+        if target <= self.generation:
+            raise SubscriptionError(
+                f"sid {self.sid}: supersede to generation {target} from "
+                f"{self.generation} would move the epoch backwards")
+        self.generation = target
         if market_tickers is not None:
             self.subscribed_market_tickers = tuple(market_tickers)
+        self.stats["generation_advances"] += 1
         self.begin_recovery()
         return self.generation
 
@@ -724,11 +890,49 @@ class SubscriptionRouter:
         book = self.books.get(ticker)
         if book is None:
             book = self.books[ticker] = OrderBook(ticker, grid=self.grid)
+            # Born into the epoch the subscription is on, so a book created
+            # after a reconnect is not silently attributed to generation 0.
+            book.subscription_generation = self.subscription.generation
         return book
 
     def _unpublish_all(self, reason: str) -> None:
         for book in self.books.values():
             book._halt(f"subscription {self.subscription.sid}: {reason}")
+
+    def _rebase_all(self, generation: int) -> None:
+        """A new subscription generation began — rebase, do NOT unpublish.
+
+        The counterpart to `_unpublish_all`, and the distinction is the point
+        of this milestone: a lost message means every book on the subscription
+        is suspect, while a reconnect means every book's POSITION is stale and
+        nothing else. Collapsing the two made an ordinary reconnect look
+        exactly like data loss.
+        """
+        for book in self.books.values():
+            book.begin_subscription_generation(generation)
+
+    def _accept(self, record: dict, *, is_snapshot: bool = False) -> str:
+        """`subscription.accept` plus the generation-boundary bookkeeping.
+
+        The rebase has to land BETWEEN accepting the message and applying it:
+        the snapshot that opens a new generation is the very message whose
+        `seq` is from the new namespace.
+        """
+        before = self.subscription.generation
+        try:
+            return self.subscription.accept(
+                sid=record.get("sid"), seq=record.get("seq"),
+                generation=subscription_generation_of(record),
+                is_snapshot=is_snapshot)
+        finally:
+            # `finally`, not `else`: a generation can advance and THEN fail
+            # (a new generation whose first message is a delta, which genuinely
+            # cannot be ordered). The books are unpublished by the caller for
+            # that reason — but their positions still belong to the epoch that
+            # ended, and leaving them would make the next snapshot look like a
+            # rewind.
+            if self.subscription.generation != before:
+                self._rebase_all(self.subscription.generation)
 
     def dispatch(self, record: dict) -> dict:
         """Apply one archived/live envelope. Ordering, then routing, then apply.
@@ -736,6 +940,10 @@ class SubscriptionRouter:
         A subscription-level failure unpublishes EVERY book on this
         subscription, not just the one the failing message happened to name.
         The lost message could have belonged to any of them.
+
+        A GENERATION BOUNDARY is not such a failure. It rebases the books'
+        positions and leaves them published, because the record itself says a
+        new subscription began — see `SubscriptionState.accept`.
         """
         etype = record.get("event_type")
         if etype not in ("orderbook_snapshot", "orderbook_delta"):
@@ -750,9 +958,7 @@ class SubscriptionRouter:
             # frames we happen to route.
             if record.get("seq") is not None:
                 try:
-                    self.subscription.accept(
-                        sid=record.get("sid"), seq=record.get("seq"),
-                        generation=record.get("subscription_generation"))
+                    self._accept(record)
                 except SubscriptionError:
                     self._unpublish_all(
                         self.subscription.state_reason or "sequence fault")
@@ -763,10 +969,7 @@ class SubscriptionRouter:
         is_snapshot = etype == "orderbook_snapshot"
 
         try:
-            status = self.subscription.accept(
-                sid=record.get("sid"), seq=record.get("seq"),
-                generation=record.get("subscription_generation"),
-                is_snapshot=is_snapshot)
+            status = self._accept(record, is_snapshot=is_snapshot)
         except SubscriptionError as exc:
             self._unpublish_all(self.subscription.state_reason or str(exc))
             raise
