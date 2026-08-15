@@ -1264,6 +1264,67 @@ token death — and M14's finding of **0 `no_liquidity_state` and 0
 `provider_no_pair` across all cohort-8 observations to date** is the first data
 point. It currently favours "we stopped observing" over "the tokens died."
 
+### 7.5 External base rates — and what they say about *our* population
+
+The first draft of this document cited no external base rates and relied
+entirely on our own 25-hour window. Verified literature now fills that gap, and
+it does two things: it supplies brutal population-level base rates, and it
+reveals that **our observed population is not the launch population at all.**
+
+**Published base rates (each with its quality flag):**
+
+| quantity | value | source | quality |
+|---|---|---|---|
+| pump.fun 24h graduation rate | **0.198%** pooled, 0.207% steady-state | Kamat, arXiv:2607.02823 (832,941 launches, May–Jun 2026) | **unrefereed, single author, no affiliation** — data released on Zenodo |
+| pump.fun graduation rate | **0.63%** (4,338 of 655,770) | Marino, Naviglio, Tarantelli & Lillo, arXiv:2602.14860 | preprint, but **Lillo is a first-rank microstructure academic**; these figures are from a secondary summary, **not fetched from the body** |
+| tokens migrating to major DEXes | **<2%** | Mancino, arXiv:2512.11850, **IEEE ISCC 2025 (peer-reviewed)** | strongest provenance in this table |
+| new tokens flagged as rug pulls | **76.4%** (76,469 of 100,063, H1 2025) at a manually audited **0.26% FPR** | Chen et al., arXiv:2603.24625 | preprint; established blockchain-data authors |
+| tokens showing rug-pull patterns | 22,195 (from 3.69B transactions, 2021–24) | Alhaidari et al., arXiv:2504.07132, **ACM CODASPY 2025** | peer-reviewed |
+| token supply held by coordinated accounts | **36.5% on average** | Hu et al. "MELT", arXiv:2602.13480 (Georgia Tech) | preprint; note the title changed from "MemeTrans" at v2 |
+
+**The three estimates of graduation disagree by 3.2×** (0.198% vs 0.63%), across
+different windows and possibly different definitions. Treat the **order of
+magnitude — a few tenths of one percent — as established, and the level as
+unsettled.**
+
+**Now the part that matters more, and it is a finding about our own data.**
+Kamat's window implies roughly **25,200 pump.fun launches per day**;
+Marino/Lillo's implies roughly **10,800/day**. We record **~395 births/day**.
+
+> **VERIFIED (arithmetic over published launch rates and our own M13 figure): we
+> observe between 1.6% and 3.7% of pump.fun launches.** Our 411 births/25h are
+> not a sample of token launches. They are a sample of **tokens DexScreener
+> chose to surface**, which is a population already filtered by roughly 30–60×.
+
+Three consequences, and they sharpen rather than undermine the rest of §7:
+
+1. **§7.3's 58.6% is conditional on an earlier, much larger filter.** A token
+   must first be surfaced (≈2–4%), and *then* 41.4% of those carry an
+   `initial_liquidity_usd`. The compound selection is severe, and **our base
+   rates cannot be compared to the published ones without saying so.**
+2. **Our population is very likely far better than average**, because whatever
+   makes DexScreener surface a token correlates with the token having real
+   activity. That is *good* for a trading question and *bad* for any claim about
+   memecoins in general. This document makes no such general claim.
+3. **Graduation is rare enough to be a sampling problem, not just a modelling
+   one.** At published rates our ~395 births/day would contain roughly **0.8 to
+   2.5 eventual graduations per day** — so a study of graduation on our data
+   accumulates positive cases at single digits per day, and a year is a
+   few hundred events. §9.5 still argues graduation is the most timeable thing
+   here; §7.5 is the reason that argument needs a multi-month horizon rather
+   than a multi-week one.
+
+**A final piece of context that explains the thinness of the literature.** The
+IMC '25 authors (§4.3) record that the only prior comparable Solana measurement
+study dates to **2022**, and that running a Solana archival node costs roughly
+**$40,000 up front plus $3,000/month**.
+
+> **The absence of contrary published evidence about Solana microstructure is a
+> COST ARTIFACT, not a green light.** Nobody has checked most of these questions
+> because checking them is expensive. That cuts against optimism and against
+> pessimism equally — but it should be stated before anyone treats "no published
+> refutation" as support.
+
 ---
 
 ## 8. Adverse selection and toxicity without a market maker
