@@ -550,7 +550,307 @@ time. **Fitting that enforcement is a prerequisite of this bake-off, not a follo
 
 ## 7. Track 6 — Coherence / arbitrage engine (Probability Graph)
 
-*(to be filled)*
+### 7.1 The one structural decision: nodes are propositions, not markets
+
+The single most important design choice, and the one that determines whether this engine
+makes or loses money:
+
+> **A node is a PROPOSITION with a resolution procedure. A market is an EDGE-LESS ATTACHMENT
+> to a node, and the attachment is itself uncertain.**
+
+Modelling markets as nodes silently asserts that two markets attached to "the same"
+proposition must agree. They need not — they can *both settle correctly and disagree*,
+because their resolution procedures differ. Every loss in coherence trading traces back to
+collapsing this distinction. Making the attachment an explicit, typed, *confidence-weighted*
+object is what lets us price that risk instead of assuming it away.
+
+```
+Proposition (node)
+  id, canonical_statement
+  resolution_procedure: { source, criteria_text, criteria_hash, timezone,
+                          settlement_lag, dispute_process }
+  resolution_time: { earliest, expected, latest }        # NOT a point
+  domain, subdomain
+
+MarketBinding (proposition -> venue market)   # the uncertain attachment
+  proposition_id, venue, market_ticker, side_convention
+  equivalence_class: exact | strong | weak | heuristic
+  binding_confidence: float                    # P(this market settles iff the proposition holds)
+  divergence_scenarios: [text]                 # enumerated ways they can come apart
+  established_by: manual | rule | llm | cross-venue-matcher
+  reviewed_at, reviewed_by
+```
+
+`binding_confidence` and `divergence_scenarios` are not documentation. §7.5 shows they are
+the dominant term in the sizing formula.
+
+### 7.2 Edge types and their constraints
+
+Constraints stated on **true probabilities**. §7.3 converts them to executable form.
+
+| Edge | Meaning | Constraint |
+|---|---|---|
+| `complement` | B = ¬A | P(A) + P(B) = 1 |
+| `partition` (hyperedge) | {A_i} exhaustive & exclusive | Σ_i P(A_i) = 1 |
+| `mutual_exclusion` (hyperedge) | {A_i} exclusive, maybe not exhaustive | Σ_i P(A_i) ≤ 1 |
+| `implication` | A ⇒ B | P(A) ≤ P(B) |
+| `equivalence` | A ⇔ B (same venue) | P(A) = P(B) |
+| `cross_venue_equivalence` | A ⇔ B, different venues | P(A) = P(B), **conditional on binding** |
+| `conditional_dependence` | A, B dependent, structure unknown | Fréchet bounds only |
+
+For `conditional_dependence` the only constraints available without a dependence model are
+the **Fréchet–Hoeffding bounds**:
+
+&nbsp;&nbsp;&nbsp;&nbsp;max(0, P(A) + P(B) − 1) ≤ P(A ∧ B) ≤ min(P(A), P(B))
+&nbsp;&nbsp;&nbsp;&nbsp;max(P(A), P(B)) ≤ P(A ∨ B) ≤ min(1, P(A) + P(B))
+
+These are *wide*. A "violation" of a Fréchet bound is a genuine arbitrage; anything inside
+the bounds is a view, not an inconsistency. **Do not let a dependence assumption smuggle a
+view into the arbitrage engine** — that is how a coherence desk becomes a directional desk
+without anyone deciding to.
+
+Note that `implication` and `partition` subsume most of Kalshi's structured families. The
+ladder markets the prophets paper mentions ("price at least \$7K", "at least \$8K", …) are a
+pure implication chain: P(≥8K) ≤ P(≥7K), monotone in the threshold. That chain is the
+cheapest, highest-confidence source of constraints on the whole venue — same ticker family,
+same settlement source, same resolution time, no semantic risk at all. **Start there.**
+
+### 7.3 Constraints must be evaluated on EXECUTABLE prices, never midpoints
+
+This is where most naive coherence engines die. A constraint on probabilities is not a
+constraint on quotes. To *capture* a violation you must buy every leg at its **ask** and sell
+at its **bid**. So:
+
+- **Complement pair.** Buy YES at ask a, buy NO at ask b. Guaranteed payoff 1. Tradable iff
+  **a + b + fees < 1**.
+- **N-leg partition.** Buy every leg at its ask. Payoff exactly 1. Tradable iff
+  **Σ_i ask_i + fees < 1**.
+- **Implication A ⇒ B violated.** Requires ask(A) < bid(B): buy A, sell B. Payoff ≥ 0 always,
+  > 0 when A false and B true.
+
+Evaluating any of these on midpoints manufactures phantom edge equal to half the summed
+spread. On an N-leg partition that is N/2 spreads of pure fiction. **The engine must read
+the book, not the mid.** This is a hard architectural requirement and the repo does not yet
+have the input: `MarketPriceTick` stores `yes_bid`/`yes_ask` but there is no depth beyond
+top-of-book and — per `paper-execution-ledger-and-ranked-roadmap` — **no live tape writer on
+the Probability lane at all.** The coherence engine cannot be built before that lands.
+
+Pleasingly, the prophets paper covers this case within its own framework **[VERIFIED]**:
+
+> Notably, Theorem 8 holds even when **q** ∉ Δ_K. As an interesting application, we can also
+> apply it when Q := Σ q_k < 1, i.e., there is trivial arbitrage opportunity by buying
+> **s** = **1** at cost Q(<1) with a deterministic return 1 … By choosing G(**q**) = (Σ q_k)²,
+> we can verify that the proper betting **s**_G = 2[Σ(p_k − q_k)]·**1**, leading to
+> deterministic profit 2(1−Q)² for any **p**\*.
+
+So coherence arbitrage is not a separate mathematics — it is Theorem 8 at a degenerate
+potential, and the same ROI decomposition applies. It is the special case where the entire
+profit is the divergence term and the score gap is irrelevant.
+
+### 7.4 The fee hurdle is large, and it is largest exactly where the markets are
+
+Kalshi's taker fee is **ceil(0.07 · C · P · (1−P))** per trade, maker ≈ 0.0175 · C · P · (1−P);
+there is no settlement fee. **[VERIFIED — Kalshi fee schedule, secondary sources; confirm
+against the primary PDF before use]** The fee is *maximal at P = 0.50* and decays to zero at
+both extremes. Consequences, computed:
+
+**Minimum mispricing required for a complement pair to break even on fees alone:**
+
+| leg prices | taker hurdle | maker hurdle |
+|---|---|---|
+| 0.50 / 0.50 | **3.50¢** | 0.88¢ |
+| 0.70 / 0.30 | 2.94¢ | 0.74¢ |
+| 0.90 / 0.10 | 1.26¢ | 0.32¢ |
+| 0.99 / 0.01 | 0.14¢ | 0.03¢ |
+
+**N-leg exhaustive partition, legs at 1/N (taker):**
+
+| N | fee hurdle per \$1 payoff |
+|---|---|
+| 2 | 3.50¢ |
+| 3 | 4.67¢ |
+| 4 | 5.25¢ |
+| 5 | 5.60¢ |
+| 10 | **6.30¢** |
+
+Three conclusions **[INFERRED]**:
+
+1. **At the money you need ~3.5¢ of genuine violation before a two-leg arb is break-even,
+   before spread.** Sub-penny coherence violations at mid-price are not opportunities; they
+   are noise. A very large fraction of what a naive detector flags will be inside this band.
+2. **The fee hurdle grows with leg count** (roughly ∝ N · (1/N)(1−1/N) = 1 − 1/N), so wide
+   partitions are *worse*, not better, despite offering more apparent violations.
+3. **Maker execution is a 4× improvement.** Since coherence arbs are not time-critical in the
+   way a latency arb is, resting limit orders on the legs is the correct execution mode. But
+   resting orders reintroduce **leg risk** (§7.5), and that trade-off — 4× cheaper vs. partial
+   fills — is the central execution question for this engine. It should be pre-decided, not
+   discovered live.
+
+### 7.5 Why an apparent violation is NOT tradable — the part that matters
+
+The brief asks for real weight here. It deserves it: **essentially every dollar lost by a
+coherence engine is lost to this list**, not to the detection math, which is trivial.
+
+**(1) Fees.** §7.4. Disqualifies most flagged violations outright.
+
+**(2) Spread.** You cross it on every leg. An N-leg basket crosses N spreads. On thin Kalshi
+markets a 3–5¢ spread per leg is ordinary, which alone exceeds the entire fee hurdle.
+
+**(3) Depth.** Top-of-book size is often a handful of contracts. An arb that exists for 10
+contracts and evaporates for 100 is not a strategy, it is a rounding error with operational
+overhead. **Size must be computed from the book, and the opportunity's size is
+min over legs of available depth at the required price** — the *worst* leg governs.
+
+**(4) Leg risk / non-atomicity.** There is no atomic multi-leg execution. You fill leg 1,
+the market moves, leg 2 is gone, and you are now holding a naked directional position you
+never wanted, in a market you have no view on. **A partially-filled arbitrage is a random
+directional bet.** Mitigations — leg into the least-liquid leg first, hard timeout, immediate
+unwind at market on timeout — all cost money, and the unwind cost must be budgeted *into the
+opportunity's expected value*, not treated as an exception.
+
+**(5) Resolution-criteria mismatch — the killer.** Two markets that read identically can
+settle differently:
+- *Different source of truth.* "Will CPI exceed 3%?" — initial print vs. revised figure.
+- *Different timezone or cutoff.* An event on the boundary of a UTC vs. ET day.
+- *Different treatment of the degenerate case.* Ties, cancellations, postponements,
+  withdrawal of a candidate, a game suspended and completed the next day. Venue A voids;
+  venue B settles NO. Both are correct per their own rules; your "arbitrage" loses a full leg.
+- *Different dispute/oracle process.* A Polymarket UMA resolution and a Kalshi exchange
+  determination are simply different mechanisms with different failure modes.
+
+**(6) Semantic near-equivalence.** The LLM-shaped failure. A matcher that scores
+"Will Candidate X win the nomination?" against "Will Candidate X be the party's nominee?" as
+equivalent is right ~almost always — and the residual is exactly the scenario where they
+diverge (nominee withdraws after winning; brokered convention). **Near-equivalence is
+correlated with the payoff**: the cases where the propositions come apart are precisely the
+weird cases, and weird cases are when prices move. The residual risk is not independent noise,
+it is adversarially selected.
+
+**(7) Correlated resolution risk.** Venue-level events — a delisting, an exchange
+determination reversal, a regulatory halt, a settlement-source outage — hit all your legs at
+once. Diversifying across many arbs does not diversify this.
+
+**(8) Capital lockup.** Prediction-market arbs are held to resolution; there is no
+mark-to-market exit at a fair price in a thin book. So the correct metric is
+**annualized return on capital locked until the *latest* leg resolves**:
+
+| captured edge | 7d | 30d | 90d | 180d | 365d |
+|---|---|---|---|---|---|
+| 1¢ | 68.9% | 13.0% | 4.2% | 2.1% | 1.0% |
+| 2¢ | 186.7% | 27.9% | 8.5% | 4.2% | 2.0% |
+| 5¢ | 1350.6% | 86.7% | 23.1% | 11.0% | 5.3% |
+
+A 2¢ arb on a one-year market annualizes to **2.0%** — worse than T-bills, for
+unbounded tail risk and full operational cost. Note the resolution time must be the
+**latest** across legs, and it must be the pessimistic tail of the distribution, not the
+expected value; markets extend, sports get postponed, elections get contested.
+
+**(9) The quantified punchline.** Let ε = P(the legs fail to offset) from causes (5)–(7).
+For a 2¢ arb on a \$0.98 basket:
+
+| ε | EV per \$0.98 staked |
+|---|---|
+| 0.000 | +2.00¢ |
+| 0.005 | +1.50¢ |
+| 0.010 | +1.00¢ |
+| **0.020** | **0.00¢** |
+| 0.050 | −3.00¢ |
+
+> **Break-even ε = edge / (edge + basket cost) = 0.02 / 1.00 = 2%.**
+> A 2-cent coherence arbitrage is destroyed by a **2% chance the legs don't offset.**
+> No LLM semantic matcher should be credited with 98% precision on the adversarially-selected
+> tail cases described in (6). **Therefore: cross-venue and LLM-established equivalences are
+> not tradable at ordinary edge sizes, full stop.** Only `exact` bindings — same venue, same
+> ticker family, same settlement source, same resolution timestamp, mechanically verified —
+> clear this bar.
+
+This is the central finding of Track 6 and it inverts the usual enthusiasm: **the coherence
+engine's value is almost entirely in the intra-venue structured families (complement pairs,
+threshold ladders, exhaustive partitions within one event), and almost none of it is in the
+exciting cross-venue semantic matching.**
+
+### 7.6 Continuous coherence checking
+
+Design **[INFERRED]**:
+
+- **Incremental, event-driven.** Maintain `constraints_by_market: ticker -> [constraint_id]`.
+  A tick on ticker *m* re-evaluates only constraints touching *m*. Cost is O(degree(m)), not
+  O(|constraints|). This is the only form that keeps up with a live tape.
+- **Two-tier evaluation.** Tier 1: cheap mid-price screen to shortlist. Tier 2: full
+  executable-price + depth + fee + ε evaluation on the shortlist only. Never emit from Tier 1.
+- **Staleness is a first-class input.** A constraint is only evaluable if *every* leg has a
+  quote fresher than τ. A stale leg is not a violation, it is missing data. Given the
+  observation-cliff history in this repo (`stage1-denominator-baseline`: 24h coverage 4.57%),
+  assume staleness is the common case and fail closed.
+- **Persistence filter.** A violation visible in one tick is probably a crossed/stale book.
+  Require it to persist over k consecutive independent observations spanning ≥ Δt before it
+  is even a candidate.
+- **Hysteresis on emission** so a violation oscillating around the threshold does not emit a
+  stream of duplicate opportunities.
+
+### 7.7 From violation to typed, sized opportunity
+
+```
+CoherenceOpportunity
+  id, detected_at, constraint_id, constraint_type
+  legs: [ { ticker, side, executable_price, price_source: ask|bid,
+            depth_available, quote_age_ms } ]
+
+  # gross
+  raw_violation           # e.g. 1 - sum(ask_i)
+  gross_edge_per_unit
+
+  # deductions, each explicit and separately auditable
+  fee_estimate            # ceil(0.07*C*P*(1-P)) per leg, taker or maker
+  spread_cost             # already in executable_price; recorded for attribution
+  slippage_estimate       # depth-walked, not assumed
+  net_edge_per_unit
+
+  # risk
+  binding_confidence_min  # min over legs
+  epsilon_leg_failure     # P(legs do not offset) from bindings + divergence_scenarios
+  risk_adjusted_ev        # (1-eps)*net_edge - eps*basket_cost
+  breakeven_epsilon       # net_edge / (net_edge + basket_cost)   <- report ALWAYS
+
+  # sizing
+  max_size_from_depth     # min over legs
+  max_size_from_risk      # from the Track 3 scale rule
+  recommended_size        # min of the two
+
+  # time
+  latest_leg_resolution_p90
+  annualized_return_on_locked_capital
+
+  # gating
+  tradable: bool
+  rejection_reasons: [ fee_hurdle | spread | depth | staleness | binding_confidence
+                     | epsilon_too_high | horizon_too_long | not_persistent ]
+```
+
+Two rules on this schema:
+
+1. **`breakeven_epsilon` is always reported**, tradable or not. It is the single number that
+   makes the (6)/(7) risk legible: "this arb requires our semantic matcher to be better than
+   98% accurate on hard cases" is a sentence a human can rule on. Nothing else in the record
+   forces that question to be asked.
+2. **`rejection_reasons` is a list, not a first-match.** We want the distribution of *why*
+   things fail, because that tells us whether the engine is fee-bound (→ pursue maker
+   execution), depth-bound (→ it will never scale), or staleness-bound (→ fix the tape first).
+   Guessing which one is the binding constraint is exactly the mistake
+   `crypto-reconciliation-capacity-001` records six sessions of.
+
+### 7.8 Build order
+
+1. **Intra-venue complement pairs** on the same ticker family. `exact` binding, ε ≈ 0,
+   mechanically verifiable, no semantics. Measure how often the fee hurdle is cleared. If it
+   never is, **stop here** — that result alone is worth having and saves the rest of the work.
+2. **Threshold ladders** (implication chains). Same settlement source, monotone constraint.
+3. **Exhaustive partitions** within one event.
+4. Mutual exclusion / Fréchet bounds — only if 1–3 show tradable frequency.
+5. **Cross-venue equivalence: do not build.** §7.5(9) says it cannot clear the bar at
+   realistic edge sizes. Revisit only with a measured, out-of-sample estimate of ε from
+   *observed* historical divergences between paired markets — and note that estimating a 2%
+   tail rate to useful precision itself needs hundreds of paired resolutions.
 
 ## 8. Where the handed premise is wrong
 
