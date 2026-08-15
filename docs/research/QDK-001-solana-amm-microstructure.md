@@ -105,22 +105,29 @@ before the transaction is sent.
 
 Confusing these three is the source of most bad P&L in this domain.
 
-| price | definition | formula |
-|---|---|---|
-| **spot / marginal, pre-trade** \(p_0\) | the price of an infinitesimal trade | \(p_0 = y/x\) |
-| **effective execution price** \(p_{\text{exec}}\) | what you actually pay, averaged over the trade | \(p_{\text{exec}} = \Delta x / \Delta y\) |
-| **marginal, post-trade** \(p_1\) | the price a data provider will report after your trade | \(p_1 = (y-\Delta y)/(x+\Delta x)\) |
+Fix the convention for the rest of this document: **\(x\) is the quote reserve
+(what you spend), \(y\) is the token reserve (what you receive), and every price
+is quoted in quote-units per token.** Let \(\tau \equiv \Delta x / x\), the trade
+size as a fraction of the **quote-side reserve**.
 
-Define \(\tau \equiv \Delta x / x\), the trade size as a fraction of the
-**input-side reserve**. Then:
+| price | definition | formula | ratio to \(p_0\) |
+|---|---|---|---|
+| **spot / marginal, pre-trade** \(p_0\) | the fee-free price of an infinitesimal trade | \(p_0 = x/y\) | 1 |
+| **effective execution price** \(p_{\text{exec}}\) | what you actually pay, averaged over the whole trade | \(p_{\text{exec}} = \Delta x / \Delta y\) | \(\dfrac{1+\gamma\tau}{\gamma}\) |
+| **marginal, post-trade** \(p_1\) | **the price a data provider will report after your trade** | \(p_1 = (x+\Delta x)/(y-\Delta y)\) | \((1+\tau)(1+\gamma\tau)\) |
 
-$$\frac{p_{\text{exec}}}{p_0} = \frac{1+\gamma\tau}{\gamma}, \qquad
-\frac{p_1}{p_0} = \frac{1}{\;\gamma \cdot \text{(as re-expressed below)}\;}$$
+Both ratios follow directly from §2.1 by substituting
+\(y - \Delta y = xy/(x+\gamma\Delta x)\).
 
-More usefully, in terms of value received versus value at spot, the **total
-entry cost** (fee plus impact, as a fraction of notional) is
+**Note the ordering, which §2.6 turns into a warning:** for any \(\tau>0\),
+\((1+\tau)(1+\gamma\tau) > (1+\gamma\tau)/\gamma\) whenever \(\gamma(1+\tau)>1\)
+— i.e. for all but vanishingly small trades, **the reported price moves further
+than your execution price did.**
 
-$$\boxed{\;S(\tau, f) \;=\; 1 - \frac{\gamma}{1+\gamma\tau}\cdot\frac{1}{1}\;=\;\frac{f + \gamma\tau}{1 + \gamma\tau}\;}$$
+In terms of value received versus value at spot, the **total entry cost** (fee
+plus impact, as a fraction of notional) is
+
+$$\boxed{\;S(\tau, f) \;=\; 1 - \frac{p_0}{p_{\text{exec}}} \;=\; 1 - \frac{\gamma}{1+\gamma\tau} \;=\; \frac{f + \gamma\tau}{1 + \gamma\tau}\;}$$
 
 and its leading-order expansion is
 
@@ -134,9 +141,12 @@ n=\$500\) the exact cost is 35.216% and \(f+\tau\) gives 35.215%; at
 > **Entry cost ≈ the fee, plus the trade size as a fraction of the quote-side
 > reserve.** Nothing more sophisticated is needed to size a probe.
 
-The post-trade marginal price satisfies \(p_1/p_0 = (1+\tau)/(1 -
-\gamma\tau/(1+\gamma\tau))^{-1}\), which simplifies to a strictly larger move
-than the execution price experienced — see §2.4, which is where this matters.
+Worked check of the post-trade formula against §2.6's headline number: at
+\(L=\$2{,}860\) (so \(x=\$1{,}430\)), \(n=\$500\), \(f=0.25\%\), we get
+\(\tau = 0.34965\), \(\gamma\tau = 0.34878\), hence
+\(p_1/p_0 = (1.34965)(1.34878) = 1.8204\) — **a reported price move of +82.0%**
+— against \(p_{\text{exec}}/p_0 = 1.34878/0.9975 = 1.3522\), an execution price
+only 35.2% above spot. Both match the exact computations in §2.4 and §2.6.
 
 ### 2.3 Converting provider TVL into reserves — the load-bearing step
 
