@@ -258,7 +258,43 @@ finding, just an order of magnitude less dramatic than the artifact suggested.
 
 ### Other cohorts
 
-| axis | cohort | n | Brier | skill |
+> ## ⚠ THE `skill` COLUMN IS **NOT** MARKET-RELATIVE SKILL (annotated 2026-08-15)
+>
+> Every `skill` figure in this document is **`brier_skill_vs_base_rate`**
+> (`app/services/forecast_reliability.py:234`) — level 1 of the evidence
+> hierarchy adopted in
+> `docs/experiments/EDGE-DISCOVERY-001-PREREGISTRATION.md`:
+>
+> ```
+> beats base rate < beats naïve model < beats MARKET PRICE
+>                 < survives executable price < survives fees < positive expectancy
+> ```
+>
+> **It bears on nothing about tradability.** The market beats the base rate by
+> far more than we do.
+>
+> **Do not compare rows to infer market-relative skill.** `template_baseline:v1`
+> IS the contemporaneous market midpoint (`app/services/forecasting.py:166`,
+> "Anchors to the market midpoint … Adds no independent information"), so its
+> **+0.1958** is *the market's own* base-rate skill. Reading
+> baseball's +0.2286 against it as "we beat the market" is **invalid**: the two
+> forecasters ran on **disjoint populations** — verified, zero source-backed
+> forecasts share a market and scanner run with a template forecast
+> (`PAIRED = 0`). Different markets, different difficulty.
+>
+> **The matched, no-lookahead measurement says the market beats us:**
+> ΔS = **−0.01700**, event-clustered over 1,482 events, 95% CI
+> [−0.0198, −0.0152] — `docs/evidence/qdk-001/DELTA_S_RESULT.md`.
+> Both forecasters negative.
+>
+> The metric key itself is not renamed here because
+> `app/services/forecast_reliability.py` is pinned at
+> `experiment_registry.py:422` as an evaluation-code file, so editing it — even
+> a comment — is a drift event against a live registered experiment. The rename,
+> plus the addition of `brier_skill_vs_market`, must land together in a declared
+> amendment window.
+
+| axis | cohort | n | Brier | skill (**vs BASE RATE**, not vs market) |
 |---|---|---:|---:|---:|
 | forecaster | baseball_evidence:v1 | 7,983 | 0.1868 | +0.2286 |
 | forecaster | template_baseline:v1 | 4,615 | 0.1996 | +0.1958 |
