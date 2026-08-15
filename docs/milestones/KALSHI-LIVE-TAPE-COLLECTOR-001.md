@@ -1429,3 +1429,75 @@ neither arm needs an `if metrics` branch in the hot path.
   silently folded into the result.
 - Segment rotation is inside the measured window (2–3 rotations per run), so the
   closer thread competes during measurement as it will in production.
+
+### 13.1 CORRECTIONS to §13, and an integration gap CP5 exposed
+
+Two amendments, both from the CP5 agent's continued analysis after §13 was
+first written. §13's figures above are superseded by these.
+
+#### 13.1.1 The overhead number was too SMALL — corrected to 0.31%
+
+`NULL_METRICS._noop(*args, **kwargs)` packs a varargs tuple and a kwargs dict on
+every call — work a genuine no-instrumentation build would never pay. The null
+arm was therefore slightly *too slow*, so the raw `real − null` difference
+**understated** the true cost.
+
+Measured correction: **+125 ns/event**.
+
+| | ns/event | % of append p50 (329,190 ns) |
+|---|---|---|
+| §13 as first written | 901 | 0.27% |
+| **corrected** | **≈1,026** | **≈0.31%** |
+
+**GATE STILL PASSES** — 0.31% is well inside the small-single-digit-percent
+requirement. Recorded because the correction moved the number in the direction
+that flatters the design, which is exactly the direction that must not be left
+unstated.
+
+Independent cross-check worth noting: append p50 ≈ **329 µs** on the null arms
+reproduces `segment.py`'s documented **3,440 ev/s** append ceiling from a
+completely different measurement path.
+
+Rig: Apple M2 (Mac14,15), 8 cores, 8 GB, macOS 26.2, CPython 3.12.3, contended
+throughout — 1-minute load ranged **4.77 → 24.29** across runs. 24 runs,
+960,000 archived events, 0 rejections, 3 rotations per run with the closer still
+draining at loop end.
+
+#### 13.1.2 CP3 AND CP4 DO NOT AGREE ON THE METRICS SEAM — the lane is unwired
+
+**`CollectorMetrics` has no caller anywhere in `app/`.** Verified: the only
+matches outside `collector_metrics.py` itself are prose in `collector.py`'s
+docstrings. CP4's measurement lane is implemented and tested but is
+**unreachable production code**.
+
+The two checkpoints designed different interfaces:
+
+| | CP3 (`collector.py`) | CP4 (`collector_metrics.py`) |
+|---|---|---|
+| per frame | `observe_frame(*, event_type, archived, append_ns, …)` | `on_frame(received_mono_ns, wire_bytes)` |
+| per append | — (folded into `observe_frame`) | `on_append(ns, rotated=)` |
+| counters | `observe_event(name)` from a closed set | `on_sequence_fault(...)`, `on_disconnect()`, … |
+| call style | inside a `try/except`, failures counted in `metrics_errors` | direct call |
+
+**Cause: an orchestration error, not an agent error.** The two checkpoints were
+run in parallel under strict file ownership — CP3 was told to define a hook and
+not implement the metrics lane; CP4 was told to define the interface it expected
+and not wire it. Both complied exactly as instructed. Nothing reconciled the two
+interfaces, because nothing was asked to.
+
+**This is an open work item and P1 is NOT complete without it.** A bridging
+checkpoint (CP3.5) must reconcile the seam before CP6, since a live session with
+an unwired metrics lane measures nothing — which is the entire point of the
+milestone.
+
+Costs to carry into that decision, all measured:
+
+- CP3's `try/except` wrapper: **+208 ns/frame** on top of the 1,026 ns
+  (total ≈1,234 ns ≈ **0.37%** of append — still passing).
+- The design's only rotation signal, `path != previous_path`: **~125–167
+  ns/frame**, charged to **both** arms.
+
+**Recommendation:** keep CP3's `try/except`. CP4 already proves it never raises
+(six injected faults, none propagate), so the wrapper is redundant defence — but
+at 208 ns it is 0.06% of append, and the failure it guards against is the
+metrics lane killing a live capture session. That trade is worth 0.06%.
