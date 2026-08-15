@@ -444,6 +444,67 @@ def path_compare_cost_ns(iterations: int = 200_000) -> dict:
             "p95_ns": _pct(s, 0.95), "mean_ns": sum(samples) / iterations}
 
 
+class _SignatureNoop:
+    """No-ops with `CollectorMetrics`'s REAL signatures, for the null-call price."""
+
+    def on_frame(self, received_mono_ns, wire_bytes=0) -> None:
+        return None
+
+    def on_append(self, elapsed_ns, rotated=False) -> None:
+        return None
+
+
+def null_call_cost_ns(iterations: int = 200_000) -> dict:
+    """What the NULL arm pays that a build with NO instrumentation would not.
+
+    THIS IS THE ONE WAY THE HEADLINE NUMBER CAN BE TOO SMALL, so it is
+    measured rather than argued away.
+
+    `NullCollectorMetrics` implements every hook as
+    `_noop(self, *_args, **_kwargs)`. That signature is what lets one method
+    stand in for eight, but it also means each call PACKS a varargs tuple and
+    a kwargs dict -- work a collector built without a measurement lane would
+    never do, because it would have no call there at all. So the null arm is
+    not free, and `E1 = real - null` therefore measures
+
+        (real metrics work) - (varargs packing)
+
+    which is smaller than the true cost of having instrumentation at all. The
+    gap is measured here and added back, and the corrected figure is the one
+    reported. Using `NULL_METRICS` is still correct -- it is what keeps an
+    `if metrics` branch out of both arms -- but the arithmetic it introduces
+    has to be undone rather than ignored.
+    """
+    nm = NULL_METRICS
+    sig = _SignatureNoop()
+    mono = time.monotonic_ns
+    absent = [0] * iterations
+    varargs = [0] * iterations
+    signature = [0] * iterations
+    gc.collect()
+    for i in range(iterations):
+        t0 = mono()
+        t1 = mono()
+        nm.on_frame(t0, 512)
+        nm.on_append(t1 - t0, rotated=False)
+        t2 = mono()
+        sig.on_frame(t0, 512)
+        sig.on_append(t1 - t0, rotated=False)
+        t3 = mono()
+        absent[i] = t1 - t0
+        varargs[i] = t2 - t1
+        signature[i] = t3 - t2
+    a, v, s = sorted(absent), sorted(varargs), sorted(signature)
+    return {"iterations": iterations,
+            "absent_p50_ns": _pct(a, 0.50),
+            "null_varargs_p50_ns": _pct(v, 0.50),
+            "signature_noop_p50_ns": _pct(s, 0.50),
+            # The correction: what two `_noop(*a, **kw)` calls cost over
+            # having no call at all.
+            "null_call_cost_p50_ns": _pct(v, 0.50) - _pct(a, 0.50),
+            "null_call_cost_mean_ns": (sum(varargs) - sum(absent)) / iterations}
+
+
 class _SeamProbe:
     """Reproduces `collector.py`'s `_metric_frame` wrapper, to price it.
 
@@ -519,6 +580,7 @@ def run_cp5(*, n: int, reps: int, max_segment_records: int, seed: int,
     clock = clock_pair_cost_ns()
     pathcmp = path_compare_cost_ns()
     seam = seam_wrapper_cost_ns()
+    nullcall = null_call_cost_ns()
 
     print(f"CP5 instrumentation-overhead gate  "
           f"n={n} reps={reps} max_segment_records={max_segment_records} "
@@ -532,13 +594,18 @@ def run_cp5(*, n: int, reps: int, max_segment_records: int, seed: int,
     print(f"  seam wrap  : direct p50={seam['direct_p50_ns']:.0f}ns vs "
           f"try/except+**kwargs p50={seam['wrapped_p50_ns']:.0f}ns "
           f"(+{seam['wrapper_overhead_p50_ns']:.0f}ns) -- NOT in the arms below")
+    print(f"  null call  : absent p50={nullcall['absent_p50_ns']:.0f}ns, "
+          f"_noop(*a,**kw) p50={nullcall['null_varargs_p50_ns']:.0f}ns, "
+          f"real-signature noop p50={nullcall['signature_noop_p50_ns']:.0f}ns "
+          f"-> E1 UNDERSTATES by {nullcall['null_call_cost_p50_ns']:.0f}ns")
     print(f"  load before: {load_before}")
     print()
     if reps <= 0:
-        # Calibration-only run. Useful on its own: these four numbers are the
-        # floor and the units of everything else, and they are cheap.
+        # Calibration-only run. Useful on its own: these numbers are the floor
+        # and the units of everything else, and they are cheap.
         return {"summary": {"calibration_only": True, "clock_pair": clock,
                             "path_compare": pathcmp, "seam_wrapper": seam,
+                            "null_call": nullcall,
                             "load_before": load_before,
                             "verdict": "CALIBRATION ONLY -- NO GATE VERDICT"},
                 "runs": []}
@@ -621,6 +688,7 @@ def run_cp5(*, n: int, reps: int, max_segment_records: int, seed: int,
         "clock_pair": clock,
         "path_compare": pathcmp,
         "seam_wrapper": seam,
+        "null_call": nullcall,
         "load_before": load_before, "load_after": load_after,
         "load_1m_over_runs": sorted(
             r["load"].get("load_1m") for r in runs
@@ -680,8 +748,10 @@ def run_cp5(*, n: int, reps: int, max_segment_records: int, seed: int,
     print(f"  DENOMINATOR: append p50 (null arms) = {append_p50_null:.0f} ns; "
           f"append mean = {append_mean_null:.0f} ns; "
           f"producer step = {nsev_null:.0f} ns")
-    print(f"    E1 as % of append p50      : "
+    print(f"    E1 raw as % of append p50  : "
           f"{summary['e1_pct_of_append_p50']:+.2f}%")
+    print(f"    E1 CORRECTED (+{correction:.0f}ns null-call) as % of append p50 : "
+          f"{summary['e1_corrected_pct_of_append_p50']:+.2f}%")
     print(f"    E2 as % of append p50      : "
           f"{summary['e2_pct_of_append_p50']:+.2f}%")
     print(f"    E3 as % of append p50      : "
@@ -721,7 +791,18 @@ def run_cp5(*, n: int, reps: int, max_segment_records: int, seed: int,
                     100.0 * ((mean + ci) if abs(mean) > limit else limit)
                     / append_p50_null}
 
-    a1 = _assess(e1, f1, "E1 direct")
+    # E1 is corrected UPWARD before it is assessed. `NULL_METRICS`'s
+    # `_noop(*a, **kw)` charges the null arm for varargs packing that a
+    # collector with no measurement lane would not pay, so the raw difference
+    # understates the cost of having instrumentation AT ALL. The gate is
+    # judged on the corrected figure -- the pessimistic one.
+    correction = nullcall["null_call_cost_p50_ns"]
+    e1c = (e1[0] + correction, e1[1], e1[2])
+    summary["e1_null_call_correction_ns"] = correction
+    summary["e1_corrected_overhead_ns"] = e1c[0]
+    summary["e1_corrected_pct_of_append_p50"] = 100.0 * e1c[0] / append_p50_null
+
+    a1 = _assess(e1c, f1, "E1 direct (corrected)")
     a2 = _assess(e2, f2, "E2 throughput")
     a3 = _assess(e3, f3, "E3 cpu-time")
     summary["estimators"] = [a1, a2, a3]
