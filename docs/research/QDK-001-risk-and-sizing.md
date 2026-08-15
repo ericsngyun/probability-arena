@@ -345,7 +345,212 @@ probability" statement (Section 5.2).
 
 ## 3. Track 2 — Uncertainty-aware sizing
 
-_(to be filled)_
+A parallel track designs a forecast layer that emits a **distribution** `π` over
+`p` rather than a point. The natural move is Kelly on a pessimistic quantile,
+`p_conservative = Q_π(α)`. This section establishes when that is justified and
+when it is theatre.
+
+### 3.1 The negative result: Bayesian Kelly gives you nothing here
+
+For a single binary contract, `g(f; p, q)` is **linear in `p`**:
+
+```
+E_π[g(f;p)] = E_π[ p·ln(1+f·b) + (1−p)·ln(1−f) ]
+            = p̄·ln(1+f·b) + (1−p̄)·ln(1−f)
+            = g(f; p̄, q)          where p̄ = E_π[p]
+```
+
+The objective under the posterior is *identical* to the objective at the
+posterior mean. Therefore:
+
+> **For a single binary contract, one-period Bayesian Kelly is exactly Kelly at
+> the posterior mean. The width, skew, and shape of the posterior over `p` have
+> literally zero effect on the Bayes-optimal log-growth bet.**
+
+This is worth stating loudly because the intuition "I am uncertain, so I should
+bet less" does **not** follow from Bayesian log-utility in this setting. Anyone
+who implements "Bayesian Kelly" expecting it to shrink positions has implemented
+Kelly-at-the-mean with extra steps. (The result is special to the binary payoff
+and to one period — it fails for general payoffs, where `p` enters inside the
+log, and it fails multi-period, see 3.3.)
+
+So the sizing-down must be justified on other grounds. There are three good ones.
+
+### 3.2 Justification A — shrinkage, and the identity that makes `λ_calib` measurable
+
+Section 2.3 measured the damage from noisy `p̂`. Reconcile it with 3.1: there is
+no contradiction, because in 2.3 the estimate `p̂` was plugged in **as if it were
+the posterior mean**, and it is not. If `p̂` is a noisy signal about `p`, then
+`E[p | p̂] ≠ p̂` — the posterior mean is `p̂` **shrunk toward the prior**.
+
+The 2.3 disaster is therefore not "Bayes fails"; it is "we skipped the Bayesian
+step". And the shrinkage has a directly estimable form. In log-odds space, with
+`x = logit(p̂)`, the standard recalibration model is
+
+```
+logit P(Y=1 | x) = a + β·x
+```
+
+`β` is the **Cox calibration slope**. `β < 1` means the forecaster is
+overconfident and its log-odds should be shrunk by exactly `β`; `β > 1` means
+underconfident. Fitting it is a one-parameter logistic regression on already-
+scored forecasts.
+
+**This yields a genuinely learned, not assumed, first factor of `λ`:**
+
+```
+p_calibrated = σ( â + β̂ · logit(p̂) )        and       λ_calib ≡ β̂
+```
+
+Applied *before* any Kelly computation, not as a multiplier afterwards — because
+shrinking log-odds and shrinking `f` are not the same operation, and the former
+is the one with a probabilistic justification.
+
+**How much data does `β̂` need?** Simulated Fisher information for the slope
+(600 replicates per cell, `x = logit(p̂)` normal with the given sd):
+
+| sd(logit p̂) | n = 200 | 500 | 1,000 | 2,000 | 5,000 | 12,945 |
+|---|---:|---:|---:|---:|---:|---:|
+| 0.5 (narrow forecasts) | ±0.603 | ±0.394 | ±0.270 | ±0.192 | ±0.122 | ±0.076 |
+| 1.0 | ±0.362 | ±0.224 | ±0.162 | ±0.116 | ±0.073 | ±0.045 |
+| 1.5 (bold forecasts) | ±0.306 | ±0.191 | ±0.138 | ±0.096 | ±0.060 | ±0.038 |
+
+(95% CI half-widths on `β̂`.)
+
+**This is the single most encouraging number in the document.** At `n ≈ 1,000`
+scored forecasts you know your calibration slope to about ±0.16, and at the
+12,945 forecasts this repository has already scored (per
+`docs/OUTCOME_SYNC_POST_DRAIN_BASELINE_2026_08.md`) you would know it to ±0.045.
+Contrast Section 8: establishing net positive expectancy needs **15,000+
+executable trades**. Calibration is roughly **15× cheaper in sample than P&L**,
+and it must be established first — not because it is easier, but because
+Section 2.1's identity says it is the *same quantity*, measured with less noise.
+
+### 3.3 Justification B — multi-period structure and the absorbing barrier
+
+The 3.1 equivalence is one-period. Over a sequence with a **non-replenished**
+bankroll, three things break it:
+
+1. **Compounding is path-dependent.** `E[log W_T] = Σ E[g_t]` is true, but the
+   *distribution* of `W_T` is not, and a drawdown constraint (Section 5) is a
+   statement about the path, not the endpoint.
+2. **Parameter uncertainty persists across bets.** If `p̂` is wrong for a *class*
+   of markets, the error is repeated, not averaged out. The one-period posterior
+   treats each bet's error as fresh; in reality model error is a common factor
+   across the whole sequence (Section 6 treats this as a correlation problem,
+   which is what it is).
+3. **There is a real absorbing barrier.** Contracts are integer, there is a
+   minimum size, and fees are charged per contract. Proportional betting on a
+   continuum has no ruin; proportional betting with a minimum lot does.
+
+### 3.4 Justification C — ambiguity, not risk
+
+The decisive argument: **the posterior is itself a model output, and its width is
+not identifiable from outcome data.** This deserves to be stated as a hard
+limitation:
+
+> `p` is **never observed**. Only the binary outcome `Y` is. The outcome data
+> identifies the *mean* of the predictive distribution (that is what a
+> calibration curve tests) and says essentially nothing about its *spread*. A
+> forecast layer that reports a 90% credible interval of ±2 pp and one that
+> reports ±15 pp produce identical likelihoods for every possible outcome
+> sequence, provided their means agree.
+
+Consequences for the design:
+
+- A self-reported posterior width **must not** be trusted as the input to
+  `p_conservative`. It is unfalsifiable by the only data available.
+- The dispersion used for `p_conservative` must come from a **measurable**
+  source. Three that are:
+  1. **Bootstrap / refit dispersion** — resample the training window, refit,
+     look at the spread of `p̂` for the same market. Measures estimation
+     variance, which is real and is exactly the `s` of Section 2.3.
+  2. **Ensemble disagreement** — spread across independent forecasters/seeds for
+     the same market. Measures model-choice sensitivity.
+  3. **Regime-conditional residual dispersion** — historical `|Y − p̂|` grouped
+     by regime (sport, venue, time-to-resolution, liquidity band), which bounds
+     how much worse than the pooled calibration curve a given cell can be.
+- Whatever is not covered by those is **ambiguity**, not risk, and ambiguity is
+  what `λ` and the abstention rules exist for.
+
+### 3.5 The four candidates, compared
+
+| approach | what it does on a binary contract | verdict |
+|---|---|---|
+| **Point Kelly** on `p̂` | `f = (p̂−q)/(1−q)` | ❌ Section 2.3 — negative growth at `q=0.9` with 3 pp of honest noise |
+| **Bayesian Kelly** `argmax E_π[g]` | **provably identical to Kelly at `p̄`** (3.1) | ❌ not wrong, but does nothing. Provides no shrinkage. |
+| **Robust / max-min Kelly** `argmax min_{p∈P} g` | with `P = [p_lo, p_hi]`, the min is at `p_lo`, so `f = (p_lo−q)/(1−q)` — **Kelly on the lower bound** | ✅ recommended |
+| **DRO** over an ambiguity set of outcome distributions | for a two-point outcome space, any ambiguity set is an interval in `p`; max-min **reduces exactly to robust Kelly on `p_lo`** | ⚠️ mathematically identical to the row above *for binaries*; earns its keep only on the memecoin lane, where the payoff is continuous and the ambiguity set is over a real distribution |
+
+**Recommendation: robust Kelly on a lower quantile, with the quantile taken from
+a measurable dispersion, after log-odds recalibration.** Explicitly *not*
+justified as Bayesian optimality — justified as ambiguity aversion against an
+unidentifiable posterior width, which is an honest reason.
+
+### 3.6 Choosing the quantile — an exact interpretation
+
+Because `f*` is **linear** in `p`, the quantile has a clean and exact meaning:
+
+```
+P( f(p_α) > f*(p_true) ) = P( p_α > p_true ) = α        (if π is calibrated)
+```
+
+> **Choosing the α-quantile sets the probability of overbetting relative to true
+> Kelly to exactly α.**
+
+That is a real design knob, not a heuristic. Given Section 2.6's asymmetry
+(overbetting is far more costly than underbetting), and given that `π`'s spread
+is *not* verifiable (3.4):
+
+- **`α ∈ [0.10, 0.25]`**, and toward the low end when the dispersion estimate
+  comes from a single source rather than bootstrap + ensemble agreement.
+- **Crucially, the quantile controls the *frequency* of overbetting, not its
+  *magnitude*.** In the 15.9% of Section-2.3 draws that abstained, the
+  remaining draws still overbet badly. So the quantile is **not a substitute for
+  `λ`**; the two do different jobs and both are needed:
+  - `p_conservative` at level α → handles **parameter uncertainty** in `p`.
+  - `λ_dd` → handles **path risk** given `p` (Section 5).
+  - `λ_calib = β̂` → handles **systematic overconfidence** in `p̂`.
+
+### 3.7 Interaction with calibration quality — the gate
+
+The quantile is only meaningful if `π` is calibrated in the mean and the
+dispersion source has verified coverage. This produces a hard rule, which
+becomes abstention reason code `CALIBRATION_UNKNOWN_FOR_REGIME` in Section 7:
+
+1. **Recalibrate first.** Never let `p_conservative` compensate for a `β̂ ≠ 1`.
+   Miscalibration is a bias; the quantile addresses variance. Using one to
+   patch the other silently couples them and both stop being measurable.
+2. **Fit `β̂` per regime, with a minimum cell size.** A pooled `β̂` is wrong in
+   every cell if calibration varies by sport/venue/horizon — and this repository
+   has direct evidence that it does: per
+   `docs/OUTCOME_SYNC_POST_DRAIN_BASELINE_2026_08.md`, tennis shows **negative
+   skill** while soccer's apparent edge was an artefact of a non-representative
+   sample. A single pooled slope would have averaged those into a plausible-
+   looking number.
+3. **Minimum cell size ≈ 500 scored forecasts** for `β̂` to ±0.2 (table in 3.2 at
+   sd(logit p̂) ≈ 1.0). Below that, the regime is `CALIBRATION_UNKNOWN` and the
+   answer is `NO_TRADE` — not "use the pooled slope".
+4. **Verify quantile coverage prospectively on the only testable implication.**
+   You cannot test the spread directly (3.4), but you *can* test the induced
+   statement: over markets where the layer claimed `p_conservative = p_α`, the
+   realised outcome frequency should exceed `p_α` more than `1−α` of the time.
+   That is a testable, one-sided coverage check — weak, but not vacuous, and it
+   is the only honest validation available.
+
+### 3.8 The composite `λ`, learned
+
+```
+λ = λ_calib × λ_dd
+    λ_calib = β̂        estimated per regime (3.2), n ≥ 500 per cell
+    λ_dd    = 2 / (1 + ln ε / ln α_dd)      from the drawdown statement (5.2)
+```
+
+with the final value **validated, not adopted**, by the out-of-sample procedure
+in 8.5: choose `λ` that maximises a *lower confidence bound* on realised growth
+over the prospective sample, never the point estimate — because the point
+estimate of the optimal `λ` is itself upward-biased for exactly the reason
+Section 2.3 describes.
 
 ## 4. Track 3 — Tail risk: CVaR and EVaR as constraints
 
