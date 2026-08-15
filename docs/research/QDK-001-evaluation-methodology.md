@@ -953,15 +953,321 @@ results whose `population_digest` differs.
 
 ## §9. The preregistration record schema
 
-*(to be filled)*
+### 9.1 The governing principle — and the general fix for paraphrase bypass
+
+Our registry's original leakage guard was a prose blocklist, and the review defeated it
+with a synonym: `"include forecasts in the cohort that beat the benchmark"` was
+**accepted**. Worse, our own tennis manifest shipped a phrasing semantically identical to
+one the tests assert is rejected. The correct diagnosis was recorded at the time and is
+worth restating because it generalizes: "A blocklist rejects *spellings*; membership needs
+a *decision procedure*."
+
+That fix was applied to membership. It was not applied as a *rule*, and the same mistake
+recurred one layer down — 002B's `universe.selection_method` prose scan accepted
+`"hand picked after looking at results"`, and had to be re-fixed as a typed enum. A defect
+that recurs after being fixed is a missing invariant, not a missing patch. So:
+
+> **The Operative-Field Invariant.** Every field the evaluator reads is **typed and
+> closed** — an enum, a number, a timestamp, or a predicate over an allowlisted field
+> registry. Every prose field is **non-operative and provably unread**, enforced by an AST
+> test asserting no evaluator branch depends on it.
+>
+> **A field that is required but unread is forbidden.** It is a recorded promise, and
+> recorded promises are how "the registry is a good filing cabinet with a strong lock and
+> no inspector" happens.
+
+The precedent exists in-repo: operator notes are bounded, secret-scanned, and covered by
+an AST test asserting no branch reads them. That pattern becomes the rule for all prose.
+
+The third clause is not cosmetic. Our current manifest has **eight required fields that no
+evaluator code reads**: `domain_sample_floors`, `evaluation_horizons`,
+`missing_data_policy`, `canceled_void_policy`, `conflict_policy`, `stale_score_policy`,
+`invalidating_conditions`, and `multiple_testing_policy`. Each must become typed-and-read
+or be demoted to explicit non-operative rationale. There is no third option, because the
+middle state is precisely what lets an author believe a promise is binding when it is not.
+
+### 9.2 The record
+
+`QDK-PREREG-1`. Fields marked **[R]** are read by the evaluator and must be typed;
+**[N]** are non-operative rationale; **[A]** are registry-assigned and author-supplied
+values are rejected.
+
+#### Identity and classification
+
+| Field | Type | Notes |
+|---|---|---|
+| `experiment_id` **[R]** | `^[a-z0-9][a-z0-9\-]{2,63}$` | |
+| `experiment_version` **[R]** | int ≥ 1 | Must be *created and validated*; today it is required but no code enforces it |
+| `mode` **[R]** | enum `exploratory` \| `confirmatory` | Only `confirmatory` can support a claim |
+| `experiment_class` **[R]** | closed enum | Existing seven classes; execution-cost research needs a new class, never a widened one |
+| `decision_function_contains_llm` **[R]** | bool | **New and load-bearing.** If true, §4 forbids historical confirmation and the evaluator refuses a confirmatory verdict sourced from resolved-historical data |
+
+#### Hypothesis
+
+| Field | Type | Notes |
+|---|---|---|
+| `hypothesis` **[N]** | prose | Human-readable statement |
+| `null_hypothesis` **[N]** | prose | |
+| `predicted_effect` **[R]** | `{direction: enum(gt\|lt), magnitude: number, unit: string}` | **Typed, not prose.** Must exceed `minimum_detectable_effect` |
+| `mechanism` **[N]** | prose | Required by the "mechanism-first, not search-first" doctrine from our own retirement doc |
+
+#### Population and universe
+
+| Field | Type | Notes |
+|---|---|---|
+| `population` **[R]** | typed predicate doc | Existing 002A schema: `{schema_version, all, none, window_end, universe, rationale}`; ≤32 predicates; fields allowlisted; `window_end` required |
+| `universe` **[R]** | `{selection_method: closed enum, artifact_digest: sha256, created_at: ts}` | `selection_method` ∈ `exhaustive_series` \| `exhaustive_event` \| `scheduled_fixtures` \| `random_sample_seeded`. Artifact must be **resolved**, and **created before registration** — a check that is currently unreachable from the register path (§10) |
+| `decision_timestamp_field` **[R]** | enum of allowlisted timestamp fields | The single moment membership is fixed (§8.1) |
+| `denominator_basis` **[R]** | `{ceiling_fraction: number, ceiling_rationale_digest: sha256}` | Forces the 41.4%-not-100% statement onto the artifact |
+| `stratification_fields` **[R]** | list of allowlisted fields | Drives the §8.4 representativeness check |
+
+#### Horizon, metric, and cost
+
+| Field | Type | Notes |
+|---|---|---|
+| `evaluation_horizons` **[R]** | list of durations | Must become read — today it is an unread promise |
+| `primary_metric` **[R]** | `{name: closed enum, unit: string, aggregation: closed enum, bounded: true}` | Exactly one. Unbounded ratios inadmissible (§5.5, F6) |
+| `declared_baselines` **[R]** | closed enum list | Skill-vs-baseline is the comparable quantity, never raw Brier (§8.4) |
+| `secondary_metrics` **[R]** | closed enum list | Computed into a **sealed** section the verdict function provably cannot read (§11.5) |
+| `cost_model` **[R]** | `{model_id: str, version: str, terms: [{name, venue, basis: enum(OBSERVED\|MODELED\|BOUNDED), adverse_bound: number?}]}` | Required. Registration is **refused** without it (F5) |
+| `kappa_floor` **[R]** | number ≥ 2 | The cost-kill multiple gate (§7.4) |
+| `sizing_rule` **[R]** | `{notional_ladder: [ints], units: str, basis: "declared_input"}` | Size is an **input**, never an output |
+
+#### Power, floors, and stopping
+
+| Field | Type | Notes |
+|---|---|---|
+| `sample_floor` **[R]** | int > 0 | Total scoreable members |
+| `per_arm_sample_floor` **[R]** | int > 0 | **New.** F3: per-arm n was never even recorded |
+| `domain_sample_floors` **[R]** | map field→int | Must become read |
+| `minimum_matured_fraction` **[R]** | 0..1 | Required for confirmatory |
+| `minimum_detectable_effect` **[R]** | number | From P0. Must be < `predicted_effect.magnitude` |
+| `stopping_rule` **[R]** | `{kind: closed enum, minimum_sample, minimum_matured_fraction, not_before, not_after}` | Only the typed form; the prose duplicate is removed |
+| `interim_look_budget` **[R]** | `{count: int (default 0), fields: closed enum list}` | Metric-blind by construction (§5.4) |
+| `evaluation_date` **[R]** | timestamp | Bounded by `not_before`/`not_after` |
+
+#### Multiplicity and control
+
+| Field | Type | Notes |
+|---|---|---|
+| `family_id` **[R]** | str | All confirmatory tests over one population in one epoch |
+| `family_size_declared` **[R]** | int ≥ 1 | Registered confirmatory hypotheses in the family |
+| `search_history` **[R]** | `{variants_evaluated: int, overlapping_data: bool, prior_milestone_ids: [str]}` | **The direct fix for F1.** Transitive count of variants evaluated on any overlapping data |
+| `correction_method` **[R]** | closed enum `holm` \| `benjamini_hochberg` | Typed, replacing today's free-text `multiple_testing_policy` |
+| `alpha` **[R]** | number | Family-wise, default 0.05 |
+| `control_spec` **[R]** | `{kind: enum(mechanism_independent_null\|permutation\|synthetic), derived_from_in_sample_ranking: false}` | **F4.** The literal `false` is a validated constant; a control derived from an in-sample ranking is rejected at registration |
+| `anomaly_conditions` **[R]** | list of typed conditions | Combined as a **conjunction**, each reported separately (F4) |
+
+#### Registry-assigned
+
+`registered_at` **[A]**, `start_time` **[A]**, `registration_commit` **[A]**,
+`manifest_digest` **[A]**, `state` **[A]**, `immutable_references` **[A]**.
+
+### 9.3 The commitment
+
+Preserve what exists — it is the strongest part of the current implementation:
+
+- `manifest_digest` = SHA-256 over canonical JSON of the manifest **minus** registry-assigned
+  fields, so the author's declaration is verifiable before confirmation.
+- Pinned at registration: population predicate digest, predicate schema and field-registry
+  versions, source digests of the predicate/population/metric/evaluation modules, baseline
+  and CI policy versions, sub-object digests, repository commit, and canon document digests.
+- Append-only hash chain (`prev`, `seq`) with `head.json` pinning event count and terminal
+  hash; a parallel result chain that re-opens every result file and recomputes its digest;
+  the **first** terminal verdict pinned and immovable.
+
+Three specific hardenings this protocol requires:
+
+1. **External timestamping.** `registered_at` is currently `datetime.now()` — self-asserted.
+   The only external corroboration is the git commit. For a record whose entire value is
+   "this predates the data", add an **external timestamp anchor** (RFC-3161 token or
+   equivalent) at registration. Without it, the commitment's strength rests on the honesty
+   of the party it is meant to bind.
+2. **Dirty-tree refusal.** There is no working-tree check, so the pinned commit need not
+   describe the code that ran. Refuse registration from a dirty tree.
+3. **Registration clock skew.** Evaluation guards against clock skew (±300s); registration
+   accepts a caller-supplied `now` with no such guard. Apply the same bound.
+
+Honest framing, already correct in-repo and worth keeping verbatim: "This is not
+tamper-PROOF — an attacker with write access can rewrite both files. It is tamper-EVIDENT,
+and the evidence lands in a git diff."
+
+---
 
 ## §10. Evaluator-enforced floors
 
-*(to be filled)*
+The 001 design named the gap precisely: "nothing connects the registry to evaluation…
+`sample_floor`, `stopping_rule` and `primary_metric` are recorded promises that no code
+checks… the registry is a good filing cabinet with a strong lock and no inspector."
+002B built the inspector. This section specifies what the inspector must additionally
+enforce before the protocol is trustworthy.
+
+### 10.1 The enforcement principle
+
+> **The evaluator computes; the author confirms.** The author supplies only
+> `experiment_id`, `confirm`, and non-operative notes. Every quantity that could change a
+> verdict — population, membership, n, metric, cost, interval, window satisfaction — is
+> recomputed by the evaluator from the committed record. **A value an author can supply is
+> a value an author can choose.**
+
+The existing signature lock already implements this and must be preserved exactly.
+
+### 10.2 Already correct — preserve
+
+Independent membership recomputation with refusal on disagreement; verdict precedence
+running integrity → drift → data quality → stopping → floor → number; deterministic
+cluster bootstrap by market with a fixed seed (an evaluator must not be able to reroll);
+degenerate-prevalence invalidation; first-terminal-verdict pinning; protocol deviations
+downgrading a favourable verdict; amendments restricted to non-semantic reasons via a
+hash-chained record.
+
+### 10.3 Live defects that must be closed first
+
+These are not hypothetical; they were found in the current implementation and each is a
+route to an unearned verdict.
+
+| # | Defect | Why it matters |
+|---|---|---|
+| D1 | Evaluation permitted from `collecting` and `registered`, recorded only as a deviation (`experiment_results.py:831`) | Contradicts the 001 design and `status()`'s own `evaluation_permitted`. **Nothing forces maturation before a terminal verdict is pinned** — this is the peek-and-lock route reopened |
+| D2 | `canon_digests` pinned but **never compared** | Verified live: baseball pinned `SAFETY_BOUNDARIES.md` at `d6c38783…`; it now hashes to `c5cb2936…`. **Real, present, undetected drift** in the document that defines the safety boundary |
+| D3 | `check_identifier_cohort` called without `universe_base`/`registered_at`, so the "universe created before registration" check is skipped at its only call site, and paths resolve against `cwd` | 002C's central universe guarantee is unreachable from the register path |
+| D4 | `_evaluation_code_drift` uses `repo_root or Path.cwd()` | `status()` raises `FileNotFoundError` from another directory instead of reporting drift |
+| D5 | Dead branch `if False and primary not in SUPPORTED_PRIMARY_METRICS:` | A disabled check left in place; harmless today, load-bearing the moment registration validation changes |
+| D6 | `record-result` text renderer raises `KeyError` on a renamed field; text is the default format and no test covers it | The default invocation of the enforcement command tracebacks |
+| D7 | Eight required manifest fields never read (§9.1) | Recorded promises |
+| D8 | `multiple_testing_policy` is free text, validated only as "non-empty and not 'none'" | No correction of any kind exists in `app/` (§11) |
+| D9 | Exceeding `MAX_EVENTS`/`MAX_RESULTS` makes `verify_event_chain` report "not intact" | Permanently bricks an experiment rather than refusing the append |
+| D10 | `primary_metric.name` is never cross-checked against `primary_metric.definition` or the hypothesis | The registered baseball experiment declares `name: "mean_brier"` with a *skill* formula as its definition and a hypothesis stated in skill terms — three different quantities in one immutable record |
+
+D10 deserves emphasis because it is already latent in a live registered experiment: the
+evaluator will compute one quantity while the hypothesis asserts another, and the manifest
+is immutable. **A registration whose metric name, metric definition, and hypothesis are
+not mutually consistent must be rejected at registration**, because it cannot be fixed
+afterwards.
+
+### 10.4 New enforcement this protocol adds
+
+1. **Per-arm floors.** Compute and report n per arm; refuse a supporting verdict if any
+   arm is below `per_arm_sample_floor`. (F3)
+2. **Disposition balance.** Sum the disposition ledger; refuse if it does not equal the
+   enrolled count. (F7, §8.3)
+3. **Representativeness block.** Compute composition drift against the registered universe
+   across `stratification_fields`; material drift blocks a favourable verdict; degenerate
+   strata are reported `inconclusive` and excluded from the headline. (F8, §8.4)
+4. **Cost enforcement.** Compute `net_conservative` before displaying gross; refuse any
+   artifact carrying gross without net; compute κ and refuse a confirmatory claim at
+   κ < `kappa_floor`. (F5, §7)
+5. **Window satisfaction, symmetric.** Determine stopping satisfaction from the clock and
+   the data; stamp any out-of-window evaluation as a deviation **in both directions**. (F9)
+6. **Control conjunction.** Evaluate each `anomaly_condition` separately, report each
+   boolean, combine as AND. (F4)
+7. **Multiplicity.** Apply `correction_method` over `family_size_declared + search_history.variants_evaluated`
+   and report the adjusted interval as the headline. (F1, F2, §11)
+8. **LLM-historical refusal.** If `decision_function_contains_llm` is true, refuse a
+   confirmatory verdict whose evidence derives from resolved-historical data. (§4)
+9. **Canon and code drift comparison.** Close D2 — compare what is pinned.
+
+---
 
 ## §11. Multiple testing
 
-*(to be filled)*
+### 11.1 The current state
+
+There is **no multiple-testing correction of any kind in `app/`** — no Bonferroni, Holm,
+Benjamini–Hochberg, alpha-spending, or family-wise term. `multiple_testing_policy` is a
+free-text field validated only for non-emptiness. All three drafted manifests set it to
+prose like `"one primary metric; ECE is descriptive only and cannot be promoted"`, and
+**nothing enforces that non-promotion**.
+
+Credit where due: the registry's *structural* multiplicity controls are real and
+unusually good — exactly one primary metric (a list is rejected, because "multiple
+primaries are how a null result becomes a positive one"), one decision rule, and a pinned
+first terminal verdict. Those close the within-experiment looks. What is missing is
+**across-experiment** and **across-search** multiplicity, which is precisely what killed
+the EDGE lane: ~39+ variants over one window, six candidates each given an independent
+shot at a fixed bar, no alpha anywhere.
+
+### 11.2 Defining the family
+
+> A **family** is the set of confirmatory tests evaluated against the same
+> data-generating population within one declared epoch, **plus every variant evaluated on
+> overlapping data during the search that produced them**.
+
+The second clause is the whole point. A family defined only over registered experiments
+counts six candidates and misses the 18-policy search that generated them, and the search
+is where the selection bias lives. Hence:
+
+```
+m  =  family_size_declared  +  search_history.variants_evaluated
+```
+
+Both are registered fields (§9.2), and the evaluator reads `m` from the record rather than
+from a human's recollection.
+
+### 11.3 The correction regime
+
+**Confirmatory claims → family-wise error rate, controlled by Holm–Bonferroni.**
+
+- Rationale: a confirmatory claim is a gate toward capital. The cost of a false positive is
+  strictly and severely asymmetric against the cost of a false negative — a false negative
+  costs us an idea, a false positive costs us money and, worse, credibility in our own
+  measurements. FWER is the right target.
+- Holm rather than plain Bonferroni: uniformly more powerful, requires no independence
+  assumption (our tests are positively correlated, sharing a population), and is trivial
+  to implement deterministically.
+- Default `alpha = 0.05` family-wise.
+
+**Exploratory screening → false discovery rate, Benjamini–Hochberg at q = 0.10.**
+
+- Used **only** to rank P1 pre-screen candidates for prospective registration. An
+  FDR-surviving screen result is a *reason to register*, never a finding. Under the
+  Asymmetry Rule it cannot be a finding anyway.
+
+### 11.4 Reporting
+
+Every confirmatory result reports, on the artifact:
+
+| Field | Content |
+|---|---|
+| `m` | The family size actually used, and its two components |
+| `alpha_raw`, `alpha_adjusted` | Nominal and Holm-adjusted |
+| `interval_raw`, `interval_adjusted` | Cluster-bootstrap intervals |
+| `headline` | **The adjusted interval.** The raw interval never appears without it |
+| `family_members` | The digests of every registered experiment in the family |
+
+The decision rule operates on `interval_adjusted`. This is a change in kind from the EDGE
+gates, which compared a point estimate to a fixed threshold with no interval at all.
+
+### 11.5 Looks, and the sealed secondary section
+
+**Looks.** The interim-look budget defaults to zero and looks are metric-blind (§5.4). If
+a design genuinely requires interim analysis, the number of looks and an alpha-spending
+function (O'Brien–Fleming) are declared at registration, and the evaluator refuses a
+verdict at a look index beyond the declared budget. **An undeclared look is a protocol
+deviation that invalidates the experiment**, not one that downgrades it — because unlike
+the deviations in §10.4(5), an undeclared look is unbounded in how much it can inflate the
+result.
+
+**The sealed secondary section.** Secondary metrics are computed and recorded, but written
+into a section that the verdict function **provably cannot read**, enforced by an AST test
+of exactly the kind already used for operator notes. This converts "ECE is descriptive
+only and cannot be promoted" from a prose promise into a structural property. Without it,
+a null primary and an interesting secondary is the most natural rationalization available,
+and it is the one our registry's own founding document predicted we would reach for:
+"…or if ECE were the primary metric instead of Brier skill."
+
+### 11.6 Replication as the dominant control
+
+The strongest multiplicity control here is not arithmetic — it is §5.7. Requiring an
+independent, separately registered replication before a claim binds means a false positive
+must survive two pre-registered tests on non-overlapping populations. At α = 0.05
+family-wise per stage, the effective rate for a spurious claim reaching P7 is on the order
+of α², and the replication requirement is robust to exactly the failure the correction is
+not: **an undeclared prior search**. A search can inflate one window; it cannot easily
+inflate two disjoint prospective windows in the same direction.
+
+This is why §14 rates undeclared search as the protocol's most serious residual
+vulnerability, and why replication is non-negotiable rather than a nice-to-have.
 
 ## §12. Structural fix table: failure mode to mechanism
 
