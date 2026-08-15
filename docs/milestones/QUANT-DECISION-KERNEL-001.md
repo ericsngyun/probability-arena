@@ -795,7 +795,605 @@ into a lane-ranking recommendation for Eric.
 
 ## 5. The feature schema
 
-*(section pending)*
+### 5.0 Rules that bind every feature in this section
+
+1. **Every feature is a function of archived evidence and a clock, and nothing
+   else.** No feature may read a live socket, a REST endpoint, or a database at
+   evaluation time. The schema must be computable by replaying the archive.
+2. **A feature that cannot be computed is ABSENT with a typed reason.** Zero is a
+   value, not "unknown". `0`, `0.0`, `""`, `"unknown"`, `-1`, and "the previous
+   pass's value" are all forbidden stand-ins. Every feature is
+   `Result[T, Absence]`, never `Optional[T]`, and never `T` with a sentinel.
+3. **Every feature carries its own window and its own minimum sample count.** A
+   feature computed from fewer observations than its floor is **absent, not
+   noisy**. This generalises the existing `MIN_SAMPLES_FOR = {"p50": 3,
+   "p95": 20, "p99": 100}` gate in `app/realtime/archive.py`.
+4. **Exact integers and decimals, never floats.** Kalshi: integer price units
+   (`app/realtime/fixedpoint.py`, 1 dollar = 10,000 units) and integer contract
+   units. Solana: the raw `amount` string parsed as an exact integer, `decimals`
+   as an integer, and **`uiAmount` never read** — it is a documented deprecated
+   float. Reuse `app/realtime/canonical.py` (`parse_float=Decimal`,
+   `parse_int=int`); one canonicalization, not two. This repository has already
+   been burned by silent decimal truncation of ordinary venue JSON under a valid
+   digest (KALSHI-ARCHIVE-REPLAY-INTEGRITY-001).
+5. **A feature whose only possible answer is "the venue does not expose this"
+   must not be a column.** It is presented as a bracket or as a stated limitation
+   instead (§6.3).
+6. **Regime is a conditioning variable, not a control.** No feature is scored the
+   same way across regimes, and the regime label is itself a first-class feature.
+
+### 5.1 The typed-absence vocabulary — one closed set, shared
+
+Extending the vocabulary frozen in `SOLANA-ROUTE-OBSERVATION-001` §5.4 rather
+than inventing a second one:
+
+| code | meaning |
+|---|---|
+| `not_returned_by_venue` | the venue's response did not contain the field |
+| `venue_returned_null` | the venue returned an explicit null |
+| `venue_returned_unparseable` | present but not parseable under the canonical decoder |
+| `derivation_input_absent` | a derived field whose input is absent |
+| `no_response` | the request produced no response |
+| `request_not_issued` | the request was never made (budget, gate, or policy) |
+| `population_truncated` | the population was capped before this member |
+| **`feed_not_available`** | the quantity requires a data source outside the boundary |
+| **`insufficient_history`** | a window statistic whose window is not yet full |
+| **`window_underfilled`** | fewer observations than the feature's declared floor |
+| **`book_unpublished`** | sequence fault, pre-snapshot, or integrity halt |
+| **`empty_side`** | the ladder side the feature needs has no levels |
+| **`insufficient_depth`** | the ladder does not reach the level the feature requires |
+| **`stale`** | newest evidence older than the feature's staleness bound |
+| **`market_not_open`** | lifecycle state is not `open` |
+| **`requires_join_unavailable`** | needs a second channel/source not present in this run |
+| **`venue_does_not_expose`** | structurally unobtainable at any subscription |
+| **`requires_submission`** | obtainable only by sending an order/transaction — permanently out of boundary |
+| **`pre_graduation`** | undefined while the token is still on a bonding curve |
+| **`observation_gap`** | the timestamp falls inside a period the tape was blind |
+
+`requires_submission` is new and load-bearing: it is the honest label for landing
+probability, our own MEV extraction, and our own quote-to-fill slippage. It is
+**not** `feed_not_available` — no feed closes it, and conflating the two is how a
+permanent limitation gets mistaken for a procurement problem.
+
+### 5.2 CLOB engine (Kalshi) — the feature schema
+
+Cost is per update on an incrementally maintained ladder; `L ≤ 99` on a 1¢ grid,
+so `O(L)` is cheap in absolute terms. **Sample size is the binding constraint,
+not CPU** — the only measured Kalshi rate on record is 4 records in ~2 minutes on
+DEMO, so any tradeoff spending samples to save compute is backwards.
+
+**Block K-A — level-1 book state.** *(all from `orderbook_delta`, per book event)*
+
+| feature | definition | absence modes |
+|---|---|---|
+| `best_bid`, `best_ask` | max/min of the two ladders, already YES-scaled under `use_yes_price=true` | `empty_side`, `book_unpublished` |
+| `bid_size`, `ask_size` | contract units resting at those prices | as above |
+| `spread`, `spread_ticks` | `best_ask − best_bid`, in price units and in ticks | `empty_side` |
+| `mid` | `(best_bid + best_ask)/2` | `empty_side` |
+| `queue_imbalance` | `(Q_b − Q_a)/(Q_b + Q_a)`, in `[−1,1]` — **the Gould–Bonart signed form** | `empty_side` |
+| `microprice` | `M + g(I, S, price_regime)` from a pooled fitted table | `empty_side`, `window_underfilled` |
+
+> **Two conventions that look identical in code and are different variables.**
+> Gould–Bonart's published coefficients are on the **signed** `[−1,1]` form.
+> Stoikov's micro-price is on the `[0,1]` form `Q_b/(Q_b+Q_a)`. The schema names
+> which is which on every field. Mixing them silently is a real and easy bug.
+
+> **`weighted_mid` is deliberately excluded.** It is structurally capable of
+> moving in the economically *wrong* direction: with a bid of 9, an ask of 1, and
+> 27 resting one tick behind, cancelling the single ask — a removal of supply —
+> makes it *fall*. On a thin binary book with a 1-contract top level that
+> configuration is routine, and a fair-value estimator that mis-signs on a
+> cancellation will systematically mis-sign the maker/taker decision.
+
+**Block K-B — depth and its shape.** `depth[m]`, `cum_depth_within(k)`,
+`depth_slope`, `depth_convexity`, `book_pressure_k`, and — the strongest feature
+in the entire schema — **`fill_cost_curve(s)`**, the ladder walk tabulated on a
+fixed size grid. Our feed carries **full-depth ladders** (at most 99 levels,
+maintained as `dict[price_units, contract_units]` in `app/realtime/book.py`), so
+`C_execution` is **exact, not modelled** — which most practitioners cannot
+achieve, since the published literature overwhelmingly uses top-N L2 feeds.
+`insufficient_depth` maps to a typed `UNFILLABLE`, never an extrapolated price.
+
+**Block K-C — order flow.** `OFI(dt)` (Cont–Kukanov–Stoikov, all four
+inequalities **weak** — getting the weak/strict distinction wrong silently
+changes the estimator at exactly the events that matter most); `MLOFI[m](dt)`
+(Xu–Gould–Howison, with the **cascade rule**: a change at level 1 writes into
+every deeper component, so a 7-lot arrival inside the spread yields
+`(7,10,10)`, not `(7,0,0)`); `integrated_OFI` (PC1); `signed_trade_imbalance`
+(**exact, because `taker_side` is given — no Lee–Ready classification error,
+which is where a meaningful chunk of the empirical literature spends its error
+budget**); `trade_count`, `trade_volume`; `order_arrival_intensity`;
+`cancellation_intensity` (a join, and an approximate one); `sweep_flag`;
+`replenishment_time`; `resilience_ratio`.
+
+> **Two implementation notes that are load-bearing.** (a) The event term must be
+> computed on the **reconstructed best-quote sequence**, not by summing
+> `delta_fp` — a delta at a non-best level that *becomes* best changes the
+> estimator. (b) **Do not fit MLOFI with OLS.** Components correlate above 0.7
+> for all pairs in large-tick books; under OLS only 11–21% of coefficients are
+> significant and out-of-sample RMSE *increases* past M ≈ 5. Use Ridge with a
+> cross-validated penalty, or the PC1 integration. Cont et al. (2014) concluded
+> deeper levels do not matter and Xu et al. concluded they do; **the entire
+> difference is OLS + in-sample R² versus Ridge + out-of-sample RMSE.**
+
+**Block K-D — cost and adverse selection.** `effective_spread`,
+`realized_spread(h)`, `price_impact(h)`, `markout(h)`, `beta_impact` (the depth
+relation, with the exponent measured at 0.98, CI [0.88, 1.08]), and
+`adverse_selection_proxy`. **`toxicity_vpin` is NOT in the schema** — §3.2, §4.3.
+
+> **Porting adverse-selection magnitudes to Kalshi: do not rescale by tick
+> size.** Albers et al.'s −0.8bp is on a ~0.02–0.03bp tick; ours is 100bp.
+> **Adverse selection scales with volatility over the fill horizon, not with tick
+> size.** Estimate it as a fitted fraction of that contract's own
+> `normalized_vol` over the empirical time-to-fill. Order-of-magnitude
+> expectation on an active contract: **0.5–1 tick per side. This is INFERRED and
+> is a measurement task, not a result.**
+
+**Block K-E — volatility and activity.** `realized_vol(dt)` in price units,
+computed in **event time as well as clock time** and both reported;
+`normalized_vol = realized_vol / sqrt(p(1−p))`, where the normalisation removes
+the mechanical variance collapse near 0 and 1; `vol_of_vol`;
+`volume_acceleration`; and
+
+> **`event_rate_ewma[tau]` at three halflives, per event type — the Hawkes
+> substitute (§3.2).** O(1) per event, defined from the first event, carrying its
+> own `n_events_seen`, fit **discriminatively** against the target.
+
+Suggested halflives `{1s, 10s, 60s}` — but at Kalshi's unmeasured production rate
+these are a **hypothesis**, not a setting. The halflife set is a registered
+parameter (§9.3), chosen once from the first measured rate and then frozen.
+
+**Block K-F — regime and clocks.** `spread_regime` (`TOUCHING` = 1 tick /
+`NARROW` 2–3 / `WIDE` 4–9 / `VERY_WIDE` at least 10 / `ONE_SIDED` / `NO_BOOK`) —
+**the primary conditioning variable in the whole engine**; `depth_regime`;
+`activity_regime`; `price_regime` (`TAIL_LOW` below 10¢ / `MID` / `TAIL_HIGH`
+above 90¢), which drives both the fee curve and the payoff variance;
+`lifecycle_state`; `time_of_day`, `day_of_week`; and **`time_to_close` — which
+has no source in the current collector design** (§12, Q2).
+
+> **Kalshi is two regimes wearing one name.** A contract with a 1¢ spread and
+> hundreds resting at the touch is the *large-tick* regime where queue imbalance
+> is strongest (out-of-sample AUC 0.76–0.81, `P(up)` about 0.85 at extreme
+> imbalance). A dormant contract with a 7¢ spread and 3 contracts a side is where
+> every estimator here degrades. **In `WIDE`/`VERY_WIDE`, do not attempt
+> short-horizon prediction at all** — the spread alone exceeds the edge, and the
+> micro-price is returned **absent** rather than extrapolated. An absent fair
+> value is a usable input to a decision rule; a fabricated one is not.
+
+> **And the venue's cost structure and its information structure point in
+> opposite directions.** The fee falls by a factor of ~8 between P = 0.50 and
+> P = 0.03, so tail contracts are dramatically cheaper to trade — but tail
+> contracts have the thinnest books, widest spreads, fewest events, and least
+> reliable estimators. This tension is real, has no clean resolution, and should
+> be stated in any strategy proposal rather than resolved by picking whichever
+> side favours the proposal.
+
+**Block K-G — observation quality.** `data_age_us`, `book_staleness`,
+`is_publishable`, `subscription_generation`, `observation_gap`, and
+`clock_offset_bound` — which is **NOT MEASURED today** (`app/cli.py:717-722`
+records this explicitly), so `data_age_us` carries an unquantified bias of
+unknown sign until it is.
+
+> **An observation gap is not latency, it is blindness.** A decision timestamped
+> inside a gap is not a high-latency decision; it is an invalid one, and must be
+> typed absent, never interpolated.
+
+**What must NOT be a column, per rule 5:** queue position at fill and everything
+derived from it (queue-position deciles, front-of-queue indicators,
+priority-adjusted fill models); order-level cancellation attribution; any
+own-order, own-position, or own-fill feature (structurally forbidden, not merely
+unavailable); cross-venue features; and `event_clock_phase` as a general column —
+admit it only per contract family, once a family-specific source exists.
+
+### 5.3 AMM engine (Solana) — the feature schema
+
+**Block S-A — pool state.** `pool_tvl_usd`; `quote_reserve_usd_est` = `L/2`
+(**derived, and valid ONLY for uniform CPMM** — it must be **typed-absent** on
+CLMM/DLMM, where the conversion has *unbounded* error in both directions);
+`fee_bps` read **from the pool, never from a per-dex default table**; `dex_id`
+verbatim and unmapped; `pool_kind` in `{cpmm, clmm, dlmm, bonding_curve,
+unknown}` where `unknown` is a first-class value; `pool_age_seconds`;
+`tvl_log_return`; `tvl_drawdown_from_peak`.
+
+> **Three incompatible impact mathematics coexist in this market.** Smooth
+> constant-product (Raydium AMM v4/CPMM, PumpSwap); **stepped constant-SUM**
+> inside a Meteora DLMM bin, where price impact within a bin is exactly **zero**
+> until the bin's output side is exhausted and then jumps; and concentrated
+> liquidity (Orca Whirlpools, Raydium CLMM), where TVL may sit far from the
+> active price. Applying the constant-product formula to a DLMM pool is not an
+> approximation with a small error — **it is the wrong functional form.** This is
+> why `pool_kind` exists and why `quote_reserve_usd_est` must be absent off-CPMM.
+> Measuring the venue mix in our own `dex_id` column is a free query and should
+> be the *first* AMM study run.
+
+> **A 100x trap worth naming: Raydium AMM v4 encodes its fee as x/10,000 while
+> CPMM and CLMM encode as x/1,000,000.** Reading one with the other's
+> denominator is a hundred-fold error in the fee term.
+
+**Block S-B — price.** `price_usd` (provider mid); `log_return`;
+**`price_churn_window`** — deliberately **not** named `realized_vol`, because at
+these pool sizes what it measures is predominantly the *impact footprint of
+individual swaps*, not information arrival, and calling it volatility imports
+every classical volatility intuition, all of which are wrong here;
+`price_change_5m/1h`; `market_cap`, `fdv`; `fdv_to_tvl`.
+
+**Block S-C — flow. This block's status changed, and the change is significant.**
+`swap_count_by_direction`, `net_signed_flow`, `trade_size_distribution`,
+`unique_signers_window`, and `liquidity_add/remove_events` were all classified as
+requiring a paid per-trade feed and therefore permanently closed. **They do
+not** — §5.4 derives every one of them from free read-only chain history. They
+are reclassified from "structurally closed" to "**pending the Phase-1 collector
+and its approval**", which is a different and much better status. Until that
+collector exists they carry `feed_not_available`; the code must not be written as
+though the closure were permanent.
+
+Available today with no new capability: `volume_5m/1h/24h_usd`, `volume_to_tvl`,
+and **`tvl_jump_unexplained`** — a TVL change too large to be explained by
+reported volume, i.e. a **liquidity-removal detector built entirely from data we
+already persist**, and the closest thing to a rug signal inside the current
+boundary. It is a *detector*, not an *attribution*: it cannot distinguish an LP
+withdrawal from a single enormous swap the provider under-reported, and the
+feature must carry that ambiguity rather than resolve it. Its likeliest failure
+is that the "unexplained" residual is dominated by provider volume-reporting
+error, so it fires everywhere and means nothing — **check that first**, on tokens
+whose TVL is stable.
+
+**Block S-D — venue dispersion.** `pair_count`, `single_venue`,
+`tvl_herfindahl`, `best_pair_share`, and `route_hops`/`route_split` from a quote
+response.
+
+**Block S-E — actor structure.** Already modelled in
+`CryptoTokenLifecycleSnapshot` and `CryptoTokenActorObservation`:
+`top10_holder_pct`, `creator_holding_pct`, `sniper_pct`, `bundler_pct`,
+`insider_pct`, `holder_count`.
+
+> **`sniper_pct`, `bundler_pct` and `insider_pct` are PROVIDER-DEFINED labels
+> with unpublished thresholds.** They may be excellent; we cannot know. Nothing
+> in the current schema records the vendor's definition alongside the value, and
+> treating them as ground truth imports an unaudited dependency. The schema must
+> carry `label_source` and `label_definition_ref` beside each.
+
+One derived feature worth adding because it has an actual derivation behind it
+rather than two independently-thresholded numbers: a holder controlling fraction
+`h` of the float faces an exit of roughly `2h × (FDV/TVL)` in `tau` terms, so
+**`exit_pressure = top10_holder_pct × fdv_to_tvl`**. Both inputs are already
+persisted, it costs one multiplication, and it is testable against the decay
+outcome. It is a **worst-case** measure — it assumes a single-transaction exit
+into the same pool — and must be named as one.
+
+> **Also worth an explicit decision rather than inheritance:** the risk engine's
+> `min_liquidity_usd = 5000.0` is **above 62% of the observed population**. A
+> threshold that most of the population fails is not discriminating within the
+> population — it is selecting a different one.
+
+**Block S-F — lifecycle, and this block dominates.** `lifecycle_stage` over the
+six observable transitions: S0 pre-liquidity, S1 bonding curve, S2 graduation,
+S3 post-graduation peak, S4 decay, S5 death or removal. Plus
+`bonding_curve_state`, `curve_progress_pct`, `graduated_or_migrated`,
+`token_age_seconds`, and
+
+> **`tvl_decay_ratio` = `L_birth / L_t` — the highest value-per-unit-effort
+> feature in the entire schema.** It is two columns we already persist and one
+> division, and §3.5 shows it drives realized execution cost more strongly than
+> any impact term.
+
+**The strongest reason lifecycle is state and not a control.** Between birth and
+the 6h/24h horizon the interquartile liquidity ratio widens from **2.16x to
+5.98x** — a **2.77x widening of dispersion**. At birth these tokens look nearly
+alike; by the horizon they have fanned out. **The lifecycle is not a uniform
+decay applied to a population; it is a sorting process.** That reframes the
+research question from "what will the price do?" to **"can the sort be predicted
+at birth, before the fan-out has happened?"** — a classification problem over
+features we already hold, with an outcome we can already compute, needing no new
+capability and not one flow feature.
+
+A second structural result points the same way: effective depth is
+**non-monotonic** across the lifecycle. It rises through the bonding curve, peaks
+at or shortly after graduation, and then decays — so far that the decayed
+post-graduation pool at our measured median (about $1,430 of quote reserve) is
+**shallower than the pump.fun curve was on its very first buy** (30 SOL virtual).
+A token that has "made it" is, at the horizon where we observe it, a worse venue
+to transact than the launchpad it escaped.
+
+Three sampling facts that must appear on the face of any AMM result:
+
+- **Our 6h/24h observations sit deep in S4**, between roughly one and nine
+  liquidity half-lives after birth (median half-life bracketed at **2.7–10.7h**,
+  a bracket rather than a point because the sample mixes two horizons and the
+  exponential form is assumed). We are measuring the *result* of the sorting
+  process, not the process.
+- **Roughly 40% of births are enrollable** — 41.4% in one 25h window (n=411),
+  and 59.8% NULL `initial_liquidity_usd` over a larger 7,447-birth sample. Use
+  "roughly 40%" as the durable claim and 41.4% as one window's reading. Every
+  rate is reported against that ceiling **on the face of the report**, not in a
+  footnote: a "90% coverage" claim over a denominator that has already discarded
+  ~60% of births is a ~37% claim.
+- **Our ~395 births/day is 1.6%–3.7% of published pump.fun launch rates.** Our
+  population is not a sample of launches; it is a sample of *tokens a provider
+  chose to surface*, already filtered by roughly 30–60x. That is probably *good*
+  for a trading question and *bad* for any claim about memecoins in general, and
+  no base rate of ours is comparable to a published one without saying so.
+
+### 5.4 The Solana realized-fill corpus — the session's biggest win
+
+This is the one place where a capability the project believed permanently closed
+turns out to be open, and it deserves to be stated precisely.
+
+**The claim.** Read-only realized *third-party* execution IS obtainable on
+Solana, free, without ever constructing, simulating, signing, or submitting a
+transaction. The crux is that **the AMM's own vault balances are inside the swap
+transaction's `preTokenBalances`** — verified in the Agave validator source
+(`ledger/src/token_balances.rs`, `collect_token_balances`), which iterates
+**every account key of the transaction**, skipping only invoked program IDs and
+the token programs themselves, and records a balance for each SPL token account.
+A swap cannot debit a vault it did not reference, so the vault is necessarily in
+the key list and necessarily recorded.
+
+**Verified live on mainnet in this session** (supplied to this document, not
+performed by the agent that wrote it): two real swaps on our own cohort-8 token
+were fetched; pool vault deltas and trader deltas **conserved to the base unit**;
+realized price computed directly from the response. This supersedes checks C1 and
+C2 of `QDK-001-solana-ground-truth.md` §13, which that document could only state
+as human-runnable because it made no RPC call.
+
+Four consequences that are better than the original proposal assumed:
+
+1. **No second RPC call.** Pre-state costs zero additional requests, which
+   roughly halves the rate budget.
+2. **No prior-slot lookup**, which does not exist on free infrastructure anyway —
+   `getAccountInfo` has no historical-slot parameter, and `minContextSlot` is a
+   *freshness floor*, not a time machine.
+3. **Intra-block ordering is handled for free.** Three swaps hitting one pool in
+   one block each carry their own pre-state, reflecting the preceding two. A
+   design reconstructing state from "the last observation of the pool" would get
+   all but the first wrong.
+4. **It is self-verifying.** `post = pre + delta` must hold on every vault. A
+   violation means the parse is wrong, not that the chain is.
+
+**The corrected realized-price formula**, because the naive version
+double-counts:
+
+```
+amount_in      = negative token_delta of the taker in mint_in    exact integer, base units
+amount_out     = positive token_delta of the taker in mint_out   exact integer, base units
+realized_price = amount_out / amount_in                          exact rational, decimal-normalized
+network_fee    = meta.fee                                        lamports - a SEPARATE ADDITIVE TERM
+```
+
+> **`realized_price` is gross of the network fee and NET of every in-protocol
+> fee.** The pool fee, the platform fee, and any creator fee are already inside
+> `amount_out`, because they were taken before the taker received anything. That
+> is exactly the right quantity for calibrating execution — it is the all-in
+> price the taker actually got. A formula of the shape
+> `(delta quote + fees) / (delta base)` **double-counts** them. `meta.fee` is the
+> *network* fee — size-independent, additive — and it belongs in its own column,
+> never inside the price.
+
+Two further naming disciplines that keep this honest. The impact measure derived
+here is **impact versus the pre-trade mid**, which is what an AMM fill model
+needs and is *better* than quote-versus-fill for calibration because it has no
+dependence on when the trader fetched their quote — but calling it "realized
+slippage" without qualification would be an equivocation, and the column must be
+named for what it is. And **priority fees are invisible**: Jito-style tips are
+ordinary SOL transfers and are therefore *detectable* as lamport outflows, but
+attributing them requires a tip-account allowlist. Recording an unattributed
+lamport outflow is honest; asserting a tip is not.
+
+**The detection method is allowlist-free, and that is the point.** A swap is
+defined by *what moved*, not by which program ran it: one party's holding of mint
+A decreased and their holding of mint B increased, with a non-signer account set
+moving oppositely. That needs no IDL, no discriminator table, and **no venue
+allowlist** — so it detects venues nobody has enumerated. On a memecoin tape
+where new venues appear continuously, an allowlist-shaped detector produces a
+corpus whose *absences are undetectable*. Venue labelling becomes a **result**
+(group by program ID, label the head by hand once) rather than an input: an
+unknown venue shows up as an unlabelled program ID with a measured share of the
+tape — visible, quantified, and honestly unnamed — instead of as a hole.
+
+It also converts a named silent-wrongness risk into a measurement. Per-mint
+deltas must net to zero across the transaction **except** for transfer-fee or
+mint/burn mints — so if the taker lost 100 and the vault gained 98, the 2 is
+**measured, not assumed away**. Token-2022 transfer fees stop being unobservable
+the moment realized fills are read, and the row carries a
+`token_conservation_gap`.
+
+**Where it fully works and where it does not.**
+
+| venue class | pre-trade state recoverable? |
+|---|---|
+| Constant-product (Raydium v4/CPMM, PumpSwap, Orca legacy) | **YES, fully** — both vaults are in `preTokenBalances` |
+| pump.fun bonding curve | **YES, derivably** — virtual and real reserves move by identical amounts on every buy and sell, so they differ by a constant fixed at curve creation; those constants live in one `Global` account readable by a single free call. **They are MUTABLE** (`set_params`), so they must be read, slot-stamped, and a corpus spanning a change must be segmented. Treating them as compile-time constants is a silent-wrongness bug. |
+| Concentrated liquidity (Whirlpool, Raydium CLMM) | **NO, not fully** — tick arrays are not token accounts and cannot be read historically |
+| Meteora DLMM | **NO, not fully** — per-bin liquidity and the active bin, same reason |
+
+CLMM/DLMM rows are therefore **realized outcomes without their full causal
+state**, and must carry a typed `pool_state_completeness` in
+`{complete, partial_clmm, partial_dlmm, unknown}`. **A calibration that pools
+them is fitting a curve to points whose x-coordinate is partly unknown, and it
+will look better than it is.**
+
+**Retrospective backfill is NOT OBTAINABLE, and that is the schedule fact.**
+Archival access is a paid product, forbidden by the amendment. And
+`getTransaction` returns `null` for a pruned transaction *indistinguishably* from
+not-found and from not-yet-confirmed — so a backfill collector **cannot tell
+"this swap did not exist" from "this node forgot it"**, which is disqualifying on
+its own for a corpus whose value depends on knowing its own denominator. A
+**prospective** collector never touches the retention horizon: it reads
+minutes-old data on a node holding days, a `null` at t+2min means "not confirmed
+yet" and is retryable, and the denominator is *what you asked for*. This is the
+same shape the project has been forced into twice already —
+CRYPTO-COVERAGE-REPAIR-001 drained the historical recoverable pool 1,043 to 106
+in a single pass.
+
+> **The corpus does not exist until collection starts, and no amount of later
+> effort recovers the days not collected. Calendar time is the scarce resource
+> here, and this is the only place in the entire document where that is true.**
+
+**The rate reality.** The public endpoint's documented limits are 100 requests
+per 10s per IP overall, **40 for any single method**, 40 concurrent connections,
+and **100 MB per 30s of response data**. A whole-chain firehose needs roughly one
+to two orders of magnitude more bandwidth than that cap allows, so it is out.
+Targeted collection scoped to the sparse lane's cohort is in: one
+`getSignaturesForAddress` per tracked token per poll, plus one `getTransaction`
+per new signature. At a conservative 25% of the single-method cap (about 1 req/s
+sustained) that is ~86,400 requests/day, and at an **INFERRED** 2,000–5,000
+usable records/day a 100k-fill corpus accumulates in roughly three to seven
+weeks. **403 is a stop condition for the pass, not a retry**, connection reuse is
+required (the connection-*rate* cap binds before the request cap), and
+`getFirstAvailableBlock` must be recorded per pass so the retention horizon is
+observed rather than assumed. The limits are documented as subject to change
+without notice, so **any capacity claim built on them must be re-measured, never
+inherited** — the same discipline CRYPTO-QUERY-PLAN-AND-DENOMINATOR-RECOVERY-001
+learned when 28 reviewer trials failed to predict a 45-second block in
+production.
+
+**Two traps that produce a silently biased corpus rather than an error.**
+(a) Omitting `maxSupportedTransactionVersion: 0` errors on v0 transactions — and
+aggregator-routed swaps are overwhelmingly v0 with lookup tables — so a naive
+retry-and-skip loop builds a corpus biased *away from exactly the routed swaps
+that matter most*. (b) Lamport balance indices resolve as
+`static ++ loaded.writable ++ loaded.readonly`; getting the order wrong
+attributes deltas to the wrong accounts with no error. The **token side is
+immune**, because each balance element carries its own `mint` and `owner` — which
+is a good reason to build the primary measurement on token balances rather than
+on lamport indices.
+
+**Four fields are contractually nullable** — `preTokenBalances`,
+`postTokenBalances`, `innerInstructions`, `logMessages` — and `owner` and
+`programId` may be omitted per element. A `null` `preTokenBalances` on a swap
+means **that swap is unusable**, not that it moved no tokens. And **failed
+transactions are still returned and still charged a fee**, so a realized-price
+corpus must filter on a null `err` before computing anything.
+
+**Do not build this on log parsing.** Logs are truncatable
+(`--log-messages-bytes-limit`), contractually nullable, and venue-private and
+unversioned; balances are consensus state. A truncated log yields a *partial*
+parse, which is the fabrication shape this repository most wants to avoid — a
+plausible number derived from incomplete evidence. Logs are a **corroborating**
+channel whose disagreement with the balance derivation is a bug signal, and
+nothing more.
+
+**What this does and does not dissolve.** It dissolves *"validating a fill model
+requires realized slippage, which requires a paid per-trade feed"* — the premise
+is false. It does **not** dissolve landing probability, our own MEV extraction,
+or our own quote-to-fill slippage, all of which remain `requires_submission`. And
+`SOLANA-ROUTE-OBSERVATION-001` §8.3's finding — *"Any `PaperFill` this project
+ever writes is a MODEL OUTPUT, never a measurement"* — **stands in full.** What
+changes is the *quality of the model's basis*: the slippage component moves from
+"MODELED, assumed" to "MODELED, calibrated against N observed realized fills in
+stratum S". That is the difference between a boundary field that is honest but
+vacuous and one that carries information.
+
+**One bonus that is arguably larger than the corpus.** A realized-execution
+corpus is the missing comparator for `SOLANA-ROUTE-OBSERVATION-001`'s own SC-5:
+*did the venue's reported price impact for size X on pool P match what actually
+happened to real traders at comparable size on P in the same minutes?* As scoped,
+that milestone can establish that a quote was **recorded faithfully** but not
+that the quote was **right**. This turns its verdict from a completeness audit
+into a genuine falsification test.
+
+### 5.5 The AMM calibration principle: measure the residual, not the curve
+
+The single largest methodological weakness of an observational fill corpus is
+that **you observe the sizes traders chose**, and traders see the pool before
+they size. That is the classical simultaneity problem — the same reason a demand
+curve cannot be estimated from a scatter of equilibrium prices and quantities —
+and it is not fixed by collecting more data.
+
+Quantified against our own designed ladder: the ladder spans `size/TVL` from
+0.35% to 17%, a **~50x range**, chosen deliberately to be non-degenerate. A
+trader targeting a 0.5–2% slippage budget on a constant-product pool is choosing
+`size/TVL` around 0.005–0.02, a **~4x range**. So the corpus may carry **an order
+of magnitude less variation in the covariate that matters**, while carrying
+orders of magnitude more rows. **Rows are not information here.** And the loss is
+concentrated in the worst place: almost no observations near the top rung,
+because nobody voluntarily accepts 17% impact — exactly where a fill model is
+least certain and a bad extrapolation most expensive.
+
+*(That 4x figure may be pessimistic: memecoin traders are frequently not
+slippage-disciplined, with tolerances of 10–50% routine and panic exits
+size-insensitive. It is an empirical question and it is cheap to settle — a
+histogram of realized `amount_in / pool_pre_in` on the first collected sample. If
+the p5–p95 range spans 20x or more the bias is mild; if it spans 4x or less the
+residual reframe below is mandatory rather than advisable.)*
+
+Four further selection effects, each with its sign: **landed-only** (aborted
+swaps are censored, biasing realized slippage *down*); **trader composition**
+(early memecoin flow is bots and snipers, so we would fit a model of *bot*
+execution rather than of a discretionary entry); **life-stage clustering**
+(volume is violently front-loaded, so the corpus's pool-state distribution is not
+the distribution at the horizons we care about); and the inherited **~40%
+enrolment ceiling**.
+
+> **The reframe that makes the bias much less damaging — and it is the design
+> rule, not a caveat.** We are **not** fitting impact as a function of size and
+> state from scratch. For a constant-product pool that function is *known
+> analytically*, and §5.4 recovers the reserves exactly. The corpus's job is to
+> measure the **residual**:
+>
+> ```
+> residual = realized_price − analytic_price(pre_state, amount_in)
+> ```
+>
+> That residual is where the unmodellable content lives — fee tiers, Token-2022
+> transfer fees, multi-pool routing, same-block contention, sandwich extraction —
+> and there is good reason to expect it to be far **less size-dependent** than
+> the impact itself, because its leading terms are proportional or additive
+> rather than curvature. **Endogeneity in size damages structure estimation badly
+> and residual estimation much less.**
+>
+> *Whether the residual really is size-independent is the whole rescue, and it is
+> testable only once a corpus exists. It is §12's first open question.*
+
+Three consequences to build in from the start:
+
+1. **Report per-stratum n by `size/TVL` decile, always.** A stratum below n = 30
+   is reported `too_thin_to_calibrate`, in the spirit of the labels this
+   repository already uses.
+2. **Declare an explicit extrapolation boundary** — the observed support of
+   `size/TVL` — and **refuse to emit a modeled number outside it**, rather than
+   emitting one with a wide interval. EDGE-SELECTION-001 is directly on point:
+   candidates that looked good in-sample inverted out-of-sample, and the negative
+   control beat them.
+3. **Treat the corpus as calibrating and falsifying a known model, never as
+   discovering one.**
+
+Two things the corpus also buys that no quote endpoint can:
+
+- **The abort rate is directly observable.** Failed transactions come back with a
+  non-null `err` and a charged `fee`, so the landed-only censoring becomes a
+  **quantified** bias rather than an invisible one — strictly better than the
+  quote lane, which cannot see aborts at all. And a failed attempt is not free: a
+  slippage revert is included in the block and charged the base fee plus the full
+  priority fee, so **any honest fill model must carry a failure branch with a
+  non-zero cost**, not a retry-until-success loop.
+- **Sandwich contamination becomes a tag rather than a hidden bias.** Same-block
+  grouping is free from the per-signature slot, and ordering can be reconstructed
+  from the **balance chain** — each transaction's `preTokenBalances` on the
+  shared vault must equal the previous one's `postTokenBalances` — rather than
+  trusted from array order. That chain is a total order, it is self-verifying,
+  and a break in it is a *detected gap* rather than a silent mis-ordering. A
+  corpus that silently mixes sandwiched and clean fills produces a slippage model
+  inflated by the sandwich rate times the average extraction, **with no way to
+  decompose them after the fact** — pessimistic in a way that looks like honest
+  conservatism and is actually an artifact. Tag each row `clean` / `sandwiched` /
+  `same_block_contended` / `undetermined`.
+- **But the observed population rate is a LOWER BOUND and a prior, never a
+  prediction.** Private-orderflow extraction may not appear as adjacent
+  same-block public transactions at all, and observed rates are conditioned on
+  *other traders'* slippage tolerances, priority fees, and routing — none of
+  which we would share. **Our own extraction remains `requires_submission`.**
+
+One correction this forces on `SOLANA-ROUTE-OBSERVATION-001` §8.2, which should
+be made openly rather than reinterpreted later. That document says the milestone
+"cannot acquire [ground truth] **within its boundary**". The claim splits:
+*"this milestone, as scoped, has no ground truth to validate against"* is
+**upheld**; *"and cannot acquire one within its boundary"* should be
+**retracted** — it is the **scope**, not the safety boundary, that forecloses it.
+The distinction is load-bearing, because as written a future reader concludes
+that ground truth requires an amendment, and therefore never looks. It does not
+require an amendment. It requires a different milestone.
+
 
 ## 6. The decision record schema
 
