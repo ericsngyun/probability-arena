@@ -866,3 +866,146 @@ is Tier 3 rather than Tier 2. Then a report emitting exactly one verdict:
   trustworthy `ExecutionQuote`. The paper-P&L milestone is blocked at this gate.
 
 **All three are successful terminations of this milestone.**
+
+---
+
+## 10. Risks and validation plan
+
+### 10.1 Risks, ranked
+
+| rank | risk | mitigation |
+|---|---|---|
+| **R1 — HIGH** | **The quote becomes a fill.** An observed `amount_out` is read two milestones later as what we would have received, its provenance evaporates, and a modeled P&L wears observed clothes. | Structural: no fill/order/position/P&L column exists (§11); the `PAPER_SIMULATION` model-id and basis requirement travels *on the artifact*. Process: CP-5's boundary reviewer is charged with hunting consumers. **Honest note: the structural half only covers this repository's own schema. The process half is the weakest link in the design, exactly as it was in the scope doc.** |
+| **R2 — HIGH** | **Boundary creep to the sibling route.** "We already have the quote; the build endpoint is one call away." | The amendment names this case explicitly. Structurally: one route constant, no path parameter (§7.4); forbidden-response refusal; SC-7; a dedicated CP-5 reviewer charge. The AST audit's `swap` ban stays in force everywhere except the one narrowly unbanned fragment (§12 FU-2). |
+| **R3 — HIGH** | **Silent decimal truncation under a valid digest.** Already observed in this repository on ordinary venue JSON (KALSHI-ARCHIVE-REPLAY-INTEGRITY-001). Base-unit amounts are exactly the shape that triggers it. | Reuse `app/realtime/canonical.py`; no float in the parse path or the digest preimage; an explicit CP-2 test on a value that truncates under `float`. |
+| **R4 — MED** | **The ladder drifts.** Rungs get "tuned" once results are in, and the preregistration silently becomes a narrative. | `ladder_digest` on every row; SC-6; the report prints the digest next to the verdict; multi-digest windows are reported invalid rather than reconciled; the one amendment window closes at the first quote (§4.5). |
+| **R5 — MED** | **Cherry-picking moves up a level** — the notionals are frozen but the token population is not. | §4.4 preregisters the population, the deterministic order, and the cap; truncation is typed. |
+| **R6 — MED** | **Database growth** on a database already past its 3,072 MiB gate: 8 rows per observation is a real multiplier. | Small declared per-pass cap; no raw body persisted; bounded route column with a typed `route_too_large`; cap set from the measured headroom (§14, M3), not from this document's arithmetic. |
+| **R7 — MED** | **Rate limiting or an unannounced free-tier change** turns most of the window into failures. | Failures are first-class rows (§5.1), so the window still produces a measurement — of quote availability, which is a legitimate answer to the milestone's question. Cap sized against the published limit at CP-0. |
+| **R8 — MED** | **The endpoint requires an account binding**, and someone supplies a "harmless" placeholder address to get it working. | §3.3 forbids all four variants by name; the typed outcome `quote_requires_account_binding` exists precisely so the honest path is the easy path; CP-5 boundary reviewer checks `request_params` in the digest preimage. |
+| **R9 — MED** | **Token-2022 transfer fees / hooks silently invalidate every quote** (§8.1, 5d). | Recorded as an absence on **every** row, permanently, rather than omitted. An unknown recorded on every row is honest; an unknown omitted is not. It also bounds the strongest verdict this milestone can reach. |
+| **R10 — LOW** | **Write-lock contention** on the shared SQLite host. | Quote rows are written inside the sparse lane's existing batched write phase, never in their own transaction and never in a phase without a session; proven at CP-4 by commit-count equality. |
+| **R11 — LOW** | **A stale quote read as fresh.** | §7.2 typed `stale_context`; `freshness_basis` records when only the weaker latency check was available. |
+
+### 10.2 Validation plan
+
+| checkpoint | proven by |
+|---|---|
+| **CP-0** | committed fixtures; G1/G2 evidence attached; the five reconnaissance answers written down with the evidence, not asserted; the terminate/continue decision recorded in this document |
+| **GATE-FU2** | the allowlist diff scoped to one fragment in one file, recorded in `docs/SAFETY_BOUNDARIES.md`, with dual confirmation; `frontier-eval-report --include-safety` clean afterwards **and** demonstrably still failing on a deliberately-added second use outside that file |
+| **CP-1** | `alembic upgrade`/`downgrade` round trip; flag-off no-op test; an import-time invariant test that checks the `raise` fires (asserts are stripped under `python -O`); the ladder digest written into §4.5 and matching a test constant |
+| **CP-2** | one named test per fabrication shape; the absence/NULL biconditional in both directions; the float-truncation test; direction-aware identity including the quote-side rejection; digest recomputation equality; the forbidden-response whole-refusal test; a purity test that the derivation takes no session, no socket, and no clock |
+| **CP-3** | fixture-only tests; a signature test that no path/endpoint argument exists; a policy test that a paid provider is denied before any client or socket is constructed |
+| **CP-4** | flag-off byte-identical pass result vs `main`; `external_calls` equality; commit-count equality; full suite green (the **whole** suite, not `-k` a keyword — a filtered run has been mistaken for a full one in this repository before) |
+| **CP-5** | three independent PASS verdicts, each recorded separately; the `AGENTS.md` safety grep clean; `frontier-eval-report --include-safety` clean |
+| **CP-6** | on-host with the flag OFF: one pass, result identical to pre-deploy, zero rows in the new table, zero external calls attributable to the lane |
+| **CP-7** | the report computed from persisted rows only, emitting one of the three verdicts, with SC-1..SC-7 each evaluated explicitly and each reported pass/fail — including SC-6's ladder-digest equality and SC-7's route/response audit |
+
+**A known weakness, stated rather than assumed away.** SC-1 is checkable after
+the fact only if the per-pass request ledger is available. The sparse lane
+reports its ledger in the pass result but does not persist it. Two options,
+neither free: evaluate SC-1 **live** during the window from the pass result (no
+schema change, but SC-1 becomes unverifiable afterwards), or persist a per-pass
+run row (a second table, more growth on a constrained database). The default
+recommendation is the live evaluation, with the loss of after-the-fact
+verifiability recorded as a limitation of the result. **This is Q-D for Eric.**
+
+---
+
+## 11. Non-goals — explicit
+
+- **No `PaperFill`.** None, in any form. Not a row, not a table, not a column,
+  not a field, not a nullable placeholder, not a dataclass, not a "we'll need
+  this later" stub.
+- **No ledger rows of any kind**: no `PaperOrder`, `Position`, `ExitDecision`,
+  `RealizedPaperPnL`, and no `ExecutionQuote` *ledger* row either. This milestone
+  produces **route-quote evidence**, which is the input a future `ExecutionQuote`
+  would be built from — not the ledger node itself.
+- **No downstream scaffolding.** No consumer, no adapter to a future consumer,
+  no interface a future consumer would implement, no migration that "reserves"
+  a table name.
+- **This is a constraint from `docs/SAFETY_BOUNDARIES.md`, not a preference.**
+  Under "What 'no implementation surface' means": *"No functions, fields,
+  tables, endpoints, or CLI commands for these capabilities — including
+  'disabled' or 'placeholder' versions."* A helpfully-disabled `PaperFill` is
+  exactly the artifact that clause forbids, and helpfulness is not an exception
+  to it.
+- **No modeled fill or modeled P&L in this milestone at all.** `PAPER_SIMULATION`
+  is permitted by the amendment and is **not exercised here**; MVP-005B still
+  governs whether such a lane is built. Nothing in this milestone produces a
+  number that would need a model identifier, because it produces no modeled
+  numbers.
+- **No EV, side, size recommendation, dollar P&L, profit, action, order,
+  recommendation, or trade direction** — no such column exists by construction.
+  The notionals (§4) are inputs of the measurement instrument, and nothing reads
+  them to decide anything.
+- **No wallet, no key, no signing, no transaction construction, no
+  `simulateTransaction`, no submission, no capital** (§3.2).
+- **No paid provider, no paid RPC, no paid trade/orderflow feed, no
+  SolanaTracker**, and no request that consumes a paid budget (§3.2 F9).
+- **No new provider beyond the single free public quote endpoint.** In
+  particular no RPC provider, not even for a slot or a fee.
+- **No systemd unit, timer, daemon, or scheduled path installed by this
+  milestone.** The lane rides the sparse lane's existing pass.
+- **No change** to the frozen-cohort lane, to `DexScreenerAdapter`, to MarketOps
+  behaviour, to any retention window, to any pragma, or to any existing
+  migration.
+- **No historical backfill**, no mass scheduling, no canary cohort, no arming.
+- **No edit to `app/services/frontier_eval.py`** by this milestone (§12 FU-2 is
+  a separate, dual-confirmed change and is not part of any checkpoint's diff).
+
+---
+
+## 12. Required follow-ups outside this milestone
+
+Both are **separate, explicitly-reviewed changes**. Neither may be folded into
+an implementation checkpoint, and neither is done by this document.
+
+### FU-1 — Canon must stop saying this milestone does not exist. (Tier 2)
+
+`app/canon.py:146-172` states that `READ_ONLY_ROUTE_QUOTE` "requires a
+separately accepted milestone that **does not yet exist**", and the canon
+summary repeats that the amendment "authorizes NO milestone". Eric's B4
+instruction (§0.1) accepted this milestone, so that text is now false.
+`app/canon.py` and `AGENTS.md` must be updated to name
+SOLANA-ROUTE-OBSERVATION-001 as the accepted milestone for this mode. Leaving
+canon stale is how the next agent concludes, correctly per canon and wrongly per
+reality, that it must stop and report back.
+
+### FU-2 — The AST safety audit will fail, and must be unbanned narrowly. (Tier 3)
+
+`app/services/frontier_eval.py` carries `BANNED_IDENTIFIER_FRAGMENTS`, enforced
+by an AST identifier scan over every `.py` file in `app/`. That list contains
+**`swap`** and **`jupiter`**, and also `paper_trad`, `expected_value`,
+`position_siz`, `portfolio`, `place_order`, `submit_order`, `create_order`. The
+canonical text grep in `AGENTS.md` / `docs/TESTING_POLICY.md` likewise matches
+`paper_trad` and `wallet`.
+
+**So any implementation of this milestone that names its venue or route in the
+obvious way will FAIL the safety audit.** The amendment says so plainly and says
+what to do about it:
+
+> "The audit is a **separate enforcement mechanism** from this document and is
+> **not amended by it**. Removing a fragment from that list, or adding an
+> allowlist entry, weakens an automated control that currently protects every
+> file in `app/`; that is its own narrow, separately reviewed change, made when
+> an implementation actually needs it, scoped to the exact fragment in the exact
+> file (the allowlist exempts a FRAGMENT in a FILE, never a whole file), and
+> recorded here. Until then the correct outcome of writing such code is a
+> failing safety audit, and the correct response is to open that separate
+> change — never to rename an identifier to slip past the scan, and never to
+> broaden the allowlist past the one file that needs it."
+
+Consequences for this plan, stated so nobody discovers them at CP-2:
+
+- **Do not touch `app/services/frontier_eval.py` as part of this milestone.**
+  This document does not, and no checkpoint does.
+- The unban is **GATE-FU2** in §9 — Tier 3, dual confirmation, between CP-0 and
+  CP-2 — and must be recorded in `docs/SAFETY_BOUNDARIES.md`.
+- It must be scoped to **one fragment in one file**. If the implementation needs
+  two files exempted, that is a signal the implementation is spread too wide,
+  not a reason to widen the allowlist.
+- **Renaming to evade the scan is explicitly forbidden**, and a reviewer should
+  treat a suspiciously-euphemistic module name as evidence of exactly that.
+- Its validation includes proving the ban still bites: a deliberately-added
+  second use outside the exempted file must still fail the audit.
