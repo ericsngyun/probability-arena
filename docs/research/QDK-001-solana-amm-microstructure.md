@@ -275,6 +275,390 @@ code.
 
 ---
 
+## 3. Impact mathematics: the pump.fun bonding curve
+
+### 3.1 The curve is a constant product over *virtual* reserves
+
+**VERIFIED** against pump.fun's own public documentation repository
+(https://github.com/pump-fun/pump-public-docs), which states the curve "is based
+on Uniswap V2 and uses synthetic x and y reserves". Program ID
+`6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P`. Constants read from the
+documented on-chain `Global` account
+`4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf`:
+
+| field | raw value | human |
+|---|---|---|
+| `initial_virtual_sol_reserves` | 30,000,000,000 | **30 SOL** |
+| `initial_virtual_token_reserves` | 1,073,000,000,000,000 | **1,073,000,000 tokens** |
+| `initial_real_token_reserves` | 793,100,000,000,000 | **793,100,000 tokens** |
+| `token_total_supply` | 1,000,000,000,000,000 | 1,000,000,000 tokens |
+| `fee_basis_points` | 100 | 1% — **legacy fallback only, see §3.4** |
+| `pool_migration_fee` | 15,000,001 | lamports |
+
+So the swap mathematics is **identical in form to §2**, with \((x,y)\) replaced
+by virtual reserves \((S, T)\):
+
+$$\Delta T = \frac{\gamma\,T\,\Delta S}{S + \gamma\,\Delta S}, \qquad k = S\cdot T = 30 \times 1{,}073{,}000{,}000 = 3.219\times10^{10}.$$
+
+**The entire §2 apparatus therefore applies unchanged to the bonding-curve
+phase** — including the \(S \approx f + \tau\) rule — with one crucial
+substitution: \(\tau\) is measured against the **virtual** SOL reserve, not
+against any real balance. That substitution is what makes the early curve far
+less brutal than its real deposits would suggest (§3.3).
+
+### 3.2 Graduation is token-denominated, and the "85 SOL" figure is exact
+
+**VERIFIED:** completion is set "at the end of a `buy` instruction, when
+`real_token_reserves == 0`" — i.e. graduation triggers when the 793,100,000
+saleable tokens are exhausted, **not** when a SOL or market-cap target is hit.
+The SOL figure is a *consequence*, and it is exactly computable:
+
+$$T_{\text{end}} = 1{,}073{,}000{,}000 - 793{,}100{,}000 = 279{,}900{,}000$$
+$$S_{\text{end}} = k / T_{\text{end}} = 115.00536\ \text{SOL} \;\Longrightarrow\; \text{real SOL raised} = 85.00536\ \text{SOL}$$
+
+**DERIVED (exact arithmetic on VERIFIED constants): the widely quoted "~85 SOL
+graduation" is 85.00536 SOL, and it is a deterministic property of the
+constants, not a policy target.**
+
+The price move across the whole curve is likewise exact:
+
+$$\frac{p_{\text{end}}}{p_{\text{start}}} = \left(\frac{T_0}{T_{\text{end}}}\right)^{2} = \left(\frac{1{,}073}{279.9}\right)^{2} = \mathbf{14.6958\times}$$
+
+> **DERIVED, and worth internalising: a pump.fun token that completes its curve
+> rises exactly 14.70× from the first buy to graduation. Not approximately —
+> exactly, by construction.** Any narrative about a pre-graduation token "going
+> up 100×" is describing either a different venue, a post-graduation move, or
+> nothing at all. This is one of the few places in this entire domain where a
+> hard ceiling can be stated with certainty, and it is a useful falsifier for
+> claims encountered in the wild.
+
+**FLAGGED — a citation that does not check out.** The commonly repeated
+"graduates at ~$69,000 market cap" figure appears in **no primary artifact** we
+could locate. It is a SOL-price-dependent restatement of the 85 SOL constant and
+implies a SOL price that has not held for some time. **Do not treat it as a
+protocol constant.** The 85.00536 SOL figure is the real invariant.
+
+### 3.3 Depth rises along the curve, then falls after graduation
+
+Because \(\tau = \Delta S / S\) and the virtual SOL reserve *grows* from 30 to
+115 as the curve fills, **price impact for a fixed notional falls monotonically
+as the curve progresses.** Computed exactly, at the current 1.25% bonding-curve
+fee (§3.4):
+
+| curve progress | virtual SOL reserve | cost of a 0.1 SOL buy | 1 SOL buy | 5 SOL buy |
+|---|---|---|---|---|
+| 0% | 30.00 | 1.57% | 4.40% | 15.21% |
+| 25% | 36.80 | 1.51% | 3.83% | 12.93% |
+| 50% | 47.59 | 1.45% | 3.26% | 10.53% |
+| 75% | 67.32 | 1.39% | 2.68% | 8.00% |
+| 99% | 111.84 | 1.34% | 2.11% | 5.43% |
+
+Now place that beside the post-graduation pools we actually measure. Putting
+both on one scale needs a SOL price; $150 is used **purely as an illustrative
+scale factor and nothing below depends on it** except the two dollar columns.
+
+**Cost of a $150 entry (the N3 rung) across the lifecycle:**
+
+| lifecycle point | effective quote reserve | \(\tau\) | entry cost |
+|---|---|---|---|
+| pump.fun curve, at launch | 30 SOL ≈ $4,500 (virtual) | 3.33% | 4.40% |
+| pump.fun curve, at graduation | 115 SOL ≈ $17,251 (virtual) | 0.87% | **2.09%** |
+| graduated pool, **birth** TVL $13,586 | $6,793 | 2.21% | 2.40% |
+| graduated pool, **horizon** TVL $2,860 | $1,430 | 10.49% | **9.70%** |
+
+> **DERIVED, and it is the structural result of this section: effective depth is
+> NON-MONOTONIC across the memecoin lifecycle. It rises through the bonding
+> curve, peaks at or shortly after graduation, and then decays.** The decayed
+> post-graduation pool at our measured median ($1,430 quote reserve) is
+> **shallower than the pump.fun curve was on its very first buy** ($4,500
+> virtual). A token that has "made it" — graduated to a real AMM — is, at the
+> horizon where we observe it, a worse venue to transact than the launchpad it
+> escaped.
+
+This is independent corroboration of §7's central claim from a completely
+different direction: the lifecycle stage variable is not a control, it is the
+dominant determinant of execution cost, and it moves in both directions.
+
+### 3.4 The fee is 1.25%, not 1% — a correction worth propagating
+
+**VERIFIED** (https://github.com/pump-fun/pump-public-docs,
+`docs/FEE_PROGRAM_README.md`): pump.fun replaced the flat fee with a
+**market-cap-tiered dynamic fee**. `computeFeesBps()` reads a `FeeConfig` PDA
+and selects a tier by market cap; **only when `feeConfig == null` does it fall
+back to `global.feeBasisPoints`, which is the legacy 100 bps.** That fallback is
+the origin of the "1%" figure now circulating everywhere.
+
+The documented tier table runs from **1.25% total on the bonding curve** (0.300%
+creator + 0.950% protocol + 0% LP) monotonically down to **0.30%** for
+$20M+ market caps.
+
+> **Any model using 1% for the bonding-curve phase under-costs by 25 bps —
+> a 25% relative error in the fee term.** At the N1 control rung, where §2.4
+> shows the fee *is* essentially the entire cost, that error is most of the
+> measurement.
+
+Two further mechanics that a naive integration gets wrong, both VERIFIED:
+
+- **Graduation now migrates to PumpSwap, not Raydium.** `migrate()` moves a
+  completed curve's liquidity to the PumpSwap AMM
+  (`pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA`, "a constant-product AMM"); it
+  is permissionless and idempotent, and LP tokens are **burnt**. The legacy
+  `withdraw`-to-Raydium path is disabled. Any `dex_id`-based lifecycle logic
+  keyed on a Raydium destination is now wrong. *(The commonly cited March 2025
+  date for this change we could **not** verify; the substance is verified, the
+  date is not.)*
+- **Not every coin is SOL-quoted any more.** `buy_v2` documents USDC-paired
+  coins. A SOL-only price model is wrong for some tokens.
+
+### 3.5 Meteora DLMM breaks the constant-product assumption entirely
+
+**VERIFIED** (https://docs.meteora.ag/core-products/dlmm/formulas.md), and this
+is important enough to sit in the impact section rather than a footnote:
+
+Meteora's DLMM prices in **discrete bins**, \(P_i = (1 + \text{bin\_step}/10^4)^i\),
+and **within a bin the invariant is constant-SUM**, \(L = P\cdot x + y\).
+
+> **The consequence is stark: price impact inside a DLMM bin is exactly ZERO.**
+> The price does not move at all until the active bin's output side is
+> exhausted, at which point it jumps to the next bin. Swap output is literally
+> \(\lfloor \text{amount\_in} \cdot P \rfloor\).
+
+So DLMM impact is a **step function**, not the smooth convex curve of §2.
+Applying §2's \(S \approx f + \tau\) to a Meteora pool is not an approximation
+with a small error — it is the wrong functional form. DLMM also carries a
+**volatility-dependent dynamic fee** (`total_fee = base + variable`, where the
+variable component scales with the square of a decaying volatility accumulator),
+so even the fee term is not a constant.
+
+Similarly, **Orca Whirlpools and Raydium CLMM are concentrated-liquidity**
+venues where TVL may sit far from the active price, so §2.3's \(L/2\) conversion
+has unbounded error in both directions.
+
+> **This is the concrete justification for the `pool_kind` feature (A6) and for
+> making `quote_reserve_usd_est` (A2) typed-absent on non-CPMM venues.** Three
+> distinct impact mathematics coexist in this market — smooth constant product,
+> stepped constant sum, and concentrated liquidity — and a state model that
+> applies one formula everywhere is silently wrong on an unknown fraction of the
+> population. **Measuring the venue mix in our own `dex_id` column is a free T0
+> study that nothing in §11 currently proposes, and it should be S-0.**
+
+### 3.6 Verified fee reference (for whoever builds A4)
+
+Collected here because §5.1's A4 explicitly forbids a guessed per-dex fee table
+— this is the *verified* one, and even it must be read from the pool, not
+assumed.
+
+| venue | tiers | default | note |
+|---|---|---|---|
+| **Raydium AMM v4** | 0.25% only | 0.25% | fee encoded as x/10,000 |
+| **Raydium CPMM** | 0.01% / 0.25% / 1% | 0.25% | **encoded as x/1,000,000** |
+| **Raydium CLMM** | 0.01% / 0.05% / 0.25% / 1% | 0.25% | encoded as x/1,000,000 |
+| **Orca Whirlpools** | 0.01%–2.00% across 9 tick spacings | per-pool | 87% LP / 12% DAO / 1% Climate |
+| **Meteora DLMM** | base + variable, cap 10% | per-pool | dynamic, volatility-scaled |
+| **pump.fun curve** | tiered by mcap | **1.25%** | 1% is the legacy fallback |
+| **PumpSwap (non-canonical)** | 20 bps LP + 5 bps protocol | 0.25% | canonical pools use the tier table |
+
+> **A trap worth naming: Raydium AMM v4 encodes its fee as x/10,000 while CPMM
+> and CLMM encode as x/1,000,000.** Reading one with the other's denominator is
+> a **100× error** in the fee term. This is exactly the kind of silent numeric
+> wrongness that `SOLANA-ROUTE-OBSERVATION-001` §5.6 built its no-float,
+> canonical-decimal discipline to catch.
+
+---
+
+## 4. What is actually uncertain — the real research question
+
+§2 and §3 establish that impact is a **closed form**. This section is therefore
+the actual research frontier: given that the pricing function is known, what
+stops you from knowing your fill?
+
+Five sources, ordered by how much they matter at our sizes.
+
+### 4.1 Ordering within a block is priority-greedy, not FIFO — and not deterministic from your side
+
+**VERIFIED** from Agave master
+(https://github.com/anza-xyz/agave, `core/src/validator.rs`): the default block
+production method is now `CentralSchedulerGreedy`; the older prio-graph
+`CentralScheduler` is **deprecated** ("will be removed in a future release").
+The greedy scheduler's own doc comment describes it as scheduling "in priority
+order, scheduling anything that can be immediately scheduled, up to the limits",
+with `target_scheduled_cus = MAX_BLOCK_UNITS / 4` and
+`max_scanned_transactions_per_scheduling_pass = 100_000`.
+
+Critically, it assigns work across threads under `ThreadAwareAccountLocks`, and
+a transaction that cannot take its account locks is deferred to
+`unschedulables` and retried.
+
+> **INFERRED, and it is the correct mental model: your position in the block is
+> a function of your fee AND of contention on the specific accounts your swap
+> touches.** For a hot memecoin pool, *every* swap contends on the same pool
+> accounts, so the account-lock path is the binding constraint precisely in the
+> situation where ordering matters most. You cannot compute your own ordering
+> ex ante, and paying more does not straightforwardly fix it.
+
+**FLAGGED AS UNVERIFIED:** the exact priority-score formula (widely stated as
+fee-per-compute-unit) and the prio-graph look-ahead depth. The authoritative
+Anza write-up was not reachable from our environment. **Do not assert either
+without reading `transaction_priority_id.rs`.**
+
+### 4.2 Concurrent swaps in the same slot are the dominant fill uncertainty
+
+**VERIFIED:** Solana's slot target is 400 ms — and this is not folklore, it is a
+compile-time assertion in the SDK
+(https://github.com/anza-xyz/solana-sdk, `clock/src/lib.rs`):
+
+```rust
+pub const DEFAULT_TICKS_PER_SECOND: u64 = 160;
+pub const DEFAULT_TICKS_PER_SLOT: u64 = 64;
+static_assertions::const_assert_eq!(DEFAULT_MS_PER_SLOT, 400);
+pub const NUM_CONSECUTIVE_LEADER_SLOTS: u64 = 4;
+pub const FORWARD_TRANSACTIONS_TO_LEADER_AT_SLOT_OFFSET: u64 = 2;
+pub const HOLD_TRANSACTIONS_SLOT_OFFSET: u64 = 20;
+```
+
+Two consequences that are directly load-bearing:
+
+1. **The pool state you quoted against is at best one slot stale, and clients
+   forward to the leader 2 slots ahead and may hold up to 20.** So the gap
+   between "state I priced against" and "state my swap is applied to" is on the
+   order of **0.8–8 seconds**, not milliseconds.
+2. **Every swap that lands ahead of yours in the same block moves the curve you
+   execute against, deterministically, by the §2 formula.** This is not noise
+   with zero mean. On a token with directional flow it is systematically against
+   you.
+
+> **This is the single largest genuine uncertainty at our notional sizes, and it
+> is quantifiable in principle.** §2 gives the exact impact of any preceding
+> swap. So the fill distribution is fully determined by the distribution of
+> *preceding same-slot flow* — which is precisely feature C4 (`net_signed_flow`)
+> at tier **T3**. **The one thing we would most need to model fills is the one
+> thing our capability boundary excludes.** That is a clean, honest statement of
+> where the wall is.
+
+**ALPENGLOW — VERIFIED status, and it does not change this.** The Alpenglow
+upgrade (https://solana.com/upgrades/alpenglow) targets ~150 ms finality versus
+today's ~400 ms pre-confirmation, with mainnet activation targeted Q3 2026 and
+two prerequisites already activated (BLS Pubkey Management, 2026-07-08;
+Validator Admission Ticket, 2026-07-22). **The page describes no change to slot
+duration.** Faster finality does not reduce same-slot concurrency, which is the
+mechanism above. *(Secondary sources give contradicting mainnet dates; treat
+anything beyond "not on mainnet as of 2026-08-14" as unverified.)*
+
+### 4.3 MEV and sandwiching — no public mempool, and it happens anyway
+
+This is the part most commonly reasoned about wrongly. The premise "Solana has
+no public mempool, therefore sandwiching is impossible" is **false**, and there
+is a peer-reviewed measurement of exactly how false.
+
+**VERIFIED — primary source:** Gerzon, Weintraub, In, Mislove, Nita-Rotaru,
+*"Quantifying the Threat of Sandwiching MEV on Jito: A Measurement of Solana's
+Leading Validator Client"*, **ACM IMC '25**, DOI
+[10.1145/3730567.3764493](https://doi.org/10.1145/3730567.3764493), PDF:
+https://cnitarot.github.io/papers/imc26_solana.pdf
+
+Findings, from the paper:
+
+- Solana's original design "lacks a *public mempool*… making MEV impossible for
+  non-validator users, since only the validators are privy to the information
+  necessary to conduct MEV attacks."
+- Jito opened a public mempool in August 2022 and **suspended it in March 2024**
+  citing "negative externalities impacting users on Solana."
+- **Suspending it did not work.** Tips per day and Jito network utilisation
+  "have only increased since then," and the authors report speculation that some
+  validators "re-created the mempool by privately collaborating."
+- Measurement window 2025-02-09 → 2025-06-09: **521,903 sandwiching instances,
+  costing users over $7.7M.**
+- Mechanism: the victim transaction "is instead **included in a Jito bundle**
+  surrounded by an attacker's transactions." **The attacker does not need a
+  mempool because the victim's transaction is routed to them.**
+- **Over 86% of Jito bundles contain a single transaction** with tips too small
+  for priority placement — i.e. they are purely **defensive**, costing users over
+  **$2.4M** in the period "that provide little benefit beyond preventing
+  Sandwiching."
+- As of Sept 2025, **97% of the top 500 validators run a Jito-compatible
+  client**, including the entire super-minority.
+- **The authors state these are lower bounds** — they analyse only length-3
+  bundles (~2.77% of daily bundles) and exclude non-SOL-denominated trades.
+
+Supporting mechanics, **VERIFIED** from https://docs.jito.wtf/lowlatencytxnsend/:
+bundles are **max 5 transactions**, executed "sequentially and atomically",
+priced in a **priority auction** where "parallel auctions are run at 50 ms
+ticks" — roughly **8 auction rounds per 400 ms slot** — ordered by "requested
+tip/cus-requested efficiency", minimum tip 1,000 lamports.
+
+> **INFERRED, and it is the operationally useful conclusion: sandwich exposure
+> on Solana is a function of your ORDERFLOW ROUTING, not of mempool visibility.**
+> If your transaction reaches a leader through a path that also reaches a
+> searcher, you are exposed regardless of how private the network looks. This
+> means sandwich risk is not a property of the token or the pool — the state
+> variables of §5 cannot predict it — it is a property of **how you submit**.
+> It therefore belongs in an execution-policy model, not in the market-state
+> model this document specifies.
+
+### 4.4 Slippage-tolerance failures cost money and return nothing
+
+**VERIFIED — Raydium** (https://docs.raydium.io/user-flows/swap.md):
+`minimumAmountOut = expectedAmountOut × (1 − slippage)`; "if actual output would
+be less, the tx reverts with `ExceededSlippage`." UI defaults are 0.5% general
+and **"2–5% for meme tokens"**, which is itself a useful piece of evidence about
+what practitioners expect.
+
+**VERIFIED — Jupiter** (https://developers.jup.ag/docs/swap/advanced/slippage.md):
+the Real-Time Slippage Estimator "estimates slippage at **order time** (when you
+call `/order` or `/build`), **not at execution time**. The estimated slippage is
+baked into the transaction." The Router path defaults to a fixed
+`slippageBps=50` (0.5%); RTSE is opt-in. The enforced floor surfaces as
+`otherAmountThreshold`.
+
+**VERIFIED — and this is the expensive part.** SIMD-0191 ("Relax Transaction
+Loading Constraints", **Activated**,
+https://github.com/solana-foundation/solana-improvement-documents/blob/main/proposals/0191-enable-transaction-loading-failure-fees.md)
+defines a Runtime Transaction Error as one that "results in a failed
+transaction, and may be included in the block. **These transactions still incur
+transaction fees, and nonce advancements.**"
+
+> **A slippage revert is included in the block, charged the base fee (5,000
+> lamports/signature) and the full priority fee, and returns no fill.** So the
+> cost of a failed attempt is not zero, and at our N1 $10 control rung a few
+> failed attempts can exceed the notional. Any honest fill model must carry a
+> **failure branch with a non-zero cost**, not a retry-until-success loop.
+
+Note also that Jupiter's RTSE bakes a slippage estimate in at *order* time —
+which means the tolerance itself is computed against the same stale state as the
+quote, compounding §4.2 rather than mitigating it.
+
+### 4.5 Liquidity changing between quote and execution
+
+The fifth source, and the one our own data speaks to most directly. §7.1 puts
+the median pool half-life at **2.7–10.7 hours**. Over a quote-to-execution gap
+of a few seconds (§4.2) that is negligible.
+
+> **INFERRED: at the timescale of a single transaction, liquidity change is the
+> SMALLEST of the five uncertainty sources. At the timescale of a holding
+> period, §2.5(b) shows it is the LARGEST cost in the entire system.** The same
+> variable is nearly irrelevant at 1 second and dominant at 6 hours. Any model
+> that carries one "liquidity risk" number for both horizons is wrong at one of
+> them.
+
+### 4.6 Summary — where the uncertainty actually is
+
+| source | magnitude at our sizes | observable to us? |
+|---|---|---|
+| Same-slot concurrent flow (§4.2) | **largest** per-transaction | **No** — needs C4 at tier T3 |
+| Intra-block ordering / account contention (§4.1) | large, coupled to the above | No |
+| Sandwich extraction (§4.3) | material, measured at scale industry-wide | No — and it is a routing property, not a state property |
+| Slippage-revert cost (§4.4) | small per event, non-zero, asymmetric | Partially — it is a modelling choice we control |
+| Liquidity change quote→execution (§4.5) | negligible at 1s, **dominant at 6h** | **Yes** — F6, and it is the one we can actually measure |
+
+> **The through-line: of the five things that make a fill uncertain, exactly one
+> is observable inside our boundary — and it happens to be the one that
+> dominates at the holding horizons we actually care about.** That is a much
+> better position than it first appears, and it argues strongly for spending
+> effort on §11's lifecycle studies rather than on execution modelling we cannot
+> validate.
+
+---
+
 ## 5. The AMM state vector, as a typed feature schema
 
 ### 5.0 The observability tiers, declared first
