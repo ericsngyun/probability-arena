@@ -242,8 +242,20 @@ class TestCredentialIsolation:
             if ("kalshi_observer_api_key_id" in src
                     or "kalshi_observer_credential_path" in src):
                 readers.append(str(path.relative_to(REPO)))
+        # KALSHI-LIVE-TAPE-COLLECTOR-001 CP2 added `app/realtime/collector.py`:
+        # `load_observer_signer`, the observer's single credential loader and
+        # the reader this list was always anticipating (see the comment on the
+        # fields in `app/config.py`). It is a widening of exactly one entry, and
+        # it is the OBSERVER's loader — the property being protected is that no
+        # *generic* Kalshi subsystem can pick this credential up, which the
+        # forbidden list below still enforces.
         assert set(readers) <= {"app/config.py", "app/main.py",
-                                "app/realtime/auth.py"}, readers
+                                "app/realtime/auth.py",
+                                "app/realtime/collector.py"}, readers
+        # Stronger than before: the loader must EXIST. Until CP2 nothing in
+        # `app/` read these variables at all, so the assertion above was
+        # satisfied by a repository in which no credential could be loaded.
+        assert "app/realtime/collector.py" in readers, readers
         for forbidden in ("app/adapters/kalshi.py", "app/services/scanner.py",
                           "app/services/watcher.py", "app/services/research.py"):
             assert forbidden not in readers
