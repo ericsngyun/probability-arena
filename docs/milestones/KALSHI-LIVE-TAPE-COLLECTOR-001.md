@@ -804,7 +804,91 @@ which is the one property the whole archive design exists to provide.
 
 ## 9. Implementation checkpoints
 
-TBD
+Ten checkpoints. Each is independently verifiable and each is a commit. No checkpoint
+depends on a later one being right.
+
+**CP0 — Library capability audit (no product code).**
+Establish, against the installed `websockets` version, the answers section 6.2 and 7.4
+marked as assumptions: the client connect parameter that bounds the inbound buffer, its
+overflow semantics (backpressure vs drop), whether inbound queue depth is readable,
+whether a drop counter exists, and how a close code is surfaced. Output: a short findings
+note appended to this document. **If overflow silently drops frames rather than applying
+backpressure, section 8.1's whole argument changes and the design must be revisited
+before CP1.**
+*Verify:* the note names a version and a source (installed source, not memory), and each
+answer is either confirmed or explicitly recorded as unavailable.
+
+**CP1 — `KalshiWebsocketTransport`, offline.**
+The class, its governed `send()`, its frame parsing, its counters. Tested with NO socket:
+`send()` refuses a `fill` channel, refuses an unknown `cmd`, refuses a raw dict; the
+class exposes no raw-send method; a non-JSON and a non-dict frame both count as
+`frames_malformed` and never reach `make_envelope`.
+*Verify:* new unit suite green; `FixtureTransport` still satisfies the same interface;
+the AGENTS.md safety grep clean.
+
+**CP2 — Credential loading, offline.**
+`load_observer_signer` reading the two documented env vars, refusing cleanly when either
+is absent, and never falling back to `UnsignedTransportSigner`.
+*Verify:* tests for absent id, absent path, bad file mode; a test that asserts
+`app/realtime/auth.py` remains the only file holding key material (the existing AST test
+still passes).
+
+**CP3 — Collector loop against `FixtureTransport`.**
+The whole orchestrator, end to end, with no network: connect, subscribe, read N fixture
+frames, envelope, dispatch, append, close, result. Uses a temp archive root initialized
+via `archive-init --confirm`.
+*Verify:* `kalshi-realtime-replay` on the produced archive reports `records=N`,
+`faults=0`, integrity intact; the per-market checksums are deterministic across two runs
+of the same fixture.
+
+**CP4 — Measurement lane, offline.**
+`collector_metrics.py`, its closed validator, the 10 s flusher thread, the 1 s ring, the
+two append histograms, and the interval-record writer.
+*Verify:* a fixture run at a synthetic 5,000 events/s produces intervals whose
+`events_received` sums to the fixture count; a ticker never appears in the output file;
+the flusher's failure paths never raise into the loop (inject an unwritable directory).
+
+**CP5 — Instrumentation-overhead gate.**
+Run the SAME fixture load with instrumentation enabled and disabled and compare append
+throughput and append latency distribution. Extend `tests/benchmarks/segment_close_cost.py`
+rather than writing a second benchmark.
+*Verify:* the measured overhead is stated as a number and is a small single-digit
+percentage of append cost, or the instrumentation is redesigned. **This checkpoint can
+fail the design and is placed before any live connection for that reason.**
+
+**CP6 — First DEMO session, dry-run.**
+`--environment demo --dry-run --max-seconds 120`. Real credential, real socket, real
+frames, ZERO archive appends.
+*Verify:* handshake succeeds; subscription confirmed; frames arrive; no archive
+directory is created or modified; `events_archived == 0`; the boundary note is printed.
+
+**CP7 — First DEMO session, archiving.**
+`--environment demo --max-seconds 300` into a purpose-initialized demo archive root.
+*Verify:* `kalshi-realtime-replay` on the result reports integrity intact and zero
+faults; `verify_archive` clean; the interval file parses; `emit_writer_pass` filed one
+session record with `writer_name="kalshi_live_tape"`.
+
+**CP8 — Reconnect and recovery, deliberately provoked.**
+Kill the connection mid-session (locally, by closing the socket from the test harness or
+by a firewall rule on the host) and confirm the recovery path.
+*Verify:* `supersede()` ran, generation incremented, a fresh snapshot re-based the books,
+the observation gap is recorded with both timestamps, and the replay lane reports the
+generation change rather than a spurious sequence fault.
+
+**CP9 — The measurement session and the report.**
+The longest DEMO session the operator authorizes (see Q2), followed by
+`kalshi-tape-measure-report`.
+*Verify:* the report either prints p95/p99 with the sample gate satisfied, or refuses
+them and says why; each of the three rotation constants gets a verdict; the NOT MEASURED
+section is non-empty and honest.
+
+**CP10 (SEPARATE APPROVAL, Tier 2) — First PRODUCTION session.**
+Not part of the merge. Requires: CP0-CP9 all passing, a production read-scoped
+credential whose scopes were verified by `audit_scopes` against the live key-metadata
+route, and a confirmed production WS host (`kalshi.py:52-55` records it as UNVERIFIED).
+Bounded exactly as CP7 was.
+*Verify:* same as CP7, in the production archive tree, plus an explicit statement that
+the demo rate distribution did NOT predict the production one (or did).
 
 ## 10. Validation plan
 
