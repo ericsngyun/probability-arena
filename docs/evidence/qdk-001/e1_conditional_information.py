@@ -182,10 +182,11 @@ def main():
     n_total = len(rows)
     tr = D["split"] == "train"
     ho = D["split"] == "holdout"
+    # counted from the split labels themselves, before any smoke override
+    n_other = n_total - int(tr.sum()) - int(ho.sum())
     if SMOKE:
         ho = tr.copy()   # never touches the real holdout
     n_tr, n_ho = int(tr.sum()), int(ho.sum())
-    n_other = n_total - n_tr - n_ho
 
     out = []
 
