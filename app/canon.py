@@ -89,8 +89,12 @@ ALLOWED_CAPABILITIES = (
 )
 
 FORBIDDEN_CAPABILITIES = (
-    "EV calculation (dollar EV; a modeled PAPER_SIMULATION P&L may never be "
-    "used to compute, approximate, or stand in for one)",
+    "EV calculation — ANY monetary or return-denominated expected value, in "
+    "ANY unit (dollars, SOL, ticks, basis points, probability-weighted "
+    "returns); 'it is not denominated in dollars' is NOT an exemption. The "
+    "only accepted EV-adjacent surface is the existing probability-gap edge "
+    "precheck, and a modeled PAPER_SIMULATION P&L may never be used to "
+    "compute, approximate, or stand in for one",
     "trade recommendations (a modeled P&L and a route quote are both EVIDENCE "
     "— neither may carry or imply a side, an entry instruction, or an action)",
     "paper trading, EXCEPT the narrowly-permitted PAPER_SIMULATION mode "
@@ -140,7 +144,13 @@ FORBIDDEN_CAPABILITIES = (
 # use; unbanning one is a separate, narrowly-scoped review.
 # See docs/SAFETY_BOUNDARIES.md for the full enumeration.
 NARROWLY_PERMITTED_MODES = (
-    "READ_ONLY_ROUTE_QUOTE — retrieve executable route/amount evidence only "
+    "READ_ONLY_ROUTE_QUOTE — NOT IMPLEMENTED; authorizes no milestone, and "
+    "building it today still means STOP AND REPORT BACK (it requires a "
+    "separately accepted milestone that does not yet exist). FREE PUBLIC "
+    "ENDPOINTS ONLY: no paid RPC, no paid trade/orderflow feed, no "
+    "SolanaTracker — a quote obtainable only by paying for it is not "
+    "obtainable, and the honest outcome is no quote. "
+    "Retrieve executable route/amount evidence only "
     "(route, output amount, price impact, fee for a stated input size from a "
     "free public quote endpoint). NEVER: swap instructions or transaction "
     "bytes, transaction construction/encoding, RPC transaction simulation, "
@@ -148,12 +158,18 @@ NARROWLY_PERMITTED_MODES = (
     "wallet key material, or any parameter binding the quote to OUR ability "
     "to execute it. The object is 'what a trade of size X would cost', never "
     "'the trade we are about to make'",
-    "PAPER_SIMULATION — produce MODELED fills and MODELED P&L only, with an "
+    "PAPER_SIMULATION — NOT IMPLEMENTED; authorizes no milestone, and "
+    "building it today still means STOP AND REPORT BACK (MVP-005B still "
+    "governs whether such a lane is BUILT at all). FREE PUBLIC ENDPOINTS "
+    "ONLY: no paid RPC, no paid trade/orderflow feed, no SolanaTracker — its "
+    "discovery/risk-lane authorization is not a precedent this mode may "
+    "borrow. "
+    "Produce MODELED fills and MODELED P&L only, with an "
     "explicit model identifier and an explicit modeled-vs-observed basis on "
     "every artifact (not in a header, README, docstring, or column comment). "
-    "NEVER: a real fill, real order, real position, real capital, a dollar-EV "
-    "substitute, a size recommendation, or a modeled number presented as "
-    "realized/actual/observed P&L",
+    "NEVER: a real fill, real order, real position, real capital, an EV "
+    "substitute in ANY denomination, a size recommendation, or a modeled "
+    "number presented as realized/actual/observed P&L",
 )
 
 EXPECTED_SERVICES_EVO_X2 = (
@@ -204,7 +220,8 @@ NEXT_MILESTONES = (
     "Goalserve-backed tennis live-state work blocked pending the API key",
     "Accumulate paired outcomes toward useful_sample (n>=100); retired EDGE-SELECTION "
     "policies remain retired (EDGE-RETIRE-001; resurrection needs a new prereg+lock)",
-    "Dollar EV, real paper trading (real fills/orders/positions/capital), "
+    "EV in any denomination, paper trading beyond the modeled "
+    "PAPER_SIMULATION mode (which MVP-005B still gates), "
     "portfolio sizing, wallet/key handling, transaction construction/signing, "
     "swaps, and live execution remain UNAUTHORIZED and require explicit, "
     "separately-accepted milestones before any surface may exist "

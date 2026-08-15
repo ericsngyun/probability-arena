@@ -179,3 +179,79 @@ class TestAgentContextCli:
         monkeypatch.setattr(cli, "agent_context", fake_context)
         assert cli.main(["agent-context"]) == 0
         assert captured == {"ran": True}
+
+class TestNarrowlyPermittedModes:
+    """CANON-ROUTE-QUOTE-RECONCILE-001 pins.
+
+    `NARROWLY_PERMITTED_MODES` is the one place canon describes something as
+    permitted rather than forbidden, so it is the one place a future edit can
+    widen the boundary without deleting a prohibition. The security review of
+    the reconciliation found three ways that happens in practice, and each
+    assertion below pins one of them.
+    """
+
+    def test_both_modes_carry_the_paid_source_exclusion(self):
+        """The exclusion used to live only in a module COMMENT, and
+        `agent-context` prints the tuple VALUES. An agent reading the
+        documented first step therefore saw no paid-source prohibition, while
+        the boundary doc forbids paid sources under BOTH modes. The constant
+        also travels to any future importer without its comment."""
+        for mode in canon.NARROWLY_PERMITTED_MODES:
+            lowered = mode.lower()
+            assert "solanatracker" in lowered, mode[:60]
+            assert "paid rpc" in lowered, mode[:60]
+            assert "free public endpoints only" in lowered, mode[:60]
+
+    def test_both_modes_say_they_are_unimplemented_and_ungated(self):
+        """"Permitted with conditions" reads as license to start building
+        unless the string itself says otherwise."""
+        for mode in canon.NARROWLY_PERMITTED_MODES:
+            assert "NOT IMPLEMENTED" in mode, mode[:60]
+            assert "STOP AND REPORT BACK" in mode, mode[:60]
+
+    def test_permitted_modes_are_not_allowed_capabilities(self):
+        """They are exceptions carved out of FORBIDDEN_CAPABILITIES, not
+        surfaces this repo has. Promoting one into ALLOWED_CAPABILITIES would
+        make it read as existing and implemented."""
+        for mode in canon.NARROWLY_PERMITTED_MODES:
+            name = mode.split(" ")[0]
+            assert not any(name in a for a in canon.ALLOWED_CAPABILITIES), name
+
+    def test_ev_prohibition_is_denomination_agnostic(self):
+        """Narrowing this to "dollar EV" invites "EV in SOL / ticks /
+        probability-weighted units is not dollar EV, so it is not on the
+        list". docs/SAFETY_BOUNDARIES.md marks the EV row UNCHANGED by
+        SAFETY-BOUNDARY-ROUTE-QUOTE-001, and docs/CAPABILITY_MATRIX.md still
+        carries EV calculation as flatly non-existent."""
+        ev = [c for c in canon.FORBIDDEN_CAPABILITIES if c.startswith("EV calculation")]
+        assert len(ev) == 1, canon.FORBIDDEN_CAPABILITIES
+        assert "ANY unit" in ev[0]
+        agents = (REPO_ROOT / "AGENTS.md").read_text(encoding="utf-8")
+        assert "any monetary or return-denominated expected value" in agents
+
+    def test_agents_md_keeps_an_imperative_build_gate_for_both_modes(self):
+        """The flat forbidden list is what the "stop and report back"
+        imperative actually fires on. Describing a mode as permitted in a
+        bullet, with its gate only as a trailing clause, removes the trigger."""
+        agents = (REPO_ROOT / "AGENTS.md").read_text(encoding="utf-8")
+        assert "BUILDING EITHER MODE TODAY STILL MEANS STOP AND REPORT BACK" in agents
+        assert "MVP-005B" in agents
+        assert "a separately accepted milestone that does not yet exist" in agents
+        assert "paper trading beyond the modeled" in agents
+
+    def test_agent_context_prints_the_modes_with_their_conditions(self, capsys):
+        """Regression on the reason this tuple exists: agents read
+        `agent-context` first, so the conditions must reach THAT OUTPUT — not
+        merely exist in a constant. The original defect was precisely that the
+        paid-source exclusion lived in a comment the command never prints."""
+        import asyncio
+
+        asyncio.run(cli.agent_context())
+        output = capsys.readouterr().out
+        assert "READ_ONLY_ROUTE_QUOTE" in output
+        assert "PAPER_SIMULATION" in output
+        assert "NOT IMPLEMENTED" in output
+        assert "STOP AND REPORT BACK" in output
+        assert "SolanaTracker" in output
+        # the hard boundary must still be printed alongside the exceptions
+        assert "forbidden capabilities" in output
