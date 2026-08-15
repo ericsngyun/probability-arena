@@ -15,6 +15,9 @@ discarded, and what is honestly timeable.
   measurement already recorded in this repository, with a citation.
 - **INFERRED** — a deduction from VERIFIED facts, with the deduction stated.
 - **SPECULATIVE** — plausible, unconfirmed, and load-bearing for nothing.
+  *No claim in this document ended up carrying this label.* Where something was
+  merely plausible it was either verified, demoted to an explicitly open
+  question, or recorded in §12.4/§12.5 as a citation that did not check out.
 
 ---
 
