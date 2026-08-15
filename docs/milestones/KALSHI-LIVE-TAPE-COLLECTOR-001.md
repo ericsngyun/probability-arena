@@ -1013,3 +1013,312 @@ architecture.
 7. The measured 3,440 events/s append figure was taken on `SegmentWriter` with a
    test-shaped record; a real `orderbook_snapshot` for a deep book may canonicalize more
    slowly. The per-record size histogram in section 7 is what will tell us. (CP7.)
+
+## 12. CP0 FINDINGS — library capability audit
+
+STATUS: **CP0 COMPLETE.** VERDICT: **DESIGN SURVIVES CP0** — with four mandatory
+corrections listed in 12.9. The gate condition stated in section 9 ("if overflow silently
+drops frames rather than applying backpressure, section 8.1's whole argument changes") is
+**NOT triggered**: overflow applies backpressure and drops nothing.
+
+### 12.0 What was audited, and how
+
+- **Installed version: `websockets` 16.0**, confirmed two ways: the distribution directory
+  `.venv/lib/python3.12/site-packages/websockets-16.0.dist-info`, and the literal
+  `tag = version = commit = "16.0"` at
+  `.venv/lib/python3.12/site-packages/websockets/version.py:23`. A runtime probe printed
+  `websockets.__version__ == "16.0"`.
+- **All file:line citations below refer to the INSTALLED SOURCE** under
+  `.venv/lib/python3.12/site-packages/websockets/`, read directly. Paths are given relative
+  to that root. Nothing here is quoted from memory or from documentation.
+- Method: source reading plus a throwaway introspection probe (`inspect.signature`, plus
+  driving `Assembler` in-process with synthetic frames). **No network connection was
+  opened.** Nothing was installed. No product code was written.
+- Note on requirements drift: `requirements.txt:9` pins `websockets>=12.0`, which is
+  satisfied by 16.0 but does not describe it. The design text was written against the v12
+  API. `websockets/legacy/` is still present on disk but `legacy/__init__.py:6-11` emits a
+  `DeprecationWarning` ("deprecated in 14.0"); **no design element may depend on it.**
+
+### 12.1 Q1 — Which connect parameter bounds the inbound buffer, and its default?
+
+**VERIFIED. The parameter is `max_queue`, and its default is `16`.**
+
+- `asyncio/client.py:321` — `max_queue: int | None | tuple[int | None, int | None] = 16`
+  in the `connect` signature. Probe output: `connect.max_queue default = 16`.
+- It is passed straight through to the connection at `asyncio/client.py:362`, and stored by
+  `asyncio/connection.py:59-69`, which splits it into `self.max_queue_high` /
+  `self.max_queue_low`.
+
+**Two facts the design did not have:**
+
+1. **`max_queue` is a HIGH-WATER MARK, not a hard cap.** The library says so in its own
+   comment at `asyncio/messages.py:94-97`: *"We cannot put a hard limit on the size of the
+   queue because a single call to `Protocol.data_received()` could produce thousands of
+   frames, which must be buffered. Instead, we pause reading when the buffer goes above the
+   high limit and we resume when it goes under the low limit."* The queue is allowed to
+   exceed `max_queue`. Section 6.2's phrase "an internal queue whose bound is `max_queue`"
+   is therefore imprecise and must be reworded.
+2. **`max_queue` accepts a `(high, low)` tuple.** With a bare int, the low mark is derived
+   as `high // 4` (`asyncio/messages.py:98-99`). Probe: `Assembler(16, None) -> high, low =
+   16, 4`. So the shipped default is pause at >16 frames, resume at <=4.
+
+**Adjacent limit worth naming, because it is a hard failure and the design never mentions
+it:** `max_size` defaults to `2**20` (1 MiB) per message (`asyncio/client.py:320`; probe
+confirmed `1048576`). A frame exceeding it raises `PayloadTooBig`, which fails the
+connection rather than dropping one message. A deep `orderbook_snapshot` is the realistic
+candidate. CP1 must set this deliberately.
+
+### 12.2 Q2 — Overflow semantics: backpressure or silent drop? **(THE LOAD-BEARING ANSWER)**
+
+**VERIFIED: BACKPRESSURE. Frames are NEVER dropped on inbound queue overflow. Section
+8.1's argument stands.**
+
+The full code path, traced end to end:
+
+1. A received data frame reaches `Connection.process_event`, which calls
+   `self.recv_messages.put(event)` — `asyncio/connection.py:753-754`.
+2. `Assembler.put` — `asyncio/messages.py:266-278` — checks only `self.closed` (raising
+   `EOFError` if the stream ended), then unconditionally calls `self.frames.put(frame)`
+   and `self.maybe_pause()`. **There is no capacity check and no discard branch.**
+3. `SimpleQueue.put` — `asyncio/messages.py:37-41` — is three lines:
+   `self.queue.append(item)` on an **unbounded `collections.deque`** (declared at
+   `asyncio/messages.py:32` with no `maxlen`), then it wakes any waiter. A `deque` without
+   `maxlen` cannot evict. **This is the decisive line: there is no path by which an
+   accepted inbound frame is discarded.**
+4. `Assembler.maybe_pause` — `asyncio/messages.py:280-289` — when
+   `len(self.frames) > self.high` and not already paused, sets `self.paused = True` and
+   calls `self.pause()`.
+5. `self.pause` is bound to the real asyncio transport:
+   `asyncio/connection.py:1006-1013` constructs the `Assembler` with
+   `pause=transport.pause_reading, resume=transport.resume_reading`.
+   `pause_reading()` stops the transport delivering bytes, the kernel receive buffer fills,
+   and **the TCP receive window closes — genuine backpressure to the venue.**
+6. Recovery: every successful read calls `maybe_resume`
+   (`asyncio/messages.py:159`, `:174`, `:238`, `:256`), which at
+   `asyncio/messages.py:291-300` calls `transport.resume_reading()` once depth falls to
+   `<= low`.
+
+**Empirical confirmation (in-process, no socket).** Ten frames were put into an
+`Assembler(high=4, low=1)`. Result: `len(frames) == 10`, `paused == True`, pause callback
+fired exactly once. **All ten frames were retained — zero loss at 2.5x the high-water
+mark.** Draining to depth 1 fired `resume` exactly once. This is precisely the
+"buffer absorbs it, then TCP backpressure" behaviour section 8.2 rungs 1-2 assume.
+
+**Corollary the design must record:** `max_queue=None` **disables flow control entirely**
+(`asyncio/messages.py:283-284`, `:292-293` both return early when the mark is `None`). That
+yields unbounded memory growth under sustained overload — still no drops, but no
+backpressure either. **CP1 must never pass `max_queue=None`.**
+
+**One genuine discard path exists and is NOT queue overflow:** `protocol.py:641-669`
+(`Protocol.discard`) drops incoming bytes *after* the connection is already closing or has
+failed. It is a shutdown behaviour, not an overload behaviour, and it cannot silently eat
+frames on a healthy connection. The comment at `asyncio/connection.py:1163`
+("There's no backpressure") refers to the **server-side outbound `broadcast()` helper**,
+not to inbound reads; it does not apply to this milestone.
+
+### 12.3 Q3 — Is inbound queue depth readable at runtime?
+
+**VERIFIED: YES, but only through an UNDOCUMENTED attribute chain. This is a real
+maintenance liability and must be treated as one.**
+
+- The expression is `len(connection.recv_messages.frames)`.
+  - `Connection.recv_messages` is a non-underscored instance attribute declared at
+    `asyncio/connection.py:98` under the comment "Assembler turning frames into messages
+    and serializing reads". It carries **no docstring**, unlike genuinely public attributes
+    beside it (`request`/`response` at `asyncio/connection.py:89-92` have docstrings;
+    `latency` at `:109-120` has one).
+  - `Assembler.frames` is declared at `asyncio/messages.py:92`.
+  - `SimpleQueue.__len__` exists at `asyncio/messages.py:34-35`, so `len()` works.
+- Also readable: `connection.recv_messages.paused` (`asyncio/messages.py:110`) — a boolean
+  "are we currently applying backpressure right now", and
+  `.high` / `.low` (`asyncio/messages.py:107`).
+- `Assembler` **is** in `asyncio/messages.py`'s `__all__` (`asyncio/messages.py:14`), but
+  `SimpleQueue` is not, and `SimpleQueue` docstrings describe it as a "Simplified version
+  of `asyncio.Queue`... only the subset of functionality needed by `Assembler`"
+  (`asyncio/messages.py:22-27`) — internal-by-intent.
+
+**Assessment.** Not name-mangled, not underscore-private, so reading it is legal Python and
+will not warn. But it is not part of the documented surface and nothing constrains the
+library from restructuring it in a minor release — the v12-to-v16 restructuring is the
+precedent. **CP1 must read depth defensively** (a single guarded helper, wrapped in
+`try/except (AttributeError, TypeError)`, returning `None` on failure), must record
+`reader_lag_frames_max` as UNAVAILABLE rather than `0` if the chain breaks, and must pin a
+test that fails loudly on a `websockets` upgrade that moves it. Section 7.4's
+`reader_lag_frames_max` row is therefore **satisfied but conditionally** — it is available
+today at the cost of one private-ish coupling.
+
+### 12.4 Q4 — Does a drop counter exist? Can a drop be detected at all?
+
+**VERIFIED: NO drop counter exists — and it does not need to, because no drop occurs.**
+
+- A case-insensitive grep for `drop|discard|overflow|counter` across every non-legacy
+  module (`asyncio/`, `sync/`, `protocol.py`, `client.py`, `frames.py`, `exceptions.py`)
+  returns **zero** counter-like symbols. Every hit is either a Python-version comment, the
+  `Protocol.discard()` shutdown parser described in 12.2, or the outbound-broadcast note.
+- A runtime probe listing every `ClientConnection` attribute matching
+  `drop|count|overflow|lag` returned the **empty list**.
+- There are no inbound frame/byte/message counters of any kind on the connection object.
+
+**Consequence for section 7.4.** The `transport_dropped` counter proposed in the "dropped
+events" row **has no library source and must be deleted, not zeroed** — but this is a good
+outcome, not a gap: it has no source because the library has nothing to report. The three
+counters that remain (`events_rejected`, `frames_malformed`, plus the collector's own
+receive count) are sufficient, because the library's contribution is provably zero.
+Assumption 2 in the "Assumptions to verify" list is now resolved: queue depth **is**
+exposed (12.3), a drop counter **is not**, and the absence is benign.
+
+**Can a drop be detected at all?** Within a connected session, the question is moot — the
+library cannot drop. Loss can therefore enter the tape from exactly two places, and both
+are already detectable by design: **(a)** the observation gap across a disconnect, which
+section 8.3 already names as data loss and timestamps at both ends, and **(b)** anything
+upstream of us at the venue, which surfaces only as a `seq` gap via
+`SubscriptionState`. The user's lossless-with-sequence-integrity requirement is thus
+achievable: **sequence integrity is the only drop detector we need, and we already have
+it.**
+
+### 12.5 Q5 — How is a close code surfaced?
+
+**VERIFIED. Two mechanisms; the exception is the intended one.**
+
+1. **Exception (primary).** `recv()` raises `ConnectionClosed`
+   (`asyncio/connection.py:257`, documented at `:262-264`, `:299`), specialized into
+   `ConnectionClosedOK` after a normal closure and `ConnectionClosedError` otherwise.
+   `ConnectionClosed` is defined at `exceptions.py:77-115` and carries:
+   - `rcvd` — a `frames.Close | None`; `rcvd.code` and `rcvd.reason` are the **peer's**
+     close code and reason;
+   - `sent` — the same for the close frame we sent;
+   - `rcvd_then_sent` — `bool | None`, which side closed first from our perspective.
+   `exceptions.py:100-115` shows `__str__` rendering all four combinations, so a log line
+   is honest without extra work. The underlying cause of an abnormal drop is chained via
+   `recv_exc` (`asyncio/connection.py:125-127`).
+2. **Attributes (secondary).** `connection.close_code` and `connection.close_reason` are
+   real `property` objects (`asyncio/connection.py:190-200` and `:202-212`; probe confirmed
+   both are properties). **The library explicitly discourages them**:
+   *"This attribute is provided for completeness. Typical applications shouldn't check its
+   value. Instead, they should inspect attributes of `ConnectionClosed` exceptions"*
+   (`asyncio/connection.py:195-197`).
+
+**Directive for CP1:** record the close code from the `ConnectionClosed` exception's
+`rcvd`/`sent`/`rcvd_then_sent`, not from the `close_code` property. Distinguishing
+`rcvd` from `sent` is exactly how section 8.2 rung 3 tells "the venue disconnected us" from
+"we disconnected ourselves" — see 12.7, which shows this distinction now carries real
+weight. Enum names for logging are available from `CloseCode` (`frames.py:56-74`).
+No callback mechanism exists; there is nothing else to wire.
+
+### 12.6 Q6 — Modern entrypoint, and breaking changes that affect CP1
+
+**VERIFIED. Entrypoint: `websockets.asyncio.client.connect`, re-exported as the top-level
+`websockets.connect`.** `__init__.py` maps `"connect": ".asyncio.client"` in its
+`lazy_import` alias table, so **the plain `websockets.connect` name already resolves to the
+modern asyncio client** — it is not the legacy one. Importing
+`websockets.asyncio.client.connect` explicitly is the unambiguous form and is what CP1
+should do.
+
+Breaking changes between the design's v12 assumptions and 16.0 that touch CP1:
+
+| # | Change | Impact on this design |
+|---|---|---|
+| 1 | **`connect` is a CLASS, not a function** (probe: `inspect.isclass(connect) is True`; `asyncio/client.py:300` is `def __init__`). It is awaitable (`__await__`, `asyncio/client.py:536`) and an async context manager (`__aenter__`, `:589`). | `await connect(...)` and `async with connect(...)` both still work. Section 6.2's `async def connect()` wrapper is unaffected. **Low.** |
+| 2 | **`extra_headers` is GONE from the client; the parameter is `additional_headers`** (`asyncio/client.py:311`; probe: `has extra_headers param? False`; the only surviving `extra_headers` in the tree is `legacy/server.py`). | **DIRECT HIT on section 6.2.** The signed Kalshi handshake headers from `signer.headers_for(...)` must be passed as `additional_headers=`. Using the v12 spelling raises `TypeError` at connect time. **Must be fixed in CP1.** |
+| 3 | **`max_queue` semantics changed**: high-water mark with a derived low mark and tuple support, not a hard bound (12.1). | Section 6.2's wording is wrong; the behaviour is *better* than assumed. **Reword, no redesign.** |
+| 4 | **`websockets.legacy` is deprecated** and warns on import (`legacy/__init__.py:6-11`). | Do not import it. Note `app/services/tennis_livefeed.py:135-140` already uses the modern top-level `websockets.connect` with `open_timeout=15`, so the existing repo precedent is correct and can be followed. **None, if avoided.** |
+| 5 | **`async for ws in connect(...)` is an UNBOUNDED auto-reconnect loop** — `asyncio/client.py:602-635` is a `while True` with its own `backoff()` and `process_exception` retry policy. | **CONFLICTS with section 6.4's "no infinite retry loop" and with `max_reconnects`.** CP1 must **not** use the async-iterator form; it must drive reconnects from its own bounded loop. Worth stating explicitly because the iterator form is the ergonomic one a reader would reach for. |
+| 6 | `max_size` default `2**20` raises `PayloadTooBig` and fails the connection (12.1). | Not in the design at all. **Set deliberately in CP1.** |
+
+Frame reading itself is unchanged in shape: `recv()` (`asyncio/connection.py:257`),
+`recv_streaming()` (`:335`), and `async for message in connection` (`__aiter__`,
+`asyncio/connection.py:230`) all exist. **Section 6.2's `__aiter__`-yielding-parsed-dicts
+transport wrapper is fully implementable on 16.0.**
+
+### 12.7 Q7 — Keepalive defaults, and the finding that changes section 8.2
+
+**VERIFIED: `ping_interval = 20`, `ping_timeout = 20`** (`asyncio/client.py:317-318`;
+probe confirmed both as `20`). Related: `open_timeout = 10` (`:316`),
+`close_timeout = 10` (`:319`), `write_limit = 2**15` (`:322`).
+
+Behaviour, from `Connection.keepalive` (`asyncio/connection.py:808-854`): a task started
+only when `ping_interval is not None` (`:856-862`) sleeps `ping_interval - latency`
+(`:820`), sends a ping (`:827`), and awaits the pong under
+`asyncio_timeout(self.ping_timeout)` (`:831-838`). **On timeout it calls
+`self.protocol.fail(CloseCode.INTERNAL_ERROR, "keepalive ping timeout")`
+(`asyncio/connection.py:844-848`) — closing the connection with code 1011**
+(`frames.py:70`). Latency-compensated interval means the effective period is
+`ping_interval` measured from pong receipt.
+
+**THE FINDING — section 8.2 rung 3 names the wrong actor.** The two mechanisms interact in
+a way the design did not anticipate:
+
+- `transport.pause_reading()` (12.2 step 5) stops the transport delivering **all** bytes,
+  which includes **PONG control frames** — control frames are not exempt from transport-level
+  pausing, and the pong is only processed in `process_event`
+  (`asyncio/connection.py:756-757`), which cannot run while reading is paused.
+- Section 8.1 additionally mandates that `archive.append()` is **synchronous and blocking in
+  the reader coroutine**. A blocking call in a coroutine blocks the **entire event loop** —
+  including the keepalive task and pong processing. Backpressure here arises from the loop
+  not running at all, which is still lossless (the kernel buffer fills, the TCP window
+  closes), but it stalls keepalive identically.
+
+**Therefore: under sustained overload, the connection is killed by OUR OWN CLIENT after
+~`ping_timeout` (default 20 s), with close code 1011 and reason "keepalive ping timeout",
+before the venue ever gets a say.** Rung 3's "venue reacts to the stalled consumer" is not
+the first thing that happens.
+
+This is **good news for the design's honesty properties and it strengthens section 8.1**:
+the overload failure is local, deterministic, bounded by a knob we control, and loudly
+labelled — rather than depending on unobserved Kalshi behaviour. It is also exactly why
+12.5's `rcvd`-vs-`sent` distinction matters: a self-inflicted 1011 appears in `sent`, a
+venue-initiated close appears in `rcvd`. **Section 8.2 rung 3 must be rewritten** to name
+the local keepalive fuse as rung 3a and the venue reaction as rung 3b, and assumption 3
+in the "Assumptions to verify" list is now only partly about Kalshi.
+
+Note also that `keepalive()` swallows non-timeout exceptions into
+`self.logger.error("keepalive ping failed", exc_info=True)` (`asyncio/connection.py:853-854`)
+— a logging-only path CP1 should ensure is captured, since it is otherwise invisible.
+
+### 12.8 Answer summary
+
+| Q | Answer | Status | Primary citation (installed source) |
+|---|---|---|---|
+| 1 | `max_queue`, default `16`; a high-water mark, not a hard cap; accepts `(high, low)`, low derived as `high // 4` | VERIFIED | `asyncio/client.py:321`; `asyncio/messages.py:94-99` |
+| 2 | **BACKPRESSURE. No drop path exists**; unbounded `deque` + `transport.pause_reading` | VERIFIED | `asyncio/messages.py:32`, `:37-41`, `:266-289`; `asyncio/connection.py:1006-1013` |
+| 3 | Yes: `len(conn.recv_messages.frames)` — **undocumented chain, private-by-intent `SimpleQueue`**; also `.paused` | VERIFIED (with liability) | `asyncio/connection.py:98`; `asyncio/messages.py:34-35`, `:92`, `:110` |
+| 4 | **No drop counter anywhere** — and none is needed; no inbound counters at all | VERIFIED | exhaustive grep + attribute probe, both empty |
+| 5 | `ConnectionClosed{,OK,Error}` with `rcvd` / `sent` / `rcvd_then_sent`; `close_code` property exists but is explicitly discouraged | VERIFIED | `exceptions.py:77-115`; `asyncio/connection.py:190-212` |
+| 6 | `websockets.asyncio.client.connect` (also top-level `websockets.connect`); six breaking changes, two material | VERIFIED | `__init__.py` alias table; `asyncio/client.py:300-329` |
+| 7 | `ping_interval=20`, `ping_timeout=20`; on timeout the **client itself** closes with 1011 | VERIFIED | `asyncio/client.py:317-318`; `asyncio/connection.py:808-854` |
+
+Nothing was recorded as UNAVAILABLE. All seven questions were answered from the installed
+source.
+
+### 12.9 VERDICT
+
+**DESIGN SURVIVES CP0.** The load-bearing assumption is confirmed: the installed
+`websockets` 16.0 applies TCP backpressure on inbound overflow and **has no code path that
+discards a received frame**. Section 8.1's decision to keep `append()` inline — and its
+rejection of the bounded-queue-plus-writer-thread alternative on the grounds that the
+latter "would convert a detectable disconnect into a silent drop" — is **correct on the
+installed library, for the reason stated.** The user's lossless requirement is achievable,
+and sequence integrity remains the only drop detector required.
+
+Four corrections are mandatory before/within CP1. **None is architectural; all are
+factual.**
+
+1. **§6.2 — wording.** Replace "an internal queue whose bound is `max_queue`" with the
+   high-water-mark description (12.1), and strike the "ASSUMPTION TO VERIFY" paragraph,
+   replacing it with a pointer to 12.2. Add `max_size` to the transport's constructor
+   parameters (12.1).
+2. **§6.2 — API.** The signed handshake headers must be passed as `additional_headers=`,
+   not `extra_headers=` (12.6 row 2). This is the one change that would fail at runtime.
+3. **§8.2 — rung 3 is wrong about who disconnects.** Split into 3a (our own keepalive fires
+   at ~`ping_timeout`, close 1011 "keepalive ping timeout", locally controlled and
+   deterministic) and 3b (the venue's own reaction, still unobserved). Update assumption 3
+   accordingly (12.7).
+4. **§7.4 — measurement rows.** Delete `transport_dropped` (no source, and none needed —
+   12.4). Keep `reader_lag_frames_max` but mark it as resting on an undocumented attribute
+   chain, with the defensive-read and UNAVAILABLE-not-zero rules from 12.3.
+   `reader_stall_ms_max` is unaffected and remains the primary overload signal.
+
+One additional guard, not a correction but a trap worth pinning: **§6.4's bounded reconnect
+policy forbids the `async for ws in connect(...)` form**, which carries its own unbounded
+`while True` retry loop (12.6 row 5). CP1 must drive reconnects from the collector's own
+`max_reconnects`-bounded loop, and `max_queue=None` must never be passed (12.2).
