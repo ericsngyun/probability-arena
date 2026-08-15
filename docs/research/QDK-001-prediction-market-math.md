@@ -542,7 +542,305 @@ time. **Fitting that enforcement is a prerequisite of this bake-off, not a follo
 
 ## 5. Track 4 — Forecasts as distributions
 
-*(to be filled)*
+### 5.1 Citation check: paper VERIFIED, but the brief's update equation is its REJECTED branch
+
+- https://arxiv.org/html/2604.18576 (v4, 12 Jul 2026) — Kevin Murphy, UBC.
+  "Agentic Forecasting using Sequential Bayesian Updating of Linguistic Beliefs" (BLF).
+
+The brief proposes evaluating the update form
+`logit p_t = logit p_{t−1} + Σ_i w_i log BF_i`. **[REFUTED as a description of the paper.]**
+That form appears only in **Appendix J**, as an alternative the authors built, evaluated, and
+**rejected**. The shipped BLF update is an LLM forward pass. Verbatim (§C.2):
+
+> The process is structured to resemble sequential Bayesian updating and decision making for
+> a POMDP, but **we are not actually doing Bayesian inference in any technical sense**: the
+> update rule (a_t, b_t) = LLM(m_{t−1}) is an LLM forward pass with **no explicit likelihood,
+> no marginalisation, and no formal posterior**.
+
+And the rejected form is Eq. 24, with a **single global** tempering coefficient α — not the
+per-source w_i the brief assumes:
+
+&nbsp;&nbsp;&nbsp;&nbsp;logit b_T = logit b_0 + α · Σ_{t=1..T} λ_t,&nbsp;&nbsp; λ_t = log[ p(o_t | s=1) / p(o_t | s=0) ]
+
+The paper's verdict: *"The gap is therefore the mechanical scalar update itself —
+accumulating one-dimensional log-likelihood-ratios cannot match weighing heterogeneous,
+dependent evidence holistically in a single pass."* (Brier 0.123 for the best explicit
+variant vs 0.088 for BLF.)
+
+**We should nonetheless take the rejected branch seriously**, for a reason the paper did not
+have: it is **auditable and deterministic**. An LLM forward pass that "does whatever it does"
+cannot be unit-tested, replayed, or reasoned about; a log-odds accumulator can. Given this
+repo's standing commitments to determinism and typed intermediate artifacts, a 3.5-point
+Brier penalty may be a price worth paying — but that is a tradeoff to make explicitly, not by
+default. And per §5.2 the rejected branch produced the single most useful number in the paper.
+
+### 5.2 Correlated evidence — the measured redundancy discount
+
+The brief calls correlated-evidence double-counting the most likely failure mode of an LLM
+research pipeline and asks for it to be treated as central. The paper supplies a hard number,
+and it is worse than expected.
+
+**The problem, named verbatim (Appendix J):**
+
+> The α term is a tempering coefficient... This is needed because **with conditionally
+> dependent observations, the naive product over-counts evidence.** If we set α < 1, it
+> down-weights each likelihood factor to restore approximately calibrated precision (a
+> Gibbs / power-posterior correction). We estimate α using a validation set.
+
+**The measured optimal tempering (Table 26, n=80 questions, 154 events):**
+
+| Conditioning of each λ_t | α\* | Brier | ECE |
+|---|---|---|---|
+| none (`uncond`) | **0.05** | 0.136 | 0.114 |
+| on the action a_t (`acond`) | **0.05** | 0.136 | 0.112 |
+| on raw history (`hcond`) | **0.00** | 0.136 | 0.117 |
+| on belief summary b_{t−1}.h (`bcond`) | **0.35** | 0.123 | 0.097 |
+| summary + action + history (`sahbcond`) | 0.35 | **0.117** | 0.103 |
+| *(BLF, linguistic)* | — | *0.088* | *0.083* |
+
+> **Read α\* as the empirical redundancy discount. Even with best-case conditioning, each
+> elicited log-Bayes-factor is worth about ONE THIRD of its face value. Without conditioning,
+> α\* collapses to 0.00–0.05 — the naively-multiplied evidence stream is net worthless or
+> actively harmful.**
+
+This is the strongest available confirmation that the brief's concern is the right one. A
+pipeline that accumulates LLM-elicited log-BFs at face value is not slightly overconfident;
+it is *twenty times* overconfident relative to the fitted optimum.
+
+**The principled cure is conditioning, not tempering.** Verbatim:
+
+> λ_t from p(o_t | s, a_t, b_{t−1}.h), additionally conditioning on the belief summary
+> b_{t−1}.h of the evidence gathered so far (**the belief state b_{t−1}, with its probability
+> removed so the likelihood is not contaminated by the running posterior**). This makes the
+> additive form Eq. 24 a **chain-rule decomposition rather than an independence
+> approximation**: evidence already implied by b_{t−1}.h contributes λ_t ≈ 0, **the principled
+> cure for the over-counting that tempering only blunts.**
+
+Three design rules follow directly **[VERIFIED source, INFERRED application]**:
+
+1. **Score each new piece of evidence against what is already believed, not in isolation.**
+   The prompt-level realization is one sentence: *"Judge only what the NEW evidence adds
+   beyond what is already known."* This is cheap and should be non-negotiable.
+2. **Strip the running probability out of the conditioning context.** Otherwise the likelihood
+   is contaminated by the posterior and the update becomes self-confirming. This is a subtle
+   bug that is easy to write and almost impossible to notice from outputs.
+3. **Bound the elicitation scale.** The paper elicits typicality on an **integer 0–10 scale**
+   under each hypothesis, λ_t = log((r¹+0.5)/(r⁰+0.5)), which caps |λ_t| at ≈ log(10.5/0.5) ≈ 3.04.
+   Verbatim: asking the model directly for the log-ratio *"produces inflated, frequently
+   wrong-signed weights and was uniformly worse (under that elicitation the optimal tempering
+   collapsed to α\* = 0, i.e. the evidence was **net-harmful and best discarded entirely**)."*
+   **Never ask an LLM for a log-likelihood-ratio directly.** Ask for a bounded ordinal rating
+   and compute the ratio ourselves.
+
+Also noted and declined by the paper: *dependence-aware evidence pooling* (cluster documents
+by underlying claim, one λ per cluster). They skip it because conditioning already targets the
+same over-counting. **For us, clustering is worth doing anyway** — it is deterministic,
+inspectable, and provides the *evidence-cluster* unit that §5.4's schema needs regardless.
+
+**What the shipped BLF does about correlated evidence: nothing explicit.** No dedup, no
+redundancy penalty, no learning rate, no per-step movement cap. The claim is that
+overwrite-a-summary semantics is roughly idempotent where multiply-in-a-likelihood is not.
+There is also **no cross-trial independence correction** — the K trials share one base model
+and one search engine, and ensembling across *different* models gave **no gains** because
+*"the component models are highly correlated — they receive the same evidence."*
+
+> **Correlated evidence is not only a within-trial problem. Our agents share retrieval
+> infrastructure, so inter-agent disagreement systematically understates true uncertainty.
+> §5.3 quantifies how badly.**
+
+### 5.3 Forecasts as distributions — the citation does NOT support this, and that matters
+
+The brief asks for a forecast object carrying mean + uncertainty + inter-agent disagreement.
+The cited paper does not deliver one, and the reasons are instructive.
+
+**(a) The posterior variance is computed and then discarded.** The shrinkage model
+(Eqs. 7–10) is a clean hierarchical Normal: y_qk = logit(p_qk), y_qk | θ ~ N(θ_q, σ_q²),
+θ_q ~ N(μ_q, τ²), giving
+
+&nbsp;&nbsp;&nbsp;&nbsp;**α_q = K τ² / (K τ² + σ_q²)**,&nbsp;&nbsp; p̂_q = σ( α_q · ȳ_q + (1 − α_q) · μ_q )
+
+with σ_q² the sample variance of the K trial logits, μ_q = logit(market price) where one
+exists, and **τ² estimated by LOO-CV** rather than marginal-likelihood empirical Bayes
+("simpler, and more robust"). The posterior θ_q | y ~ N(m_q, v_q) is written down — and
+**v_q never appears again**; Eq. 10 is an explicit "plugin approximation" using m_q only.
+**The system emits a scalar.**
+
+**(b) Inter-trial variance is a weak proxy for epistemic uncertainty.** Median across-trial
+σ_q on ForecastBench is only **0.27 logits**, and the shrinkage was a measured **no-op: the
+LOO grid selected α ≡ 1 in 791/791 folds.** It binds only on the higher-variance AIBQ2 set
+(median σ_q = 0.50), worth ~+4 Metaculus score.
+
+> This is the empirical form of the warning in §4.3. **Inter-trial spread measures prompt and
+> sampling sensitivity, not epistemic uncertainty**, it is small, and on the benchmark where
+> it was tested it carried no usable information at all. **`B-cons(γ)` — conservative Kelly on
+> a belief quantile — therefore has no validated source of spread today.** It remains the most
+> attractive sizing rule in §4.3 and it is the least ready to ship. Building the spread is
+> prerequisite work, not a detail of the sizing rule.
+
+**(c) Logit-space averaging is empirical, not proven.** The paper proves arithmetic-mean
+averaging improves Brier by Jensen, then notes the proof does **not** transfer: BS_y(y) =
+(σ(y) − o)² *"is not globally convex in y... Our preference for logit-space averaging on FB is
+therefore empirical, not formal."* Two credited mechanisms: it preserves extremity, and it
+degrades gracefully — *"For a confident prediction p ≈ 0.95, one dead trial in five costs the
+arithmetic mean ~9 percentage points but the logit mean only ~4."* Use logit space, but know
+it is a heuristic with a failure-tolerance rationale, not a theorem.
+
+**(d) Trial count is the only component that reliably helps.** Ablation (Table 14, ΔBI vs
+5 trials): logit:1 → **−1.2\*\*\***; averaging space → −0.2 (n.s.); shrinkage → **0.0 (n.s.)**.
+Caption verbatim: *"More trials reliably improve BI; averaging-space and shrinkage choices give
+differences within bootstrap noise on FB."* **Spend on K, not on aggregation cleverness.**
+
+### 5.4 Hierarchical Platt calibration
+
+**[VERIFIED]** Global: p̂_cal = σ(a · logit p̂ + b). Hierarchical (Eq. 13):
+
+&nbsp;&nbsp;&nbsp;&nbsp;**p̂_cal = σ(a · logit p̂ + b + δ_s)** — shared slope, shared intercept, **per-source offset δ_s only** (no per-source slope)
+
+Prior on δ_s is an L2 penalty λ Σ δ_s², i.e. a zero-mean Gaussian, with **λ = 1.0 fixed and
+never tuned**. Fit by minimizing log loss under **leave-one-question-out CV**; 9 sources over
+~400 questions / 791 events, so roughly **45 questions per source offset**. The paper states no
+minimum sample size and runs no sample-size sweep. **[FLAG: the brief's question "how many
+calibration points are needed" has no answer in this source.]**
+
+**What "over-shrinking extreme predictions for skewed base rates" means concretely.** Source
+empirical priors range from 0.00 (ACLED 10× spike; Wikipedia vaccine) to 0.99 (Wikipedia
+swimming world record), while FRED ≈ 0.42 and yfinance ≈ 0.58. A single global slope a < 1,
+fitted to fix genuine overconfidence on Polymarket, drags the legitimately-near-0/near-1
+sources back toward the pooled centre and destroys real skill. Per-source δ_s lets each source
+sit at its own operating point.
+
+**Measured effect (Table 15, ΔBI):**
+
+| Setting | global Platt | hierarchical Platt |
+|---|---|---|
+| Zero-shot baseline, overall | +0.2 (n.s.) | **+3.5\*\*\*** |
+| Zero-shot, dataset | +0.5\*\*\* | **+5.5\*\*\*** |
+| **Full BLF, overall** | +0.4 (n.s.) | **+0.4 (n.s.)** |
+
+Verbatim: *"**Calibration has limited effect on the full BLF system**, but hierarchical
+calibration is crucial for the ZS baseline... Global Platt hurts the ZS baseline because it
+over-shrinks predictions from the empirical prior."*
+
+> **Calibration is a crutch for a weak forecaster, not an amplifier for a strong one.** If our
+> forecaster is weak, hierarchical Platt is worth ~3.5 BI. If it becomes strong, calibration
+> stops mattering. Either way, **global Platt is worse than nothing** on heterogeneous sources —
+> and "heterogeneous sources" describes our repo exactly (separate baseball / tennis / soccer
+> forecasters plus a template baseline, with documented per-lane skill differences). If we
+> calibrate at all, it must be hierarchical from day one.
+
+### 5.5 The proposed forecast object
+
+Synthesizing §5.1–5.4 plus the Track 5 finding that the contemporaneous price is not recorded:
+
+```
+Forecast                                   # replaces a bare `estimated_probability`
+  # --- identity ---
+  market_ticker, proposition_id, forecaster_name, forecaster_version,
+  model_name, prompt_version, created_at
+
+  # --- the belief itself ---
+  p_mean                    float          # logit-space mean of K trials, post-shrinkage
+  p_logit_mean, p_logit_sd  float          # CARRY THE SPREAD FORWARD (BLF discards it)
+  n_trials K                int
+  trial_logits              [float]        # raw, for re-aggregation without a re-run
+  shrinkage_alpha           float          # K*tau^2/(K*tau^2+sigma^2); 1.0 => no shrinkage
+  prior_anchor              {kind: market|base_rate|uninformative, value}
+
+  # --- calibration state ---
+  p_calibrated              float          # sigma(a*logit(p) + b + delta_source)
+  calibrator_id, calibrator_fit_through    # WHICH calibrator, fit on data through WHEN
+  is_extrapolation          bool           # p outside the calibrator's fitted support
+
+  # --- market context (MISSING TODAY; see 6.4 reason 3) ---
+  market_price_at_forecast  float          # q. Without this, Delta-S is not computable.
+  yes_bid, yes_ask, spread, liquidity_proxy, quote_age_ms
+  price_source              tick|rest|absent
+
+  # --- evidence, CLUSTERED not listed ---
+  evidence_clusters: [
+    { cluster_id, claim_summary,
+      members: [ {source_id, url, retrieved_at, publisher, query_that_found_it} ],
+      independence_class: primary | syndicated | derivative | unknown,
+      lambda_raw            float,         # bounded-ordinal-derived log-BF for the CLUSTER
+      lambda_tempered       float } ]      # after alpha; alpha recorded, not assumed
+  tempering_alpha           float
+  novelty_conditioned       bool           # was lambda scored against the running summary?
+
+  # --- provenance & audit ---
+  evidence_cutoff_at        datetime       # leakage guard
+  research_packet_id, resolution_assessment_id
+```
+
+Five design rules embedded above, each traceable to a finding:
+
+1. **`market_price_at_forecast` is the highest-value single field.** Without it, ΔS is not
+   computable and Track 1 is unmeasurable (§6.4 reason 3).
+2. **Evidence is stored as CLUSTERS, not items.** One λ per underlying claim, never one per
+   document. Three articles syndicating one wire story are one piece of evidence. This is the
+   deduplication the BLF authors declined to test and which we should do anyway, because it is
+   deterministic and inspectable where their conditioning cure is not.
+3. **`independence_class` is explicit and defaults to `unknown`.** `unknown` must be treated as
+   `syndicated` (maximally correlated) by any consumer. Fail closed.
+4. **`lambda_raw` comes from a bounded ordinal elicitation**, never from asking the model for a
+   log-ratio (§5.2 rule 3), and `tempering_alpha` is **stored, not assumed** — so a
+   re-estimation of α can be replayed over historical forecasts without re-running the agents.
+5. **The spread is carried forward.** `p_logit_sd` and `trial_logits` are what `B-cons(γ)`
+   needs, and BLF's discarding of them is the specific gap that blocks that sizing rule.
+   Storing raw trial logits also lets us re-aggregate later without paying for new inference.
+
+### 5.6 The finding that should reset expectations for the whole project
+
+The most consequential number in this paper is not in the brief's list of questions.
+
+BLF's baseline `Crowd+emp` **is the market price** (ForecastBench freeze value:
+Polymarket/Manifold/RFI price, Metaculus community prediction). Against it **[VERIFIED]**:
+
+| Method | Market questions | Dataset questions | All |
+|---|---|---|---|
+| **BLF (Gemini Pro)** | **+2.3 BI (n.s.)** | +4.5\*\*\* | +3.4\*\* |
+| Cassi | +0.6 (n.s.) | +1.3 (n.s.) | +1.0 (n.s.) |
+| GPT-5 | −1.1 (n.s.) | +1.8\* | +0.3 (n.s.) |
+| Grok 4.20 | −1.9 (n.s.) | +4.7\*\*\* | +1.4 (n.s.) |
+| Foresight-32B | −0.6 (n.s.) | −2.3 (n.s.) | −1.5 (n.s.) |
+
+> **On MARKET questions — the only ones we can trade — the state-of-the-art agentic
+> forecaster beats the market price by +2.3 BI, and that is NOT statistically significant
+> (n = 200 events). Every other system is at or below the market. All of BLF's significant
+> edge comes from DATASET questions, where there is no market at all**, and substantially
+> from non-LLM machinery (a KNN model that "bypasses the LLM entirely" on DBnomics; linear
+> trend models on FRED/yfinance).
+
+Chain this to Track 1. Theorem 8 says profit = ΔS + D − L_ρ. If the best published agentic
+forecaster cannot demonstrate ΔS > 0 against market prices, then our realistic prior is
+**ΔS ≈ 0**, leaving profit ≈ D − L_ρ: pure divergence rent against pure execution cost. In a
+CLOB with thin books that is a coin flip at best, and Corollary 15 says the two terms cancel
+exactly in the idealized case.
+
+Two independent corroborations, from arXiv 2607.03015 (Raven-Agent, verified to exist and read;
+treat its own ROI figures as anecdotal — n = 42–58 trades, single deployment):
+- **Prediction Arena**: six frontier LLMs run as end-to-end Kalshi agents, \$10k each, 57 days.
+  **All six lost money (−16% to −31%).** Only hard-coded constraints held; prompt-level risk
+  guidance was *"frequently ignored."*
+- **RLVR-style accuracy optimization improved Brier while *worsening* return** (best-accuracy
+  agent: −14.8%). This is Track 1's thesis appearing again, from a completely different
+  direction: optimizing the forecast does not optimize the trade.
+
+Raven-Agent's own controlled replay (forecaster held fixed, all policies see identical
+probabilities) is the cleanest available evidence for §4's design:
+
+| Policy | ROI |
+|---|---|
+| **Edge-proportional sizing** | **−55.5%** |
+| Forecast-only | −10.7% |
+| Edge-filter | −9.3% |
+| Raven fixed-stake | −4.7% |
+| Raven full (select → quarter-Kelly → hard caps) | +15.9% |
+
+> **Sizing proportional to edge, without a selection gate, was five times worse than flat
+> stakes** — it concentrates capital on confidently-wrong high-edge forecasts. This is the
+> naive `edge = p − q` rule of the brief's thesis, measured. It also settles an ordering
+> question for §4: **selection must precede sizing**, and the risk constraints must live in
+> deterministic code outside the prompt, not in instructions the model can ignore.
 
 ## 6. Track 5 — Conditional calibration
 
