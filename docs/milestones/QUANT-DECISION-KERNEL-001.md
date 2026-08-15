@@ -1827,7 +1827,367 @@ T-bills, for unbounded tail risk and full operational cost.
 
 ## 8. The implementation ladder
 
-*(section pending)*
+### 8.0 The ordering principle
+
+> **Order by what unblocks the edge measurement, not by architectural elegance.**
+
+Concretely, each rung is ranked by three questions, in this order: *does it
+unblock `ΔS`?* — *is it time-sensitive, i.e. does delay destroy data that cannot
+be recovered?* — *does it change the sample size of everything after it?*
+Architectural completeness ranks last, and several architecturally natural
+components are deliberately built late or not at all.
+
+### 8.1 Critique of the proposed ordering
+
+The proposed ladder was: **Phase 0** store contemporaneous market price, add a
+market baseline, fix the registry `canon_digests` defect; **Phase 1**
+`MARKET-STATE-OBSERVATION-001` extending the running sparse observer plus the
+Solana forward realized-fill collector; **Phase 2+** anything that consumes an
+edge, gated on Phase 0 showing `ΔS > 0` with adequate power.
+
+**It is right in shape and wrong in four places.** Taken in descending order of
+consequence.
+
+**C1 — the Phase-2 gate as stated would freeze the programme for twenty years,
+and it is the most important correction here.** "Phase 0 showing `ΔS > 0` with
+adequate power" is ambiguous between two very different sample requirements, and
+the natural reading picks the wrong one. The 30,000–75,000 figure in §9.4 is the
+sample needed to demonstrate a **1pp net P&L edge**. `ΔS` is a **score**
+difference — bounded, far lower variance than a return, and computable on
+resolved forecasts with no trading at all. The research tracks say this from two
+directions: *"the ΔS channel is cheaper to measure than the P&L channel… prove
+ΔS > 0 first, on paper, and only then bake off allocators"*, and the calibration
+slope is **roughly 15× cheaper in sample than the P&L test**.
+
+> **The Phase-2 gate must be `ΔS > 0` measured on scores with event-clustered
+> standard errors, not the P&L power number.** And "adequate power" must be a
+> *declared number* — the `ΔS` minimum detectable effect at the available
+> effective N — fixed at P0 and registered, not asserted afterwards.
+
+**C2 — the Solana collector should not be gated behind Phase 0 at all, and this
+is the change with the largest calendar consequence.** It answers a **different
+question** (§4.6: "can we model execution?" versus "do we have an edge?"), so
+gating it on the edge measurement is a category error. More importantly, it is
+the **only item on the entire ladder where delay destroys data**: retrospective
+backfill is not obtainable (§5.4), so every day not collected is permanently
+lost, while every other rung operates on data that will still be there next
+month.
+
+Its long pole is **approval, not engineering**: it needs its own accepted
+milestone *and* a separately reviewed `BANNED_IDENTIFIER_FRAGMENTS` decision
+(Tier 3). So:
+
+> **Start the approval clock in Phase 0 even though the build is Phase 1.**
+> Writing the milestone and requesting the Tier-3 decision costs nothing and
+> unblocks nothing else; waiting until Phase 0 completes costs weeks of corpus
+> that cannot be recovered.
+
+**C3 — Phase 0 is missing three items, and one of them may collapse months of
+the schedule.**
+
+*(a) The retrospective `q` may already exist, and nobody has looked.* The
+prediction-market track concluded that computing `ΔS` historically would need a
+join against `MarketPriceTick` and that "per the roadmap the Probability lane has
+**no live tape writer**, so that coverage is unlikely to exist historically". But
+**`MarketPriceTickBucket` (`app/models.py:319`) carries `open_bid`, `close_bid`,
+`open_ask`, `close_ask`, `open/high/low/close_mid`, `spread_avg`, `domain`, and
+`tick_count` in 300-second buckets keyed `(market_ticker, bucket_start)`** — and
+per OPS-013/OPS-014 the raw-tick retention reduction pruned 380,850 raw ticks
+with **buckets intact**, precisely so that raw ticks need not be kept forever.
+
+> **So an executable-quote `q` at five-minute resolution may be recoverable for
+> the entire forecast history without any live tape writer.** Coverage is
+> unmeasured. Measuring it is one `JOIN` and it is the cheapest query in this
+> whole document. If it returns high coverage, the historical `ΔS` measurement
+> stops being a Phase-1 wait and becomes a Phase-0 result.
+>
+> The caveats are real and must be stated with any number it produces: a 5-minute
+> bucket is not the quote at forecast creation, it is the quote within ±5
+> minutes; buckets exist only where aggregation ran and the ticker was on the
+> watchlist; and this is adequate for `ΔS` (a score comparison) but **not** for
+> `L_ρ` (an execution price).
+
+*(b) Residual correlation must be measured in Phase 0, because it sets the
+sample size of everything after it.* `DEFF = 1 + (m−1)ρ`, and every `n_required`
+in §9.4 scales linearly with it. It costs **no new data** — residuals
+`r_i = Y_i − p̂_i` already exist for every scored forecast. **Measuring it first
+is the difference between planning for 15,000 and discovering at trade 15,000
+that you needed 73,000.** And the correlation that matters is not event
+correlation but **model-error correlation** — the mechanism nobody instruments,
+and the one with a live in-repo instance: all six EDGE-SELECTION-001 candidates
+failed out-of-sample *together*.
+
+*(c) The abstention denominator must be instrumented in Phase 0.* If
+`EXECUTION_COST_EXCEEDS_EDGE` fires on 95–99% of candidates, the programme's
+binding constraint is **venue selection and the cost model**, not the forecaster,
+and the entire kernel above it is premature. That is measurable **before any
+trade**. And it should **reuse the existing `edge_precheck` surface** —
+probability-gap measurement with validity checks, already built with no dollar
+EV, side, size, or action fields by construction — rather than introducing a new
+one. Adding a typed reason code to an existing observation surface is a much
+smaller act than creating a candidate pipeline.
+
+**C4 — the registry item is right but under-specified, and it has a consequence
+that needs a human.** Two corrections:
+
+*(a) `canon_digests` is not the biggest hole.* Verified in this session:
+`experiment_registry.py:500` writes
+`"canon_digests": {f: _file_digest(root / f) for f in CANON_FILES}` where
+`CANON_FILES = ("docs/PROJECT_CANON.md", "docs/SAFETY_BOUNDARIES.md")`, and
+`_evaluation_code_drift` at line 802 reads **only**
+`refs.get("evaluation_code_digests")`. `canon_digests` is written and never
+compared. Confirmed drift: `SAFETY_BOUNDARIES.md` pinned at `d6c38783…`, current
+`c5cb2936…` — **drifted for 8 days while `status()` reported clean.** But the
+*larger* hole is that evaluation is permitted from `collecting` and even
+`registered` states, recorded merely as a deviation — which contradicts both the
+registry's own design and `status()`'s own `evaluation_permitted = state in
+(MATURED, EVALUATED)`, and **reopens the peek-and-lock route**. Fix both, and fix
+the state gate first.
+
+*(b) Turning the check on will immediately fail a live registered experiment,
+and that is the point.* The drift is real and present. It must be handled as a
+**declared amendment with a recorded reason**, not a silent re-pin — and it is a
+Tier-2 decision because someone has to accept that a registered experiment
+becomes non-comparable. Note also that **adding `brier_skill_vs_market` to
+`forecast_reliability.py` is itself a drift event**, since that file is in
+`EVALUATION_CODE_FILES`. Both changes should land in **one declared window** so
+the registry reports one amendment rather than two.
+
+**C5 — a missing rung between Phase 0 and Phase 1: the free recalibration
+control arm.** If the market price is miscalibrated with a fitted intercept and
+slope, then `p_recal = σ(â + b̂·logit q)` is a **forecast derived from the price
+alone** — no research, no LLM, no evidence pipeline. It costs one logistic
+regression on data Phase 0 produces.
+
+Its expected value here is **low and it should still be run**, for a reason that
+is not about its own P&L: it is the correct **control arm** for `ΔS`. If our
+forecaster does not beat a free price transform, the forecaster is not the
+product, and we should trade the transform and skip the apparatus. Conditional
+calibration is **a competitor to our forecasting stack, not a layer on top of
+it**.
+
+The honest expectation is null: by model-free reliability decomposition, **every
+Kalshi domain outside Politics has a reliability component rounding to
+0.000–0.001** — there is essentially nothing to recalibrate — and Politics is the
+one domain we have no forecaster for. That is a **coverage** problem, not a
+statistics problem, and infinite data does not fix it.
+
+**C6 — two smaller ordering points.** Within Phase 0, put the **prospective
+capture first** (a forecast written today without `q` can never have its `ΔS`
+computed) and the retrospective analyses after (existing rows are not going
+anywhere). And be precise about "extend the sparse observer": that is the right
+call for the *realized-fill collector's population, cadence discipline, and
+denominator preservation* — but the sparse lane's own sampling design (exactly
+two observations, at 6h and 24h) is close to the **worst possible design for
+microstructure**, and its 24h coverage of **4.6%** makes any 24h-horizon
+experiment **not evaluable**. Extending its schedule also risks the denominator
+that lane exists to protect. **Extend its population and its plumbing; do not
+change its horizons without a separate decision.**
+
+**What the proposed ordering got right, and it is the important part.** The
+inversion itself — measurement before exploitation — is correct and is the whole
+document. The choice to extend a lane that is already running rather than build a
+parallel service is correct and matches this repository's own history. And
+storing `q` on every forecast is correctly identified as the cheapest
+high-value change available; it is first on the revised ladder too.
+
+### 8.2 The revised ladder
+
+Every rung is independently verifiable and states what would falsify it. Tiers
+are from §2.5.
+
+---
+
+#### PHASE 0 — make the edge measurable. Days, cheap, unblocks everything.
+
+**P0.0 — Measure the retrospective `q` join coverage.** *(Tier 1, hours)*
+One query: for each `MarketForecastRecord`, is there a
+`MarketPriceTickBucket` row for the same `market_ticker` whose
+`bucket_start` window contains `created_at`, carrying a usable
+`close_bid`/`close_ask`? Report coverage overall and by `domain`,
+`forecaster_name`, and month.
+**Verified by:** a coverage number with its denominator, and a stated
+bucket-to-forecast time offset distribution.
+**Falsified by:** coverage near zero, in which case historical `ΔS` genuinely
+waits for prospective capture and P0.1 becomes the critical path.
+**Why first:** it is the cheapest query in the document and it can collapse
+months of schedule.
+
+**P0.1 — Store the contemporaneous market quote on every forecast.**
+*(Tier 2, additive migration)*
+Add to `MarketForecastRecord`: `market_yes_bid`, `market_yes_ask`,
+`market_mid`, `market_spread`, `quote_observed_at`, `quote_source`
+(`tick|bucket|scan|absent`), and a typed absence when no quote existed.
+**Verified by:** SC-1 — every forecast written after this checkpoint carries a
+quote or a typed absence; a query returning zero rows with neither.
+**Why second and not first:** it is the only rung whose delay is irreversible for
+*future* rows, so it must land early — but P0.0 may show the *past* is already
+covered, which changes how urgently everything downstream is needed.
+
+**P0.2 — Segment the corpus by `p ≡ q`.** *(Tier 1)*
+Count, by `forecaster_name`, `forecaster_version`, `evidence_depth`, and
+`calibration_tags`, how many forecasts are midpoint-anchored. The supplied
+finding is **PAIRED = 0** — the market-anchored `template_baseline` rows pair
+with zero source-backed forecasts.
+**Verified by:** a segmentation table whose parts sum to the corpus.
+**Falsified by:** a non-zero paired count, which would be *good news* and would
+make P1.0 immediately runnable.
+**Consequence if PAIRED = 0 holds:** **P0.1 alone unblocks nothing.** A market
+price stored beside a forecast that *is* the market price yields `ΔS ≡ 0` by
+construction. The measurement additionally requires a **non-anchored forecaster
+running on tickers where `q` is recorded** — which is a prerequisite the proposed
+ladder does not name, and which is the real gate on Phase 1.
+
+**P0.3 — Add a market baseline to reliability reporting.** *(Tier 2)*
+`brier_skill_vs_market` alongside `brier_skill_vs_base_rate` in
+`app/services/forecast_reliability.py`, with the market baseline **typed-absent**
+(and its denominator reported) where no `q` exists.
+**Verified by:** SC-2; and a reliability artifact on a corpus with no `q` must
+report the absence rather than silently omit the field.
+**Note:** this file is in `EVALUATION_CODE_FILES`, so this is a **drift event**
+for every registered experiment. Land it with P0.5 in one declared window.
+
+**P0.4 — Measure residual correlation and `DEFF`.** *(Tier 1)*
+`ρ_model = corr(r_i, r_j)` over residuals grouped by feature, model version,
+regime, and time bucket, on the ~12,945 already-scored forecasts. Report
+`K_eff = K/(1 + (K−1)ρ)` and the implied `DEFF`.
+**Verified by:** a `DEFF` with a cluster definition and an interval.
+**Why it must be here:** every `n_required` downstream scales linearly with it.
+
+**P0.5 — Close the registry defects.** *(Tier 2)*
+In order: (i) refuse evaluation from non-matured states rather than annotating
+it; (ii) compare `canon_digests`, not merely record them; (iii) resolve repo
+paths from the module rather than `cwd`. Then handle the **already-drifted**
+`SAFETY_BOUNDARIES.md` pin as a declared amendment with a recorded reason.
+**Verified by:** a test that a registered experiment with a mutated canon file
+reports drift; a test that evaluation from `collecting` is refused.
+**Falsified by:** the drift check passing on the live baseball experiment, which
+would mean the comparison is not actually wired.
+
+**P0.6 — Instrument the abstention denominator.** *(Tier 2)*
+Extend the existing `edge_precheck` surface to emit a typed reason code and a
+`denominator_member` flag per candidate, with **no side, no size, no dollar
+amount**. Report the reason-code distribution.
+**Verified by:** SC-6 — the distribution sums to the candidate count.
+**What it decides:** if `EXECUTION_COST_EXCEEDS_EDGE` dominates, the binding
+constraint is the venue and the cost model, and Phase 1's priorities change.
+
+**P0.7 — Open the Solana collector's approval track.** *(Tier 3 request; no code)*
+Write the milestone for the read-only realized-fill collector and request the
+`BANNED_IDENTIFIER_FRAGMENTS` decision. **No RPC call, no code, no flag.**
+**Verified by:** an accepted-or-refused decision on the record.
+**Why in Phase 0:** it is pure calendar. The corpus cannot be backfilled.
+
+**Phase 0 exit criterion:** `ΔS` is either *computed* (if P0.0 found coverage and
+P0.2 found paired rows) or *demonstrably blocked on a named prerequisite*, with
+`DEFF`, the abstention distribution, and the `ΔS` minimum detectable effect all
+declared numbers rather than assertions.
+
+---
+
+#### PHASE 1 — the two collection lanes. Weeks, and one of them is time-critical.
+
+**P1.0 — `MARKET-STATE-OBSERVATION-001`: extend the running sparse observer.**
+*(Tier 2)*
+Extend **population and plumbing**, not horizons (§8.1 C6). It already has a live
+cohort, a growing corpus, denominator preservation, typed non-observation, and a
+proven bounded-pass shape. Building a parallel service would duplicate all four
+and inherit none.
+**Verified by:** the existing lane's own invariants continue to hold — no change
+to its 6h/24h denominators, no change to enrolment eligibility, `external_calls`
+accounted per pass.
+**Falsified by:** any movement in the sparse lane's coverage numbers attributable
+to this change.
+
+**P1.1 — The Solana forward realized-fill collector.** *(Tier 3 to activate)*
+Gated on P0.7. Shape: default-OFF flag, bounded pass, deterministic population
+(the sparse lane's cohort, inheriting and **stating** its ~40% enrolment
+ceiling), typed non-observations, no raw payload persisted (only a body digest
+chained into the row digest), `getFirstAvailableBlock` recorded per pass, `403`
+as a stop condition. Row shape per §5.4, with `pool_state_completeness`,
+`mev_class`, and `token_conservation_gap`.
+**Verified by:** `post = pre + delta` on every vault on every row; per-mint
+conservation to the base unit except where `token_conservation_gap` is non-zero;
+digest reproducibility; zero paid calls; zero rows in a success state missing a
+recorded status, digest, or latency.
+**Falsified by:** one balance identity violation; one paid call; one row with a
+defaulted numeric.
+**What it must NOT build:** no `PaperFill`, `PaperOrder`, `Position`, or
+`RealizedPaperPnL` row, table, column, or placeholder. The corpus is evidence;
+the consumer that turns evidence into a modeled fill is a different, later,
+separately-accepted question.
+
+**P1.2 — The free-recalibration control arm.** *(Tier 1)*
+Fit one global two-parameter recalibration on the Phase-0 `q` data, with
+**event-clustered** standard errors and a **permutation null reported alongside
+every R²**. At most three coarse horizon buckets and two domain groups — six
+cells, not two hundred. **Hard gate: train-early / test-late.**
+**Verified by:** an out-of-time result with its permutation null.
+**Expected outcome:** null on sports. **That is a useful result**, and it is the
+control arm for P1.3.
+
+**P1.3 — Compute `ΔS` prospectively.** *(Tier 1)*
+`mean[S(p,y) − S(q,y)]` per domain, event-clustered, on prospectively-generated
+non-anchored forecasts only, excluding every `p ≡ q` row.
+**Verified by:** SC-3 and SC-8; a verdict reachable in all three directions.
+**This is the gate on everything in Phase 2.**
+
+---
+
+#### PHASE 2 — only if `ΔS > 0`. Anything that consumes an edge.
+
+**Gated on P1.3 returning `market_relative_edge_measured_positive` at the
+declared `ΔS` power, and on P1.2 not beating it.** If `ΔS ≤ 0` everywhere, **the
+correct action is to stop**, and that is a legitimate and valuable outcome —
+indeed the one the external evidence predicts.
+
+In rough order, none of it authorized here: the cost model and `κ` computation
+against the Phase-1 corpus; the taker-only CLOB execution layer; the allocator ×
+scale × gate bake-off, **paired on one shared forecast stream** (which cuts the
+required N by roughly an order of magnitude) and with a real `ABSTAIN` arm,
+because a bake-off that cannot return "none of these" is not an experiment; and
+only then, and separately accepted, anything resembling a modeled paper P&L
+under `PAPER_SIMULATION`.
+
+**Explicitly not in Phase 2 at any point:** everything in §3's cut list.
+
+### 8.3 The ladder at a glance
+
+| rung | tier | new data? | unblocks | time-critical? |
+|---|---|---|---|---|
+| P0.0 join coverage | 1 | no | possibly the entire historical `ΔS` | no |
+| P0.1 store `q` | 2 | prospective | `ΔS` on all future rows | **yes, for future rows** |
+| P0.2 segment `p ≡ q` | 1 | no | names the real Phase-1 prerequisite | no |
+| P0.3 market baseline | 2 | no | SC-2; drift event | no |
+| P0.4 residual correlation | 1 | no | every `n_required` downstream | no |
+| P0.5 registry defects | 2 | no | trusting any confirmatory verdict | no |
+| P0.6 abstention denominator | 2 | prospective | tells us if the venue is the constraint | no |
+| P0.7 collector approval | 3 | no | P1.1 | **yes, pure calendar** |
+| P1.0 extend sparse observer | 2 | prospective | AMM lifecycle features | no |
+| P1.1 realized-fill collector | 3 | prospective | the execution model's only ground truth | **yes, not backfillable** |
+| P1.2 recalibration control | 1 | no | the control arm for `ΔS` | no |
+| P1.3 compute `ΔS` | 1 | no | **the Phase-2 gate** | no |
+
+Two rungs are time-critical and they are **P0.1 and P0.7/P1.1**. Everything else
+can be reordered without cost.
+
+### 8.4 What is deliberately absent from this ladder
+
+- **A live Kalshi tape writer is not a Phase-0 dependency.** `ΔS` needs the
+  *forecast-time* quote, which the scan path and the tick buckets already supply.
+  The tape is needed for `L_ρ` — the execution-cost measurement — which is a
+  Phase-2 concern. Requiring it in Phase 0 over-constrains the schedule.
+- **No forecaster work.** This ladder measures the forecaster we have. If P1.3
+  returns null, improving the forecaster is the correct next move — but that is a
+  different milestone and it should not be pre-empted by building machinery for
+  an edge that does not exist.
+- **No sizing layer.** §7 designs it so we know what to instrument; nothing on
+  this ladder builds it.
+- **No coherence engine**, intra-venue or otherwise. If it is ever built, it
+  starts at intra-venue complement pairs with exact bindings, measures how often
+  the 3.50¢ hurdle is cleared on executable prices, and **stops there if the
+  answer is never** — a result worth having on its own.
+
 
 ## 9. Evaluation and preregistration
 
