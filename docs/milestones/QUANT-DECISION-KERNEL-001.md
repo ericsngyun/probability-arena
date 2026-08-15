@@ -1534,7 +1534,296 @@ anyone deciding to erode it.
 
 ## 7. Gates, guards and the scalars that make a result legible
 
-*(section pending)*
+### 7.1 Abstention is a separate GATE, not a `min()` term
+
+The original form was
+
+```
+f_actual = min( lambda*f_Kelly(p_conservative), f_liquidity, f_CVaR,
+                f_concentration, f_drawdown )
+```
+
+**A `min` over positive quantities is positive. The formula as written has no way
+to abstain** — yet abstention is the default and the most frequently correct
+action. Encoding "calibration is unknown for this regime, so we decline" as "the
+liquidity cap happened to be 0" is not a representation, it is a coincidence.
+
+Three further structural problems with that form, beyond §3.3's removal of
+`f_CVaR`:
+
+- **`f_concentration` is not a cap at all — it is a joint allocation.** `min`
+  takes a function of one position. "These five positions together must not
+  exceed `B_c`" is not expressible that way, and any per-position translation
+  (`B_c/5`) is wasteful when edges differ and wrong when a sixth arrives.
+- **`f_drawdown` is already inside `lambda`**, since `lambda = lambda_calib x
+  lambda_dd` and `lambda_dd` *is* the drawdown constraint. A separate term
+  applies it twice. The genuinely distinct term the form is missing is a
+  **state-dependent** multiplier that tightens as wealth approaches the halt
+  floor — size on the *excess over the stop level*, not on total wealth.
+- **Three terms are missing entirely:** a minimum size `f_min` below which
+  discretisation and fees dominate and the correct action is `NO_TRADE` rather
+  than a tiny position; `delta_t`, because `g` is per resolution; and the
+  target-versus-increment distinction — the output must be a **target with a
+  no-trade band**, because every rebalance pays the full cost wedge and a system
+  chasing a moving target pays it repeatedly for no edge.
+
+**The revised shape:**
+
+```
+0. GATE       codes <- evaluate_gates(state, forecast, book, graph, wealth)
+              if codes is non-empty:  return NO_TRADE(codes)      # THE DEFAULT
+
+1. BELIEF     p_cal <- per-regime log-odds recalibration
+              p_con <- alpha-quantile of a MEASURED dispersion, else ABSENT
+
+2. CEILING    lambda <- lambda_calib x lambda_dd x wealth_multiplier
+              f_ceil <- min( lambda * kelly(p_con, q),
+                             f_liquidity,        # fillable depth
+                             f_position_cap )    # a stated flat cap
+
+3. ALLOCATE   choose {f_i} maximising the sum of  g(f_i) / delta_t_i
+              subject to  0 <= f_i <= f_ceil_i
+                          cluster budgets, book budget,
+                          book-level EVaR, and K_eff >= K_min
+
+4. DISCRETISE if rounding pushes the realised fraction above f_i: NO_TRADE
+              if f_i < f_min:                                     NO_TRADE
+              if the move is inside the no-trade band:            HOLD
+
+5. EMIT       f_i, the BINDING constraint, the slack on every other constraint,
+              lambda's three factors separately, p_con and its dispersion source,
+              delta_t, cluster id + graph version, model identifier, and the
+              modeled-vs-observed basis for every input.
+```
+
+**Step 5 is not decoration.** A size with no record of *why* it is that size
+cannot be audited and cannot be debugged when the drawdown comes — and under the
+`PAPER_SIMULATION` amendment it **may not be produced at all** without the model
+identifier and the modeled-vs-observed basis travelling with the number.
+
+**A note on step 2 that keeps Kelly in its place.** Kelly is a **ceiling, not the
+allocator.** Its optimality is conditional on a known `p`, which is the one thing
+we do not have: at `q = 0.90`, an *unbiased* forecaster with 3pp of honest noise
+turns a real +3pp edge into **negative** expected growth, because the
+estimation-error penalty carries a `1/(1−q)²` factor. **2x Kelly is exactly zero
+growth**, and the bias that produces 2x Kelly is `delta = e` — so **a 2pp
+forecasting bias zeroes out the growth of a genuine 2pp edge**, and a forecaster
+calibrated to ±2pp is considered excellent. Meanwhile the growth curve is
+symmetric about full Kelly and the *risk* curve is not: 0.75x and 1.25x both earn
+93.7% of optimal growth, but the latter has a 12.0% chance of ending below where
+it started against 2.4%. **Underbetting is nearly free; overbetting is not**, and
+every error source pushes size upward. A "20% maximum drawdown at no more than 5%
+probability" statement implies **lambda_dd ≈ 0.139**, about one-seventh Kelly,
+earning 26% of the optimal growth rate. That is the price, and the only two knobs
+are the drawdown and its probability.
+
+*(One thing that does not work and should not be attempted: "Bayesian Kelly".
+For a single binary contract `g` is **linear in `p`**, so the expected objective
+under the posterior is identical to the objective at the posterior mean. The
+width, skew and shape of the posterior have **literally zero** effect on the
+Bayes-optimal log-growth bet. Anyone implementing "Bayesian Kelly" expecting it
+to shrink positions has implemented Kelly-at-the-mean with extra steps. The
+shrinkage must be justified as **ambiguity aversion against an unidentifiable
+posterior width**, which is an honest reason — and it is why `p_conservative`
+uses a *measured* dispersion or nothing.)*
+
+*(A second thing worth carrying: the allocator and the scale are different axes
+and they compose. Proper-scoring-rule betting fixes direction and relative
+weights across simultaneous markets and is defined only up to a positive scalar;
+Kelly fixes total exposure. They are not competitors on one axis, and the
+candidate space is a grid — allocator x scale x gate — not a list. For a binary
+market the Brier-rule proper bet and the raw margin rule are literally the same
+allocator up to a constant of 2.)*
+
+### 7.2 The abstention reason codes
+
+Typed, closed, ordered, and **all binding codes retained**. Free text is
+forbidden for the same reason the registry replaced its prose leakage guard with
+a closed typed predicate schema: prose is paraphrase-bypassable and cannot be
+aggregated.
+
+| code | condition |
+|---|---|
+| `KILL_SWITCH_ACTIVE` | manual halt, or the drawdown stop fired |
+| `STALE_STATE` | quote, forecast, graph, or calibration older than its regime's freshness bound |
+| `OBSERVATION_GAP` | the decision timestamp falls inside a period the tape was blind |
+| `BOOK_UNPUBLISHABLE` | sequence fault or integrity halt on the venue state |
+| `CALIBRATION_UNKNOWN_FOR_REGIME` | fewer than the floor of scored forecasts in this regime cell, or the calibration-slope CI half-width exceeds its bound |
+| `CALIBRATION_FAILED_FOR_REGIME` | the regime shows negative skill — and this repository has a live instance in tennis |
+| `MODEL_VERSION_UNTESTED_IN_REGIME` | this model version has no prospective record in this regime |
+| `GRAPH_COVERAGE_UNKNOWN` | the correlation graph did not analyse this instrument. Absence of an edge is not evidence of independence |
+| `EXECUTION_COST_EXCEEDS_EDGE` | net edge is at or below zero |
+| `KAPPA_BELOW_FLOOR` | the cost-kill multiple is below 2 (§7.4) |
+| `EDGE_BELOW_MINIMUM` | net edge below the smallest edge the sample size can ever validate |
+| `LIQUIDITY_BELOW_THRESHOLD` | resting size or pool depth below what the rung implies, or depth unmeasured |
+| `UNFILLABLE_AT_RUNG` | the visible ladder cannot fill this rung |
+| `EXTRAPOLATION_OUTSIDE_SUPPORT` | an input sits outside the calibrator's or the cost model's fitted support |
+| `TAIL_UNVERIFIED_FOR_REGIME` | the prospective sample is too small to have seen a rare common-mode regime. **"Unmeasured" is not "satisfied"** |
+| `TAIL_CONSTRAINT_BINDING` | book-level EVaR at its limit |
+| `CORRELATED_EXPOSURE_AT_LIMIT` | cluster budget exhausted |
+| `BUDGET_EXHAUSTED` | book budget at its limit |
+| `SIZE_ROUNDS_ABOVE_LIMIT` | integer or lot rounding would push the realised fraction above the ceiling |
+| `RESOLUTION_CRITERIA_AMBIGUOUS` | the resolution rule is not machine-checkable, or its source is disputed |
+| `REGIME_SHIFT_SUSPECTED` | the recent residual distribution differs from the calibration window — i.e. our errors have become correlated |
+| `NOT_MARKABLE` | no executable exit quote exists, so the position could not be honestly marked (§7.3) |
+
+Four properties this layer must have:
+
+1. **Abstention is not a failure to be minimised.** The `NO_TRADE` rate is not a
+   KPI to drive down. A system abstaining on 99% of candidates is behaving
+   correctly if 99% of candidates fail a gate. Pressure to "increase coverage"
+   goes through changing a threshold **explicitly, with the change recorded** —
+   never through weakening a gate's evaluation.
+2. **The reason-code distribution is the single most informative diagnostic the
+   kernel produces.** If `EXECUTION_COST_EXCEEDS_EDGE` is 95% of abstentions, the
+   programme's binding constraint is the cost model and the venue, not the
+   forecaster — and that is worth knowing **before** spending two years
+   collecting trades. §8 makes measuring it a Phase-0 item for exactly this
+   reason.
+3. **Every candidate counts toward the denominator**, abstained or not.
+4. **No gate may be bypassed by a flag.** A "force" path is how every one of
+   these systems eventually fails. If a gate must be relaxed, the threshold
+   changes and the change is versioned into the prospective record — which
+   invalidates the prior sample for the acceptance test, as it should.
+
+A related sequencing result worth recording, because it is measured rather than
+argued: in a controlled replay with the forecaster held fixed so every policy saw
+identical probabilities, **edge-proportional sizing with no selection gate
+returned −55.5%, roughly five times worse than flat stakes at −4.7%**, because it
+concentrates capital on confidently-wrong high-edge forecasts. **Selection
+precedes sizing**, and the risk constraints live in deterministic code outside
+the prompt — in the same study, prompt-level risk guidance was "frequently
+ignored" and only hard-coded constraints held.
+
+### 7.3 The mark-to-market guard
+
+This is the most concrete, quantified hazard in the entire document for a paper
+ledger, and it is an implementation requirement rather than an aspiration.
+
+The price a data provider reports after a swap is the **post-trade marginal
+price**, not the execution price, and in a thin pool these diverge violently —
+with the reported price always moving *further* than the execution price for a
+buy.
+
+| pool TVL | notional | avg exec vs spot | **reported marginal move** | **phantom gain if marked at the reported price** |
+|---|---|---|---|---|
+| $1,936 | $500 | +51.90% | **+129.79%** | **+51.27%** |
+| **$2,860** | **$500** | **+35.22%** | **+82.04%** | **+34.63%** |
+| $2,860 | $150 | +10.74% | +22.05% | +10.21% |
+| $11,578 | $500 | +8.89% | +18.00% | +8.37% |
+| $67,119 | $500 | +1.74% | +3.00% | +1.24% |
+
+> **A $500 buy into the median observed pool raises the reported price by 82%
+> and, if the resulting position is marked at that reported price, shows an
+> instantaneous 35% "profit" that is entirely the trade's own footprint.**
+
+**The rule:**
+
+> **A position is marked off an executable EXIT quote, never off a reported
+> price.** Any modeled-fill to position to modeled-P&L chain that marks using
+> `CryptoPriceTick.price_usd` **will manufacture profits out of its own simulated
+> impact**. If no executable exit quote or exit-side ladder walk is available,
+> the position is `NOT_MARKABLE` — a typed absence and an abstention code — and
+> **not** marked at the mid "for now".
+
+The CLOB analogue is the same rule with a different mechanism: mark off the
+**bid** side of the executable ladder for a long, walked to the position size,
+not off the mid. A mid-price mark on a thin binary book manufactures half the
+spread per position on every valuation.
+
+And the same discipline governs coherence detection, which is where naive engines
+die: **a constraint on probabilities is not a constraint on quotes.** To capture a
+violation you buy every leg at its **ask**. Evaluating on midpoints manufactures
+phantom edge equal to half the summed spread — on an N-leg partition, `N/2`
+spreads of pure fiction.
+
+### 7.4 Kappa — the cost-kill multiple
+
+Because a meaningful part of the cost stack is **bounded rather than measured**,
+a single net number understates the fragility. Every result therefore reports one
+robustness scalar:
+
+> **kappa = the multiple of total modeled cost at which the net result crosses
+> zero.**
+
+| kappa | verdict |
+|---|---|
+| **below 1** | already dead — negative at the modeled cost |
+| **1 to 2** | **not robust; may NOT support a confirmatory claim.** Our cost stack has non-closable terms and a stale liquidity estimate. A result that dies if costs are twice the model has not survived our own measurement error |
+| **2 or more** | reportable, with kappa stated on the artifact |
+
+Kappa is cheap to compute, hard to game (the *evaluator* computes it, not the
+author), and it is exactly the number that would have made the EDGE candidates'
+fragility legible before the cost model existed: at frictionless +0.10..+0.30
+going to −0.03..−0.21 under a single fee assumption, **their kappa was well below
+1.**
+
+**Adverse bounds, never zeros.** Every non-observable cost term carries a
+**declared adverse bound registered before data is seen**, and net is computed
+twice: `net_partial` at the observed and modeled terms alone, and
+`net_conservative` with every bounded term charged at its adverse bound.
+**`net_conservative` is the headline.** This converts an unknown into a stated
+worst case — a claim that can be falsified later — rather than into a silent
+zero, which cannot.
+
+The terms this applies to, per venue:
+
+| venue | term | basis |
+|---|---|---|
+| Kalshi | half-spread | OBSERVED from the snapshot |
+| Kalshi | taker fee | MODELED — round trip at both ends, no maker rebate, no rounding down |
+| Kalshi | executable touch | OBSERVED; rows without a usable touch are **uncovered, never guessed** |
+| Kalshi | queue position, partial fill, market impact | **BOUNDED** — declared, never silently zero |
+| Solana | price impact at notional | OBSERVED from the quote, never recomputed from our own mid |
+| Solana | route and pool fees | OBSERVED where the venue reports it; **no default fee, no assumed bps, no per-dex fee table** |
+| Solana | priority fee, base fee | **BOUNDED — non-closable.** Fetching a priority fee is *forbidden* |
+| Solana | Token-2022 transfer fee and hooks | **BOUNDED** from a quote; **measurable** from a realized fill (§5.4) |
+| Solana | realized slippage, landing probability, MEV | **BOUNDED — `requires_submission`** for our own; **measurable as a population lower bound** for third parties (§5.4) |
+
+Note what §5.4 does to two of those rows: it moves Token-2022 transfer fees and
+third-party realized slippage from "bounded forever" to "bounded from a quote,
+measured from a fill". That is the concrete payoff of the corpus, expressed in
+the only currency that matters here — a cost term that stops being an assumption.
+
+One rounding detail that is not a rounding detail: the Kalshi fee is rounded up
+to the whole cent **on the order**, not per contract, so the overhead is at most
+`1/C` cents per contract. Per-contract taker cost at P = 0.50 is **2.00c at
+C = 1**, 1.80c at C = 10, 1.75c at C = 100 — and at P = 0.03 a one-contract order
+pays the 1c minimum against a 0.21c marginal rate, roughly **5x the marginal
+rate**. This implies a real `f_min`: **require at least 10 contracts, prefer 20**,
+and make the rounding overhead an explicit line in the cost record rather than an
+approximation.
+
+### 7.5 Delta-t — the term whose omission is the largest economic gap
+
+`g` is per **resolution**. Capital is committed for the duration, so the quantity
+to rank and budget is `g(f) / delta_t`, and `delta_t` is the **pessimistic tail**
+across every leg, not the expected value — markets extend, sports get postponed,
+elections get contested.
+
+Two consequences:
+
+1. **A held-to-resolution position pays fees once; a microstructure round trip
+   pays twice.** That asymmetry is another argument for microstructure as an
+   execution-quality tool rather than a signal.
+2. **Long-horizon markets are unvalidatable at any edge.** §9.4 needs
+   30,000–75,000 prospective observations. A 2pp edge on six-month markets cannot
+   accumulate that in any human timeframe. The correct response to a long-horizon
+   opportunity is to **decline it rather than lower the bar** — `ADR-004` already
+   says the quiet part: *"If challengers never beat the baseline, the correct
+   outcome is improving models — not lowering the gate."*
+
+For scale, on a captured edge held to resolution:
+
+| captured edge | 7d | 30d | 90d | 365d |
+|---|---|---|---|---|
+| 1c | 68.9% | 13.0% | 4.2% | 1.0% |
+| 2c | 186.7% | 27.9% | 8.5% | **2.0%** |
+| 5c | 1350.6% | 86.7% | 23.1% | 5.3% |
+
+A 2-cent arbitrage on a one-year market annualizes to **2.0%** — worse than
+T-bills, for unbounded tail risk and full operational cost.
+
 
 ## 8. The implementation ladder
 
