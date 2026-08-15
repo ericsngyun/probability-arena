@@ -89,16 +89,71 @@ ALLOWED_CAPABILITIES = (
 )
 
 FORBIDDEN_CAPABILITIES = (
-    "EV calculation",
-    "trade recommendations",
-    "paper trading",
-    "portfolio sizing",
-    "order placement",
-    "wallet / private-key handling",
-    "live trading / execution",
+    "EV calculation (dollar EV; a modeled PAPER_SIMULATION P&L may never be "
+    "used to compute, approximate, or stand in for one)",
+    "trade recommendations (a modeled P&L and a route quote are both EVIDENCE "
+    "— neither may carry or imply a side, an entry instruction, or an action)",
+    "paper trading, EXCEPT the narrowly-permitted PAPER_SIMULATION mode "
+    "(SAFETY-BOUNDARY-ROUTE-QUOTE-001): MODELED fills and MODELED P&L only, "
+    "and every artifact carrying such a number must carry, on the artifact "
+    "itself, an explicit model identifier AND an explicit modeled-vs-observed "
+    "basis (an artifact missing either must not be produced, persisted, "
+    "printed, returned, or forwarded; aggregates/exports inherit both). Real "
+    "fills, real orders, real positions and real capital remain forbidden "
+    "with no implementation surface, presenting a modeled number as realized/"
+    "actual/observed P&L is forbidden, and MVP-005B still governs whether "
+    "such a lane is BUILT at all",
+    "portfolio sizing (a PAPER_SIMULATION fill necessarily has a size, but "
+    "that size is a stated INPUT declared modeled in its basis — nothing may "
+    "derive, optimize, rank, or recommend a size from a modeled result)",
+    "order placement (a modeled fill is not an order, and an executable route "
+    "quote is not an order ticket)",
+    "wallet / private-key handling (READ_ONLY_ROUTE_QUOTE may never load, "
+    "derive, generate, import, hold, or reference wallet key material, seed "
+    "phrases, or keypairs, and may not pass a wallet we control as a quote's "
+    "user/payer)",
+    "live trading / execution (retrieving executable route evidence is not "
+    "execution; holding a quote is not a step toward one)",
     "autonomous trading",
     "crypto wallets",
-    "swaps / transaction construction / signing (Jupiter or any DEX)",
+    "swaps / transaction construction / signing (Jupiter or any DEX) — "
+    "including requesting or receiving swap instructions or transaction/"
+    "instruction bytes from ANY endpoint (the build/swap sibling of the very "
+    "API that served a quote included), constructing/encoding/serializing a "
+    "transaction client-side, simulating one against an RPC node "
+    "(simulateTransaction and equivalents), signing, submitting/broadcasting/"
+    "relaying, and fetching a blockhash, priority fee, or nonce. "
+    "READ_ONLY_ROUTE_QUOTE (SAFETY-BOUNDARY-ROUTE-QUOTE-001) permits "
+    "RETRIEVING a public route/amount quote — what route a stated input size "
+    "would take and what output amount, price impact and fee is reported — "
+    "and nothing else; it loosens no part of this row",
+)
+
+# SAFETY-BOUNDARY-ROUTE-QUOTE-001: two capability modes are PERMITTED WITH
+# CONDITIONS, and neither is implemented — the amendment authorizes no
+# milestone. They are not ALLOWED_CAPABILITIES (that tuple lists surfaces this
+# repo actually has); they are the exact, bounded exceptions carved out of
+# FORBIDDEN_CAPABILITIES above. Both are FREE PUBLIC ENDPOINTS ONLY: no paid
+# RPC, no paid trade/orderflow feed, no SolanaTracker — a quote obtainable
+# only by paying for it is not obtainable, and the honest outcome is no quote.
+# The AST safety audit still bans the identifiers such an implementation would
+# use; unbanning one is a separate, narrowly-scoped review.
+# See docs/SAFETY_BOUNDARIES.md for the full enumeration.
+NARROWLY_PERMITTED_MODES = (
+    "READ_ONLY_ROUTE_QUOTE — retrieve executable route/amount evidence only "
+    "(route, output amount, price impact, fee for a stated input size from a "
+    "free public quote endpoint). NEVER: swap instructions or transaction "
+    "bytes, transaction construction/encoding, RPC transaction simulation, "
+    "signing, submission/broadcast, blockhash/priority-fee/nonce fetches, "
+    "wallet key material, or any parameter binding the quote to OUR ability "
+    "to execute it. The object is 'what a trade of size X would cost', never "
+    "'the trade we are about to make'",
+    "PAPER_SIMULATION — produce MODELED fills and MODELED P&L only, with an "
+    "explicit model identifier and an explicit modeled-vs-observed basis on "
+    "every artifact (not in a header, README, docstring, or column comment). "
+    "NEVER: a real fill, real order, real position, real capital, a dollar-EV "
+    "substitute, a size recommendation, or a modeled number presented as "
+    "realized/actual/observed P&L",
 )
 
 EXPECTED_SERVICES_EVO_X2 = (
@@ -149,10 +204,18 @@ NEXT_MILESTONES = (
     "Goalserve-backed tennis live-state work blocked pending the API key",
     "Accumulate paired outcomes toward useful_sample (n>=100); retired EDGE-SELECTION "
     "policies remain retired (EDGE-RETIRE-001; resurrection needs a new prereg+lock)",
-    "EV, paper trading, portfolio sizing, wallet/key handling, transaction "
-    "construction/signing, swaps, and live execution remain UNAUTHORIZED and require "
-    "explicit, separately-accepted milestones before any surface may exist "
-    "(see docs/SAFETY_BOUNDARIES.md) — none are a current next step",
+    "Dollar EV, real paper trading (real fills/orders/positions/capital), "
+    "portfolio sizing, wallet/key handling, transaction construction/signing, "
+    "swaps, and live execution remain UNAUTHORIZED and require explicit, "
+    "separately-accepted milestones before any surface may exist "
+    "(see docs/SAFETY_BOUNDARIES.md) — none are a current next step. "
+    "SAFETY-BOUNDARY-ROUTE-QUOTE-001 carves out exactly two "
+    "permitted-with-conditions modes (see NARROWLY_PERMITTED_MODES): "
+    "READ_ONLY_ROUTE_QUOTE and PAPER_SIMULATION. NEITHER IS IMPLEMENTED and "
+    "the amendment authorizes NO milestone — it states what such a lane would "
+    "be permitted to do if one were separately accepted, and an "
+    "implementation would still fail the AST safety audit, which is a "
+    "separate control the amendment does not touch",
 )
 
 CANON_DOCS = (
