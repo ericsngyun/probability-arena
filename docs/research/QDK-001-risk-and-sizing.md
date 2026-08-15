@@ -762,7 +762,149 @@ Given 4.2–4.4, the honest treatment of the tail term:
 
 ## 5. Track 4 — Drawdown and ruin
 
-_(to be filled)_
+### 5.1 The two "drawdowns" are not the same statement, and one of them is degenerate
+
+Under the continuous (diffusion) approximation, betting `λ` times the full-Kelly
+fraction gives log-wealth `X_t = a·t + b·B_t` with `a = (μ²/σ²)(λ − λ²/2)` and
+`b = λμ/σ`, so `2a/b² = 2/λ − 1` and
+
+```
+P( W ever falls to α·W₀ )  =  α^(2/λ − 1)          ── barrier from INITIAL wealth
+```
+
+That is the constraint Busseti–Ryu–Boyd formalise, and they define it on initial
+wealth deliberately. The reason is that the *other* drawdown — peak-to-trough —
+is degenerate:
+
+> The peak-relative drawdown process `Y_t = max_{s≤t} X_s − X_t` is a **reflected
+> Brownian motion with negative drift**. Such a process is positive-recurrent and
+> therefore **visits arbitrarily high levels with probability 1**. Over an
+> unbounded horizon, `P(max peak-to-trough drawdown > L) = 1` for every `L`, at
+> every `λ > 0`.
+>
+> **There is no `λ` that bounds peak-to-trough drawdown. A drawdown constraint
+> can only be stated against a fixed reference level.**
+
+Simulated confirmation (`q=0.50, p=0.55`, 12,000 paths, `α = 0.5`):
+
+| λ | formula `α^(2/λ−1)` | (a) hits 0.5·W₀, N=250 | N=1,000 | N=5,000 | (b) peak-DD>50%, N=250 | N=1,000 | N=5,000 |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 0.10 | 0.00000 | 0.00000 | 0.00000 | 0.00000 | 0.00000 | 0.00000 | 0.00000 |
+| 0.14 | 0.00010 | 0.00000 | 0.00008 | 0.00008 | 0.00000 | 0.00125 | 0.00625 |
+| 0.25 | 0.00781 | 0.00350 | 0.00633 | **0.00642** | 0.00983 | 0.08258 | **0.39692** |
+| 0.333 | 0.03112 | 0.01892 | 0.02850 | **0.02867** | 0.06942 | 0.32750 | **0.88317** |
+| 0.50 | 0.12500 | 0.08600 | 0.11150 | **0.11267** | 0.34467 | 0.85333 | **1.00000** |
+| 1.00 | 0.50000 | 0.40200 | 0.46883 | **0.47683** | 0.96658 | 1.00000 | **1.00000** |
+
+Column (a) converges to the formula and then **stops growing** — the barrier
+probability saturates, exactly as the closed form says. Column (b) **keeps
+growing toward 1** at every `λ`, confirming the recurrence argument. And median
+peak drawdown grows without bound in horizon:
+
+| λ | N=100 med / p95 | N=250 | N=1,000 | N=5,000 |
+|---:|---|---|---|---|
+| 0.10 | 0.072 / 0.142 | 0.105 / 0.191 | 0.155 / 0.249 | 0.219 / 0.315 |
+| 0.14 | 0.100 / 0.193 | 0.145 / 0.257 | **0.215** / 0.337 | 0.296 / 0.418 |
+| 0.25 | 0.175 / 0.322 | 0.247 / 0.414 | 0.357 / 0.534 | 0.478 / 0.639 |
+| 0.50 | 0.338 / 0.562 | 0.447 / 0.684 | 0.609 / 0.813 | 0.762 / 0.897 |
+| 1.00 | 0.586 / 0.833 | 0.738 / 0.930 | 0.893 / 0.984 | 0.973 / 0.998 |
+
+**Design consequence.** The tolerable-drawdown statement must be written against
+a fixed reference — the starting bankroll of a declared epoch — and paired with
+a **halt rule** at that level. "I will not lose more than 20% from any peak" is
+not a satisfiable requirement. "I will halt if the modelled bankroll reaches 80%
+of the epoch's starting value, and I accept a 5% chance of that" is.
+
+### 5.2 Converting a max-tolerable-drawdown statement into a per-trade constraint
+
+Invert `α^(2/λ−1) = ε`:
+
+```
+λ_dd = 2 / ( 1 + ln ε / ln α )
+```
+
+| max drawdown | α | ε=0.20 | ε=0.10 | ε=0.05 | ε=0.01 |
+|---:|---:|---:|---:|---:|---:|
+| 10% | 0.90 | 0.123 | 0.088 | 0.068 | 0.045 |
+| 20% | 0.80 | 0.244 | 0.177 | **0.139** | 0.092 |
+| 30% | 0.70 | 0.363 | 0.268 | 0.213 | 0.144 |
+| 40% | 0.60 | 0.482 | 0.363 | 0.291 | 0.200 |
+| 50% | 0.50 | 0.602 | 0.463 | 0.376 | 0.262 |
+
+> **"A 20% maximum drawdown, at no more than 5% probability" implies
+> `λ_dd = 0.139` — about one-seventh Kelly.**
+
+Sanity-check that against Section 2.6: `λ = 0.14` earns **26.0%** of the optimal
+growth rate. That is the price. It is not negotiable downward without either
+accepting a larger drawdown or a higher probability of it — those are the only
+two knobs, and the table prices both.
+
+(A pleasing consistency: `λ = 0.14` also produces a *median peak* drawdown of
+21.5% over 1,000 bets in the table above. Coincidental — the two are different
+statements — but it means the number is not an artefact of choosing the
+convenient definition.)
+
+### 5.3 Risk of ruin, and why "there is no ruin under proportional betting" is false here
+
+The standard reassurance is that proportional betting on infinitely divisible
+wealth can never reach zero. Three things break that here:
+
+1. **Integer contracts and a minimum lot.** Below the minimum tradeable size the
+   strategy is no longer proportional; there is a real absorbing region. This is
+   the mechanism by which the "no ruin" theorem stops applying, and it applies at
+   a bankroll level far above zero.
+2. **Per-contract fees.** Kalshi's fee is `0.07·C·P·(1−P)` (taker), which is
+   proportional to contracts, so it scales with position — but the *minimum* is
+   one cent, rounded up, which is a fixed cost at small sizes and becomes
+   arbitrarily large as a fraction of a shrinking bankroll.
+3. **A non-replenished bankroll has no mean reversion in capacity.** With no
+   external inflow, capacity is monotone in the worst path taken so far. Combined
+   with 5.1's recurrence result, the operative statement is: **run long enough
+   and the peak-to-trough drawdown will eventually exceed any bound; the only
+   protection is a halt rule at a fixed level, and the halt is permanent unless a
+   human re-capitalises.** That decision must be an explicit human act, not a
+   parameter.
+
+### 5.4 The halt rule, stated
+
+```
+epoch:      declared start, declared starting modelled bankroll W₀, declared λ
+soft halt:  W ≤ 0.90·W₀   → new positions blocked; existing positions run off;
+                             a mandatory review of β̂ and the residual-correlation
+                             estimate before the epoch may resume
+hard halt:  W ≤ 0.80·W₀   → programme stops; resumption requires an explicit
+                             human decision and a NEW epoch with a NEW W₀
+```
+
+The soft halt exists because Section 6.2(c) says the most likely cause of a
+drawdown is that model errors have become correlated — which is a *detectable*
+condition, and the drawdown is the trigger to go and look.
+
+### 5.5 The safety factor: with noisy `p̂` you pay `λ`'s risk and get `λ_eff`'s growth
+
+The `λ_dd` table assumes `p` is known. It is not. Simulating `λ·f*(p̂)` with
+`p̂ ~ N(p_true, s)` and mapping the realised growth back onto the `g(λ)` curve
+(400,000 draws per cell):
+
+| λ intended | s=0.00 | s=0.01 | s=0.02 | s=0.03 |
+|---:|---:|---:|---:|---:|
+| 0.14 | λ_eff 0.140 | 0.140 | 0.138 | 0.138 |
+| 0.25 | 0.250 | 0.249 | 0.244 | 0.239 |
+| 0.50 | 0.500 | 0.490 | 0.463 | **0.428** |
+| 1.00 | 1.000 | 0.800 | 0.601 | **0.420** |
+
+Read this correctly — it is **not** saying that noise makes you safer:
+
+> **Noise gives you the risk profile of `λ` and the growth of `λ_eff < λ`.** At
+> `λ = 1.0, s = 0.03` you take the drawdowns of full Kelly (median peak DD 89%
+> over 1,000 bets) while earning what an honest `λ = 0.42` would have earned. The
+> growth-per-unit-drawdown deteriorates by more than half.
+
+The other reading is the useful one: **at small `λ` the noise sensitivity nearly
+vanishes** (0.140 → 0.138 across the whole range of `s`). Low `λ` is not merely
+safer; it is *robust*, in the specific sense that its performance stops depending
+on a quantity we cannot measure. That robustness — not the drawdown table alone —
+is the strongest argument for `λ ≈ 0.15`.
 
 ## 6. Track 5 — Correlation and concentration
 
