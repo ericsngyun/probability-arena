@@ -637,6 +637,136 @@ anything — replaces it.
 
 ---
 
+## 8. Adverse selection and toxicity without a market maker
+
+### 8.1 Why the classical framing does not apply unmodified
+
+"Toxic flow" in classical microstructure means: flow that systematically arrives
+on the informed side, so that a market maker who fills it loses on average and
+must widen or withdraw. Every part of that sentence assumes a market maker who
+**chooses** quotes, **observes** flow, and **can withdraw**.
+
+An AMM LP does none of those things. The pool quotes a fixed curve, fills
+everything, and cannot decline. It has no queue to defend and no inventory
+policy to run. So the classical machinery — VPIN, order-flow-imbalance-based
+toxicity scores, quote-fade detection — does not merely lack inputs here; the
+decision it was built to inform does not exist.
+
+**What survives is the economics, not the metric.** An LP is still adversely
+selected: it systematically ends up long the asset that is falling and short the
+asset that is rising, because arbitrageurs trade against a stale curve. That is
+a real, measurable, AMM-native cost, and the literature's name for it is
+**loss-versus-rebalancing (LVR)** — see §12.
+
+### 8.2 The four toxicity channels that actually exist here
+
+For a *taker* on a thin Solana memecoin pool — which is our position, not the
+LP's — there are four distinct adverse-selection channels. They are genuinely
+different mechanisms and conflating them is a modelling error.
+
+**Channel 1 — Sandwich / MEV extraction.** An adversary observes your intent,
+buys ahead of you, lets your trade push the price, and sells into it. Your
+execution is worse by the amount extracted. *Status:* **unobservable
+prospectively** (`SOLANA-ROUTE-OBSERVATION-001` §8.1 row 8: "NOT OBSERVABLE
+WITHOUT SUBMITTING A TRANSACTION"). §4 covers the mechanism.
+
+**Channel 2 — Stale-quote adverse selection.** You quote at \(t\), the pool
+state changes, you execute against a different state. This is the taker-side
+mirror of LVR and it is entirely a function of the gap between quote and
+execution. *Status:* the quantity is **bounded but not measured** — see §4.
+
+**Channel 3 — Liquidity-removal risk (the rug).** The LP withdraws, and your
+exit curve ceases to exist. Note carefully that this is **not** a price move: it
+is the disappearance of the function that converts your position into money.
+Classical microstructure has no analogue at all, because a CLOB's liquidity
+withdrawal leaves the venue intact. *Status:* partially detectable at T0 via C8
+(§5.1); this is the highest-value detector we can build inside the boundary.
+
+**Channel 4 — Structural liquidity decay.** The pool does not disappear; it
+thins. §2.5(b) quantifies this at **−22% of notional on a $500 round trip at the
+measured median decay, with the token's true price unchanged.**
+
+> **The ranking is the finding.** For a taker in this asset class, ordered by
+> measured or plausible magnitude:
+>
+> **Channel 4 (decay, ~22% at $500/median, MEASURED) > Channel 3 (rug, total
+> loss but lower frequency, UNMEASURED) > Channel 1 (sandwich, UNMEASURABLE
+> prospectively) > Channel 2 (stale quote, bounded and small at our sizes).**
+>
+> **The dominant adverse-selection cost in Solana memecoins is not MEV.** It is
+> the slow structural thinning of the pool between entry and exit — a lifecycle
+> phenomenon (§7), not a microstructure one. MEV gets the attention; decay takes
+> the money. Every hour of effort spent on sandwich modelling before Channel 4
+> is measured is misallocated.
+
+### 8.3 What the repository already encodes, and how to read it
+
+`app/services/crypto_risk_engine.py` already carries a normalized set of
+adverse-selection proxies with explicit thresholds:
+
+| config | default | category |
+|---|---|---|
+| `max_top_holder_pct` | 20.0 | `holder_concentration` |
+| `max_sniper_pct` | 20.0 | `sniper_concentration` |
+| `max_insider_pct` | 15.0 | `insider_concentration` |
+| `max_bundler_pct` | 25.0 | `bundler_concentration` |
+| `min_liquidity_usd` | 5000.0 | liquidity floor |
+| — | — | `provider_rug_flag` (pass-through of a provider's own flag) |
+
+Three observations about this set, offered as findings rather than criticism:
+
+1. **The thresholds are declared policy, not fitted quantities.** They are round
+   numbers (20/20/15/25) and nothing in the repository claims otherwise. That is
+   honest, and it also means **their calibration is an entirely open empirical
+   question** that S-3 (§11.2) would begin to answer as a side effect.
+2. **`min_liquidity_usd = 5000.0` is above 62% of the observed population.**
+   `SOLANA-ROUTE-OBSERVATION-001` §4.2 measured 62% of quoted-population pools
+   below $5,000 and used exactly this observation to re-anchor its notional
+   ladder. The same argument applies to the risk floor: a threshold that most of
+   the population fails is not discriminating within the population, it is
+   selecting a different one. **Whether that is intended should be an explicit
+   decision, not an inherited constant.**
+3. **`sniper_pct` / `insider_pct` / `bundler_pct` are provider-defined labels**
+   (§5.1 Block E, E3). We consume a vendor's heuristic with an unpublished
+   threshold. They may be excellent; we cannot know, and nothing in the schema
+   currently records the vendor's definition alongside the value. Treating them
+   as ground truth in any downstream model imports an unaudited dependency.
+
+### 8.4 The concentration channel is the one with a real mechanism
+
+Of everything in §8.3, holder concentration has the clearest causal story, and
+it connects directly to §2:
+
+**INFERRED, and it follows from §2 arithmetic rather than from folklore.** If a
+single holder controls a fraction \(h\) of the float and the pool has TVL \(L\),
+that holder's exit is a swap of size roughly \(h \cdot \text{FDV}\) against a
+quote reserve of \(L/2\). Using §2's rule \(S \approx f + \tau\), that exit moves
+the price by approximately
+
+$$\tau_{\text{exit}} \;\approx\; \frac{2\,h\cdot \text{FDV}}{L}\;=\;2h \cdot \left(\frac{\text{FDV}}{L}\right).$$
+
+So **concentration matters exactly in proportion to `fdv_to_tvl`** — feature B6
+in §5.1. A 20% holder in a token whose FDV is 5× its TVL faces
+\(\tau_{\text{exit}} \approx 2\), i.e. an exit that consumes the pool. A 20%
+holder in a token whose FDV is 1.2× its TVL faces \(\tau \approx 0.48\) — still
+enormous, but survivable.
+
+> This gives a **composite risk feature with an actual derivation behind it**,
+> rather than two independently-thresholded numbers:
+> \(\;\texttt{exit\_pressure} = \texttt{top10\_holder\_pct} \times
+> \texttt{fdv\_to\_tvl}\).
+> Both inputs are already persisted (Block E, B6). It costs one multiplication
+> and it is testable against the F6 decay outcome in study S-3. **This is the
+> most concrete new feature proposed anywhere in this document.**
+
+*The caveat that keeps it honest:* it assumes the holder exits into the same
+pool in one transaction. A patient seller splitting across hours faces far less
+impact — but a patient seller also does not produce the failure mode the risk
+engine is trying to catch. It is a **worst-case** measure, and should be named
+as one.
+
+---
+
 ## 11. What our data can and cannot support today
 
 This section converts the rest of the document into an inventory and a ranked
