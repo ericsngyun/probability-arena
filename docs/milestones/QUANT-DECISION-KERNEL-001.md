@@ -614,7 +614,184 @@ from impact to decay. **Intra-venue coherence on exact bindings** is not cut —
 
 ## 4. Architecture: two state engines, one decision interface
 
-*(section pending)*
+### 4.1 The dependency direction
+
+```
+                     +--------------------------------------+
+                     |  DecisionInterface                   |
+                     |  (venue-agnostic; emits an           |
+                     |   EvaluationRecord or NO_TRADE)      |
+                     +--------------------+-----------------+
+                                          | consumes a VenueState
+                    +---------------------+---------------------+
+                    |                                           |
+        +-----------v-----------+                   +-----------v-----------+
+        |  CLOB state engine    |                   |  AMM state engine     |
+        |  (Kalshi)             |                   |  (Solana)             |
+        |  book + trade tape    |                   |  pool state + curve   |
+        +-----------+-----------+                   +-----------+-----------+
+                    |                                           |
+        +-----------v-----------+                   +-----------v-----------+
+        | canonical archive     |                   | sparse observer /     |
+        | (replay-deterministic)|                   | realized-fill corpus  |
+        +-----------------------+                   +-----------------------+
+```
+
+Dependencies point **downward only**. Neither engine imports the other. The
+decision interface imports neither engine's internals — it consumes a
+`VenueState` whose contract is stated in §4.4 and is deliberately thin, because
+the two engines share almost no mathematics and a fat shared interface would be a
+lie about how much they have in common.
+
+The archive/observer layer is *already* the boundary this repository enforces:
+replay determinism on the Kalshi side (`app/realtime/archive.py`,
+`app/realtime/book.py`), typed non-observation and denominator preservation on
+the Solana side (`app/services/crypto_sparse_observation.py`). Neither engine may
+read a live socket or a REST endpoint at evaluation time. **Every feature must be
+computable by replaying evidence**, which is what makes any of this auditable.
+
+### 4.2 The one-sentence statement of the difference
+
+> In a **CLOB** the price is uncertain and the state is observable. In an **AMM**
+> the price is a *known function* of state, and what is uncertain is **which
+> state your transaction will be applied to**.
+
+That inversion drives everything. It means the thing classical microstructure
+spends most of its effort estimating — price impact — is a **closed-form
+identity** on an AMM, and the thing classical microstructure takes for granted —
+that your order interacts with the book you just observed — is the AMM's whole
+problem.
+
+### 4.3 What does NOT transfer — the non-transfer table
+
+This table exists because the failure mode it prevents is specific and
+expensive: import a CLOB feature library, compute forty features on an AMM, find
+no signal, and conclude the market is efficient — when in fact thirty of the
+features measured objects that do not exist.
+
+**CLOB to AMM: structurally absent (the object has no referent).**
+
+| construct | why it does not exist on an AMM | replacement |
+|---|---|---|
+| Queue position, queue-ahead, FIFO priority | There is no queue. A swap executes atomically against the curve at inclusion. | **Nothing structural.** The nearest analogue is transaction *landing*, which is an uncertainty, not a state variable — and it is unobservable without submitting. |
+| Queue imbalance `I` | Requires two sides with independent depths. A CPMM has **one** state `(x,y)` serving both directions; the reserve ratio **is the price**, so it cannot predict the price. | **Nothing.** Depth is symmetric by construction. |
+| OFI, MLOFI, integrated OFI | Built from **placements and cancellations**. An AMM emits neither. | Signed swap flow — a *different and weaker* variable (§4.5). |
+| Cancellation intensity, book flickering, spoofing | Nothing to cancel. | **Nothing.** The nearest economically similar behaviour is LP add/remove, which is capital movement, not intent signalling. |
+| Microprice, i.e. `M + g(I,S)` | Requires a bid, an ask, and a spread to correct for. There is one marginal price and no bid-ask bounce to de-noise. | The marginal price `y/x` is already the correct fair value. |
+| Bid-ask spread, effective spread, realized spread, price improvement | There is no quoted spread. | `2f`, the doubled pool fee — plus the decay asymmetry of §3.5, which has no CLOB analogue at all. |
+| Order-book slope, depth-at-k-levels | Levels do not exist. | The curve itself. Depth at any size is closed-form and continuous — strictly more informative than a level ladder. |
+| Fill probability conditional on queue position | An LP is not "filled"; anything crossing its range trades against it unconditionally. | Not a decision variable. |
+| Maker/taker fee differential | LPs earn the pool fee; swappers pay it. There is no rebate/fee choice at order time. | — |
+| Book publishability, sequence-gap unpublishing | Chain state is canonical and totally ordered by slot. Entirely different failure model. | Slot-chain continuity. |
+
+**CLOB to AMM: the estimator dies even though the concept survives.**
+
+| construct | why the estimator fails | replacement |
+|---|---|---|
+| Kyle's lambda, and every regression-estimated impact coefficient | It estimates the derivative of price with respect to signed volume *statistically*, because in a CLOB impact is not observable ex ante. On an AMM it is a **closed form**. Regressing to recover a coefficient we can compute exactly adds estimation error to an identity — and will absorb liquidity-decay effects into what looks like an impact coefficient. | `S(tau,f) = (f + gamma*tau)/(1 + gamma*tau)` evaluated at the pool state. |
+| Amihud illiquidity | A proxy for a quantity we can compute — and badly contaminated, because the reported return is largely *self-generated impact*. | Pool TVL and `tau`. |
+| Roll's implied spread from autocovariance | Assumes bid-ask bounce between two quotes. Consecutive prints walk a deterministic curve. Returns noise or a negative variance. | `2f`, known exactly. |
+| Realized volatility from a provider mid | Not wrong so much as **misnamed**: at our pool sizes it predominantly measures the impact footprint of individual swaps. | Keep the number, rename it `price_churn`, drop the volatility interpretation. |
+| VPIN / order-flow toxicity | Needs signed volume; its volume-bucketing is calibrated to a market-maker inventory problem no AMM LP faces; and it has been **refuted in its home market** — Andersen & Bondarenko, with near-perfect trade classification: *"We conclude that VPIN is not suitable for capturing order flow toxicity."* | LVR — a *realized accounting* quantity rather than a latent-variable estimate. Note LVR is the **LP's** cost and we are on the taker side; it identifies who the informed counterparty is, it is not a taker edge. |
+
+**AMM to CLOB: what does not transfer the other way.**
+
+| construct | why |
+|---|---|
+| The closed-form cost function | A CLOB's `C_execution` must be reconstructed from a book that may be stale, may be unpublishable, and may not contain enough depth to fill at all. `UNFILLABLE` is a typed outcome. |
+| Liquidity decay as the dominant cost | On Kalshi the dominant cost is the **fee**, which is larger than the tick. Decay has no analogue. |
+| The pool algebra, virtual reserves, bonding-curve progress | No pool, no invariant. |
+| Loss-versus-rebalancing | No LP. |
+| Landing probability, slot inclusion, MEV sandwiching, priority fees | No mempool, no leader, no block. |
+| The `p(1-p)` variance normalisation | Kalshi-specific; a memecoin's payoff is not binary. It must be **dropped** on the AMM side, not carried across. |
+
+**Transfers directly, and it is a short list:** signed trade imbalance, trade
+count, volume acceleration, realized volatility and vol-of-vol (with the
+normalisation dropped), regime labels and event-time clocks (with different cut
+points), and the *discipline* of §7.2 — that execution cost comes from the actual
+state of the venue at decision time, and that "cannot fill" is a typed outcome
+rather than an extrapolated price.
+
+### 4.4 The `VenueState` contract — deliberately thin
+
+Because §4.3 is long, the shared interface must be short. Anything richer would
+be a false claim of commonality.
+
+```
+VenueState                              # what BOTH engines must supply
+  venue_id            enum{kalshi, solana}
+  instrument_ref      opaque, venue-scoped
+  observed_at         timestamp
+  evidence_digest     sha256 over the canonical encoding of the state
+  staleness           duration since the newest accepted evidence
+  is_evaluable        bool             # false => the decision interface must abstain
+  absence             Absence | None   # typed, from the closed vocabulary of 5.1
+
+  fair_value          probability or price, with its own basis enum
+  cost_curve(size)    size -> Result[ExecutionCost, Absence]
+                                       # the ONLY execution primitive both engines share
+  exit_mark(size)     size -> Result[ExitMark, Absence]
+                                       # 7.3: NEVER a reported mid
+
+  regime              venue-specific closed enum (spread_regime, or
+                      pool_kind x lifecycle_stage), carried opaquely
+
+ExecutionCost
+  cost_terms[]        {name, value, basis: OBSERVED|MODELED|BOUNDED,
+                       adverse_bound: number?}
+  total_partial       observed + modeled terms only
+  total_conservative  every BOUNDED term charged at its adverse bound
+  unfillable_shortfall  typed; a refusal, never an extrapolated price
+```
+
+Four invariants this contract holds:
+
+1. **`cost_curve` is a function of size and is convex-or-staircase, never a
+   constant.** On a CLOB it is the ladder walk against the visible book; on an
+   AMM it is the curve algebra. This is what makes "the same signal at different
+   notionals can have opposite sign" true rather than rhetorical. Worked on a
+   real-shaped Kalshi ladder (40 contracts at 52c, then 200 at 55c, with
+   `p_hat = 56c`): the identical signal is worth **+90c at 40 contracts and
+   −58c at 240**, and total EV is maximised *at the top-of-book size* because
+   stepping one level up costs a full 100bp of notional at once. There is no
+   smooth impact curve to trade off against; there is a staircase.
+2. **`UNFILLABLE` is a typed outcome carrying its shortfall, never a price.** A
+   model that extrapolates past the visible book is inventing liquidity, and on
+   Kalshi the ladder frequently ends well before $1.00.
+3. **`exit_mark` never returns a reported mid.** §7.3 is the guard, and it is the
+   difference between a paper ledger and a fiction.
+4. **`is_evaluable == false` is a first-class answer.** A refusal is a valid,
+   recordable decision outcome; a decision made on a stale book is not.
+
+### 4.5 The structural asymmetry, stated once because it sets the ceiling
+
+The strongest verified result in the CLOB literature is Cont–Kukanov–Stoikov's:
+short-horizon price changes are explained far better by **order-book events**
+(R² = 65%) than by **trades** (R² = 32%), and in the joint regression the trade
+term loses significance in 69% of subsamples.
+
+**An AMM emits only swap flow — the weaker variable — and there is no
+construction that recovers the stronger one, because the information is never
+created.** The two engines are therefore not two implementations of one design.
+They have different achievable ceilings.
+
+> **AMMs are harder to predict and easier to price. CLOBs are easier to predict
+> and harder to price.** Any plan that treats them as symmetric is wrong about
+> both.
+
+### 4.6 Which question each engine is for
+
+| | CLOB engine (Kalshi) | AMM engine (Solana) |
+|---|---|---|
+| answers | **"Do we have an edge?"** | **"Can we model execution?"** |
+| because | it has the arrival rate (410.7 baseball arrivals/day), calibration instruments, resolved binary outcomes, and a live registered experiment | it has a free, read-only, **realized third-party fill** corpus and an analytically-known cost curve whose residual can be measured |
+| its cost model is | reconstructed from a book — exact where the ladder reaches, `UNFILLABLE` where it does not | closed-form from reserves, plus a residual that is measurable against real fills |
+| its binding constraint is | **sample size** (§9.4) | **capacity** — a few hundred dollars a day at the optimal clip even at an extraordinary edge (§3.5) |
+| its worst failure mode | the fee exceeds every documented signal | marking a position off a reported price and manufacturing a 35% phantom gain (§7.3) |
+
+**Both are needed for a paper P&L, and neither is sufficient.** §10 turns this
+into a lane-ranking recommendation for Eric.
+
 
 ## 5. The feature schema
 
