@@ -71,6 +71,15 @@ WRITER_NAMES = frozenset({
     "meme_news", "retention", "crypto_tape", "crypto_horizon_observe",
     "outcome_sync", "forecast_scoring", "polymarket", "cross_venue",
     "tennis_tape", "test_writer",
+    # KALSHI-LIVE-TAPE-COLLECTOR-001 (Q5, approved 2026-08-15). The live tape
+    # collector's SESSION record only. Its per-interval rate/size/latency
+    # measurements deliberately do NOT come here — that envelope is
+    # SQLite-shaped and growing it for one lane is what the rule at the top of
+    # this module forbids; those go to `kalshi-live-tape.jsonl` under
+    # `collector_metrics.py`'s own closed schema. What lands here is the one
+    # per-session provenance record, so the collector identifies itself through
+    # the same canonical registry as every other writer.
+    "kalshi_live_tape",
 })
 
 # GATE2-WRITER-TELEMETRY-001 — the writer-pass label sets.

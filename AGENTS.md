@@ -66,6 +66,36 @@ already cost this project months.
    aggregate, archival and observability stores.** `MarketPriceTickBucket` held
    the executable market price the whole time and had survived a pruning
    milestone; finding it turned "years of new collection" into a 90-second query.
+4. **A measurement must report its own noise floor, not just its result.** An
+   assertion that cannot tell you when it is meaningless is worse than no
+   assertion. CP5's two-null-arm benchmark exposed a ~200,000 ns/ev floor
+   against a ~900 ns signal and so caught a leaked process that had been pinning
+   a core for two hours; a single-null benchmark would have reported scheduler
+   noise as an overhead result and passed its gate for the wrong reason. The
+   same shape applies to test guards — assert that the permitted thing EXISTS,
+   or the guard is satisfied by a repository in which nothing works.
+
+## Parallel-agent composition (binding)
+
+> **Every parallel-agent milestone with a shared runtime path must have an
+> explicitly owned integration-seam checkpoint.**
+
+**File ownership prevents collisions. It does not guarantee composition.** When
+workstream A and workstream B exchange an interface, assign a third checkpoint —
+or the orchestrator — to *prove the seam* before either is called complete.
+
+Earned the hard way: KALSHI-LIVE-TAPE-COLLECTOR-001 ran CP3 (orchestrator) and
+CP4 (metrics) in parallel under strict file ownership. CP3 was told to define a
+hook and not implement the lane; CP4 was told to define its expected interface
+and not wire it. **Both complied exactly.** The result was 1,186 lines and 81
+green tests of *unreachable* code — `CollectorMetrics` had no caller anywhere in
+`app/`, and the two interfaces did not match. Two green reports produced a false
+"complete" status.
+
+The guard against this is a test that instantiates the **real** collaborator,
+drives the **real** path, and proves observable state actually changes. A unit
+suite cannot catch an unreachable module, because from inside the module
+everything works.
 
 **Metric-naming rule:** `brier_skill_vs_base_rate` is level-1 evidence and must
 never be presented as market-relative skill. Its rename, and the addition of
