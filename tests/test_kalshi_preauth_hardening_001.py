@@ -468,6 +468,22 @@ class TestAudits:
             "app/realtime/auth.py": ("private_key",)}
 
     def test_observer_package_remains_inert(self):
+        """Amended by KALSHI-LIVE-TAPE-COLLECTOR-001 CP1, deliberately.
+
+        This audit used to ban `websockets` from every file in the package,
+        which was the right assertion while gap 1 ("there is no real transport")
+        was true. CP1 closes that gap under an approved milestone, so the
+        assertion is narrowed to the thing actually worth protecting: **the
+        socket lives in exactly one file.** That is stronger than deleting the
+        ban, because it now fails if a SECOND file in the package grows a
+        connection — which is how "the transport is confined" would otherwise
+        stop being true without anyone noticing.
+
+        Everything else stays absolute: no file in the package may touch a
+        database or an HTTP client, and none may be executable.
+        """
+        socket_holder = "ws_transport.py"
+        seen_socket_holder = False
         for path in sorted(PKG.rglob("*.py")):
             tree = ast.parse(path.read_text())
             mods = set()
@@ -476,11 +492,19 @@ class TestAudits:
                     mods |= {a.name for a in node.names}
                 elif isinstance(node, ast.ImportFrom) and node.module:
                     mods.add(node.module)
-            for banned in ("sqlite3", "sqlalchemy", "app.db", "app.models",
-                           "websockets", "httpx", "aiohttp", "requests"):
-                assert not any(m == banned or m.startswith(banned + ".")
-                               for m in mods), (path, banned)
+            banned = ["sqlite3", "sqlalchemy", "app.db", "app.models",
+                      "httpx", "aiohttp", "requests"]
+            if path.name == socket_holder:
+                seen_socket_holder = True
+            else:
+                banned.append("websockets")
+            for name in banned:
+                assert not any(m == name or m.startswith(name + ".")
+                               for m in mods), (path, name)
             assert "__main__" not in path.read_text()
+        assert seen_socket_holder, (
+            "the one permitted socket file is gone; if the transport moved, this "
+            "audit must move with it rather than silently permitting nothing")
 
     def test_no_timer_service_or_daemon_was_added(self):
         infra = REPO / "infra"

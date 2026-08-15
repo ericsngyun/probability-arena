@@ -393,7 +393,9 @@ that edits them has already lost the argument that the guarantees are unchanged.
     class KalshiWebsocketTransport(Transport):
         def __init__(self, *, environment: str, signer: RequestSigner,
                      open_timeout_s: float, ping_interval_s: float | None,
-                     max_queue: int, read_timeout_s: float) -> None
+                     ping_timeout_s: float | None,
+                     max_queue: int, max_size: int,
+                     read_timeout_s: float | None) -> None
         async def connect(self) -> None       # handshake with signed headers
         async def send(self, message: dict) -> None   # GOVERNED, see below
         def __aiter__(self)                   # yields parsed dict frames
@@ -406,6 +408,14 @@ Contract and invariants:
   no `url` parameter. The connect URI and the headers are never logged (the
   TENNIS-LIVE-FEED-002 precedent, `docs/SAFETY_BOUNDARIES.md:259`: failures reported by
   exception type name only).
+  **The signed headers are passed as `additional_headers=`, not `extra_headers=`**
+  (12.6 row 2): the v12 spelling does not exist on the installed `websockets` 16.0 and
+  raises `TypeError` at connect, on the signed handshake. `connect` is also driven
+  directly (`await connect(...)`); the `async for ws in connect(...)` form is forbidden
+  here because it carries its own unbounded `while True` retry loop (12.6 row 5), which
+  would silently defeat §6.4's `max_reconnects`.
+  A signer without `headers_for` — i.e. `UnsignedTransportSigner` — is refused at this
+  point rather than tolerated, per §6.5.
 - **`send()`** is the new structural control described in section 4: `cmd` must be in
   `("subscribe", "unsubscribe", "update_subscription")`, any `params["channels"]` is
   re-run through `assert_channels_allowed`, and any other shape raises `CapabilityError`.
@@ -415,13 +425,22 @@ Contract and invariants:
   counted as `malformed_frames` and skipped — it is not an envelope and must never be
   passed to `make_envelope`, which would archive a nonsense record.
 - **Backpressure is made explicit at the library boundary.** `websockets` buffers
-  incoming frames in an internal queue whose bound is `max_queue`. This is the single
-  most important knob in the whole design and section 8 is about it. **ASSUMPTION TO
-  VERIFY:** that the installed `websockets` version exposes `max_queue` on the client
-  connect API and that exceeding it applies TCP backpressure rather than dropping
-  frames. `docs/KALSHI_DEMO_READONLY_VALIDATION_2026_08.md:213` records `websockets 16.0`
-  as available; the checkpoint that introduces the transport must confirm the parameter's
-  name and semantics against the installed version before anything is built on it.
+  incoming frames in an internal queue, and `max_queue` is a **high-water mark, not a
+  hard cap**: the queue is an unbounded `deque` and the library pauses reading when depth
+  exceeds `max_queue`, resuming when it falls back to the derived low mark (`max_queue // 4`
+  for a bare int). Overflow therefore applies TCP backpressure and **drops nothing** —
+  see 12.1 and 12.2, which settle this against the installed source rather than leaving it
+  as an assumption. This is the single most important knob in the whole design and
+  section 8 is about it. `max_queue=None` disables flow control entirely and must never be
+  passed (12.2); the transport refuses it at construction.
+- **`max_size` is a constructor parameter and a deliberate choice** (12.1). It bounds a
+  single message; exceeding it raises `PayloadTooBig`, which **fails the connection**
+  rather than dropping one message, so too tight a value manufactures observation gaps.
+  CP1 sets it to **8 MiB** — 8x the library default, roughly 20x the arithmetic worst case
+  for a full two-sided book on the 4-decimal grid `fixedpoint.py` admits, and still
+  finite, so a runaway frame cannot exhaust memory. When it is hit, the transport raises a
+  named `FrameTooLargeError` carrying the configured limit and the remedy, and records a
+  close cause of `oversize_frame`, so the symptom is never an unexplained disconnect.
 
 ### 6.3 `collector.py` — the session orchestrator
 
@@ -641,8 +660,8 @@ carries `markets_subscribed` (a count), never a list. Bucket labels follow the e
 | **archive append latency** | `monotonic_ns()` immediately before and after `archive.append(envelope)`, into a pre-allocated histogram | Two clock reads per event. **Assumption to verify:** that this is a low-tens-of-nanoseconds cost on the target host and therefore negligible against a measured append. Checkpoint 5 measures the instrumentation overhead explicitly by running the same fixture load with instrumentation on and off |
 | **rotation frequency** | `EventArchive.rotations` delta per interval, plus `_live_segment_id` transitions | Read from the archive's own counters, not inferred from the filesystem |
 | **archive close latency** | Wall time of the CLOSER thread's work per segment, obtained via a callback on `_on_rotation_closed`, plus `wait_for_rotations` duration at session end | Close is already OFF the producer thread (`archive.py:496-512`). Measuring it must not put it back on: the timing is taken on the closer thread |
-| **dropped events** | Three separate counters that must never be merged: `events_rejected` (archive said no, typed), `frames_malformed` (unparseable), and `transport_dropped` (the library's own drop counter, if it exposes one) | A single "dropped" number would hide which layer failed. **Assumption to verify:** whether the installed `websockets` exposes a drop/overflow counter at all; if it does not, that is a measurement GAP and must be reported as one, not zeroed |
-| **backpressure / lag** | `reader_lag_frames_max` from the library's inbound queue depth if exposed; ALWAYS also `reader_stall_ms_max` — the longest wall gap between consecutive successful reads — which needs no library support | Stall time is the property that actually matters and is measurable regardless. **If queue depth is not exposed, say so; do not report zero lag** |
+| **dropped events** | Two separate counters that must never be merged: `events_rejected` (archive said no, typed) and `frames_malformed` (unparseable), plus the collector's own receive count. **`transport_dropped` is DELETED, not zeroed** (12.4): the installed library has no drop path and no drop counter, so the number has no source — and needs none, because the library's contribution is provably zero. Loss can enter only across a disconnect (§8.3) or upstream at the venue, and sequence integrity detects the latter | A single "dropped" number would hide which layer failed. A fabricated zero would be worse than either |
+| **backpressure / lag** | `reader_lag_frames_max` from `len(conn.recv_messages.frames)`; ALWAYS also `reader_stall_ms_max` — the longest wall gap between consecutive successful reads — which needs no library support | Queue depth **rests on an undocumented attribute chain through a `SimpleQueue` the library calls internal** (12.3). It is read through a single guarded helper returning `None` on `AttributeError`/`TypeError`, is recorded as UNAVAILABLE rather than `0` when the chain breaks, and a test pins the chain so a `websockets` upgrade fails loudly. Stall time is the property that actually matters and is measurable regardless |
 
 ### 7.5 The report
 
@@ -696,8 +715,9 @@ advance, `archive.py:466-495`), but archive order would stop meaning wire order
 |---|---|---|---|
 | 0 | append p99 well under inter-arrival time | nothing | ordinary intervals |
 | 1 | transient burst; library inbound buffer absorbs it | nothing; buffer drains | `reader_lag_frames_max` rises |
-| 2 | sustained arrival above append throughput; buffer reaches `max_queue` | library stops reading the socket; TCP receive window closes | `reader_stall_ms_max` rises sharply |
-| 3 | venue reacts to the stalled consumer | connection closes (**assumption to verify**: Kalshi may instead buffer, or disconnect with a specific close code — this has never been observed by this repo) | `disconnects` +1, `disconnected_at` recorded |
+| 2 | sustained arrival above append throughput; buffer passes the `max_queue` high-water mark | library stops reading the socket (`transport.pause_reading`); TCP receive window closes. Nothing is dropped (12.2) | `reader_stall_ms_max` rises sharply |
+| 3a | **our own keepalive fuse fires first** | `pause_reading` stops PONG frames too, and a blocking `append()` stalls the event loop including the keepalive task — so after ~`ping_timeout` (default 20 s) **this client** closes the connection with code **1011 "keepalive ping timeout"** (12.7). Local, deterministic, bounded by a knob we own | `disconnects` +1, `disconnected_at` recorded, close cause `local_keepalive_timeout` (from `ConnectionClosed.sent`) |
+| 3b | venue reacts to the stalled consumer | connection closes (**assumption to verify**: Kalshi may instead buffer, or disconnect with a specific close code — this has never been observed by this repo, and on the installed library rung 3a normally fires before the venue gets a say) | `disconnects` +1, close cause `remote_close` (from `ConnectionClosed.rcvd`) |
 | 4 | collector reconnects, `supersede()`, `get_snapshot` | new generation; books rebuilt from a fresh snapshot | `reconnects` +1, `subscription_generation` +1, and an explicit **observation gap** record |
 | 5 | reconnects exceed `max_reconnects` | session ENDS, `status="capped_reconnects"` | terminal record, non-zero exit |
 
@@ -1001,8 +1021,12 @@ architecture.
    applies TCP backpressure rather than dropping frames. (CP0.)
 2. The library exposes inbound queue depth and/or a drop counter. If not, `reader_lag`
    is unavailable and must be reported as a gap, not as zero. (CP0.)
-3. Kalshi disconnects a stalled consumer rather than buffering indefinitely, and the
-   close code is observable. Never observed by this repo. (CP8 / first overload.)
+3. **Partly resolved by 12.7.** The close code is observable — from
+   `ConnectionClosed.rcvd`/`sent`, not the discouraged `close_code` property (12.5) — and
+   under sustained overload OUR OWN client closes first, at ~`ping_timeout`, with code
+   1011 "keepalive ping timeout" (rung 3a). What remains unverified is only the venue
+   half: whether Kalshi disconnects a stalled consumer rather than buffering
+   indefinitely, and with what code. Never observed by this repo. (CP8 / first overload.)
 4. Two `monotonic_ns()` calls per event are negligible against append cost on the target
    host. (CP5.)
 5. A material fraction of segment-close cost holds the GIL and therefore steals from the
@@ -1301,7 +1325,8 @@ installed library, for the reason stated.** The user's lossless requirement is a
 and sequence integrity remains the only drop detector required.
 
 Four corrections are mandatory before/within CP1. **None is architectural; all are
-factual.**
+factual.** **All four are APPLIED in this document as of CP1** — §6.2 (items 1 and 2),
+§8.2 rung 3a/3b and assumption 3 (item 3), and §7.4 (item 4).
 
 1. **§6.2 — wording.** Replace "an internal queue whose bound is `max_queue`" with the
    high-water-mark description (12.1), and strike the "ASSUMPTION TO VERIFY" paragraph,

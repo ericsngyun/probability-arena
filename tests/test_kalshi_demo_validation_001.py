@@ -294,7 +294,19 @@ class TestAuditModuleIsNotPartOfTheCollector:
         assert "demo" not in kx.WS_HOSTS[kx.ENV_PRODUCTION]
         assert "demo" not in kx.REST_HOSTS[kx.ENV_PRODUCTION]
 
-    def test_still_no_transport_anywhere_in_the_observer(self):
+    def test_the_only_transport_in_the_observer_is_the_one_ws_file(self):
+        """Amended by KALSHI-LIVE-TAPE-COLLECTOR-001 CP1, deliberately.
+
+        Formerly `test_still_no_transport_anywhere_in_the_observer`. That claim
+        was true and worth pinning while the observer had no way to reach a
+        venue; CP1 gives it one, under an approved milestone, in exactly one
+        file. The audit is narrowed rather than dropped, so it now catches the
+        regression that actually matters: a SECOND socket appearing in the
+        package. The three HTTP clients stay banned everywhere, including in the
+        websocket file — the collector has no REST path (§3 non-goals).
+        """
+        socket_holder = "ws_transport.py"
+        holders = []
         for path in sorted(PKG.rglob("*.py")):
             tree = ast.parse(path.read_text())
             for node in ast.walk(tree):
@@ -304,9 +316,13 @@ class TestAuditModuleIsNotPartOfTheCollector:
                     names = {node.module}
                 else:
                     continue
-                for banned in ("httpx", "requests", "aiohttp", "websockets"):
+                for banned in ("httpx", "requests", "aiohttp"):
                     assert not any(n == banned or n.startswith(banned + ".")
                                    for n in names), (path, banned)
+                if any(n == "websockets" or n.startswith("websockets.")
+                       for n in names):
+                    holders.append(path.name)
+        assert set(holders) == {socket_holder}, holders
 
 
 # --- live DEMO REST wire evidence, 2026-08-07 --------------------------------------
