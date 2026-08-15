@@ -824,6 +824,138 @@ is for.** But the consequence is sharp:
 
 ---
 
+## 6. Flow as a point process: does Hawkes transfer?
+
+The brief asks specifically whether marked/multivariate Hawkes self-excitation is
+the right model for Solana swap arrivals, and instructs that the continuous-time
+formalism not be assumed to transfer. This section takes that instruction
+seriously and reaches a **qualified no**.
+
+### 6.1 What would have to be true
+
+A univariate Hawkes process has conditional intensity
+
+$$\lambda(t) = \mu + \sum_{t_i < t} \phi(t - t_i)$$
+
+and its standard maximum-likelihood estimator assumes a **simple** point process:
+event times are distinct, observed on a continuum, and the excitation kernel
+\(\phi\) is resolvable at the lags where it carries mass. The multivariate/marked
+extension — the version actually wanted here, with types {buy, sell, liquidity
+add, liquidity remove} and marks for size — inherits all of those assumptions
+per component and adds cross-excitation terms.
+
+Three of those assumptions are under pressure on Solana.
+
+### 6.2 Pressure point 1 — event times are tied at the slot lattice
+
+**VERIFIED (§4.2):** Solana's slot target is 400 ms, asserted at compile time in
+the SDK. Every transaction in a block shares that block's time. There is no
+sub-slot timestamp available from ordinary block data; the only intra-block
+information is **position in the block**, and §4.1 establishes that position is
+set by a priority-greedy scheduler under account-lock contention, not by arrival
+order.
+
+> **INFERRED, and it is the crux: intra-slot arrival order does not recover
+> arrival TIME.** Two swaps in the same block are simultaneous as far as any
+> observable clock is concerned, and their *order* reflects fee and contention
+> rather than when they were sent. So the finest honest time resolution for
+> Solana swap arrivals is **one slot**, and the data are tied counts on a
+> lattice, not a simple point process.
+
+### 6.3 Pressure point 2 — the interesting kernel mass sits inside one slot
+
+This is the argument that actually decides the question, and it is not about
+data hygiene.
+
+The self-excitation one wants to capture here is **bot response**: a sniper or
+copy-trader reacting to a visible buy. That response is mediated by software
+racing to get into the *next* block, or the same one. So the excitation kernel's
+mass is concentrated at lags of **roughly one slot or less** — precisely the
+region the lattice cannot resolve.
+
+> **A Hawkes fit on slot-stamped Solana data would be estimating a kernel across
+> the exact interval where all of its structure lives, using a clock too coarse
+> to see it.** The fitted decay parameter would be dominated by the
+> discretisation, and one would be measuring the block time, not the behaviour.
+
+This is a different and more serious objection than "ties are inconvenient."
+Ties can be jittered or handled with a tie-aware likelihood. A kernel that is
+entirely sub-resolution cannot be recovered by any amount of estimator care.
+
+### 6.4 Pressure point 3 — batching manufactures clustering that is not behavioural
+
+Hawkes is attractive here because swap arrivals visibly cluster. But block
+batching **produces clustering mechanically**: independent Poisson arrivals,
+observed only through 400 ms batches, appear as bursts at batch boundaries. A
+Hawkes model fitted to slot-aggregated data will happily attribute that
+batching artifact to self-excitation and report a large branching ratio.
+
+> **Any claimed self-excitation on Solana swap data must first be shown to
+> exceed what the batching alone produces.** The correct null is not a
+> homogeneous Poisson process in continuous time; it is a **batched** Poisson
+> process on the slot lattice. We are not aware of published work establishing
+> that comparison for Solana, and §12 records that as an unfilled gap rather
+> than as a claim.
+
+### 6.5 The mitigating fact — for most of our tokens, arrivals are sparse
+
+The above is the case against. Here is the case that it may not bind, and it
+comes from our own numbers.
+
+Ties become material when the expected count per slot is non-negligible. That
+threshold sits at:
+
+| events per slot | events/sec | swaps/day |
+|---|---|---|
+| 0.01 | 0.025 | 2,160 |
+| 0.10 | 0.250 | 21,600 |
+| 1.00 | 2.500 | 216,000 |
+
+Our tokens are nowhere near the top of that table. At a median observed TVL of
+$2,860 and plausible average swap sizes of 1–5% of the quote reserve, a token
+would need **$500,000 of daily volume** to reach even 0.4 events/sec, and at a
+more typical $50,000 of daily volume the rate is **0.008–0.04 events/sec** —
+about **one swap every 25 to 125 seconds**, or one event per 60–300 slots.
+
+> **INFERRED: for the median token at the horizons we observe, slot
+> discretisation is NOT the binding problem — arrivals are far too sparse for
+> ties to matter.** The 400 ms lattice is fine resolution for a process that
+> fires once a minute.
+
+But this rescue is narrower than it looks, and the reason is exactly why one
+wanted Hawkes in the first place:
+
+> **Hawkes is a model of CLUSTERS, and the clusters are precisely where the
+> local rate is high.** A token averaging one swap per minute may fire twenty
+> swaps in four seconds during a burst. The average rate says the lattice is
+> fine; the *conditional* rate during the events of interest says it is not.
+> **§6.3's objection therefore survives §6.5 intact.**
+
+### 6.6 Recommendation
+
+1. **Do not adopt continuous-time Hawkes as the default formalism for Solana
+   swap flow.** It is the right instinct and the wrong clock.
+2. **Prefer a discrete-time model on the slot lattice** — an
+   autoregressive count model over slot-indexed, direction-typed counts
+   (integer-valued autoregression / observation-driven Poisson autoregression).
+   This is honest about the resolution actually available, it handles ties by
+   construction, and it does not require inventing sub-slot times.
+3. **Choose the aggregation window explicitly and defend it.** If the analysis
+   window is one second or one minute rather than one slot, most of §6.2–§6.4
+   dissolves — and so does any hope of capturing bot-reaction dynamics. That is
+   a real trade-off to be made deliberately, not by default.
+4. **Whatever is fitted, benchmark it against a batched-Poisson null** (§6.4),
+   not against a continuous-time Poisson null.
+5. **Recognise that none of this is estimable by us today.** Every input —
+   direction-typed swap counts (C3), signed flow (C4), sizes (C5), liquidity
+   events (C7) — sits at tier **T3**, outside our declared capability boundary
+   (§5.0). **This section is therefore a design conclusion, not a research
+   plan.** It records what we would do, and what we would avoid, if the boundary
+   ever changed — and it deliberately does not motivate changing it, because
+   §11's zero-cost lifecycle studies are the better next move.
+
+---
+
 ## 7. Lifecycle as the dominant regime variable
 
 In equity or FX microstructure, "regime" is a slow-moving nuisance parameter —
