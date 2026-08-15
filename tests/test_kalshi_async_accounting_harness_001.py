@@ -179,6 +179,41 @@ class TestRealSignalReproducesTheSameClass:
         commitment regions, so this arm must PUBLISH every trial AND satisfy
         the consistency identity.
 
+        A8-SIGINT-CLASSIFY-002 -- WHY `published == n_trials` IS NOW A TRUE
+        STATEMENT AND NOT MERELY A GREEN ONE. It used to be neither. The
+        harness scheduled its interrupts by `time.sleep(rng.uniform(0,
+        window_s))`, a wall clock that knew nothing about the submit loop's
+        progress, so which REGION an interrupt landed in was a race: measured
+        idle, the loop ran 2.325 s and the last bomb fired at 1.142 s, and
+        that ~1.18 s of unearned margin is the only reason this assertion
+        passed. Erode it (machine load) and interrupts land in `close()`
+        instead -- specifically in the UN-DEFERRED, READ-ONLY reconciliation
+        at `segment.py:2253`/`:2259`, which re-reads and re-verifies all
+        20,000 already-fsynced records and costs ~1.2 s of the 1.29 s
+        `close()`. `close.__doc__` (`segment.py:2121-2125`) explicitly
+        promises that outcome: "a crash anywhere before that leaves a segment
+        with no manifest -- recoverable and uncommitted, never falsely
+        CLOSED". Post-mortem of such a trial confirmed it exactly: 20,000
+        records on disk, `verify_chain` ok, ordinals 0..19999 contiguous,
+        accounting clean, no manifest. So the OLD form of this assertion
+        demanded a publication the contract never promised, and got it only
+        by a timing coincidence.
+
+        The bomber now fires on SUBMIT-LOOP PROGRESS -- each interrupt is
+        pinned to a submit index drawn from the same seeded rng and delivered
+        when the loop reaches it. Every interrupt is therefore guaranteed to
+        land in the submit burst, which is the region whose deferral this
+        assertion is actually about, and `bombs_missed` is asserted zero so a
+        bomb that escaped the region is a loud failure rather than a silent
+        pass. That is strictly stronger than what it replaces: previously an
+        unknown fraction of bombs missed `submit()` altogether and the trial
+        could not say so.
+
+        NOTE ON THE WORD "unpublishable" in the assertion messages below: it
+        is inherited and imprecise. A trial that does not publish leaves its
+        records intact, chain-verified and RECOVERABLE, merely uncommitted --
+        not destroyed. The property being guarded is real; the noun is wrong.
+
         `asyncexc` is `PyThreadState_SetAsyncExc`, a ctypes-only injection
         CPython's own documentation calls unsafe. It can land inside
         CPython's internal machinery, and nothing in `segment.py` can
@@ -200,6 +235,7 @@ class TestRealSignalReproducesTheSameClass:
         n_hang = 0
         violations = []
         published = 0
+        usable = []
         for seed in range(REAL_FAULT_TRIALS):
             r = _run_fault_trial(target_="segment", seed=seed, n_interrupts=2,
                                  mode=mode, window_s=0.6, tmp_path=tmp_path)
@@ -210,6 +246,7 @@ class TestRealSignalReproducesTheSameClass:
             if r.get("top_level_fault"):
                 continue
             n_trials += 1
+            usable.append(r)
             if r["close_ok"]:
                 published += 1
             else:
@@ -239,6 +276,18 @@ class TestRealSignalReproducesTheSameClass:
                   f"post_close={ex['post_close_accounting']} "
                   f"state={ex['state']!r}")
         if mode == "sigint":
+            # A8-SIGINT-CLASSIFY-002: the PRECONDITION of the publication
+            # assertion below -- every interrupt actually landed in the submit
+            # burst. Without this, "all trials published" is satisfiable by a
+            # campaign whose bombs all missed the region under test, which is
+            # exactly how the wall-clock scheduler could pass while testing
+            # nothing. Asserted, not merely printed.
+            missed = [(r["seed"], r["bomb_targets"], r["fired_at_index"])
+                      for r in usable if r.get("bombs_missed")]
+            assert not missed, (
+                "an interrupt was never delivered into the submit loop, so "
+                "this campaign did not exercise the region its publication "
+                f"assertion is about: {missed}")
             assert not violations, (
                 f"{len(violations)}/{n_trials} trials left MORE records "
                 "readable on disk than the writer booked as written -- the "

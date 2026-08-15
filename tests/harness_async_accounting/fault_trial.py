@@ -73,7 +73,7 @@ def deliver_asyncexc(tid: int, exc_type) -> None:
         ctypes.pythonapi.PyThreadState_SetAsyncExc(ctypes.c_ulong(tid), None)
 
 
-def run_segment(root: Path, seg_id: str, n_submits: int) -> tuple:
+def run_segment(root: Path, seg_id: str, n_submits: int, progress: list) -> tuple:
     ah.initialize_archive(root, ENV, archive_identity="kalshi-realtime")
     w = sg.SegmentWriter(root, environment=ENV, segment_id=seg_id,
                          partition_identity="p", commit_to_head=False)
@@ -81,6 +81,11 @@ def run_segment(root: Path, seg_id: str, n_submits: int) -> tuple:
     def submit_loop():
         caught = 0
         for i in range(n_submits):
+            # A8-SIGINT-CLASSIFY-002: publish loop PROGRESS so the bomber can
+            # gate on it instead of on a wall clock. A single store into a
+            # preallocated list slot is one bytecode under the GIL; it costs
+            # nothing measurable and cannot itself be torn.
+            progress[0] = i
             try:
                 w.submit(fields(i))
             except BaseException:
@@ -90,13 +95,14 @@ def run_segment(root: Path, seg_id: str, n_submits: int) -> tuple:
     return w, submit_loop, w.accounting
 
 
-def run_shim(variant: str, n_submits: int) -> tuple:
+def run_shim(variant: str, n_submits: int, progress: list) -> tuple:
     cls = rs.VARIANTS[variant]
     s = cls()
 
     def submit_loop():
         caught = 0
         for i in range(n_submits):
+            progress[0] = i
             try:
                 s.submit(i)
             except BaseException:
@@ -117,13 +123,13 @@ def main() -> int:
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--mode", choices=["sigint", "asyncexc"], default="sigint")
     ap.add_argument("--window-s", type=float, default=0.6,
-                    help="each interrupt's delay is drawn uniformly from "
-                    "[0, window-s]; calibrated so a --n-submits campaign's "
-                    "wall-clock duration comfortably covers the window a "
-                    "background bomber thread needs to actually get "
-                    "scheduled and land inside the submit loop (measured: a "
-                    "tight sub-millisecond submit loop starves a daemon "
-                    "bomber thread of a scheduling slot entirely)")
+                    help="RETAINED FOR CLI COMPATIBILITY, NO LONGER SCHEDULES "
+                    "ANYTHING. Interrupts used to be scheduled by "
+                    "`time.sleep(rng.uniform(0, window_s))`, i.e. by a wall "
+                    "clock that knew nothing about how far the submit loop "
+                    "had actually got. See A8-SIGINT-CLASSIFY-002 and "
+                    "`bomber()` below for why that was replaced by "
+                    "progress-gated delivery.")
     args = ap.parse_args()
     try:
         return _run(args)
@@ -141,13 +147,16 @@ def _run(args) -> int:
     rng = random.Random(args.seed)
     caught_holder = {}
 
+    progress = [-1]          # last submit index the loop has STARTED
+    loop_done = threading.Event()
+
     if args.target == "segment":
         root = Path(args.root)
         obj, submit_loop, accounting = run_segment(root, args.segment_id,
-                                                    args.n_submits)
+                                                    args.n_submits, progress)
     elif args.target.startswith("shim:"):
         obj, submit_loop, accounting = run_shim(args.target.split(":", 1)[1],
-                                                 args.n_submits)
+                                                 args.n_submits, progress)
     else:
         raise SystemExit(f"unknown --target {args.target!r}")
 
@@ -166,14 +175,66 @@ def _run(args) -> int:
     main_tid = threading.get_ident()
     fired_at = []
 
+    # A8-SIGINT-CLASSIFY-002: PROGRESS-GATED DELIVERY, NOT WALL-CLOCK.
+    #
+    # The bomber used to `time.sleep(rng.uniform(0, window_s))`. That schedule
+    # is a pure function of a wall clock and knows nothing about how far the
+    # submit loop has actually got, so whether an interrupt landed in the
+    # region under test at all was a RACE between the bomber's sleeps and the
+    # loop's duration. Measured on idle hardware: the loop ran 2.325 s and the
+    # latest bomb fired at 1.142 s -- ~1.18 s of unearned margin. Erode that
+    # margin (machine load, a faster loop, a wider window) and interrupts
+    # start landing in `close()` instead, where they abort the un-deferred
+    # read-only reconciliation and the trial legitimately does not publish.
+    # Measured calibration curve, idle, varying ONLY window_s:
+    #     0.6 -> 5/5 published   0.9 -> 6/6   1.2 -> 5/6   1.8 -> 4/6
+    # -- publication falling off exactly as the bomb window crosses the loop's
+    # 2.325 s duration. That is a property of the harness's clock, not of the
+    # writer, and it is what made this test flaky in BOTH directions.
+    #
+    # Each interrupt is now pinned to a SUBMIT INDEX drawn from the same
+    # seeded `rng`, and the bomber waits for the loop to actually reach it.
+    # This is strictly stronger than the wall clock it replaces: it also
+    # closes the false negative the comment above warns about -- previously an
+    # unknown fraction of bombs missed `submit()` entirely and the trial had
+    # no way to say so, which is precisely how a fault campaign silently
+    # stops testing anything. `bombs_missed` is now reported, so a miss is a
+    # visible datum rather than an invisible pass.
+    #
+    # Targets are confined to [5%, 85%] of the loop. The 15% tail is RUNWAY:
+    # `os.kill` only sets a flag, and CPython runs the handler at the main
+    # thread's next bytecode-boundary check, so the handler lands a few
+    # bytecodes after the target -- and, if it lands inside `submit()`'s
+    # deferred commitment region, at that region's exit. 3,000 remaining
+    # iterations is many orders of magnitude more runway than either needs,
+    # and it is denominated in LOOP PROGRESS rather than seconds, so machine
+    # load stretches the runway and the delivery equally. That is the whole
+    # point: the margin can no longer be eroded by load.
+    lo = max(1, int(0.05 * args.n_submits))
+    hi = max(lo + 1, int(0.85 * args.n_submits))
+    bomb_targets = sorted(rng.randrange(lo, hi) for _ in range(args.n_interrupts))
+    fired_at_index = []
+    bombs_missed = 0
+
     def bomber():
-        for _ in range(args.n_interrupts):
-            time.sleep(rng.uniform(0.0, args.window_s))
+        nonlocal bombs_missed
+        for target in bomb_targets:
+            while progress[0] < target:
+                if loop_done.is_set():
+                    # The loop finished before reaching this target. Under
+                    # progress gating this should be unreachable (targets are
+                    # capped at 85% of the loop); record it rather than fire
+                    # a bomb into `close()` and call the result a finding.
+                    bombs_missed += 1
+                    return
+                time.sleep(0.0002)
+            at = progress[0]
             if args.mode == "sigint":
                 os.kill(os.getpid(), signal.SIGINT)
             else:
                 deliver_asyncexc(main_tid, KeyboardInterrupt)
             fired_at.append(time.monotonic())
+            fired_at_index.append(at)
 
     bomb_thread = threading.Thread(target=bomber, name="bomber", daemon=True)
     bomb_thread.start()
@@ -186,7 +247,13 @@ def _run(args) -> int:
     # terminates the whole process. Everything from here on is wrapped so
     # such a fault is CLASSIFIED (`late_fault`) instead of losing the trial.
     late_fault = None
-    caught_holder["caught"] = submit_loop()
+    try:
+        caught_holder["caught"] = submit_loop()
+    finally:
+        # Release any bomber still waiting on a target the loop will now never
+        # reach, so it records a miss instead of stalling the trial. In the
+        # `finally` so an interrupt escaping the loop cannot strand it.
+        loop_done.set()
     pre_close = accounting.to_dict()
 
     close_ok = True
@@ -256,6 +323,15 @@ def _run(args) -> int:
         "n_interrupts": args.n_interrupts,
         "seed": args.seed,
         "n_fired": len(fired_at),
+        # A8-SIGINT-CLASSIFY-002 diagnostics: which submit indices each
+        # interrupt was AIMED at (deterministic in `--seed`) and where the
+        # loop actually was when it was delivered. A future failure is then
+        # diagnosable from the trial's own output -- "did the bomb land in the
+        # region under test at all?" is answerable without re-deriving the
+        # timing study that produced this design.
+        "bomb_targets": bomb_targets,
+        "fired_at_index": fired_at_index,
+        "bombs_missed": bombs_missed,
         "caught_in_loop": caught_holder.get("caught"),
         "late_fault": late_fault,
         "pre_close_accounting": pre_close,
