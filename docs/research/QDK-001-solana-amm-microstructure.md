@@ -1102,6 +1102,208 @@ point. It currently favours "we stopped observing" over "the tokens died."
 
 ---
 
+## 9. What is genuinely timeable — an honest assessment
+
+This domain is saturated with unfalsifiable claims, so this section applies a
+fixed four-part test to each and reports the results without softening them. A
+pattern is tradeable only if it (a) **exists**, (b) is **predictable** at a
+usable horizon, (c) **survives costs**, and (d) **survives competition**.
+
+Most candidates fail at (c), and the reason is arithmetic rather than opinion.
+
+### 9.1 The cost hurdle comes first, because it eliminates most of the field
+
+From §2.5(b), the round-trip microstructure cost along the *measured* median
+decay path:
+
+| clip | round-trip cost | ⇒ minimum gross edge to break even |
+|---|---|---|
+| $10 | 1.04% | **1.04%** |
+| $50 | 3.16% | **3.16%** |
+| $150 | 8.11% | **8.11%** |
+| $500 | 22.23% | **22.23%** |
+
+> **Any claimed pattern must predict a move larger than this, reliably, after
+> the fact, out of sample.** Note the hurdle is *not* a fixed transaction cost
+> to be amortised — it scales with clip size, so it cannot be outrun by trading
+> bigger. It is the reverse: **trading bigger makes the hurdle worse faster than
+> it makes the profit better.**
+
+### 9.2 The capacity arithmetic, which is the real verdict
+
+Take the strongest version of the opportunity: **all 170 eligible births per 25
+hours**, every one traded, along the median decay path.
+
+**Net dollars per day at various assumed true gross edges:**
+
+| clip | deployed/day | 5% edge | 10% edge | 20% edge | 50% edge |
+|---|---|---|---|---|---|
+| $10 | $1,700 | $67 | $152 | $322 | $832 |
+| $50 | $8,500 | $156 | $581 | $1,431 | $3,981 |
+| $150 | $25,500 | **−$793** | $482 | $3,032 | $10,682 |
+| $500 | $85,000 | **−$14,646** | **−$10,396** | **−$1,896** | $23,604 |
+
+Three things fall out, and they matter more than any signal question:
+
+1. **There is an interior optimum, and it is small.** Around $50–150 per token.
+   Below it you leave money on the table; above it the decay-asymmetry cost
+   overwhelms the edge. **At a 10% gross edge, the $500 clip loses $10,396/day
+   while the $50 clip makes $581/day** — same signal, same population, opposite
+   sign, purely from sizing.
+2. **A $500 clip is unprofitable even at a 20% gross edge.** This is the
+   quantitative vindication of `SOLANA-ROUTE-OBSERVATION-001` §4.1's decision to
+   cap the ladder at $500 and of its instinct that V1's $2,000 rung was not a
+   quote at all.
+3. **The whole opportunity is small.** Even a *10% sustained gross edge* — which
+   would be extraordinary — yields several hundred dollars a day at the optimal
+   clip. That is a real number, but it is not a number that justifies unbounded
+   engineering, and it should be stated before, not after, the work is done.
+
+> **The honest headline: the binding constraint on this asset class is not
+> signal, it is CAPACITY. The pools are too thin to absorb size, and the
+> population is too small to compensate with breadth.** Anyone reasoning about
+> Solana memecoins should establish this arithmetic first, because it determines
+> whether any signal question is worth asking.
+
+### 9.3 The claims, assessed
+
+| # | claim | exists? | predictable? | survives cost? | verdict |
+|---|---|---|---|---|---|
+| 1 | Sniping the launch block | **yes** | n/a — it is a race | yes, if you win | **REAL, but not a statistical edge** — see §9.4 |
+| 2 | Bonding-curve graduation is a forecastable event | **yes, VERIFIED** | **yes** — deterministic in curve progress | plausible | **MOST PROMISING** — §9.5 |
+| 3 | Liquidity decay / the birth-to-outcome sort is predictable | **yes, measured** | **open, testable today** | depends on effect size | **BEST NEXT STUDY** (S-3) |
+| 4 | Holder concentration predicts failure | plausible mechanism (§8.4) | open, testable today | plausible | **WORTH TESTING** |
+| 5 | Short-horizon price momentum / mean reversion | unclear | doubtful | **no** | **REJECT** — §9.6 |
+| 6 | Volume spikes predict price moves | **partly mechanical** | contaminated | no | **REJECT as stated** — §9.6 |
+| 7 | Sniper/bundler percentages predict failure | vendor-defined | open | plausible | **TEST, but audit the labels first** (E3) |
+| 8 | Social/boost attention predicts moves | unclear | unclear | doubtful | **LOW PRIORITY** |
+| 9 | Following profitable creator/wallet clusters | plausible | **unbuilt** | plausible | **HIGHEST-VALUE UNBUILT** — §9.7 |
+| 10 | Avoiding sandwiches is alpha | it is a cost, not a signal | n/a | n/a | **CATEGORY ERROR** — §4.3 |
+
+### 9.4 Sniping: real, and a worse trade than it looks
+
+Launch sniping demonstrably exists and is industrially contested. Two facts from
+this document make it a worse proposition than its reputation suggests, both
+**DERIVED from §3**:
+
+- **The upside is capped at exactly 14.6958×**, and only for a token that
+  completes its curve. That is a hard ceiling (§3.2), not a distribution with a
+  fat right tail. Any pitch describing 100× from a curve entry is describing
+  post-graduation price action, which is a different and much less certain bet.
+- **The launch instant is the WORST execution point on the entire curve.** §3.3
+  shows a $150 buy costs 4.40% at 0% progress and 2.09% at 99%. Impact falls
+  monotonically as the curve fills. **The sniper pays the highest impact on the
+  curve for the privilege of being early.**
+
+It is a latency and infrastructure contest against well-capitalised specialists,
+with a capped payoff and the worst fill on the curve. **It is not a statistical
+edge and it is not what this project is built to do.**
+
+### 9.5 Graduation: the most genuinely timeable event in the asset class
+
+This is the one place where the four-part test comes out clean, and it is worth
+stating why.
+
+- **It exists and is exactly defined.** VERIFIED (§3.2): completion fires when
+  `real_token_reserves == 0`. It is not a fuzzy regime label; it is a program
+  state transition.
+- **It is predictable in a strong sense.** Curve progress is a deterministic
+  function of tokens sold. Given progress and recent fill rate, the *time* to
+  graduation is forecastable in a way essentially nothing else in this document
+  is.
+- **It is a discrete, dated, structural event** — liquidity migrates to
+  PumpSwap, LP tokens are burnt (§3.4) — which is exactly the shape of thing this
+  project's forecasting machinery is built around, as opposed to a continuous
+  price prediction.
+- **Depth is best there.** §3.3: the curve is at its deepest near graduation
+  (2.09% for $150 at 99% progress), so it is also the cheapest point on the
+  lifecycle at which to transact.
+
+> **If one thing in this document deserves follow-up capability work, it is
+> observing bonding-curve progress (feature F3).** It converts the problem from
+> "predict a price" into "forecast a dated state transition," which is a
+> qualitatively easier and better-posed question, and it is the only candidate
+> here where predictability, depth, and event structure all point the same way.
+>
+> **Two honest caveats.** F3 requires reading curve state, which is a capability
+> we do not currently have and which would need its own scoped, approved
+> milestone — this document does not authorise it and does not assume it.
+> And "the event is forecastable" is **not** the same as "the price move around
+> it is forecastable"; the latter is unestablished and should not be assumed
+> from the former.
+
+### 9.6 What to reject, and why the rejection is stronger than usual
+
+**Claims 5 and 6 — short-horizon momentum and volume-spike signals — should be
+rejected, and §2.6 gives a mechanical reason rather than an empirical one.**
+
+At our pool sizes, the provider-reported price change *is largely the impact
+footprint of individual swaps*. A $500 buy into the median pool moves the
+reported price 82% (§2.6). So:
+
+- **`price_change_5m` and `volume_5m_usd` are not two independent observations.**
+  They are two views of the same swaps, mechanically linked through the curve.
+  Any regression of one on the other recovers the AMM formula, not a behavioural
+  relationship.
+- **A "volume spike predicts a price move" finding is very nearly guaranteed a
+  priori**, because on a constant-product curve volume *is* price movement. It
+  will look like a strong result and mean nothing.
+
+> **This is the highest-risk analytical trap in the whole domain, because the
+> spurious result is large, stable, out-of-sample-robust, and completely
+> useless.** It will survive every validation a naive pipeline applies. The only
+> defence is knowing the mechanism in advance — which is the entire reason §2
+> is in this document.
+
+### 9.7 The highest-value unbuilt feature
+
+`app/models.py` carries `repeated_cohort_ref` and `known_creator_cluster_ref` on
+`CryptoTokenActorObservation`, explicitly annotated as "placeholders for later
+cross-token cohort analysis (no behavior today)."
+
+**These are the most valuable unbuilt things in the schema**, for a reason
+specific to this asset class:
+
+> **Individual memecoins have no history — that is the defining difficulty. But
+> the PEOPLE who create and trade them do.** A creator address that has launched
+> eleven tokens has a track record even though each of its tokens has none. This
+> is the only mechanism available for transferring information *across* the
+> lifecycle barrier that makes every other prediction problem hard.
+
+It is also, unlike almost everything in §5's Block C, **buildable from public
+addresses we already persist** (`CryptoTokenBirthEvent.creator_address`), and it
+requires no new provider and no per-swap feed.
+
+*The caveats, because this is the claim most likely to be over-sold:*
+creator-address reuse may be low (an operator who rotates addresses defeats it
+entirely, and any operator sophisticated enough to be worth tracking has an
+obvious incentive to rotate); the repository has no measurement of reuse rate;
+and clustering public addresses is a technique whose reliability degrades exactly
+against the adversaries it most wants to catch. **The first step is not to build
+the feature — it is the one-line measurement of how often
+`creator_address` repeats across our 411 births/25h.** If reuse is rare, the
+whole line of work is closed cheaply and that is a good outcome.
+
+### 9.8 The summary judgement
+
+> 1. **Capacity, not signal, is the binding constraint** (§9.2). Establish the
+>    cost arithmetic before asking any predictive question.
+> 2. **The clip size is $50–150 and the optimum is interior.** Bigger is
+>    strictly worse, and the arithmetic changes sign between $150 and $500.
+> 3. **The most timeable thing is graduation** (§9.5), because it is a dated
+>    structural event rather than a price — but observing it needs capability we
+>    do not have.
+> 4. **The best study we can run today costs nothing**: the birth-to-outcome
+>    sort, S-3 (§11.2), on data already in the database.
+> 5. **Reject short-horizon price/volume signals on mechanical grounds** (§9.6),
+>    before wasting a pipeline on them.
+> 6. **The domain's own folklore is systematically biased toward the two things
+>    that are least accessible** — sniping and MEV — and away from the two that
+>    are most measurable — decay and concentration. That misallocation is itself
+>    the opportunity, such as it is.
+
+---
+
 ## 10. DISCARD list: classical CLOB constructs that do not transfer
 
 This section exists because the failure mode it prevents is specific and
