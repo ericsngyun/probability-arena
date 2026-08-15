@@ -313,3 +313,38 @@ if m >= 3:
 
 open(OUT, "w").write("\n".join(L) + "\n")
 print(f"\nwrote {OUT}")
+
+# Markdown cell table, emitted rather than transcribed so the result document
+# cannot drift from the computation.
+MD = os.path.join(HERE, "e3_cell_table.md")
+T = ["| slice | cell | n_obs (tr/ho) | n_events (tr/ho) | TRAIN ΔS [95% CI] | "
+     "HOLDOUT ΔS [CI] | BH adj p (ho) | verdict |",
+     "|---|---|---|---|---|---|---|---|"]
+def esc(s: str) -> str:
+    """Cell labels contain '|' (the |p-q| slice); escape it or the table breaks."""
+    return s.replace("|", "\\|")
+
+
+for c in cells:
+    tr, ho = c["tr"], c["ho"]
+    nobs = f"{tr['n_obs']}/{ho['n_obs']}"
+    nev = f"{tr['n_events']}/{ho['n_events']}"
+    sl, cl = esc(c["slice"]), esc(c["cell"])
+    if not c["evaluable"]:
+        T.append(f"| {sl} | {cl} | {nobs} | {nev} | — | — | — | "
+                 f"**underpowered** |")
+        continue
+    cit, cih = c["ci_train"], c["ci_holdout"]
+    if any(c is x for x in promoted):
+        verdict = "**PROMOTED**"
+    elif c["bh_holdout"]:
+        verdict = "market better (BH-signif, ΔS<0)"
+    else:
+        verdict = "no effect"
+    T.append(
+        f"| {sl} | {cl} | {nobs} | {nev} | "
+        f"{tr['est']:+.5f} [{cit[0]:+.5f}, {cit[1]:+.5f}] | "
+        f"{ho['est']:+.5f} [{cih[0]:+.5f}, {cih[1]:+.5f}] | "
+        f"{c['adj_holdout']:.4f} | {verdict} |")
+open(MD, "w").write("\n".join(T) + "\n")
+print(f"wrote {MD}")
