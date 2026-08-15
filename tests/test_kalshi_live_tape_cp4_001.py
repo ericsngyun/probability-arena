@@ -919,6 +919,102 @@ class TestTheNullLane:
 # ---------------------------------------------------------------------------------
 
 
+class TestTheOrchestratorInterface:
+    """The contract CP3 wires to, pinned so it cannot drift silently.
+
+    CP4 owns this file and CP3 owns `collector.py`; nothing wires the two
+    together yet. A signature change here would otherwise show up as a
+    `TypeError` inside a live session, which is the worst possible place for it.
+    """
+
+    def test_the_documented_call_sequence_works_end_to_end(self, tmp_path):
+        """Exactly the snippet in the module docstring, against fakes."""
+        clock = FakeClock()
+
+        class FakeTransportCounters:
+            frames_malformed = 2
+            reader_stall_ms_max = 41
+            bytes_received = 0
+
+            def snapshot(self):
+                return {"frames_malformed": self.frames_malformed,
+                        "reader_stall_ms_max": self.reader_stall_ms_max,
+                        "bytes_received": self.bytes_received}
+
+        counters = FakeTransportCounters()
+        metrics = CollectorMetrics(environment="demo",
+                                   markets_subscribed=len(TICKERS))
+        metrics.bind_reader_lag(lambda: 6)
+        metrics.bind_transport_counters(counters.snapshot)
+        metrics.bind_archive_state(
+            lambda: {"rotation_failures": 0, "closer_outstanding": 1})
+        flusher = _flusher(metrics, tmp_path, clock)
+
+        previous_path = None
+        for index in range(50):
+            clock.advance_ns(200_000)
+            counters.bytes_received += 480
+            metrics.on_frame(clock.ns, 480)
+            path = f"segment-{index // 25}"
+            metrics.on_append(140_000, rotated=path != previous_path)
+            previous_path = path
+        metrics.on_append_rejected(60_000)
+        metrics.on_sequence_fault("gap")
+        metrics.on_disconnect()
+        metrics.on_reconnect(3)
+        metrics.on_segment_closed(1_500_000_000)
+        flusher._sample()
+        assert flusher.stop() is True
+
+        record = _read(flusher.path)[0]
+        assert record["events_received"] == 50
+        assert record["events_archived"] == 50
+        assert record["events_rejected"] == 1
+        assert record["frames_malformed"] == 2
+        assert record["rotations_started"] == 2
+        assert record["reader_lag_frames_max"] == 6
+        assert record["reader_stall_ms_max"] == 41
+        assert record["closer_outstanding_max"] == 1
+        assert record["segments_closed"] == 1
+        assert record["subscription_generation"] == 3
+        assert record["sequence_gaps"] == 1
+        assert record["disconnects"] == 1 and record["reconnects"] == 1
+        assert record["event_bytes_total"] == 50 * 480
+        assert metrics.observe_errors == 0
+
+    def test_the_transport_snapshot_keys_this_module_reads_still_exist(self):
+        """`TransportCounters` is CP1's, and this module reads two of its
+        fields. If CP1 renames one, the metric silently becomes 0 — so the
+        coupling is asserted rather than assumed."""
+        from app.realtime.ws_transport import TransportCounters
+
+        snapshot = TransportCounters().snapshot()
+        for field in ("frames_malformed", "reader_stall_ms_max",
+                      "bytes_received"):
+            assert field in snapshot, field
+
+    def test_every_method_the_docstring_names_exists_on_both_lanes(self):
+        import app.realtime.collector_metrics as module
+
+        documented = ("on_frame", "on_append", "on_append_rejected",
+                      "on_frame_malformed", "on_sequence_fault",
+                      "on_disconnect", "on_reconnect", "on_segment_closed",
+                      "bind_reader_lag", "bind_transport_counters",
+                      "bind_archive_state")
+        for name in documented:
+            assert name in module.__doc__, f"{name} is not documented"
+            assert callable(getattr(CollectorMetrics, name)), name
+            assert callable(getattr(NULL_METRICS, name)), name
+
+    def test_this_module_never_imports_the_orchestrator(self):
+        """Dependency direction (§6.1) is strictly downward: `collector.py`
+        imports this, never the reverse."""
+        source = Path("app/realtime/collector_metrics.py").read_text()
+        assert "import collector" not in source
+        assert "from app.realtime.collector" not in source
+        assert "ws_transport" not in source.split('"""')[2]  # not in code
+
+
 class TestTheIntervalWriter:
 
     def test_the_file_is_beside_the_shared_sink_not_inside_it(self, tmp_path,

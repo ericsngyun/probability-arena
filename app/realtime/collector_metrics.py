@@ -51,8 +51,9 @@ validator, or its file.** §5.4 established that `sqlite-writes.jsonl` is the
 right mechanism and the wrong home, for four reasons that all still hold: the
 field set is closed and SQLite-shaped with nowhere to put a rate, a size or a
 latency percentile; the model is one event per PASS and a collector session is
-hours long; `emit_writer_pass` derives `writer_class` from `run_source` and can
-never emit `continuous_daemon`; and the file has no rotation until 001E while
+hours long; `emit_writer_pass` derives `writer_class` from how the pass was
+launched and can never emit `continuous_daemon`, so a long-running collector
+would be mislabelled; and the file has no rotation until 001E while
 `read_events` slurps it whole (420 MB peak heap on 60 MB).
 
 Growing `ALLOWED_FIELDS` by twelve rate/size/latency fields would contradict the
@@ -71,6 +72,45 @@ one `emit_writer_pass` session record — needs `kalshi_live_tape` in that close
 enum, which §6.6 flags as an architectural change and §11 Q5 puts to Eric. That
 is a session-level concern belonging to the orchestrator, not to the interval
 lane, and it is left undone here deliberately rather than done silently.
+
+THE INTERFACE THE ORCHESTRATOR IS EXPECTED TO CALL (CP3 wires this; CP4 does not)
+--------------------------------------------------------------------------------
+
+Every method below is safe to call unconditionally, is a no-op on
+`NULL_METRICS`, and cannot raise. Nothing in this module reaches into the
+collector, the transport or the archive — the orchestrator supplies the three
+`bind_*` sources and the two per-frame facts, and this file knows nothing else
+about any of them.
+
+    metrics = CollectorMetrics(environment=cfg.environment,
+                               markets_subscribed=len(cfg.market_tickers))
+    metrics.bind_reader_lag(transport.queue_depth)
+    metrics.bind_transport_counters(transport.counters.snapshot)
+    metrics.bind_archive_state(lambda: {
+        "rotation_failures": len(archive.rotation_failures),
+        "closer_outstanding": archive._closer.outstanding()})
+    flusher = MetricsFlusher(metrics)      # start() in the session's `try`,
+    flusher.start()                        # stop() in its `finally`
+
+    # per frame, step 5 of §6.3 — after `archive.append()` has returned
+    metrics.on_frame(received_mono_ns, wire_bytes)
+    metrics.on_append(end_ns - start_ns, rotated=path != previous_path)
+
+`received_mono_ns` is the `time.monotonic_ns()` the loop already took at step 1,
+reused rather than re-read. `wire_bytes` is the delta of
+`transport.counters.bytes_received` across the yield, which is that frame's
+payload length. `rotated` is `True` when the `Path` returned by
+`archive.append()` differs from the previous one — the only rotation signal
+available without reading a private archive attribute, and it is observed on the
+producer thread where the rotation cost is actually paid.
+
+The remaining calls are per-event-class, not per-frame:
+`on_append_rejected(elapsed_ns)` for a typed `ArchiveError`,
+`on_frame_malformed()` (only when no transport source is bound — the transport
+is otherwise the single authority), `on_sequence_fault("gap"|"regression"|
+"duplicate")`, `on_disconnect()`, `on_reconnect(generation)`, and
+`on_segment_closed(elapsed_ns)` from an `_on_rotation_closed` hook **on the
+closer thread**.
 
 SCHEMA DELTAS FROM §7.3, AND WHY EACH EXISTS
 --------------------------------------------
