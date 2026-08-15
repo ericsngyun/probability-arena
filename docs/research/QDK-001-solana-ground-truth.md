@@ -594,15 +594,283 @@ Notes that keep this honest:
 
 ## 6. Link 4 — retention and availability on free endpoints
 
-*(pending)*
+### 6.1 The architecture (VERIFIED)
+
+Historical transaction reads are not a core validator function; they are two
+opt-in features on an RPC node, and their exact help text is worth having:
+
+> `--enable-rpc-transaction-history` — "Enable historical transaction info over
+> JSON RPC, including the 'getConfirmedBlock' API. This will cause an increase
+> in disk usage and IOPS"
+>
+> `--enable-rpc-bigtable-ledger-storage` (`.requires("enable_rpc_transaction_history")`)
+> — "Fetch historical transaction info from a BigTable instance **as a fallback
+> to local ledger data**"
+>
+> — Agave, `validator/src/cli.rs`
+
+So a node answers `getTransaction` from **local ledger first**, and only reaches
+a BigTable archive if the operator configured one. Local ledger extent is
+governed by `--limit-ledger-size` ("specify how many blocks to store on the RPC
+node" — Anza operations docs) and is trimmed by the ledger cleanup service.
+
+The error codes make the two tiers visible (**UNVERIFIED** in this session —
+read from a secondary rendering of `rpc_custom_error.rs`, not from the primary
+source):
+
+| code | meaning |
+|---|---|
+| `-32001` | `BlockCleanedUp` — the node had it and purged it |
+| `-32004` | `BlockNotAvailable` |
+| `-32007` | `SlotSkipped` |
+| `-32009` | `LongTermStorageSlotSkipped` — "Slot XXX was skipped, or missing in long-term storage" |
+
+`-32009` existing at all is the tell that a BigTable fallback is a real,
+separate tier: it is the *archive's* miss, not the node's.
+
+### 6.2 How far back a free public endpoint serves — the honest answer
+
+**Not documented, and therefore not assertable.** The official cluster reference
+documents rate limits for `api.mainnet-beta.solana.com` in detail (§7) and says
+**nothing** about retention. It does say:
+
+> "The public RPC endpoints are not intended for production applications." /
+> "The public services are subject to abuse and rate limits may change without
+> prior notice."
+
+Third-party sources put practical public-endpoint history at **roughly a few
+days** (commonly repeated as "3–4 days"), which is consistent with a local
+ledger sized by disk rather than by time. That figure is **UNVERIFIED** and this
+document does not adopt it as a number. What *is* structurally certain:
+
+1. Retention is an **operator configuration**, not a protocol guarantee, so it
+   can change without notice and differs per node behind the same hostname.
+2. `getTransaction` returns **`null`** for a pruned transaction, which is
+   indistinguishable from *not found* and from *not yet confirmed* (VERIFIED).
+   **A backfill collector cannot tell "this swap did not exist" from "this node
+   forgot it."** For a corpus whose value depends on knowing its own
+   denominator, that ambiguity is disqualifying on its own.
+3. `getFirstAvailableBlock` — "Returns the lowest confirmed block slot still
+   available in this node's ledger" (VERIFIED) — is the exact probe, and it is
+   free. Any design touching history must call it and record the answer per
+   pass, because it is the only self-reported statement of the horizon.
+
+### 6.3 What an archival node changes, and why it is out of scope
+
+An archival node (BigTable-backed or an Old-Faithful-style archive) extends
+`getTransaction` and `getBlock` to the full chain history. It changes nothing
+about the *schema* — the same `meta` fields come back — only the *reach*.
+
+**Archival access is a paid product.** Under
+`docs/SAFETY_BOUNDARIES.md` SAFETY-BOUNDARY-ROUTE-QUOTE-001, "Neither mode may
+use a **paid RPC endpoint** […] — free public endpoints only", and the
+amendment's own instruction for this situation is explicit: *"the correct
+outcome is no quote, reported honestly, never a purchase."* So:
+
+> **A retrospective backfill of historical swaps is NOT OBTAINABLE within the
+> boundary.** Not "expensive". Not obtainable.
+
+### 6.4 The forward-collected corpus makes the problem disappear — say so plainly
+
+**Yes. Completely.** This is the decisive point of §6.
+
+A prospective collector that reads slots shortly after they are produced never
+touches the retention horizon at all. It is always reading data that is minutes
+old on a node whose local ledger holds days. Every §6 hazard evaporates:
+
+| hazard | prospective collector |
+|---|---|
+| pruning | reading minutes-old data, orders of magnitude inside any plausible horizon |
+| `null` ambiguity | a `null` at t+2min means *not confirmed yet* — retryable, and distinguishable, because you know the slot exists |
+| archival cost | zero; free endpoint suffices |
+| unknown denominator | the denominator is *what you asked for*, recorded as you ask |
+| operator config drift | `getFirstAvailableBlock` per pass detects it; a prospective lane is never near the boundary anyway |
+
+And it is the same shape this repository has already been forced into twice:
+`CRYPTO-COVERAGE-REPAIR-001` drained the historical recoverable pool in a single
+pass (1,043 → 106) and `CRYPTO-COVERAGE-REPAIR-002` exists precisely because the
+retrospective half was exhausted. **The lesson generalizes: on this project's
+data sources, retrospective recovery is always smaller than it looks and
+prospective collection is always the real instrument.** This is one more
+instance, not a new discovery.
+
+The cost of prospectivity is honest and should be stated: **no corpus exists on
+day one.** A calibration corpus accumulates at the rate the tape produces
+swaps, and the first useful sample is weeks away, not hours. That is a schedule
+fact for Eric, not an engineering obstacle.
+
+---
 
 ## 7. Link 5 — rate limits and a sustainable prospective collection rate
 
-*(pending)*
+### 7.1 The documented limits (VERIFIED, quoted)
+
+From the official cluster reference, applying to the public mainnet, devnet and
+testnet endpoints alike:
+
+> - "Maximum number of requests per 10 seconds per IP: **100**"
+> - "Maximum number of requests per 10 seconds per IP for a single RPC: **40**"
+> - "Maximum concurrent connections per IP: **40**"
+> - "Maximum connection rate per 10 seconds per IP: **40**"
+> - "Maximum amount of data per 30 second: **100 MB**"
+
+and, from the RPC overview: "Shared public endpoints may return `429` when you
+exceed rate limits and `403` when traffic is blocked."
+
+Restated as rates: **10 req/s overall, 4 req/s for any single method, 3.33 MB/s
+of response data.**
+
+### 7.2 The binding constraint is bandwidth, not requests — and that kills the firehose
+
+The tempting design is to scrape every block: `getBlock(slot,
+transactionDetails: "full")` returns every transaction in a slot with full
+`meta` in one request, which is enormously more request-efficient than
+per-signature fetching.
+
+The request budget permits it. Solana produces roughly 2.5 slots/s ≈ 216,000
+slots/day, and the single-method cap of 4 req/s allows ~345,600 requests/day.
+Requests are not the problem.
+
+**Bandwidth is.** A mainnet block with full JSON metadata is on the order of
+single-digit megabytes to tens of megabytes, so a full firehose needs somewhere
+around 10–75 MB/s against a documented ceiling of 3.33 MB/s — **roughly one to
+two orders of magnitude over budget.** (VERIFIED cap; block-size magnitudes are
+**INFERRED** and are the weakest number in this section — §13 gives the one-shot
+check that measures a real block's response size.)
+
+**Conclusion: whole-chain collection is not available for free. Targeted
+collection is.** That is not a disappointment; it is the design constraint that
+produces the right architecture.
+
+### 7.3 The targeted design, and its actual arithmetic
+
+Scope collection to the tokens this project already tracks — the sparse
+observer's rolling cohort — rather than to mainnet:
+
+1. `getSignaturesForAddress(address)` — up to **1,000** signatures per call
+   (VERIFIED: "Maximum transaction signatures to return (between 1 and 1,000)"),
+   with `until: <last signature seen>` for incremental paging (VERIFIED). One
+   call per tracked token per poll.
+2. `getTransaction(signature, {maxSupportedTransactionVersion: 0})` per new
+   signature.
+
+Per-token cost per poll = 1 + (new swaps since last poll). The rate is therefore
+governed by **how many tokens we track and how fast they trade**, both of which
+we choose, not by mainnet throughput.
+
+Working the budget conservatively — target 25% of the documented single-method
+cap, i.e. **1 req/s sustained**, to leave headroom for the "subject to change
+without notice" clause and for 429 backoff:
+
+- ~86,400 requests/day.
+- Reserve ~20% for signature paging → ~69,000 `getTransaction`/day.
+- At **~2,000–5,000 usable swap records/day** after filtering failures,
+  non-swaps, and unusable venues (**INFERRED**, dominated by an unmeasured
+  swaps-per-signature yield), a corpus of 100k+ realized fills accumulates in
+  **roughly three to seven weeks**.
+
+That is a real corpus, on free infrastructure, and it is far larger than any
+volume of self-trading could produce — which is the proposal's central claim and
+it survives.
+
+### 7.4 Operational cautions that are not optional
+
+- **429 and 403 are expected outcomes, not errors to retry blindly.** A 403 is
+  "traffic is blocked", and hammering through it is how a shared endpoint gets
+  an IP banned. Exponential backoff with a hard daily cap, and a `403` treated
+  as a **stop condition for the pass**, not a retry.
+- **Requests-per-method, not requests-total, is the real cap.** A design that
+  spends its whole budget on `getTransaction` hits 4 req/s, not 10.
+- **The concurrency cap is 40 connections and the connection *rate* cap is 40
+  per 10 s.** A naive client opening a fresh connection per request will hit the
+  connection-rate cap long before the request cap. Connection reuse is required.
+- **Rate limits "may change without prior notice"** (VERIFIED). Any capacity
+  claim built on these numbers must be re-measured, not inherited — the same
+  discipline `CRYPTO-QUERY-PLAN-AND-DENOMINATOR-RECOVERY-001` learned when 28
+  reviewer trials failed to predict a 45-second block in production.
+- All of the above is a **documentation** claim. No request was made. §13.
+
+---
 
 ## 8. Link 6 — is MEV / sandwich activity detectable read-only?
 
-*(pending)*
+**Answer: YES at the population level, NO for our own counterfactual. That
+distinction is the whole content of this section, and it is what lets
+`SOLANA-ROUTE-OBSERVATION-001` §8.1 row 8 be narrowed rather than upheld.**
+
+### 8.1 Why it is detectable, mechanically
+
+A sandwich is three transactions in one block on one pool: attacker buys,
+victim's swap executes at the worsened price, attacker sells. Everything needed
+to identify that pattern is in data §3–§5 already established:
+
+- **Same-block grouping is free.** `getSignaturesForAddress` returns a `slot`
+  per signature (VERIFIED). Group by slot; any pool with ≥2 signatures in one
+  slot is a candidate. **This means sandwich screening costs nothing extra to
+  detect — only the candidates need their full transactions fetched**, which
+  keeps it inside §7's budget.
+- **Ordering does not have to be trusted.** Rather than relying on the order of
+  `getBlock`'s `transactions` array (**INFERRED** to be execution order; not
+  stated in the docs I read), the order can be **reconstructed from the balance
+  chain**: each transaction's `preTokenBalances` on the shared vault must equal
+  the previous one's `postTokenBalances`. That chain is a total order, it is
+  self-verifying, and a break in it is a detected gap rather than a silent
+  mis-ordering. (INFERRED, from the VERIFIED per-transaction capture semantics
+  in §5.2.)
+- **The attacker signature is behavioural, not identity-based.** Across the
+  bracketing pair: net token position ≈ 0, net SOL positive, same signer or same
+  token accounts, same pool, same slot. No labelling service, no address
+  reputation list, no paid feed.
+- **The victim's excess cost is computable.** You have the victim's realized
+  price and, from the *front-run's* `preTokenBalances`, the pool state that
+  would have priced the victim's swap had the front-run not occurred. The
+  counterfactual clean price is arithmetic on a constant-product curve.
+
+### 8.2 Why this is more valuable than it first appears
+
+The proposal describes MEV detection as answering "the dominant residual in AMM
+execution". It is more than that — **it is a correctness requirement for the
+corpus, not an enrichment of it.**
+
+A calibration corpus that silently mixes sandwiched and clean fills produces a
+slippage model inflated by the sandwich rate times the average extraction, with
+**no way to decompose the two after the fact**. The fitted model would then be
+systematically pessimistic in a way that looks like honest conservatism and is
+actually an artifact. Being able to tag each row `clean` / `sandwiched` /
+`same_block_contended` turns that from a hidden bias into two separate,
+separately-reportable regimes.
+
+It also supplies something no quote endpoint can: an **empirical distribution of
+extraction magnitude by trade size**, measured on other people's money.
+
+### 8.3 What is still NOT observable, stated precisely
+
+- **Our own extraction.** MEV is a response to a specific order's visibility to
+  searchers and to the leader. We have no order, so there is no counterfactual
+  to observe. `SOLANA-ROUTE-OBSERVATION-001` §8.2 is right that this "does not
+  exist until you send it", and this document does not disturb that.
+- **Whether the population rate transfers to us.** Observed sandwich rates are
+  conditioned on *other traders'* slippage tolerances, priority fees, RPC
+  routing, and whether they used a private relay — none of which we would share.
+  A population rate is a **prior**, not a prediction, and any use of it in a
+  modeled fill is a MODELED input requiring the `PAPER_SIMULATION` model
+  identifier and modeled-vs-observed basis.
+- **Private-orderflow sandwiches.** Extraction routed through private channels
+  may not appear as adjacent same-block public transactions at all, so the
+  observed rate is a **lower bound**. Reporting it as *the* rate would be the
+  fabrication shape this repository names elsewhere as truncation presented as
+  completeness.
+
+### 8.4 The precise narrowing this implies
+
+`SOLANA-ROUTE-OBSERVATION-001` §8.1 row 8 currently reads:
+
+> | 8 | MEV / sandwich extraction | **NOT OBSERVABLE WITHOUT SUBMITTING A TRANSACTION** |
+
+That is true of *our* extraction and false of *the population's*. The row should
+split into 8a (population extraction rate and magnitude — **OBSERVABLE
+read-only, as a lower bound**) and 8b (our own extraction — **NOT OBSERVABLE**,
+unchanged). See §12.
 
 ## 9. Selection bias — you observe the sizes traders chose
 
