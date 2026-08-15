@@ -1432,12 +1432,276 @@ precisely what stops 30,000 such observations from being mistaken for evidence.
 
 ## 9. Challenge to the formula
 
-_(to be filled)_
+```
+f_actual = min( λ·f_Kelly(p_conservative), f_liquidity, f_CVaR, f_concentration, f_drawdown )
+```
+
+The form is **60% right**. Two of the five terms do not belong where they are,
+one is a duplicate, and the combinator cannot express the most important output.
+
+### 9.1 `min(...)` can never return `NO_TRADE` — the structural gap
+
+A `min` over positive quantities is positive. The formula as written has **no way
+to abstain**, yet Section 7 argues abstention is the default and the most
+frequently correct action. Every term would have to be capable of returning 0,
+and "the liquidity cap happened to be 0" is a poor way to encode "calibration is
+unknown for this regime, so we decline".
+
+**Fix: an explicit gate in front, returning a typed reason-code set, evaluated
+before any sizing arithmetic runs.** Sizing is only reached if the gate passes.
+
+### 9.2 `f_CVaR` does not belong in a per-position `min`
+
+Section 4.2: the loss distribution of a single binary position is two-point, so
+`CVaR_α = f` exactly for any `α ≤ 1−p`, and **negative** (constraint vacuous) for
+`α > 1−p`. As a per-position term it is a flat cap with a misleading name, and
+its behaviour flips on the sign of `α − (1−p)` with no warning in the notation.
+
+**Fix: remove it from the per-position `min`; impose `EVaR_α(book) ≤ D_max` as a
+book-level constraint** (4.3 for why EVaR).
+
+### 9.3 `f_concentration` is not a cap at all — it is a joint allocation
+
+`min` takes a function of one position. "These five positions together must not
+exceed `B_c`" is not expressible that way. Any per-position translation
+(`B_c / 5`, say) is either wasteful when the positions have different edges or
+wrong when a sixth arrives.
+
+**Fix: a joint allocation step over clusters** — a small convex program, not a
+`min`. Section 9.6.
+
+### 9.4 `f_drawdown` is already inside `λ` — either a duplicate or double-counting
+
+`λ = λ_calib × λ_dd` (3.8), and `λ_dd` **is** the drawdown constraint (5.2). A
+separate `f_drawdown` term applies it twice, or means something different from
+what it says.
+
+There is, however, a genuinely distinct drawdown term the formula is missing: a
+**state-dependent** multiplier that tightens as wealth approaches the halt floor.
+This is the Grossman–Zhou insight — size on the *excess over the stop level*, not
+on total wealth:
+
+```
+κ(W) = clamp( (W − W_halt) / (W₀ − W_halt), 0, 1 )
+```
+
+`κ = 1` at the epoch start, `κ = 0` at the hard halt. This is a real, non-
+redundant term and it is what `f_drawdown` should have been.
+
+### 9.5 Three terms the formula omits entirely
+
+**(a) A minimum size, `f_min`.** Below it, discretisation and fees dominate and
+the correct action is `NO_TRADE`, not a tiny position (2.4). Without `f_min` the
+system takes thousands of trades whose fees exceed their edge — and, worse,
+those trades enter the Section 8 denominator and drag the measured expectancy
+toward the cost wedge.
+
+**(b) Time.** `g` is per *resolution*, not per unit time. An edge of 0.005 nats
+that resolves in an hour and one that resolves in six months are different
+propositions by a factor of ~4,000. Capital is committed for the duration, so
+the quantity to be ranked and budgeted is:
+
+```
+growth rate  =  g(f) / Δt        Δt = expected time to resolution
+```
+
+Its omission is the single largest *economic* gap in the stated form. It also
+changes the answer to "which position gets the cluster budget" completely, and it
+interacts with Section 8: a strategy with a 2 pp edge on six-month markets cannot
+accumulate 30,000 observations in any human timeframe, so long-horizon markets
+are **unvalidatable** regardless of their edge.
+
+**(c) Target vs increment.** The formula is silent on whether `f_actual` is a
+target position or an order size. It must be a **target**, with a **no-trade
+band** around it — every rebalance pays the full cost wedge of 8.2, and a system
+that chases a moving target pays it repeatedly for no edge.
+
+### 9.6 The revised form
+
+```
+0. GATE          codes ← evaluate_gates(market, forecast, book, graph, state)
+                 if codes ≠ ∅:  return NO_TRADE(codes)
+
+1. BELIEF        p_cal  ← σ( â_r + β̂_r · logit(p̂) )        per-regime recalibration (3.2)
+                 p_con  ← Q_α( dispersion from bootstrap / ensemble / residuals )   (3.4, 3.6)
+
+2. CEILING       λ      ← β̂_r × λ_dd × κ(W)                  (3.8, 5.2, 9.4)
+                 f_ceil ← min( λ · (p_con − q)/(1 − q),
+                               f_liquidity,       # fillable depth at the touch
+                               f_position_cap )   # a stated flat cap
+
+3. ALLOCATE      choose { f_i } to maximise   Σ_i  g(f_i; p_con,i, q_i) / Δt_i
+                 subject to   0 ≤ f_i ≤ f_ceil,i
+                              Σ_{i∈c} f_i ≤ B_c      ∀ clusters c        (6.4, 6.5)
+                              Σ_i f_i     ≤ B_total
+                              EVaR_α(book) ≤ D_max                        (4.3)
+                              K_eff(book) ≥ K_min                         (6.1)
+                 — convex: objective concave, EVaR convex, rest linear.
+
+4. DISCRETISE    if realised_fraction(round(f_i)) > f_i:  NO_TRADE(SIZE_ROUNDS_ABOVE_LIMIT)
+                 if f_i < f_min:                          NO_TRADE(EDGE_BELOW_MINIMUM)
+                 if |f_i − f_current,i| < no_trade_band:   HOLD
+
+5. EMIT          f_i, the binding constraint, slack on every other constraint,
+                 λ's three factors separately, p_con and its dispersion source,
+                 Δt_i, cluster id + graph version, model identifier,
+                 and the modeled-vs-observed basis for every input.
+```
+
+Step 5 is not decoration. A size with no record of *why* it is that size cannot
+be audited, cannot be debugged when the drawdown comes, and — under the
+`PAPER_SIMULATION` amendment — **may not legally be produced at all** without the
+model identifier and modeled-vs-observed basis travelling with the number.
+
+### 9.7 The deepest challenge: the whole layer may be premature
+
+Sections 8.1 and 8.6 together say something uncomfortable. The prior is that
+`e_net ≤ 0`; the measurement that would move that prior needs 30,000–75,000
+prospective observations; and none of that measurement requires a sizing layer.
+**A sizing layer is the machinery for exploiting an edge whose existence has not
+been established, and building it first inverts the dependency.**
+
+The defensible reasons to design it now anyway — and they are real — are: it
+tells you what to *instrument* (residual correlation, abstention codes, cluster
+identity, `Δt`) before the prospective window opens rather than after; it
+produces the `λ` and `n_required` numbers that determine whether the programme is
+feasible at all; and it establishes that `Δt` and `DEFF` must be measured up
+front, which is the difference between a two-year window and a twenty-year one.
+
+Those are design-ahead reasons. They are not build reasons, and this document is
+not a build authorisation.
+
+---
 
 ## 10. Consolidated term reference
 
-_(to be filled)_
+| term | concrete definition | value / source | status |
+|---|---|---|---|
+| `f_Kelly(p,q)` | `(p−q)/(1−q)` | derived §2.1 | ceiling only, never the allocator (§2.7) |
+| `p_conservative` | `Q_α(π)` of a **measured** dispersion (bootstrap refit / ensemble disagreement / regime residuals), applied after log-odds recalibration | `α ∈ [0.10, 0.25]`; `α` = P(overbet vs true Kelly), exactly (§3.6) | dispersion source must be measurable — self-reported posterior width is unfalsifiable (§3.4) |
+| `λ_calib` | Cox calibration slope `β̂`, per regime, in log-odds space | needs n ≥ 500/cell for ±0.22; ±0.16 at n=1,000 (§3.2) | learned |
+| `λ_dd` | `2 / (1 + ln ε / ln α_dd)` | **0.139** for "20% max DD at 5%" (§5.2) | derived from a stated tolerance |
+| `κ(W)` | `clamp((W − W_halt)/(W₀ − W_halt), 0, 1)` | Grossman–Zhou form (§9.4) | state-dependent |
+| `λ` | `λ_calib × λ_dd × κ(W)` | ≈ 0.14 at epoch start with the above | validated on a **lower confidence bound** of realised growth, never the point estimate (§3.8) |
+| `f_liquidity` | fillable fraction at the touch within the assumed slippage | venue depth; unmeasured depth ⇒ abstain | hard cap |
+| `f_CVaR` | **removed from per-position.** Book-level `EVaR_α(book) ≤ D_max` | §4.2, §4.3 | relocated |
+| `f_concentration` | **replaced by** cluster budgets `Σ_{i∈c} f_i ≤ B_c` | `B_c ≈ λ_dd / K_eff ≈ 4%` at ρ=0.3 (§6.5) | joint allocation, not a cap |
+| `f_drawdown` | **absorbed into `λ_dd`**; the non-redundant part is `κ(W)` | §9.4 | de-duplicated |
+| `f_min` | smallest size where fees + discretisation do not dominate | new term (§9.5a) | gate, not a cap |
+| `Δt` | expected time to resolution; objective is `g/Δt` | new term (§9.5b) | the largest economic omission |
+| `NO_TRADE` | typed reason-code set, evaluated **before** sizing | 16 codes (§7.2) | the default |
+
+**The three numbers to remember:**
+
+| | |
+|---|---|
+| `λ ≈ 0.14` | one-seventh Kelly, for a 20% max drawdown at 5% probability — and it earns 26% of the optimal growth rate |
+| `K_eff ≤ 1/ρ` | at ρ=0.3, no book ever holds more than 3.33 independent bets |
+| **n ≈ 30,000–75,000** | prospective decisions to demonstrate a 1 pp net edge honestly |
+
+---
 
 ## 11. Evidence ledger — VERIFIED vs INFERRED
 
-_(to be filled)_
+### 11.1 VERIFIED — derived or computed in this document, reproducible
+
+| claim | how |
+|---|---|
+| `f* = (p−q)/(1−q)` | algebraic derivation, §2.1 |
+| `g(f*) = KL(p‖q)`, i.e. max growth = log-score advantage over the market | algebra + numerical agreement to 6 dp in all 6 parameter blocks, §2.1 |
+| 2× Kelly ⇒ zero growth; the bias producing it is `δ = e` | simulation, §2.2 |
+| At `q=0.90`, unbiased noise `s=0.03` gives **negative** expected growth on a real +3 pp edge | 400,000-draw MC, §2.3 |
+| Estimation-error penalty carries a `1/(1−q)²` factor | second-order expansion + the 100× gap between q=0.50 and q=0.90 rows, §2.3 |
+| `λ=0.5` → 74.9% of growth at 50% of log-return volatility | 20,000 paths × 1,000 bets, §2.6 (agrees with published MacLean–Ziemba–Blazenko) |
+| Full Kelly: median peak drawdown 89.4%, `P(DD>50%) = 1.0000` across 20,000 paths, with `p` known exactly | simulation, §2.6 |
+| One-period Bayesian Kelly ≡ Kelly at the posterior mean, for a binary contract | algebra (`g` is linear in `p`), §3.1 |
+| `P(f(p_α) > f*(p_true)) = α` exactly, because `f*` is linear in `p` | algebra, §3.6 |
+| Calibration-slope CIs: ±0.16 at n=1,000; ±0.045 at n=12,945 | Fisher-information simulation, §3.2 |
+| `VaR_α = CVaR_α = f` for a single binary whenever `α ≤ 1−p`; CVaR goes **negative** when `α > 1−p` | analytic + 300,000-draw MC, §4.2 |
+| `CVaR95 / Σf → 1.000` as ρ rises; 0.290 at ρ=0, K=25 | 300,000-draw MC, §4.3 |
+| EVaR ≥ CVaR in every simulated case, by 10–27% | §4.3 |
+| CVaR99 at n=250 rests on 2 observations; small-`n` bias is **downward** (−8.1% at n=50) | 800 bootstrap replicates vs 10⁶-draw truth, §4.4 |
+| With a 0.6% common-shock regime, 59% of n=50 samples contain zero instances of it | §4.4 |
+| `α^(2/λ−1)` matches the simulated **initial-wealth** barrier and saturates | 12,000 paths at N=250/1,000/5,000, §5.1 |
+| Peak-to-trough drawdown is unbounded at every `λ` (reflected BM with negative drift is positive-recurrent); simulated `P(DD>50%)` → 1.000 at λ=0.5 | argument + simulation, §5.1 |
+| `λ_dd = 0.139` for "20% max DD at ε=0.05" | inversion of the closed form, §5.2 |
+| With noisy `p̂` you take `λ`'s risk and earn `λ_eff < λ`'s growth; at small `λ` the sensitivity nearly vanishes | 400,000-draw MC, §5.5 |
+| `K_eff = K/(1+(K−1)ρ)`, ceiling `1/ρ` | algebra, §6.1 |
+| Per-trade Sharpe `= (p−q)/√(p(1−p))`; `q` cancels | algebra, §8.3 |
+| `n = 15,451` (1 pp, 80%, one-sided 5%); 33,991 with DEFF 2.2; 73,191 with Bonferroni-20 | standard power formula, §8.3–8.4 |
+| MDE at n=36 is **20.7 pp**; at n=1,000 it is 3.9 pp ≈ the round-trip cost wedge | §8.4 |
+
+### 11.2 VERIFIED against repository documents
+
+| claim | source |
+|---|---|
+| 12,945 forecasts, all scored, coverage 100%, sample representative | `docs/OUTCOME_SYNC_POST_DRAIN_BASELINE_2026_08.md` (lines 115–127) |
+| Reported skill figures are **against the base rate**: baseball +0.2286 (n=7,983), soccer +0.2434, tennis **negative** and `credible_current_finding` | same, results tables |
+| Soccer's earlier +0.8845 skill was `contradicted_by_expanded_sample` — a 34-observation artefact | same |
+| All six EDGE-SELECTION-001 candidates retired after out-of-sample failure; `spread_only` negative control outperformed | `docs/EDGE_SELECTION_RETIREMENT_2026_07_10.md` |
+| MVP-005A gate crossed on paired n=36 | `docs/SAFETY_BOUNDARIES.md`, EV-calculation row |
+| `kalshi_fee_rate_assumption = 0.07`, charged round-trip at both measurement ends | `docs/SAFETY_BOUNDARIES.md`, COST-MODEL-001 bullet |
+| Portfolio sizing / dollar EV / trade recommendations / order placement all forbidden with no implementation surface | `docs/SAFETY_BOUNDARIES.md` |
+| `PAPER_SIMULATION` requires a model identifier **and** a modeled-vs-observed basis on every artefact, not satisfiable by a header or docstring | `docs/SAFETY_BOUNDARIES.md`, SAFETY-BOUNDARY-ROUTE-QUOTE-001 |
+| `BANNED_IDENTIFIER_FRAGMENTS` includes `kelly`, `position_siz`, `portfolio`, `expected_value`, `paper_trad`; the audit is deliberately not amended by the boundary doc | same |
+| POLY-002 / POLY-PRECISION-001 produce `comparable_market_candidate` and degrade ambiguity to `unresolved_semantic_match` rather than forcing a match | `docs/SAFETY_BOUNDARIES.md`, POLY bullets |
+| REGISTRY-002A replaced prose leakage guards with a closed typed predicate schema | `docs/PROSPECTIVE_EXPERIMENT_REGISTRY_002A.md` |
+
+### 11.3 VERIFIED via external sources (primary where available)
+
+| claim | source |
+|---|---|
+| Risk-constrained Kelly; drawdown risk defined as `P(wealth ever drops to a fraction of its **initial** value)`; convex bound; single risk-aversion parameter | Busseti, Ryu & Boyd, *Risk-Constrained Kelly Gambling* — https://arxiv.org/abs/1603.06183 · https://web.stanford.edu/~boyd/papers/pdf/kelly.pdf |
+| EVaR: coherent, tightest Chernoff bound on VaR and CVaR, KL-divergence dual, tractable where CVaR is not | Ahmadi-Javid (2012), *JOTA* 155(3):1105–1123 — https://link.springer.com/article/10.1007/s10957-011-9968-2 · commentary: https://arxiv.org/pdf/1504.00640 |
+| CVaR for general loss distributions; the `min_t { t + (1/α)E[(L−t)⁺] }` convex form | Rockafellar & Uryasev — https://sites.math.washington.edu/~rtr/papers/rtr187-CVaR2.pdf |
+| Half-Kelly ≈ 75% of growth at ~50% of volatility (MacLean–Ziemba–Blazenko 1992); Chopra–Ziemba 20:2:1 error sensitivity (means dominate); a 10% error in the mean can produce ~50% overbetting; overbetting penalty far exceeds underbetting | Ziemba, *Using the Kelly Criterion for Investing* — https://webhomes.maths.ed.ac.uk/mckinnon/blackouts/StochOptFinanceAndEnergySpringer/Chap1_KellyZiemba.pdf |
+| Full vs fractional Kelly medium-term simulations | Thorp — http://www.edwardothorp.com/wp-content/uploads/2016/11/KellySimulationsNew.pdf |
+| Estimation risk in Kelly investing | https://arxiv.org/html/2508.18868v1 |
+| Modified Kelly criteria under parameter uncertainty | Chu, Wu & Swartz — https://www.sfu.ca/~tswartz/papers/kelly.pdf |
+| Kelly generalisation under temporal correlation | https://arxiv.org/pdf/2003.02743 |
+| Grossman–Zhou: size on the excess over the moving stop level; Klass & Nowicki (2005) show it is not always optimal in discrete time | https://perso.math.u-pem.fr/elie.romuald/elie_files/et06.pdf · https://www.sciencedirect.com/science/article/abs/pii/S0167715205001641 · Kelly with a stop-loss rule: https://arxiv.org/pdf/1311.2550 |
+| Drawdown-constrained Kelly under parameter uncertainty (Bayesian Grossman–Zhou) | https://papers.ssrn.com/sol3/papers.cfm?abstract_id=6942459 |
+| Empirical CVaR estimator is biased though consistent; performs materially worse than VaR under fat tails where tail observations are sparse | https://arxiv.org/pdf/1908.07232 · https://kramer.ucsd.edu/img/pubs/Conditional-Value-at-Risk-Estimation-Reduced-Order-Models-Heinkenschloss-Kramer-Takhtaganov-Willcox-2018.pdf |
+| g-entropic / entropy-based risk measures, class containing both CVaR and EVaR | https://arxiv.org/pdf/1801.07220 |
+| CFTC Core Principle 5 position limits; aggregation across similar event contracts with the same underlying reference | https://www.federalregister.gov/documents/2026/03/16/2026-05105/prediction-markets |
+
+### 11.4 VERIFIED only against **secondary** sources — treat as provisional
+
+| claim | caveat |
+|---|---|
+| Kalshi taker fee `= 0.07 · C · P · (1−P)`, rounded up to the cent; maker fee = 25% of taker; max 1.75¢/contract at P=0.50 | Consistent across three independent secondary sources — https://marketmath.io/platforms/kalshi · https://pm.wiki/learn/kalshi-fees-explained · https://whirligigbear.substack.com/p/makertaker-math-on-kalshi — and consistent with the repository's own `kalshi_fee_rate_assumption = 0.07`. **NOT verified against Kalshi's official fee schedule in this session** (the official PDF returned HTTP 429). Every cost figure in §8.2 inherits this caveat. Verify before the acceptance test's cost model is locked. |
+| "Limit total correlated exposure to 20–25% of capital" as practitioner guidance | https://www.predictengine.ai/blog/common-market-making-mistakes-on-prediction-markets-explained — low-quality source, quoted only to note that §6.5's arithmetic gives **~4%**, an order of magnitude tighter than folklore |
+
+### 11.5 INFERRED — judgment, assumption, or extrapolation. Not established.
+
+| claim | basis | how to settle it |
+|---|---|---|
+| Plausible net edge range `e_net ∈ [0.5, 3] pp` | cost wedge (§8.2) minus the repository's negative follow-through evidence (§8.1) | it *is* the thing the acceptance test measures |
+| Design values `m = 5, ρ = 0.3` ⇒ `DEFF = 2.2` | illustrative; every sample size in §8.4 scales linearly with this | **measure residual correlation on the existing 12,945 forecasts** — cheapest high-value action in the document |
+| `k = 20` hypotheses for the multiplicity correction | conservative guess | fixed by pre-registration (P2) |
+| ~95% abstention rate | from the cost wedge exceeding most edges | measurable before any trade (§8.7 step 4) |
+| `α_quantile ∈ [0.10, 0.25]` | judgment, from the over/under-betting asymmetry of §2.6 | coverage check of §3.7 rule 4 |
+| `β̂ ∈ [0.85, 1.15]` acceptance band; `n ≥ 500` per regime cell | judgment, anchored to the §3.2 CI table | — |
+| **EVaR is *not* more robust to estimate than CVaR** | mechanism argument (the MGF at the optimising `z` is dominated by the same tail points); **not simulated here** | a bootstrap comparison of EVaR vs CVaR estimation error — a genuine gap in this document |
+| Sequential tests cut expected `n` by 30–50% under a strong alternative and cost more under a weak one | general SPRT/e-value theory; not computed for this payoff | compute for the actual payoff before relying on it |
+| `B_c ≈ 4%` of bankroll per cluster | `λ_dd / K_eff` at ρ=0.3 — arithmetic is exact, the inputs are the assumptions above | follows from measuring ρ |
+| That `Δt` (§9.5b) is the largest economic omission | reasoning, not measurement | measure the realised distribution of time-to-resolution per venue |
+| Soft/hard halt at 0.90/0.80 `W₀` | judgment; the *form* is forced by §5.1, the levels are not | a stated human risk tolerance, per §5.2's table |
+
+### 11.6 Known gaps in this document
+
+1. **No multi-asset / continuous-payoff Kelly.** The memecoin lane needs
+   `E[R/(1+f·R)] = 0` over a full return distribution; §2.4 argues Kelly should
+   not be used there at all, but does not develop the alternative beyond "flat
+   cap + tail constraint".
+2. **EVaR estimation error is asserted, not measured** (11.5).
+3. **`Δt` is identified as a missing term but not developed** into a ranking rule.
+4. **The joint allocation of §9.6 step 3 is specified but not solved** for any
+   concrete book; its convexity is stated from the structure of the constraints,
+   not verified on an instance.
+5. **The Kalshi fee formula is secondary-sourced** (11.4) and every cost number
+   depends on it.
+6. **Nothing here is validated against live data**, because doing so would
+   require capabilities the safety boundary forbids. This document is
+   design-ahead research and its numbers are properties of models, not
+   measurements of markets.
