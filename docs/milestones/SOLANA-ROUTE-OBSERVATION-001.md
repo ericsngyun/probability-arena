@@ -693,3 +693,176 @@ in discipline:
   field, does not retain the bytes, and does not compute a body digest over
   them. "We only ignored the field we were not allowed to have" is not a
   boundary; refusing the response is.
+
+---
+
+## 8. What is observable, and what is not
+
+Carried forward from the scope doc and **updated for the amendment**. To make a
+later `ExecutionQuote` trustworthy you need, at the quote instant: a reference
+price, the depth at it, the impact of a print of a given notional, the route,
+the fees, the realized slippage between quote and fill, the landing probability
+and slot delay, and the adversarial cost.
+
+### 8.1 The split, after the amendment
+
+| # | quantity | status now | changed by the amendment? |
+|---|---|---|---|
+| 1 | mid price | **OBSERVABLE** — DexScreener, already fetched by the sparse lane | no |
+| 2 | depth | **OBSERVABLE only as a provider-computed USD aggregate**; true reserves remain unparsed and unverified | no |
+| 3 | **price impact at a given notional** | **OBSERVED from the quote response** (§5.3) | **YES — was "ESTIMATED ONLY", with unbounded error for concentrated-liquidity pools** |
+| 4 | **route composition — pools, split, hops** | **OBSERVED from the quote response** | **YES — was "NOT OBSERVABLE; proxy only"** |
+| 5a | pool fee per hop | **OBSERVED where the venue reports it**; otherwise a typed absence, never a per-dex default table | **YES, partially** |
+| 5b | Solana base fee / priority fee | **NOT AVAILABLE** — fetching a priority fee is explicitly forbidden (§3.2 F6) | no; now forbidden by name rather than merely absent |
+| 5c | associated-token-account rent | **NOT OBSERVED**; moot without a wallet, real for any future quote | no |
+| 5d | token-2022 transfer fee / hooks | **NOT OBSERVABLE** from these sources. If present and unaccounted, every quote is wrong by an unknown multiplicative factor — a **silent-wrongness** risk, so it is recorded as an absence on every row rather than omitted | no |
+| 6 | realized slippage | **NOT OBSERVABLE prospectively.** Retrospective measurement needs a per-trade feed, which is **paid and now explicitly forbidden** (§3.2 F9) | **YES — went from "expensive" to "out of bounds"** |
+| 7 | landing probability, slot delay | **NOT OBSERVABLE WITHOUT SUBMITTING A TRANSACTION** | no |
+| 8 | MEV / sandwich extraction | **NOT OBSERVABLE WITHOUT SUBMITTING A TRANSACTION** | no |
+| 9 | exit-side depth at t+Δ | **OBSERVABLE** as a later observation — what the sparse lane already buys | no |
+
+### 8.2 The three that did not move, and why they matter most
+
+- **Landing** (7) and **adversarial extraction** (8) are unobservable by
+  construction: no provider sells you your own counterfactual, and MEV is a
+  response *to your own order*, which does not exist until you send it.
+- **Realized slippage** (6) was the one quantity that could have validated a
+  fill model against something resembling ground truth. The amendment closes the
+  only route to it. **This milestone therefore has no ground truth to validate
+  against and cannot acquire one within its boundary.** That is a permanent
+  limitation of the result, not a gap more work will close.
+
+### 8.3 The finding, restated and now sharper
+
+> **Any `PaperFill` this project ever writes is a MODEL OUTPUT, never a
+> measurement** — because landing and adversarial extraction cannot be observed
+> without executing.
+
+The amendment agrees and turns the finding into a hard requirement: under
+`PAPER_SIMULATION` a modeled fill **must** carry an explicit model identifier
+and a modeled-vs-observed basis *on the artifact itself* — not in a header,
+README, docstring, or column comment, because none of those survive the number
+being copied into a report or another agent's context, "which is exactly when
+the mislabeling happens".
+
+What this milestone changes is the *basis*: with observed quote evidence, such a
+model's inputs become OBSERVED rather than assumed. The fill stays MODELED.
+
+### 8.4 The fallback if quoting turns out to be unobtainable
+
+If CP-0 finds no free public quote endpoint that returns a quote without an
+account binding (§3.3), the milestone terminates with `quote_unobtainable_free`.
+The scope doc's proxy design — pool-inventory composition plus a declared,
+conservative, NULL-when-inputs-are-absent impact model over provider TVL —
+stays on record as a **separate, smaller, separately-approved** fallback
+milestone. It is deliberately **not** folded into this one: a proxy shipped
+under this milestone's name would later be read as if this milestone had
+succeeded.
+
+---
+
+## 9. Implementation checkpoints
+
+Repo pattern: dry-run → focused independent reviews → dark deployment →
+bounded prospective activation. **Every checkpoint defaults OFF, and dry-run
+comes first at every stage.** Each is independently verifiable and each can
+terminate the milestone.
+
+Reversibility tier assigned at design time: **1** autonomous · **2** single
+confirmation · **3** dual confirmation.
+
+### CP-0 — Entry gates and endpoint reconnaissance. **NO PRODUCTION CODE.** (Tier 2)
+
+Two entry gates from Eric's own instruction, neither verified by this document:
+
+- **G1** — 6h sparse-lane mechanics demonstrably healthy (§14, M1).
+- **G2** — 24h jobs being scheduled correctly (§14, M2).
+
+Then, by **hand-invoked, single-token, hard-capped, local** requests — not on
+EVO, not scheduled, not behind any flag, nothing persisted to the production
+database:
+
+1. Does a **free public** quote endpoint return a quote **without** a key and
+   **without** an account/user parameter? If it requires either, the answer is
+   `quote_unobtainable_free` and the milestone terminates here (§3.3).
+2. Which of the §5.3 fields does the response actually carry — output amount,
+   min/threshold output, price impact, per-hop fee, route, pools, split, context
+   slot? Each answer is a committed fixture, not a claim in prose.
+3. The published rate limit, and whether it is compatible with the per-pass cap.
+4. The declared entry mint's address and decimals (§14, M5).
+5. Current DB headroom against the 3,072 MiB gate (§14, M3).
+
+**Deliverable:** committed fixtures plus a findings section appended to this
+document. **Gate:** any of 1–3 failing terminates the milestone as a successful
+decision, not a failure.
+
+### GATE-FU2 — the safety-audit unban. **(Tier 3 — dual confirmation)**
+
+**This gate sits between CP-0 and CP-2 and cannot be skipped.** Writing the
+implementation will FAIL `frontier-eval-report --include-safety` (§12, FU-2).
+The correct response is a separate, narrow, separately-reviewed allowlist change
+scoped to the exact fragment in the exact file, recorded in
+`docs/SAFETY_BOUNDARIES.md` — **never** renaming an identifier to slip past the
+scan, and never broadening the allowlist past the one file that needs it. Until
+this gate passes, a failing safety audit is the correct state and not a defect.
+
+### CP-1 — Contract, migration, ladder freeze. Dry-run only. (Tier 2 — schema change)
+
+One additive table (§5), one migration with an up/down round-trip test, the
+closed `quote_state` and `absent_fields` vocabularies, the digest version
+constant, and one flag defaulting **false**. The ladder integers are computed
+once, and the ladder digest is fixed and written back into §4.5. Import-time
+invariant checks use `raise`, not `assert` — `python -O` strips asserts.
+Nothing is wired to anything; `--dry-run` computes, prints, and persists nothing.
+
+### CP-2 — Pure parsing and derivation, **no I/O**. (Tier 1)
+
+A function from (recorded response bytes, request record) to a typed record. No
+session, no network, no clock. Tests: one per fabrication shape; the
+absence/NULL biconditional (§5.4); the no-float truncation test (§5.6);
+direction-aware identity (§7.1); digest recomputation (SC-4); and a test that a
+response containing transaction bytes is **refused whole** (§7.4).
+
+### CP-3 — The route-locked client, against fixtures only. **Zero live calls.** (Tier 1)
+
+The client with exactly one route constant and no path parameter (§7.4), tested
+entirely against CP-0 fixtures. One test asserts the public surface has no path
+or endpoint argument. One asserts the run-scoped provider policy denies every
+paid provider **before a client or socket exists**.
+
+### CP-4 — Wire into the pass, flag OFF. (Tier 2)
+
+Assertions, not assurances: flag OFF yields a pass result byte-identical to
+`main`; no read, no write, no compute, no external call; commit count unchanged;
+the quote work never runs in a phase that structurally has no session; and the
+sparse lane's own `external_calls` is unchanged.
+
+### CP-5 — Three focused, independent reviews. All must PASS. (Tier 2)
+
+| reviewer | charge |
+|---|---|
+| **fabrication / identity** | Can any failure be recorded as a success? Is any quantity field reachable with its input absent? Attack the absence vocabulary, the digest preimage, and the identity gate adversarially. |
+| **storage / write-shape** | Rows/day against the DB gate; transaction count and lock hold; is anything persisting a raw body? |
+| **boundary** | The `AGENTS.md` safety grep; `frontier-eval-report --include-safety`; a read of every column name asking "could this be read as a size, an EV, an order, or a recommendation?"; and an explicit hunt for any reachable path to the build/swap sibling route, any retained transaction bytes, and any account-binding parameter. |
+
+### CP-6 — Dark deployment, flag OFF. (Tier 2)
+
+On EVO: verify the no-op is a true no-op — no read, no write, no compute, no
+external call, and zero rows in the new table.
+
+### CP-7 — Bounded prospective activation, then verdict. (Tier 3 — dual confirmation)
+
+Flag ON for a bounded, pre-declared window with a pre-declared per-pass cap.
+This is the **first live use of a newly permitted capability**, which is why it
+is Tier 3 rather than Tier 2. Then a report emitting exactly one verdict:
+
+- `execution_quote_trustworthy` — observed fields complete and self-consistent
+  often enough that a later `ExecutionQuote` may carry them with observed
+  provenance.
+- `execution_quote_trustworthy_with_stated_gaps` — usable, but named fields are
+  systematically absent (no threshold output, no context slot, …), and those
+  gaps travel with every downstream use.
+- `execution_quote_not_trustworthy` — the free public inputs do not support a
+  trustworthy `ExecutionQuote`. The paper-P&L milestone is blocked at this gate.
+
+**All three are successful terminations of this milestone.**
