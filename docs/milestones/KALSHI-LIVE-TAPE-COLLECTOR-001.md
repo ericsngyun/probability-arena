@@ -892,7 +892,53 @@ the demo rate distribution did NOT predict the production one (or did).
 
 ## 10. Validation plan
 
-TBD
+### 10.1 Per-checkpoint proof
+
+Stated inline in section 9 — each checkpoint carries its own *Verify* line, and none of
+them is "it ran without an exception".
+
+### 10.2 Suite-level gates (every checkpoint)
+
+- `.venv/bin/python -m pytest -q` fully green. **Not** `-k kalshi`: the archive lane's
+  own history includes a report of "suite 1097" that was actually a `-k kalshi` subset
+  against a real 3,893. The number reported must be the whole suite's.
+- The AGENTS.md safety grep clean, with the documented allowlist unchanged (the Kalshi
+  WS auth entry is pre-existing; this milestone must not add a second allowlist entry).
+- A new test asserting that no member of `FORBIDDEN_CHANNELS` is reachable from any
+  configuration surface: env var, CLI argument, or config default.
+- A new test asserting the collector opens no database session (no `get_sessionmaker`
+  import reachable from `app/realtime/collector.py`).
+
+### 10.3 The archive contract is proven by the archive's own tools, not by new ones
+
+Every session's output is validated with `kalshi-realtime-replay` (`cli.py:651`) and
+`verify_archive` (`segment.py:3641`). The collector introduces **no new verification
+path**. This matters: a bridge milestone that shipped its own verifier would be able to
+certify its own output, which is the exact failure class `EventArchive`'s docstring
+describes at `archive.py:321-327` — two implementations merely intended to agree.
+
+### 10.4 What "the measurement is trustworthy" means, concretely
+
+The measurement is accepted only if ALL of the following hold:
+
+1. CP5 shows instrumentation overhead is small and stated as a number.
+2. The session that produced the distribution had zero `events_rejected` and zero
+   `rotation_failures`, or the report explains each one.
+3. The sample gate (`MIN_SAMPLES_FOR`) is satisfied for every percentile printed, and
+   percentiles that fail it are refused rather than printed with a caveat.
+4. No percentile is computed across an observation gap.
+5. `metric_flush_drops == 0`, or the drops are reported and the affected intervals are
+   excluded rather than interpolated.
+
+If any fails, the correct outcome is "we do not yet have a measured rate", not a softer
+number. The whole point of the milestone is to stop guessing; a low-confidence
+measurement presented as a measurement would be worse than the current honest guess.
+
+### 10.5 Deployment state at merge
+
+Merged code, nothing running. No systemd unit, no timer, no MarketOps hook, no flag
+flipped on EVO-X2. The runbook gains a manual-invocation section; the deployment report
+records that the collector exists and is not scheduled.
 
 ## 11. Open questions for Eric
 
