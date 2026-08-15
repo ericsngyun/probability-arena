@@ -1,0 +1,80 @@
+==========================================================================
+EDGE-DISCOVERY-001 / E1 — conditional information of p given q
+==========================================================================
+rows total                     10285
+  TRAIN                        6471
+  HOLDOUT                      3814
+  neither split (dropped)      0
+events (all)                   1482
+events TRAIN                   959
+events HOLDOUT                 537
+events in BOTH splits          14
+tickers (all)                  5819
+
+CLIPPING to [0.01, 0.99] before any logit:
+  p clipped                    0  (low 0, high 0)
+  q clipped                    287  (low 0, high 287)
+  rows with either clipped     287
+  rows dropped for any reason  0
+
+base rate Y=1  TRAIN 0.40257   HOLDOUT 0.44468
+
+--------------------------------------------------------------------------
+TRAIN-FITTED COEFFICIENTS  (n_train = 6471, event clusters = 959)
+--------------------------------------------------------------------------
+two-term model:  logit P(Y=1) = a + b_q * z_q + b_d * d
+term            est              boot 95% CI    CR1 SE               CR1 95% CI
+alpha      -0.08559 [ -0.21860,   0.04432]   0.06725 [ -0.21740,   0.04622]
+beta_q      1.06015 [  0.95310,   1.17927]   0.05642 [  0.94956,   1.17073]
+beta_d      0.13220 [ -0.03711,   0.31600]   0.08992 [ -0.04403,   0.30843]
+
+market-only model:  logit P(Y=1) = a + b_q * z_q
+alpha      -0.09011 [ -0.22042,   0.04066]   0.06621 [ -0.21988,   0.03966]
+beta_q      1.01267 [  0.93292,   1.09997]   0.04089 [  0.93252,   1.09282]
+
+bootstrap draws with a non-converged refit: 0 / 2000
+two-term  beta_q - 1  = +0.06015  boot 95% CI [-0.04690, +0.17927]  -> includes 0
+market-only beta_q-1  = +0.01267  boot 95% CI [-0.06708, +0.09997]  -> includes 0
+TRAIN log-lik: two-term -3243.608  market-only -3246.601  LR chi2(1) = 5.9875  (iid-naive, descriptive only)
+
+--------------------------------------------------------------------------
+HOLDOUT EVALUATION  (n_holdout = 3814, event clusters = 537)
+--------------------------------------------------------------------------
+model                                           Brier   log loss
+(a) market alone  q                          0.179173   0.528599
+(b) two-term model  a+b_q*z_q+b_d*d          0.180145   0.531419
+(c) our forecast alone  p                    0.194733   0.570061
+(x) market recalibrated  a+b_q*z_q           0.180197   0.531284
+
+--------------------------------------------------------------------------
+PAIRED DIFFERENCES ON HOLDOUT — event-clustered bootstrap
+(10000 resamples of 537 holdout events; NEGATIVE favours the first model)
+--------------------------------------------------------------------------
+PRIMARY  (b) two-term  -  (a) market alone
+    brier    +0.000972   95% CI [-0.000132, +0.002079]   includes 0
+    logloss  +0.002819   95% CI [-0.000181, +0.005816]   includes 0
+
+         (b) two-term  -  (c) our p alone
+    brier    -0.014587   95% CI [-0.019075, -0.010119]   EXCLUDES 0
+    logloss  -0.038642   95% CI [-0.050046, -0.027138]   EXCLUDES 0
+
+         (c) our p     -  (a) market alone   [known: p is worse]
+    brier    +0.015560   95% CI [+0.010981, +0.020147]   EXCLUDES 0
+    logloss  +0.041462   95% CI [+0.030064, +0.052923]   EXCLUDES 0
+
+DECOMP-1 (x) market recalibrated - (a) raw market  [MARKET effect]
+    brier    +0.001024   95% CI [+0.000028, +0.002004]   EXCLUDES 0
+    logloss  +0.002685   95% CI [+0.000131, +0.005202]   EXCLUDES 0
+
+DECOMP-2 (b) two-term - (x) market recalibrated  [AGENT effect]
+    brier    -0.000051   95% CI [-0.000536, +0.000431]   includes 0
+    logloss  +0.000135   95% CI [-0.001157, +0.001427]   includes 0
+
+==========================================================================
+PREREGISTERED VERDICT
+==========================================================================
+  beats market alone on Brier   with CI excluding 0 : False
+  beats market alone on logloss with CI excluding 0 : False
+  E1 : FAIL
+  beta_d = +0.13220  event-clustered boot 95% CI [-0.03711, +0.31600]
+==========================================================================
