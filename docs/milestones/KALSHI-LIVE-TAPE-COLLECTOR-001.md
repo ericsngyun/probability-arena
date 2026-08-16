@@ -1860,3 +1860,21 @@ E2/E3 remain unresolved for the structural reason §13 gives (both are
 whole-run estimators against a noise floor larger than the signal); nothing
 about this checkpoint changes that, and both point estimates are negative,
 which is what an unresolved estimator looks like.
+
+### Suite state at this checkpoint
+
+`.venv/bin/python -m pytest -q -p no:randomly`: **5,052 passed / 4 failed**
+(+22 tests, all of them this checkpoint's). The four are pre-existing and
+environment-flaky, established against a **clean clone of the pre-change
+commit run on the same host**, which produced **5,026 passed / 8 failed** — a
+strict SUPERSET containing all four:
+
+| failure | family |
+|---|---|
+| `test_crypto_reconciler_lock_wait_budget_001` | one of the two named known failures |
+| `test_live_market_001::TestEndToEnd` (2 members) | the documented rotating-member class; the baseline run hit **4** members |
+| `test_ops009::…::test_marketops_report_cli_surfaces_promotion` | the wall-clock flake its own sibling's docstring describes — it seeds a signal by age and does not patch `marketops._now`; also failed on the untouched baseline |
+
+The host was carrying several concurrent agents throughout (load 1m 4.4–5.1),
+which is the regime both flake families are documented to appear in. No
+failure is reachable from `app/realtime/`.
