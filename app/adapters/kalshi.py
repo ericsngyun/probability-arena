@@ -338,6 +338,31 @@ class KalshiRestAdapter:
                     f"truncated and must not be used as a population")
         return rows, pages
 
+    async def fetch_markets_by_tickers_raw(
+        self, tickers: list[str], *, chunk_delay_seconds: float = 0.25
+    ) -> list[dict]:
+        """Fresh RAW venue objects for specific tickers, chunked to the page limit.
+
+        The raw sibling of `fetch_markets_by_tickers`. KALSHI-TAPE-MANIFEST needs
+        the untouched payload because it samples fields (`volume_fp`, top-of-book
+        sizes) that `MarketData` normalizes or rounds, and it re-reads the same
+        tickers repeatedly to measure a RATE — so a rounded value would quantize
+        the very difference being measured.
+
+        Read-only; unknown tickers are simply absent from the response.
+        """
+        results: list[dict] = []
+        async with httpx.AsyncClient(base_url=self.base_url, timeout=self.timeout) as client:
+            for start in range(0, len(tickers), PAGE_SIZE):
+                chunk = tickers[start : start + PAGE_SIZE]
+                response = await self._get_with_retry(
+                    client, MARKETS_PATH,
+                    {"tickers": ",".join(chunk), "limit": len(chunk)})
+                results.extend(response.json().get("markets") or [])
+                if chunk_delay_seconds and start + PAGE_SIZE < len(tickers):
+                    await asyncio.sleep(chunk_delay_seconds)
+        return results
+
     async def fetch_markets_by_tickers(self, tickers: list[str]) -> list[MarketData]:
         """Fresh quotes for specific tickers via GET /markets?tickers=...,
         chunked to the page-size limit. Read-only; unknown tickers are simply

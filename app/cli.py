@@ -652,12 +652,14 @@ def kalshi_tape_manifest(
     environment: str = "demo",
     out_json: str | None = None,
     out_markdown: str | None = None,
-    max_staleness_hours: float = 24.0,
     min_separation_ratio: float = 2.0,
     min_distinct_events: int = 6,
     min_distinct_series: int = 4,
     max_per_event: int = 3,
     page_delay_seconds: float = 0.3,
+    probe_reads: int = 4,
+    probe_interval_seconds: float = 150.0,
+    screen_pool_max: int = 1200,
     include_mve: bool = False,
     fmt: str = "text",
 ) -> int:
@@ -678,6 +680,7 @@ def kalshi_tape_manifest(
     from app.services.kalshi_tape_manifest import (
         EligibilityPolicy,
         ManifestError,
+        ProbePolicy,
         SelectionPolicy,
         render_markdown,
         snapshot_and_build,
@@ -686,6 +689,10 @@ def kalshi_tape_manifest(
     def _progress(pages, rows):
         if fmt == "text" and pages % 25 == 0:
             print(f"  ... {pages} pages, {rows} markets", flush=True)
+
+    def _probe_progress(i, total, rows):
+        if fmt == "text":
+            print(f"  ... probe read {i}/{total} ({rows} markets)", flush=True)
 
     if fmt == "text":
         print(f"kalshi tape manifest — {environment}")
@@ -697,7 +704,12 @@ def kalshi_tape_manifest(
             environment=environment,
             mve_filter=None if include_mve else "exclude",
             page_delay_seconds=page_delay_seconds,
-            eligibility=EligibilityPolicy(max_staleness_hours=max_staleness_hours),
+            eligibility=EligibilityPolicy(),
+            probe=ProbePolicy(
+                reads=probe_reads,
+                interval_seconds=probe_interval_seconds,
+                screen_pool_max=screen_pool_max,
+            ),
             selection=SelectionPolicy(
                 min_separation_ratio=min_separation_ratio,
                 min_distinct_events=min_distinct_events,
@@ -705,6 +717,7 @@ def kalshi_tape_manifest(
                 max_per_event=max_per_event,
             ),
             progress=_progress,
+            probe_progress=_probe_progress,
         ))
     except (ManifestError, RuntimeError, OSError) as exc:
         print(f"error: {exc}")
@@ -725,20 +738,24 @@ def kalshi_tape_manifest(
     snap = manifest["snapshot"]
     print(f"  snapshot             {snap['canonical_snapshot_timestamp']} "
           f"({snap['pages_fetched']} pages, "
-          f"{snap['activity_snapshot_duration_seconds']}s)")
+          f"{snap['census_duration_seconds']}s)")
     print(f"  statistic            {manifest['statistic']['name']}")
     print(f"  frame                {pop['frame_size']} open markets")
     print(f"  eligible             {pop['eligible_count']} "
           f"({pop['eligible_distinct_events']} events, "
           f"{pop['eligible_distinct_series']} series)")
     print(f"  frame digest         {manifest['candidate_population']['frame_digest_sha256'][:16]}…")
+    ap = manifest["activity_probe"]
+    print(f"  probe                {ap['reads']} reads over "
+          f"{ap.get('span_minutes')} min; "
+          f"{ap['candidates_probed']}/{ap['screen_pool_size']} probed"
+          + (" (POOL TRUNCATED)" if ap.get("screen_pool_was_truncated") else ""))
+    print(f"  lifetime vol monotonic {ap.get('lifetime_volume_is_monotonic')}")
     print("  frame integrity:")
-    print(f"    nonzero statistic          {fi['markets_with_nonzero_statistic']}")
-    print(f"    updated within 24h         {fi['markets_updated_within_24h']}")
+    print(f"    nonzero 24h volume         {fi['markets_with_nonzero_screen_statistic']}")
+    print(f"    traded during the probe    {fi['markets_that_traded_during_the_probe']}")
     print(f"    crossed books              {fi['crossed_books']}")
     print(f"    negative resting sizes     {fi['negative_resting_sizes']}")
-    print(f"    statistic self-consistent  {fi['statistic_is_internally_consistent']}"
-          f" (contradictions {fi['nonzero_statistic_but_not_updated_in_24h']})")
     print("  top ineligibility reasons:")
     for k, v in list(pop["ineligibility_histogram"].items())[:8]:
         print(f"    {k:<28} {v}")
@@ -8817,8 +8834,6 @@ def build_parser() -> argparse.ArgumentParser:
     ktm_p.add_argument("--out-json", type=str, default=None, dest="out_json")
     ktm_p.add_argument("--out-markdown", type=str, default=None,
                        dest="out_markdown")
-    ktm_p.add_argument("--max-staleness-hours", type=float, default=24.0,
-                       dest="max_staleness_hours")
     ktm_p.add_argument("--min-separation-ratio", type=float, default=2.0,
                        dest="min_separation_ratio")
     ktm_p.add_argument("--min-distinct-events", type=int, default=6,
@@ -8829,6 +8844,13 @@ def build_parser() -> argparse.ArgumentParser:
                        dest="max_per_event")
     ktm_p.add_argument("--page-delay-seconds", type=float, default=0.3,
                        dest="page_delay_seconds")
+    ktm_p.add_argument("--probe-reads", type=int, default=4, dest="probe_reads",
+                       help="how many timed re-reads measure the activity rate")
+    ktm_p.add_argument("--probe-interval-seconds", type=float, default=150.0,
+                       dest="probe_interval_seconds")
+    ktm_p.add_argument("--screen-pool-max", type=int, default=1200,
+                       dest="screen_pool_max",
+                       help="cap on how many markets the activity probe re-reads")
     ktm_p.add_argument("--include-mve", action="store_true", dest="include_mve",
                        help="do NOT exclude multivariate-event combinatorial "
                             "shards (they are near-identical permutations and "
@@ -9964,12 +9986,14 @@ def main(argv: list[str] | None = None) -> int:
         return kalshi_tape_manifest(
             environment=args.environment, out_json=args.out_json,
             out_markdown=args.out_markdown,
-            max_staleness_hours=args.max_staleness_hours,
             min_separation_ratio=args.min_separation_ratio,
             min_distinct_events=args.min_distinct_events,
             min_distinct_series=args.min_distinct_series,
             max_per_event=args.max_per_event,
             page_delay_seconds=args.page_delay_seconds,
+            probe_reads=args.probe_reads,
+            probe_interval_seconds=args.probe_interval_seconds,
+            screen_pool_max=args.screen_pool_max,
             include_mve=args.include_mve, fmt=args.fmt)
     if args.command == "kalshi-realtime-replay":
         return kalshi_realtime_replay(
