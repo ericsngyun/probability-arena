@@ -8,9 +8,16 @@ from the two documented observer environment variables to
 **CP3 scope: the session loop and the observation record.** Everything after
 the credential section: the frame-by-frame orchestrator (connect, subscribe,
 read, envelope, append, dispatch, close, result) and the normalization that
-decides what a tape record says. The measurement lane
-(`collector_metrics.py`, CP4) is NOT here; this module talks to it through one
-optional, no-op-by-default hook (`NullCollectorMetrics`).
+decides what a tape record says.
+
+**CP3.5 scope: the seam to the measurement lane.** The lane itself is still
+`collector_metrics.py` (CP4) and is still off this module's critical path in
+both directions — it may not slow the tape down and it may not take the tape
+down. What changed is that it is now CALLED: this module holds the typed,
+direct calls into `CollectorMetrics`, each inside its own narrow exception
+boundary, and owns the flusher's start/stop. The argument for that shape, and
+the list of what is deliberately not observed, is at "CP3.5 — THE METRICS SEAM"
+below.
 
 Two properties of the CP3 half are load-bearing and are argued at their
 definitions:
@@ -75,6 +82,8 @@ from app.realtime.archive import ArchiveError, EventArchive
 from app.realtime.archive_head import ArchiveHeadError
 from app.realtime.auth import ReadOnlyRequestSigner
 from app.realtime.book import (
+    SUB_GAP,
+    SUB_REGRESSION,
     SubscriptionError,
     SubscriptionRouter,
     SubscriptionState,
@@ -83,6 +92,7 @@ from app.realtime.book import (
     utcnow,
 )
 from app.realtime.canonical import canonical_datetime
+from app.realtime.collector_metrics import NULL_METRICS, NullCollectorMetrics
 from app.realtime.fixedpoint import (
     FixedPointError,
     parse_contract_units,
@@ -837,46 +847,74 @@ BOUNDARY_NOTE = (
 # rejection as a fatal error.
 RECORD_REJECTION_PREFIX = "event rejected by the writer:"
 
-# The closed set of counter names the collector will ever hand the metrics
-# lane. A name outside this set is a schema change, not a log line.
-METRIC_EVENTS = ("frames_malformed", "events_rejected", "sequence_fault",
-                 "recovery_requested", "reconnect", "subscription_superseded",
-                 "archive_rotation")
+# =================================================================================
+# CP3.5 — THE METRICS SEAM
+# =================================================================================
+#
+# CP3 and CP4 were built in parallel under strict file ownership and shipped two
+# different interfaces for the same seam: CP3 defined `observe_frame(**kwargs)` /
+# `observe_event(name)` and CP4 defined `on_frame` / `on_append` / a per-class
+# counter method each. Both complied with their instructions exactly, nothing was
+# asked to reconcile them, and the result was 1,186 lines of green but
+# UNREACHABLE measurement code — `CollectorMetrics` had no caller anywhere in
+# `app/`. That is now written doctrine (`AGENTS.md`, "Parallel-agent
+# composition"), and this checkpoint owns the seam.
+#
+# The reconciliation, and the three rules it follows:
+#
+# **1. One typed interface, CP4's, called directly.** There is no adapter and no
+# translation layer. `observe_frame`/`observe_event` are gone rather than
+# forwarded, because a shim that maps one shape onto the other at runtime is a
+# second interface pretending to be a bridge — the next reader would have to
+# hold both in their head to know what a counter means.
+#
+# **2. Each call sits in its OWN narrow `try/except`, and nothing else does.**
+# Not a generic wrapper: no `*args`, no `**kwargs`, no reflection, no dispatch
+# table. The boundary exists because observability must never kill the capture
+# stream, and it is priced: CP5 measured a `try/except` + `**kwargs` wrapper at
+# +208 ns/frame, of which the kwargs packing — not the exception handler — is
+# most of the cost. A metrics call that raises is counted in `metrics_errors`
+# and the session continues.
+#
+# **3. Nothing on this seam can carry a market ticker.** Every parameter is an
+# `int`, a `bool` or a member of a closed string vocabulary; there is no field
+# for market identity to ride in, in either direction. §7.2 keeps
+# high-cardinality identity out of the telemetry directory structurally, and the
+# structure is checked through the WIRED path in
+# `tests/test_kalshi_live_tape_cp35_001.py`, not just inside the metrics module.
+#
+# What the collector calls, and exactly once per occurrence of each:
+#
+#   on_frame(received_mono_ns, wire_bytes)        every frame off the wire,
+#                                                 malformed and control included
+#   on_frame_malformed()                          a frame that is not a dict
+#   on_append(elapsed_ns, rotated=)               one accepted `archive.append`
+#   on_append_rejected(elapsed_ns)                one typed record rejection
+#   on_sequence_fault("gap"|"regression"|"duplicate")
+#   on_disconnect()                               a connection the venue ended
+#   on_reconnect(subscription_generation=)        one reconnect attempt
+#   on_subscription_generation(generation)        a new epoch actually began
+#
+# Two deliberate silences, stated so they are not mistaken for oversights:
+#
+# * **Sequence faults outside CP4's closed vocabulary are not forwarded.**
+#   `wrong_sid`, `stale_generation`, `missing_sequence`, `awaiting_snapshot` and
+#   book-level refusals have no bucket in the interval record, and
+#   `on_sequence_fault` counts an unrecognised kind as an `observe_error` — a
+#   claim that the METRICS lane malfunctioned. They are counted in
+#   `CollectorResult.sequence_faults`, which is where they are true.
+# * **`on_segment_closed` is not wired and cannot be from here.** It is
+#   documented as a closer-thread call from an `_on_rotation_closed` hook, and
+#   `EventArchive` exposes no callback seam for one; reaching into `_closer`
+#   from the collector would be exactly the private coupling CP4 refused to
+#   take. Wiring it needs an owned change to `archive.py`.
+SEQUENCE_FAULT_KINDS = {SUB_GAP: "gap", SUB_REGRESSION: "regression"}
 
-
-class NullCollectorMetrics:
-    """The default metrics seam: three methods, all of which do nothing.
-
-    CP4 owns `app/realtime/collector_metrics.py` and may supply any object with
-    this interface. The contract, so the two halves can be built independently:
-
-    * ``observe_frame(*, event_type: str, archived: bool, append_ns: int | None,
-      rotations: int) -> None`` — once per received frame, AFTER the append, so
-      nothing here can delay a record reaching the writer. ``append_ns`` is
-      `None` on a dry run and on a rejected record.
-    * ``observe_event(name: str) -> None`` — one counter increment, `name` from
-      `METRIC_EVENTS`.
-    * ``close() -> None`` — once, at session end.
-
-    **No market ticker is ever passed.** A ticker is high-cardinality market
-    identity and section 7.2 keeps it out of the telemetry directory entirely;
-    the interval record carries a COUNT of subscribed markets, never a list. So
-    the seam is shaped such that the collector cannot leak one even by mistake.
-
-    A hook that raises is counted in `metrics_errors` and the session continues.
-    The measurement lane is off the archive's critical path in both directions:
-    it may not slow the tape down, and it may not take the tape down either.
-    """
-
-    def observe_frame(self, *, event_type: str, archived: bool,
-                      append_ns: int | None, rotations: int) -> None:
-        return None
-
-    def observe_event(self, name: str) -> None:
-        return None
-
-    def close(self) -> None:
-        return None
+# The default seam. Deliberately the SAME object CP5's "instrumentation off"
+# arm uses, rather than a second no-op class living here: two null lanes would
+# have to be kept in step by hand, and the one that drifted would be the one
+# the overhead gate measured.
+DEFAULT_METRICS: NullCollectorMetrics = NULL_METRICS
 
 
 @dataclass(frozen=True)
@@ -1004,10 +1042,17 @@ class _Session:
     """
 
     def __init__(self, config: CollectorConfig, *, transport_factory,
-                 metrics=None, stop_requested=None, sleep=None):
+                 metrics=None, flusher=None, stop_requested=None, sleep=None):
         self.config = config
         self._transport_factory = transport_factory
-        self._metrics = metrics if metrics is not None else NullCollectorMetrics()
+        self._metrics = metrics if metrics is not None else DEFAULT_METRICS
+        # The interval writer's thread, when the caller built one. The session
+        # owns only its LIFECYCLE — `start()` inside the run, `stop()` in the
+        # `finally` so the last interval (the one that explains how the session
+        # ended) is written even when the session ended badly. Both calls are
+        # inside their own boundary: a flusher that cannot start must not
+        # prevent a tape from being collected.
+        self._flusher = flusher
         self._stop_requested = stop_requested
         self._sleep = sleep if sleep is not None else asyncio.sleep
         self._archive = None
@@ -1015,7 +1060,17 @@ class _Session:
         self._recovery_pending: dict = {}
         self._command_id = 0
         self._started_ns = 0
-        self._rotations_seen = 0
+        # The segment path the last accepted append landed in. `path !=
+        # previous` is the ONLY rotation signal available without reading a
+        # private archive attribute, and unlike `archive.rotations` — which the
+        # CLOSER thread increments when a retired segment finishes closing — it
+        # is observed on the producer thread, on the very append that paid the
+        # rotation cost. CP5 priced the comparison at ~125-167 ns.
+        self._prev_segment_path = None
+        # The live transport's counter block, resolved once per connection.
+        # `wire_bytes` is its `bytes_received` delta across one yield.
+        self._wire_counters = None
+        self._wire_bytes_seen = 0
 
         self.events_received = 0
         self.events_archived = 0
@@ -1040,18 +1095,37 @@ class _Session:
         self.metrics_errors = 0
         self.rejection_reasons: list = []
 
-    # -- the metrics seam, which may never take the session down --------------
-    def _metric_frame(self, **kwargs) -> None:
-        try:
-            self._metrics.observe_frame(**kwargs)
-        except Exception:                     # noqa: BLE001 - counted, not silent
-            self.metrics_errors += 1
+    # -- the metrics seam's off-hot-path half ---------------------------------
+    def _bind_measurement_sources(self, transport) -> None:
+        """Give the flusher thread its three read-only windows, per connection.
 
-    def _metric_event(self, name: str) -> None:
-        try:
-            self._metrics.observe_event(name)
-        except Exception:                     # noqa: BLE001 - counted, not silent
-            self.metrics_errors += 1
+        Every source is a callable the METRICS side calls defensively
+        (`read_source`), and every one of them reaches into an object this
+        module owns a reference to — which is the point of §7.3 putting the
+        binding here: `collector_metrics.py` must not know that an archive has
+        a `_closer`, or that a transport has a `queue_depth` that travels an
+        undocumented library chain (CP0 12.3). When one of those breaks, one
+        line in one file changes.
+
+        Re-bound on every connection because a reconnect builds a NEW transport;
+        a source closed over the dead one would report the last connection's
+        numbers forever, which is worse than reporting none.
+        """
+        counters = getattr(transport, "counters", None)
+        self._wire_counters = counters if hasattr(counters, "bytes_received") else None
+        self._wire_bytes_seen = getattr(self._wire_counters, "bytes_received", 0)
+        snapshot = getattr(counters, "snapshot", None)
+        if callable(snapshot):
+            try:
+                self._metrics.bind_transport_counters(snapshot)
+            except Exception:                 # noqa: BLE001 - counted, not silent
+                self.metrics_errors += 1
+        depth = getattr(transport, "queue_depth", None)
+        if callable(depth):
+            try:
+                self._metrics.bind_reader_lag(depth)
+            except Exception:                 # noqa: BLE001 - counted, not silent
+                self.metrics_errors += 1
 
     # -- ordering -------------------------------------------------------------
     def _router_for(self, sid: int) -> SubscriptionRouter:
@@ -1095,8 +1169,16 @@ class _Session:
                 market_tickers=self.config.market_tickers,
                 generation=self.subscription_epoch)
             self.subscription_generations += 1
-            self._metric_event("subscription_superseded")
         self._recovery_pending.clear()
+        # ONE observation per epoch, not one per superseded router: the metrics
+        # lane holds a GAUGE ("which stream do this interval's numbers belong
+        # to"), and the number it must equal is the one stamped on every
+        # envelope from here on. Counting supersessions into it instead would
+        # make the gauge a function of how many sids happened to be open.
+        try:
+            self._metrics.on_subscription_generation(self.subscription_epoch)
+        except Exception:                     # noqa: BLE001 - counted, not silent
+            self.metrics_errors += 1
         return self.subscription_epoch
 
     async def _request_recovery(self, transport, sid: int) -> None:
@@ -1113,8 +1195,11 @@ class _Session:
         self._command_id += 1
         await transport.send(build_get_snapshot(
             self._command_id, sid, list(self.config.market_tickers)))
+        # Counted on the session result only. The interval record's field set is
+        # closed (§7.2) and has no bucket for a recovery request; inventing one
+        # is a schema change, and mapping it onto a neighbouring counter would
+        # make that counter mean two things.
         self.recoveries_requested += 1
-        self._metric_event("recovery_requested")
 
     # -- per-frame ------------------------------------------------------------
     async def _handle_frame(self, message, transport):
@@ -1125,13 +1210,36 @@ class _Session:
         receive_mono = monotonic_ns()
         self.events_received += 1
 
+        # This frame's payload length, as the delta of the transport's own byte
+        # counter across the yield. Inlined rather than called: a helper would
+        # add a Python frame to every frame of every session, and the whole
+        # design of this seam is that measurement is charged honestly.
+        counters = self._wire_counters
+        if counters is None:
+            wire_bytes = 0
+        else:
+            total = counters.bytes_received
+            wire_bytes = total - self._wire_bytes_seen
+            self._wire_bytes_seen = total
+
+        metrics = self._metrics
         if type(message) is not dict:
             # Never handed to `make_envelope`: it would archive a record whose
             # `raw` is not a venue message. The live transport already filters
             # these; a fixture transport does not, and the collector must not
             # depend on which transport it holds.
             self.frames_malformed += 1
-            self._metric_event("frames_malformed")
+            # Still a received frame, so it still counts in the denominator —
+            # `events_received = archived + rejected + malformed` is the
+            # conservation property §7.4 asks the record to preserve.
+            try:
+                metrics.on_frame(receive_mono, wire_bytes)
+            except Exception:                 # noqa: BLE001 - counted, not silent
+                self.metrics_errors += 1
+            try:
+                metrics.on_frame_malformed()
+            except Exception:                 # noqa: BLE001 - counted, not silent
+                self.metrics_errors += 1
             return self._cap_check()
 
         # 2. Normalization: pure, stateless, and never destructive — `raw` goes
@@ -1151,69 +1259,117 @@ class _Session:
         # 3. ARCHIVE FIRST, INTERPRET SECOND. A frame we could not order is
         #    still evidence, and a dispatch exception must never cost us the
         #    record — which is the whole reason `raw` is stored verbatim.
-        append_ns = None
+        append_ns = 0
         archived = False
+        rejected = False
+        rotated = False
+        fatal = None
         if self._archive is not None:
             before = monotonic_ns()
             try:
-                self._archive.append(envelope)
+                path = self._archive.append(envelope)
             except ArchiveError as exc:
+                # The rejected append still cost time and still competed for the
+                # writer lock, so it is timed like any other: an append that
+                # ends in a refusal is not a free one.
+                append_ns = monotonic_ns() - before
                 text = str(exc)
-                if not text.startswith(RECORD_REJECTION_PREFIX):
+                if text.startswith(RECORD_REJECTION_PREFIX):
+                    rejected = True
+                    self.events_rejected += 1
+                    if len(self.rejection_reasons) < 32:
+                        self.rejection_reasons.append(text)
+                else:
                     # Partition-level: ENOSPC, an unwritable env dir, every
                     # candidate segment id held. Continuing here would produce a
-                    # tape with a hole nothing records.
-                    return _Outcome("archive", status=STATUS_ARCHIVE_ERROR,
-                                    detail=f"{type(exc).__name__}: {text}")
-                self.events_rejected += 1
-                if len(self.rejection_reasons) < 32:
-                    self.rejection_reasons.append(text)
-                self._metric_event("events_rejected")
+                    # tape with a hole nothing records. The session ends — but
+                    # the frame was received, so it is still observed below
+                    # before the outcome is returned.
+                    fatal = _Outcome("archive", status=STATUS_ARCHIVE_ERROR,
+                                     detail=f"{type(exc).__name__}: {text}")
             else:
                 append_ns = monotonic_ns() - before
                 archived = True
                 self.events_archived += 1
-            rotations = self._archive.rotations
-            if rotations > self._rotations_seen:
-                self._rotations_seen = rotations
-                self._metric_event("archive_rotation")
+                rotated = (self._prev_segment_path is not None
+                           and path != self._prev_segment_path)
+                self._prev_segment_path = path
 
         # 4. Sequence validation, AFTER the append. A `SubscriptionError` is
         #    recorded and triggers recovery; it does not end the session and it
-        #    cannot un-archive anything.
-        if self.config.validate_sequence:
+        #    cannot un-archive anything. It is skipped once the partition is
+        #    known broken: there is nothing left to keep ordered.
+        if fatal is None and self.config.validate_sequence:
             await self._validate(envelope, transport)
 
-        # 5. Measurement, last and off the critical path.
-        self._metric_frame(event_type=envelope.event_type, archived=archived,
-                           append_ns=append_ns, rotations=self._rotations_seen)
+        # 5. Measurement, last and off the critical path. Exactly one `on_frame`
+        #    per received frame, and exactly one append observation per append —
+        #    an accepted one or a rejected one, never both and never neither.
+        try:
+            metrics.on_frame(receive_mono, wire_bytes)
+        except Exception:                     # noqa: BLE001 - counted, not silent
+            self.metrics_errors += 1
+        if archived:
+            try:
+                metrics.on_append(append_ns, rotated=rotated)
+            except Exception:                 # noqa: BLE001 - counted, not silent
+                self.metrics_errors += 1
+        elif rejected:
+            try:
+                metrics.on_append_rejected(append_ns)
+            except Exception:                 # noqa: BLE001 - counted, not silent
+                self.metrics_errors += 1
+        if fatal is not None:
+            return fatal
         return self._cap_check()
 
     async def _validate(self, envelope, transport) -> None:
         sid = envelope.sid
         if not isinstance(sid, int) or isinstance(sid, bool):
             # Nothing to order against: `seq` is per subscription and this frame
-            # names none. Counted as a fault rather than silently ignored.
+            # names none. Counted as a fault rather than silently ignored — and
+            # NOT forwarded to the metrics lane, whose fault vocabulary has no
+            # word for it (see SEQUENCE_FAULT_KINDS).
             if envelope.seq is not None:
                 self.sequence_faults += 1
-                self._metric_event("sequence_fault")
             return
         router = self._router_for(sid)
         try:
-            router.dispatch(envelope.to_dict())
+            outcome = router.dispatch(envelope.to_dict())
         except SubscriptionError:
             self.sequence_faults += 1
-            self._metric_event("sequence_fault")
+            # The classification comes from the SUBSCRIPTION's own state reason,
+            # not from re-deriving it here: `book.py` decided what kind of fault
+            # this was when it refused the message, and a second opinion
+            # computed from the same envelope could disagree with the one the
+            # replay lane will reach.
+            kind = SEQUENCE_FAULT_KINDS.get(router.subscription.state_reason)
+            if kind is not None:
+                try:
+                    self._metrics.on_sequence_fault(kind)
+                except Exception:             # noqa: BLE001 - counted, not silent
+                    self.metrics_errors += 1
             router.subscription.begin_recovery()
             await self._request_recovery(transport, sid)
         except Exception:                     # noqa: BLE001 - see below
             # A book-level refusal (`BookIntegrityError`, `FixedPointError`) is
             # a statement about ONE market's reconstruction, not about the tape.
             # The record is already durable; losing the session over it would
-            # trade evidence for tidiness.
+            # trade evidence for tidiness. It is not a SEQUENCE fault kind, so
+            # the metrics lane is not told it was one.
             self.sequence_faults += 1
-            self._metric_event("sequence_fault")
         else:
+            # A duplicate is not a session fault — the venue re-sent something
+            # already applied and nothing was lost, which is why
+            # `sequence_faults` does not move. It IS a distribution the interval
+            # record carries its own counter for, so it is observed here and
+            # nowhere else.
+            if (type(outcome) is dict
+                    and outcome.get("action") == "duplicate_ignored"):
+                try:
+                    self._metrics.on_sequence_fault("duplicate")
+                except Exception:             # noqa: BLE001 - counted, not silent
+                    self.metrics_errors += 1
             if router.subscription.healthy:
                 self._recovery_pending.pop(sid, None)
 
@@ -1236,6 +1392,10 @@ class _Session:
             await transport.connect()
             # A LIVE SOCKET, not an attempt: `connect()` has returned.
             self.connection_generation += 1
+            # Bound here, and only here: before this line there is no connection
+            # whose counters mean anything, and after it every one of this
+            # connection's frames is measured against the same source.
+            self._bind_measurement_sources(transport)
             self._command_id += 1
             # The ONLY frame shape that reaches a socket comes from a builder;
             # the transport re-validates it and refuses anything else.
@@ -1252,6 +1412,14 @@ class _Session:
                 if outcome is not None:
                     return outcome
         except TransportError as exc:
+            # THE SOCKET WENT AWAY WHILE WE STILL WANTED FRAMES. That is a
+            # disconnect, and §8.3 makes it the boundary loss can enter across,
+            # so it is observed on both ends of the ladder: here, and again as a
+            # reconnect if the bound allows another attempt.
+            try:
+                self._metrics.on_disconnect()
+            except Exception:                 # noqa: BLE001 - counted, not silent
+                self.metrics_errors += 1
             # Type name only: a URI and signed headers must never reach a log
             # line through an exception message (SAFETY_BOUNDARIES:259).
             return _Outcome("transport", detail=type(exc).__name__)
@@ -1262,6 +1430,14 @@ class _Session:
                     await closer()
                 except Exception:             # noqa: BLE001 - close is best effort
                     pass
+        # The stream ended without an error: the venue closed it. Also a
+        # disconnect. A session that ends because WE hit a cap returns from
+        # inside the loop above and is deliberately not counted as one — an
+        # operator's stop is not a venue event.
+        try:
+            self._metrics.on_disconnect()
+        except Exception:                     # noqa: BLE001 - counted, not silent
+            self.metrics_errors += 1
         return _Outcome("stream_ended")
 
     async def _backoff(self) -> None:
@@ -1299,6 +1475,22 @@ class _Session:
             except (ArchiveError, ArchiveHeadError, OSError) as exc:
                 return self._result(STATUS_ARCHIVE_ERROR, started_at,
                                     f"{type(exc).__name__}: {exc}", 0, 0)
+            archive = self._archive
+            # §7.3 defines `closer_outstanding_max` in terms of a PRIVATE
+            # archive attribute. The reach stays here, in the orchestrator that
+            # already holds the archive, rather than in the metrics module —
+            # which is the same rule CP4 states for the transport's queue depth.
+            try:
+                self._metrics.bind_archive_state(lambda: {
+                    "rotation_failures": len(archive.rotation_failures),
+                    "closer_outstanding": archive._closer.outstanding()})
+            except Exception:                 # noqa: BLE001 - counted, not silent
+                self.metrics_errors += 1
+        if self._flusher is not None:
+            try:
+                self._flusher.start()
+            except Exception:                 # noqa: BLE001 - counted, not silent
+                self.metrics_errors += 1
         try:
             while True:
                 outcome = await self._one_connection(self._transport_factory())
@@ -1318,7 +1510,18 @@ class _Session:
                               f"{self.config.max_reconnects} exhausted")
                     break
                 self.reconnects += 1
-                self._metric_event("reconnect")
+                # The epoch the session is LEAVING. It is passed rather than
+                # left to the metrics lane to guess, because the lane cannot:
+                # the two numbers move on different events, and before this
+                # seam existed `on_reconnect`'s generation parameter had no
+                # channel to arrive through at all and was never once supplied.
+                # The epoch the session ARRIVES in is reported separately, by
+                # `_begin_subscription_epoch`, when the resubscribe succeeds.
+                try:
+                    self._metrics.on_reconnect(
+                        subscription_generation=self.subscription_epoch)
+                except Exception:             # noqa: BLE001 - counted, not silent
+                    self.metrics_errors += 1
                 # The epoch is NOT advanced here. A reconnect is an intention;
                 # the generation begins when the resubscribe actually succeeds
                 # (`_begin_subscription_epoch`, called from
@@ -1337,10 +1540,17 @@ class _Session:
                     status = STATUS_ARCHIVE_ERROR
                     detail = f"close failed: {type(exc).__name__}: {exc}"
                 rotation_failures = len(self._archive.rotation_failures)
-            try:
-                self._metrics.close()
-            except Exception:                 # noqa: BLE001 - counted, not silent
-                self.metrics_errors += 1
+            # AFTER the archive's commit point, so the final interval record
+            # sees the session's true last numbers, and in the `finally` so it is
+            # written even when the session ended on an exception. `stop()` is
+            # documented never to raise; the boundary is here anyway, because
+            # the one thing a measurement lane may never do is be the reason a
+            # committed tape's session reports a failure.
+            if self._flusher is not None:
+                try:
+                    self._flusher.stop()
+                except Exception:             # noqa: BLE001 - counted, not silent
+                    self.metrics_errors += 1
         if rotation_failures and status == STATUS_OK:
             # An uncommitted segment is not evidence, so a rotation failure is a
             # session-level fault even when every frame was accepted.
@@ -1349,9 +1559,30 @@ class _Session:
         return self._result(status, started_at, detail, segments_committed,
                             rotation_failures)
 
+    def _measurement_path(self) -> str | None:
+        """Where this session's interval records went, or `None`.
+
+        Read from the flusher rather than recomputed, so a result that names a
+        measurement file names the one that was actually written to. `None` is
+        the honest answer for a session with no measurement lane, and the field
+        stayed permanently `None` for as long as the lane had no caller.
+        """
+        if self._flusher is None:
+            return None
+        try:
+            return str(self._flusher.path)
+        except Exception:                     # noqa: BLE001 - counted, not silent
+            self.metrics_errors += 1
+            return None
+
     def _result(self, status: str, started_at, detail: str,
                 segments_committed: int, rotation_failures: int) -> CollectorResult:
         finished_at = utcnow()
+        # Resolved BEFORE the result is built, not inline in the argument list:
+        # reading it can fail, that failure moves `metrics_errors`, and Python
+        # evaluates keyword arguments left to right — so an inline call would
+        # have reported the error count as it stood one argument earlier.
+        measurement_path = self._measurement_path()
         return CollectorResult(
             status=status, environment=self.config.environment,
             events_received=self.events_received,
@@ -1373,13 +1604,13 @@ class _Session:
             duration_ms=(monotonic_ns() - self._started_ns) // 1_000_000,
             archive_root=(None if self.config.archive_root is None
                           else str(self.config.archive_root)),
-            measurement_path=None,
+            measurement_path=measurement_path,
             rejection_reasons=tuple(self.rejection_reasons),
             detail=detail)
 
 
 async def run_session(config: CollectorConfig, *, transport_factory,
-                      metrics=None, stop_requested=None,
+                      metrics=None, flusher=None, stop_requested=None,
                       sleep=None) -> CollectorResult:
     """Run one bounded session against whatever transport the factory returns.
 
@@ -1389,15 +1620,22 @@ async def run_session(config: CollectorConfig, *, transport_factory,
     and socket-free — CP3's tests pass a `FixtureTransport` factory and open no
     socket at all, while the live path passes a factory that builds a
     `KalshiWebsocketTransport` around a signer from `load_observer_signer`.
+
+    `metrics` is a `CollectorMetrics` (or `NULL_METRICS`); `flusher` is the
+    `MetricsFlusher` that writes its interval records. They are separate
+    parameters because they have separate lifetimes: the recorder must exist
+    before the first frame, while the writer thread is the session's to start
+    and — more importantly — to STOP, so that the interval explaining how a
+    session ended is on disk even when it ended badly.
     """
     return await _Session(config, transport_factory=transport_factory,
-                          metrics=metrics, stop_requested=stop_requested,
-                          sleep=sleep).run()
+                          metrics=metrics, flusher=flusher,
+                          stop_requested=stop_requested, sleep=sleep).run()
 
 
 def collect_once(config: CollectorConfig, *, transport_factory, metrics=None,
-                 stop_requested=None) -> CollectorResult:
+                 flusher=None, stop_requested=None) -> CollectorResult:
     """Synchronous entry point for an operator command. One session, then stop."""
     return asyncio.run(run_session(config, transport_factory=transport_factory,
-                                   metrics=metrics,
+                                   metrics=metrics, flusher=flusher,
                                    stop_requested=stop_requested))

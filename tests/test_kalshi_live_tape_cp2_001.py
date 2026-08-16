@@ -541,6 +541,22 @@ class TestKeyMaterialStaysInAuth:
         anti-vacuity assertions below require the permitted modules to actually
         be imported — so a collector that had been gutted, or a parse that
         silently produced nothing, fails here instead of passing.
+
+        AMENDED AGAIN AT CP3.5, by one module: `app.realtime.collector_metrics`.
+        The measurement lane had no caller anywhere in `app/` and the reason it
+        had none was that nothing was allowed to import it — an audit that
+        forbids the wiring is an audit that certifies unreachable code. The
+        amendment is net-STRONGER in three further ways, all below:
+
+        * the same equality is now also asserted for the METRICS module's own
+          app-level imports, so admitting it did not admit its whole transitive
+          reach — `app.telemetry.sink` is the only new arrival and it is named;
+        * the dependency DIRECTION is asserted here, in the audit that governs
+          it, rather than only in the metrics module's own suite: the lane may
+          not import the collector back;
+        * a fresh interpreter must still import the collector without pulling
+          SQLAlchemy in transitively, which is the property `app.telemetry`
+          being on the banned list was standing in for.
         """
         mods = set()
         for node in ast.walk(COLLECTOR_SRC):
@@ -552,6 +568,7 @@ class TestKeyMaterialStaysInAuth:
         assert app_mods == {"app.config", "app.realtime.archive",
                             "app.realtime.archive_head", "app.realtime.auth",
                             "app.realtime.book", "app.realtime.canonical",
+                            "app.realtime.collector_metrics",
                             "app.realtime.fixedpoint", "app.realtime.kalshi",
                             "app.realtime.ws_transport"}, app_mods
         # Anti-vacuity: the permitted things must EXIST. An empty or unparsed
@@ -565,3 +582,27 @@ class TestKeyMaterialStaysInAuth:
                        "app.db", "app.models", "app.services", "app.crud",
                        "app.telemetry"):
             assert not any(m.startswith(banned) for m in mods), banned
+
+        # --- the newly admitted module, held to the same standard -------------
+        metrics_src = ast.parse(
+            (REPO / "app" / "realtime" / "collector_metrics.py").read_text())
+        metrics_mods = set()
+        for node in ast.walk(metrics_src):
+            if isinstance(node, ast.Import):
+                metrics_mods |= {a.name for a in node.names}
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                metrics_mods.add(node.module)
+        metrics_app_mods = {m for m in metrics_mods if m.startswith("app.")}
+        assert metrics_app_mods == {"app.realtime.kalshi",
+                                    "app.telemetry.sink"}, metrics_app_mods
+        # Downward only: the lane may not reach back into the orchestrator.
+        assert "app.realtime.collector" not in metrics_mods
+        for banned in ("solana", "solders", "web3", "eth_account", "websockets",
+                       "requests", "httpx", "aiohttp", "sqlalchemy",
+                       "app.db", "app.models", "app.services", "app.crud"):
+            assert not any(m.startswith(banned) for m in metrics_mods), banned
+        # Anti-vacuity for this arm: the module really was parsed, and the
+        # thing the collector imports it FOR really is in it.
+        assert len([n for n in ast.walk(metrics_src)
+                    if isinstance(n, ast.ClassDef)]) >= 4
+        assert "app.realtime.kalshi" in metrics_app_mods
