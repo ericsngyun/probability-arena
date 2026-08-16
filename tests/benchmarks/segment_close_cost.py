@@ -300,6 +300,7 @@ def cp5_one_run(*, n: int, arm: str, max_segment_records: int,
 
         prev_path = None
         rejected = 0
+        metrics_errors = 0
         gc.collect()
 
         t_start, c_start = time.perf_counter(), time.process_time()
@@ -332,12 +333,22 @@ def cp5_one_run(*, n: int, arm: str, max_segment_records: int,
                 path = prev_path
             t1 = mono()
 
-            # -- step 5: the measurement block. `rotated` is computed in EVERY
-            #    arm so the path comparison sits in the common baseline and the
-            #    real-minus-null difference is the two metric CALLS alone.
+            # -- step 5: the measurement block, in THE SHAPE `collector.py`
+            #    ACTUALLY CONTAINS since CP3.5: typed direct calls, each inside
+            #    its own inline `try/except`. Before CP3.5 this loop measured a
+            #    shape no caller used, because there was no caller.
+            #    `rotated` is computed in EVERY arm so the path comparison sits
+            #    in the common baseline and the real-minus-null difference is
+            #    the two metric CALLS plus their two boundaries alone.
             rotated = path != prev_path and prev_path is not None
-            on_frame(t_recv, tbytes[k])
-            on_append(t1 - t0, rotated=rotated)
+            try:
+                on_frame(t_recv, tbytes[k])
+            except Exception:                   # noqa: BLE001
+                metrics_errors += 1
+            try:
+                on_append(t1 - t0, rotated=rotated)
+            except Exception:                   # noqa: BLE001
+                metrics_errors += 1
             t2 = mono()
 
             prev_path = path
@@ -359,6 +370,9 @@ def cp5_one_run(*, n: int, arm: str, max_segment_records: int,
             "arm": arm,
             "records": n,
             "rejected": rejected,
+            # Anti-vacuity for the boundary: it must be present and must never
+            # have fired. A non-zero here means the arms are not comparable.
+            "metrics_errors": metrics_errors,
             "rotations": rotations,
             "segments": len(manifests) if hasattr(manifests, "__len__") else None,
             "loop_wall_s": loop_wall,
@@ -445,21 +459,23 @@ def path_compare_cost_ns(iterations: int = 200_000) -> dict:
 
 
 class _SeamProbe:
-    """Reproduces `collector.py`'s `_metric_frame` wrapper, to price it.
+    """Prices the three seam shapes this milestone has actually proposed.
 
-    CP3 and CP4 do not currently agree on the seam. `collector.py:1032-1042`
-    calls `observe_frame(**kwargs)` / `observe_event(name)` inside a
-    `try/except`; `collector_metrics.py` exposes `on_frame(...)` /
-    `on_append(...)` and expects to be called directly (its own docstring
-    shows the orchestrator doing so). Nothing in `app/` bridges the two --
-    `CollectorMetrics` has no caller outside its tests.
+    History, because the numbers only mean something against it. CP3 and CP4
+    shipped different interfaces for the same seam: CP3 called
+    `observe_frame(**kwargs)` inside a `try/except`, CP4 exposed
+    `on_frame(...)` and expected a direct call, and nothing in `app/` bridged
+    the two -- `CollectorMetrics` had no caller outside its own tests. CP5
+    priced CP3's shape at +250 ns p50 over a direct call and recommended
+    against it (§13, "An actionable constraint for CP3<->CP4 wiring").
 
-    That matters to CP5 because the two shapes do not cost the same. The
-    wrapper builds a keyword dict, pushes an exception handler and adds a
-    Python-level call frame per invocation, and that cost is real
-    instrumentation cost that the direct-call measurement does not contain.
-    Rather than assume it away or silently measure the cheaper shape, it is
-    priced here.
+    **CP3.5 took a third option and this probe is what says it was the right
+    one.** The wired seam calls the typed method DIRECTLY and puts only that
+    call inside an inline `try/except` -- so it pays the exception handler
+    (which CPython 3.11+ makes zero-cost on the non-raising path) but not the
+    keyword dict and not the extra Python call frame. `guarded` measures
+    exactly the shape `collector.py` now contains; `wrapped` is kept so the
+    thing that was rejected stays measurable rather than becoming folklore.
     """
 
     def __init__(self) -> None:
@@ -467,6 +483,9 @@ class _SeamProbe:
         self.n = 0
 
     def observe_frame(self, *, event_type, archived, append_ns, rotations):
+        self.n += 1
+
+    def on_frame(self, received_mono_ns: int, wire_bytes: int = 0) -> None:
         self.n += 1
 
     def wrapped(self, **kwargs) -> None:
@@ -477,27 +496,48 @@ class _SeamProbe:
 
 
 def seam_wrapper_cost_ns(iterations: int = 200_000) -> dict:
-    """Direct call vs `collector.py`'s try/except + `**kwargs` wrapper."""
+    """Three shapes: typed direct, CP3.5's inline-guarded, CP3's kwargs wrapper.
+
+    All three are timed in the SAME loop iteration, one clock pair each, so a
+    scheduler excursion lands on all of them rather than on whichever arm ran
+    during it.
+    """
     probe = _SeamProbe()
     mono = time.monotonic_ns
     direct = [0] * iterations
+    guarded = [0] * iterations
     wrapped = [0] * iterations
+    errors = 0
     gc.collect()
     for i in range(iterations):
         t0 = mono()
-        probe.observe_frame(event_type="orderbook_delta", archived=True,
-                            append_ns=1234, rotations=0)
+        probe.on_frame(1_234_567, 480)
         t1 = mono()
+        # THE WIRED SHAPE, character for character as `collector.py` has it.
+        try:
+            probe.on_frame(1_234_567, 480)
+        except Exception:                       # noqa: BLE001
+            errors += 1
+        t2 = mono()
         probe.wrapped(event_type="orderbook_delta", archived=True,
                       append_ns=1234, rotations=0)
-        t2 = mono()
+        t3 = mono()
         direct[i] = t1 - t0
-        wrapped[i] = t2 - t1
-    d, w = sorted(direct), sorted(wrapped)
+        guarded[i] = t2 - t1
+        wrapped[i] = t3 - t2
+    d, g, w = sorted(direct), sorted(guarded), sorted(wrapped)
     return {"iterations": iterations,
-            "direct_p50_ns": _pct(d, 0.50), "wrapped_p50_ns": _pct(w, 0.50),
+            "boundary_errors": errors,
+            "direct_p50_ns": _pct(d, 0.50),
+            "guarded_p50_ns": _pct(g, 0.50),
+            "wrapped_p50_ns": _pct(w, 0.50),
             "direct_mean_ns": sum(direct) / iterations,
+            "guarded_mean_ns": sum(guarded) / iterations,
             "wrapped_mean_ns": sum(wrapped) / iterations,
+            # CP3.5's cost: what the exception boundary alone adds.
+            "guard_overhead_p50_ns": _pct(g, 0.50) - _pct(d, 0.50),
+            "guard_overhead_mean_ns": (sum(guarded) - sum(direct)) / iterations,
+            # CP3's cost, the number CP3.5 had to come in under.
             "wrapper_overhead_p50_ns": _pct(w, 0.50) - _pct(d, 0.50),
             "wrapper_overhead_mean_ns": (sum(wrapped) - sum(direct)) / iterations}
 
@@ -529,9 +569,13 @@ def run_cp5(*, n: int, reps: int, max_segment_records: int, seed: int,
     print(f"  path!=path : p50={pathcmp['p50_ns']:.0f}ns "
           f"p95={pathcmp['p95_ns']:.0f}ns mean={pathcmp['mean_ns']:.0f}ns "
           f"(charged to BOTH arms; includes one clock pair)")
-    print(f"  seam wrap  : direct p50={seam['direct_p50_ns']:.0f}ns vs "
-          f"try/except+**kwargs p50={seam['wrapped_p50_ns']:.0f}ns "
-          f"(+{seam['wrapper_overhead_p50_ns']:.0f}ns) -- NOT in the arms below")
+    print(f"  seam shape : direct p50={seam['direct_p50_ns']:.0f}ns | "
+          f"CP3.5 guarded p50={seam['guarded_p50_ns']:.0f}ns "
+          f"(+{seam['guard_overhead_p50_ns']:.0f}ns) | "
+          f"CP3 try/except+**kwargs p50={seam['wrapped_p50_ns']:.0f}ns "
+          f"(+{seam['wrapper_overhead_p50_ns']:.0f}ns)")
+    print(f"               the guarded shape IS what the arms below run; the "
+          f"wrapper is priced but not wired")
     print(f"  load before: {load_before}")
     print()
     if reps <= 0:

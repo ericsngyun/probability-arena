@@ -1578,6 +1578,11 @@ class _Session:
     def _result(self, status: str, started_at, detail: str,
                 segments_committed: int, rotation_failures: int) -> CollectorResult:
         finished_at = utcnow()
+        # Resolved BEFORE the result is built, not inline in the argument list:
+        # reading it can fail, that failure moves `metrics_errors`, and Python
+        # evaluates keyword arguments left to right — so an inline call would
+        # have reported the error count as it stood one argument earlier.
+        measurement_path = self._measurement_path()
         return CollectorResult(
             status=status, environment=self.config.environment,
             events_received=self.events_received,
@@ -1599,7 +1604,7 @@ class _Session:
             duration_ms=(monotonic_ns() - self._started_ns) // 1_000_000,
             archive_root=(None if self.config.archive_root is None
                           else str(self.config.archive_root)),
-            measurement_path=self._measurement_path(),
+            measurement_path=measurement_path,
             rejection_reasons=tuple(self.rejection_reasons),
             detail=detail)
 
