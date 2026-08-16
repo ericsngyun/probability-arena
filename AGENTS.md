@@ -95,7 +95,22 @@ green tests of *unreachable* code — `CollectorMetrics` had no caller anywhere 
 The guard against this is a test that instantiates the **real** collaborator,
 drives the **real** path, and proves observable state actually changes. A unit
 suite cannot catch an unreachable module, because from inside the module
-everything works.
+everything works. The worked example is
+`tests/test_kalshi_live_tape_cp35_001.py` (CP3.5, the seam checkpoint that
+closed this one): reachability, exactly-one-observation-per-event, containment
+of a hostile collaborator, and the shape the cost was measured against.
+
+**Two corollaries that seam checkpoint earned:**
+
+* **An audit that forbids the wiring certifies unreachable code.** The
+  dependency-direction test had `collector_metrics` off the collector's
+  permitted-import list, so the module was structurally unimportable by the one
+  caller it existed for. When an integration seam is opened, its audit is part
+  of the seam — amend it explicitly, keep it net-stronger, and say so.
+* **A parameter nothing ever passes is not an interface, it is a comment.**
+  `on_reconnect(subscription_generation=…)` had no channel to arrive through for
+  a whole milestone. Prefer proving a parameter's *caller* exists over proving
+  its *handler* works.
 
 **Metric-naming rule:** `brier_skill_vs_base_rate` is level-1 evidence and must
 never be presented as market-relative skill. Its rename, and the addition of

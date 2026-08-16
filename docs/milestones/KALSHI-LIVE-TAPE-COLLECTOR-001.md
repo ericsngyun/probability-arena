@@ -1583,3 +1583,124 @@ Costs to carry into that decision, all measured:
 (six injected faults, none propagate), so the wrapper is redundant defence — but
 at 208 ns it is 0.06% of append, and the failure it guards against is the
 metrics lane killing a live capture session. That trade is worth 0.06%.
+
+---
+
+## 14. CP3.5 — the seam, wired and proven
+
+**STATUS: CLOSED.** §13.1.2's open work item is done. `CollectorMetrics` has a
+caller in `app/`: `app/realtime/collector.py` calls its typed methods directly.
+
+### What the reconciliation actually was
+
+`observe_frame(**kwargs)` and `observe_event(name)` were **deleted, not
+forwarded.** An adapter that maps one shape onto the other at runtime is a
+second interface pretending to be a bridge, and the next reader would have had
+to hold both to know what a counter means. The surviving interface is CP4's,
+because it is the one with a typed method per event class — the shape that
+cannot silently widen.
+
+Each call sits in **its own** narrow `try/except` that counts
+`CollectorResult.metrics_errors` and suppresses. Not one wrapper around many
+calls: a `try` holding two observations lets the first one's failure hide the
+second entirely, which is asserted against in test 24.
+
+| collector event | typed call | exactly-once proof |
+|---|---|---|
+| every frame off the wire | `on_frame(received_mono_ns, wire_bytes)` | tests 7, 9, 15, 16 |
+| a frame that is not a dict | `on_frame_malformed()` | test 9 |
+| an accepted `archive.append` | `on_append(elapsed_ns, rotated=)` | tests 8, 16 |
+| a typed record rejection | `on_append_rejected(elapsed_ns)` | test 8 |
+| a sequence fault | `on_sequence_fault("gap"\|"regression"\|"duplicate")` | tests 10, 11, 12 |
+| a connection the venue ended | `on_disconnect()` | tests 13, 15 |
+| a reconnect attempt | `on_reconnect(subscription_generation=)` | tests 13, 14 |
+| a new epoch actually beginning | `on_subscription_generation(generation)` | test 14 |
+
+### Three defects the wiring exposed and fixed
+
+1. **`on_reconnect`'s generation had no channel and was never supplied.** The
+   old three-method seam could not carry it, so the interval record's
+   `subscription_generation` would have sat at 0 while the tape stamped 1, 2, 3.
+   The reconnect now carries the epoch it is LEAVING and
+   `on_subscription_generation` reports the one it arrives in — the two move on
+   different events, and a session that reconnects would otherwise report a
+   gauge one epoch behind its own evidence for the rest of its life. Test 14
+   compares the gauge against the generation read back off the tape.
+2. **`NULL_METRICS` was a varargs sink.** §13.1.1 measured that at 125 ns/event
+   of work a no-instrumentation build never pays; every method is now written
+   out with its real parameters, so both arms of the gate are honest.
+3. **Rotation was detected from `archive.rotations`**, which the CLOSER thread
+   increments when a retired segment finishes closing — so the signal arrived on
+   another thread, late, and was attributed to whichever append happened to
+   observe it. It now uses the segment `Path` the append returned, which is
+   CP4's documented signal, observed on the producer thread, on the append that
+   actually paid the cost.
+
+### The cost, re-measured against the wired shape
+
+`tests/benchmarks/segment_close_cost.py` now runs **the shape `collector.py`
+contains** in its measured loop, and prices all three proposed shapes side by
+side in one loop iteration:
+
+| seam shape | p50 | vs direct |
+|---|---|---|
+| typed direct call | **83 ns** | — |
+| **CP3.5: typed direct inside its own `try/except`** | **83 ns** | **+0 ns** |
+| CP3: `try/except` + `**kwargs` wrapper | 292–333 ns | +209 to +250 ns |
+
+**The boundary is free at this resolution** — it sits below the host's 42 ns
+clock quantum, and the mean over 300,000 iterations is −0.5 to +1.9 ns across
+three runs. §13's +208/+250 ns was the **keyword packing and the extra call
+frame**, not the exception handler; CPython 3.11+ makes a non-raising
+`try/except` zero-cost. Eric's requirement — cost the wrapper's 208 ns or less
+— is met with the whole of it to spare.
+
+Full gate, re-run against the wired seam (`--cp5-records 20000 --cp5-reps 6`,
+Apple M2, 8 cores, load 1m 3.06 → 3.66):
+
+| estimator | point | 95% CI | noise floor | status |
+|---|---|---|---|---|
+| **E1 direct** | **+829.1 ns/event** | ±32.2 | 20.5 ±23.6 | **RESOLVED** |
+| E2 throughput | +11,975 ns/event | ±15,599 | 4,551 | UNRESOLVED |
+| E3 cpu-time | +7,583 ns/event | ±10,448 | 3,658 | UNRESOLVED |
+
+Denominator: append p50 (null arms) = 264,285 ns. **E1 = +0.31% of append p50,
+upper 95% bound 0.33% — GATE PASSED**, and identical as a percentage to §13.1.1's
+corrected 0.31% despite a quieter host and a faster append. E2/E3 remain
+unresolved for the structural reason §13 gives; nothing about this checkpoint
+changes that.
+
+Note the arithmetic: E1 is now measured against a null arm with **typed**
+no-ops, so the 829 ns already contains §13.1.1's +125 ns correction. It is not
+comparable to §13's uncorrected 901 ns and is not an improvement over the
+corrected 1,026 ns — the append got faster on this run, and the ratio, which is
+what the gate is about, did not move.
+
+### What is still NOT wired, and why
+
+`on_segment_closed(elapsed_ns)` — documented as a closer-thread call from an
+`_on_rotation_closed` hook. `EventArchive` exposes no callback seam for one, and
+reaching into `archive._closer` from the collector is exactly the private
+coupling CP4 refused to take. `segments_closed`, `segment_close_ms_histogram`
+and `segment_close_ms_max` therefore stay at zero in production until an owned
+change to `archive.py` adds the hook. Test 6 asserts this method is absent from
+the collector, so the gap stays visible instead of being forgotten.
+
+Sequence faults outside `gap|regression|duplicate` (`wrong_sid`,
+`stale_generation`, `missing_sequence`, `awaiting_snapshot`, book-level
+refusals) are **deliberately not forwarded**: the interval record's field set is
+closed and has no bucket for them, and `on_sequence_fault` counts an unknown
+kind as an `observe_error` — a claim that the metrics lane malfunctioned. They
+are counted in `CollectorResult.sequence_faults`. Test 12 pins that they reach
+neither a wrong bucket nor the error counter. Giving them a bucket is a schema
+change and belongs to whoever next opens that schema.
+
+### Audit amended
+
+`tests/test_kalshi_live_tape_cp2_001.py::test_32` (dependency direction) now
+admits `app.realtime.collector_metrics` — **an audit that forbids the wiring is
+an audit that certifies unreachable code.** Kept net-stronger: the metrics
+module's own app-level imports are held to the same equality
+(`{app.realtime.kalshi, app.telemetry.sink}`), the downward-only direction is
+asserted in the audit that governs it rather than only in CP4's own suite, and
+each new arm carries an anti-vacuity assertion.
