@@ -894,6 +894,10 @@ RECORD_REJECTION_PREFIX = "event rejected by the writer:"
 #   on_disconnect()                               a connection the venue ended
 #   on_reconnect(subscription_generation=)        one reconnect attempt
 #   on_subscription_generation(generation)        a new epoch actually began
+#   on_segment_closed(close_ns)                   one COMPLETED segment close,
+#                                                 on the archive's closer
+#                                                 thread, measured by the
+#                                                 archive (see below)
 #
 # Two deliberate silences, stated so they are not mistaken for oversights:
 #
@@ -903,11 +907,19 @@ RECORD_REJECTION_PREFIX = "event rejected by the writer:"
 #   `on_sequence_fault` counts an unrecognised kind as an `observe_error` — a
 #   claim that the METRICS lane malfunctioned. They are counted in
 #   `CollectorResult.sequence_faults`, which is where they are true.
-# * **`on_segment_closed` is not wired and cannot be from here.** It is
-#   documented as a closer-thread call from an `_on_rotation_closed` hook, and
-#   `EventArchive` exposes no callback seam for one; reaching into `_closer`
-#   from the collector would be exactly the private coupling CP4 refused to
-#   take. Wiring it needs an owned change to `archive.py`.
+# * **`on_segment_closed` is wired, but NOT from the loop.** KALSHI-TAPE-
+#   CLOSE-CALLBACK made the owned change to `archive.py` that CP3.5 said this
+#   needed: `EventArchive(..., on_segment_closed=)` takes ONE typed callable,
+#   `callable(close_ns: int) -> None`, and the archive measures the close and
+#   calls it AFTER the measured interval has ended, on the thread that ran the
+#   close. The collector's half is `_on_segment_closed` and nothing more — it
+#   never times a close, never reaches into `archive._closer`, and the
+#   dependency direction is unchanged (`archive.py` imports nothing from
+#   either the collector or the metrics lane; the audit asserts it). Without
+#   this, `segments_closed`, `segment_close_ms_histogram` and
+#   `segment_close_ms_max` are permanently zero, and
+#   `DEFAULT_MAX_SEGMENT_RECORDS = 13_000` — a constant chosen to target a ~2 s
+#   close — has nothing to be retuned against.
 SEQUENCE_FAULT_KINDS = {SUB_GAP: "gap", SUB_REGRESSION: "regression"}
 
 # The default seam. Deliberately the SAME object CP5's "instrumentation off"
@@ -1126,6 +1138,30 @@ class _Session:
                 self._metrics.bind_reader_lag(depth)
             except Exception:                 # noqa: BLE001 - counted, not silent
                 self.metrics_errors += 1
+
+    def _on_segment_closed(self, close_ns: int) -> None:
+        """One completed segment close, measured by the archive that ran it.
+
+        KALSHI-TAPE-CLOSE-CALLBACK. Passed to `EventArchive` as
+        `on_segment_closed=` and called ON THE ARCHIVE'S CLOSER THREAD (or,
+        for the final commit, on whichever thread called `archive.close()`).
+        This is the one seam method the collector cannot call from its own
+        loop: the producer never runs a close, and timing one from here would
+        require reaching into `archive._closer` — the private coupling CP4
+        refused to take, and the reason `segments_closed` sat at zero through
+        CP3.5.
+
+        **No `try/except` here, and that is deliberate.** Every other seam call
+        carries its own boundary because it sits on the producer's path, where
+        the collector is the last line of defence. This one does not: the
+        archive contains it (`_notify_segment_closed`, `except BaseException`)
+        because the thing that must not change is the CLOSE, and only the
+        archive can guarantee that. A second boundary here would catch the same
+        failure first and leave `archive.segment_close_observer_errors` at
+        zero — a metrics failure hidden from the counter that exists to show
+        it. The archive's count is folded into `metrics_errors` in `run()`.
+        """
+        self._metrics.on_segment_closed(close_ns)
 
     # -- ordering -------------------------------------------------------------
     def _router_for(self, sid: int) -> SubscriptionRouter:
@@ -1467,8 +1503,14 @@ class _Session:
                 # uninitialized root, and a collector can never bring one into
                 # existence (`archive.py:398-401`). Operator step:
                 # `archive-init --confirm`.
-                self._archive = EventArchive(self.config.archive_root,
-                                             environment=self.config.environment)
+                self._archive = EventArchive(
+                    self.config.archive_root,
+                    environment=self.config.environment,
+                    # The close-latency seam. The archive owns detecting a
+                    # completed close and measuring it; the collector supplies
+                    # only where the number goes. Passed unconditionally, so
+                    # the instrumented and null arms run the same archive code.
+                    on_segment_closed=self._on_segment_closed)
             # `ArchiveHeadError` is the uninitialized-root HALT and is NOT an
             # `ArchiveError`; catching only the latter turned the one refusal
             # this path exists to report into an untyped crash.
@@ -1540,6 +1582,14 @@ class _Session:
                     status = STATUS_ARCHIVE_ERROR
                     detail = f"close failed: {type(exc).__name__}: {exc}"
                 rotation_failures = len(self._archive.rotation_failures)
+                # Read AFTER `close()`, which shuts the closer down and joins
+                # it, so this is a settled number rather than a sample of a
+                # counter another thread is still writing. Folded in here
+                # rather than incremented from `_on_segment_closed`, which
+                # runs on the closer thread: `metrics_errors += 1` from two
+                # threads is a lost-update race on the very field that exists
+                # to say the measurement misbehaved.
+                self.metrics_errors += self._archive.segment_close_observer_errors
             # AFTER the archive's commit point, so the final interval record
             # sees the session's true last numbers, and in the `finally` so it is
             # written even when the session ended on an exception. `stop()` is

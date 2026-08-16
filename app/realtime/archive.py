@@ -25,6 +25,7 @@ import statistics
 import threading
 import time
 import zlib
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -105,6 +106,11 @@ class ArchiveError(RuntimeError):
 _CLOSER_STOP = object()
 
 
+def _close_writer_plain(writer) -> dict:
+    """Close one writer and return its manifest. No measurement, no seam."""
+    return writer.close()
+
+
 def _swallow(fn):
     """Run `fn()` and return the exception it raised, or None. Used where a
     failure must be RECORDED against one segment rather than propagated and
@@ -145,8 +151,17 @@ class _RotationCloser:
     against each other rather than contending on the archive head lock.
     """
 
-    def __init__(self, sink, *, name="kalshi-segment-closer"):
+    def __init__(self, sink, *, close_writer=None,
+                 name="kalshi-segment-closer"):
         self._sink = sink                  # callable(writer, exc_or_None)
+        # How ONE writer is closed. Injected rather than hard-coded as
+        # `writer.close()` so `EventArchive` can measure the close it owns
+        # (`_timed_close`) without this class knowing that anything is being
+        # measured: the thread that runs the close is the thread that must
+        # time it, and it is this one. The default keeps a bare
+        # `_RotationCloser` usable on its own.
+        self._close_writer = (close_writer if close_writer is not None
+                              else _close_writer_plain)
         self._name = name
         self._q: queue.SimpleQueue = queue.SimpleQueue()
         self._cv = threading.Condition()
@@ -239,7 +254,7 @@ class _RotationCloser:
                 return
             exc = None
             try:
-                item.close()
+                self._close_writer(item)
             except BaseException as e:      # noqa: BLE001 - reported via sink
                 exc = e
             try:
@@ -343,7 +358,8 @@ class EventArchive:
                  expected_archive_id: str | None = None,
                  max_segment_records: int | None = DEFAULT_MAX_SEGMENT_RECORDS,
                  max_segment_age_s: float | None = DEFAULT_MAX_SEGMENT_AGE_S,
-                 max_segment_bytes: int | None = DEFAULT_MAX_SEGMENT_BYTES):
+                 max_segment_bytes: int | None = DEFAULT_MAX_SEGMENT_BYTES,
+                 on_segment_closed: Callable[[int], None] | None = None):
         from app.realtime.kalshi import ENVIRONMENTS
 
         if environment not in ENVIRONMENTS:
@@ -382,8 +398,26 @@ class EventArchive:
         self.expected_archive_id = expected_archive_id
         self.rotations = 0
         self.rotation_failures: list = []
+        # KALSHI-TAPE-CLOSE-CALLBACK. The ONE observational seam this class
+        # exposes. See `_timed_close`/`_notify_segment_closed` for the
+        # contract; `None` (the default) is the archive exactly as it was.
+        if on_segment_closed is not None and not callable(on_segment_closed):
+            raise ArchiveError(
+                "on_segment_closed must be callable(close_ns: int) -> None; "
+                "a non-callable observer would fail on the closer thread at "
+                "the first rotation, hours into a session, instead of here")
+        self._on_segment_closed = on_segment_closed
+        # Incremented on whichever thread ran the close whose observer raised.
+        # An observer that fails is an observation that is GONE, and a silent
+        # `except: pass` would make that indistinguishable from a segment that
+        # never closed -- which is the exact reading error `segments_closed ==
+        # 0` already caused once.
+        self.segment_close_observer_errors = 0
         # A8: rotations close OFF the producer thread. See `_RotationCloser`.
-        self._closer = _RotationCloser(self._on_rotation_closed)
+        # The closer runs `_timed_close`, so the measurement happens on the
+        # thread that pays for the close.
+        self._closer = _RotationCloser(self._on_rotation_closed,
+                                       close_writer=self._timed_close)
         # How long `close()` waits for in-flight rotations before giving up
         # and closing whatever is left inline. Generous by design: `close()`
         # is the commit point, and an unclosed segment is not evidence.
@@ -505,11 +539,95 @@ class EventArchive:
             # producer needs.
             if not self._closer.submit(retiring):
                 # The closer is already shut down (an append racing close()).
-                # Do it here rather than lose the commit.
+                # Do it here rather than lose the commit. Measured through the
+                # same `_timed_close` as every other close: this path commits
+                # a real segment, so omitting it would silently under-report
+                # exactly the closes that happen during a shutdown.
                 self._on_rotation_closed(
                     retiring,
-                    _swallow(retiring.close))
+                    _swallow(lambda: self._timed_close(retiring)))
         return writer
+
+    # -- the close-observation seam -------------------------------------------
+    def _timed_close(self, writer) -> dict:
+        """Close ONE writer, measure the close, then report the duration.
+
+        THE ORDER IS THE POINT. `close_ns` is computed BEFORE the observer is
+        called, so an observer that takes a second does not appear in the
+        second it is reporting. Telemetry that is inside the interval it
+        measures reports its own cost as the cost of the thing, and the whole
+        reason this seam exists is to retune `DEFAULT_MAX_SEGMENT_RECORDS`
+        against a real close.
+
+        Every other property of the close is unchanged, deliberately:
+
+        * **This raises exactly what `writer.close()` raises.** Nothing is
+          caught here, so each of the three call sites keeps the exception
+          handling it already had -- including `EventArchive.close()`'s
+          `except Exception`, which lets a `KeyboardInterrupt` mid-close
+          propagate the way it does today.
+        * **A close that raised is not observed.** The contract is a
+          COMPLETED close; a failed one is already reported through
+          `rotation_failures`/`close_failures`, and counting it in a latency
+          distribution would mix "how long a commit takes" with "how long a
+          commit took before it failed".
+        * **An idempotent re-close is not observed.** `SegmentWriter.close()`
+          returns `read_manifest()` when the segment is already CLOSED, and
+          `EventArchive.close()` documents that a drain-timeout can reach a
+          writer the closer already finished. That call does no close work, so
+          observing it would be a second sample for one segment -- the
+          "exactly once per close" property, broken by the one path that
+          exists to make closing safe.
+
+        THREAD OWNERSHIP. The observer runs on the thread that ran the close,
+        never handed to another: the closer thread for a rotation, the caller's
+        thread for `EventArchive.close()`'s inline commit, the producer's
+        thread on the documented `submit()` fallback. Those three cannot
+        overlap in the normal lifecycle -- `close()` calls `_closer.shutdown()`
+        (which joins the thread) before it closes anything inline -- so the
+        single-writer discipline `CollectorMetrics` documents for its three
+        close-latency slots holds. The one exception is the known-open race in
+        `_RotationCloser.submit`'s docstring: an `append` racing `close()` can
+        run the fallback while the inline loop runs. The cost of that is one
+        possibly-lost increment in a consumer's counter, never a change to any
+        segment.
+        """
+        already_closed = writer.state is SegmentState.CLOSED
+        t0 = time.monotonic_ns()
+        manifest = writer.close()
+        close_ns = time.monotonic_ns() - t0
+        # <-- the interval has ENDED here. Nothing below it is measured.
+        if not already_closed:
+            self._notify_segment_closed(close_ns)
+        return manifest
+
+    def _notify_segment_closed(self, close_ns: int) -> None:
+        """Invoke the observer with one measured close, and contain it.
+
+        The observer is typed -- one positional `int` of nanoseconds -- and
+        this module knows nothing else about it. No `*args`, no `**kwargs`, no
+        reflection, and no telemetry vocabulary: the archive reports that a
+        segment finished closing and how long that took, which is a fact about
+        the archive.
+
+        `BaseException`, not `Exception`. An observer must never be able to
+        decide the fate of evidence, and the two positions this could raise
+        from are both after the manifest is published: it can change nothing
+        about the committed segment, but a propagating exception WOULD skip the
+        remaining writers in `EventArchive.close()`'s loop and leave healthy,
+        fully written evidence uncommitted. `_RotationCloser._run` already
+        contains its sink the same way and for the same reason. The cost is
+        stated rather than hidden: a `KeyboardInterrupt` delivered while the
+        observer happens to be running is absorbed here and counted, instead of
+        ending the process one close earlier.
+        """
+        observer = self._on_segment_closed
+        if observer is None:
+            return
+        try:
+            observer(close_ns)
+        except BaseException:               # noqa: BLE001 - counted, see above
+            self.segment_close_observer_errors += 1
 
     def _on_rotation_closed(self, writer, exc) -> None:
         """Called on the closer thread when one retiring segment finishes."""
@@ -697,7 +815,10 @@ class EventArchive:
         manifests, failures = {}, {}
         for seg_id, writer in pending:
             try:
-                manifests[seg_id] = writer.close()
+                # `_timed_close` raises exactly what `writer.close()` raises,
+                # so this loop's aggregation is unchanged; a writer the closer
+                # already finished is re-read, not re-observed.
+                manifests[seg_id] = self._timed_close(writer)
             except Exception as exc:            # noqa: BLE001 - aggregated below
                 failures[seg_id] = exc
         self.close_failures = failures
