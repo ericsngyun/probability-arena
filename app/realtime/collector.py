@@ -1525,7 +1525,16 @@ class _Session:
             try:
                 self._metrics.bind_archive_state(lambda: {
                     "rotation_failures": len(archive.rotation_failures),
-                    "closer_outstanding": archive._closer.outstanding()})
+                    # A PROPERTY, not a method. `outstanding()` called the int
+                    # it returns, so this lambda raised `TypeError` on EVERY
+                    # flusher sample: `read_source` counted a `source_failure`
+                    # and returned `None`, which took `rotation_failures` down
+                    # with it — the whole dict is built or none of it is. Both
+                    # §7.3 gauges were therefore structurally unreachable, the
+                    # same defect class this milestone exists to close for
+                    # `segments_closed`, and for the same reason: nothing
+                    # asserted that the number could ever be non-zero.
+                    "closer_outstanding": archive._closer.outstanding})
             except Exception:                 # noqa: BLE001 - counted, not silent
                 self.metrics_errors += 1
         if self._flusher is not None:

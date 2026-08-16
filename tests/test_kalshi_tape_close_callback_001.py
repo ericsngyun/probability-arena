@@ -398,6 +398,52 @@ class TestAntiVacuity:
                     and n.func.id in ("getattr", "setattr", "hasattr")]
 
 
+class TestTheOtherPermanentlyZeroGauge:
+    """Found while wiring the close seam, and it is the same defect.
+
+    §7.3's `closer_outstanding_max` and `rotation_failures` are read through
+    `bind_archive_state`, whose lambda called `archive._closer.outstanding()`
+    — a PROPERTY. Every flusher sample raised `TypeError`, `read_source`
+    counted a `source_failure` and returned `None`, and the whole dict went
+    with it: `rotation_failures` then defaulted to **0**, which is
+    indistinguishable from "no rotation failed". A gauge nothing asserts can
+    move is a gauge that does not move; that is exactly why `segments_closed`
+    sat at zero for a whole checkpoint.
+    """
+
+    def test_x1_the_bound_archive_state_source_actually_returns_state(
+            self, tmp_path):
+        init_archive(tmp_path)
+        metrics = CollectorMetrics(environment=ENV, markets_subscribed=1)
+        result = run_session(tmp_path, metrics)
+
+        assert result.status == kc.STATUS_OK
+        # It was BOUND (CP3.5 test 3 proves that much) — and it WORKS.
+        assert metrics._archive_state_source is not None
+        state = metrics.read_source(metrics._archive_state_source)
+        assert isinstance(state, dict), state
+        assert state["rotation_failures"] == 0
+        assert state["closer_outstanding"] == 0
+        assert metrics.source_failures == 0
+
+    def test_x2_a_real_flusher_sample_does_not_fail_the_source(self, tmp_path):
+        """The path that actually reads it: the flusher's own sampler, at a
+        cadence fast enough to fire during the session."""
+        init_archive(tmp_path)
+        metrics = CollectorMetrics(environment=ENV, markets_subscribed=1)
+        path = tmp_path / "telemetry" / "kalshi-live-tape.jsonl"
+        flusher = MetricsFlusher(metrics, path=path, flush_interval_s=60.0,
+                                 sample_interval_s=0.01)
+        result = run_session(tmp_path, metrics, flusher=flusher)
+
+        assert result.status == kc.STATUS_OK
+        assert flusher.thread_error is None
+        assert metrics.source_failures == 0
+        record = list(iter_interval_records(path))[0]
+        assert record["rotation_failures"] == 0
+        assert record["closer_outstanding_max"] == 0
+
+
 # =====================================================================================
 # PROOF 2 — a hostile observer changes NOTHING about the commitment
 # =====================================================================================
