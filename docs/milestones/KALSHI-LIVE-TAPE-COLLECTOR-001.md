@@ -1710,3 +1710,153 @@ module's own app-level imports are held to the same equality
 (`{app.realtime.kalshi, app.telemetry.sink}`), the downward-only direction is
 asserted in the audit that governs it rather than only in CP4's own suite, and
 each new arm carries an anti-vacuity assertion.
+
+## 15. KALSHI-TAPE-CLOSE-CALLBACK — the close-latency seam
+
+**STATUS: CLOSED.** §14's one remaining gap is wired. `on_segment_closed` has
+a caller, and `segments_closed` / `segment_close_ms_histogram` /
+`segment_close_ms_max` move in a real session.
+
+### Why this was not cosmetic
+
+`DEFAULT_MAX_SEGMENT_RECORDS = 13_000` (`segment.py:196-212`) was derived to
+target a **~2 second close** from `~145 ms of CPU per 1,000 records`, and
+retuning it against a *measured* rate is one of the things the CP6–CP9
+qualification session exists to do. With no close-latency lane, that session
+could not answer its own question: the constant would have been re-affirmed
+from the same bench measurement it came from.
+
+### The contract
+
+`EventArchive(..., on_segment_closed=callable(close_ns: int) -> None)`.
+
+* **`archive.py` owns detecting a completed close.** `_timed_close` wraps every
+  one of the three call sites — the closer thread's rotation, the inline
+  fallback when an `append` races `close()`, and `EventArchive.close()`'s final
+  commit — so a short session, which commits *everything* at `close()`, is
+  measured rather than reporting nothing.
+* **The callback runs on the thread that ran the close**, never dispatched.
+  Rotations therefore observe on `kalshi-segment-closer`; the final commit
+  observes on the caller's thread, after `_closer.shutdown()` has already
+  joined the closer. The two cannot overlap in the normal lifecycle, so
+  `CollectorMetrics`' single-writer discipline for its three close-latency
+  slots holds.
+* **The measurement excludes the callback.** `close_ns` is computed from two
+  `monotonic_ns()` reads around `writer.close()` and the observer is invoked
+  *after* the second one. Telemetry inside the interval it measures reports its
+  own cost as the cost of the thing.
+* **A metrics failure cannot alter a close.** `_notify_segment_closed` contains
+  the observer with `except BaseException` and counts
+  `segment_close_observer_errors`. `BaseException`, not `Exception`, because
+  both invocation points are *after* the manifest is published: the observer
+  can change nothing about the committed segment, but a propagating exception
+  would skip the remaining writers in `EventArchive.close()`'s loop and leave
+  healthy evidence uncommitted. The cost — an interrupt raised inside the
+  observer is absorbed one close early — is stated in the docstring, not hidden.
+* **No import inverts.** `archive.py` imports neither the collector nor the
+  metrics lane; the callable is passed in. The collector's half is one method,
+  `_on_segment_closed`, which forwards and nothing else.
+* **Callback absent = the archive of today.** `None` is the default and every
+  other caller (`cli.py`, every archive test) is unchanged.
+
+**Two closes are deliberately NOT observed**, because "exactly once per close"
+is otherwise false: a close that **raised** (not a completed close; it is
+already reported through `rotation_failures`/`close_failures`, and mixing it
+into a latency distribution would mix "how long a commit takes" with "how long
+a commit took before it failed"), and an **idempotent re-close** of a segment
+already `CLOSED` (which does no close work — `EventArchive.close()`'s
+drain-timeout path can reach one, and observing it would add a second sample
+for one segment every time something went slowly).
+
+### The proofs
+
+`tests/test_kalshi_tape_close_callback_001.py`, 22 tests:
+
+| # | property | evidence |
+|---|---|---|
+| 1 | a REAL session moves the REAL close counters | tests 1, 2 — `segments_closed == result.segments_committed`, histogram populated, a validated interval record on disk carrying `segments_closed` and `segment_close_ms_histogram` |
+| 1a | **breaking the callback makes test 1 fail** | test 3 — the same session with `_notify_segment_closed` neutered: every close assertion goes to zero while the tape is still committed |
+| 2 | a hostile observer changes nothing | test 6 — an observer raising on EVERY close vs a control run: identical file BYTES, identical `event_file_sha256`, identical manifest commitment fields, identical replay checksums. Tests 7, 8 add the collector-level and `BaseException` cases |
+| 3 | exactly once per close | tests 10–13 — counted against the manifests on DISK; the idempotent re-close (11), the failed close (12), and both threads (13) |
+| 4 | absent ⇒ today's behaviour | tests 14–16 — byte equality against a control whose `_timed_close` is replaced by the pre-seam `writer.close()` |
+| 5 | the duration excludes the observer | tests 17–19 — a 1 s observer inside a close that reports `< 0.5 s`; test 18 pins that the number is not a constant 0; test 19 pins the ORDER in the source, because a fast observer makes the defect invisible |
+
+Test 6's byte comparison freezes the clock the `gzip` module reads. gzip stamps
+`time.time()` into every member header, so two runs a second apart differ in
+file bytes for identical content — without the freeze the strongest field in
+the comparison (`event_file_sha256`, a checksum of the committed file) would
+have had to be dropped or would have been flaky.
+
+### Audits amended
+
+Three, all flagged and all net-stronger with anti-vacuity guards:
+
+1. **`cp35::test_6`** — `on_segment_closed` moved from *asserted absent* into
+   `SEAM_METHODS`. An audit that pins an interface as unwired certifies
+   unreachable code the moment the wiring lands, so the marker moved rather
+   than disappearing: the test now also pins the seam's arrival point, the
+   `EventArchive(on_segment_closed=)` **keyword**, which is the coupling that
+   can silently rot.
+2. **`cp35::test_24`** (one exception boundary per metrics call) — the close
+   forward is the one seam call the collector does not make from its own
+   thread, and its boundary lives in `archive.py`. A second `try` in the
+   collector would catch the same failure first and leave
+   `segment_close_observer_errors` permanently zero. The exemption is three
+   assertions that the boundary is somewhere *better*: the call is the whole
+   body of `_on_segment_closed`, `archive.py` contains it with `BaseException`,
+   and the collector folds the archive's count into `metrics_errors`.
+3. **`cp2::test_32`** (dependency direction) — gains an archive arm:
+   `archive.py` may not import `app.realtime.collector` or
+   `app.realtime.collector_metrics`. The seam opened the one path by which the
+   evidence store could come to depend on the telemetry lane, so the audit that
+   governs direction now covers all three modules on the seam instead of two.
+
+### The other permanently-zero gauge, found on the way
+
+`bind_archive_state`'s lambda called `archive._closer.outstanding()` — a
+**property**. Every flusher sample therefore raised `TypeError`,
+`read_source` counted a `source_failure` and returned `None`, and the whole
+dict went with it: `closer_outstanding_max` was stuck at 0 and
+`rotation_failures` fell back to its `0` default — **indistinguishable from
+"no rotation failed"** in the interval record. Same defect class as
+`segments_closed` and the same root cause: nothing asserted the number could
+ever move. Fixed, with two tests that fail on the pre-fix line.
+
+### CP5 re-check
+
+**The frame path is unaffected, and that is measured rather than assumed.**
+Close runs on the closer thread, so the seam adds nothing to the per-frame
+path — but the closer contends with the producer for the GIL (which is why
+§13's CP5 mode rotates at all), so "off the producer thread" is an argument,
+not evidence. `tests/benchmarks/segment_close_cost.py --mode cp5` now
+constructs its `EventArchive` **with the seam wired** in every arm (the real
+arm passing `CollectorMetrics.on_segment_closed`, the null arms
+`NullCollectorMetrics.on_segment_closed`), so the gate keeps measuring the
+shape `collector.py` contains — the rule CP3.5 set for this benchmark.
+
+Re-run, `--cp5-records 20000 --cp5-reps 6`, Apple M2, 8 cores, load 1m
+**4.47 → 5.05** (CP3.5's run: 3.06 → 3.66 — a *busier* host this time):
+
+| estimator | point | 95% CI | noise floor | status |
+|---|---|---|---|---|
+| **E1 direct** | **+829.8 ns/event** | ±16.5 | 20.5 ±23.6 | **RESOLVED** |
+| E2 throughput | −11,540.9 ns/event | ±15,758.7 | 35,754.5 | UNRESOLVED |
+| E3 cpu-time | −4,825.9 ns/event | ±12,053.9 | 21,685.8 | UNRESOLVED |
+
+Denominator: append p50 (null arms) = 278,872 ns. **E1 = +0.30% of append p50
+— GATE PASSED**, against CP3.5's +829.1 ns ±32.2 = 0.31%. The two points are
+**0.7 ns apart**, an order of magnitude inside either confidence interval, on a
+host carrying ~40% more load; the CI is in fact tighter (±16.5 vs ±32.2). The
+frame-path cost did not move.
+
+The arithmetic bound agrees. Each run rotates once (`rot 1` in the per-rep
+table), so 20,000 events pay for **two** close observations — the rotation and
+the final commit. `on_segment_closed` is three integer operations and a
+`bisect_right`; even at a generous 1 µs each that is **~0.1 ns/event**, below
+the run's own 44.1 ns resolution limit. There is no scenario in this shape
+where the close seam is visible in E1, and the measurement says so.
+
+E2/E3 remain unresolved for the structural reason §13 gives (both are
+whole-run estimators against a noise floor larger than the signal); nothing
+about this checkpoint changes that, and both point estimates are negative,
+which is what an unresolved estimator looks like.
