@@ -606,3 +606,30 @@ class TestKeyMaterialStaysInAuth:
         assert len([n for n in ast.walk(metrics_src)
                     if isinstance(n, ast.ClassDef)]) >= 4
         assert "app.realtime.kalshi" in metrics_app_mods
+
+        # --- KALSHI-TAPE-CLOSE-CALLBACK: the archive stays BELOW both --------
+        # The close-latency seam runs the other way — `archive.py` calls into
+        # the metrics lane. A callback passed IN is what keeps that from
+        # inverting the arrow, and the temptation it removes ("just import
+        # CollectorMetrics and call the method") is exactly what this arm
+        # forbids. Net-stronger: the audit that governs direction now covers
+        # the third module on the seam, not two of the three.
+        archive_src = ast.parse(
+            (REPO / "app" / "realtime" / "archive.py").read_text())
+        archive_mods = set()
+        for node in ast.walk(archive_src):
+            if isinstance(node, ast.Import):
+                archive_mods |= {a.name for a in node.names}
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                archive_mods.add(node.module)
+        assert "app.realtime.collector" not in archive_mods
+        assert "app.realtime.collector_metrics" not in archive_mods
+        for banned in ("sqlalchemy", "app.db", "app.models", "app.services",
+                       "app.telemetry"):
+            assert not any(m.startswith(banned) for m in archive_mods), banned
+        # Anti-vacuity: the archive really was parsed, and the seam it exposes
+        # instead of an import is present.
+        assert "app.realtime.segment" in archive_mods
+        assert any(isinstance(n, ast.FunctionDef)
+                   and n.name == "_notify_segment_closed"
+                   for n in ast.walk(archive_src))
