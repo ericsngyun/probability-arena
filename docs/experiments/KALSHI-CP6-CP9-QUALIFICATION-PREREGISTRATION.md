@@ -1,0 +1,148 @@
+# CP6–CP9 live qualification — preregistration
+
+**Status: PREREGISTERED. Written and committed BEFORE any live session ran.**
+Nothing here was chosen after seeing venue behaviour.
+
+Authorizes **no orders, no portfolio channels, no venue writes, no capital**.
+Read-only market data only, per `docs/SAFETY_BOUNDARIES.md`.
+
+---
+
+## 0. The standing bar — Eric's words, binding on all four checkpoints
+
+- **A live surprise is a FINDING, not something to patch around during the
+  qualification run.**
+- **A missing measurement is not zero.**
+- **A disconnected metric is not healthy.**
+- **A session that misses the preregistered sample floor is UNDERPOWERED, not
+  "close enough".**
+- **Any venue behaviour that contradicts fixture assumptions must update the
+  model of the venue BEFORE qualification proceeds.**
+
+The rationale is doctrine 7: this repo's recurring defect is *a plausible benign
+value produced by a broken path*. Once microstructure research begins, that
+class yields clean-looking datasets and convincing statistics rather than
+obvious crashes. A qualification session built on a workaround measures the
+workaround.
+
+---
+
+## 1. Session parameters — frozen
+
+- **Sample floor:** ≥ **2 hours** AND ≥ **100,000 archived live frames**,
+  **whichever occurs later**. **4-hour maximum** for this first run.
+- **Universe:** exactly **12 live tickers**, **4 high / 4 medium / 4 low**
+  message-rate strata, spanning several contract/event structures.
+- Manifest frozen **before** capture, recording the stratification snapshot
+  **timestamp**, the ranking **statistic**, and the **full candidate
+  population** — so the sampling frame is explicit and the 12 are never
+  mistaken for a representative sample of the venue.
+- **No ticker may be replaced because its telemetry looks cleaner.**
+
+---
+
+## 2. CP6 — first live session. Deliberately narrow.
+
+Prove, on the **actual venue**, exactly these:
+
+1. handshake
+2. subscription
+3. generation stamping
+4. raw-frame capture
+5. normalized-frame capture
+6. metrics movement (**non-zero**, per doctrine 7 — absence is not health)
+7. book reconstruction
+
+**CP6 MUST NOT quietly become the long qualification run.** If the first ~10
+minutes reveal a semantic mismatch with our fixtures, **stop and report**. A
+mismatch discovered later contaminates everything downstream, and a tape
+captured against a wrong venue model is worse than no tape.
+
+---
+
+## 3. CP7 — force the failure that motivated the generation epoch
+
+Reconnect **during an active multi-market session** and prove:
+
+> **Each market independently reacquires publishability only after ITS OWN
+> new-generation snapshot.**
+
+**No book may silently survive across a generation boundary as if nothing
+happened.** This is a positive control in the doctrine-7 sense: force the
+reconnect, and require the generation to change and per-market publishability to
+drop and re-acquire individually.
+
+`KALSHI-REPLAY-GENERATION-CONSISTENCY-001` (deferred, replay-side) does not
+excuse the live collector from this proof.
+
+---
+
+## 4. CP8 — replay integrity. "Replay completed" is NOT the test.
+
+The acceptance criterion is **state equality**:
+
+```
+live-derived terminal state  ==  replay-derived terminal state
+```
+
+for **every market where the necessary frame sequence exists**, plus:
+
+- **frame-count conservation**
+- **generation-count conservation**
+
+**Any state that cannot be reconstructed from the durable tape is a
+QUALIFICATION FAILURE**, not a caveat — the entire future microstructure
+programme depends on replayability, and a tape that cannot reproduce its own
+terminal state cannot support it.
+
+---
+
+## 5. CP9 — four-way verdict, not pass/fail
+
+Report exactly one of:
+
+| verdict | meaning |
+|---|---|
+| **QUALIFIED** | correctness properties hold AND the sample floor was met |
+| **CONDITIONALLY QUALIFIED** | correctness holds; a stated limitation bounds the claim |
+| **UNDERPOWERED** | correctness holds; sample insufficient for the tail estimates |
+| **FAILED** | a correctness property does not hold |
+
+**Correctness and statistical power are different dimensions and must not be
+collapsed into one bit.** A run can satisfy every correctness property and still
+be underpowered for p99 latency if DEMO yields, say, 30k frames — that is
+**UNDERPOWERED**, and the p95/p99 figures must be **refused**, not printed with
+a caveat.
+
+Report per §7: events/sec average, p95 and p99 burst rate, event sizes, archive
+append latency, rotation frequency, archive close latency, dropped events,
+backpressure/lag — and a **NOT MEASURED** section that must be non-empty and
+honest.
+
+Each of the three rotation constants gets an explicit verdict against the
+measured close latency. Retuning `DEFAULT_MAX_SEGMENT_RECORDS = 13_000` against
+a real rate — rather than the "~500 events/s **assumed** peak" it currently
+rests on — is the milestone's stated purpose.
+
+---
+
+## 6. After CP9 — the fixed order
+
+1. generation-aware `publishable_books()`
+   (`KALSHI-REPLAY-GENERATION-CONSISTENCY-001`)
+2. **tape schema freeze / review**
+3. preregister `MARKET-MICROSTRUCTURE-EDGE-001`
+4. feature derivation
+
+The schema freeze is a **measurement contract, not a database check**. Once
+feature research begins, changing event semantics, generation treatment,
+trade-direction interpretation, or book-reconstruction rules risks invalidating
+every downstream result.
+
+---
+
+## 7. Deviations
+
+Any departure from this document must be recorded here with reason and
+timestamp **before** the affected result is reported. An unlogged deviation
+invalidates the affected checkpoint.
