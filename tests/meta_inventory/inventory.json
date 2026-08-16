@@ -6783,8 +6783,10 @@
       "functions_visited": [
         "app/realtime/archive.py::EventArchive._candidate_segment_ids",
         "app/realtime/archive.py::EventArchive._check_partition_writable",
+        "app/realtime/archive.py::EventArchive._notify_segment_closed",
         "app/realtime/archive.py::EventArchive._on_rotation_closed",
         "app/realtime/archive.py::EventArchive._segment_id",
+        "app/realtime/archive.py::EventArchive._timed_close",
         "app/realtime/archive.py::EventArchive._writer_for",
         "app/realtime/archive.py::EventArchive.append",
         "app/realtime/archive.py::EventArchive.partition",
@@ -7109,6 +7111,25 @@
         [
           "EventArchive.append",
           "EventArchive._writer_for",
+          "EventArchive._timed_close",
+          "EventArchive._notify_segment_closed",
+          "observer(...) [unbound name]"
+        ],
+        [
+          "EventArchive.append",
+          "EventArchive._writer_for",
+          "EventArchive._timed_close",
+          "time.monotonic_ns(...) [module alias 'time' not traversable]"
+        ],
+        [
+          "EventArchive.append",
+          "EventArchive._writer_for",
+          "EventArchive._timed_close",
+          "writer.close(...) [receiver type unknown]"
+        ],
+        [
+          "EventArchive.append",
+          "EventArchive._writer_for",
           "EventArchive.partition",
           "ArchiveError(...) [unbound name]"
         ],
@@ -7170,6 +7191,8 @@
     "app/realtime/archive.py::EventArchive.close": {
       "entrypoint": "app/realtime/archive.py::EventArchive.close",
       "functions_visited": [
+        "app/realtime/archive.py::EventArchive._notify_segment_closed",
+        "app/realtime/archive.py::EventArchive._timed_close",
         "app/realtime/archive.py::EventArchive.close"
       ],
       "manual_bridges": [
@@ -7607,6 +7630,22 @@
         ],
         [
           "EventArchive.close",
+          "EventArchive._timed_close",
+          "EventArchive._notify_segment_closed",
+          "observer(...) [unbound name]"
+        ],
+        [
+          "EventArchive.close",
+          "EventArchive._timed_close",
+          "time.monotonic_ns(...) [module alias 'time' not traversable]"
+        ],
+        [
+          "EventArchive.close",
+          "EventArchive._timed_close",
+          "writer.close(...) [receiver type unknown]"
+        ],
+        [
+          "EventArchive.close",
           "failures.items(...) [receiver type unknown]"
         ],
         [
@@ -7620,10 +7659,6 @@
         [
           "EventArchive.close",
           "repr(...) [unbound name]"
-        ],
-        [
-          "EventArchive.close",
-          "writer.close(...) [receiver type unknown]"
         ]
       ]
     },

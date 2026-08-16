@@ -731,7 +731,7 @@ carries `markets_subscribed` (a count), never a list. Bucket labels follow the e
 | **event sizes** | `len(raw_frame_bytes)` at the transport boundary, before JSON parsing | Measured on the WIRE bytes, so it is comparable to bandwidth. Record size on disk is a different number and is derived separately from segment manifests |
 | **archive append latency** | `monotonic_ns()` immediately before and after `archive.append(envelope)`, into a pre-allocated histogram | Two clock reads per event. **Assumption to verify:** that this is a low-tens-of-nanoseconds cost on the target host and therefore negligible against a measured append. Checkpoint 5 measures the instrumentation overhead explicitly by running the same fixture load with instrumentation on and off |
 | **rotation frequency** | `EventArchive.rotations` delta per interval, plus `_live_segment_id` transitions | Read from the archive's own counters, not inferred from the filesystem |
-| **archive close latency** | Wall time of the CLOSER thread's work per segment, obtained via a callback on `_on_rotation_closed`, plus `wait_for_rotations` duration at session end | Close is already OFF the producer thread (`archive.py:496-512`). Measuring it must not put it back on: the timing is taken on the closer thread |
+| **archive close latency** | Wall time of ONE COMPLETED segment close, measured inside `EventArchive._timed_close` and handed to a typed callback (`on_segment_closed=callable(close_ns: int) -> None`) — see §15 | Close is already OFF the producer thread (`archive.py:496-512`). Measuring it must not put it back on: the timing is taken on the thread that ran the close. The callback is invoked **after** the measured interval has ended, so a slow observer cannot inflate the number it is being handed |
 | **dropped events** | Two separate counters that must never be merged: `events_rejected` (archive said no, typed) and `frames_malformed` (unparseable), plus the collector's own receive count. **`transport_dropped` is DELETED, not zeroed** (12.4): the installed library has no drop path and no drop counter, so the number has no source — and needs none, because the library's contribution is provably zero. Loss can enter only across a disconnect (§8.3) or upstream at the venue, and sequence integrity detects the latter | A single "dropped" number would hide which layer failed. A fabricated zero would be worse than either |
 | **backpressure / lag** | `reader_lag_frames_max` from `len(conn.recv_messages.frames)`; ALWAYS also `reader_stall_ms_max` — the longest wall gap between consecutive successful reads — which needs no library support | Queue depth **rests on an undocumented attribute chain through a `SimpleQueue` the library calls internal** (12.3). It is read through a single guarded helper returning `None` on `AttributeError`/`TypeError`, is recorded as UNAVAILABLE rather than `0` when the chain breaks, and a test pins the chain so a `websockets` upgrade fails loudly. Stall time is the property that actually matters and is measurable regardless |
 
@@ -1678,13 +1678,19 @@ what the gate is about, did not move.
 
 ### What is still NOT wired, and why
 
-`on_segment_closed(elapsed_ns)` — documented as a closer-thread call from an
-`_on_rotation_closed` hook. `EventArchive` exposes no callback seam for one, and
-reaching into `archive._closer` from the collector is exactly the private
-coupling CP4 refused to take. `segments_closed`, `segment_close_ms_histogram`
-and `segment_close_ms_max` therefore stay at zero in production until an owned
-change to `archive.py` adds the hook. Test 6 asserts this method is absent from
-the collector, so the gap stays visible instead of being forgotten.
+**CLOSED by KALSHI-TAPE-CLOSE-CALLBACK (§15).** As written at CP3.5:
+
+> `on_segment_closed(elapsed_ns)` — documented as a closer-thread call from an
+> `_on_rotation_closed` hook. `EventArchive` exposes no callback seam for one, and
+> reaching into `archive._closer` from the collector is exactly the private
+> coupling CP4 refused to take. `segments_closed`, `segment_close_ms_histogram`
+> and `segment_close_ms_max` therefore stay at zero in production until an owned
+> change to `archive.py` adds the hook. Test 6 asserts this method is absent from
+> the collector, so the gap stays visible instead of being forgotten.
+
+That owned change to `archive.py` is now made. Test 6's absence assertion moved
+into `SEAM_METHODS` rather than being deleted, and gained the seam's arrival
+point (the `EventArchive(on_segment_closed=)` keyword) — see §15's audit note.
 
 Sequence faults outside `gap|regression|duplicate` (`wrong_sid`,
 `stale_generation`, `missing_sequence`, `awaiting_snapshot`, book-level

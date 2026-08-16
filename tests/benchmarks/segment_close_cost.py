@@ -271,13 +271,22 @@ def cp5_one_run(*, n: int, arm: str, max_segment_records: int,
     root = Path(tempfile.mkdtemp(prefix="cp5-overhead-"))
     try:
         ah.initialize_archive(root, ENV, archive_identity="kalshi-realtime")
-        archive = EventArchive(root, environment=ENV,
-                               max_segment_records=max_segment_records)
         if arm == "real":
             metrics = CollectorMetrics(environment=ENV,
                                        markets_subscribed=markets)
         else:
             metrics = NULL_METRICS
+        # KALSHI-TAPE-CLOSE-CALLBACK: the archive carries the close-latency
+        # seam the collector now wires, so this stays "the shape `collector.py`
+        # contains" — the rule CP3.5 set for this benchmark. It matters here
+        # even though close runs off the producer thread: the closer contends
+        # with the producer for the GIL (the reason this mode rotates at all),
+        # so the real arm's histogram work on the closer thread is part of
+        # what the producer pays for. BOTH arms pass a callable, so the
+        # difference is the instrumentation and not the seam's existence.
+        archive = EventArchive(root, environment=ENV,
+                               max_segment_records=max_segment_records,
+                               on_segment_closed=metrics.on_segment_closed)
 
         # Pre-allocated sample arrays. Assignment by index only: a growing
         # list would put an amortised realloc inside the timed loop, and it
