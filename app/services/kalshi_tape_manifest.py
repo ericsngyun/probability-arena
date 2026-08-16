@@ -1152,7 +1152,7 @@ def render_markdown(manifest: dict) -> str:
     w("")
     w("| field | value |")
     w("|---|---|")
-    w(f"| canonical timestamp (first page requested) | `{snap['canonical_snapshot_timestamp']}` |")
+    w(f"| **canonical timestamp** (the probe's first read) | `{snap['canonical_snapshot_timestamp']}` |")
     w(f"| census started | `{snap['census_started_at']}` |")
     w(f"| census completed | `{snap['census_completed_at']}` |")
     w(f"| census duration | {snap['census_duration_seconds']} s |")
@@ -1161,10 +1161,13 @@ def render_markdown(manifest: dict) -> str:
     w(f"| pages fetched | {snap['pages_fetched']} |")
     w(f"| request | `{snap['request_params']}` |")
     w("")
-    w("Two timestamps, not one: the enumeration takes minutes, so a single "
-      "'snapshot time' would be a fiction. The canonical reference for every "
-      "staleness computation is the START; the completion time bounds how much "
-      "drift the frame can contain.")
+    w("Four timestamps, not one, because the stratification rests on a "
+      "measurement rather than a reading. The CENSUS establishes the frame; the "
+      "PROBE measures the activity every rank is derived from. The canonical "
+      "snapshot timestamp is therefore the probe's FIRST read — dating the "
+      "stratification to the census would attribute the ranking to a "
+      "measurement the ranking does not use. Every probe read timestamp is "
+      "listed in section 4b so the window is fully reconstructible.")
     w("")
 
     st = m["statistic"]
