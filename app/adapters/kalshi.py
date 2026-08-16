@@ -284,6 +284,85 @@ class KalshiRestAdapter:
                     break
         return results[:limit]
 
+    async def fetch_open_markets_raw(
+        self,
+        *,
+        mve_filter: str | None = "exclude",
+        page_delay_seconds: float = 0.3,
+        max_pages: int = 2000,
+        progress=None,
+    ) -> tuple[list[dict], int]:
+        """Enumerate every open market as RAW venue objects. Returns (rows, pages).
+
+        Unlike `fetch_active_markets` this returns the venue payload untouched
+        and pages to exhaustion rather than to a configured limit, because its
+        caller (KALSHI-TAPE-MANIFEST) needs a census — a truncated frame is a
+        biased sampling frame, and the whole point of that artifact is that the
+        frame is explicit.
+
+        Uses `_get_with_retry`, so a 429 backs off rather than aborting the
+        census midway. `page_delay_seconds` is a courtesy throttle: an
+        unthrottled ~370-page walk reliably earns a 429 from this venue.
+
+        Read-only. The only route reachable from here is GET /markets.
+        """
+        rows: list[dict] = []
+        cursor: str | None = None
+        pages = 0
+        async with httpx.AsyncClient(base_url=self.base_url, timeout=self.timeout) as client:
+            while pages < max_pages:
+                params: dict = {"status": "open", "limit": PAGE_SIZE}
+                if mve_filter:
+                    params["mve_filter"] = mve_filter
+                if cursor:
+                    params["cursor"] = cursor
+                response = await self._get_with_retry(client, MARKETS_PATH, params)
+                payload = response.json()
+                page = payload.get("markets") or []
+                rows.extend(page)
+                pages += 1
+                cursor = payload.get("cursor") or None
+                if progress is not None:
+                    progress(pages, len(rows))
+                if not cursor or not page:
+                    break
+                if page_delay_seconds:
+                    await asyncio.sleep(page_delay_seconds)
+            else:
+                # Loop exhausted `max_pages` with a cursor still outstanding.
+                # Silently returning here would hand the caller a truncated
+                # census that looks complete, so it is an error instead.
+                raise RuntimeError(
+                    f"market enumeration hit max_pages={max_pages} with a cursor "
+                    f"still outstanding after {len(rows)} markets; the frame is "
+                    f"truncated and must not be used as a population")
+        return rows, pages
+
+    async def fetch_markets_by_tickers_raw(
+        self, tickers: list[str], *, chunk_delay_seconds: float = 0.25
+    ) -> list[dict]:
+        """Fresh RAW venue objects for specific tickers, chunked to the page limit.
+
+        The raw sibling of `fetch_markets_by_tickers`. KALSHI-TAPE-MANIFEST needs
+        the untouched payload because it samples fields (`volume_fp`, top-of-book
+        sizes) that `MarketData` normalizes or rounds, and it re-reads the same
+        tickers repeatedly to measure a RATE — so a rounded value would quantize
+        the very difference being measured.
+
+        Read-only; unknown tickers are simply absent from the response.
+        """
+        results: list[dict] = []
+        async with httpx.AsyncClient(base_url=self.base_url, timeout=self.timeout) as client:
+            for start in range(0, len(tickers), PAGE_SIZE):
+                chunk = tickers[start : start + PAGE_SIZE]
+                response = await self._get_with_retry(
+                    client, MARKETS_PATH,
+                    {"tickers": ",".join(chunk), "limit": len(chunk)})
+                results.extend(response.json().get("markets") or [])
+                if chunk_delay_seconds and start + PAGE_SIZE < len(tickers):
+                    await asyncio.sleep(chunk_delay_seconds)
+        return results
+
     async def fetch_markets_by_tickers(self, tickers: list[str]) -> list[MarketData]:
         """Fresh quotes for specific tickers via GET /markets?tickers=...,
         chunked to the page-size limit. Read-only; unknown tickers are simply

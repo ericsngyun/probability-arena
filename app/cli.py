@@ -648,6 +648,135 @@ def experiment_registry_register(
     return 0
 
 
+def kalshi_tape_manifest(
+    environment: str = "demo",
+    out_json: str | None = None,
+    out_markdown: str | None = None,
+    min_separation_ratio: float = 2.0,
+    min_distinct_events: int = 6,
+    min_distinct_series: int = 4,
+    max_per_event: int = 3,
+    page_delay_seconds: float = 0.3,
+    probe_reads: int = 4,
+    probe_interval_seconds: float = 150.0,
+    screen_pool_max: int = 1200,
+    include_mve: bool = False,
+    fmt: str = "text",
+) -> int:
+    """KALSHI-TAPE-MANIFEST — freeze the CP6-CP9 session universe BEFORE capture.
+
+    One read-only census of `GET /markets`, then a deterministic ranking and
+    stratification into the authorized 4 high / 4 medium / 4 low universe.
+    Loads no credential (the market-data routes are public), opens no socket,
+    starts no capture and writes nothing to the venue.
+
+    Exit code 0 = QUALIFIED, 1 = REFUSED, 2 = the census itself failed. A
+    REFUSED manifest is a FINDING about the venue and is still written out;
+    padding the universe or blurring the strata to reach twelve is forbidden.
+    """
+    import asyncio as _asyncio
+    import json as _json
+
+    from app.services.kalshi_tape_manifest import (
+        EligibilityPolicy,
+        ManifestError,
+        ProbePolicy,
+        SelectionPolicy,
+        render_markdown,
+        snapshot_and_build,
+    )
+
+    def _progress(pages, rows):
+        if fmt == "text" and pages % 25 == 0:
+            print(f"  ... {pages} pages, {rows} markets", flush=True)
+
+    def _probe_progress(i, total, rows):
+        if fmt == "text":
+            print(f"  ... probe read {i}/{total} ({rows} markets)", flush=True)
+
+    if fmt == "text":
+        print(f"kalshi tape manifest — {environment}")
+        print("  read-only census of GET /markets; no credential, no socket, "
+              "no capture")
+
+    try:
+        manifest, frame = _asyncio.run(snapshot_and_build(
+            environment=environment,
+            mve_filter=None if include_mve else "exclude",
+            page_delay_seconds=page_delay_seconds,
+            eligibility=EligibilityPolicy(),
+            probe=ProbePolicy(
+                reads=probe_reads,
+                interval_seconds=probe_interval_seconds,
+                screen_pool_max=screen_pool_max,
+            ),
+            selection=SelectionPolicy(
+                min_separation_ratio=min_separation_ratio,
+                min_distinct_events=min_distinct_events,
+                min_distinct_series=min_distinct_series,
+                max_per_event=max_per_event,
+            ),
+            progress=_progress,
+            probe_progress=_probe_progress,
+        ))
+    except (ManifestError, RuntimeError, OSError) as exc:
+        print(f"error: {exc}")
+        return 2
+
+    if out_json:
+        _Path(out_json).write_text(
+            _json.dumps(manifest, indent=2, sort_keys=True, default=str) + "\n")
+    if out_markdown:
+        _Path(out_markdown).write_text(render_markdown(manifest))
+
+    if fmt == "json":
+        print(_json.dumps(manifest, indent=2, sort_keys=True, default=str))
+        return 0 if manifest["verdict"] == "QUALIFIED" else 1
+
+    pop = manifest["population"]
+    fi = manifest["frame_integrity"]
+    snap = manifest["snapshot"]
+    print(f"  snapshot             {snap['canonical_snapshot_timestamp']} "
+          f"({snap['pages_fetched']} pages, "
+          f"{snap['census_duration_seconds']}s)")
+    print(f"  statistic            {manifest['statistic']['name']}")
+    print(f"  frame                {pop['frame_size']} open markets")
+    print(f"  eligible             {pop['eligible_count']} "
+          f"({pop['eligible_distinct_events']} events, "
+          f"{pop['eligible_distinct_series']} series)")
+    print(f"  frame digest         {manifest['candidate_population']['frame_digest_sha256'][:16]}…")
+    ap = manifest["activity_probe"]
+    print(f"  probe                {ap['reads']} reads over "
+          f"{ap.get('span_minutes')} min; "
+          f"{ap['candidates_probed']}/{ap['screen_pool_size']} probed"
+          + (" (POOL TRUNCATED)" if ap.get("screen_pool_was_truncated") else ""))
+    print(f"  lifetime vol monotonic {ap.get('lifetime_volume_is_monotonic')}")
+    print("  frame integrity:")
+    print(f"    nonzero 24h volume         {fi['markets_with_nonzero_screen_statistic']}")
+    print(f"    traded during the probe    {fi['markets_that_traded_during_the_probe']}")
+    print(f"    crossed books              {fi['crossed_books']}")
+    print(f"    negative resting sizes     {fi['negative_resting_sizes']}")
+    print("  top ineligibility reasons:")
+    for k, v in list(pop["ineligibility_histogram"].items())[:8]:
+        print(f"    {k:<28} {v}")
+    print(f"  VERDICT              {manifest['verdict']}")
+    if manifest["verdict"] == "REFUSED":
+        for r in manifest["refusal_reasons"]:
+            print(f"    - {r}")
+        print("  no capture session is authorized by this manifest")
+    else:
+        for s in manifest["universe"]:
+            for r in s["members"]:
+                print(f"    [{s['stratum']:<6}] {r['ticker']:<44} "
+                      f"{r['statistic']:>14,.2f}  {r['strike_type']}")
+    if out_json:
+        print(f"  wrote                {out_json}")
+    if out_markdown:
+        print(f"  wrote                {out_markdown}")
+    print(f"  frame markets held in memory only: {len(frame)} (not persisted)")
+    return 0 if manifest["verdict"] == "QUALIFIED" else 1
+
+
 def kalshi_realtime_replay(
     archive: str, environment: str = "demo", fmt: str = "text",
 ) -> int:
@@ -8695,6 +8824,40 @@ def build_parser() -> argparse.ArgumentParser:
                      help="registry root (defaults to ./experiments)")
     err.add_argument("--format", choices=("text", "json"), default="text", dest="fmt")
 
+    ktm_p = subparsers.add_parser(
+        "kalshi-tape-manifest",
+        help="Freeze the CP6-CP9 qualification-session universe BEFORE any "
+             "capture (KALSHI-TAPE-MANIFEST; read-only census, no credential, "
+             "no socket, no capture). Exit 1 = REFUSED.")
+    ktm_p.add_argument("--environment", choices=("demo", "production"),
+                       default="demo")
+    ktm_p.add_argument("--out-json", type=str, default=None, dest="out_json")
+    ktm_p.add_argument("--out-markdown", type=str, default=None,
+                       dest="out_markdown")
+    ktm_p.add_argument("--min-separation-ratio", type=float, default=2.0,
+                       dest="min_separation_ratio")
+    ktm_p.add_argument("--min-distinct-events", type=int, default=6,
+                       dest="min_distinct_events")
+    ktm_p.add_argument("--min-distinct-series", type=int, default=4,
+                       dest="min_distinct_series")
+    ktm_p.add_argument("--max-per-event", type=int, default=3,
+                       dest="max_per_event")
+    ktm_p.add_argument("--page-delay-seconds", type=float, default=0.3,
+                       dest="page_delay_seconds")
+    ktm_p.add_argument("--probe-reads", type=int, default=4, dest="probe_reads",
+                       help="how many timed re-reads measure the activity rate")
+    ktm_p.add_argument("--probe-interval-seconds", type=float, default=150.0,
+                       dest="probe_interval_seconds")
+    ktm_p.add_argument("--screen-pool-max", type=int, default=1200,
+                       dest="screen_pool_max",
+                       help="cap on how many markets the activity probe re-reads")
+    ktm_p.add_argument("--include-mve", action="store_true", dest="include_mve",
+                       help="do NOT exclude multivariate-event combinatorial "
+                            "shards (they are near-identical permutations and "
+                            "are excluded by default)")
+    ktm_p.add_argument("--format", choices=("text", "json"), default="text",
+                       dest="fmt")
+
     krr = subparsers.add_parser(
         "kalshi-realtime-replay",
         help="Deterministically replay an archived Kalshi event stream "
@@ -9819,6 +9982,19 @@ def main(argv: list[str] | None = None) -> int:
         return experiment_registry_register(
             manifest=args.manifest, confirm=args.confirm and not args.dry_run,
             base=args.base, fmt=args.fmt)
+    if args.command == "kalshi-tape-manifest":
+        return kalshi_tape_manifest(
+            environment=args.environment, out_json=args.out_json,
+            out_markdown=args.out_markdown,
+            min_separation_ratio=args.min_separation_ratio,
+            min_distinct_events=args.min_distinct_events,
+            min_distinct_series=args.min_distinct_series,
+            max_per_event=args.max_per_event,
+            page_delay_seconds=args.page_delay_seconds,
+            probe_reads=args.probe_reads,
+            probe_interval_seconds=args.probe_interval_seconds,
+            screen_pool_max=args.screen_pool_max,
+            include_mve=args.include_mve, fmt=args.fmt)
     if args.command == "kalshi-realtime-replay":
         return kalshi_realtime_replay(
             archive=args.archive, environment=args.environment, fmt=args.fmt)
