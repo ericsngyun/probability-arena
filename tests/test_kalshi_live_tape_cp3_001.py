@@ -872,16 +872,35 @@ class TestFailureHandling:
 
     def test_51_a_metrics_hook_that_raises_cannot_take_the_tape_down(self,
                                                                     tmp_path):
+        """CP3.5: the hostile object implements the TYPED seam and raises from
+        every method of it. Before CP3.5 this test passed against an object
+        with the old method names, so it would have passed even if the seam had
+        no caller at all — the `AttributeError` counted the same as a raise."""
         init_archive(tmp_path)
 
-        class Hostile:
-            def observe_frame(self, **kwargs):
+        class Hostile(kc.NullCollectorMetrics):
+            def on_frame(self, received_mono_ns, wire_bytes=0):
                 raise RuntimeError("metrics exploded")
 
-            def observe_event(self, name):
+            def on_append(self, elapsed_ns, rotated=False):
                 raise RuntimeError("metrics exploded")
 
-            def close(self):
+            def on_append_rejected(self, elapsed_ns=0):
+                raise RuntimeError("metrics exploded")
+
+            def on_frame_malformed(self):
+                raise RuntimeError("metrics exploded")
+
+            def on_sequence_fault(self, kind):
+                raise RuntimeError("metrics exploded")
+
+            def on_disconnect(self):
+                raise RuntimeError("metrics exploded")
+
+            def on_reconnect(self, subscription_generation=None):
+                raise RuntimeError("metrics exploded")
+
+            def on_subscription_generation(self, generation):
                 raise RuntimeError("metrics exploded")
 
         result = kc.collect_once(make_config(tmp_path),
@@ -894,20 +913,44 @@ class TestFailureHandling:
         assert integrity["intact"] is True and out["faults"] == []
 
     def test_52_the_metrics_seam_is_never_handed_a_market_ticker(self, tmp_path):
+        """Every argument that crosses the seam, captured through the WIRED
+        path. §7.2's no-ticker guarantee is structural — there is no parameter
+        a market identifier could ride in — so the assertion is about the whole
+        argument list, not about one field name."""
         init_archive(tmp_path)
         seen: list = []
 
         class Recorder(kc.NullCollectorMetrics):
-            def observe_frame(self, **kwargs):
-                seen.append(kwargs)
+            def on_frame(self, received_mono_ns, wire_bytes=0):
+                seen.append(("on_frame", received_mono_ns, wire_bytes))
+
+            def on_append(self, elapsed_ns, rotated=False):
+                seen.append(("on_append", elapsed_ns, rotated))
+
+            def on_frame_malformed(self):
+                seen.append(("on_frame_malformed",))
+
+            def on_sequence_fault(self, kind):
+                seen.append(("on_sequence_fault", kind))
+
+            def on_subscription_generation(self, generation):
+                seen.append(("on_subscription_generation", generation))
+
+            def on_disconnect(self):
+                seen.append(("on_disconnect",))
 
         kc.collect_once(make_config(tmp_path),
                         transport_factory=RecordingFactory(FULL_SESSION),
                         metrics=Recorder())
-        assert seen and all("market_ticker" not in kw for kw in seen)
+        assert [call for call in seen if call[0] == "on_frame"]
         blob = json.dumps(seen, default=str)
-        assert M1 not in blob
-        assert set(seen[0]) == {"event_type", "archived", "append_ns", "rotations"}
+        assert M1 not in blob and "KX" not in blob
+        # Anti-vacuity: the needle really is findable when it IS present.
+        assert M1 in json.dumps([("on_frame", M1)])
+        for call in seen:
+            for argument in call[1:]:
+                assert isinstance(argument, (int, bool)) or argument in (
+                    "gap", "regression", "duplicate"), call
 
 
 class _ExplodingTransport(kx.FixtureTransport):
