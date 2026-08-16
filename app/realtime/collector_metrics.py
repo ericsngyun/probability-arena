@@ -73,8 +73,16 @@ enum, which §6.6 flags as an architectural change and §11 Q5 puts to Eric. Tha
 is a session-level concern belonging to the orchestrator, not to the interval
 lane, and it is left undone here deliberately rather than done silently.
 
-THE INTERFACE THE ORCHESTRATOR IS EXPECTED TO CALL (CP3 wires this; CP4 does not)
---------------------------------------------------------------------------------
+THE INTERFACE THE ORCHESTRATOR CALLS (WIRED BY CP3.5 — `collector.py`)
+----------------------------------------------------------------------
+
+**This is no longer a proposed interface: `app/realtime/collector.py` calls
+these methods directly**, each inside its own narrow `try/except` that counts
+`CollectorResult.metrics_errors` and suppresses. CP4 shipped this surface and
+CP3 shipped a differently-shaped one, and for one milestone nothing called
+either — 1,186 lines of green, unreachable code. The reachability proof lives in
+`tests/test_kalshi_live_tape_cp35_001.py`, which drives the REAL collector into
+the REAL lane and asserts these counters move.
 
 Every method below is safe to call unconditionally, is a no-op on
 `NULL_METRICS`, and cannot raise. Nothing in this module reaches into the
@@ -106,11 +114,21 @@ producer thread where the rotation cost is actually paid.
 
 The remaining calls are per-event-class, not per-frame:
 `on_append_rejected(elapsed_ns)` for a typed `ArchiveError`,
-`on_frame_malformed()` (only when no transport source is bound — the transport
-is otherwise the single authority), `on_sequence_fault("gap"|"regression"|
-"duplicate")`, `on_disconnect()`, `on_reconnect(generation)`, and
-`on_segment_closed(elapsed_ns)` from an `_on_rotation_closed` hook **on the
+`on_frame_malformed()` (the producer's own count; when a transport source is
+bound the flusher prefers the TRANSPORT's total, which is why both may be
+recorded without double-counting the record), `on_sequence_fault("gap"|
+"regression"|"duplicate")`, `on_disconnect()`, `on_reconnect(generation)`,
+`on_subscription_generation(generation)` when a new subscription epoch begins,
+and `on_segment_closed(elapsed_ns)` from an `_on_rotation_closed` hook **on the
 closer thread**.
+
+**The fault vocabulary is closed and the collector honours the closure.**
+`on_sequence_fault` counts anything outside `gap|regression|duplicate` as an
+`observe_error` — a metrics-lane malfunction. The collector therefore does NOT
+forward the fault classes this record has no bucket for (`wrong_sid`,
+`stale_generation`, `missing_sequence`, `awaiting_snapshot`, and book-level
+refusals): they are counted in `CollectorResult.sequence_faults`, where they are
+visible, rather than laundered into a counter that means something else.
 
 SCHEMA DELTAS FROM §7.3, AND WHY EACH EXISTS
 --------------------------------------------
@@ -724,10 +742,45 @@ class CollectorMetrics:
             self.observe_errors += 1
 
     def on_reconnect(self, subscription_generation: int | None = None) -> None:
+        """One reconnect ATTEMPT, carrying the epoch the session is leaving.
+
+        The generation is a parameter and not an inference because the two
+        numbers move on different events: a reconnect is an intention, and the
+        epoch advances only when the resubscribe that follows it actually
+        succeeds (`collector.py:_begin_subscription_epoch`). Recording the
+        epoch here says which stream ended; `on_subscription_generation` says
+        which one began. Passing `None` is still accepted — an unknown epoch is
+        left at its previous value rather than reset to a fabricated 0.
+        """
         try:
             self.reconnects += 1
-            if isinstance(subscription_generation, int):
+            if (isinstance(subscription_generation, int)
+                    and not isinstance(subscription_generation, bool)):
                 self.subscription_generation = subscription_generation
+        except Exception:  # pragma: no cover
+            self.observe_errors += 1
+
+    def on_subscription_generation(self, generation: int) -> None:
+        """A new SUBSCRIPTION EPOCH began. A gauge move, not a counter.
+
+        `subscription_generation` is the one field in the interval record that
+        answers "which stream do this interval's numbers belong to", and it has
+        to be the SAME number the tape stamps on every envelope
+        (`connection_generation` / `subscription_generation`,
+        KALSHI-TAPE-GENERATION). Before this method existed the only writer was
+        `on_reconnect`, so the gauge lagged the tape by exactly one epoch for
+        the whole of every reconnected session — the same "two counters merely
+        intended to agree" defect that left the tape's generation column
+        permanently null.
+
+        A `bool` is refused for the reason `supersede()` refuses one: `True`
+        is an `int` in Python and would silently record epoch 1.
+        """
+        try:
+            if isinstance(generation, bool) or not isinstance(generation, int):
+                self.observe_errors += 1
+                return
+            self.subscription_generation = generation
         except Exception:  # pragma: no cover
             self.observe_errors += 1
 
@@ -818,13 +871,22 @@ class CollectorMetrics:
 
 
 class NullCollectorMetrics:
-    """The disabled lane. Every method is a no-op with the same signature.
+    """The disabled lane. Every method is a TYPED no-op with the real signature.
 
     Exists for CP5, which must run the SAME fixture load with instrumentation on
     and off. Without it the comparison would require an `if metrics is not None`
     branch in the per-frame path, which would mean the "off" run and the "on" run
     no longer execute the same code — the overhead gate would then be measuring
     its own scaffolding.
+
+    **Every method is written out with its real parameters rather than aliased
+    to one `_noop(*args, **kwargs)`.** §13.1.1 measured what the shared-varargs
+    form cost: packing a varargs tuple and a kwargs dict on every call is work a
+    genuine no-instrumentation build never pays, so the "off" arm was too SLOW
+    and the raw `real − null` difference understated the true overhead by
+    **125 ns/event** (0.27% → 0.31% of append p50). A null lane that is more
+    expensive than no lane at all is a null lane that flatters the design it is
+    supposed to be the control for. Typed no-ops keep both arms honest.
     """
 
     session_id = "0" * 32
@@ -833,13 +895,45 @@ class NullCollectorMetrics:
     def __init__(self, *_args, **_kwargs) -> None:
         pass
 
-    def _noop(self, *_args, **_kwargs) -> None:
+    # -- hot path ------------------------------------------------------------------
+    def on_frame(self, received_mono_ns: int, wire_bytes: int = 0) -> None:
         return None
 
-    on_frame = on_append = on_append_rejected = on_frame_malformed = _noop
-    on_disconnect = on_reconnect = on_sequence_fault = _noop
-    on_segment_closed = _noop
-    bind_reader_lag = bind_transport_counters = bind_archive_state = _noop
+    def on_append(self, elapsed_ns: int, rotated: bool = False) -> None:
+        return None
+
+    def on_append_rejected(self, elapsed_ns: int = 0) -> None:
+        return None
+
+    def on_frame_malformed(self) -> None:
+        return None
+
+    # -- warm path -----------------------------------------------------------------
+    def on_disconnect(self) -> None:
+        return None
+
+    def on_reconnect(self, subscription_generation: int | None = None) -> None:
+        return None
+
+    def on_subscription_generation(self, generation: int) -> None:
+        return None
+
+    def on_sequence_fault(self, kind: str) -> None:
+        return None
+
+    # -- closer thread -------------------------------------------------------------
+    def on_segment_closed(self, elapsed_ns: int) -> None:
+        return None
+
+    # -- binding -------------------------------------------------------------------
+    def bind_reader_lag(self, source) -> None:
+        return None
+
+    def bind_transport_counters(self, source) -> None:
+        return None
+
+    def bind_archive_state(self, source) -> None:
+        return None
 
 
 NULL_METRICS = NullCollectorMetrics()
