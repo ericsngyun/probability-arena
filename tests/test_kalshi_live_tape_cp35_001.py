@@ -63,10 +63,18 @@ M1 = "KXMLBHIT-26AUG071845CINWSH-WSHNNUEZ26-1"
 # Every method of the seam, named once. The list is the contract: a method that
 # leaves this list has to leave `collector.py` and `collector_metrics.py` too,
 # and a method that joins it has to be wired before this file goes green.
+#
+# AMENDED BY KALSHI-TAPE-CLOSE-CALLBACK: `on_segment_closed` joined the list.
+# It was the one seam method CP3.5 could not wire — the producer never runs a
+# close, and timing one from the collector would have meant reaching into
+# `archive._closer`. `EventArchive` now takes a typed
+# `on_segment_closed=callable(close_ns: int) -> None`, so the collector's half
+# is a one-line forward and the method has a caller like every other. Its
+# proofs live in `tests/test_kalshi_tape_close_callback_001.py`.
 SEAM_METHODS = (
     "on_frame", "on_frame_malformed", "on_append", "on_append_rejected",
     "on_sequence_fault", "on_disconnect", "on_reconnect",
-    "on_subscription_generation",
+    "on_subscription_generation", "on_segment_closed",
 )
 SEAM_BINDINGS = ("bind_transport_counters", "bind_reader_lag",
                  "bind_archive_state")
@@ -233,6 +241,12 @@ class CallCounter(CollectorMetrics):
         self._tally("on_subscription_generation", generation)
         super().on_subscription_generation(generation)
 
+    def on_segment_closed(self, elapsed_ns):
+        # Entered on the ARCHIVE's closer thread (or, for the final commit,
+        # on whichever thread called `archive.close()`), never on the loop.
+        self._tally("on_segment_closed", elapsed_ns)
+        super().on_segment_closed(elapsed_ns)
+
     def bind_transport_counters(self, source):
         self._tally("bind_transport_counters")
         super().bind_transport_counters(source)
@@ -382,21 +396,39 @@ class TestReachability:
         """The structural guard against the seam quietly becoming unreachable
         again. `collector.py` must NAME every method of the contract.
 
-        Anti-vacuity is the point of the second half: a scan that would pass on
-        an empty file proves nothing, so a method that is deliberately NOT
-        wired (`on_segment_closed`, which needs an owned callback seam in
-        `archive.py`) and a method that does not exist are both asserted
-        absent — if this test can find those, its findings are real.
+        Anti-vacuity is the point of the second half: a method that does not
+        exist is asserted absent — if this test can find that, its findings
+        are real.
+
+        AMENDED BY KALSHI-TAPE-CLOSE-CALLBACK, and kept NET-STRONGER.
+        `on_segment_closed` used to be asserted ABSENT here, as the visible
+        marker of the one unwired method. An audit that pins an interface as
+        unwired certifies unreachable code the moment the wiring lands, so the
+        marker moves rather than disappears: the method is now required in
+        `SEAM_METHODS` like the other eight, AND the seam it arrives through is
+        pinned too — `collector.py` must hand `EventArchive` the callback by
+        KEYWORD, because that is the coupling that can silently rot (a
+        positional would break on the next parameter `EventArchive` gains, and
+        a dropped kwarg would return the counters to zero with every test in
+        this file still green). The full proof set is
+        `tests/test_kalshi_tape_close_callback_001.py`.
         """
         called = set()
+        archive_kwargs = set()
         for node in ast.walk(COLLECTOR_SRC):
             if isinstance(node, ast.Call) and isinstance(node.func,
                                                          ast.Attribute):
                 called.add(node.func.attr)
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                    and node.func.id == "EventArchive"):
+                archive_kwargs |= {kw.arg for kw in node.keywords if kw.arg}
         for name in SEAM_METHODS + SEAM_BINDINGS:
             assert name in called, f"{name} has no caller in collector.py"
-        assert "on_segment_closed" not in called       # documented, not wired
         assert "on_frame_totally_invented" not in called
+        # The close seam's own arrival point, held to the same standard.
+        assert "on_segment_closed" in archive_kwargs, archive_kwargs
+        assert "environment" in archive_kwargs                 # anti-vacuity
+        assert "on_segment_closed_totally_invented" not in archive_kwargs
         # The interfaces CP3 defined and CP3.5 replaced are GONE, not shimmed.
         # Identifier level, not substring: the module is allowed — required,
         # really — to EXPLAIN in prose what it replaced and why.
@@ -826,7 +858,25 @@ class TestSeamShape:
 
     def test_24_every_metrics_call_sits_inside_its_own_boundary(self):
         """Not one wrapper around many calls: one boundary per call, so a
-        method that raises cannot suppress the observation after it."""
+        method that raises cannot suppress the observation after it.
+
+        AMENDED BY KALSHI-TAPE-CLOSE-CALLBACK, and kept NET-STRONGER.
+        `on_segment_closed` is the one seam call the collector does not make
+        from its own thread: the ARCHIVE calls it, on the thread that ran the
+        close, from inside `_notify_segment_closed`'s own boundary — which
+        already wraps the collector's forward and everything under it. A
+        second `try` here would catch the same failure first and leave
+        `archive.segment_close_observer_errors` permanently zero, hiding a
+        metrics failure from the counter that exists to show it.
+
+        So the exemption is not "this one is allowed to be unguarded". It is
+        three assertions that the boundary is somewhere BETTER, all checked
+        below: the call is the entire body of `_on_segment_closed` and nothing
+        else rides with it; `archive.py` contains it with `BaseException`
+        (stronger than the `Exception` this test requires everywhere else);
+        and the collector FOLDS the archive's error count into
+        `metrics_errors`, so the honesty field still moves.
+        """
         guarded = set()
         for node in ast.walk(COLLECTOR_SRC):
             if not isinstance(node, ast.Try):
@@ -845,8 +895,36 @@ class TestSeamShape:
                              if c.func.attr in set(SEAM_METHODS + SEAM_BINDINGS)]
             assert len(metrics_calls) <= 1, ast.dump(node)
             guarded.update(id(c) for c in metrics_calls)
+
+        # --- the ONE call whose boundary lives in `archive.py` ---------------
+        forwarder = next(n for n in ast.walk(COLLECTOR_SRC)
+                         if isinstance(n, ast.FunctionDef)
+                         and n.name == "_on_segment_closed")
+        body_calls = [c for c in ast.walk(forwarder)
+                      if isinstance(c, ast.Call)
+                      and isinstance(c.func, ast.Attribute)]
+        assert [c.func.attr for c in body_calls] == ["on_segment_closed"]
+        assert len(forwarder.body) == 2                # the docstring, and it
+        exempt = {id(c) for c in body_calls}
         for call in self._metrics_calls():
-            assert id(call) in guarded, ast.dump(call)
+            assert id(call) in guarded or id(call) in exempt, ast.dump(call)
+        # The exemption is only sound if the archive really does contain it.
+        archive_src = ast.parse(
+            (REPO / "app" / "realtime" / "archive.py").read_text())
+        notify = next(n for n in ast.walk(archive_src)
+                      if isinstance(n, ast.FunctionDef)
+                      and n.name == "_notify_segment_closed")
+        handlers = [h for t in ast.walk(notify) if isinstance(t, ast.Try)
+                    for h in t.handlers]
+        assert [getattr(h.type, "id", None) for h in handlers] == \
+            ["BaseException"], ast.dump(notify)
+        # ...and only honest if the count reaches `metrics_errors`.
+        folded = [n for n in ast.walk(COLLECTOR_SRC)
+                  if isinstance(n, ast.AugAssign)
+                  and getattr(n.target, "attr", None) == "metrics_errors"
+                  and getattr(n.value, "attr", None)
+                  == "segment_close_observer_errors"]
+        assert len(folded) == 1, "the archive's observer failures are dropped"
 
     def test_25_there_is_no_generic_metrics_dispatcher_left(self):
         """The shape CP5 measured and Eric refused: a wrapper that takes
