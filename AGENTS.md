@@ -92,6 +92,32 @@ already cost this project months.
    `**kwargs`, reflection, adapter dispatch, or silent interface translation on
    these paths.
 
+7. **Every important metric needs a POSITIVE-CONTROL test: force the underlying
+   condition to occur, and prove the metric becomes non-benign.** Testing the
+   healthy state only proves the healthy state. This directly targets the
+   failure class that has produced every observability defect found in this
+   repo — **a plausible benign value emitted by a broken path**, which does not
+   crash, does not alert, and yields clean-looking datasets and convincing
+   statistics.
+
+   | force this | this must become non-benign |
+   |---|---|
+   | a reconnect | `subscription_generation` changes |
+   | a sequence gap | the gap metric is non-zero |
+   | a rotation failure | `rotation_failures` is non-zero |
+   | a segment close | the close histogram moves |
+   | disconnecting the metrics lane | the reachability test **fails** |
+
+   Real instances this rule would have caught on the day they shipped: two
+   archive columns permanently `None` and read as "no generation information";
+   `closer_outstanding()` called on a *property*, so `rotation_failures`
+   silently fell back to `0` — indistinguishable from "no rotation failed";
+   `CollectorMetrics` with 81 green tests and no caller anywhere in `app/`;
+   `brier_skill_vs_base_rate` reading as skill while measuring the wrong
+   baseline.
+
+   **A missing measurement is not zero. A disconnected metric is not healthy.**
+
 ## Parallel-agent composition (binding)
 
 > **Every parallel-agent milestone with a shared runtime path must have an
