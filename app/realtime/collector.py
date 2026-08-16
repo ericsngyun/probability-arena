@@ -1023,6 +1023,18 @@ class _Session:
         self.frames_malformed = 0
         self.reconnects = 0
         self.subscription_generations = 0
+        # KALSHI-TAPE-GENERATION — the two capture-time epochs stamped onto
+        # every envelope. 0 means "nothing has begun yet" and is never stamped
+        # on a frame: a frame can only be read after a socket is up and a
+        # subscribe has been sent, which is what advances each of them.
+        #
+        # `connection_generation` advances on a live socket; `subscription_
+        # epoch` advances only when a new SUCCESSFUL subscription generation
+        # begins. They are separate because they are separate phenomena: a
+        # connect attempt that never subscribes must not consume a subscription
+        # epoch, and the tape has always had a column for each.
+        self.connection_generation = 0
+        self.subscription_epoch = 0
         self.sequence_faults = 0
         self.recoveries_requested = 0
         self.metrics_errors = 0
@@ -1054,24 +1066,38 @@ class _Session:
         router = self._routers.get(sid)
         if router is None:
             router = self._routers[sid] = SubscriptionRouter(
-                SubscriptionState(sid, market_tickers=self.config.market_tickers))
+                SubscriptionState(sid, market_tickers=self.config.market_tickers,
+                                  # THE SAME NUMBER the envelopes carry. A sid
+                                  # first seen after two reconnects used to be
+                                  # born at generation 1 while the tape said 3.
+                                  generation=self.subscription_epoch))
             self.subscription_generations += 1
         return router
 
-    def _supersede_all(self) -> None:
-        """A new stream's sequence numbers are in a different namespace.
+    def _begin_subscription_epoch(self) -> int:
+        """A new SUCCESSFUL subscription generation has begun.
 
-        `supersede` is the existing model (`book.py:696-707`) and is driven, not
+        Called once per accepted subscribe — not per connect attempt and not
+        per frame — and it is the only place the epoch moves. Every envelope
+        stamped from here on carries this number, and every `SubscriptionState`
+        is moved onto it, so the value validated on replay is the value the
+        collector actually held. Two counters merely intended to agree is how
+        the tape ended up with a permanently null generation column.
+
+        `supersede` is the existing model (`book.py`) and is driven, not
         re-invented: it advances the generation and marks every subscription as
         awaiting a fresh snapshot, so a straggler from the old stream is
         identifiable rather than looking like an ordinary gap.
         """
+        self.subscription_epoch += 1
         for router in self._routers.values():
             router.subscription.supersede(
-                market_tickers=self.config.market_tickers)
+                market_tickers=self.config.market_tickers,
+                generation=self.subscription_epoch)
             self.subscription_generations += 1
             self._metric_event("subscription_superseded")
         self._recovery_pending.clear()
+        return self.subscription_epoch
 
     async def _request_recovery(self, transport, sid: int) -> None:
         """Recovery path 1: ask the venue to re-send snapshots for this sid.
@@ -1115,7 +1141,12 @@ class _Session:
             venue=VENUE, environment=self.config.environment,
             channel=observation["channel"], message=message,
             receive_time=receive_time, receive_mono=receive_mono,
-            normalized=observation)
+            normalized=observation,
+            # Stamped at capture. Nothing downstream can reconstruct which
+            # connection or which subscription generation a frame arrived
+            # under, so the tape carries it or the answer is gone.
+            connection_generation=self.connection_generation,
+            subscription_generation=self.subscription_epoch)
 
         # 3. ARCHIVE FIRST, INTERPRET SECOND. A frame we could not order is
         #    still evidence, and a dispatch exception must never cost us the
@@ -1203,12 +1234,19 @@ class _Session:
     async def _one_connection(self, transport):
         try:
             await transport.connect()
+            # A LIVE SOCKET, not an attempt: `connect()` has returned.
+            self.connection_generation += 1
             self._command_id += 1
             # The ONLY frame shape that reaches a socket comes from a builder;
             # the transport re-validates it and refuses anything else.
             await transport.send(build_subscribe(
                 self._command_id, list(self.config.channels),
                 list(self.config.market_tickers)))
+            # The subscribe was accepted by the socket, so a new subscription
+            # generation begins HERE — before the first frame of it can be
+            # read, and after (not before) the attempt that produced it
+            # succeeded. A connect that never got this far consumed no epoch.
+            self._begin_subscription_epoch()
             async for message in transport:
                 outcome = await self._handle_frame(message, transport)
                 if outcome is not None:
@@ -1281,7 +1319,12 @@ class _Session:
                     break
                 self.reconnects += 1
                 self._metric_event("reconnect")
-                self._supersede_all()
+                # The epoch is NOT advanced here. A reconnect is an intention;
+                # the generation begins when the resubscribe actually succeeds
+                # (`_begin_subscription_epoch`, called from
+                # `_one_connection`). Advancing on the attempt would burn an
+                # epoch on a connect that never came back, and the tape would
+                # then have a generation no frame was ever stamped with.
                 await self._backoff()
         finally:
             if self._archive is not None:

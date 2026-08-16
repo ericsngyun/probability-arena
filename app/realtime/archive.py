@@ -628,7 +628,14 @@ class EventArchive:
         writer = self._writer_for(when)
         raw = envelope.to_dict()
         reason = writer.submit({
-            "connection_generation": raw.get("connection_id"),
+            # KALSHI-TAPE-GENERATION. These two read `connection_id` and
+            # `subscription_generation` off an envelope that defined NEITHER
+            # field, so `asdict()` never produced them and both pinned columns
+            # were permanently null — while `book.dispatch` read that null
+            # straight back as "no generation information" and could not tell a
+            # reconnect from a dropped message. The names now match the
+            # envelope's, and `EventEnvelope` defines both.
+            "connection_generation": raw.get("connection_generation"),
             "subscription_id": raw.get("sid"),
             "subscription_generation": raw.get("subscription_generation"),
             "message_type": raw.get("event_type"),
