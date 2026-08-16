@@ -75,6 +75,23 @@ already cost this project months.
    same shape applies to test guards — assert that the permitted thing EXISTS,
    or the guard is satisfied by a repository in which nothing works.
 
+5. **A checkpoint is not complete because its implementation and tests are
+   green; it is complete when its intended production path is demonstrably
+   reachable.** CP4 shipped 1,186 lines and 81 passing tests that nothing in
+   `app/` could call. From inside a module, everything works — so reachability
+   must be asserted from *outside*, by a test that instantiates the real
+   collaborator and proves observable state changes. **Seam tests stay in the
+   suite permanently**, even after the subsystem matures; they are the guard,
+   not scaffolding.
+6. **Typed seams with explicit fault boundaries are the default for
+   observational hot paths.** Measured on the collector seam: a typed direct
+   call is **83 ns**, and **83 ns** again when placed inside its own narrow
+   `try/except` — the boundary is free. A generic `try/except` + `**kwargs`
+   seam is **292–333 ns**. The cost was never the fault handling; it was the
+   varargs packing. So take the containment and pay nothing: no `*args`,
+   `**kwargs`, reflection, adapter dispatch, or silent interface translation on
+   these paths.
+
 ## Parallel-agent composition (binding)
 
 > **Every parallel-agent milestone with a shared runtime path must have an
