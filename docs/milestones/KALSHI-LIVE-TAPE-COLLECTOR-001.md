@@ -1,6 +1,10 @@
 # KALSHI-LIVE-TAPE-COLLECTOR-001 — live venue -> canonical archive bridge
 
-STATUS: DESIGN ONLY. No production code in this branch.
+STATUS: IMPLEMENTED THROUGH CP5 + CP3.5 + the close-latency seam. CP0-CP5 and
+the metrics seam are merged and reachable; CP6-CP9 (live DEMO) are pending a
+frozen session manifest. See section 9 for per-checkpoint state, section 12 for
+the CP0 library audit, sections 13/13.1 for the CP5 gate and its corrections,
+section 14 for the CP3.5 seam and section 15 for the close-latency callback.
 
 ## 1. Objective
 
