@@ -354,7 +354,10 @@ the venue are incompatible as currently written.
    Tier-2 approval is unaffected by this document.
 6. **The `error` frame's body.** Its *cause* was determined (§9.1) — it is the
    venue rejecting the collector's own recovery command — but the message body
-   was not captured, so the venue's error code is unknown.
+   was not captured, so the venue's error code is unknown. **CLOSED
+   2026-08-17**: it is `{"code":13,"msg":"Unsupported action"}`, and the same
+   command sent to the orderbook subscription is answered rather than refused
+   (`KALSHI-COLLECTOR-P0-FIXES-FINDING.md` §2).
 
 ---
 
@@ -409,6 +412,30 @@ All three were visible in these runs and none is in this milestone's scope.
 They are recorded because a venue-model or bound surprise found during
 qualification contaminates everything downstream, and the CP6–CP9
 preregistration says so.
+
+> **RESOLVED 2026-08-17 by KALSHI-COLLECTOR-P0-FIXES.** All three were measured
+> against the venue and fixed; see
+> `KALSHI-COLLECTOR-P0-FIXES-FINDING.md`. Two corrections belong here rather
+> than only there, because this section as written is partly wrong:
+>
+> * **§9.1 was right about the mechanism and one detail was missing.** `trade`
+>   frames DO carry `seq`, on their OWN `sid` — the venue assigns one sid per
+>   channel and says so in its acks (`orderbook_delta`→1, `ticker`→2,
+>   `trade`→3). The trade subscription's sequence was contiguous 1…219 with
+>   zero gaps while the collector reported 219 faults on it. The `error` body
+>   is `{"code":13,"msg":"Unsupported action"}`, and the same `get_snapshot`
+>   sent to the ORDERBOOK sid is answered normally — so the recovery path is
+>   sound and this was a routing defect. After the fix the identical run
+>   reports **0 faults, 0 recoveries, 0 error frames**.
+> * **§9.2 IS FALSE AS STATED.** Measured with values rather than key names,
+>   **57 of 60** `orderbook_snapshot` frames carried non-empty ladders (up to
+>   eight YES and seven NO levels) and 3 carried neither key; the census
+>   replicated exactly on a second socket. "DEMO's `orderbook_snapshot` carries
+>   no ladder" was inferred from a KEY LIST of a ladderless sample — doctrine 8
+>   one level down: a key list is not a value. The real defect is the opposite
+>   and is ours, in `_normalize_orderbook`: an OMITTED ladder was recorded as
+>   coverage `present` with zero levels, making "the venue said nothing" and
+>   "the venue said empty" the same record.
 
 0. **`max_seconds` is not enforced during silence.** `CollectorConfig`
    documents `max_seconds`, `max_events` and `max_reconnects` as "three

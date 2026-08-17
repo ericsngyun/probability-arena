@@ -1,0 +1,1166 @@
+{
+  "command_sent": {
+    "cmd": "update_subscription",
+    "id": 2,
+    "params": {
+      "action": "get_snapshot",
+      "market_tickers": [
+        "KXMAXSHARDINGTEST-26AUG2818-T68399.99",
+        "KXMAXSHARDINGTEST-26AUG2818-T56399.99",
+        "KXMAXSHARDINGTEST-26AUG2818-T65399.99"
+      ],
+      "sids": [
+        1
+      ]
+    }
+  },
+  "command_sent_after_frame_ordinal": 30,
+  "credential_audit": {
+    "environment": "demo",
+    "key_id_fingerprint": "sha256:355d3cd2c0177448",
+    "proven_read_only": true,
+    "scopes": [
+      "read"
+    ],
+    "verified_at": "2026-08-17T08:53:25.372374+00:00"
+  },
+  "environment": "demo",
+  "frames_after_command": [
+    {
+      "at": "2026-08-17T08:53:39.860116+00:00",
+      "frame": {
+        "msg": {
+          "delta_fp": "100.00",
+          "market_id": "5ac66685-e9c9-49f5-9885-d0302f74ad29",
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T68399.99",
+          "price_dollars": "0.2500",
+          "side": "no",
+          "ts": "2026-08-17T08:53:39.843496Z",
+          "ts_ms": 1786956819843
+        },
+        "seq": 30,
+        "sid": 1,
+        "type": "orderbook_delta"
+      },
+      "ordinal": 31
+    },
+    {
+      "at": "2026-08-17T08:53:39.892747+00:00",
+      "frame": {
+        "id": 2,
+        "msg": {
+          "market_id": "5ac66685-e9c9-49f5-9885-d0302f74ad29",
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T68399.99",
+          "no_dollars_fp": [
+            [
+              "0.4300",
+              "2500.00"
+            ],
+            [
+              "0.4200",
+              "2170.00"
+            ],
+            [
+              "0.2500",
+              "300.00"
+            ]
+          ],
+          "yes_dollars_fp": [
+            [
+              "0.2100",
+              "300.00"
+            ]
+          ]
+        },
+        "seq": 31,
+        "sid": 1,
+        "type": "orderbook_snapshot"
+      },
+      "ordinal": 32
+    },
+    {
+      "at": "2026-08-17T08:53:39.892869+00:00",
+      "frame": {
+        "id": 2,
+        "msg": {
+          "market_id": "227f4cc9-9901-45f7-a6fa-fb7ee811bb9b",
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T56399.99",
+          "no_dollars_fp": [
+            [
+              "0.8800",
+              "200.00"
+            ]
+          ],
+          "yes_dollars_fp": [
+            [
+              "0.7400",
+              "2500.00"
+            ],
+            [
+              "0.7500",
+              "483.00"
+            ],
+            [
+              "0.8400",
+              "200.00"
+            ]
+          ]
+        },
+        "seq": 32,
+        "sid": 1,
+        "type": "orderbook_snapshot"
+      },
+      "ordinal": 33
+    },
+    {
+      "at": "2026-08-17T08:53:39.892909+00:00",
+      "frame": {
+        "id": 2,
+        "msg": {
+          "market_id": "0b58a781-1098-485b-91f5-da977f86e99e",
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T65399.99",
+          "no_dollars_fp": [
+            [
+              "0.5300",
+              "2500.00"
+            ],
+            [
+              "0.5200",
+              "2176.00"
+            ],
+            [
+              "0.4000",
+              "200.00"
+            ]
+          ],
+          "yes_dollars_fp": [
+            [
+              "0.3600",
+              "200.00"
+            ]
+          ]
+        },
+        "seq": 33,
+        "sid": 1,
+        "type": "orderbook_snapshot"
+      },
+      "ordinal": 34
+    },
+    {
+      "at": "2026-08-17T08:53:40.037642+00:00",
+      "frame": {
+        "msg": {
+          "delta_fp": "100.00",
+          "market_id": "0b58a781-1098-485b-91f5-da977f86e99e",
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T65399.99",
+          "price_dollars": "0.3600",
+          "side": "yes",
+          "ts": "2026-08-17T08:53:40.021402Z",
+          "ts_ms": 1786956820021
+        },
+        "seq": 34,
+        "sid": 1,
+        "type": "orderbook_delta"
+      },
+      "ordinal": 35
+    },
+    {
+      "at": "2026-08-17T08:53:40.037804+00:00",
+      "frame": {
+        "msg": {
+          "delta_fp": "100.00",
+          "market_id": "0b58a781-1098-485b-91f5-da977f86e99e",
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T65399.99",
+          "price_dollars": "0.4000",
+          "side": "no",
+          "ts": "2026-08-17T08:53:40.021784Z",
+          "ts_ms": 1786956820021
+        },
+        "seq": 35,
+        "sid": 1,
+        "type": "orderbook_delta"
+      },
+      "ordinal": 36
+    },
+    {
+      "at": "2026-08-17T08:53:40.084120+00:00",
+      "frame": {
+        "msg": {
+          "delta_fp": "100.00",
+          "market_id": "5ac66685-e9c9-49f5-9885-d0302f74ad29",
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T68399.99",
+          "price_dollars": "0.2100",
+          "side": "yes",
+          "ts": "2026-08-17T08:53:40.068504Z",
+          "ts_ms": 1786956820068
+        },
+        "seq": 36,
+        "sid": 1,
+        "type": "orderbook_delta"
+      },
+      "ordinal": 37
+    },
+    {
+      "at": "2026-08-17T08:53:40.085240+00:00",
+      "frame": {
+        "msg": {
+          "delta_fp": "100.00",
+          "market_id": "5ac66685-e9c9-49f5-9885-d0302f74ad29",
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T68399.99",
+          "price_dollars": "0.2500",
+          "side": "no",
+          "ts": "2026-08-17T08:53:40.068923Z",
+          "ts_ms": 1786956820068
+        },
+        "seq": 37,
+        "sid": 1,
+        "type": "orderbook_delta"
+      },
+      "ordinal": 38
+    },
+    {
+      "at": "2026-08-17T08:53:40.265842+00:00",
+      "frame": {
+        "msg": {
+          "delta_fp": "100.00",
+          "market_id": "0b58a781-1098-485b-91f5-da977f86e99e",
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T65399.99",
+          "price_dollars": "0.3600",
+          "side": "yes",
+          "ts": "2026-08-17T08:53:40.249766Z",
+          "ts_ms": 1786956820249
+        },
+        "seq": 38,
+        "sid": 1,
+        "type": "orderbook_delta"
+      },
+      "ordinal": 39
+    },
+    {
+      "at": "2026-08-17T08:53:40.266016+00:00",
+      "frame": {
+        "msg": {
+          "delta_fp": "100.00",
+          "market_id": "0b58a781-1098-485b-91f5-da977f86e99e",
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T65399.99",
+          "price_dollars": "0.4000",
+          "side": "no",
+          "ts": "2026-08-17T08:53:40.25014Z",
+          "ts_ms": 1786956820250
+        },
+        "seq": 39,
+        "sid": 1,
+        "type": "orderbook_delta"
+      },
+      "ordinal": 40
+    },
+    {
+      "at": "2026-08-17T08:53:40.552346+00:00",
+      "frame": {
+        "msg": {
+          "delta_fp": "100.00",
+          "market_id": "227f4cc9-9901-45f7-a6fa-fb7ee811bb9b",
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T56399.99",
+          "price_dollars": "0.8400",
+          "side": "yes",
+          "ts": "2026-08-17T08:53:40.536179Z",
+          "ts_ms": 1786956820536
+        },
+        "seq": 40,
+        "sid": 1,
+        "type": "orderbook_delta"
+      },
+      "ordinal": 41
+    },
+    {
+      "at": "2026-08-17T08:53:40.552464+00:00",
+      "frame": {
+        "msg": {
+          "delta_fp": "100.00",
+          "market_id": "227f4cc9-9901-45f7-a6fa-fb7ee811bb9b",
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T56399.99",
+          "price_dollars": "0.8800",
+          "side": "no",
+          "ts": "2026-08-17T08:53:40.536541Z",
+          "ts_ms": 1786956820536
+        },
+        "seq": 41,
+        "sid": 1,
+        "type": "orderbook_delta"
+      },
+      "ordinal": 42
+    },
+    {
+      "at": "2026-08-17T08:53:40.802895+00:00",
+      "frame": {
+        "msg": {
+          "delta_fp": "100.00",
+          "market_id": "227f4cc9-9901-45f7-a6fa-fb7ee811bb9b",
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T56399.99",
+          "price_dollars": "0.8400",
+          "side": "yes",
+          "ts": "2026-08-17T08:53:40.786704Z",
+          "ts_ms": 1786956820786
+        },
+        "seq": 42,
+        "sid": 1,
+        "type": "orderbook_delta"
+      },
+      "ordinal": 43
+    },
+    {
+      "at": "2026-08-17T08:53:40.802989+00:00",
+      "frame": {
+        "msg": {
+          "delta_fp": "100.00",
+          "market_id": "227f4cc9-9901-45f7-a6fa-fb7ee811bb9b",
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T56399.99",
+          "price_dollars": "0.8800",
+          "side": "no",
+          "ts": "2026-08-17T08:53:40.787078Z",
+          "ts_ms": 1786956820787
+        },
+        "seq": 43,
+        "sid": 1,
+        "type": "orderbook_delta"
+      },
+      "ordinal": 44
+    },
+    {
+      "at": "2026-08-17T08:53:42.220450+00:00",
+      "frame": {
+        "msg": {
+          "delta_fp": "-100.00",
+          "market_id": "0b58a781-1098-485b-91f5-da977f86e99e",
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T65399.99",
+          "price_dollars": "0.4000",
+          "side": "no",
+          "ts": "2026-08-17T08:53:42.199467Z",
+          "ts_ms": 1786956822199
+        },
+        "seq": 44,
+        "sid": 1,
+        "type": "orderbook_delta"
+      },
+      "ordinal": 45
+    },
+    {
+      "at": "2026-08-17T08:53:42.220543+00:00",
+      "frame": {
+        "msg": {
+          "delta_fp": "-100.00",
+          "market_id": "0b58a781-1098-485b-91f5-da977f86e99e",
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T65399.99",
+          "price_dollars": "0.3600",
+          "side": "yes",
+          "ts": "2026-08-17T08:53:42.199467Z",
+          "ts_ms": 1786956822199
+        },
+        "seq": 45,
+        "sid": 1,
+        "type": "orderbook_delta"
+      },
+      "ordinal": 46
+    },
+    {
+      "at": "2026-08-17T08:53:42.269203+00:00",
+      "frame": {
+        "msg": {
+          "delta_fp": "-100.00",
+          "market_id": "5ac66685-e9c9-49f5-9885-d0302f74ad29",
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T68399.99",
+          "price_dollars": "0.2100",
+          "side": "yes",
+          "ts": "2026-08-17T08:53:42.199467Z",
+          "ts_ms": 1786956822199
+        },
+        "seq": 46,
+        "sid": 1,
+        "type": "orderbook_delta"
+      },
+      "ordinal": 47
+    },
+    {
+      "at": "2026-08-17T08:53:42.269300+00:00",
+      "frame": {
+        "msg": {
+          "delta_fp": "-100.00",
+          "market_id": "0b58a781-1098-485b-91f5-da977f86e99e",
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T65399.99",
+          "price_dollars": "0.4000",
+          "side": "no",
+          "ts": "2026-08-17T08:53:42.199467Z",
+          "ts_ms": 1786956822199
+        },
+        "seq": 47,
+        "sid": 1,
+        "type": "orderbook_delta"
+      },
+      "ordinal": 48
+    },
+    {
+      "at": "2026-08-17T08:53:42.269334+00:00",
+      "frame": {
+        "msg": {
+          "delta_fp": "-100.00",
+          "market_id": "0b58a781-1098-485b-91f5-da977f86e99e",
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T65399.99",
+          "price_dollars": "0.3600",
+          "side": "yes",
+          "ts": "2026-08-17T08:53:42.199467Z",
+          "ts_ms": 1786956822199
+        },
+        "seq": 48,
+        "sid": 1,
+        "type": "orderbook_delta"
+      },
+      "ordinal": 49
+    },
+    {
+      "at": "2026-08-17T08:53:42.269360+00:00",
+      "frame": {
+        "msg": {
+          "delta_fp": "-100.00",
+          "market_id": "5ac66685-e9c9-49f5-9885-d0302f74ad29",
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T68399.99",
+          "price_dollars": "0.2100",
+          "side": "yes",
+          "ts": "2026-08-17T08:53:42.199467Z",
+          "ts_ms": 1786956822199
+        },
+        "seq": 49,
+        "sid": 1,
+        "type": "orderbook_delta"
+      },
+      "ordinal": 50
+    },
+    {
+      "at": "2026-08-17T08:53:42.269387+00:00",
+      "frame": {
+        "msg": {
+          "delta_fp": "-100.00",
+          "market_id": "5ac66685-e9c9-49f5-9885-d0302f74ad29",
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T68399.99",
+          "price_dollars": "0.2500",
+          "side": "no",
+          "ts": "2026-08-17T08:53:42.199467Z",
+          "ts_ms": 1786956822199
+        },
+        "seq": 50,
+        "sid": 1,
+        "type": "orderbook_delta"
+      },
+      "ordinal": 51
+    },
+    {
+      "at": "2026-08-17T08:53:42.269407+00:00",
+      "frame": {
+        "msg": {
+          "delta_fp": "-100.00",
+          "market_id": "227f4cc9-9901-45f7-a6fa-fb7ee811bb9b",
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T56399.99",
+          "price_dollars": "0.8400",
+          "side": "yes",
+          "ts": "2026-08-17T08:53:42.199467Z",
+          "ts_ms": 1786956822199
+        },
+        "seq": 51,
+        "sid": 1,
+        "type": "orderbook_delta"
+      },
+      "ordinal": 52
+    },
+    {
+      "at": "2026-08-17T08:53:42.269428+00:00",
+      "frame": {
+        "msg": {
+          "delta_fp": "-100.00",
+          "market_id": "227f4cc9-9901-45f7-a6fa-fb7ee811bb9b",
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T56399.99",
+          "price_dollars": "0.8800",
+          "side": "no",
+          "ts": "2026-08-17T08:53:42.199467Z",
+          "ts_ms": 1786956822199
+        },
+        "seq": 52,
+        "sid": 1,
+        "type": "orderbook_delta"
+      },
+      "ordinal": 53
+    },
+    {
+      "at": "2026-08-17T08:53:42.269449+00:00",
+      "frame": {
+        "msg": {
+          "delta_fp": "-100.00",
+          "market_id": "5ac66685-e9c9-49f5-9885-d0302f74ad29",
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T68399.99",
+          "price_dollars": "0.2500",
+          "side": "no",
+          "ts": "2026-08-17T08:53:42.199467Z",
+          "ts_ms": 1786956822199
+        },
+        "seq": 53,
+        "sid": 1,
+        "type": "orderbook_delta"
+      },
+      "ordinal": 54
+    },
+    {
+      "at": "2026-08-17T08:53:42.269469+00:00",
+      "frame": {
+        "msg": {
+          "delta_fp": "-100.00",
+          "market_id": "227f4cc9-9901-45f7-a6fa-fb7ee811bb9b",
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T56399.99",
+          "price_dollars": "0.8400",
+          "side": "yes",
+          "ts": "2026-08-17T08:53:42.199467Z",
+          "ts_ms": 1786956822199
+        },
+        "seq": 54,
+        "sid": 1,
+        "type": "orderbook_delta"
+      },
+      "ordinal": 55
+    },
+    {
+      "at": "2026-08-17T08:53:42.269491+00:00",
+      "frame": {
+        "msg": {
+          "delta_fp": "-100.00",
+          "market_id": "227f4cc9-9901-45f7-a6fa-fb7ee811bb9b",
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T56399.99",
+          "price_dollars": "0.8800",
+          "side": "no",
+          "ts": "2026-08-17T08:53:42.199467Z",
+          "ts_ms": 1786956822199
+        },
+        "seq": 55,
+        "sid": 1,
+        "type": "orderbook_delta"
+      },
+      "ordinal": 56
+    },
+    {
+      "at": "2026-08-17T08:53:48.994633+00:00",
+      "frame": {
+        "msg": {
+          "delta_fp": "100.00",
+          "market_id": "5ac66685-e9c9-49f5-9885-d0302f74ad29",
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T68399.99",
+          "price_dollars": "0.2100",
+          "side": "yes",
+          "ts": "2026-08-17T08:53:48.977808Z",
+          "ts_ms": 1786956828977
+        },
+        "seq": 56,
+        "sid": 1,
+        "type": "orderbook_delta"
+      },
+      "ordinal": 57
+    }
+  ],
+  "frames_before_command": [
+    {
+      "at": "2026-08-17T08:53:25.625903+00:00",
+      "frame": {
+        "id": 1,
+        "msg": {
+          "channel": "orderbook_delta",
+          "sid": 1
+        },
+        "type": "subscribed"
+      },
+      "ordinal": 1
+    },
+    {
+      "at": "2026-08-17T08:53:25.625984+00:00",
+      "frame": {
+        "msg": {
+          "market_id": "227f4cc9-9901-45f7-a6fa-fb7ee811bb9b",
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T56399.99",
+          "no_dollars_fp": [
+            [
+              "0.8800",
+              "200.00"
+            ]
+          ],
+          "yes_dollars_fp": [
+            [
+              "0.7400",
+              "2500.00"
+            ],
+            [
+              "0.7500",
+              "483.00"
+            ],
+            [
+              "0.8400",
+              "200.00"
+            ]
+          ]
+        },
+        "seq": 1,
+        "sid": 1,
+        "type": "orderbook_snapshot"
+      },
+      "ordinal": 2
+    },
+    {
+      "at": "2026-08-17T08:53:25.626042+00:00",
+      "frame": {
+        "msg": {
+          "market_id": "0b58a781-1098-485b-91f5-da977f86e99e",
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T65399.99",
+          "no_dollars_fp": [
+            [
+              "0.5300",
+              "2500.00"
+            ],
+            [
+              "0.5200",
+              "2176.00"
+            ],
+            [
+              "0.4000",
+              "200.00"
+            ]
+          ],
+          "yes_dollars_fp": [
+            [
+              "0.3600",
+              "200.00"
+            ]
+          ]
+        },
+        "seq": 2,
+        "sid": 1,
+        "type": "orderbook_snapshot"
+      },
+      "ordinal": 3
+    },
+    {
+      "at": "2026-08-17T08:53:25.626079+00:00",
+      "frame": {
+        "msg": {
+          "market_id": "5ac66685-e9c9-49f5-9885-d0302f74ad29",
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T68399.99",
+          "no_dollars_fp": [
+            [
+              "0.4300",
+              "2500.00"
+            ],
+            [
+              "0.4200",
+              "2170.00"
+            ],
+            [
+              "0.2500",
+              "200.00"
+            ]
+          ],
+          "yes_dollars_fp": [
+            [
+              "0.2100",
+              "200.00"
+            ]
+          ]
+        },
+        "seq": 3,
+        "sid": 1,
+        "type": "orderbook_snapshot"
+      },
+      "ordinal": 4
+    },
+    {
+      "at": "2026-08-17T08:53:30.649296+00:00",
+      "frame": {
+        "msg": {
+          "delta_fp": "100.00",
+          "market_id": "5ac66685-e9c9-49f5-9885-d0302f74ad29",
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T68399.99",
+          "price_dollars": "0.2100",
+          "side": "yes",
+          "ts": "2026-08-17T08:53:30.579279Z",
+          "ts_ms": 1786956810579
+        },
+        "seq": 4,
+        "sid": 1,
+        "type": "orderbook_delta"
+      },
+      "ordinal": 5
+    },
+    {
+      "at": "2026-08-17T08:53:30.649403+00:00",
+      "frame": {
+        "msg": {
+          "delta_fp": "100.00",
+          "market_id": "5ac66685-e9c9-49f5-9885-d0302f74ad29",
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T68399.99",
+          "price_dollars": "0.2500",
+          "side": "no",
+          "ts": "2026-08-17T08:53:30.579627Z",
+          "ts_ms": 1786956810579
+        },
+        "seq": 5,
+        "sid": 1,
+        "type": "orderbook_delta"
+      },
+      "ordinal": 6
+    },
+    {
+      "at": "2026-08-17T08:53:30.765033+00:00",
+      "frame": {
+        "msg": {
+          "delta_fp": "100.00",
+          "market_id": "0b58a781-1098-485b-91f5-da977f86e99e",
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T65399.99",
+          "price_dollars": "0.3600",
+          "side": "yes",
+          "ts": "2026-08-17T08:53:30.748959Z",
+          "ts_ms": 1786956810748
+        },
+        "seq": 6,
+        "sid": 1,
+        "type": "orderbook_delta"
+      },
+      "ordinal": 7
+    },
+    {
+      "at": "2026-08-17T08:53:30.765105+00:00",
+      "frame": {
+        "msg": {
+          "delta_fp": "100.00",
+          "market_id": "0b58a781-1098-485b-91f5-da977f86e99e",
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T65399.99",
+          "price_dollars": "0.4000",
+          "side": "no",
+          "ts": "2026-08-17T08:53:30.74931Z",
+          "ts_ms": 1786956810749
+        },
+        "seq": 7,
+        "sid": 1,
+        "type": "orderbook_delta"
+      },
+      "ordinal": 8
+    },
+    {
+      "at": "2026-08-17T08:53:30.887490+00:00",
+      "frame": {
+        "msg": {
+          "delta_fp": "100.00",
+          "market_id": "5ac66685-e9c9-49f5-9885-d0302f74ad29",
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T68399.99",
+          "price_dollars": "0.2100",
+          "side": "yes",
+          "ts": "2026-08-17T08:53:30.870897Z",
+          "ts_ms": 1786956810870
+        },
+        "seq": 8,
+        "sid": 1,
+        "type": "orderbook_delta"
+      },
+      "ordinal": 9
+    },
+    {
+      "at": "2026-08-17T08:53:30.887814+00:00",
+      "frame": {
+        "msg": {
+          "delta_fp": "100.00",
+          "market_id": "5ac66685-e9c9-49f5-9885-d0302f74ad29",
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T68399.99",
+          "price_dollars": "0.2500",
+          "side": "no",
+          "ts": "2026-08-17T08:53:30.871347Z",
+          "ts_ms": 1786956810871
+        },
+        "seq": 9,
+        "sid": 1,
+        "type": "orderbook_delta"
+      },
+      "ordinal": 10
+    },
+    {
+      "at": "2026-08-17T08:53:30.992577+00:00",
+      "frame": {
+        "msg": {
+          "delta_fp": "-1.00",
+          "market_id": "5ac66685-e9c9-49f5-9885-d0302f74ad29",
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T68399.99",
+          "price_dollars": "0.2100",
+          "side": "yes",
+          "ts": "2026-08-17T08:53:30.976282Z",
+          "ts_ms": 1786956810976
+        },
+        "seq": 10,
+        "sid": 1,
+        "type": "orderbook_delta"
+      },
+      "ordinal": 11
+    },
+    {
+      "at": "2026-08-17T08:53:31.070590+00:00",
+      "frame": {
+        "msg": {
+          "delta_fp": "100.00",
+          "market_id": "0b58a781-1098-485b-91f5-da977f86e99e",
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T65399.99",
+          "price_dollars": "0.3600",
+          "side": "yes",
+          "ts": "2026-08-17T08:53:31.054425Z",
+          "ts_ms": 1786956811054
+        },
+        "seq": 11,
+        "sid": 1,
+        "type": "orderbook_delta"
+      },
+      "ordinal": 12
+    },
+    {
+      "at": "2026-08-17T08:53:31.070650+00:00",
+      "frame": {
+        "msg": {
+          "delta_fp": "100.00",
+          "market_id": "0b58a781-1098-485b-91f5-da977f86e99e",
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T65399.99",
+          "price_dollars": "0.4000",
+          "side": "no",
+          "ts": "2026-08-17T08:53:31.054801Z",
+          "ts_ms": 1786956811054
+        },
+        "seq": 12,
+        "sid": 1,
+        "type": "orderbook_delta"
+      },
+      "ordinal": 13
+    },
+    {
+      "at": "2026-08-17T08:53:31.284891+00:00",
+      "frame": {
+        "msg": {
+          "delta_fp": "100.00",
+          "market_id": "227f4cc9-9901-45f7-a6fa-fb7ee811bb9b",
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T56399.99",
+          "price_dollars": "0.8400",
+          "side": "yes",
+          "ts": "2026-08-17T08:53:31.268412Z",
+          "ts_ms": 1786956811268
+        },
+        "seq": 13,
+        "sid": 1,
+        "type": "orderbook_delta"
+      },
+      "ordinal": 14
+    },
+    {
+      "at": "2026-08-17T08:53:31.285598+00:00",
+      "frame": {
+        "msg": {
+          "delta_fp": "100.00",
+          "market_id": "227f4cc9-9901-45f7-a6fa-fb7ee811bb9b",
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T56399.99",
+          "price_dollars": "0.8800",
+          "side": "no",
+          "ts": "2026-08-17T08:53:31.268783Z",
+          "ts_ms": 1786956811268
+        },
+        "seq": 14,
+        "sid": 1,
+        "type": "orderbook_delta"
+      },
+      "ordinal": 15
+    },
+    {
+      "at": "2026-08-17T08:53:31.595890+00:00",
+      "frame": {
+        "msg": {
+          "delta_fp": "100.00",
+          "market_id": "227f4cc9-9901-45f7-a6fa-fb7ee811bb9b",
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T56399.99",
+          "price_dollars": "0.8400",
+          "side": "yes",
+          "ts": "2026-08-17T08:53:31.579652Z",
+          "ts_ms": 1786956811579
+        },
+        "seq": 15,
+        "sid": 1,
+        "type": "orderbook_delta"
+      },
+      "ordinal": 16
+    },
+    {
+      "at": "2026-08-17T08:53:31.595991+00:00",
+      "frame": {
+        "msg": {
+          "delta_fp": "100.00",
+          "market_id": "227f4cc9-9901-45f7-a6fa-fb7ee811bb9b",
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T56399.99",
+          "price_dollars": "0.8800",
+          "side": "no",
+          "ts": "2026-08-17T08:53:31.580059Z",
+          "ts_ms": 1786956811580
+        },
+        "seq": 16,
+        "sid": 1,
+        "type": "orderbook_delta"
+      },
+      "ordinal": 17
+    },
+    {
+      "at": "2026-08-17T08:53:33.210827+00:00",
+      "frame": {
+        "msg": {
+          "delta_fp": "-100.00",
+          "market_id": "0b58a781-1098-485b-91f5-da977f86e99e",
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T65399.99",
+          "price_dollars": "0.3600",
+          "side": "yes",
+          "ts": "2026-08-17T08:53:33.189831Z",
+          "ts_ms": 1786956813189
+        },
+        "seq": 17,
+        "sid": 1,
+        "type": "orderbook_delta"
+      },
+      "ordinal": 18
+    },
+    {
+      "at": "2026-08-17T08:53:33.210926+00:00",
+      "frame": {
+        "msg": {
+          "delta_fp": "-99.00",
+          "market_id": "5ac66685-e9c9-49f5-9885-d0302f74ad29",
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T68399.99",
+          "price_dollars": "0.2100",
+          "side": "yes",
+          "ts": "2026-08-17T08:53:33.189831Z",
+          "ts_ms": 1786956813189
+        },
+        "seq": 18,
+        "sid": 1,
+        "type": "orderbook_delta"
+      },
+      "ordinal": 19
+    },
+    {
+      "at": "2026-08-17T08:53:33.248692+00:00",
+      "frame": {
+        "msg": {
+          "delta_fp": "-100.00",
+          "market_id": "0b58a781-1098-485b-91f5-da977f86e99e",
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T65399.99",
+          "price_dollars": "0.3600",
+          "side": "yes",
+          "ts": "2026-08-17T08:53:33.189831Z",
+          "ts_ms": 1786956813189
+        },
+        "seq": 19,
+        "sid": 1,
+        "type": "orderbook_delta"
+      },
+      "ordinal": 20
+    },
+    {
+      "at": "2026-08-17T08:53:33.248748+00:00",
+      "frame": {
+        "msg": {
+          "delta_fp": "-100.00",
+          "market_id": "0b58a781-1098-485b-91f5-da977f86e99e",
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T65399.99",
+          "price_dollars": "0.4000",
+          "side": "no",
+          "ts": "2026-08-17T08:53:33.189831Z",
+          "ts_ms": 1786956813189
+        },
+        "seq": 20,
+        "sid": 1,
+        "type": "orderbook_delta"
+      },
+      "ordinal": 21
+    },
+    {
+      "at": "2026-08-17T08:53:33.248779+00:00",
+      "frame": {
+        "msg": {
+          "delta_fp": "-100.00",
+          "market_id": "5ac66685-e9c9-49f5-9885-d0302f74ad29",
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T68399.99",
+          "price_dollars": "0.2500",
+          "side": "no",
+          "ts": "2026-08-17T08:53:33.189831Z",
+          "ts_ms": 1786956813189
+        },
+        "seq": 21,
+        "sid": 1,
+        "type": "orderbook_delta"
+      },
+      "ordinal": 22
+    },
+    {
+      "at": "2026-08-17T08:53:33.248806+00:00",
+      "frame": {
+        "msg": {
+          "delta_fp": "-100.00",
+          "market_id": "5ac66685-e9c9-49f5-9885-d0302f74ad29",
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T68399.99",
+          "price_dollars": "0.2100",
+          "side": "yes",
+          "ts": "2026-08-17T08:53:33.189831Z",
+          "ts_ms": 1786956813189
+        },
+        "seq": 22,
+        "sid": 1,
+        "type": "orderbook_delta"
+      },
+      "ordinal": 23
+    },
+    {
+      "at": "2026-08-17T08:53:33.248831+00:00",
+      "frame": {
+        "msg": {
+          "delta_fp": "-100.00",
+          "market_id": "0b58a781-1098-485b-91f5-da977f86e99e",
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T65399.99",
+          "price_dollars": "0.4000",
+          "side": "no",
+          "ts": "2026-08-17T08:53:33.189831Z",
+          "ts_ms": 1786956813189
+        },
+        "seq": 23,
+        "sid": 1,
+        "type": "orderbook_delta"
+      },
+      "ordinal": 24
+    },
+    {
+      "at": "2026-08-17T08:53:33.248860+00:00",
+      "frame": {
+        "msg": {
+          "delta_fp": "-100.00",
+          "market_id": "227f4cc9-9901-45f7-a6fa-fb7ee811bb9b",
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T56399.99",
+          "price_dollars": "0.8400",
+          "side": "yes",
+          "ts": "2026-08-17T08:53:33.189831Z",
+          "ts_ms": 1786956813189
+        },
+        "seq": 24,
+        "sid": 1,
+        "type": "orderbook_delta"
+      },
+      "ordinal": 25
+    },
+    {
+      "at": "2026-08-17T08:53:33.248888+00:00",
+      "frame": {
+        "msg": {
+          "delta_fp": "-100.00",
+          "market_id": "227f4cc9-9901-45f7-a6fa-fb7ee811bb9b",
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T56399.99",
+          "price_dollars": "0.8800",
+          "side": "no",
+          "ts": "2026-08-17T08:53:33.189831Z",
+          "ts_ms": 1786956813189
+        },
+        "seq": 25,
+        "sid": 1,
+        "type": "orderbook_delta"
+      },
+      "ordinal": 26
+    },
+    {
+      "at": "2026-08-17T08:53:33.248915+00:00",
+      "frame": {
+        "msg": {
+          "delta_fp": "-100.00",
+          "market_id": "5ac66685-e9c9-49f5-9885-d0302f74ad29",
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T68399.99",
+          "price_dollars": "0.2500",
+          "side": "no",
+          "ts": "2026-08-17T08:53:33.189831Z",
+          "ts_ms": 1786956813189
+        },
+        "seq": 26,
+        "sid": 1,
+        "type": "orderbook_delta"
+      },
+      "ordinal": 27
+    },
+    {
+      "at": "2026-08-17T08:53:33.248941+00:00",
+      "frame": {
+        "msg": {
+          "delta_fp": "-100.00",
+          "market_id": "227f4cc9-9901-45f7-a6fa-fb7ee811bb9b",
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T56399.99",
+          "price_dollars": "0.8400",
+          "side": "yes",
+          "ts": "2026-08-17T08:53:33.189831Z",
+          "ts_ms": 1786956813189
+        },
+        "seq": 27,
+        "sid": 1,
+        "type": "orderbook_delta"
+      },
+      "ordinal": 28
+    },
+    {
+      "at": "2026-08-17T08:53:33.248964+00:00",
+      "frame": {
+        "msg": {
+          "delta_fp": "-100.00",
+          "market_id": "227f4cc9-9901-45f7-a6fa-fb7ee811bb9b",
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T56399.99",
+          "price_dollars": "0.8800",
+          "side": "no",
+          "ts": "2026-08-17T08:53:33.189831Z",
+          "ts_ms": 1786956813189
+        },
+        "seq": 28,
+        "sid": 1,
+        "type": "orderbook_delta"
+      },
+      "ordinal": 29
+    },
+    {
+      "at": "2026-08-17T08:53:39.859747+00:00",
+      "frame": {
+        "msg": {
+          "delta_fp": "100.00",
+          "market_id": "5ac66685-e9c9-49f5-9885-d0302f74ad29",
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T68399.99",
+          "price_dollars": "0.2100",
+          "side": "yes",
+          "ts": "2026-08-17T08:53:39.843122Z",
+          "ts_ms": 1786956819843
+        },
+        "seq": 29,
+        "sid": 1,
+        "type": "orderbook_delta"
+      },
+      "ordinal": 30
+    }
+  ],
+  "market_tickers": [
+    "KXMAXSHARDINGTEST-26AUG2818-T68399.99",
+    "KXMAXSHARDINGTEST-26AUG2818-T56399.99",
+    "KXMAXSHARDINGTEST-26AUG2818-T65399.99"
+  ],
+  "milestone": "KALSHI-COLLECTOR-P0-FIXES",
+  "orderbook_sid_from_ack": 1,
+  "question": "is get_snapshot valid on the ORDERBOOK subscription, or unsupported on every subscription?",
+  "wire_counters": {
+    "bytes_received": 15465,
+    "closes": 1,
+    "commands_refused": 0,
+    "commands_sent": 2,
+    "connects": 1,
+    "frames_malformed": 0,
+    "frames_oversize": 0,
+    "frames_received": 57,
+    "frames_yielded": 57,
+    "read_timeouts": 0,
+    "reader_stall_ms_max": 6725
+  }
+}

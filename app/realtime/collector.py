@@ -599,17 +599,40 @@ def _normalize_orderbook(msg: dict, *, is_snapshot: bool) -> dict:
              "no_side_normalization": "identity_yes_scaled"}
 
     if is_snapshot:
-        bids, bid_reason = _normalize_ladder(msg.get("yes_dollars_fp") or [],
-                                             venue_side="yes",
-                                             venue_field="yes_dollars_fp")
-        asks, ask_reason = _normalize_ladder(msg.get("no_dollars_fp") or [],
-                                             venue_side="no",
-                                             venue_field="no_dollars_fp")
+        # A LADDER THE VENUE DID NOT SEND IS AN ABSENCE, NOT AN EMPTY LADDER.
+        # `msg.get(...) or []` used to collapse the two, so a snapshot carrying
+        # no `yes_dollars_fp` key produced `coverage[bid_levels] = present` with
+        # zero levels — a typed absence wearing the word "present", which is
+        # precisely the plausible-benign-value class doctrine 7 names. Measured
+        # on the DEMO wire 2026-08-17: 57 of 60 snapshots carried real ladders
+        # (up to eight YES and seven NO levels) and 3 carried neither key, so
+        # both branches occur on an ordinary venue and the distinction is not
+        # hypothetical.
+        raw_bids = msg.get("yes_dollars_fp")
+        raw_asks = msg.get("no_dollars_fp")
+        if raw_bids is None:
+            bids, bid_reason = [], ABSENT_NOT_SUPPLIED
+        else:
+            bids, bid_reason = _normalize_ladder(raw_bids, venue_side="yes",
+                                                 venue_field="yes_dollars_fp")
+        if raw_asks is None:
+            asks, ask_reason = [], ABSENT_NOT_SUPPLIED
+        else:
+            asks, ask_reason = _normalize_ladder(raw_asks, venue_side="no",
+                                                 venue_field="no_dollars_fp")
         block["bid_levels"] = bids
         block["ask_levels"] = asks
-        block["venue_omitted_bid_ladder"] = "yes_dollars_fp" not in msg
-        block["venue_omitted_ask_ladder"] = "no_dollars_fp" not in msg
-        block["depth"] = "full_ladder"
+        block["venue_omitted_bid_ladder"] = raw_bids is None
+        block["venue_omitted_ask_ladder"] = raw_asks is None
+        # `depth` is what a downstream reader consults to know how much of the
+        # book this record describes. Asserting `full_ladder` on a snapshot that
+        # transmitted no ladder is the same defect stated as a schema field.
+        if raw_bids is not None and raw_asks is not None:
+            block["depth"] = "full_ladder"
+        elif raw_bids is None and raw_asks is None:
+            block["depth"] = "no_ladder_supplied"
+        else:
+            block["depth"] = "one_side_ladder_only"
         coverage[OBS_BID_LEVELS] = bid_reason
         coverage[OBS_ASK_LEVELS] = ask_reason
 
@@ -622,11 +645,15 @@ def _normalize_orderbook(msg: dict, *, is_snapshot: bool) -> dict:
             coverage[OBS_SPREAD] = PRESENT
         else:
             block["spread_units"] = None
-            # One-sided or empty. NOT zero: a zero spread is a tradable market,
-            # which is the opposite of what an empty side means.
-            coverage[OBS_SPREAD] = (ABSENT_NOT_SUPPLIED
-                                    if bid_reason == ask_reason == PRESENT
-                                    else ABSENT_UNPARSEABLE)
+            # One-sided, empty, or never transmitted — and the three are
+            # reported as the reasons they are. NOT zero: a zero spread is a
+            # tradable market, which is the opposite of what any of them means.
+            if ABSENT_UNPARSEABLE in (bid_reason, ask_reason):
+                coverage[OBS_SPREAD] = ABSENT_UNPARSEABLE
+            elif ABSENT_OVER_BOUND in (bid_reason, ask_reason):
+                coverage[OBS_SPREAD] = ABSENT_OVER_BOUND
+            else:
+                coverage[OBS_SPREAD] = ABSENT_NOT_SUPPLIED
         return {"block": block, "coverage": coverage}
 
     # A delta is one signed net change at one price level on one side.
@@ -938,6 +965,13 @@ class CollectorConfig:
     market list is enumerated rather than "all markets" — the subscription is
     the tape's sample frame, so it has to be a deliberate choice.
 
+    `max_seconds` is enforced on a DEADLINE, not on frame arrival
+    (`_Session._read_until_deadline`). That sentence used to be false: all three
+    caps were evaluated only from `_handle_frame`, so on a quiet venue the
+    session sat in `recv()` and nothing could end it — a 60-minute bound was
+    observed 86 minutes in and had to be killed. `max_events` remains
+    frame-driven because it cannot be approached any other way.
+
     `channels` runs through `assert_channels_allowed` HERE, at construction, so
     a `fill` in a config file, an environment variable or a CLI argument is a
     `CapabilityError` before any object exists that could open a socket.
@@ -1224,6 +1258,15 @@ class _Session:
         (`kalshi.py:326-331`) — and once per fault, not once per frame: after a
         gap every subsequent delta faults too, and re-sending on each of them
         would answer a stalled subscription with a command storm.
+
+        **Only an ORDERBOOK subscription may be sent this**, which is the
+        caller's precondition and is checked there. Measured on the DEMO wire
+        2026-08-17: sent against the trade sid it is answered
+        `{"type":"error","sid":3,"seq":2,"msg":{"code":13,"msg":"Unsupported
+        action"}}`, and sent against the orderbook sid it is ANSWERED — three
+        `orderbook_snapshot` frames at seq 31/32/33, no error and no rewind. So
+        the recovery works; it was being aimed at a subscription that has no
+        snapshot to give.
         """
         if self._recovery_pending.get(sid):
             return
@@ -1385,8 +1428,20 @@ class _Session:
                     self._metrics.on_sequence_fault(kind)
                 except Exception:             # noqa: BLE001 - counted, not silent
                     self.metrics_errors += 1
-            router.subscription.begin_recovery()
-            await self._request_recovery(transport, sid)
+            # RECOVERY IS ORDERBOOK-ONLY, and the condition is an OBSERVATION —
+            # this subscription has actually carried an orderbook frame — not an
+            # assumption that every sid is a book. The venue refuses the command
+            # anywhere else (`_request_recovery`), and a refused recovery costs
+            # more than the missing one: the `error` it returns consumes a
+            # sequence number on the subscription it was sent to, so answering a
+            # fault with an invalid command manufactures the next fault.
+            #
+            # There is no repair for a lost trade or ticker print and this does
+            # not pretend otherwise. The fault is counted, the stream re-anchors
+            # (`SubscriptionState._reanchor_if_unbased`), and nothing is sent.
+            if router.subscription.carries_orderbook:
+                router.subscription.begin_recovery()
+                await self._request_recovery(transport, sid)
         except Exception:                     # noqa: BLE001 - see below
             # A book-level refusal (`BookIntegrityError`, `FixedPointError`) is
             # a statement about ONE market's reconstruction, not about the tape.
@@ -1413,17 +1468,83 @@ class _Session:
         if self.events_received >= self.config.max_events:
             return _Outcome("cap", status=STATUS_CAPPED_EVENTS,
                             detail=f"max_events={self.config.max_events} reached")
-        elapsed_ns = monotonic_ns() - self._started_ns
-        if elapsed_ns >= self.config.max_seconds * 1_000_000_000:
-            return _Outcome("cap", status=STATUS_CAPPED_TIME,
-                            detail=f"max_seconds={self.config.max_seconds} reached")
+        if self._time_cap_reached():
+            return self._time_cap_outcome()
         if self._stop_requested is not None and self._stop_requested():
             return _Outcome("cap", status=STATUS_STOPPED,
                             detail="stop requested by the caller")
         return None
 
+    # -- the time cap, which must not depend on a frame arriving ---------------
+    #
+    # `_cap_check` runs from `_handle_frame` and nowhere else, so before this
+    # existed every cap was evaluated ON FRAME ARRIVAL. While the venue is quiet
+    # the session sits in `recv()` and no cap can fire. Found the hard way
+    # during KALSHI-DEMO-TRAFFIC-CAPACITY-001: a session launched at 06:34:43Z
+    # with `max_seconds=3600` was still connected, still frameless and had
+    # written no result at 07:57Z — 86 minutes into a 60-minute bound — and had
+    # to be killed. `CollectorConfig` calls these "three independent hard caps"
+    # and says "there is no unbounded session"; one of the three was a comment.
+    #
+    # The other two are frame-gated BY NATURE and stay that way: `max_events`
+    # cannot be approached without frames, and it is documented below why
+    # `stop_requested` is not given a timer.
+    def _remaining_seconds(self) -> float:
+        elapsed_ns = monotonic_ns() - self._started_ns
+        return (self.config.max_seconds * 1_000_000_000 - elapsed_ns) / 1e9
+
+    def _time_cap_reached(self) -> bool:
+        return self._remaining_seconds() <= 0
+
+    def _time_cap_outcome(self):
+        return _Outcome("cap", status=STATUS_CAPPED_TIME,
+                        detail=f"max_seconds={self.config.max_seconds} reached")
+
+    async def _read_frames(self, transport):
+        """The frame loop, extracted so a deadline can be put around it."""
+        async for message in transport:
+            outcome = await self._handle_frame(message, transport)
+            if outcome is not None:
+                return outcome
+        return None
+
+    async def _read_until_deadline(self, transport):
+        """`_read_frames`, bounded by whatever is left of `max_seconds`.
+
+        ONE `asyncio.wait_for`, not a polling loop and not a second task racing
+        the reader: the timer is the timeout argument of the very await the
+        reader is already suspended in, so between frames it costs one timer
+        handle and no wakeups at all. That is what "no busy-wait" means here.
+
+        **It cannot interfere with a frame in flight.** The only await points
+        inside the loop are the transport's `recv` and the recovery `send`;
+        `archive.append()` is synchronous and caller-threaded (`_Session`), so
+        there is no suspension point between a frame being read and its record
+        being durable, and a cancellation therefore cannot land between them.
+        What the cancellation can discard is a `recv` that had not yet produced
+        a frame — which is the session ending, not a frame being lost.
+
+        `stop_requested` is deliberately NOT given a timer. It is an operator's
+        intent, not a bound, and giving it one would mean waking the reader on a
+        fixed cadence forever to ask a question that is almost always "no". The
+        session is now hard-bounded in time regardless, so a stop can no longer
+        be ignored indefinitely.
+        """
+        remaining = self._remaining_seconds()
+        if remaining <= 0:
+            return self._time_cap_outcome()
+        try:
+            return await asyncio.wait_for(self._read_frames(transport), remaining)
+        except (asyncio.TimeoutError, TimeoutError):
+            return self._time_cap_outcome()
+
     # -- one connection -------------------------------------------------------
     async def _one_connection(self, transport):
+        # Checked BEFORE the socket is opened, so an exhausted time budget never
+        # buys another handshake — the reconnect ladder must not be able to
+        # extend the session past its own bound.
+        if self._time_cap_reached():
+            return self._time_cap_outcome()
         try:
             await transport.connect()
             # A LIVE SOCKET, not an attempt: `connect()` has returned.
@@ -1443,10 +1564,9 @@ class _Session:
             # read, and after (not before) the attempt that produced it
             # succeeded. A connect that never got this far consumed no epoch.
             self._begin_subscription_epoch()
-            async for message in transport:
-                outcome = await self._handle_frame(message, transport)
-                if outcome is not None:
-                    return outcome
+            outcome = await self._read_until_deadline(transport)
+            if outcome is not None:
+                return outcome
         except TransportError as exc:
             # THE SOCKET WENT AWAY WHILE WE STILL WANTED FRAMES. That is a
             # disconnect, and §8.3 makes it the boundary loss can enter across,
