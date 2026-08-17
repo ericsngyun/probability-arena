@@ -271,13 +271,22 @@ def acquisitions(timeline, *, epoch):
     for entry in timeline:
         if entry["subscription_epoch"] != epoch:
             continue
+        # The CP7 failure signature is one frame flipping many markets INTO
+        # publishable. It is counted here rather than `len(entry["changes"])`
+        # because the probe's transition log became typed: the frame carrying a
+        # new generation's first snapshot legitimately changes every book — it
+        # moves the siblings into `awaiting_snapshot_for_generation`, which is
+        # the fix WORKING — and only the acquisitions are the defect. Counting
+        # every typed change would fail on correct behaviour, which is a
+        # weaker test, not a stronger one, because it cannot be left armed.
+        gained = sum(1 for c in entry["changes"] if c["to"] is True)
         for change in entry["changes"]:
             if change["to"] is True:
                 out.append({"market": change["market_ticker"],
                             "caused_by": entry["cause"]["market_ticker"],
                             "cause_type": entry["cause"]["event_type"],
                             "cause_seq": entry["cause"]["seq"],
-                            "changes_in_this_entry": len(entry["changes"])})
+                            "acquisitions_in_this_entry": gained})
     return out
 
 
@@ -291,8 +300,8 @@ def assert_each_market_acquired_on_its_own_snapshot(timeline, *, epoch, expected
         assert entry["caused_by"] == entry["market"], (
             f"{entry['market']} was republished on {entry['caused_by']}'s "
             "snapshot — a sibling's snapshot says nothing about this ladder")
-        assert entry["changes_in_this_entry"] == 1, (
-            "one frame flipped several markets at once; that is the CP7 "
+        assert entry["acquisitions_in_this_entry"] == 1, (
+            "one frame republished several markets at once; that is the CP7 "
             "defect, whatever the count")
 
 
@@ -599,7 +608,7 @@ class TestTheFaultPathIsUnchanged:
         assert [a["market"] for a in recovery] == list(MARKETS), recovery
         for entry in recovery:
             assert entry["caused_by"] == entry["market"], entry
-            assert entry["changes_in_this_entry"] == 1, entry
+            assert entry["acquisitions_in_this_entry"] == 1, entry
 
     def test_the_same_stream_without_the_drop_faults_zero_times(self, tmp_path):
         """The paired control, so "faults >= 1" is a property of the drop."""
