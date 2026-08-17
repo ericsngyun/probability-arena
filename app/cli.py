@@ -600,6 +600,96 @@ async def forecast_scorability_audit_report(
     return 0
 
 
+async def forecast_reliability_decomposition_report(
+    hours: int | None = None, since: str | None = None, until: str | None = None,
+    domain: str | None = None, forecaster: str | None = None, bins: int = 10,
+    minimum_bin_count: int | None = None, minimum_cohort_count: int | None = None,
+    top: int = 10, fmt: str = "text", session=None,
+) -> int:
+    """FORECAST-RELIABILITY-DECOMP-001 — read-only calibration/reliability
+    decomposition over scored_current forecasts only (reuses the scorability
+    population). Zero calls, zero writes; never advice. 0 ok / 2 invalid input."""
+    import json as _json
+    from datetime import datetime as _dt, timezone as _tz
+
+    from app.services.forecast_reliability import build_reliability_report
+
+    def _parse(ts):
+        if ts is None:
+            return None
+        d = _dt.fromisoformat(ts.replace("Z", "+00:00"))
+        return d if d.tzinfo else d.replace(tzinfo=_tz.utc)
+
+    owns_session = session is None
+    if owns_session:
+        from app.db import get_sessionmaker, run_migrations
+
+        run_migrations()
+        session = get_sessionmaker()()
+    try:
+        r = build_reliability_report(
+            session, hours=hours, since=_parse(since), until=_parse(until),
+            domain=domain, forecaster=forecaster, bins=bins,
+            minimum_bin_count=minimum_bin_count, minimum_cohort_count=minimum_cohort_count,
+            top=max(1, top))
+    except ValueError as exc:
+        print(f"error: {exc}")
+        return 2
+    finally:
+        if owns_session:
+            session.close()
+
+    if fmt == "json":
+        print(_json.dumps(r, indent=2, default=str))
+        return 0
+    p = r["population"]
+    b = r["baselines"]
+    m = r["murphy_decomposition"]
+    print("forecast reliability decomposition — measurement only, never advice")
+    print(r["disclaimer"])
+    print(f"external_calls={r['external_calls']} persisted={str(r['persisted']).lower()} "
+          f"writes={r['writes']}")
+    w = r["window"]
+    print(f"window: since={w['since_utc']} until={w['until_utc']} hours={w['hours']} bins={w['bins']} "
+          f"domain={w['domain_filter']} forecaster={w['forecaster_filter']}")
+    if w["domain_filtered_out"]:
+        print(f"  (truncated: {w['domain_filtered_out']} forecasts filtered out by --domain)")
+    print(f"population: all={p['all_forecasts']} scored_current={p['scored_current']} "
+          f"excl_pending={p['excluded_pending']} excl_unscorable={p['excluded_unscorable']} "
+          f"excl_backlog={p['excluded_backlog']} excl_stale={p['excluded_stale']} "
+          f"excl_inconsistent={p['excluded_inconsistent']}")
+    print("reliability bins [lo,hi) (last [lo,hi]):")
+    for bs in r["reliability_bins"]:
+        if bs["count"] == 0:
+            continue
+        print(f"  [{bs['lower']:.2f},{bs['upper']:.2f}] n={bs['count']:4} "
+              f"mean_p={bs['mean_forecast_probability']} obs={bs['observed_positive_rate']} "
+              f"gap={bs['calibration_gap']} brier={bs['mean_brier']} {bs['direction']} {bs['label']}")
+    ce = r["calibration_error"]
+    print(f"calibration error: ECE={ce['ece']} MCE={ce['mce']} "
+          f"populated={ce['populated_bins']} measured={ce['measured_bins']} thin={ce['too_thin_bins']}")
+    print(f"baselines: prevalence={b['prevalence']} model_brier={b['model_brier']} "
+          f"neutral={b['neutral_baseline_brier']} base_rate={b['base_rate_baseline_brier']} "
+          f"skill_vs_base_rate={b['brier_skill_vs_base_rate']} skill_vs_neutral={b['brier_skill_vs_neutral']}")
+    print(f"murphy: reliability={m['reliability']} resolution={m['resolution']} "
+          f"uncertainty={m['uncertainty']} reconstructed={m['reconstructed_brier']} "
+          f"actual={m['actual_brier']} residual={m['discretization_residual']} "
+          f"populated_bins={m['populated_bins']}")
+    d = r["directional"]
+    print(f"directional: signed_gap={d['signed_calibration_gap']} "
+          f"over_share={d['overprediction_weighted_share']} under_share={d['underprediction_weighted_share']} "
+          f"extreme_miss={d['extreme_confidence_miss_count']} high_correct={d['high_confidence_correct_count']}")
+    print("cohorts (domain):")
+    for c in r["cohorts"]["domain"]:
+        print(f"  {c['name']:20} n={c['scored_count']:4} prev={c['prevalence']} brier={c['mean_brier']} "
+              f"skill={c['brier_skill_vs_base_rate']} ECE={c['ece']} MCE={c['mce']} {c['sample_label']}")
+    t = r["temporal"]["trend"]
+    print(f"temporal trend: {t['label']} (measured_periods={t['measured_periods']} "
+          f"early_ece={t.get('early_mean_ece')} late_ece={t.get('late_mean_ece')})")
+    print(f"VERDICT: {r['verdict']['primary']}  findings={r['verdict']['findings']}")
+    return 0
+
+
 async def run_baseline(
     scan_limit: int | None = None,
     candidate_limit: int | None = None,
@@ -5744,6 +5834,21 @@ def build_parser() -> argparse.ArgumentParser:
     fsa_parser.add_argument("--forecaster", type=str, default=None)
     fsa_parser.add_argument("--top", type=int, default=10)
     fsa_parser.add_argument("--format", choices=("text", "json"), default="text", dest="fmt")
+    frd_parser = subparsers.add_parser(
+        "forecast-reliability-decomposition-report",
+        help="Read-only calibration/reliability decomposition over scored_current "
+             "forecasts (FORECAST-RELIABILITY-DECOMP-001; zero calls, no writes)",
+    )
+    frd_parser.add_argument("--hours", type=int, default=None)
+    frd_parser.add_argument("--since", type=str, default=None, help="ISO UTC (overrides --hours)")
+    frd_parser.add_argument("--until", type=str, default=None, help="ISO UTC (default now)")
+    frd_parser.add_argument("--domain", type=str, default=None)
+    frd_parser.add_argument("--forecaster", type=str, default=None)
+    frd_parser.add_argument("--bins", type=int, default=10, help="equal-width probability bins (>=2)")
+    frd_parser.add_argument("--minimum-bin-count", type=int, default=None)
+    frd_parser.add_argument("--minimum-cohort-count", type=int, default=None)
+    frd_parser.add_argument("--top", type=int, default=10)
+    frd_parser.add_argument("--format", choices=("text", "json"), default="text", dest="fmt")
     baseline_parser = subparsers.add_parser(
         "run-baseline", help="Run the full read-only measurement loop as one audited pipeline"
     )
@@ -6428,6 +6533,15 @@ def main(argv: list[str] | None = None) -> int:
             forecast_scorability_audit_report(
                 hours=args.hours, since=args.since, until=args.until,
                 domain=args.domain, forecaster=args.forecaster, top=args.top, fmt=args.fmt,
+            )
+        )
+    if args.command == "forecast-reliability-decomposition-report":
+        return asyncio.run(
+            forecast_reliability_decomposition_report(
+                hours=args.hours, since=args.since, until=args.until,
+                domain=args.domain, forecaster=args.forecaster, bins=args.bins,
+                minimum_bin_count=args.minimum_bin_count,
+                minimum_cohort_count=args.minimum_cohort_count, top=args.top, fmt=args.fmt,
             )
         )
     if args.command == "run-baseline":
