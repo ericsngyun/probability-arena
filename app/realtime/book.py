@@ -11,6 +11,12 @@ The rule that shapes the whole file: *a book whose sequence integrity is
 unresolved must not be published as current*. Continuing across a gap produces a
 book that looks fine and is quietly missing levels — the failure mode that is
 hardest to notice and most expensive to have trusted.
+
+Its per-market half, earned the same way (KALSHI-REPLAY-GENERATION-CONSISTENCY,
+CP7 live evidence): *within a subscription generation, a market is not
+publishable until THAT MARKET has received its own snapshot for that
+generation*. A sibling's snapshot re-bases the sibling and says nothing about
+anyone else's ladder.
 """
 
 from __future__ import annotations
@@ -264,6 +270,50 @@ LADDER_SUPPLIED = "supplied"
 LADDER_OMITTED = "omitted_by_venue"
 LADDER_UNOBSERVED = "no_snapshot_applied"
 
+# --- publication state ------------------------------------------------------------
+#
+# KALSHI-REPLAY-GENERATION-CONSISTENCY-001. Publishability is a TYPED state, not a
+# bare boolean, because three different situations produce "False" and a consumer
+# that cannot tell them apart cannot act on any of them:
+#
+#   PUB_BOOK_HALTED                    integrity is broken — a gap, a rejection,
+#                                      a crossed book. Something is WRONG.
+#   PUB_AWAITING_GENERATION_SNAPSHOT   nothing is wrong. The subscription moved to
+#                                      a new generation and THIS market has not yet
+#                                      received its own snapshot for it, so the
+#                                      ladder it holds belongs to an abandoned
+#                                      epoch. Not an error; not "based and empty".
+#   PUB_SUBSCRIPTION_UNHEALTHY         the subscription itself is awaiting a base.
+#
+# Doctrine 10: "not yet based for this generation" travels with its own name and
+# with BOTH generation numbers, so a reader never has to infer why a book went
+# quiet — and can never read a zero-level book as observed emptiness when it is
+# really an un-re-snapshotted book from the previous epoch.
+PUB_PUBLISHABLE = "publishable"
+PUB_BOOK_HALTED = "book_halted"
+PUB_AWAITING_GENERATION_SNAPSHOT = "awaiting_snapshot_for_generation"
+PUB_SUBSCRIPTION_UNHEALTHY = "subscription_unhealthy"
+
+
+@dataclass(frozen=True)
+class PublicationState:
+    """Why one market is, or is not, publishable right now.
+
+    `publishable` is the answer; `state` is the reason in the closed vocabulary
+    above; `reason` is the human detail. `subscription_generation` and
+    `based_generation` are carried on every instance — equal means this market
+    holds a base for the epoch the subscription is in, and that identity IS the
+    invariant this milestone enforces.
+    """
+    publishable: bool
+    state: str
+    reason: str | None
+    subscription_generation: int | None
+    based_generation: int | None
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
 
 class BookIntegrityError(RuntimeError):
     """The book cannot be trusted and must not be published."""
@@ -319,6 +369,13 @@ class OrderBook:
         # thing from `self.generation`, which counts this book's own
         # resynchronisations. Unknown until a router tells it one.
         self.subscription_generation = GENERATION_UNKNOWN
+        # The subscription epoch whose OWN snapshot based this book. The pair
+        # (`subscription_generation`, `based_generation`) is the whole of
+        # KALSHI-REPLAY-GENERATION-CONSISTENCY-001: when they differ, the
+        # subscription has moved to a new epoch and THIS market has not yet been
+        # re-snapshotted, so its ladder is pre-boundary state and must not be
+        # served as current no matter what its siblings did.
+        self.based_generation = GENERATION_UNKNOWN
         self.synced = False
         self.integrity_reason: str | None = "awaiting snapshot"
         self.snapshot_receive_time: datetime | None = None
@@ -329,6 +386,13 @@ class OrderBook:
                                       SIDE_NO: LADDER_UNOBSERVED}
         self.stats = {"snapshots": 0, "deltas": 0, "duplicates": 0, "gaps": 0,
                       "regressions": 0, "resyncs": 0, "rejected_pre_snapshot": 0,
+                      # Deltas from a NEW generation refused because this
+                      # market has not been re-snapshotted into it. Counted on
+                      # its own and never merged into `gaps` or
+                      # `rejected_pre_snapshot`: it is neither loss nor a cold
+                      # start, and merging it would make the boundary
+                      # indistinguishable from both.
+                      "rejected_pre_generation_snapshot": 0,
                       # A reconnect is counted, never merged into `gaps`: they
                       # are different phenomena and the whole point of the
                       # epoch is that they stay distinguishable.
@@ -337,15 +401,60 @@ class OrderBook:
     # -- integrity ---------------------------------------------------------------
 
     @property
+    def based_for_current_generation(self) -> bool:
+        """Has THIS market received its own snapshot for the epoch it is in?
+
+        `GENERATION_UNKNOWN == GENERATION_UNKNOWN` is True by design: a book
+        nobody ever told an epoch to (a direct caller, a legacy tape) is not
+        put into a permanent awaiting state by a check about epochs it does not
+        participate in. The moment a router names an epoch, the comparison
+        becomes real.
+        """
+        return self.based_generation == self.subscription_generation
+
+    @property
+    def publication_state(self) -> PublicationState:
+        """The typed answer, with both epochs attached. See `PublicationState`.
+
+        Order matters. A halted book is halted whatever its epoch — reporting
+        it as merely "awaiting the new generation" would hide an integrity
+        fault behind a benign word, which is this repository's recurring
+        failure class rather than a hypothetical one.
+        """
+        if not self.synced or self.integrity_reason is not None:
+            return PublicationState(
+                False, PUB_BOOK_HALTED,
+                self.integrity_reason or "book is not synced",
+                self.subscription_generation, self.based_generation)
+        if not self.based_for_current_generation:
+            return PublicationState(
+                False, PUB_AWAITING_GENERATION_SNAPSHOT,
+                (f"{self.market_ticker}: based in subscription generation "
+                 f"{self.based_generation!r}, the subscription is on "
+                 f"{self.subscription_generation!r}; this market has not "
+                 "received its own snapshot for the current generation and "
+                 "its ladder belongs to the epoch the venue abandoned"),
+                self.subscription_generation, self.based_generation)
+        return PublicationState(True, PUB_PUBLISHABLE, None,
+                                self.subscription_generation,
+                                self.based_generation)
+
+    @property
     def publishable(self) -> bool:
-        """A book is publishable only when synced AND sequence-clean."""
-        return self.synced and self.integrity_reason is None
+        """Publishable only when synced, sequence-clean AND based in this epoch.
+
+        The third clause is KALSHI-REPLAY-GENERATION-CONSISTENCY-001. It is a
+        property of THIS market: a sibling's snapshot re-bases the sibling, and
+        says nothing whatsoever about the ladder held here.
+        """
+        return self.publication_state.publishable
 
     def _require_publishable(self) -> None:
-        if not self.publishable:
+        state = self.publication_state
+        if not state.publishable:
             raise BookIntegrityError(
                 f"{self.market_ticker}: book is not publishable "
-                f"({self.integrity_reason})")
+                f"[{state.state}] ({state.reason})")
 
     def classify_seq(self, seq: int | None) -> str:
         if seq is None:
@@ -434,6 +543,12 @@ class OrderBook:
             self.stats["resyncs"] += 1
         self.sid = sid if sid is not None else self.sid
         self.last_seq = seq
+        # THIS market is now based for the epoch it is positioned in. The
+        # router has already moved `subscription_generation` forward
+        # (`_rebase_all` runs between accepting a frame and applying it), so
+        # taking the value from the book rather than from a parameter keeps one
+        # source of truth for the epoch instead of two that must agree.
+        self.based_generation = self.subscription_generation
         self.generation += 1
         self.synced = seq is not None
         self.integrity_reason = None if seq is not None else (
@@ -518,7 +633,6 @@ class OrderBook:
             raise BookIntegrityError(
                 f"{self.market_ticker}: delta received before any snapshot; "
                 "rejected rather than buffered")
-
         ticker = msg.get("market_ticker")
         if ticker is not None and ticker != self.market_ticker:
             self._halt(f"delta is labelled {ticker!r}, not {self.market_ticker}")
@@ -534,6 +648,32 @@ class OrderBook:
                 f"{self.market_ticker}: delta belongs to subscription {sid}, "
                 f"this book is on {self.sid}; sequence numbers from a "
                 "superseded subscription are not comparable")
+
+        if not self.based_for_current_generation:
+            # KALSHI-REPLAY-GENERATION-CONSISTENCY-001, the serious half. A
+            # delta from generation g applied on top of generation g-1's ladder
+            # does not merely serve stale depth — it FABRICATES a book that
+            # never existed at any instant, and one that a later snapshot would
+            # overwrite without leaving a trace that it ever happened.
+            #
+            # Deliberately NOT `_halt`: nothing is broken. The book is already
+            # non-publishable through its typed state, the refusal is counted
+            # on its own axis, and the market recovers the moment ITS OWN
+            # snapshot for this generation arrives. Halting here would file a
+            # routine reconnect as an integrity fault, which is exactly the
+            # conflation `_rebase_all` exists to prevent.
+            #
+            # It runs AFTER the identity checks on purpose: "this message
+            # belongs to another market/subscription" is the stronger statement
+            # and must keep its halt, or a mislabelled frame arriving during a
+            # boundary would be filed as a benign wait.
+            self.stats["rejected_pre_generation_snapshot"] += 1
+            raise BookIntegrityError(
+                f"{self.market_ticker}: delta belongs to subscription "
+                f"generation {self.subscription_generation!r}; this book was "
+                f"last based in {self.based_generation!r} and has not received "
+                "its own snapshot for the current generation — rejected rather "
+                "than applied to an abandoned ladder")
 
         status = SEQ_OK if ordered_externally else self.classify_seq(seq)
         if status == SEQ_DUPLICATE:
@@ -592,9 +732,21 @@ class OrderBook:
         """A NEW subscription generation began. Rebase, do not halt.
 
         Clears the per-book sequence POSITION and nothing else — no ladder is
-        touched and the book is NOT unpublished, because a reconnect is a
-        legitimate discontinuity rather than evidence of loss. What must go is
-        the position: after a reconnect the venue's `seq` restarts, so
+        touched and the book is NOT HALTED, because a reconnect is a legitimate
+        discontinuity rather than evidence of loss.
+
+        It does, however, stop being PUBLISHABLE, and that is
+        KALSHI-REPLAY-GENERATION-CONSISTENCY-001: `based_generation` stays where
+        it was, so until this market's own snapshot for the new epoch arrives,
+        `publication_state` reads `awaiting_snapshot_for_generation` — a named,
+        benign state, distinct from every integrity fault. Before this, the
+        book kept `synced=True` with no integrity reason and was republished
+        the instant any SIBLING market re-snapshotted; measured live on
+        2026-08-17, that republished 59 of 60 markets on ladders from the epoch
+        the venue had just abandoned (CP7).
+
+        What must go is the position: after a reconnect the venue's `seq`
+        restarts, so
         `apply_snapshot`'s anti-rewind guard would compare two numbers from
         different namespaces and refuse the very snapshot that re-bases the
         book. That guard stays fully armed WITHIN a generation, which is where
@@ -856,7 +1008,9 @@ class SubscriptionState:
           already left. Still a fault: its `seq` is from a dead namespace.
         * `generation > self.generation` — a RECONNECT. The venue's `seq`
           restarts, so the boundary EXPLAINS the discontinuity instead of
-          being one. Not a fault, and it does not unpublish anything.
+          being one. Not a fault, and it HALTS nothing. It does take every
+          book out of publishable state until that book's own snapshot for the
+          new epoch arrives — see `OrderBook.begin_subscription_generation`.
         * `GENERATION_UNKNOWN` — a record written before the epoch existed.
           The check is skipped and ordering falls back to pure `seq`
           continuity, exactly as it behaved before the field.
@@ -1034,13 +1188,20 @@ class SubscriptionRouter:
             book._halt(f"subscription {self.subscription.sid}: {reason}")
 
     def _rebase_all(self) -> None:
-        """A new subscription generation began — rebase, do NOT unpublish.
+        """A new subscription generation began — rebase, do NOT halt.
 
         The counterpart to `_unpublish_all`, and the distinction is the point
-        of this milestone: a lost message means every book on the subscription
-        is suspect, while a reconnect means every book's POSITION is stale and
-        nothing else. Collapsing the two made an ordinary reconnect look
-        exactly like data loss.
+        of KALSHI-TAPE-GENERATION: a lost message means every book on the
+        subscription is suspect, while a reconnect means every book's POSITION
+        is stale and nothing else. Collapsing the two made an ordinary
+        reconnect look exactly like data loss.
+
+        Rebasing does take every book out of publishable state — each one now
+        awaits its OWN snapshot for the new epoch — but it does so through the
+        typed `awaiting_snapshot_for_generation` state rather than through
+        `_halt`, so the two remain telling different stories. Nothing here
+        touches `integrity_reason`, and a test spies on `_halt` to keep it that
+        way.
         """
         generation = self.subscription.generation
         if generation == self._books_generation:
@@ -1079,8 +1240,10 @@ class SubscriptionRouter:
         The lost message could have belonged to any of them.
 
         A GENERATION BOUNDARY is not such a failure. It rebases the books'
-        positions and leaves them published, because the record itself says a
-        new subscription began — see `SubscriptionState.accept`.
+        positions and halts none of them, because the record itself says a new
+        subscription began — see `SubscriptionState.accept`. Each book stays
+        non-publishable, under its own typed reason, until ITS OWN snapshot for
+        the new generation arrives.
         """
         etype = record.get("event_type")
         if etype not in ("orderbook_snapshot", "orderbook_delta"):
@@ -1150,6 +1313,36 @@ class SubscriptionRouter:
                                 sid=self.subscription.sid,
                                 ordered_externally=True)
 
-    def publishable_books(self) -> dict:
+    def publication_states(self) -> dict:
+        """Per-market typed publication state. The only place they are composed.
+
+        THE INVARIANT: within generation `g`, a market is not publishable until
+        THAT MARKET itself has received its snapshot for `g`. The per-book half
+        lives in `OrderBook.publication_state`; the subscription half is added
+        here, and it is a CONJUNCTION rather than a replacement — a
+        subscription awaiting its own base can publish nothing, and a based
+        subscription still says nothing about a market that has not been
+        re-snapshotted.
+
+        The per-market reason is reported in preference to the subscription's
+        because it is the more specific true statement about that market. The
+        defect this replaces did the opposite: it took `subscription.healthy`,
+        a SINGLE flag for sixty markets, and let the first snapshot of a new
+        generation republish all sixty.
+        """
         healthy = self.subscription.healthy
-        return {t: (b.publishable and healthy) for t, b in sorted(self.books.items())}
+        states = {}
+        for ticker, book in sorted(self.books.items()):
+            state = book.publication_state
+            if state.publishable and not healthy:
+                state = PublicationState(
+                    False, PUB_SUBSCRIPTION_UNHEALTHY,
+                    (f"subscription {self.subscription.sid}: "
+                     f"{self.subscription.state_reason or SUB_AWAITING_SNAPSHOT}"),
+                    state.subscription_generation, state.based_generation)
+            states[ticker] = state
+        return states
+
+    def publishable_books(self) -> dict:
+        """The boolean view, derived from the typed one so they cannot diverge."""
+        return {t: s.publishable for t, s in self.publication_states().items()}

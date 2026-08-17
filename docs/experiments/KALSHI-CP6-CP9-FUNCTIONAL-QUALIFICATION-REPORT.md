@@ -3,6 +3,24 @@
 **Branch `KALSHI-CP6-CP9-FUNCTIONAL`. Not merged.**
 Scope governed by §8 of `KALSHI-CP6-CP9-QUALIFICATION-PREREGISTRATION.md`.
 
+> **ADDENDUM 2026-08-17 — the CP7 failure is FIXED, on a branch, and this
+> document is NOT rewritten.** Everything below remains the record of what the
+> code did during the three live sessions, which is what an experiment report
+> is for. What changed since: `KALSHI-REPLAY-GENERATION-CONSISTENCY-001` made
+> publishability per-market and generation-aware, and the strict-xfail claim
+> this report leaves behind in §3.3 now passes with its marker removed.
+>
+> **Would CP7 pass now?** Its third property — per-market independent
+> re-acquisition — now holds, proved on the venue's own frames from
+> `s2-reconnect` in `tests/test_kalshi_replay_generation_consistency_001.py`
+> (25 tests, including the revert control that turns 17 of them red). The other
+> two CP7 properties are untouched and still hold. **But CP7 is a LIVE
+> qualification and this is an offline proof over its captured frames**: the
+> verdict below is only retired by a new live reconnect session, which this
+> addendum does not claim to have run. Nothing else in the verdict block moves —
+> throughput, latency, capacity and microstructure realism are exactly as
+> unestablished as they were.
+
 ---
 
 ## 0. The verdict
@@ -314,6 +332,20 @@ The property is pinned as an executable claim in
 marked `xfail(strict=True)`: the day the fix lands it XPASSes, the suite fails,
 and this verdict must be revised on evidence rather than remembered.
 
+**That happened, 2026-08-17.** The fix landed on branch
+`KALSHI-REPLAY-GENERATION-CONSISTENCY`, the test XPASSed and failed the suite
+exactly as designed, and its marker was removed. The mechanism named above is
+the one that was repaired: `publishable_books()` no longer ANDs a per-book flag
+with a subscription-level `healthy`, and a book is publishable only while
+`based_generation == subscription_generation` — i.e. only after **its own**
+snapshot for the current epoch. A new-generation delta arriving on an
+un-re-snapshotted book is now refused rather than applied, which is what closes
+the "not a contract we hold" exposure in the paragraph above rather than merely
+narrowing it. The proofs are re-run against `s2-reconnect`'s own verbatim frames
+in `tests/test_kalshi_replay_generation_consistency_001.py`. **The live sessions
+were not re-run**; see the addendum at the top of this document for what that
+does and does not retire.
+
 ---
 
 ## 4. CP8 — deterministic replay and conservation
@@ -624,10 +656,13 @@ them.
 
 ## 9. What should happen next
 
-1. **Fix CP7 before any microstructure feature reads a book across a
-   reconnect.** `KALSHI-REPLAY-GENERATION-CONSISTENCY-001` is already the
-   scheduled next item; §3.3 is its live justification, and the strict xfail is
-   its acceptance test.
+1. ~~**Fix CP7 before any microstructure feature reads a book across a
+   reconnect.**~~ **DONE 2026-08-17** on branch
+   `KALSHI-REPLAY-GENERATION-CONSISTENCY`, unmerged: publishability is now
+   per-market and generation-aware, the strict xfail passes with its marker
+   removed, and six proofs run over `s2-reconnect`'s verbatim frames. Still
+   open, and deliberately: **a live reconnect session has not been re-run**, so
+   the FAILED verdict in §0 stands as a record of the sessions that were.
 2. **Decide whether the tape must record collector actions** (§4.5) before a
    recovery count becomes an experimental variable.
 3. **Consider widening `archive.replay()`** to the non-orderbook sids (§4.6),

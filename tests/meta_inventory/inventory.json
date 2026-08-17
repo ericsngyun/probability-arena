@@ -13434,6 +13434,10 @@
         ],
         [
           "replay",
+          "<expr>.to_dict(...) [chained call]"
+        ],
+        [
+          "replay",
           "SubscriptionRouter(...) [from app.realtime.book import SubscriptionRouter]"
         ],
         [
@@ -13470,7 +13474,7 @@
         ],
         [
           "replay",
-          "router.publishable_books(...) [receiver type unknown]"
+          "router.publication_states(...) [receiver type unknown]"
         ],
         [
           "replay",
@@ -13487,6 +13491,10 @@
         [
           "replay",
           "sorted(...) [unbound name]"
+        ],
+        [
+          "replay",
+          "states.items(...) [receiver type unknown]"
         ],
         [
           "replay",
