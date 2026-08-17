@@ -846,7 +846,7 @@ def kalshi_realtime_replay(
         digest = f"{chk[:16]}…" if isinstance(chk, str) else "NOT_PUBLISHABLE"
         print(f"    {ticker:24} publishable={pub} "
               f"state={state.get('state', 'unknown')} checksum={digest}")
-        # KALSHI-TAPE-MEASUREMENT-CONTRACT-001 §9.9. `gaps` and `regressions`
+        # KALSHI-TAPE-MEASUREMENT-CONTRACT-001 §9.8. `gaps` and `regressions`
         # were printed from the per-market BOOK stats, where they are
         # STRUCTURALLY UNREACHABLE: `SubscriptionRouter` settles ordering once
         # per sid and calls `apply_delta(ordered_externally=True)`, so

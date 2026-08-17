@@ -22,12 +22,12 @@ from pathlib import Path
 import pytest
 
 from app.realtime.archive import EventArchive, replay
-from app.realtime.book import make_envelope
 from app.realtime.book import (
     PUB_AWAITING_GENERATION_SNAPSHOT,
     PUB_BOOK_HALTED,
     SubscriptionRouter,
     SubscriptionState,
+    make_envelope,
 )
 from app.realtime.collector_metrics import (
     ALLOWED_FIELDS,
@@ -384,7 +384,7 @@ class TestUnboundGaugesReportZeroNotUnknown:
         assert set(record) == set(ALLOWED_FIELDS)
 
     def test_per_market_fault_counters_are_structurally_unreachable(self):
-        """§9.9. `OrderBook.stats["gaps"|"regressions"|"duplicates"]` can never
+        """§9.8. `OrderBook.stats["gaps"|"regressions"|"duplicates"]` can never
         become non-zero in the ROUTED path.
 
         `SubscriptionRouter` settles ordering once per sid and calls
@@ -479,7 +479,7 @@ class TestOperatorReplayCommandSurvivesAHaltedBook:
         assert code == 1                       # a faulting tape is not a pass
         assert "NOT_PUBLISHABLE" in out
         assert "state=book_halted" in out
-        # §9.9: the REAL fault numbers are printed, per sid.
+        # §9.8: the REAL fault numbers are printed, per sid.
         assert "sid=1" in out and "gaps=1" in out
 
     def test_anti_vacuity_a_healthy_tape_still_prints_a_real_checksum(

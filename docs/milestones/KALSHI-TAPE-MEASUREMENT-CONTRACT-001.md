@@ -717,7 +717,7 @@ into one bit, so it reads `false` while `state_equality.differences == []`. The
 CP6–CP9 report splits it by hand. If that checker is reused for P4 it should
 emit two bits. **Instrument-level, outside `app/`; noted for whoever runs P4.**
 
-### 9.9 `OrderBook.stats["gaps"|"regressions"|"duplicates"]` — **STRUCTURALLY UNREACHABLE. FIXED AT THE READOUT (§10.3)**
+### 9.8 `OrderBook.stats["gaps"|"regressions"|"duplicates"]` — **STRUCTURALLY UNREACHABLE. FIXED AT THE READOUT (§10.3)**
 
 Found by this milestone, and the sharpest instance of the class.
 
@@ -749,7 +749,7 @@ zero, but a metric whose measurement path cannot become non-benign.
 happens on the operator's primary readout and the correct numbers were already in
 the same return value, one key away.
 
-### 9.10 REJECTED as candidates
+### 9.9 REJECTED as candidates
 
 - `spread_units = null`, `bid_levels = []` with a typed reason, `ladder_presence`,
   `reader_lag_frames_max`, absence of `transport_dropped`, `data_age_us` negatives
@@ -764,7 +764,7 @@ the same return value, one key away.
 
 Two, each argued against the contract. Nothing else in `app/` is touched.
 
-### 10.1 `kalshi-realtime-replay` crashes on exactly the tape it exists to inspect — **FIXED**
+### 10.1 `kalshi-realtime-replay` crashed on exactly the tape it exists to inspect — **FIXED**
 
 `app/cli.py:828` formats `checksum={chk[:16]}`. `replay()` sets a market's
 checksum to **`None` when the book is not publishable** — deliberately, so a
@@ -804,7 +804,7 @@ today, and a trap for the next reader. Removed; no behaviour changes.
 
 ### 10.3 `kalshi-realtime-replay` printed a structurally-unreachable zero for the fault it exists to report — **FIXED AT THE READOUT**
 
-§9.9's defect, at the surface where it does damage. The per-market line printed
+§9.8's defect, at the surface where it does damage. The per-market line printed
 `gaps` and `regressions` from `OrderBook.stats`, where they can never be
 non-zero on the routed path, so a tape with a real sequence gap reported
 `gaps=0` for every market.
@@ -1002,7 +1002,7 @@ that no amount of work on this tape can change.
 | L16 | **The closer's margin over the append ceiling is under 2×.** Synchronous append sustains ~3,440 events/s; the closer keeps up only below roughly 6,900 events/s at `DEFAULT_MAX_SEGMENT_RECORDS = 13_000`. | Overload is designed to become a **timestamped disconnect, not a silent gap** — append latency *is* reader stall, on purpose, and a collector that cannot keep up stops and says so. Measuring where production sits against that ceiling is P4's job. |
 | L17 | **Archive order equals wire order only under a single producer per subscription.** | Structural in the collector: exactly one task reads exactly one socket and calls `append()` on its own stack. Stated so a future concurrent writer does not silently void it. |
 | L18 | **The SIGKILL loss window is the unflushed tail plus the whole uncommitted segment** (`flush_every = 256`; `close()` is the commit point and an unclosed segment is explicitly not evidence). | Bounded, documented, and the same for DEMO and production. Rename-after-fsync is the durability contract, not `close()`. |
-| L19 | **`OrderBook.stats["gaps"|"regressions"|"duplicates"]` are structurally unreachable on the routed path** (§9.9). | Fixed at the operator readout (§10.3) and pinned by a test. The reachable numbers are in `subscription_stats`. A future consumer reading the per-market block must be told, and now is. |
+| L19 | **`OrderBook.stats["gaps"|"regressions"|"duplicates"]` are structurally unreachable on the routed path** (§9.8). | Fixed at the operator readout (§10.3) and pinned by a test. The reachable numbers are in `subscription_stats`. A future consumer reading the per-market block must be told, and now is. |
 
 ---
 
@@ -1040,7 +1040,7 @@ Every one carries its own anti-vacuity control.
 | `test_omitted_and_empty_ladders_are_distinguishable_after_replay` | §5.1, §7: `NOT_PROVIDED != EMPTY` survives replay | `checksum()` **cannot** tell them apart — which is why the check exists |
 | `test_a_market_awaiting_its_own_snapshot_is_not_halted` | §7.1, §8.3: a reconnect boundary is not an integrity fault | a real within-generation gap **does** halt |
 | `test_the_three_candidates_emit_zero_while_the_correct_one_emits_null` | §9.1, §9.2 | the record really was built and is schema-valid |
-| `test_per_market_fault_counters_are_structurally_unreachable` | §9.9 | the reachable per-market counters did move |
+| `test_per_market_fault_counters_are_structurally_unreachable` | §9.8 | the reachable per-market counters did move |
 | `test_there_is_no_transport_dropped_field` | §8.4 | the schema is populated and the one legitimate drop field is there |
 | `test_text_output_reports_the_halt_instead_of_crashing` | §10.1, §10.3 | — |
 | `test_anti_vacuity_a_healthy_tape_still_prints_a_real_checksum` | §10.1 | a healthy tape prints a real digest and `gaps=0` truthfully |
