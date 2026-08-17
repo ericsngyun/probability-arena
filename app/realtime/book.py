@@ -11,6 +11,12 @@ The rule that shapes the whole file: *a book whose sequence integrity is
 unresolved must not be published as current*. Continuing across a gap produces a
 book that looks fine and is quietly missing levels — the failure mode that is
 hardest to notice and most expensive to have trusted.
+
+Its per-market half, earned the same way (KALSHI-REPLAY-GENERATION-CONSISTENCY,
+CP7 live evidence): *within a subscription generation, a market is not
+publishable until THAT MARKET has received its own snapshot for that
+generation*. A sibling's snapshot re-bases the sibling and says nothing about
+anyone else's ladder.
 """
 
 from __future__ import annotations
@@ -627,27 +633,6 @@ class OrderBook:
             raise BookIntegrityError(
                 f"{self.market_ticker}: delta received before any snapshot; "
                 "rejected rather than buffered")
-        if not self.based_for_current_generation:
-            # KALSHI-REPLAY-GENERATION-CONSISTENCY-001, the serious half. A
-            # delta from generation g applied on top of generation g-1's ladder
-            # does not merely serve stale depth — it FABRICATES a book that
-            # never existed at any instant, and one that a later snapshot would
-            # overwrite without leaving a trace that it ever happened.
-            #
-            # Deliberately NOT `_halt`: nothing is broken. The book is already
-            # non-publishable through its typed state, the refusal is counted
-            # on its own axis, and the market recovers the moment ITS OWN
-            # snapshot for this generation arrives. Halting here would file a
-            # routine reconnect as an integrity fault, which is exactly the
-            # conflation `_rebase_all` exists to prevent.
-            self.stats["rejected_pre_generation_snapshot"] += 1
-            raise BookIntegrityError(
-                f"{self.market_ticker}: delta belongs to subscription "
-                f"generation {self.subscription_generation!r}; this book was "
-                f"last based in {self.based_generation!r} and has not received "
-                "its own snapshot for the current generation — rejected rather "
-                "than applied to an abandoned ladder")
-
         ticker = msg.get("market_ticker")
         if ticker is not None and ticker != self.market_ticker:
             self._halt(f"delta is labelled {ticker!r}, not {self.market_ticker}")
@@ -663,6 +648,32 @@ class OrderBook:
                 f"{self.market_ticker}: delta belongs to subscription {sid}, "
                 f"this book is on {self.sid}; sequence numbers from a "
                 "superseded subscription are not comparable")
+
+        if not self.based_for_current_generation:
+            # KALSHI-REPLAY-GENERATION-CONSISTENCY-001, the serious half. A
+            # delta from generation g applied on top of generation g-1's ladder
+            # does not merely serve stale depth — it FABRICATES a book that
+            # never existed at any instant, and one that a later snapshot would
+            # overwrite without leaving a trace that it ever happened.
+            #
+            # Deliberately NOT `_halt`: nothing is broken. The book is already
+            # non-publishable through its typed state, the refusal is counted
+            # on its own axis, and the market recovers the moment ITS OWN
+            # snapshot for this generation arrives. Halting here would file a
+            # routine reconnect as an integrity fault, which is exactly the
+            # conflation `_rebase_all` exists to prevent.
+            #
+            # It runs AFTER the identity checks on purpose: "this message
+            # belongs to another market/subscription" is the stronger statement
+            # and must keep its halt, or a mislabelled frame arriving during a
+            # boundary would be filed as a benign wait.
+            self.stats["rejected_pre_generation_snapshot"] += 1
+            raise BookIntegrityError(
+                f"{self.market_ticker}: delta belongs to subscription "
+                f"generation {self.subscription_generation!r}; this book was "
+                f"last based in {self.based_generation!r} and has not received "
+                "its own snapshot for the current generation — rejected rather "
+                "than applied to an abandoned ladder")
 
         status = SEQ_OK if ordered_externally else self.classify_seq(seq)
         if status == SEQ_DUPLICATE:

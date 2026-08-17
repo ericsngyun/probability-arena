@@ -668,6 +668,27 @@ class TestTheDropDetectorIsNotBlinded:
         assert router.subscription.stats["stale_generation"] == 1
         assert router.publishable_books() == {MARKETS[0]: False}
 
+    def test_identity_still_wins_over_the_benign_boundary_state(self):
+        """A mislabelled delta must still HALT, even while the book is waiting.
+
+        "This message belongs to another market" is the stronger statement, and
+        filing it as a benign wait would let the one thing a book must never do
+        — absorb another market's data — arrive dressed as a reconnect.
+        """
+        book = bk.OrderBook(MARKETS[0])
+        book.subscription_generation = 1
+        book.apply_snapshot(CP7_SNAPSHOTS[MARKETS[0]]["msg"], sid=SID_ORDERBOOK,
+                            seq=1)
+        assert book.publishable is True
+        book.begin_subscription_generation(2)
+        assert book.publication_state.state == bk.PUB_AWAITING_GENERATION_SNAPSHOT
+
+        with pytest.raises(bk.BookIntegrityError, match="absorb another"):
+            book.apply_delta(orderbook_delta(seq=2, market=MARKETS[1])["msg"],
+                             seq=2, sid=SID_ORDERBOOK)
+        assert book.publication_state.state == bk.PUB_BOOK_HALTED
+        assert book.stats["rejected_pre_generation_snapshot"] == 0
+
     def test_a_legacy_tape_without_the_epoch_still_publishes_and_still_detects(self):
         """The `GENERATION_UNKNOWN` sentinel must not become either a permanent
         awaiting state or a licence to skip the sequence check."""
