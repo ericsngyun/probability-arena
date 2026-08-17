@@ -26,6 +26,10 @@ KALSHI-PROD-OBSERVATIONAL-QUALIFICATION-001
   REPLAY-EQUALITY VERDICT                     NO-GO until B3 is closed
 ```
 
+**One sentence, if you read nothing else:** *proceed to P4, but B3 must be
+closed before P4 computes a replay-equality verdict — and it is a ~4-line fix
+plus a CP8 re-run, not a research problem.*
+
 **This is not one verdict, because P4 is not one act.** P4 captures a production
 tape and then computes a CP9-style qualification verdict over it. Those have
 different blockers, and collapsing them would be the same mistake CP8's
