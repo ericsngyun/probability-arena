@@ -238,16 +238,36 @@ class DropTap(_BaseTap):
 # =================================================================================
 
 
-def _book_state(book, publishable: bool) -> dict:
+def _book_state(book, state) -> dict:
     """One market's terminal state.
 
     `checksum` only when publishable, mirroring `archive.replay` exactly: a
     consumer comparing checksums without also reading `publishable` would
     otherwise accept a torn book, and a comparison that used a different rule
     on each side would not be comparing the same quantity.
+
+    `state` is a `PublicationState`, not a boolean. The CP7 run of 2026-08-17
+    recorded only the boolean, and the failure it measured then had to be
+    RECONSTRUCTED from the frame stream afterwards to learn *why* each book was
+    unpublishable. Doctrine 10 applies to the artifact as much as to the code:
+    `publishable: false` is an absence, and the three ways of arriving at it —
+    a real integrity fault, an un-re-snapshotted epoch, an unbased subscription
+    — are not the same observation. They are written down here so that no
+    future reader has to infer which one occurred.
     """
+    publishable = state.publishable
     return {
         "publishable": publishable,
+        # The typed reason, its human detail, and BOTH epoch numbers.
+        "publication_state": state.state,
+        "publication_reason": state.reason,
+        "publication_subscription_generation": _plain(
+            state.subscription_generation),
+        "publication_based_generation": _plain(state.based_generation),
+        # Read off the book itself as well as off the state, so the artifact
+        # records the invariant's two inputs and not only its verdict.
+        "based_generation": _plain(book.based_generation),
+        "based_for_current_generation": book.based_for_current_generation,
         "checksum": (book.checksum() if publishable else None),
         "synced": book.synced,
         "integrity_reason": book.integrity_reason,
@@ -266,7 +286,7 @@ def capture_state(session) -> dict:
     """The collector's own terminal view, read from the real routers."""
     out = {}
     for sid, router in sorted(session._routers.items(), key=lambda kv: str(kv[0])):
-        publishable = router.publishable_books()
+        states = router.publication_states()
         sub = router.subscription
         out[str(sid)] = {
             "sid": sub.sid,
@@ -276,70 +296,170 @@ def capture_state(session) -> dict:
             "last_seq": sub.last_seq,
             "carries_orderbook": sub.carries_orderbook,
             "stats": dict(sub.stats),
-            "books": {t: _book_state(b, publishable.get(t, False))
+            # `publication_states()` is keyed by exactly `router.books`, so the
+            # lookup is total; it is written as a direct index rather than a
+            # defaulted `.get` because a missing key would be a real disagreement
+            # between the two and must raise rather than be recorded as `False`.
+            "books": {t: _book_state(b, states[t])
                       for t, b in sorted(router.books.items())},
         }
     return out
 
 
-def _publishability_map(session) -> dict:
+def _publication_state_map(session) -> dict:
+    """Per-market typed publication state, keyed by `(sid, ticker)`.
+
+    The value is the identity a transition is detected on: the boolean, the
+    typed reason, and both epoch numbers. Keying on the boolean alone — what
+    the 2026-08-17 run did — cannot see a market move from
+    `awaiting_snapshot_for_generation` to `book_halted`, which is precisely the
+    distinction the anti-vacuity control has to make.
+
+    `reason` is deliberately NOT part of the key. It is free text derived from
+    the other four fields, so including it would add no transition that the key
+    does not already carry, while making the log sensitive to wording.
+    """
     out = {}
     for sid, router in session._routers.items():
-        for ticker, pub in router.publishable_books().items():
-            out[(sid, ticker)] = pub
+        for ticker, state in router.publication_states().items():
+            out[(sid, ticker)] = {
+                "publishable": state.publishable,
+                "state": state.state,
+                "subscription_generation": _plain(state.subscription_generation),
+                "based_generation": _plain(state.based_generation),
+            }
+    return out
+
+
+def _refusal_map(session) -> dict:
+    """Per-market cumulative `rejected_pre_generation_snapshot` counts.
+
+    The fix refuses a new-generation delta that lands on a book which has not
+    been re-snapshotted into that generation. CP7 could previously only report
+    that this "did not happen to occur"; this makes the refusal an OBSERVABLE
+    rather than an inference, so the artifact can distinguish "the guard fired"
+    from "the venue's ordering happened to be favourable again".
+
+    Read from `OrderBook.stats`, which is cumulative and is not reset by a
+    later snapshot, so a refusal cannot be erased by the recovery that follows
+    it.
+    """
+    out = {}
+    for sid, router in session._routers.items():
+        for ticker, book in router.books.items():
+            out[(sid, ticker)] = book.stats.get(
+                "rejected_pre_generation_snapshot", 0)
     return out
 
 
 class ObservedSession(_Session):
     """The shipped session, with a read-only observer after each frame.
 
-    It records only TRANSITIONS in per-market publishability, plus the frame
+    It records only TRANSITIONS in per-market publication state, plus the frame
     that caused each one. A per-frame dump would be a rate measurement in
     disguise and this milestone makes no rate claims; a transition log is the
     exact evidence CP7 needs — `old book -> nonpublishable -> its own new
     snapshot -> publishable`, independently per market.
+
+    The state is the TYPED one, not the boolean. A transition is detected on
+    `(publishable, state, subscription_generation, based_generation)`, so a
+    book that moves from `awaiting_snapshot_for_generation` to `book_halted`
+    without changing its boolean is visible — which is the whole of the
+    anti-vacuity question, and is exactly what the 2026-08-17 artifacts could
+    not answer without reconstruction.
 
     It cannot change what the collector does: it runs AFTER `_handle_frame` has
     returned, it mutates nothing the collector reads, and it returns the
     collector's own outcome unmodified.
     """
 
-    def __init__(self, *args, timeline: list, **kwargs):
+    def __init__(self, *args, timeline: list, refusals: list | None = None,
+                 **kwargs):
         super().__init__(*args, **kwargs)
         self._timeline = timeline
+        # Optional so a caller that only wants the transition log keeps working;
+        # the live `run()` always passes one, because a session that cannot say
+        # whether the guard fired cannot answer CP7's fourth question.
+        self._refusals = [] if refusals is None else refusals
         self._last_pub: dict = {}
+        self._last_refusals: dict = {}
         self._frame_ordinal = 0
+
+    @staticmethod
+    def _cause(message) -> dict:
+        msg = message if type(message) is dict else {}
+        raw_msg = msg.get("msg")
+        return {
+            "event_type": msg.get("type"),
+            "sid": msg.get("sid"),
+            "seq": msg.get("seq"),
+            "market_ticker": (raw_msg or {}).get("market_ticker")
+            if isinstance(raw_msg, dict) else None,
+        }
 
     async def _handle_frame(self, message, transport):
         outcome = await super()._handle_frame(message, transport)
         self._frame_ordinal += 1
-        current = _publishability_map(self)
+        current = _publication_state_map(self)
         changes = []
         for key in sorted(set(current) | set(self._last_pub), key=lambda k: str(k)):
             before = self._last_pub.get(key)
             after = current.get(key)
             if before != after:
-                changes.append({"sid": key[0], "market_ticker": key[1],
-                                "from": before, "to": after})
+                changes.append({
+                    "sid": key[0], "market_ticker": key[1],
+                    # The booleans keep their exact former meaning and name, so
+                    # every existing consumer of this artifact still reads the
+                    # same quantity.
+                    "from": None if before is None else before["publishable"],
+                    "to": None if after is None else after["publishable"],
+                    # The typed reason beside it. A market can move between two
+                    # unpublishable states — `awaiting_snapshot_for_generation`
+                    # to `book_halted` is the one that matters — and the
+                    # booleans alone cannot see that at all.
+                    "from_state": before,
+                    "to_state": after,
+                })
         if changes:
-            msg = message if type(message) is dict else {}
-            raw_msg = msg.get("msg")
             self._timeline.append({
                 "frame_ordinal": self._frame_ordinal,
                 "at": datetime.now(timezone.utc).isoformat(),
-                "cause": {
-                    "event_type": msg.get("type"),
-                    "sid": msg.get("sid"),
-                    "seq": msg.get("seq"),
-                    "market_ticker": (raw_msg or {}).get("market_ticker")
-                    if isinstance(raw_msg, dict) else None,
-                },
+                "cause": self._cause(message),
                 "subscription_epoch": self.subscription_epoch,
                 "connection_generation": self.connection_generation,
                 "sequence_faults_so_far": self.sequence_faults,
                 "changes": changes,
             })
         self._last_pub = current
+
+        # The delta-refusal guard, observed per frame. Recorded separately from
+        # the publishability timeline because a refusal changes NO publication
+        # state — the book was already `awaiting_snapshot_for_generation` — so
+        # the transition log cannot see it, and "it did not happen" and "it
+        # happened and was invisible" would otherwise look identical.
+        refusals = _refusal_map(self)
+        for key in sorted(set(refusals) | set(self._last_refusals),
+                          key=lambda k: str(k)):
+            before = self._last_refusals.get(key, 0)
+            after = refusals.get(key, 0)
+            if after > before:
+                self._refusals.append({
+                    "frame_ordinal": self._frame_ordinal,
+                    "at": datetime.now(timezone.utc).isoformat(),
+                    "sid": key[0],
+                    "market_ticker": key[1],
+                    "cause": self._cause(message),
+                    "subscription_epoch": self.subscription_epoch,
+                    "rejected_pre_generation_snapshot_delta": after - before,
+                    "rejected_pre_generation_snapshot_total": after,
+                    # A refusal reaches the collector as a `BookIntegrityError`
+                    # and is counted in `sequence_faults` by the generic
+                    # book-level handler. That is NOT a lost message, and this
+                    # pairing is what lets a reader subtract it out rather than
+                    # read a clean reconnect as a faulting one.
+                    "session_sequence_faults_so_far": self.sequence_faults,
+                })
+        self._last_refusals = refusals
         return outcome
 
 
@@ -383,6 +503,7 @@ def run(*, mode, tickers, channels, max_seconds, max_events, max_reconnects,
     recorder = WireRecorder(samples_per_type=samples_per_type)
     journal: list = []
     timeline: list = []
+    refusals: list = []
     transports: list = []
     close_budget = [force_close_budget if mode == "reconnect" else 0]
     drop_budget = [1 if mode == "drop" else 0]
@@ -419,7 +540,8 @@ def run(*, mode, tickers, channels, max_seconds, max_events, max_reconnects,
 
     async def _go():
         session = ObservedSession(config, transport_factory=transport_factory,
-                                  metrics=metrics, timeline=timeline)
+                                  metrics=metrics, timeline=timeline,
+                                  refusals=refusals)
         holder["session"] = session
         return await session.run()
 
@@ -457,6 +579,10 @@ def run(*, mode, tickers, channels, max_seconds, max_events, max_reconnects,
         "wire": recorder.to_dict(),
         "perturbation_journal": journal,
         "publishability_timeline": timeline,
+        # Empty means the guard did not fire in this session — which is a
+        # statement about the venue's frame ordering, NOT a proof that the
+        # guard works. Read it with §3.3 of the CP9 report.
+        "generation_delta_refusals": refusals,
         "live_terminal_state": capture_state(session),
     }
     Path(out_path).write_text(json.dumps(payload, indent=2, sort_keys=True,
@@ -478,6 +604,7 @@ def run(*, mode, tickers, channels, max_seconds, max_events, max_reconnects,
         "by_type": dict(recorder.by_type),
         "perturbations": len(journal),
         "publishability_transitions": len(timeline),
+        "generation_delta_refusals": len(refusals),
         "out": str(out_path),
     }, indent=2))
 

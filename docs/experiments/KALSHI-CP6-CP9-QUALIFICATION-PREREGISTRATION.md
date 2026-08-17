@@ -235,3 +235,26 @@ this document is not silent about them:
 generation boundary), CP8 QUALIFIED with two named non-reconstructible
 collector-action counters, fault isolation QUALIFIED. The four lower lines of
 the §8 block stand unchanged.
+
+**AMENDED FORWARD 2026-08-17 — CP7 re-run live, and now QUALIFIED.** Recorded
+here rather than by editing the line above, because the outcome of the sessions
+that ran is not changed by a later run. `KALSHI-REPLAY-GENERATION-CONSISTENCY-
+001` fixed the defect and `KALSHI-CP7-LIVE-RERUN-001` re-measured **all three
+CP7 properties on the venue** — two forced teardowns, per-market re-acquisition
+in 60 separate transition entries at each boundary, and a within-generation gap
+that still faults and is still typed `book_halted`. A sixth deviation joins the
+five above:
+
+6. **The re-run's universe is not the original 60.** Three of the 2026-08-17
+   instruments had closed, so 57 were retained in their original order and 3
+   were topped up by a **telemetry-blind** rule (ticker ascending), frozen with
+   its full candidate population **before** any socket opened. §1's prohibition
+   — no ticker may be replaced because its telemetry looks cleaner — is
+   satisfied by construction: the freeze script reads no activity field at all.
+
+**Still not established, in either run:** the delta-refusal path
+(`rejected_pre_generation_snapshot`) has **never been exercised live**. Both
+times the venue sent every snapshot before any delta for the affected markets.
+The re-run measures that absence rather than inferring it, and reports it as
+NOT EXERCISED rather than as a pass. The four lower lines of §8 still stand
+unchanged.

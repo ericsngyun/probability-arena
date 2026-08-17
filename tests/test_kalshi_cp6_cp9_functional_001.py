@@ -314,7 +314,7 @@ def make_config(root, **kwargs):
 
 def drive(root, streams, *, tap="plain", **kwargs):
     """Run one ObservedSession over `streams`, one stream per connection."""
-    made, journal, timeline = [], [], []
+    made, journal, timeline, refusals = [], [], [], []
     recorder = probe.WireRecorder(samples_per_type=4)
     close_budget = [kwargs.pop("close_budget", 0)]
     drop_budget = [kwargs.pop("drop_budget", 0)]
@@ -339,14 +339,14 @@ def drive(root, streams, *, tap="plain", **kwargs):
     async def _go():
         session = probe.ObservedSession(make_config(root, **kwargs),
                                         transport_factory=factory,
-                                        timeline=timeline)
+                                        timeline=timeline, refusals=refusals)
         holder["session"] = session
         return await session.run()
 
     result = asyncio.run(_go())
     return {"result": result, "session": holder["session"],
             "recorder": recorder, "journal": journal, "timeline": timeline,
-            "transports": made}
+            "refusals": refusals, "transports": made}
 
 
 def clean_stream(*, snapshot_seq=1, deltas=12, markets=(M1, M2)):
@@ -513,6 +513,142 @@ class TestForcedSocketTeardown:
         # assertion above is not passing because everything went dark.
         assert books[M1]["publishable"] is True
         assert books[M1]["stats"]["snapshots"] == 2
+
+    def test_the_artifact_carries_the_TYPED_reason_not_only_the_boolean(
+            self, tmp_path):
+        """Doctrine 10, applied to the artifact rather than to the code.
+
+        The 2026-08-17 CP7 artifacts recorded `publishable: false` and nothing
+        else, so the failure they contained had to be reconstructed from the
+        frame stream afterwards. Three different things produce that boolean —
+        an integrity fault, an un-re-snapshotted epoch, an unbased
+        subscription — and a reader must not have to guess which.
+
+        This asserts the two markets above land on DIFFERENT typed states, so
+        the field cannot be a constant that happens to look right.
+        """
+        init_archive(tmp_path)
+        gen1 = list(subscribed_acks()) + [
+            laddered_snapshot(seq=1, market=M1),
+            laddered_snapshot(seq=2, market=M2),
+            orderbook_delta(seq=3, market=M1),
+            orderbook_delta(seq=4, market=M2),
+            orderbook_delta(seq=5, market=M1),
+            orderbook_delta(seq=6, market=M2)]
+        gen2 = list(subscribed_acks()) + [
+            laddered_snapshot(seq=1, market=M1),
+            orderbook_delta(seq=2, market=M1),
+            orderbook_delta(seq=3, market=M1)]
+
+        out = drive(tmp_path, [gen1, gen2], tap="close", close_budget=1,
+                    after_frames=9, max_reconnects=1)
+        state = probe.capture_state(out["session"])
+        books = {t: b for sid in state.values() for t, b in sid["books"].items()}
+
+        assert books[M2]["publication_state"] == "awaiting_snapshot_for_generation"
+        assert books[M2]["based_for_current_generation"] is False
+        assert books[M2]["publication_based_generation"] == 1
+        assert books[M2]["publication_subscription_generation"] == 2
+        assert M2 in (books[M2]["publication_reason"] or "")
+
+        # The other market, in the same session, reads differently — so the
+        # field is a measurement and not a constant.
+        assert books[M1]["publication_state"] == "publishable"
+        assert books[M1]["publication_reason"] is None
+        assert books[M1]["based_for_current_generation"] is True
+        assert books[M1]["publication_based_generation"] == 2
+
+        # And the artifact's typed states agree with the collector's own, so
+        # the probe is reporting the shipped code's answer and not its own.
+        router = out["session"]._routers[SID_ORDERBOOK]
+        for ticker, live in router.publication_states().items():
+            assert books[ticker]["publication_state"] == live.state
+            assert books[ticker]["publishable"] is live.publishable
+
+
+class TestTheGenerationDeltaRefusalIsObservable:
+    """Doctrine 7 for the guard CP7 could only report as "did not occur".
+
+    A new-generation delta landing on an un-re-snapshotted book is refused and
+    counted as `rejected_pre_generation_snapshot`. In the 2026-08-17 sessions
+    it never fired — but only because the venue happened to send all 60
+    snapshots before any delta, and an observer that is simply broken produces
+    that same empty result. Both halves are forced here so that an empty
+    `generation_delta_refusals` list in a live artifact means "the ordering was
+    favourable", not "nothing was watching".
+    """
+
+    @staticmethod
+    def _boundary(*, resnapshot_m2: bool):
+        gen1 = list(subscribed_acks()) + [
+            laddered_snapshot(seq=1, market=M1),
+            laddered_snapshot(seq=2, market=M2),
+            orderbook_delta(seq=3, market=M1),
+            orderbook_delta(seq=4, market=M2),
+            orderbook_delta(seq=5, market=M1),
+            orderbook_delta(seq=6, market=M2)]
+        # Generation 2. M1's snapshot arrives first either way — it is what
+        # re-bases the SUBSCRIPTION, so without it a delta would be refused one
+        # level up and would never reach a book at all.
+        gen2 = list(subscribed_acks()) + [laddered_snapshot(seq=1, market=M1)]
+        seq = 2
+        if resnapshot_m2:
+            gen2.append(laddered_snapshot(seq=seq, market=M2))
+            seq += 1
+        gen2.append(orderbook_delta(seq=seq, market=M2))
+        return [gen1, gen2]
+
+    def test_a_new_generation_delta_on_an_unbased_book_is_REFUSED_and_recorded(
+            self, tmp_path):
+        init_archive(tmp_path)
+        out = drive(tmp_path, self._boundary(resnapshot_m2=False),
+                    tap="close", close_budget=1, after_frames=9,
+                    max_reconnects=1)
+
+        refusals = out["refusals"]
+        assert refusals, ("the guard never fired — this stream cannot prove "
+                          "anything about the refusal path")
+        assert [r["market_ticker"] for r in refusals] == [M2], refusals
+        entry = refusals[0]
+        assert entry["cause"]["event_type"] == "orderbook_delta"
+        assert entry["cause"]["market_ticker"] == M2
+        assert entry["subscription_epoch"] == 2
+        assert entry["rejected_pre_generation_snapshot_total"] == 1
+
+        # The counter on the book agrees with the observer, and the refusal is
+        # counted on its OWN axis rather than as loss or as a cold start.
+        state = probe.capture_state(out["session"])
+        books = {t: b for sid in state.values() for t, b in sid["books"].items()}
+        assert books[M2]["stats"]["rejected_pre_generation_snapshot"] == 1
+        assert books[M2]["stats"]["gaps"] == 0
+        assert books[M2]["stats"]["rejected_pre_snapshot"] == 0
+        # Refused, NOT halted: nothing is broken and the market recovers on its
+        # own snapshot, so the typed state must stay the benign boundary one.
+        assert books[M2]["publication_state"] == "awaiting_snapshot_for_generation"
+
+        # THE TRAP THIS PAIRING EXISTS TO DISARM. A refusal reaches the
+        # collector as a `BookIntegrityError` and is counted by the generic
+        # book-level handler, so `sequence_faults` moves even though no message
+        # was lost. Recorded here so a live reconnect session with a non-zero
+        # fault count is not misread as a faulting one.
+        assert out["result"].sequence_faults >= 1
+        assert entry["session_sequence_faults_so_far"] >= 1
+
+    def test_the_same_boundary_WITH_the_snapshot_refuses_nothing(self, tmp_path):
+        """The negative control. Same stream, M2 re-snapshotted first."""
+        init_archive(tmp_path)
+        out = drive(tmp_path, self._boundary(resnapshot_m2=True),
+                    tap="close", close_budget=1, after_frames=9,
+                    max_reconnects=1)
+
+        assert out["refusals"] == []
+        state = probe.capture_state(out["session"])
+        books = {t: b for sid in state.values() for t, b in sid["books"].items()}
+        assert books[M2]["stats"]["rejected_pre_generation_snapshot"] == 0
+        # The delta was APPLIED, not merely un-refused — otherwise "zero
+        # refusals" could mean the delta never arrived.
+        assert books[M2]["publishable"] is True
+        assert books[M2]["stats"]["deltas"] >= 1
 
 
 class TestForcedSequenceGap:
