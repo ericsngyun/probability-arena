@@ -146,3 +146,61 @@ every downstream result.
 Any departure from this document must be recorded here with reason and
 timestamp **before** the affected result is reported. An unlogged deviation
 invalidates the affected checkpoint.
+
+---
+
+## 8. AMENDMENT — rescoped to DEMO FUNCTIONAL-ONLY (2026-08-17)
+
+**Recorded as a forward amendment, before any CP6–CP9 session runs.**
+
+`KALSHI-DEMO-TRAFFIC-CAPACITY-001` returned **UNREACHABLE by 9.2×**, and the
+scale control settled it: all **388** non-test eligible markets — 32× the
+preregistered universe — reach only **55,344** projected frames. **98.3% of the
+frames DEMO's eligible population emits come from 194 venue test instruments.**
+DEMO is an engineering sandbox, not an empirical proxy for production activity.
+
+**The ≥100,000-frame floor is withdrawn for DEMO**, and with it every rate,
+latency-tail and capacity claim. Those move to
+`KALSHI-PROD-OBSERVATIONAL-QUALIFICATION-001`. Do not keep extracting
+conclusions from DEMO that it cannot provide.
+
+### CP6 — live semantics
+Does the collector correctly understand actual venue messages? Prove: channel/
+sid assignments · sequence domains · subscription generations · snapshot forms ·
+normalized representation · **zero unexplained recovery errors**.
+
+### CP7 — reconnect correctness
+Force reconnects. Prove `generation_after > generation_before`, and
+**independently for every market**: `old book → nonpublishable → its own new
+snapshot → publishable`. Also prove a genuine **within-generation gap still
+faults**.
+
+### CP8 — deterministic replay
+`State_live^terminal == State_replay^terminal`, plus **raw-frame conservation**,
+**normalized-frame conservation where normalization is defined**, **generation
+conservation**, and **per-sid sequence findings conserved**. Where a frame class
+cannot support conservation because the venue does not sequence it (`ticker`),
+the report must say **explicitly what can and cannot be established** rather
+than omitting it.
+
+### CP9 — functional qualification, and nothing more
+
+Output exactly this shape, so that "CP9 PASSED" can never be read six months
+later as "collector performance was validated under realistic trading
+conditions":
+
+```
+Collector semantics      QUALIFIED / FAILED
+Reconnect behavior       QUALIFIED / FAILED
+Archive conservation     QUALIFIED / FAILED
+Replay equality          QUALIFIED / FAILED
+Fault isolation          QUALIFIED / FAILED
+
+DEMO throughput          NOT QUALIFIED
+Production latency       NOT MEASURED
+Production capacity      NOT MEASURED
+Microstructure realism   NOT ESTABLISHED
+```
+
+The four lower lines are **not** caveats to be dropped when the top five pass.
+They are the scope of the claim.

@@ -139,6 +139,60 @@ already cost this project months.
    observe what moves it. Do that *before* it enters a statistic, not after the
    statistic looks surprising.
 
+9. **Fixtures are executable claims about external reality.** Any fixture
+   representing venue behaviour must be traceable to **captured wire evidence or
+   official protocol semantics**. A fixture that cannot identify its empirical
+   basis is **synthetic test data, not venue truth**.
+
+   Earned: 368 green tests were built on CP3 fixtures that put every channel on
+   **one shared `sid`**. The venue does not — it assigns sid 1 =
+   `orderbook_delta`, sid 2 = `ticker`, sid 3 = `trade`. Every test built on
+   those fixtures was internally consistent and wrong, and the suite certified
+   the wrong behaviour rather than failing. This is the most dangerous form of
+   the repo's recurring failure class, because fixtures are what everything else
+   is checked against.
+
+   **Critical protocol fixtures must carry provenance:**
+   `capture_id` · `timestamp` · `venue` · `channel` ·
+   `sanitized raw frame hash` · `schema version`.
+   That is also the drift detector — it is how we notice the live venue moving
+   away from the world our tests certify.
+
+   **Sequence is a property of stream identity, not of the market.** The domain
+   is `(connection/session, subscription generation, sid)`, and within a
+   sequenced sid `seq_{n+1} = seq_n + 1` unless documented venue behaviour says
+   otherwise. Assuming `seq = f(market)` is what produced 219 false faults on a
+   stream that ran 1..219 perfectly clean.
+
+10. **Never encode epistemic absence as a numerical market state.**
+    `None → 0` is dangerous anywhere the zero has economic meaning.
+
+    | | means |
+    |---|---|
+    | `depth = 0` | the venue said the book is empty |
+    | `depth = unknown` | the venue said nothing |
+
+    Collapsing those fabricates market state. The concrete case: an **omitted**
+    snapshot ladder was normalized as `present` with zero levels, making "the
+    venue said nothing" and "the venue said empty" one record — which would have
+    corrupted spread, depth imbalance, OFI, microprice, resilience and
+    liquidity-regime labels, and every model built on them.
+
+    Absence must be **structurally** representable, not remembered by
+    convention: `LadderState = NOT_PROVIDED | EMPTY | PRESENT(levels)`.
+
+    **Every source carries a data-quality capability, and features inherit it:**
+
+    | source | ordering | gap detection | completeness claim |
+    |---|---|---|---|
+    | `orderbook` | sequenced | yes | measurable |
+    | `trade` | sequenced (own sid) | yes | measurable |
+    | `ticker` | **unsequenced** | **no** | **unknown** |
+
+    Ticker data is not unusable — but it must **never be silently described as
+    lossless**. A feature like `rolling_ticker_volume_30s` must inherit "no
+    sequence-based loss detection" from its source.
+
 ## Parallel-agent composition (binding)
 
 > **Every parallel-agent milestone with a shared runtime path must have an
