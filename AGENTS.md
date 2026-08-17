@@ -118,6 +118,27 @@ already cost this project months.
 
    **A missing measurement is not zero. A disconnected metric is not healthy.**
 
+8. **A field name is not evidence of its semantics. Before using any venue field
+   as an experimental variable, empirically verify what causes it to change.**
+
+   The concrete case: the tape-manifest tool gated market freshness on Kalshi's
+   `updated_time` and reported that **73,057 of 73,630 markets were stale**.
+   Precise, dramatic, reproducible — and **wrong**. `updated_time` is a market
+   *definition* timestamp. Ten markets re-read 180 s apart moved it **0/10**
+   while lifetime volume moved **10/10** and top-of-book moved **10/10**; the
+   "stale" markets were trading hundreds of thousands of contracts per minute.
+
+   The failure was not noise. Noise is obvious. This was a confident false
+   finding produced by assuming a field meant what its name suggested.
+
+   **Apply this before any of these becomes an experimental variable:**
+   `timestamp` · `sequence` · `trade side` · `size` · `volume` ·
+   `open interest` · `book update` · `market status` · `liquidity`.
+
+   The verification is cheap: re-read the field across a known interval and
+   observe what moves it. Do that *before* it enters a statistic, not after the
+   statistic looks surprising.
+
 ## Parallel-agent composition (binding)
 
 > **Every parallel-agent milestone with a shared runtime path must have an
