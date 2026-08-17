@@ -279,7 +279,16 @@ def live_flat_state(session: dict) -> dict:
 
 def compare_state(live: dict, out: dict) -> dict:
     """Every market, both directions. A market present on one side only is a
-    difference, not a skip."""
+    difference, not a skip.
+
+    Subscription statistics are compared only on the sids `archive.replay()`
+    actually reconstructs — it returns early on every non-orderbook event type,
+    so it never builds a router for the `trade` or `ticker` sid. That is a scope
+    limitation of the replay FUNCTION and it is reported as one
+    (`subscription_stats_live_only`), not absorbed into the market comparison
+    and not silently dropped. What the TAPE can support for those sids is
+    established separately by `subscription_findings_from_tape`.
+    """
     tickers = sorted(set(live["checksums"]) | set(out["checksums"]))
     differences = []
     for t in tickers:
@@ -290,8 +299,9 @@ def compare_state(live: dict, out: dict) -> dict:
             differences.append({"market_ticker": t,
                                 "live": {"checksum": lc, "publishable": lp, "stats": ls},
                                 "replay": {"checksum": rc, "publishable": rp, "stats": rs}})
+    shared = sorted(set(live["subscription_stats"]) & set(out["subscription_stats"]))
     sub_diff = []
-    for sid in sorted(set(live["subscription_stats"]) | set(out["subscription_stats"])):
+    for sid in shared:
         a = live["subscription_stats"].get(sid)
         b = out["subscription_stats"].get(sid)
         if _canon(a) != _canon(b):
@@ -301,8 +311,67 @@ def compare_state(live: dict, out: dict) -> dict:
         "markets_replay": len(out["checksums"]),
         "markets_compared": len(tickers),
         "differences": differences,
+        "subscription_sids_compared": shared,
+        "subscription_stats_live_only": sorted(
+            set(live["subscription_stats"]) - set(out["subscription_stats"])),
+        "subscription_stats_replay_only": sorted(
+            set(out["subscription_stats"]) - set(live["subscription_stats"])),
         "subscription_stat_differences": sub_diff,
         "equal": not differences and not sub_diff,
+    }
+
+
+def subscription_findings_from_tape(records) -> dict:
+    """Re-derive EVERY sid's ordering findings from the tape.
+
+    `archive.replay()` reconstructs books, so it visits orderbook records only.
+    The live lane does more than that: it runs `SubscriptionRouter.dispatch`
+    over every frame on every sid, which is why a `trade` gap is a live finding
+    at all. This function closes that hole for the purpose of the conservation
+    proof — same objects, same code, different medium — so the question "can
+    the tape support the findings the live lane made?" is answered by
+    measurement rather than by assumption.
+
+    It is deliberately NOT a patch to `app/`. This milestone qualifies the
+    collector; changing the replay function mid-qualification would mean
+    qualifying something other than what shipped.
+
+    Each subscription is seeded with the generation stamped on the FIRST record
+    for its sid, exactly as `_Session._router_for` seeds it with the epoch
+    current when the sid was first seen. Seeding at 1 instead would manufacture
+    a `generation_advances` the collector never made.
+    """
+    from app.realtime.book import (
+        SubscriptionError,
+        SubscriptionRouter,
+        SubscriptionState,
+        subscription_generation_of,
+    )
+
+    routers: dict = {}
+    faults = 0
+    for r in records:
+        sid = r.get("sid")
+        if not isinstance(sid, int) or isinstance(sid, bool):
+            continue
+        router = routers.get(sid)
+        if router is None:
+            seed = subscription_generation_of(r)
+            seed = seed if isinstance(seed, int) and seed >= 1 else 1
+            router = routers[sid] = SubscriptionRouter(
+                SubscriptionState(sid, generation=seed))
+        try:
+            router.dispatch(r)
+        except SubscriptionError:
+            faults += 1
+        except Exception:                      # noqa: BLE001 - book-level refusal
+            faults += 1
+    return {
+        "faults": faults,
+        "subscription_stats": {str(sid): dict(r.subscription.stats)
+                               for sid, r in sorted(routers.items())},
+        "carries_orderbook": {str(sid): r.subscription.carries_orderbook
+                              for sid, r in sorted(routers.items())},
     }
 
 
@@ -449,6 +518,27 @@ def main() -> None:
     live = live_flat_state(session)
     equality = compare_state(live, out_a)
 
+    # The sids `archive.replay()` never builds a router for, re-derived from the
+    # tape with the same objects the live lane used.
+    tape_findings = subscription_findings_from_tape(records)
+    live_sub = live["subscription_stats"]
+    tape_sub = tape_findings["subscription_stats"]
+    sub_recon_diff = []
+    for sid in sorted(set(live_sub) | set(tape_sub)):
+        if _canon(live_sub.get(sid)) != _canon(tape_sub.get(sid)):
+            sub_recon_diff.append({"sid": sid, "live": live_sub.get(sid),
+                                   "from_tape": tape_sub.get(sid)})
+    findings_reconstructible = {
+        "live_sids": sorted(live_sub),
+        "tape_sids": sorted(tape_sub),
+        "replay_function_sids": sorted(out_a["subscription_stats"]),
+        "sids_the_shipped_replay_omits": sorted(set(tape_sub)
+                                                - set(out_a["subscription_stats"])),
+        "carries_orderbook_from_tape": tape_findings["carries_orderbook"],
+        "differences": sub_recon_diff,
+        "conserved": not sub_recon_diff and bool(tape_sub),
+    }
+
     bad_records, corruption = corrupt_one_delta(records)
     out_bad = replay(bad_records)
     equality_control = compare_state(live, out_bad)
@@ -475,6 +565,7 @@ def main() -> None:
         },
         "replay_deterministic_across_two_runs": deterministic,
         "state_equality": equality,
+        "subscription_findings_reconstructible_from_tape": findings_reconstructible,
         "state_equality_negative_control": {
             "corruption": corruption,
             "still_equal_under_corruption": equality_control["equal"],
@@ -515,6 +606,8 @@ def main() -> None:
             "control_detected_the_corruption"],
         "generation_conservation": gens["conserved"],
         "per_sid_findings_conserved": all(s["agrees"] for s in sid_findings),
+        "subscription_findings_reconstructible_from_tape":
+            findings_reconstructible["conserved"],
         "replay_deterministic": deterministic,
         "state_equality": equality["equal"],
         "state_equality_negative_control": verdict[
