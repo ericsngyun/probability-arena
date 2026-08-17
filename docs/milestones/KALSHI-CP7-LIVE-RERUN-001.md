@@ -258,8 +258,8 @@ else, all inside `kalshi.ALLOWED_CHANNELS` and refused at `CollectorConfig`
 construction otherwise. **No order, position, portfolio, wallet or
 key-management surface was reached**, and no private channel was subscribed. No
 key material was printed: the credential audit records a key-id fingerprint and
-nothing else. The universe freeze used one **unauthenticated** public REST
-route.
+nothing else. The universe freeze touched no socket at all: it used the
+**unauthenticated** public `GET /markets` route, queried once per test series.
 
 EVO: the throwaway clone was deleted, every process was killed, and the
 production checkout was verified clean at `6af41ca` on `main` afterwards. The
