@@ -37,7 +37,8 @@ interval, on the interval's method, or on any judgement about how conservative
 to be. Nothing in the frozen rule was adjusted.
 
 **This is a finding about DEMO, not a probe failure**, and it is not a finding
-about production (§9).
+about production (§7.5). It reshapes the CP6–CP9 qualification design; §10 sets
+out the options it leaves open, without picking one.
 
 ---
 
@@ -188,11 +189,13 @@ blocks, 20,000 draws, one-sided 5th percentile, seed 20260817.
 
 Two dependencies made the obvious alternative wrong, and the preregistration
 names both. **Per-market rates are not independent within an event** — the pool
-holds two markets from the same PGA tournament, and a single simulated market
-maker would move the whole plateau together — so summing independent per-market
-Poisson intervals would understate the variance of the sum by whatever the
-cross-market correlation is. And **frames are serially dependent**: the observed
-bins are not i.i.d., they arrive in bursts of exactly 20. So nothing is ever
+holds three markets from the same PGA tournament (`FESJC26`, across the
+`KXPGATOUR`, `KXPGATOP20` and `KXPGATOP10` series), and a single simulated
+market maker would move the whole plateau together — so summing independent
+per-market Poisson intervals would understate the variance of the sum by
+whatever the cross-market correlation is. And **frames are serially
+dependent**: the bins are visibly not i.i.d., alternating between long runs of
+zero and bursts that land on exactly 20. So nothing is ever
 combined across markets: the resampling unit is the bin total, already summed
 across the pool, which carries the cross-market dependence without modelling
 it; and contiguous blocks of bins are resampled rather than single bins, which
@@ -203,7 +206,8 @@ variability *within* the observed window. It cannot bound variation *between* a
 short window and a four-hour session. See §7 for what that leaves open.
 
 To clear the floor, this pool would need **6.94 frames/s sustained for four
-hours**. It produced 0.75, and 91.7% of that came from one market.
+hours**. It produced 0.75, and **97.9% of that came from one market**
+(λ̂ = 0.7378 of Σλ̂ = 0.7533).
 
 ---
 
@@ -220,7 +224,8 @@ statistic.
 
 | | |
 |---|---:|
-| frames | **68,370** |
+| frames received in 299.72 s | **68,370** |
+| frames in the 295 s of complete bins (continuous arm) | 66,380 |
 | Σλ̂ | **225.0 frames/s** |
 | **N_4h** | **3,240,244** (lower bound 3,123,792) |
 | verdict the *same* estimator returns | **REACHABLE** |
@@ -260,7 +265,7 @@ Three things follow, and they agree exactly with the socket.
    nine minutes. That is why there were zero `trade` frames.
 2. **The one market whose book moved is the one market that sent frames.**
    `yes_bid_size_fp` and `yes_ask_size_fp` moved on exactly one market:
-   `KXECONSTATCPIYOY-26AUG-T3.6`, the market that produced 664 of the 679
+   `KXECONSTATCPIYOY-26AUG-T3.6`, the market that produced 665 of the 679
    frames. Two entirely independent routes, one market, same answer.
 3. **All ten `volume_24h_fp` moves are DECREASES.** Roll-off out of the trailing
    window, with nothing arriving to replace it — an independent replication of
@@ -324,10 +329,13 @@ the venue are incompatible as currently written.
    frozen from a snapshot taken 2026-08-16T04:01Z and probed 2026-08-17T05:51Z.
    The manifest itself flagged (§6.5) that three of the four high-activity
    markets are event-driven and might not stay active;
-   `KXLIGAMXGAME-26AUG16SLACDG` is a 16 August fixture and was certainly over.
-   That confound is real and cannot be separated from episodic flow by this
-   design. It does not change the verdict, because the 388-market universe
-   probed *at the same instant as the measurement* also falls short.
+   `KXLIGAMXGAME-26AUG16SLACDG` is a 16 August fixture and had almost certainly
+   concluded (its `status` was not re-read for a value, only for a change, and
+   it did not change). That confound is real and cannot be separated from
+   episodic flow by this design. It does not change the verdict, because the
+   388-market universe — probed nineteen minutes after the primary run, from a
+   list that includes every market the manifest found eligible — also falls
+   short.
 3. **The rejection rate.** Dry-run cannot observe `events_rejected` (§1.4), so
    the archived count is bounded above but not below.
 4. **Whether DEMO's flow is simulated.** Still inference from shape, though the
