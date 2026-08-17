@@ -124,6 +124,37 @@ CP7's `test_each_market_regains_publishability_only_on_its_OWN_new_snapshot` was
 a `strict` xfail; it now passes and the marker is removed, with the history kept
 in its docstring as the anti-vacuity record.
 
+## Suite state, and the attribution of every failure
+
+`pytest -q -p no:randomly`, loaded host (load average 7–18 throughout):
+**5,171 passed, 17 failed, 6 skipped, 4 xfailed** in 18 m 10 s, against the
+recorded **5,148 / 13 / 6 / 5** baseline. `xfailed` drops by one because CP7's
+strict xfail is now a pass.
+
+* **16 of the 17 are the known wall-clock/staleness class**, in the files that
+  class already owns (`test_live_market_001`, `test_marketops`,
+  `test_crypto_horizon_obs_*`, `test_crypto_coverage_001`, `test_ops009`,
+  `test_tennis_*`). Three checks, as the CP9 report requires: **all 16 pass in
+  isolation** (43 tests, 7 s, green); **none of those files imports
+  `app.realtime`** at all, and this branch changes nothing outside
+  `app/realtime/`; and the 55 test files that DO import `app.realtime` were run
+  together — **1,667 passed, 0 failed** apart from the one below.
+* **1 of the 17 is mine, and is fixed.** `tests/meta_inventory/inventory.json`
+  is a committed call-graph audit artifact and its drift test failed —
+  correctly, because `replay()` now calls `publication_states()` instead of
+  `publishable_books()`. Attributed by measurement rather than assumption: the
+  base commit passes that test on this host and this branch failed it.
+  Regenerated with `tests/meta_inventory/call_graph.py`; the entire diff is
+  four lines (the renamed call, `<expr>.to_dict(...)`, `states.items(...)`).
+  **Reviewed, not merely regenerated:** no new filesystem, mutation, hashing or
+  queue primitive becomes reachable from any canonical entry point, so the
+  audit's reachability surface changed in name only — and the guard is still
+  armed, since appending one fabricated function to the artifact turns it red.
+
+Safety grep (`AGENTS.md`) over `app/`: unchanged — every hit is a pre-existing
+boundary statement in a docstring or an `app/canon.py` declaration, and this
+branch adds none.
+
 ## What this does and does not clear
 
 `MARKET-MICROSTRUCTURE-EDGE-001`'s blocker is removed **for the reconstruction
