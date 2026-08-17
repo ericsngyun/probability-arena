@@ -256,7 +256,30 @@ guards, which is precisely what they are for.
 | an explicitly empty ladder | `present` | not conflated with absent |
 | a silent session | ends at `max_seconds` | the test is wrapped in an outer `asyncio` timeout, so a regression **fails** instead of hanging the suite |
 
-### 5.1 The live control
+### 5.1 Suite state, and the attribution of every failure
+
+`pytest -q -p no:randomly`, this host: **5,132 passed, 7 failed, 6 skipped,
+4 xfailed** in 12 m 49 s. The kalshi subset alone (`-k kalshi`) is **1,654
+passed, 0 failed**.
+
+The seven are the known wall-clock/staleness flake class and none of them is
+attributable to this change. Three independent checks:
+
+1. **All seven pass in isolation** — 11 tests, 5.5 s, green.
+2. **The visible assertion is a duration bound blown by suite length**:
+   `assert 120 <= 943.1 <= 900` on `market_quote_age_s`, from a fixture seeded
+   three minutes before module import in a run that took 12 m 49 s.
+3. **None of the four files imports either changed module.** The only
+   `realtime` occurrence across them is the `enable_realtime_watcher` settings
+   flag in `test_marketops.py`; nothing reaches `app.realtime.book` or
+   `app.realtime.collector`.
+
+They are all the same family — `source_backed`, `stale_provider_warning`,
+`market_freshness_measured`, `market_quote_age_s` — which is exactly the
+rotating-member behaviour already recorded for
+`test_live_market_001::TestEndToEnd` under load.
+
+### 5.2 The live control
 
 The same instruments, channels and duration, once with the shipped collector and
 once with the fixed one:
