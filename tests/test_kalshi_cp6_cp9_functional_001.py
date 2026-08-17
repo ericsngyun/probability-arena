@@ -449,38 +449,36 @@ class TestForcedSocketTeardown:
                 if c["to"] is False and entry["subscription_epoch"] >= 1]
         assert lost, "no book was ever unpublished at the boundary"
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=("CP7 defect, measured 2026-08-17: publishability is regained "
-                "on a SIBLING market's snapshot because `publishable_books()` "
-                "ANDs the per-book flag with a SUBSCRIPTION-level `healthy`. "
-                "Fixed by generation-aware publishability "
-                "(KALSHI-REPLAY-GENERATION-CONSISTENCY-001); when it lands "
-                "this XPASSes, the strict marker fails the suite, and the CP9 "
-                "verdict must be revised."))
     def test_each_market_regains_publishability_only_on_its_OWN_new_snapshot(
             self, tmp_path):
-        """THE PREREGISTERED CP7 PROPERTY, asserted as required — and it fails.
+        """THE PREREGISTERED CP7 PROPERTY, asserted as required — and it now holds.
 
         The preregistration requires, independently for every market:
         `old book -> nonpublishable -> ITS OWN new snapshot -> publishable`,
         and states that no book may silently survive a generation boundary as
         if nothing happened.
 
-        It does not hold. `publishable_books()` is
+        **History, kept because it is the anti-vacuity evidence.** Until
+        KALSHI-REPLAY-GENERATION-CONSISTENCY-001 this test was a `strict`
+        xfail, and it failed on the live venue for 59 of 60 markets at both
+        forced boundaries. `publishable_books()` was
         `book.publishable AND subscription.healthy`, and `healthy` is a
-        SUBSCRIPTION-level flag that the first snapshot of the new generation
-        sets for the whole subscription. `begin_subscription_generation()`
-        deliberately rebases each book without unpublishing it, so a book that
-        has NOT been re-snapshotted still carries `synced=True` and no
-        integrity reason from the previous epoch — and the moment a sibling
-        market's snapshot arrives, it is republished with generation-N-1
-        content as though it were current.
+        SUBSCRIPTION-level flag that the first snapshot of a new generation set
+        for the whole subscription, while `begin_subscription_generation()`
+        rebased each book without taking it out of publishable state. So the
+        moment ONE market re-snapshotted, all sixty were republished carrying
+        ladders from the epoch the venue had just abandoned.
 
-        The stream below makes that unambiguous: after the boundary only M1 is
-        re-snapshotted, and M2 is asserted to have received exactly one
-        snapshot in its whole life. M2 nevertheless comes back publishable, so
-        its ladder is pre-boundary state being served as current.
+        The fix makes publishability a property of the market: a book is
+        publishable only while `based_generation == subscription_generation`,
+        i.e. only after its OWN snapshot for the current epoch. Reverting it
+        turns this assertion red again — that is the anti-vacuity check, and it
+        is exercised directly in
+        `tests/test_kalshi_replay_generation_consistency_001.py`.
+
+        The stream below makes the property unambiguous: after the boundary
+        only M1 is re-snapshotted, and M2 is asserted to have received exactly
+        one snapshot in its whole life.
         """
         init_archive(tmp_path)
         gen1 = list(subscribed_acks()) + [
@@ -511,6 +509,10 @@ class TestForcedSocketTeardown:
         assert books[M2]["publishable"] is False, (
             "M2 was republished across a generation boundary on one lifetime "
             "snapshot — its ladder is pre-boundary state served as current")
+        # ...and the market that DID re-snapshot is publishable, so the
+        # assertion above is not passing because everything went dark.
+        assert books[M1]["publishable"] is True
+        assert books[M1]["stats"]["snapshots"] == 2
 
 
 class TestForcedSequenceGap:

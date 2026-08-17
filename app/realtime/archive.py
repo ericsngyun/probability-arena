@@ -1197,9 +1197,15 @@ def replay(records, *, grid=None) -> dict:
 
     books = {t: b for router in routers.values()
              for t, b in router.books.items()}
-    publishable = {}
+    # TYPED, not a bare boolean. `publishable=False` has three causes — a
+    # halted book, a market awaiting its own snapshot for the current
+    # subscription generation, and an unbased subscription — and a
+    # microstructure consumer needs them apart: only the first means something
+    # is wrong (KALSHI-REPLAY-GENERATION-CONSISTENCY-001).
+    states = {}
     for router in routers.values():
-        publishable.update(router.publishable_books())
+        states.update(router.publication_states())
+    publishable = {t: s.publishable for t, s in states.items()}
     return {
         "markets": len(books), "subscriptions": len(routers),
         "events_applied": applied, "events_rejected": rejected, "faults": faults,
@@ -1208,6 +1214,12 @@ def replay(records, *, grid=None) -> dict:
         "checksums": {t: (books[t].checksum() if publishable.get(t) else None)
                       for t in sorted(books)},
         "publishable": {t: publishable.get(t, False) for t in sorted(books)},
+        "publication_states": {
+            t: (states[t].to_dict() if t in states else
+                {"publishable": False, "state": "unknown", "reason":
+                 "no publication state was produced for this market",
+                 "subscription_generation": None, "based_generation": None})
+            for t in sorted(books)},
         "stats": {t: dict(books[t].stats) for t in sorted(books)},
         "subscription_stats": {
             str(sid): dict(r.subscription.stats) for sid, r in sorted(
