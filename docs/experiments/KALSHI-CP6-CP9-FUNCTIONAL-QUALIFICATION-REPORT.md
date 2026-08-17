@@ -413,11 +413,15 @@ recorded here in full.
 
 **(a) `SubscriptionState.stats["recoveries"]` is not derivable from the tape.**
 
-| session | sid | live | from tape | every other field |
-|---|---:|---:|---:|---|
-| `s2-reconnect` | 1 | 2 | 0 | identical |
-| `s2-reconnect` | 3 | 2 | 0 | identical |
-| `s3-drop` | 1 | **14** | **0** | identical |
+| session | sid | channel | live | from tape | every other field |
+|---|---:|---|---:|---:|---|
+| `s2-reconnect` | 1 | `orderbook_delta` | 2 | 0 | identical |
+| `s2-reconnect` | 2 | `ticker` | 2 | 0 | see (b) — `generation_advances` also differs |
+| `s2-reconnect` | 3 | `trade` | 2 | 0 | identical |
+| `s3-drop` | 1 | `orderbook_delta` | **14** | **0** | identical |
+
+Those four rows are the complete set of differences the checker found across
+all three sessions — `s1-observe` had none.
 
 `recoveries` counts a **collector action** — `begin_recovery()`, called when the
 collector decides to resynchronise or when `supersede()` runs on a resubscribe.

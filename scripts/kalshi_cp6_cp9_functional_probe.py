@@ -66,11 +66,7 @@ from kalshi_collector_p0_wire_probe import (  # noqa: E402
     prove_read_only,
 )
 
-from app.realtime.collector import (  # noqa: E402
-    CollectorConfig,
-    _Session,
-    normalize_frame,
-)
+from app.realtime.collector import CollectorConfig, _Session  # noqa: E402
 from app.realtime.collector_metrics import CollectorMetrics  # noqa: E402
 from app.realtime.ws_transport import (  # noqa: E402
     KalshiWebsocketTransport,
@@ -534,9 +530,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-
-# `normalize_frame` is imported so the conservation checker and this module
-# cannot drift onto two different normalizers; it is exercised by the checker,
-# not here.
-_ = normalize_frame
