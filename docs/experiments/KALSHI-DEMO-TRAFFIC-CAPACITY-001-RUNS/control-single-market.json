@@ -1,0 +1,302 @@
+{
+  "bins": [
+    {
+      "bin": 0,
+      "bin_start_seconds": 0.0,
+      "by_ticker": {
+        "KXMLB-26-TEX": 1,
+        "__no_market_ticker__": 3
+      },
+      "by_type": {
+        "orderbook_snapshot": 1,
+        "subscribed": 3
+      },
+      "complete": true,
+      "total": 4
+    },
+    {
+      "bin": 1,
+      "bin_start_seconds": 5.0,
+      "by_ticker": {},
+      "by_type": {},
+      "complete": true,
+      "total": 0
+    },
+    {
+      "bin": 2,
+      "bin_start_seconds": 10.0,
+      "by_ticker": {},
+      "by_type": {},
+      "complete": true,
+      "total": 0
+    },
+    {
+      "bin": 3,
+      "bin_start_seconds": 15.0,
+      "by_ticker": {},
+      "by_type": {},
+      "complete": true,
+      "total": 0
+    },
+    {
+      "bin": 4,
+      "bin_start_seconds": 20.0,
+      "by_ticker": {},
+      "by_type": {},
+      "complete": true,
+      "total": 0
+    },
+    {
+      "bin": 5,
+      "bin_start_seconds": 25.0,
+      "by_ticker": {},
+      "by_type": {},
+      "complete": true,
+      "total": 0
+    },
+    {
+      "bin": 6,
+      "bin_start_seconds": 30.0,
+      "by_ticker": {},
+      "by_type": {},
+      "complete": true,
+      "total": 0
+    },
+    {
+      "bin": 7,
+      "bin_start_seconds": 35.0,
+      "by_ticker": {},
+      "by_type": {},
+      "complete": true,
+      "total": 0
+    },
+    {
+      "bin": 8,
+      "bin_start_seconds": 40.0,
+      "by_ticker": {},
+      "by_type": {},
+      "complete": true,
+      "total": 0
+    },
+    {
+      "bin": 9,
+      "bin_start_seconds": 45.0,
+      "by_ticker": {},
+      "by_type": {},
+      "complete": true,
+      "total": 0
+    },
+    {
+      "bin": 10,
+      "bin_start_seconds": 50.0,
+      "by_ticker": {},
+      "by_type": {},
+      "complete": true,
+      "total": 0
+    },
+    {
+      "bin": 11,
+      "bin_start_seconds": 55.0,
+      "by_ticker": {},
+      "by_type": {},
+      "complete": true,
+      "total": 0
+    },
+    {
+      "bin": 12,
+      "bin_start_seconds": 60.0,
+      "by_ticker": {
+        "__no_market_ticker__": 1
+      },
+      "by_type": {
+        "subscribed": 1
+      },
+      "complete": false,
+      "total": 1
+    }
+  ],
+  "config": {
+    "bin_seconds": 5.0,
+    "channels": [
+      "orderbook_delta",
+      "ticker",
+      "trade"
+    ],
+    "dry_run": true,
+    "market_tickers": [
+      "KXMLB-26-TEX"
+    ],
+    "max_events": 5000000,
+    "max_seconds": 60,
+    "validate_sequence": true
+  },
+  "credential_audit": {
+    "detail": "verified against GET /trade-api/v2/api_keys",
+    "environment": "demo",
+    "key_id_fingerprint": "sha256:355d3cd2c0177448",
+    "proven_read_only": true,
+    "scopes": [
+      "read"
+    ],
+    "verified_at": "2026-08-17T05:48:40.557210+00:00"
+  },
+  "environment": "demo",
+  "finished_at": "2026-08-17T05:49:41.658388+00:00",
+  "frame_shapes_observed": [
+    {
+      "market_ticker": null,
+      "msg_keys": [
+        "channel",
+        "sid"
+      ],
+      "ordinal": 1,
+      "seconds_since_first_frame": 0.0,
+      "top_level_keys": [
+        "id",
+        "msg",
+        "type"
+      ],
+      "type": "subscribed"
+    },
+    {
+      "market_ticker": null,
+      "msg_keys": [
+        "channel",
+        "sid"
+      ],
+      "ordinal": 2,
+      "seconds_since_first_frame": 0.0002,
+      "top_level_keys": [
+        "id",
+        "msg",
+        "type"
+      ],
+      "type": "subscribed"
+    },
+    {
+      "market_ticker": null,
+      "msg_keys": [
+        "channel",
+        "sid"
+      ],
+      "ordinal": 3,
+      "seconds_since_first_frame": 0.0003,
+      "top_level_keys": [
+        "id",
+        "msg",
+        "type"
+      ],
+      "type": "subscribed"
+    },
+    {
+      "market_ticker": "KXMLB-26-TEX",
+      "msg_keys": [
+        "market_id",
+        "market_ticker",
+        "no_dollars_fp",
+        "yes_dollars_fp"
+      ],
+      "ordinal": 4,
+      "seconds_since_first_frame": 0.0005,
+      "top_level_keys": [
+        "msg",
+        "seq",
+        "sid",
+        "type"
+      ],
+      "type": "orderbook_snapshot"
+    },
+    {
+      "market_ticker": null,
+      "msg_keys": [
+        "channel",
+        "sid"
+      ],
+      "ordinal": 5,
+      "seconds_since_first_frame": 60.6536,
+      "top_level_keys": [
+        "id",
+        "msg",
+        "type"
+      ],
+      "type": "subscribed"
+    }
+  ],
+  "milestone": "KALSHI-DEMO-TRAFFIC-CAPACITY-001",
+  "not_cp6": "borrows CP6's dry-run mechanism; archives nothing and claims no checkpoint",
+  "recorder": {
+    "by_ticker": {
+      "KXMLB-26-TEX": 1,
+      "__no_market_ticker__": 4
+    },
+    "by_type": {
+      "orderbook_snapshot": 1,
+      "subscribed": 4
+    },
+    "connections": 2,
+    "first_frame_at": "2026-08-17T05:48:40.965856+00:00",
+    "frames_not_a_dict": 0,
+    "frames_tapped": 5,
+    "span_seconds": 60.6536
+  },
+  "run_label": "control-single-market-rank1",
+  "session_result": {
+    "archive_root": null,
+    "boundary_note": "OBSERVE_ONLY: authenticated read-only Kalshi market-data observation. The session sends channel subscriptions only, over a closed allowlist ('orderbook_delta', 'ticker', 'trade', 'market_lifecycle_v2'); no order, position, wallet, key-management or write-scoped surface exists in this package. Evidence is appended to a filesystem archive; no database session is opened.",
+    "channels": [
+      "orderbook_delta",
+      "ticker",
+      "trade"
+    ],
+    "detail": "max_seconds=60 reached",
+    "dry_run": true,
+    "duration_ms": 61067,
+    "environment": "demo",
+    "events_archived": 0,
+    "events_received": 5,
+    "events_rejected": 0,
+    "finished_at": "2026-08-17T05:49:41.657030Z",
+    "frames_malformed": 0,
+    "markets_subscribed": 1,
+    "measurement_path": null,
+    "metrics_errors": 0,
+    "reconnects": 1,
+    "recoveries_requested": 0,
+    "rejection_reasons": [],
+    "rotation_failures": 0,
+    "segments_committed": 0,
+    "sequence_faults": 0,
+    "started_at": "2026-08-17T05:48:40.589573Z",
+    "status": "capped_time",
+    "subscription_generations": 2
+  },
+  "started_at": "2026-08-17T05:48:40.589288+00:00",
+  "wire_counters_per_connection": [
+    {
+      "bytes_received": 4484,
+      "closes": 1,
+      "commands_refused": 0,
+      "commands_sent": 1,
+      "connects": 1,
+      "frames_malformed": 0,
+      "frames_oversize": 0,
+      "frames_received": 4,
+      "frames_yielded": 4,
+      "read_timeouts": 1,
+      "reader_stall_ms_max": 37
+    },
+    {
+      "bytes_received": 73,
+      "closes": 1,
+      "commands_refused": 0,
+      "commands_sent": 1,
+      "connects": 1,
+      "frames_malformed": 0,
+      "frames_oversize": 0,
+      "frames_received": 1,
+      "frames_yielded": 1,
+      "read_timeouts": 0,
+      "reader_stall_ms_max": 39
+    }
+  ]
+}

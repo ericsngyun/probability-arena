@@ -1,0 +1,2024 @@
+{
+  "bins": [
+    {
+      "bin": 0,
+      "bin_start_seconds": 0.0,
+      "by_ticker": {
+        "KXBOXING-26AUG15SHIELDSCOTT-SHIELD": 1,
+        "KXECONSTATCPIYOY-26AUG-T3.6": 1,
+        "KXFEDDECISION-26SEP-C25": 4,
+        "KXGOVFLNOMR-26-JFIS": 1,
+        "KXHEISMAN-27-CCARR": 1,
+        "KXHEISMAN-27-DMOOR": 1,
+        "KXHEISMAN-27-GSTOC": 1,
+        "KXHEISMAN-27-JHOOV": 1,
+        "KXHEISMAN-27-JMAIA": 1,
+        "KXHEISMAN-27-JSAGA": 1,
+        "KXHEISMAN-27-JSAYI": 1,
+        "KXHEISMAN-27-JSMIT": 1,
+        "KXHEISMAN-27-MTONE": 1,
+        "KXHEISMAN-27-SLEA": 1,
+        "KXLIGAMXGAME-26AUG15ATLTIG-ATL": 1,
+        "KXLIGAMXGAME-26AUG16SLACDG-SLA": 1,
+        "KXMLB-26-BOS": 1,
+        "KXMLB-26-CHC": 1,
+        "KXMLB-26-CLE": 1,
+        "KXMLB-26-HOU": 1,
+        "KXMLB-26-LAA": 1,
+        "KXMLB-26-LAD": 1,
+        "KXMLB-26-MIL": 1,
+        "KXMLB-26-PHI": 1,
+        "KXMLB-26-PIT": 1,
+        "KXMLB-26-SF": 1,
+        "KXMLB-26-STL": 1,
+        "KXMLB-26-TEX": 1,
+        "KXMLB-26-TOR": 1,
+        "KXMLB-26-WSH": 1,
+        "KXNASCARRACE-COOO81526-AUCI": 1,
+        "KXNASCARRACE-COOO81526-AUDI": 1,
+        "KXNASCARRACE-COOO81526-JOLO": 1,
+        "KXNASCARRACE-COOO81526-KYLA": 1,
+        "KXNASCARRACE-COOO81526-ROCH": 1,
+        "KXNASCARRACE-COOO81526-RYBL": 1,
+        "KXNASCARRACE-COOO81526-TYRE": 1,
+        "KXNASCARRACE-COOO81526-WIBY": 1,
+        "KXNBA-27-BOS": 1,
+        "KXNBA-27-GSW": 1,
+        "KXNBA-27-LAL": 1,
+        "KXNBA-27-MIA": 1,
+        "KXNBA-27-OKC": 1,
+        "KXNBA-27-PHI": 1,
+        "KXNBA-27-TOR": 1,
+        "KXNCAAF-27-ALA": 1,
+        "KXNCAAF-27-FLA": 1,
+        "KXNCAAF-27-IND": 1,
+        "KXNCAAF-27-LSU": 1,
+        "KXNCAAF-27-MISS": 1,
+        "KXNCAAF-27-ORE": 1,
+        "KXNCAAF-27-USC": 1,
+        "KXPGATOP10-FESJC26-APOT": 1,
+        "KXPGATOP10-FESJC26-ASMA": 1,
+        "KXPGATOP10-FESJC26-BCAU": 1,
+        "KXPGATOP10-FESJC26-CAME": 1,
+        "KXPGATOP10-FESJC26-CCON": 1,
+        "KXPGATOP10-FESJC26-JKOI": 1,
+        "KXPGATOP10-FESJC26-JSPA": 1,
+        "KXPGATOP10-FESJC26-KREI": 1,
+        "KXPGATOP10-FESJC26-MBRE": 1,
+        "KXPGATOP10-FESJC26-MFIT": 1,
+        "KXPGATOP10-FESJC26-MHOM": 1,
+        "KXPGATOP10-FESJC26-NECH": 1,
+        "KXPGATOP10-FESJC26-NHOJ": 1,
+        "KXPGATOP10-FESJC26-PCAN": 1,
+        "KXPGATOP10-FESJC26-PCOO": 1,
+        "KXPGATOP10-FESJC26-PROD": 1,
+        "KXPGATOP10-FESJC26-RFOW": 1,
+        "KXPGATOP10-FESJC26-RGER": 1,
+        "KXPGATOP10-FESJC26-RHEN": 1,
+        "KXPGATOP10-FESJC26-RHIS": 1,
+        "KXPGATOP10-FESJC26-RMCI": 1,
+        "KXPGATOP10-FESJC26-SBUR": 1,
+        "KXPGATOP10-FESJC26-SIM": 1,
+        "KXPGATOP10-FESJC26-SLOW": 1,
+        "KXPGATOP10-FESJC26-SSTE": 1,
+        "KXPGATOP10-FESJC26-SSTR": 1,
+        "KXPGATOP10-FESJC26-SYEL": 1,
+        "KXPGATOP10-FESJC26-TFLE": 1,
+        "KXPGATOP10-FESJC26-XSCH": 1,
+        "KXPGATOP20-FESJC26-APOT": 1,
+        "KXPGATOP20-FESJC26-BCAU": 1,
+        "KXPGATOP20-FESJC26-BGRI": 1,
+        "KXPGATOP20-FESJC26-CAME": 1,
+        "KXPGATOP20-FESJC26-CCON": 1,
+        "KXPGATOP20-FESJC26-CGOT": 1,
+        "KXPGATOP20-FESJC26-ECOL": 1,
+        "KXPGATOP20-FESJC26-GWOO": 1,
+        "KXPGATOP20-FESJC26-HENG": 1,
+        "KXPGATOP20-FESJC26-JKNA": 1,
+        "KXPGATOP20-FESJC26-JKOI": 1,
+        "KXPGATOP20-FESJC26-JROS": 1,
+        "KXPGATOP20-FESJC26-JSMI": 1,
+        "KXPGATOP20-FESJC26-KMIT": 1,
+        "KXPGATOP20-FESJC26-LABE": 1,
+        "KXPGATOP20-FESJC26-MBRE": 1,
+        "KXPGATOP20-FESJC26-MFIT": 1,
+        "KXPGATOP20-FESJC26-MLEE": 1,
+        "KXPGATOP20-FESJC26-MMCN": 1,
+        "KXPGATOP20-FESJC26-NHOJ": 1,
+        "KXPGATOP20-FESJC26-PCOO": 1,
+        "KXPGATOP20-FESJC26-RCAS": 1,
+        "KXPGATOP20-FESJC26-RHEN": 1,
+        "KXPGATOP20-FESJC26-RHIS": 1,
+        "KXPGATOP20-FESJC26-RMCI": 1,
+        "KXPGATOP20-FESJC26-SIM": 1,
+        "KXPGATOP20-FESJC26-SSTR": 1,
+        "KXPGATOP20-FESJC26-SYEL": 1,
+        "KXPGATOP20-FESJC26-WKIM": 1,
+        "KXPGATOUR-FESJC26-ABHA": 1,
+        "KXPGATOUR-FESJC26-ANOR": 1,
+        "KXPGATOUR-FESJC26-ARAI": 1,
+        "KXPGATOUR-FESJC26-ASCO": 1,
+        "KXPGATOUR-FESJC26-ASMA": 1,
+        "KXPGATOUR-FESJC26-BCAU": 1,
+        "KXPGATOUR-FESJC26-BGRI": 1,
+        "KXPGATOUR-FESJC26-CMOR": 1,
+        "KXPGATOUR-FESJC26-ECOL": 1,
+        "KXPGATOUR-FESJC26-GWOO": 1,
+        "KXPGATOUR-FESJC26-HENG": 1,
+        "KXPGATOUR-FESJC26-HHAL": 1,
+        "KXPGATOUR-FESJC26-HMAT": 1,
+        "KXPGATOUR-FESJC26-JBRI": 1,
+        "KXPGATOUR-FESJC26-JSPA": 1,
+        "KXPGATOUR-FESJC26-KKIT": 1,
+        "KXPGATOUR-FESJC26-KREI": 1,
+        "KXPGATOUR-FESJC26-MFIT": 1,
+        "KXPGATOUR-FESJC26-MLEE": 1,
+        "KXPGATOUR-FESJC26-MMCN": 1,
+        "KXPGATOUR-FESJC26-MSCH": 1,
+        "KXPGATOUR-FESJC26-NECH": 1,
+        "KXPGATOUR-FESJC26-NHJG": 1,
+        "KXPGATOUR-FESJC26-PCOO": 1,
+        "KXPGATOUR-FESJC26-RFOW": 1,
+        "KXPGATOUR-FESJC26-RGER": 1,
+        "KXPGATOUR-FESJC26-RHIS": 1,
+        "KXPGATOUR-FESJC26-RMCI": 1,
+        "KXPGATOUR-FESJC26-SBUR": 1,
+        "KXPGATOUR-FESJC26-SIM": 1,
+        "KXPGATOUR-FESJC26-SLOW": 1,
+        "KXPGATOUR-FESJC26-SSCH": 1,
+        "KXPGATOUR-FESJC26-SSTR": 1,
+        "KXPGATOUR-FESJC26-STHE": 1,
+        "KXPGATOUR-FESJC26-TFLE": 1,
+        "KXPGATOUR-FESJC26-TKIM": 1,
+        "KXPGATOUR-FESJC26-VHOV": 1,
+        "KXPGATOUR-FESJC26-WCLA": 1,
+        "KXPGATOUR-FESJC26-XSCH": 1,
+        "KXPRESNOMD-28-AELS": 1,
+        "KXPRESNOMD-28-CMUR": 1,
+        "KXPRESNOMD-28-JCRO": 1,
+        "KXPRESNOMR-28-BD": 1,
+        "KXPRESNOMR-28-BK": 1,
+        "KXPRESNOMR-28-DJTJR": 1,
+        "KXPRESNOMR-28-EM": 1,
+        "KXPRESNOMR-28-ES": 1,
+        "KXPRESNOMR-28-GA": 1,
+        "KXPRESNOMR-28-ITRU": 1,
+        "KXPRESNOMR-28-JDV": 1,
+        "KXPRESNOMR-28-MG": 1,
+        "KXPRESNOMR-28-MPEN": 1,
+        "KXPRESNOMR-28-MTG": 1,
+        "KXPRESNOMR-28-NMIN": 1,
+        "KXPRESNOMR-28-RPAU": 1,
+        "KXPRESNOMR-28-STE": 1,
+        "KXPRESNOMR-28-TC": 1,
+        "KXPRESNOMR-28-TCAR": 1,
+        "KXPRESNOMR-28-TG": 1,
+        "KXPRESNOMR-28-TMAS": 1,
+        "KXPRESNOMR-28-VR": 1,
+        "KXSB-27-BAL": 1,
+        "KXSB-27-CHI": 1,
+        "KXSB-27-DEN": 1,
+        "KXSB-27-DET": 1,
+        "KXSB-27-GB": 1,
+        "KXSB-27-HOU": 1,
+        "KXSB-27-JAC": 1,
+        "KXSB-27-KC": 1,
+        "KXSB-27-LAC": 1,
+        "KXSB-27-LAR": 1,
+        "KXSB-27-MIN": 1,
+        "KXSB-27-PIT": 1,
+        "KXSB-27-SF": 1,
+        "KXSB-27-TB": 1,
+        "KXSCRSENS-26-DNOR": 1,
+        "KXUFCFIGHT-26AUG15MAKMGI-MAK": 1,
+        "KXUFCFIGHT-26AUG15MAKMGI-MGI": 1,
+        "KXUFCMOV-26AUG15MAKMGI-MAKSUB": 1,
+        "KXUFCMOV-26AUG15MAKMGI-MGIKOTKODQ": 1,
+        "KXUFCMOV-26AUG15MAKMGI-MGISUB": 1,
+        "KXVOTEPRIMARY-GOVFLNOMR26JFIS-51": 1,
+        "KXVOTEPRIMARY-GOVFLNOMR26JFIS-52": 1,
+        "KXVOTEPRIMARY-GOVFLNOMR26JFIS-55": 1,
+        "KXVOTEPRIMARY-GOVFLNOMR26JFIS-65": 1,
+        "KXVOTEPRIMARY-GOVFLNOMR26JFISJFIS-13": 1,
+        "KXVOTEPRIMARY-GOVFLNOMR26JFISJFIS-14": 1,
+        "KXVOTEPRIMARY-GOVFLNOMR26JFISJFIS-57": 1,
+        "KXVOTEPRIMARY-GOVFLNOMR26JFISJFIS-6": 1,
+        "KXVOTEPRIMARY-GOVFLNOMR26JFISJFIS-8": 1,
+        "__no_market_ticker__": 4
+      },
+      "by_type": {
+        "error": 1,
+        "orderbook_delta": 1,
+        "orderbook_snapshot": 200,
+        "subscribed": 3,
+        "ticker": 1,
+        "trade": 1
+      },
+      "complete": true,
+      "total": 207
+    },
+    {
+      "bin": 1,
+      "bin_start_seconds": 5.0,
+      "by_ticker": {
+        "KXECONSTATCPIYOY-26AUG-T3.6": 4,
+        "KXFEDDECISION-26SEP-C25": 13
+      },
+      "by_type": {
+        "orderbook_delta": 14,
+        "ticker": 2,
+        "trade": 1
+      },
+      "complete": true,
+      "total": 17
+    },
+    {
+      "bin": 2,
+      "bin_start_seconds": 10.0,
+      "by_ticker": {
+        "KXFEDDECISION-26SEP-C25": 7
+      },
+      "by_type": {
+        "orderbook_delta": 2,
+        "ticker": 3,
+        "trade": 2
+      },
+      "complete": true,
+      "total": 7
+    },
+    {
+      "bin": 3,
+      "bin_start_seconds": 15.0,
+      "by_ticker": {
+        "KXFEDDECISION-26SEP-C25": 3
+      },
+      "by_type": {
+        "orderbook_delta": 1,
+        "ticker": 1,
+        "trade": 1
+      },
+      "complete": true,
+      "total": 3
+    },
+    {
+      "bin": 4,
+      "bin_start_seconds": 20.0,
+      "by_ticker": {
+        "KXFEDDECISION-26SEP-C25": 6
+      },
+      "by_type": {
+        "orderbook_delta": 2,
+        "ticker": 2,
+        "trade": 2
+      },
+      "complete": true,
+      "total": 6
+    },
+    {
+      "bin": 5,
+      "bin_start_seconds": 25.0,
+      "by_ticker": {
+        "KXECONSTATCPIYOY-26AUG-T3.6": 4,
+        "KXFEDDECISION-26SEP-C25": 11
+      },
+      "by_type": {
+        "orderbook_delta": 13,
+        "ticker": 2
+      },
+      "complete": true,
+      "total": 15
+    },
+    {
+      "bin": 6,
+      "bin_start_seconds": 30.0,
+      "by_ticker": {
+        "KXFEDDECISION-26SEP-C25": 9
+      },
+      "by_type": {
+        "orderbook_delta": 3,
+        "ticker": 3,
+        "trade": 3
+      },
+      "complete": true,
+      "total": 9
+    },
+    {
+      "bin": 7,
+      "bin_start_seconds": 35.0,
+      "by_ticker": {
+        "KXFEDDECISION-26SEP-C25": 2
+      },
+      "by_type": {
+        "orderbook_delta": 1,
+        "trade": 1
+      },
+      "complete": true,
+      "total": 2
+    },
+    {
+      "bin": 8,
+      "bin_start_seconds": 40.0,
+      "by_ticker": {
+        "KXFEDDECISION-26SEP-C25": 4
+      },
+      "by_type": {
+        "orderbook_delta": 1,
+        "ticker": 2,
+        "trade": 1
+      },
+      "complete": true,
+      "total": 4
+    },
+    {
+      "bin": 9,
+      "bin_start_seconds": 45.0,
+      "by_ticker": {
+        "KXFEDDECISION-26SEP-C25": 11
+      },
+      "by_type": {
+        "orderbook_delta": 10,
+        "ticker": 1
+      },
+      "complete": true,
+      "total": 11
+    },
+    {
+      "bin": 10,
+      "bin_start_seconds": 50.0,
+      "by_ticker": {
+        "KXECONSTATCPIYOY-26AUG-T3.6": 4,
+        "KXFEDDECISION-26SEP-C25": 5
+      },
+      "by_type": {
+        "orderbook_delta": 5,
+        "ticker": 2,
+        "trade": 2
+      },
+      "complete": true,
+      "total": 9
+    },
+    {
+      "bin": 11,
+      "bin_start_seconds": 55.0,
+      "by_ticker": {
+        "KXFEDDECISION-26SEP-C25": 4
+      },
+      "by_type": {
+        "orderbook_delta": 1,
+        "ticker": 2,
+        "trade": 1
+      },
+      "complete": true,
+      "total": 4
+    },
+    {
+      "bin": 12,
+      "bin_start_seconds": 60.0,
+      "by_ticker": {
+        "KXFEDDECISION-26SEP-C25": 6
+      },
+      "by_type": {
+        "orderbook_delta": 2,
+        "ticker": 2,
+        "trade": 2
+      },
+      "complete": true,
+      "total": 6
+    },
+    {
+      "bin": 13,
+      "bin_start_seconds": 65.0,
+      "by_ticker": {
+        "KXFEDDECISION-26SEP-C25": 11
+      },
+      "by_type": {
+        "orderbook_delta": 10,
+        "ticker": 1
+      },
+      "complete": true,
+      "total": 11
+    },
+    {
+      "bin": 14,
+      "bin_start_seconds": 70.0,
+      "by_ticker": {
+        "KXECONSTATCPIYOY-26AUG-T3.6": 4,
+        "KXFEDDECISION-26SEP-C25": 3
+      },
+      "by_type": {
+        "orderbook_delta": 4,
+        "ticker": 2,
+        "trade": 1
+      },
+      "complete": true,
+      "total": 7
+    },
+    {
+      "bin": 15,
+      "bin_start_seconds": 75.0,
+      "by_ticker": {},
+      "by_type": {},
+      "complete": true,
+      "total": 0
+    },
+    {
+      "bin": 16,
+      "bin_start_seconds": 80.0,
+      "by_ticker": {
+        "KXFEDDECISION-26SEP-C25": 8
+      },
+      "by_type": {
+        "orderbook_delta": 5,
+        "ticker": 2,
+        "trade": 1
+      },
+      "complete": true,
+      "total": 8
+    },
+    {
+      "bin": 17,
+      "bin_start_seconds": 85.0,
+      "by_ticker": {
+        "KXFEDDECISION-26SEP-C25": 11
+      },
+      "by_type": {
+        "orderbook_delta": 9,
+        "ticker": 1,
+        "trade": 1
+      },
+      "complete": true,
+      "total": 11
+    },
+    {
+      "bin": 18,
+      "bin_start_seconds": 90.0,
+      "by_ticker": {
+        "KXECONSTATCPIYOY-26AUG-T3.6": 7,
+        "KXFEDDECISION-26SEP-C25": 1
+      },
+      "by_type": {
+        "orderbook_delta": 6,
+        "ticker": 2
+      },
+      "complete": true,
+      "total": 8
+    },
+    {
+      "bin": 19,
+      "bin_start_seconds": 95.0,
+      "by_ticker": {
+        "KXFEDDECISION-26SEP-C25": 5
+      },
+      "by_type": {
+        "orderbook_delta": 2,
+        "ticker": 1,
+        "trade": 2
+      },
+      "complete": true,
+      "total": 5
+    },
+    {
+      "bin": 20,
+      "bin_start_seconds": 100.0,
+      "by_ticker": {
+        "KXFEDDECISION-26SEP-C25": 3
+      },
+      "by_type": {
+        "orderbook_delta": 1,
+        "ticker": 1,
+        "trade": 1
+      },
+      "complete": true,
+      "total": 3
+    },
+    {
+      "bin": 21,
+      "bin_start_seconds": 105.0,
+      "by_ticker": {
+        "KXECONSTATCPIYOY-26AUG-T3.6": 20,
+        "KXFEDDECISION-26SEP-C25": 19
+      },
+      "by_type": {
+        "orderbook_delta": 33,
+        "ticker": 3,
+        "trade": 3
+      },
+      "complete": true,
+      "total": 39
+    },
+    {
+      "bin": 22,
+      "bin_start_seconds": 110.0,
+      "by_ticker": {},
+      "by_type": {},
+      "complete": true,
+      "total": 0
+    },
+    {
+      "bin": 23,
+      "bin_start_seconds": 115.0,
+      "by_ticker": {
+        "KXFEDDECISION-26SEP-C25": 7
+      },
+      "by_type": {
+        "orderbook_delta": 3,
+        "ticker": 1,
+        "trade": 3
+      },
+      "complete": true,
+      "total": 7
+    },
+    {
+      "bin": 24,
+      "bin_start_seconds": 120.0,
+      "by_ticker": {
+        "KXFEDDECISION-26SEP-C25": 1
+      },
+      "by_type": {
+        "ticker": 1
+      },
+      "complete": true,
+      "total": 1
+    },
+    {
+      "bin": 25,
+      "bin_start_seconds": 125.0,
+      "by_ticker": {
+        "KXECONSTATCPIYOY-26AUG-T3.6": 20,
+        "KXFEDDECISION-26SEP-C25": 5
+      },
+      "by_type": {
+        "orderbook_delta": 22,
+        "ticker": 1,
+        "trade": 2
+      },
+      "complete": true,
+      "total": 25
+    },
+    {
+      "bin": 26,
+      "bin_start_seconds": 130.0,
+      "by_ticker": {
+        "KXFEDDECISION-26SEP-C25": 11
+      },
+      "by_type": {
+        "orderbook_delta": 10,
+        "ticker": 1
+      },
+      "complete": true,
+      "total": 11
+    },
+    {
+      "bin": 27,
+      "bin_start_seconds": 135.0,
+      "by_ticker": {},
+      "by_type": {},
+      "complete": true,
+      "total": 0
+    },
+    {
+      "bin": 28,
+      "bin_start_seconds": 140.0,
+      "by_ticker": {
+        "KXFEDDECISION-26SEP-C25": 3
+      },
+      "by_type": {
+        "orderbook_delta": 1,
+        "ticker": 1,
+        "trade": 1
+      },
+      "complete": true,
+      "total": 3
+    },
+    {
+      "bin": 29,
+      "bin_start_seconds": 145.0,
+      "by_ticker": {
+        "KXECONSTATCPIYOY-26AUG-T3.6": 20
+      },
+      "by_type": {
+        "orderbook_delta": 20
+      },
+      "complete": true,
+      "total": 20
+    },
+    {
+      "bin": 30,
+      "bin_start_seconds": 150.0,
+      "by_ticker": {
+        "KXFEDDECISION-26SEP-C25": 14
+      },
+      "by_type": {
+        "orderbook_delta": 11,
+        "ticker": 2,
+        "trade": 1
+      },
+      "complete": true,
+      "total": 14
+    },
+    {
+      "bin": 31,
+      "bin_start_seconds": 155.0,
+      "by_ticker": {
+        "KXECONSTATCPIYOY-26AUG-T3.6": 20,
+        "KXFEDDECISION-26SEP-C25": 3
+      },
+      "by_type": {
+        "orderbook_delta": 21,
+        "ticker": 1,
+        "trade": 1
+      },
+      "complete": true,
+      "total": 23
+    },
+    {
+      "bin": 32,
+      "bin_start_seconds": 160.0,
+      "by_ticker": {
+        "KXFEDDECISION-26SEP-C25": 3
+      },
+      "by_type": {
+        "orderbook_delta": 1,
+        "ticker": 1,
+        "trade": 1
+      },
+      "complete": true,
+      "total": 3
+    },
+    {
+      "bin": 33,
+      "bin_start_seconds": 165.0,
+      "by_ticker": {
+        "KXECONSTATCPIYOY-26AUG-T3.6": 20,
+        "KXFEDDECISION-26SEP-C25": 3
+      },
+      "by_type": {
+        "orderbook_delta": 21,
+        "ticker": 1,
+        "trade": 1
+      },
+      "complete": true,
+      "total": 23
+    },
+    {
+      "bin": 34,
+      "bin_start_seconds": 170.0,
+      "by_ticker": {
+        "KXFEDDECISION-26SEP-C25": 14
+      },
+      "by_type": {
+        "orderbook_delta": 11,
+        "ticker": 2,
+        "trade": 1
+      },
+      "complete": true,
+      "total": 14
+    },
+    {
+      "bin": 35,
+      "bin_start_seconds": 175.0,
+      "by_ticker": {
+        "KXFEDDECISION-26SEP-C25": 3
+      },
+      "by_type": {
+        "orderbook_delta": 1,
+        "ticker": 1,
+        "trade": 1
+      },
+      "complete": true,
+      "total": 3
+    },
+    {
+      "bin": 36,
+      "bin_start_seconds": 180.0,
+      "by_ticker": {},
+      "by_type": {},
+      "complete": true,
+      "total": 0
+    },
+    {
+      "bin": 37,
+      "bin_start_seconds": 185.0,
+      "by_ticker": {
+        "KXECONSTATCPIYOY-26AUG-T3.6": 20
+      },
+      "by_type": {
+        "orderbook_delta": 20
+      },
+      "complete": true,
+      "total": 20
+    },
+    {
+      "bin": 38,
+      "bin_start_seconds": 190.0,
+      "by_ticker": {
+        "KXFEDDECISION-26SEP-C25": 10
+      },
+      "by_type": {
+        "orderbook_delta": 10
+      },
+      "complete": true,
+      "total": 10
+    },
+    {
+      "bin": 39,
+      "bin_start_seconds": 195.0,
+      "by_ticker": {
+        "KXFEDDECISION-26SEP-C25": 1
+      },
+      "by_type": {
+        "ticker": 1
+      },
+      "complete": true,
+      "total": 1
+    },
+    {
+      "bin": 40,
+      "bin_start_seconds": 200.0,
+      "by_ticker": {},
+      "by_type": {},
+      "complete": true,
+      "total": 0
+    },
+    {
+      "bin": 41,
+      "bin_start_seconds": 205.0,
+      "by_ticker": {
+        "KXFEDDECISION-26SEP-C25": 9
+      },
+      "by_type": {
+        "orderbook_delta": 3,
+        "ticker": 3,
+        "trade": 3
+      },
+      "complete": true,
+      "total": 9
+    },
+    {
+      "bin": 42,
+      "bin_start_seconds": 210.0,
+      "by_ticker": {
+        "KXECONSTATCPIYOY-26AUG-T3.6": 20,
+        "KXFEDDECISION-26SEP-C25": 11
+      },
+      "by_type": {
+        "orderbook_delta": 30,
+        "ticker": 1
+      },
+      "complete": true,
+      "total": 31
+    },
+    {
+      "bin": 43,
+      "bin_start_seconds": 215.0,
+      "by_ticker": {},
+      "by_type": {},
+      "complete": true,
+      "total": 0
+    },
+    {
+      "bin": 44,
+      "bin_start_seconds": 220.0,
+      "by_ticker": {
+        "KXFEDDECISION-26SEP-C25": 3
+      },
+      "by_type": {
+        "orderbook_delta": 1,
+        "ticker": 1,
+        "trade": 1
+      },
+      "complete": true,
+      "total": 3
+    },
+    {
+      "bin": 45,
+      "bin_start_seconds": 225.0,
+      "by_ticker": {},
+      "by_type": {},
+      "complete": true,
+      "total": 0
+    },
+    {
+      "bin": 46,
+      "bin_start_seconds": 230.0,
+      "by_ticker": {
+        "KXFEDDECISION-26SEP-C25": 13
+      },
+      "by_type": {
+        "orderbook_delta": 11,
+        "ticker": 1,
+        "trade": 1
+      },
+      "complete": true,
+      "total": 13
+    },
+    {
+      "bin": 47,
+      "bin_start_seconds": 235.0,
+      "by_ticker": {
+        "KXECONSTATCPIYOY-26AUG-T3.6": 3,
+        "KXFEDDECISION-26SEP-C25": 3
+      },
+      "by_type": {
+        "orderbook_delta": 4,
+        "ticker": 1,
+        "trade": 1
+      },
+      "complete": true,
+      "total": 6
+    },
+    {
+      "bin": 48,
+      "bin_start_seconds": 240.0,
+      "by_ticker": {
+        "KXECONSTATCPIYOY-26AUG-T3.6": 1
+      },
+      "by_type": {
+        "ticker": 1
+      },
+      "complete": true,
+      "total": 1
+    },
+    {
+      "bin": 49,
+      "bin_start_seconds": 245.0,
+      "by_ticker": {
+        "KXFEDDECISION-26SEP-C25": 5
+      },
+      "by_type": {
+        "orderbook_delta": 4,
+        "ticker": 1
+      },
+      "complete": true,
+      "total": 5
+    },
+    {
+      "bin": 50,
+      "bin_start_seconds": 250.0,
+      "by_ticker": {
+        "KXFEDDECISION-26SEP-C25": 3
+      },
+      "by_type": {
+        "orderbook_delta": 1,
+        "ticker": 1,
+        "trade": 1
+      },
+      "complete": true,
+      "total": 3
+    },
+    {
+      "bin": 51,
+      "bin_start_seconds": 255.0,
+      "by_ticker": {
+        "KXFEDDECISION-26SEP-C25": 12
+      },
+      "by_type": {
+        "orderbook_delta": 9,
+        "ticker": 2,
+        "trade": 1
+      },
+      "complete": true,
+      "total": 12
+    },
+    {
+      "bin": 52,
+      "bin_start_seconds": 260.0,
+      "by_ticker": {
+        "KXECONSTATCPIYOY-26AUG-T3.6": 7,
+        "KXFEDDECISION-26SEP-C25": 3
+      },
+      "by_type": {
+        "orderbook_delta": 7,
+        "ticker": 2,
+        "trade": 1
+      },
+      "complete": true,
+      "total": 10
+    },
+    {
+      "bin": 53,
+      "bin_start_seconds": 265.0,
+      "by_ticker": {
+        "KXFEDDECISION-26SEP-C25": 6
+      },
+      "by_type": {
+        "orderbook_delta": 2,
+        "ticker": 2,
+        "trade": 2
+      },
+      "complete": true,
+      "total": 6
+    },
+    {
+      "bin": 54,
+      "bin_start_seconds": 270.0,
+      "by_ticker": {
+        "KXECONSTATCPIYOY-26AUG-T3.6": 20,
+        "KXFEDDECISION-26SEP-C25": 9
+      },
+      "by_type": {
+        "orderbook_delta": 23,
+        "ticker": 3,
+        "trade": 3
+      },
+      "complete": true,
+      "total": 29
+    },
+    {
+      "bin": 55,
+      "bin_start_seconds": 275.0,
+      "by_ticker": {
+        "KXFEDDECISION-26SEP-C25": 11
+      },
+      "by_type": {
+        "orderbook_delta": 10,
+        "ticker": 1
+      },
+      "complete": true,
+      "total": 11
+    },
+    {
+      "bin": 56,
+      "bin_start_seconds": 280.0,
+      "by_ticker": {
+        "KXECONSTATCPIYOY-26AUG-T3.6": 20
+      },
+      "by_type": {
+        "orderbook_delta": 20
+      },
+      "complete": true,
+      "total": 20
+    },
+    {
+      "bin": 57,
+      "bin_start_seconds": 285.0,
+      "by_ticker": {},
+      "by_type": {},
+      "complete": true,
+      "total": 0
+    },
+    {
+      "bin": 58,
+      "bin_start_seconds": 290.0,
+      "by_ticker": {
+        "KXFEDDECISION-26SEP-C25": 3
+      },
+      "by_type": {
+        "orderbook_delta": 1,
+        "ticker": 1,
+        "trade": 1
+      },
+      "complete": true,
+      "total": 3
+    },
+    {
+      "bin": 59,
+      "bin_start_seconds": 295.0,
+      "by_ticker": {
+        "KXECONSTATCPIYOY-26AUG-T3.6": 20,
+        "KXFEDDECISION-26SEP-C25": 15
+      },
+      "by_type": {
+        "orderbook_delta": 32,
+        "ticker": 1,
+        "trade": 2
+      },
+      "complete": true,
+      "total": 35
+    },
+    {
+      "bin": 60,
+      "bin_start_seconds": 300.0,
+      "by_ticker": {
+        "KXFEDDECISION-26SEP-C25": 1
+      },
+      "by_type": {
+        "trade": 1
+      },
+      "complete": false,
+      "total": 1
+    }
+  ],
+  "config": {
+    "bin_seconds": 5.0,
+    "channels": [
+      "orderbook_delta",
+      "ticker",
+      "trade"
+    ],
+    "dry_run": true,
+    "market_tickers": [
+      "KXMLB-26-TEX",
+      "KXNBA-27-TOR",
+      "KXLIGAMXGAME-26AUG16SLACDG-SLA",
+      "KXECONSTATCPIYOY-26AUG-T3.6",
+      "KXUFCMOV-26AUG15MAKMGI-MAKSUB",
+      "KXPRESNOMR-28-ES",
+      "KXPGATOUR-FESJC26-RMCI",
+      "KXPGATOUR-FESJC26-BCAU",
+      "KXNASCARRACE-COOO81526-KYLA",
+      "KXHEISMAN-27-GSTOC",
+      "KXLIGAMXGAME-26AUG15ATLTIG-ATL",
+      "KXPGATOP20-FESJC26-LABE",
+      "KXBOXING-26AUG15SHIELDSCOTT-SHIELD",
+      "KXPGATOUR-FESJC26-RHIS",
+      "KXPGATOP20-FESJC26-RHIS",
+      "KXPRESNOMR-28-JDV",
+      "KXNBA-27-GSW",
+      "KXPGATOUR-FESJC26-HHAL",
+      "KXPRESNOMR-28-BD",
+      "KXMLB-26-CHC",
+      "KXPGATOP20-FESJC26-RHEN",
+      "KXSB-27-PIT",
+      "KXPRESNOMR-28-BK",
+      "KXPGATOP10-FESJC26-MBRE",
+      "KXHEISMAN-27-JSAGA",
+      "KXSB-27-LAC",
+      "KXPGATOP10-FESJC26-NHOJ",
+      "KXPGATOP10-FESJC26-SLOW",
+      "KXPGATOP20-FESJC26-MMCN",
+      "KXVOTEPRIMARY-GOVFLNOMR26JFISJFIS-8",
+      "KXPGATOUR-FESJC26-TFLE",
+      "KXPGATOP10-FESJC26-RFOW",
+      "KXHEISMAN-27-JHOOV",
+      "KXMLB-26-MIL",
+      "KXPGATOUR-FESJC26-MSCH",
+      "KXNBA-27-OKC",
+      "KXPGATOP20-FESJC26-APOT",
+      "KXPRESNOMD-28-JCRO",
+      "KXPGATOP20-FESJC26-JSMI",
+      "KXHEISMAN-27-MTONE",
+      "KXPGATOP10-FESJC26-SYEL",
+      "KXNASCARRACE-COOO81526-TYRE",
+      "KXVOTEPRIMARY-GOVFLNOMR26JFIS-65",
+      "KXPGATOUR-FESJC26-SSTR",
+      "KXNCAAF-27-LSU",
+      "KXHEISMAN-27-JSAYI",
+      "KXPGATOP10-FESJC26-PROD",
+      "KXPGATOP10-FESJC26-KREI",
+      "KXNASCARRACE-COOO81526-AUCI",
+      "KXPGATOUR-FESJC26-ECOL",
+      "KXPGATOP10-FESJC26-JSPA",
+      "KXNCAAF-27-FLA",
+      "KXSB-27-GB",
+      "KXMLB-26-BOS",
+      "KXHEISMAN-27-SLEA",
+      "KXVOTEPRIMARY-GOVFLNOMR26JFIS-55",
+      "KXPGATOUR-FESJC26-ASCO",
+      "KXPGATOUR-FESJC26-MLEE",
+      "KXSB-27-CHI",
+      "KXPRESNOMR-28-DJTJR",
+      "KXVOTEPRIMARY-GOVFLNOMR26JFISJFIS-13",
+      "KXPGATOP10-FESJC26-ASMA",
+      "KXUFCFIGHT-26AUG15MAKMGI-MGI",
+      "KXPGATOP10-FESJC26-SSTR",
+      "KXSB-27-JAC",
+      "KXPGATOP20-FESJC26-MBRE",
+      "KXHEISMAN-27-DMOOR",
+      "KXPGATOUR-FESJC26-JSPA",
+      "KXNBA-27-BOS",
+      "KXMLB-26-TOR",
+      "KXPGATOUR-FESJC26-HENG",
+      "KXSB-27-DEN",
+      "KXPRESNOMR-28-STE",
+      "KXMLB-26-PHI",
+      "KXMLB-26-CLE",
+      "KXPGATOP20-FESJC26-BCAU",
+      "KXPGATOP10-FESJC26-PCAN",
+      "KXPGATOUR-FESJC26-KKIT",
+      "KXNASCARRACE-COOO81526-JOLO",
+      "KXMLB-26-HOU",
+      "KXMLB-26-STL",
+      "KXPGATOUR-FESJC26-KREI",
+      "KXSCRSENS-26-DNOR",
+      "KXPGATOP20-FESJC26-CAME",
+      "KXUFCMOV-26AUG15MAKMGI-MGIKOTKODQ",
+      "KXSB-27-BAL",
+      "KXPGATOP20-FESJC26-PCOO",
+      "KXPGATOUR-FESJC26-NHJG",
+      "KXSB-27-SF",
+      "KXPGATOUR-FESJC26-SSCH",
+      "KXSB-27-TB",
+      "KXNASCARRACE-COOO81526-WIBY",
+      "KXNBA-27-LAL",
+      "KXPGATOP20-FESJC26-GWOO",
+      "KXPGATOUR-FESJC26-ARAI",
+      "KXHEISMAN-27-CCARR",
+      "KXSB-27-KC",
+      "KXPRESNOMR-28-ITRU",
+      "KXNASCARRACE-COOO81526-ROCH",
+      "KXVOTEPRIMARY-GOVFLNOMR26JFISJFIS-14",
+      "KXMLB-26-SF",
+      "KXPGATOP20-FESJC26-NHOJ",
+      "KXPGATOUR-FESJC26-VHOV",
+      "KXPGATOP10-FESJC26-CCON",
+      "KXPGATOUR-FESJC26-BGRI",
+      "KXPGATOUR-FESJC26-GWOO",
+      "KXPGATOP20-FESJC26-MFIT",
+      "KXPGATOP10-FESJC26-TFLE",
+      "KXPGATOP10-FESJC26-APOT",
+      "KXVOTEPRIMARY-GOVFLNOMR26JFIS-51",
+      "KXHEISMAN-27-JMAIA",
+      "KXNCAAF-27-MISS",
+      "KXPRESNOMR-28-VR",
+      "KXMLB-26-LAD",
+      "KXPRESNOMR-28-TCAR",
+      "KXPGATOUR-FESJC26-ABHA",
+      "KXPGATOUR-FESJC26-ANOR",
+      "KXUFCFIGHT-26AUG15MAKMGI-MAK",
+      "KXMLB-26-WSH",
+      "KXPGATOUR-FESJC26-MMCN",
+      "KXNCAAF-27-IND",
+      "KXPRESNOMR-28-MTG",
+      "KXPGATOP10-FESJC26-MFIT",
+      "KXPGATOP10-FESJC26-JKOI",
+      "KXPRESNOMR-28-MPEN",
+      "KXPRESNOMD-28-AELS",
+      "KXPGATOP20-FESJC26-SYEL",
+      "KXPGATOP20-FESJC26-SSTR",
+      "KXPGATOP20-FESJC26-RCAS",
+      "KXPRESNOMR-28-RPAU",
+      "KXPGATOUR-FESJC26-HMAT",
+      "KXNCAAF-27-USC",
+      "KXPGATOUR-FESJC26-TKIM",
+      "KXVOTEPRIMARY-GOVFLNOMR26JFISJFIS-6",
+      "KXNBA-27-PHI",
+      "KXPGATOP20-FESJC26-ECOL",
+      "KXPGATOUR-FESJC26-XSCH",
+      "KXPRESNOMR-28-MG",
+      "KXPGATOP20-FESJC26-CCON",
+      "KXPGATOP10-FESJC26-SSTE",
+      "KXPGATOP10-FESJC26-NECH",
+      "KXPGATOUR-FESJC26-NECH",
+      "KXFEDDECISION-26SEP-C25",
+      "KXPGATOP20-FESJC26-SIM",
+      "KXPGATOP10-FESJC26-SBUR",
+      "KXVOTEPRIMARY-GOVFLNOMR26JFISJFIS-57",
+      "KXPGATOUR-FESJC26-CMOR",
+      "KXPRESNOMR-28-GA",
+      "KXPGATOUR-FESJC26-JBRI",
+      "KXPGATOP10-FESJC26-RHEN",
+      "KXPGATOP20-FESJC26-CGOT",
+      "KXPRESNOMR-28-EM",
+      "KXPGATOP20-FESJC26-HENG",
+      "KXPGATOP20-FESJC26-JKNA",
+      "KXSB-27-HOU",
+      "KXNCAAF-27-ORE",
+      "KXMLB-26-LAA",
+      "KXPGATOUR-FESJC26-ASMA",
+      "KXPGATOUR-FESJC26-PCOO",
+      "KXPGATOUR-FESJC26-MFIT",
+      "KXNASCARRACE-COOO81526-RYBL",
+      "KXPGATOP10-FESJC26-XSCH",
+      "KXPRESNOMR-28-TMAS",
+      "KXPRESNOMR-28-TG",
+      "KXPGATOP10-FESJC26-MHOM",
+      "KXPGATOUR-FESJC26-RGER",
+      "KXPGATOP20-FESJC26-JROS",
+      "KXPGATOP20-FESJC26-WKIM",
+      "KXPGATOP20-FESJC26-BGRI",
+      "KXGOVFLNOMR-26-JFIS",
+      "KXPGATOUR-FESJC26-STHE",
+      "KXPGATOP10-FESJC26-RHIS",
+      "KXPRESNOMR-28-TC",
+      "KXPGATOP10-FESJC26-PCOO",
+      "KXPGATOUR-FESJC26-WCLA",
+      "KXSB-27-MIN",
+      "KXPGATOP20-FESJC26-RMCI",
+      "KXNASCARRACE-COOO81526-AUDI",
+      "KXSB-27-LAR",
+      "KXHEISMAN-27-JSMIT",
+      "KXPRESNOMR-28-NMIN",
+      "KXPGATOP20-FESJC26-KMIT",
+      "KXPGATOP20-FESJC26-MLEE",
+      "KXPRESNOMD-28-CMUR",
+      "KXNBA-27-MIA",
+      "KXPGATOP10-FESJC26-BCAU",
+      "KXPGATOP10-FESJC26-RGER",
+      "KXSB-27-DET",
+      "KXPGATOP10-FESJC26-CAME",
+      "KXVOTEPRIMARY-GOVFLNOMR26JFIS-52",
+      "KXPGATOP10-FESJC26-SIM",
+      "KXNCAAF-27-ALA",
+      "KXUFCMOV-26AUG15MAKMGI-MGISUB",
+      "KXPGATOP10-FESJC26-RMCI",
+      "KXMLB-26-PIT",
+      "KXPGATOUR-FESJC26-RFOW",
+      "KXPGATOUR-FESJC26-SBUR",
+      "KXPGATOUR-FESJC26-SIM",
+      "KXPGATOP20-FESJC26-JKOI",
+      "KXPGATOUR-FESJC26-SLOW"
+    ],
+    "max_events": 5000000,
+    "max_reconnects": 5,
+    "max_seconds": 300,
+    "read_timeout_s": 420.0,
+    "validate_sequence": true
+  },
+  "credential_audit": {
+    "detail": "verified against GET /trade-api/v2/api_keys",
+    "environment": "demo",
+    "key_id_fingerprint": "sha256:355d3cd2c0177448",
+    "proven_read_only": true,
+    "scopes": [
+      "read"
+    ],
+    "verified_at": "2026-08-17T06:13:01.246688+00:00"
+  },
+  "environment": "demo",
+  "finished_at": "2026-08-17T06:18:01.746488+00:00",
+  "frame_shapes_observed": [
+    {
+      "market_ticker": null,
+      "msg_keys": [
+        "channel",
+        "sid"
+      ],
+      "ordinal": 1,
+      "seconds_since_first_frame": 0.0,
+      "top_level_keys": [
+        "id",
+        "msg",
+        "type"
+      ],
+      "type": "subscribed"
+    },
+    {
+      "market_ticker": null,
+      "msg_keys": [
+        "channel",
+        "sid"
+      ],
+      "ordinal": 2,
+      "seconds_since_first_frame": 0.0002,
+      "top_level_keys": [
+        "id",
+        "msg",
+        "type"
+      ],
+      "type": "subscribed"
+    },
+    {
+      "market_ticker": null,
+      "msg_keys": [
+        "channel",
+        "sid"
+      ],
+      "ordinal": 3,
+      "seconds_since_first_frame": 0.0002,
+      "top_level_keys": [
+        "id",
+        "msg",
+        "type"
+      ],
+      "type": "subscribed"
+    },
+    {
+      "market_ticker": "KXBOXING-26AUG15SHIELDSCOTT-SHIELD",
+      "msg_keys": [
+        "market_id",
+        "market_ticker"
+      ],
+      "ordinal": 4,
+      "seconds_since_first_frame": 0.0367,
+      "top_level_keys": [
+        "msg",
+        "seq",
+        "sid",
+        "type"
+      ],
+      "type": "orderbook_snapshot"
+    },
+    {
+      "market_ticker": "KXECONSTATCPIYOY-26AUG-T3.6",
+      "msg_keys": [
+        "market_id",
+        "market_ticker",
+        "no_dollars_fp",
+        "yes_dollars_fp"
+      ],
+      "ordinal": 5,
+      "seconds_since_first_frame": 0.037,
+      "top_level_keys": [
+        "msg",
+        "seq",
+        "sid",
+        "type"
+      ],
+      "type": "orderbook_snapshot"
+    },
+    {
+      "market_ticker": "KXFEDDECISION-26SEP-C25",
+      "msg_keys": [
+        "market_id",
+        "market_ticker",
+        "no_dollars_fp",
+        "yes_dollars_fp"
+      ],
+      "ordinal": 6,
+      "seconds_since_first_frame": 0.0375,
+      "top_level_keys": [
+        "msg",
+        "seq",
+        "sid",
+        "type"
+      ],
+      "type": "orderbook_snapshot"
+    },
+    {
+      "market_ticker": "KXGOVFLNOMR-26-JFIS",
+      "msg_keys": [
+        "market_id",
+        "market_ticker",
+        "no_dollars_fp",
+        "yes_dollars_fp"
+      ],
+      "ordinal": 7,
+      "seconds_since_first_frame": 0.0376,
+      "top_level_keys": [
+        "msg",
+        "seq",
+        "sid",
+        "type"
+      ],
+      "type": "orderbook_snapshot"
+    },
+    {
+      "market_ticker": "KXHEISMAN-27-CCARR",
+      "msg_keys": [
+        "market_id",
+        "market_ticker",
+        "no_dollars_fp",
+        "yes_dollars_fp"
+      ],
+      "ordinal": 8,
+      "seconds_since_first_frame": 0.0378,
+      "top_level_keys": [
+        "msg",
+        "seq",
+        "sid",
+        "type"
+      ],
+      "type": "orderbook_snapshot"
+    },
+    {
+      "market_ticker": "KXHEISMAN-27-DMOOR",
+      "msg_keys": [
+        "market_id",
+        "market_ticker",
+        "no_dollars_fp",
+        "yes_dollars_fp"
+      ],
+      "ordinal": 9,
+      "seconds_since_first_frame": 0.0379,
+      "top_level_keys": [
+        "msg",
+        "seq",
+        "sid",
+        "type"
+      ],
+      "type": "orderbook_snapshot"
+    },
+    {
+      "market_ticker": "KXHEISMAN-27-GSTOC",
+      "msg_keys": [
+        "market_id",
+        "market_ticker",
+        "no_dollars_fp",
+        "yes_dollars_fp"
+      ],
+      "ordinal": 10,
+      "seconds_since_first_frame": 0.038,
+      "top_level_keys": [
+        "msg",
+        "seq",
+        "sid",
+        "type"
+      ],
+      "type": "orderbook_snapshot"
+    },
+    {
+      "market_ticker": "KXHEISMAN-27-JHOOV",
+      "msg_keys": [
+        "market_id",
+        "market_ticker",
+        "no_dollars_fp",
+        "yes_dollars_fp"
+      ],
+      "ordinal": 11,
+      "seconds_since_first_frame": 0.0381,
+      "top_level_keys": [
+        "msg",
+        "seq",
+        "sid",
+        "type"
+      ],
+      "type": "orderbook_snapshot"
+    },
+    {
+      "market_ticker": "KXHEISMAN-27-JMAIA",
+      "msg_keys": [
+        "market_id",
+        "market_ticker",
+        "no_dollars_fp",
+        "yes_dollars_fp"
+      ],
+      "ordinal": 12,
+      "seconds_since_first_frame": 0.0383,
+      "top_level_keys": [
+        "msg",
+        "seq",
+        "sid",
+        "type"
+      ],
+      "type": "orderbook_snapshot"
+    },
+    {
+      "market_ticker": "KXHEISMAN-27-JSAGA",
+      "msg_keys": [
+        "market_id",
+        "market_ticker",
+        "no_dollars_fp",
+        "yes_dollars_fp"
+      ],
+      "ordinal": 13,
+      "seconds_since_first_frame": 0.0384,
+      "top_level_keys": [
+        "msg",
+        "seq",
+        "sid",
+        "type"
+      ],
+      "type": "orderbook_snapshot"
+    },
+    {
+      "market_ticker": "KXHEISMAN-27-JSAYI",
+      "msg_keys": [
+        "market_id",
+        "market_ticker",
+        "no_dollars_fp",
+        "yes_dollars_fp"
+      ],
+      "ordinal": 14,
+      "seconds_since_first_frame": 0.0385,
+      "top_level_keys": [
+        "msg",
+        "seq",
+        "sid",
+        "type"
+      ],
+      "type": "orderbook_snapshot"
+    },
+    {
+      "market_ticker": "KXHEISMAN-27-JSMIT",
+      "msg_keys": [
+        "market_id",
+        "market_ticker",
+        "no_dollars_fp",
+        "yes_dollars_fp"
+      ],
+      "ordinal": 15,
+      "seconds_since_first_frame": 0.0386,
+      "top_level_keys": [
+        "msg",
+        "seq",
+        "sid",
+        "type"
+      ],
+      "type": "orderbook_snapshot"
+    },
+    {
+      "market_ticker": "KXHEISMAN-27-MTONE",
+      "msg_keys": [
+        "market_id",
+        "market_ticker",
+        "no_dollars_fp",
+        "yes_dollars_fp"
+      ],
+      "ordinal": 16,
+      "seconds_since_first_frame": 0.0387,
+      "top_level_keys": [
+        "msg",
+        "seq",
+        "sid",
+        "type"
+      ],
+      "type": "orderbook_snapshot"
+    },
+    {
+      "market_ticker": "KXHEISMAN-27-SLEA",
+      "msg_keys": [
+        "market_id",
+        "market_ticker",
+        "no_dollars_fp",
+        "yes_dollars_fp"
+      ],
+      "ordinal": 17,
+      "seconds_since_first_frame": 0.0389,
+      "top_level_keys": [
+        "msg",
+        "seq",
+        "sid",
+        "type"
+      ],
+      "type": "orderbook_snapshot"
+    },
+    {
+      "market_ticker": "KXLIGAMXGAME-26AUG15ATLTIG-ATL",
+      "msg_keys": [
+        "market_id",
+        "market_ticker"
+      ],
+      "ordinal": 18,
+      "seconds_since_first_frame": 0.039,
+      "top_level_keys": [
+        "msg",
+        "seq",
+        "sid",
+        "type"
+      ],
+      "type": "orderbook_snapshot"
+    },
+    {
+      "market_ticker": "KXLIGAMXGAME-26AUG16SLACDG-SLA",
+      "msg_keys": [
+        "market_id",
+        "market_ticker"
+      ],
+      "ordinal": 19,
+      "seconds_since_first_frame": 0.039,
+      "top_level_keys": [
+        "msg",
+        "seq",
+        "sid",
+        "type"
+      ],
+      "type": "orderbook_snapshot"
+    },
+    {
+      "market_ticker": "KXMLB-26-BOS",
+      "msg_keys": [
+        "market_id",
+        "market_ticker",
+        "no_dollars_fp",
+        "yes_dollars_fp"
+      ],
+      "ordinal": 20,
+      "seconds_since_first_frame": 0.0391,
+      "top_level_keys": [
+        "msg",
+        "seq",
+        "sid",
+        "type"
+      ],
+      "type": "orderbook_snapshot"
+    },
+    {
+      "market_ticker": "KXMLB-26-CHC",
+      "msg_keys": [
+        "market_id",
+        "market_ticker",
+        "no_dollars_fp",
+        "yes_dollars_fp"
+      ],
+      "ordinal": 21,
+      "seconds_since_first_frame": 0.0396,
+      "top_level_keys": [
+        "msg",
+        "seq",
+        "sid",
+        "type"
+      ],
+      "type": "orderbook_snapshot"
+    },
+    {
+      "market_ticker": "KXMLB-26-CLE",
+      "msg_keys": [
+        "market_id",
+        "market_ticker",
+        "no_dollars_fp",
+        "yes_dollars_fp"
+      ],
+      "ordinal": 22,
+      "seconds_since_first_frame": 0.04,
+      "top_level_keys": [
+        "msg",
+        "seq",
+        "sid",
+        "type"
+      ],
+      "type": "orderbook_snapshot"
+    },
+    {
+      "market_ticker": "KXMLB-26-HOU",
+      "msg_keys": [
+        "market_id",
+        "market_ticker",
+        "no_dollars_fp",
+        "yes_dollars_fp"
+      ],
+      "ordinal": 23,
+      "seconds_since_first_frame": 0.0768,
+      "top_level_keys": [
+        "msg",
+        "seq",
+        "sid",
+        "type"
+      ],
+      "type": "orderbook_snapshot"
+    },
+    {
+      "market_ticker": "KXMLB-26-LAA",
+      "msg_keys": [
+        "market_id",
+        "market_ticker",
+        "no_dollars_fp",
+        "yes_dollars_fp"
+      ],
+      "ordinal": 24,
+      "seconds_since_first_frame": 0.08,
+      "top_level_keys": [
+        "msg",
+        "seq",
+        "sid",
+        "type"
+      ],
+      "type": "orderbook_snapshot"
+    },
+    {
+      "market_ticker": "KXMLB-26-LAD",
+      "msg_keys": [
+        "market_id",
+        "market_ticker",
+        "no_dollars_fp",
+        "yes_dollars_fp"
+      ],
+      "ordinal": 25,
+      "seconds_since_first_frame": 0.0802,
+      "top_level_keys": [
+        "msg",
+        "seq",
+        "sid",
+        "type"
+      ],
+      "type": "orderbook_snapshot"
+    },
+    {
+      "market_ticker": "KXMLB-26-MIL",
+      "msg_keys": [
+        "market_id",
+        "market_ticker",
+        "no_dollars_fp",
+        "yes_dollars_fp"
+      ],
+      "ordinal": 26,
+      "seconds_since_first_frame": 0.0809,
+      "top_level_keys": [
+        "msg",
+        "seq",
+        "sid",
+        "type"
+      ],
+      "type": "orderbook_snapshot"
+    },
+    {
+      "market_ticker": "KXMLB-26-PHI",
+      "msg_keys": [
+        "market_id",
+        "market_ticker",
+        "no_dollars_fp",
+        "yes_dollars_fp"
+      ],
+      "ordinal": 27,
+      "seconds_since_first_frame": 0.0813,
+      "top_level_keys": [
+        "msg",
+        "seq",
+        "sid",
+        "type"
+      ],
+      "type": "orderbook_snapshot"
+    },
+    {
+      "market_ticker": "KXMLB-26-PIT",
+      "msg_keys": [
+        "market_id",
+        "market_ticker",
+        "no_dollars_fp",
+        "yes_dollars_fp"
+      ],
+      "ordinal": 28,
+      "seconds_since_first_frame": 0.0818,
+      "top_level_keys": [
+        "msg",
+        "seq",
+        "sid",
+        "type"
+      ],
+      "type": "orderbook_snapshot"
+    },
+    {
+      "market_ticker": "KXMLB-26-SF",
+      "msg_keys": [
+        "market_id",
+        "market_ticker",
+        "no_dollars_fp",
+        "yes_dollars_fp"
+      ],
+      "ordinal": 29,
+      "seconds_since_first_frame": 0.1129,
+      "top_level_keys": [
+        "msg",
+        "seq",
+        "sid",
+        "type"
+      ],
+      "type": "orderbook_snapshot"
+    },
+    {
+      "market_ticker": "KXMLB-26-STL",
+      "msg_keys": [
+        "market_id",
+        "market_ticker",
+        "no_dollars_fp",
+        "yes_dollars_fp"
+      ],
+      "ordinal": 30,
+      "seconds_since_first_frame": 0.1158,
+      "top_level_keys": [
+        "msg",
+        "seq",
+        "sid",
+        "type"
+      ],
+      "type": "orderbook_snapshot"
+    }
+  ],
+  "milestone": "KALSHI-DEMO-TRAFFIC-CAPACITY-001",
+  "not_cp6": "borrows CP6's dry-run mechanism; archives nothing and claims no checkpoint",
+  "recorder": {
+    "by_ticker": {
+      "KXBOXING-26AUG15SHIELDSCOTT-SHIELD": 1,
+      "KXECONSTATCPIYOY-26AUG-T3.6": 235,
+      "KXFEDDECISION-26SEP-C25": 331,
+      "KXGOVFLNOMR-26-JFIS": 1,
+      "KXHEISMAN-27-CCARR": 1,
+      "KXHEISMAN-27-DMOOR": 1,
+      "KXHEISMAN-27-GSTOC": 1,
+      "KXHEISMAN-27-JHOOV": 1,
+      "KXHEISMAN-27-JMAIA": 1,
+      "KXHEISMAN-27-JSAGA": 1,
+      "KXHEISMAN-27-JSAYI": 1,
+      "KXHEISMAN-27-JSMIT": 1,
+      "KXHEISMAN-27-MTONE": 1,
+      "KXHEISMAN-27-SLEA": 1,
+      "KXLIGAMXGAME-26AUG15ATLTIG-ATL": 1,
+      "KXLIGAMXGAME-26AUG16SLACDG-SLA": 1,
+      "KXMLB-26-BOS": 1,
+      "KXMLB-26-CHC": 1,
+      "KXMLB-26-CLE": 1,
+      "KXMLB-26-HOU": 1,
+      "KXMLB-26-LAA": 1,
+      "KXMLB-26-LAD": 1,
+      "KXMLB-26-MIL": 1,
+      "KXMLB-26-PHI": 1,
+      "KXMLB-26-PIT": 1,
+      "KXMLB-26-SF": 1,
+      "KXMLB-26-STL": 1,
+      "KXMLB-26-TEX": 1,
+      "KXMLB-26-TOR": 1,
+      "KXMLB-26-WSH": 1,
+      "KXNASCARRACE-COOO81526-AUCI": 1,
+      "KXNASCARRACE-COOO81526-AUDI": 1,
+      "KXNASCARRACE-COOO81526-JOLO": 1,
+      "KXNASCARRACE-COOO81526-KYLA": 1,
+      "KXNASCARRACE-COOO81526-ROCH": 1,
+      "KXNASCARRACE-COOO81526-RYBL": 1,
+      "KXNASCARRACE-COOO81526-TYRE": 1,
+      "KXNASCARRACE-COOO81526-WIBY": 1,
+      "KXNBA-27-BOS": 1,
+      "KXNBA-27-GSW": 1,
+      "KXNBA-27-LAL": 1,
+      "KXNBA-27-MIA": 1,
+      "KXNBA-27-OKC": 1,
+      "KXNBA-27-PHI": 1,
+      "KXNBA-27-TOR": 1,
+      "KXNCAAF-27-ALA": 1,
+      "KXNCAAF-27-FLA": 1,
+      "KXNCAAF-27-IND": 1,
+      "KXNCAAF-27-LSU": 1,
+      "KXNCAAF-27-MISS": 1,
+      "KXNCAAF-27-ORE": 1,
+      "KXNCAAF-27-USC": 1,
+      "KXPGATOP10-FESJC26-APOT": 1,
+      "KXPGATOP10-FESJC26-ASMA": 1,
+      "KXPGATOP10-FESJC26-BCAU": 1,
+      "KXPGATOP10-FESJC26-CAME": 1,
+      "KXPGATOP10-FESJC26-CCON": 1,
+      "KXPGATOP10-FESJC26-JKOI": 1,
+      "KXPGATOP10-FESJC26-JSPA": 1,
+      "KXPGATOP10-FESJC26-KREI": 1,
+      "KXPGATOP10-FESJC26-MBRE": 1,
+      "KXPGATOP10-FESJC26-MFIT": 1,
+      "KXPGATOP10-FESJC26-MHOM": 1,
+      "KXPGATOP10-FESJC26-NECH": 1,
+      "KXPGATOP10-FESJC26-NHOJ": 1,
+      "KXPGATOP10-FESJC26-PCAN": 1,
+      "KXPGATOP10-FESJC26-PCOO": 1,
+      "KXPGATOP10-FESJC26-PROD": 1,
+      "KXPGATOP10-FESJC26-RFOW": 1,
+      "KXPGATOP10-FESJC26-RGER": 1,
+      "KXPGATOP10-FESJC26-RHEN": 1,
+      "KXPGATOP10-FESJC26-RHIS": 1,
+      "KXPGATOP10-FESJC26-RMCI": 1,
+      "KXPGATOP10-FESJC26-SBUR": 1,
+      "KXPGATOP10-FESJC26-SIM": 1,
+      "KXPGATOP10-FESJC26-SLOW": 1,
+      "KXPGATOP10-FESJC26-SSTE": 1,
+      "KXPGATOP10-FESJC26-SSTR": 1,
+      "KXPGATOP10-FESJC26-SYEL": 1,
+      "KXPGATOP10-FESJC26-TFLE": 1,
+      "KXPGATOP10-FESJC26-XSCH": 1,
+      "KXPGATOP20-FESJC26-APOT": 1,
+      "KXPGATOP20-FESJC26-BCAU": 1,
+      "KXPGATOP20-FESJC26-BGRI": 1,
+      "KXPGATOP20-FESJC26-CAME": 1,
+      "KXPGATOP20-FESJC26-CCON": 1,
+      "KXPGATOP20-FESJC26-CGOT": 1,
+      "KXPGATOP20-FESJC26-ECOL": 1,
+      "KXPGATOP20-FESJC26-GWOO": 1,
+      "KXPGATOP20-FESJC26-HENG": 1,
+      "KXPGATOP20-FESJC26-JKNA": 1,
+      "KXPGATOP20-FESJC26-JKOI": 1,
+      "KXPGATOP20-FESJC26-JROS": 1,
+      "KXPGATOP20-FESJC26-JSMI": 1,
+      "KXPGATOP20-FESJC26-KMIT": 1,
+      "KXPGATOP20-FESJC26-LABE": 1,
+      "KXPGATOP20-FESJC26-MBRE": 1,
+      "KXPGATOP20-FESJC26-MFIT": 1,
+      "KXPGATOP20-FESJC26-MLEE": 1,
+      "KXPGATOP20-FESJC26-MMCN": 1,
+      "KXPGATOP20-FESJC26-NHOJ": 1,
+      "KXPGATOP20-FESJC26-PCOO": 1,
+      "KXPGATOP20-FESJC26-RCAS": 1,
+      "KXPGATOP20-FESJC26-RHEN": 1,
+      "KXPGATOP20-FESJC26-RHIS": 1,
+      "KXPGATOP20-FESJC26-RMCI": 1,
+      "KXPGATOP20-FESJC26-SIM": 1,
+      "KXPGATOP20-FESJC26-SSTR": 1,
+      "KXPGATOP20-FESJC26-SYEL": 1,
+      "KXPGATOP20-FESJC26-WKIM": 1,
+      "KXPGATOUR-FESJC26-ABHA": 1,
+      "KXPGATOUR-FESJC26-ANOR": 1,
+      "KXPGATOUR-FESJC26-ARAI": 1,
+      "KXPGATOUR-FESJC26-ASCO": 1,
+      "KXPGATOUR-FESJC26-ASMA": 1,
+      "KXPGATOUR-FESJC26-BCAU": 1,
+      "KXPGATOUR-FESJC26-BGRI": 1,
+      "KXPGATOUR-FESJC26-CMOR": 1,
+      "KXPGATOUR-FESJC26-ECOL": 1,
+      "KXPGATOUR-FESJC26-GWOO": 1,
+      "KXPGATOUR-FESJC26-HENG": 1,
+      "KXPGATOUR-FESJC26-HHAL": 1,
+      "KXPGATOUR-FESJC26-HMAT": 1,
+      "KXPGATOUR-FESJC26-JBRI": 1,
+      "KXPGATOUR-FESJC26-JSPA": 1,
+      "KXPGATOUR-FESJC26-KKIT": 1,
+      "KXPGATOUR-FESJC26-KREI": 1,
+      "KXPGATOUR-FESJC26-MFIT": 1,
+      "KXPGATOUR-FESJC26-MLEE": 1,
+      "KXPGATOUR-FESJC26-MMCN": 1,
+      "KXPGATOUR-FESJC26-MSCH": 1,
+      "KXPGATOUR-FESJC26-NECH": 1,
+      "KXPGATOUR-FESJC26-NHJG": 1,
+      "KXPGATOUR-FESJC26-PCOO": 1,
+      "KXPGATOUR-FESJC26-RFOW": 1,
+      "KXPGATOUR-FESJC26-RGER": 1,
+      "KXPGATOUR-FESJC26-RHIS": 1,
+      "KXPGATOUR-FESJC26-RMCI": 1,
+      "KXPGATOUR-FESJC26-SBUR": 1,
+      "KXPGATOUR-FESJC26-SIM": 1,
+      "KXPGATOUR-FESJC26-SLOW": 1,
+      "KXPGATOUR-FESJC26-SSCH": 1,
+      "KXPGATOUR-FESJC26-SSTR": 1,
+      "KXPGATOUR-FESJC26-STHE": 1,
+      "KXPGATOUR-FESJC26-TFLE": 1,
+      "KXPGATOUR-FESJC26-TKIM": 1,
+      "KXPGATOUR-FESJC26-VHOV": 1,
+      "KXPGATOUR-FESJC26-WCLA": 1,
+      "KXPGATOUR-FESJC26-XSCH": 1,
+      "KXPRESNOMD-28-AELS": 1,
+      "KXPRESNOMD-28-CMUR": 1,
+      "KXPRESNOMD-28-JCRO": 1,
+      "KXPRESNOMR-28-BD": 1,
+      "KXPRESNOMR-28-BK": 1,
+      "KXPRESNOMR-28-DJTJR": 1,
+      "KXPRESNOMR-28-EM": 1,
+      "KXPRESNOMR-28-ES": 1,
+      "KXPRESNOMR-28-GA": 1,
+      "KXPRESNOMR-28-ITRU": 1,
+      "KXPRESNOMR-28-JDV": 1,
+      "KXPRESNOMR-28-MG": 1,
+      "KXPRESNOMR-28-MPEN": 1,
+      "KXPRESNOMR-28-MTG": 1,
+      "KXPRESNOMR-28-NMIN": 1,
+      "KXPRESNOMR-28-RPAU": 1,
+      "KXPRESNOMR-28-STE": 1,
+      "KXPRESNOMR-28-TC": 1,
+      "KXPRESNOMR-28-TCAR": 1,
+      "KXPRESNOMR-28-TG": 1,
+      "KXPRESNOMR-28-TMAS": 1,
+      "KXPRESNOMR-28-VR": 1,
+      "KXSB-27-BAL": 1,
+      "KXSB-27-CHI": 1,
+      "KXSB-27-DEN": 1,
+      "KXSB-27-DET": 1,
+      "KXSB-27-GB": 1,
+      "KXSB-27-HOU": 1,
+      "KXSB-27-JAC": 1,
+      "KXSB-27-KC": 1,
+      "KXSB-27-LAC": 1,
+      "KXSB-27-LAR": 1,
+      "KXSB-27-MIN": 1,
+      "KXSB-27-PIT": 1,
+      "KXSB-27-SF": 1,
+      "KXSB-27-TB": 1,
+      "KXSCRSENS-26-DNOR": 1,
+      "KXUFCFIGHT-26AUG15MAKMGI-MAK": 1,
+      "KXUFCFIGHT-26AUG15MAKMGI-MGI": 1,
+      "KXUFCMOV-26AUG15MAKMGI-MAKSUB": 1,
+      "KXUFCMOV-26AUG15MAKMGI-MGIKOTKODQ": 1,
+      "KXUFCMOV-26AUG15MAKMGI-MGISUB": 1,
+      "KXVOTEPRIMARY-GOVFLNOMR26JFIS-51": 1,
+      "KXVOTEPRIMARY-GOVFLNOMR26JFIS-52": 1,
+      "KXVOTEPRIMARY-GOVFLNOMR26JFIS-55": 1,
+      "KXVOTEPRIMARY-GOVFLNOMR26JFIS-65": 1,
+      "KXVOTEPRIMARY-GOVFLNOMR26JFISJFIS-13": 1,
+      "KXVOTEPRIMARY-GOVFLNOMR26JFISJFIS-14": 1,
+      "KXVOTEPRIMARY-GOVFLNOMR26JFISJFIS-57": 1,
+      "KXVOTEPRIMARY-GOVFLNOMR26JFISJFIS-6": 1,
+      "KXVOTEPRIMARY-GOVFLNOMR26JFISJFIS-8": 1,
+      "__no_market_ticker__": 4
+    },
+    "by_type": {
+      "error": 1,
+      "orderbook_delta": 436,
+      "orderbook_snapshot": 200,
+      "subscribed": 3,
+      "ticker": 72,
+      "trade": 56
+    },
+    "connections": 1,
+    "first_frame_at": "2026-08-17T06:13:01.679399+00:00",
+    "frames_not_a_dict": 0,
+    "frames_tapped": 768,
+    "span_seconds": 300.0305
+  },
+  "run_label": "control-wide-eligible-200",
+  "session_result": {
+    "archive_root": null,
+    "boundary_note": "OBSERVE_ONLY: authenticated read-only Kalshi market-data observation. The session sends channel subscriptions only, over a closed allowlist ('orderbook_delta', 'ticker', 'trade', 'market_lifecycle_v2'); no order, position, wallet, key-management or write-scoped surface exists in this package. Evidence is appended to a filesystem archive; no database session is opened.",
+    "channels": [
+      "orderbook_delta",
+      "ticker",
+      "trade"
+    ],
+    "detail": "max_seconds=300 reached",
+    "dry_run": true,
+    "duration_ms": 300465,
+    "environment": "demo",
+    "events_archived": 0,
+    "events_received": 768,
+    "events_rejected": 0,
+    "finished_at": "2026-08-17T06:18:01.744720Z",
+    "frames_malformed": 0,
+    "markets_subscribed": 200,
+    "measurement_path": null,
+    "metrics_errors": 0,
+    "reconnects": 0,
+    "recoveries_requested": 1,
+    "rejection_reasons": [],
+    "rotation_failures": 0,
+    "segments_committed": 0,
+    "sequence_faults": 57,
+    "started_at": "2026-08-17T06:13:01.279184Z",
+    "status": "capped_time",
+    "subscription_generations": 3
+  },
+  "started_at": "2026-08-17T06:13:01.278945+00:00",
+  "wire_counters_per_connection": [
+    {
+      "bytes_received": 248621,
+      "closes": 1,
+      "commands_refused": 0,
+      "commands_sent": 2,
+      "connects": 1,
+      "frames_malformed": 0,
+      "frames_oversize": 0,
+      "frames_received": 768,
+      "frames_yielded": 768,
+      "read_timeouts": 0,
+      "reader_stall_ms_max": 11509
+    }
+  ]
+}

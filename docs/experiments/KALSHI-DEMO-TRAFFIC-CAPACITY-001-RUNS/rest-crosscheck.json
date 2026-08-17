@@ -1,0 +1,200 @@
+{
+  "environment": "demo",
+  "fields_that_moved_count_of_markets": {
+    "can_close_early": 0,
+    "close_time": 0,
+    "created_time": 0,
+    "custom_strike": 0,
+    "early_close_condition": 0,
+    "event_ticker": 0,
+    "exchange_index": 0,
+    "expected_expiration_time": 0,
+    "expiration_time": 0,
+    "expiration_value": 0,
+    "floor_strike": 0,
+    "last_price_dollars": 0,
+    "latest_expiration_time": 0,
+    "liquidity_dollars": 0,
+    "market_type": 0,
+    "no_ask_dollars": 0,
+    "no_bid_dollars": 0,
+    "no_sub_title": 0,
+    "notional_value_dollars": 0,
+    "occurrence_datetime": 0,
+    "open_interest_fp": 0,
+    "open_time": 0,
+    "previous_price_dollars": 0,
+    "previous_yes_ask_dollars": 0,
+    "previous_yes_bid_dollars": 0,
+    "price_level_structure": 0,
+    "price_ranges": 0,
+    "primary_participant_key": 0,
+    "result": 0,
+    "rules_primary": 0,
+    "rules_secondary": 0,
+    "settlement_timer_seconds": 0,
+    "settlement_ts": 0,
+    "settlement_value_dollars": 0,
+    "status": 0,
+    "strike_type": 0,
+    "subtitle": 0,
+    "ticker": 0,
+    "title": 0,
+    "updated_time": 0,
+    "volume_24h_fp": 10,
+    "volume_fp": 0,
+    "yes_ask_dollars": 0,
+    "yes_ask_size_fp": 1,
+    "yes_bid_dollars": 0,
+    "yes_bid_size_fp": 1,
+    "yes_sub_title": 0
+  },
+  "first_read_at": "2026-08-17T05:55:29.478063+00:00",
+  "interval_seconds_requested": 540.0,
+  "markets_present_in_both_reads": 12,
+  "markets_requested": 12,
+  "markets_that_moved_any_watched_field": 10,
+  "milestone": "KALSHI-DEMO-TRAFFIC-CAPACITY-001",
+  "per_market": {
+    "KXECONSTATCPIYOY-26AUG-T3.6": {
+      "fields_that_moved": [
+        "volume_24h_fp",
+        "yes_ask_size_fp",
+        "yes_bid_size_fp"
+      ],
+      "first": {
+        "volume_24h_fp": "121109.99",
+        "yes_ask_size_fp": "745555.81",
+        "yes_bid_size_fp": "11324995.47"
+      },
+      "present_in_both_reads": true,
+      "second": {
+        "volume_24h_fp": "107776.67",
+        "yes_ask_size_fp": "772222.45",
+        "yes_bid_size_fp": "11466662.08"
+      }
+    },
+    "KXHEISMAN-27-CCARR": {
+      "fields_that_moved": [
+        "volume_24h_fp"
+      ],
+      "first": {
+        "volume_24h_fp": "7721.15"
+      },
+      "present_in_both_reads": true,
+      "second": {
+        "volume_24h_fp": "7657.42"
+      }
+    },
+    "KXLIGAMXGAME-26AUG16SLACDG-SLA": {
+      "fields_that_moved": [],
+      "first": {},
+      "present_in_both_reads": true,
+      "second": {}
+    },
+    "KXMLB-26-TEX": {
+      "fields_that_moved": [
+        "volume_24h_fp"
+      ],
+      "first": {
+        "volume_24h_fp": "45809234.71"
+      },
+      "present_in_both_reads": true,
+      "second": {
+        "volume_24h_fp": "45096414.46"
+      }
+    },
+    "KXNASCARRACE-COOO81526-ROCH": {
+      "fields_that_moved": [],
+      "first": {},
+      "present_in_both_reads": true,
+      "second": {}
+    },
+    "KXNBA-27-TOR": {
+      "fields_that_moved": [
+        "volume_24h_fp"
+      ],
+      "first": {
+        "volume_24h_fp": "1044438.55"
+      },
+      "present_in_both_reads": true,
+      "second": {
+        "volume_24h_fp": "1010973.52"
+      }
+    },
+    "KXPGATOP10-FESJC26-CCON": {
+      "fields_that_moved": [
+        "volume_24h_fp"
+      ],
+      "first": {
+        "volume_24h_fp": "14012.35"
+      },
+      "present_in_both_reads": true,
+      "second": {
+        "volume_24h_fp": "13946.82"
+      }
+    },
+    "KXPGATOP20-FESJC26-NHOJ": {
+      "fields_that_moved": [
+        "volume_24h_fp"
+      ],
+      "first": {
+        "volume_24h_fp": "14187.62"
+      },
+      "present_in_both_reads": true,
+      "second": {
+        "volume_24h_fp": "14117.45"
+      }
+    },
+    "KXPGATOUR-FESJC26-ARAI": {
+      "fields_that_moved": [
+        "volume_24h_fp"
+      ],
+      "first": {
+        "volume_24h_fp": "12947.81"
+      },
+      "present_in_both_reads": true,
+      "second": {
+        "volume_24h_fp": "12894.63"
+      }
+    },
+    "KXPRESNOMR-28-ITRU": {
+      "fields_that_moved": [
+        "volume_24h_fp"
+      ],
+      "first": {
+        "volume_24h_fp": "9804.20"
+      },
+      "present_in_both_reads": true,
+      "second": {
+        "volume_24h_fp": "9736.14"
+      }
+    },
+    "KXSB-27-KC": {
+      "fields_that_moved": [
+        "volume_24h_fp"
+      ],
+      "first": {
+        "volume_24h_fp": "15406.11"
+      },
+      "present_in_both_reads": true,
+      "second": {
+        "volume_24h_fp": "15340.40"
+      }
+    },
+    "KXVOTEPRIMARY-GOVFLNOMR26JFISJFIS-14": {
+      "fields_that_moved": [
+        "volume_24h_fp"
+      ],
+      "first": {
+        "volume_24h_fp": "248268.40"
+      },
+      "present_in_both_reads": true,
+      "second": {
+        "volume_24h_fp": "248211.77"
+      }
+    }
+  },
+  "route": "GET /trade-api/v2/markets (public, no credential)",
+  "second_read_at": "2026-08-17T06:04:29.743517+00:00"
+}
