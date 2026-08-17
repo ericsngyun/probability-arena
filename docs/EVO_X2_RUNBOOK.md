@@ -3087,3 +3087,56 @@ silent edit.
 tighter **cap**, never a floor. Set it from the histogram above once a real
 distribution exists; never guess it. CLI override:
 `--lock-wait-budget-seconds`.
+
+---
+
+## Git remotes — migrated to Cursor Origin (2026-08-17)
+
+**`origin` is now Cursor Origin**, not GitHub:
+
+| remote | URL | role |
+|---|---|---|
+| `origin` (fetch) | `https://origin.cursor.com/esy/probability-arena.git` | **primary** |
+| `origin` (push) | Cursor **and** GitHub — both | see below |
+| `github` | `https://github.com/ericsngyun/probability-arena.git` | secondary / fallback |
+
+`main` tracks `origin/main` (Cursor). All 129 refs were pushed at migration.
+Mac worktrees share this config, so all of them followed automatically.
+
+### Why `origin` pushes to BOTH — and when to stop
+
+**EVO cannot authenticate to Cursor Origin.** It reaches GitHub over SSH
+(`git@github.com:…`), but Cursor Origin authenticates over HTTPS through a git
+credential helper:
+
+```
+credential.https://origin.cursor.com.helper = !~/.local/bin/origin credential-helper
+```
+
+That requires the `origin` CLI installed on EVO **and an interactive
+`origin auth login` run there**. SSH is not an alternative — `origin.cursor.com`
+does not answer on the SSH port, and `origin ssh-key` alone is not sufficient.
+
+So `origin` is configured with **two push URLs**. One `git push origin` reaches
+Cursor *and* GitHub, and **EVO keeps pulling from GitHub as it always has**.
+Without this, a push would land only on Cursor and **EVO would silently go
+stale — the deploy pipeline would break without erroring**, which is worse than
+an extra push.
+
+**To finish the migration** (optional), on EVO: install the `origin` CLI, run
+`origin auth login`, repoint its remote to
+`https://origin.cursor.com/esy/probability-arena.git`, verify `git fetch origin`,
+then drop the GitHub push URL here with:
+
+```
+git remote set-url --delete --push origin https://github.com/ericsngyun/probability-arena.git
+```
+
+An SSH key for EVO (`evo-x2-deploy`,
+`SHA256:Pmpv1h/xYVZMvHJ/LfnZt1LCGKPEyBjSfvtYlpCAobA`) is already registered on
+the Origin account and can be removed with `origin ssh-key delete` if unused.
+
+### Verifying the three-way match
+
+`main` must agree across **local · Cursor · GitHub · EVO**. EVO reads GitHub
+until it is migrated, so a Cursor-only push breaks the invariant silently.
