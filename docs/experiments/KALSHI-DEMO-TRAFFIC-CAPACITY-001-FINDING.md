@@ -31,6 +31,12 @@ The frozen twelve-market pool produced **679 frames in 900 seconds**.
 | preregistered floor | 100,000 |
 | **shortfall** | **9.2×** |
 
+**It replicates in the harsher direction.** The same pool, probed again two
+hours later for twice as long, produced **zero** continuous frames in thirty
+minutes — `N_4h = 0` (§8). And subscribing to the **entire** 388-market
+real-market eligible universe of DEMO, 32× the preregistered universe size,
+still reaches only **55,344** (§6.1). This is not a pool-selection problem.
+
 The rule is `UNREACHABLE` when the **point estimate itself** is below 100,000.
 It is below by an order of magnitude, so the verdict does not turn on the
 interval, on the interval's method, or on any judgement about how conservative
@@ -324,7 +330,9 @@ the venue are incompatible as currently written.
    be said is that the shortfall is **9.2× for the pool and 1.8× for the entire
    non-test universe**, and that eleven of twelve pool markets contributed
    literally nothing, so the whole four-hour budget would have to arrive as
-   bursts. §8 records the longer replication run against this exact concern.
+   bursts. **§8 replicates the primary window two hours later at twice the
+   length and finds ZERO continuous frames**, which narrows this objection
+   considerably without closing it.
 2. **Whether the pool was quiet because 26 hours had passed.** The pool was
    frozen from a snapshot taken 2026-08-16T04:01Z and probed 2026-08-17T05:51Z.
    The manifest itself flagged (§6.5) that three of the four high-activity
@@ -350,9 +358,48 @@ the venue are incompatible as currently written.
 
 ---
 
-## 8. Replication
+## 8. Replication — the pool got quieter, not louder
 
-*(see §8.1)*
+§7.1 is the one objection that could overturn this verdict: a fifteen-minute
+window might have landed in a trough. So the frozen pool was probed again, two
+hours later, for twice as long.
+
+`replication-pool-12-1800s`, `2026-08-17T07:58:46.915342Z` →
+`08:29:02.386952Z`, same twelve markets, same channels, 1,815 s observed.
+
+| | primary (05:51Z, 900 s) | **replication (07:58Z, 1,815 s)** |
+|---|---:|---:|
+| frames received | 679 | 286 |
+| `orderbook_delta` | 641 | **0** |
+| `ticker` | 23 | **0** |
+| `trade` | 0 | **0** |
+| `orderbook_snapshot` | 12 | 228 |
+| `subscribed` | 3 | 58 |
+| Σλ̂ continuous | 0.7367/s | **0.0000/s** |
+| **N_4h continuous** | 10,608 | **0** |
+| N_4h all-archived arm | 10,848 | 2,261 |
+
+**Zero continuous frames in thirty minutes.** Every one of the 286 frames is a
+one-off: the run spans 20 subscription generations (19 reconnects, 19
+transport read timeouts at the 90 s bound), and 12 markets × 19 resubscribes =
+228 snapshots plus 58 acks accounts for all of them. Even
+`KXECONSTATCPIYOY-26AUG-T3.6`, which carried 97.9% of the primary window, went
+completely silent; its 19 frames are its 19 replayed snapshots.
+
+Three things follow.
+
+- **The verdict replicates, in the harsher direction.** The primary window was
+  not a trough; if anything it was the pool's better half-hour.
+- **The all-archived arm's 2,261 is pure instrument.** Every frame in it is a
+  reconnect artefact — the exact effect §1.3 removed from the primary run,
+  reintroduced here only because a bounded `read_timeout_s` was required to
+  make the session terminate at all (§9.0). It is reported rather than hidden
+  because a number that is 100% artefact is worth being able to recognise.
+- **§7.1 is narrowed but not closed.** Two windows totalling 45 minutes cannot
+  rule out a burst somewhere in a four-hour session. What they do rule out is
+  the pool being *steadily* near the floor and merely under-sampled: it is not
+  9× short on average with normal variance, it is at zero for long stretches
+  with one market occasionally waking up.
 
 ---
 
