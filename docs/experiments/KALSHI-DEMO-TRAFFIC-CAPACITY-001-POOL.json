@@ -1,0 +1,160 @@
+{
+  "environment": "demo",
+  "excluded_series": [
+    "KXMAXSHARDINGTEST",
+    "KXTESTMATCH"
+  ],
+  "exclusion_authority": "docs/experiments/KALSHI-TAPE-MANIFEST-001-AMENDMENT-TEST-INSTRUMENTS.md",
+  "frozen_before_probe": true,
+  "high": [
+    {
+      "close_time": "2028-10-31T04:00:00+00:00",
+      "event_ticker": "KXMLB-26",
+      "rank": 1,
+      "series": "KXMLB",
+      "statistic": 16890.343793628224,
+      "ticker": "KXMLB-26-TEX",
+      "title": "Will Texas win the 2026 Pro Baseball Championship?",
+      "top_of_book_change_rate": 1.0
+    },
+    {
+      "close_time": "2029-07-30T14:00:00+00:00",
+      "event_ticker": "KXNBA-27",
+      "rank": 2,
+      "series": "KXNBA",
+      "statistic": 13175.991678051709,
+      "ticker": "KXNBA-27-TOR",
+      "title": "Will Toronto win the 2027 Pro Basketball Finals?",
+      "top_of_book_change_rate": 1.0
+    },
+    {
+      "close_time": "2026-08-19T07:00:00+00:00",
+      "event_ticker": "KXLIGAMXGAME-26AUG16SLACDG",
+      "rank": 3,
+      "series": "KXLIGAMXGAME",
+      "statistic": 5419.042033434541,
+      "ticker": "KXLIGAMXGAME-26AUG16SLACDG-SLA",
+      "title": "Santos Laguna vs Guadalajara Winner?",
+      "top_of_book_change_rate": 1.0
+    },
+    {
+      "close_time": "2026-09-11T12:29:00+00:00",
+      "event_ticker": "KXECONSTATCPIYOY-26AUG",
+      "rank": 4,
+      "series": "KXECONSTATCPIYOY",
+      "statistic": 2632.1092890597197,
+      "ticker": "KXECONSTATCPIYOY-26AUG-T3.6",
+      "title": "CPI year-over-year in Aug 2026?",
+      "top_of_book_change_rate": 0.6666666666666666
+    }
+  ],
+  "milestone": "KALSHI-DEMO-TRAFFIC-CAPACITY-001",
+  "plateau": [
+    {
+      "close_time": "2026-08-30T00:00:00+00:00",
+      "event_ticker": "KXPGATOUR-FESJC26",
+      "rank": 96,
+      "series": "KXPGATOUR",
+      "statistic": 16.999494842876857,
+      "ticker": "KXPGATOUR-FESJC26-ARAI",
+      "title": "Will Aaron Rai win the FedEx St. Jude Championship?",
+      "top_of_book_change_rate": 1.0
+    },
+    {
+      "close_time": "2027-01-01T15:00:00+00:00",
+      "event_ticker": "KXHEISMAN-27",
+      "rank": 97,
+      "series": "KXHEISMAN",
+      "statistic": 16.97054161175375,
+      "ticker": "KXHEISMAN-27-CCARR",
+      "title": "Who will win Heisman Trophy?",
+      "top_of_book_change_rate": 1.0
+    },
+    {
+      "close_time": "2029-02-13T23:30:00+00:00",
+      "event_ticker": "KXSB-27",
+      "rank": 98,
+      "series": "KXSB",
+      "statistic": 16.966593443862212,
+      "ticker": "KXSB-27-KC",
+      "title": "Will Kansas City win the 2027 Pro Football Championship?",
+      "top_of_book_change_rate": 1.0
+    },
+    {
+      "close_time": "2028-11-07T15:00:00+00:00",
+      "event_ticker": "KXPRESNOMR-28",
+      "rank": 99,
+      "series": "KXPRESNOMR",
+      "statistic": 16.95738105209889,
+      "ticker": "KXPRESNOMR-28-ITRU",
+      "title": "Will Ivanka Trump be the nominee for the Presidency for the Republican party?",
+      "top_of_book_change_rate": 1.0
+    },
+    {
+      "close_time": "2026-08-30T05:00:00+00:00",
+      "event_ticker": "KXNASCARRACE-COOO81526",
+      "rank": 100,
+      "series": "KXNASCARRACE",
+      "statistic": 16.93764021274066,
+      "ticker": "KXNASCARRACE-COOO81526-ROCH",
+      "title": "Will Ross Chastain be the NASCAR Cup Series Cook Out 400 winner?",
+      "top_of_book_change_rate": 1.0
+    },
+    {
+      "close_time": "2027-08-18T14:00:00+00:00",
+      "event_ticker": "KXVOTEPRIMARY-GOVFLNOMR26JFIS",
+      "rank": 101,
+      "series": "KXVOTEPRIMARY",
+      "statistic": 16.93632415677885,
+      "ticker": "KXVOTEPRIMARY-GOVFLNOMR26JFISJFIS-14",
+      "title": "Will James Fishback receive at least 14% of the popular vote in the 2026 Florida Republican Governor primary?",
+      "top_of_book_change_rate": 1.0
+    },
+    {
+      "close_time": "2026-09-13T00:00:00+00:00",
+      "event_ticker": "KXPGATOP20-FESJC26",
+      "rank": 103,
+      "series": "KXPGATOP20",
+      "statistic": 16.91658331737466,
+      "ticker": "KXPGATOP20-FESJC26-NHOJ",
+      "title": "FedEx St. Jude Championship: Will Nicolai Hojgaard finish top 20?",
+      "top_of_book_change_rate": 1.0
+    },
+    {
+      "close_time": "2026-09-13T00:00:00+00:00",
+      "event_ticker": "KXPGATOP10-FESJC26",
+      "rank": 105,
+      "series": "KXPGATOP10",
+      "statistic": 16.90473881372446,
+      "ticker": "KXPGATOP10-FESJC26-CCON",
+      "title": "FedEx St. Jude Championship: Will Corey Conners finish top 10?",
+      "top_of_book_change_rate": 1.0
+    }
+  ],
+  "plateau_band_candidates_after_test_exclusion": 178,
+  "pool_id": "KALSHI-DEMO-TRAFFIC-CAPACITY-001-POOL",
+  "selection_rule": {
+    "high": "all four markets at rank 1-4 of the manifest's eligible_ranked (the >= 1,000 contracts/min band). No discretion: the preregistration names all four.",
+    "no_post_hoc_optimisation": "Frozen and committed before any socket was opened. A market that turns out quiet STAYS IN and its rate is reported.",
+    "plateau": "the 15.0-17.0 contracts/min band with venue test series excluded, ordered by manifest rank ascending, drawn with the manifest's own within_stratum_pick (pass 1: first market of an unclaimed event_ticker; pass 2: fill from the remainder), n=8",
+    "total": 12
+  },
+  "source_artifact": "docs/experiments/KALSHI-TAPE-MANIFEST-001.json",
+  "source_artifact_sha256": "be1fdbd7f7a772a0540f743cb423f78ed29effac3dbad7d1aad156f9a09593ad",
+  "source_canonical_snapshot_timestamp": "2026-08-16T04:01:12.764730+00:00",
+  "source_frame_digest_sha256": "f0604224c651ac7297d69436f7ce930f1966d963ab81a9cf8a4ec23fd7141a5a",
+  "tickers": [
+    "KXMLB-26-TEX",
+    "KXNBA-27-TOR",
+    "KXLIGAMXGAME-26AUG16SLACDG-SLA",
+    "KXECONSTATCPIYOY-26AUG-T3.6",
+    "KXPGATOUR-FESJC26-ARAI",
+    "KXHEISMAN-27-CCARR",
+    "KXSB-27-KC",
+    "KXPRESNOMR-28-ITRU",
+    "KXNASCARRACE-COOO81526-ROCH",
+    "KXVOTEPRIMARY-GOVFLNOMR26JFISJFIS-14",
+    "KXPGATOP20-FESJC26-NHOJ",
+    "KXPGATOP10-FESJC26-CCON"
+  ]
+}
