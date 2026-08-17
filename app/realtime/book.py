@@ -246,6 +246,24 @@ SEQ_GAP = "gap"
 SEQ_REGRESSION = "regression"
 SEQ_MISSING = "missing_sequence"
 
+# --- ladder presence --------------------------------------------------------------
+#
+# "The venue sent an empty ladder" and "the venue sent no ladder key at all" are
+# DIFFERENT OBSERVATIONS and are never merged. Measured on the DEMO wire
+# 2026-08-17 (`docs/experiments/KALSHI-COLLECTOR-P0-FIXES-RUNS/`): of 60
+# `orderbook_snapshot` frames, 57 carried non-empty ladders — up to eight YES
+# levels and seven NO levels — and 3 carried NEITHER key. So the venue does send
+# ladders, and it omits the key for a side holding nothing, which this file
+# already recorded as legitimate from a 2026-08-08 capture (`apply_snapshot`).
+#
+# What was missing is any way for a reader to tell "observed, and empty" apart
+# from "never transmitted". Both produce a book with zero levels; only one of
+# them is an observation, and reading the other as depth is how a microstructure
+# statistic acquires liquidity that never existed.
+LADDER_SUPPLIED = "supplied"
+LADDER_OMITTED = "omitted_by_venue"
+LADDER_UNOBSERVED = "no_snapshot_applied"
+
 
 class BookIntegrityError(RuntimeError):
     """The book cannot be trusted and must not be published."""
@@ -304,6 +322,11 @@ class OrderBook:
         self.synced = False
         self.integrity_reason: str | None = "awaiting snapshot"
         self.snapshot_receive_time: datetime | None = None
+        # Which ladders the LAST APPLIED SNAPSHOT actually carried. Typed, and
+        # carried on every derived view, so a zero-level side is never read as
+        # observed emptiness when the venue simply did not transmit it.
+        self.ladder_presence: dict = {SIDE_YES: LADDER_UNOBSERVED,
+                                      SIDE_NO: LADDER_UNOBSERVED}
         self.stats = {"snapshots": 0, "deltas": 0, "duplicates": 0, "gaps": 0,
                       "regressions": 0, "resyncs": 0, "rejected_pre_snapshot": 0,
                       # A reconnect is counted, never merged into `gaps`: they
@@ -387,14 +410,25 @@ class OrderBook:
             if not msg.get("market_ticker") and ticker is None:
                 raise BookIntegrityError(
                     f"{self.market_ticker}: snapshot identifies no market")
-            yes_levels = self._parse_levels(msg.get("yes_dollars_fp") or [], "yes")
-            no_levels = self._parse_levels(msg.get("no_dollars_fp") or [], "no")
+            # PRESENCE IS READ BEFORE THE VALUES, and `None` counts as absent
+            # for the reason `_first_field` gives: a JSON null is the venue
+            # declining to answer, not an answer. `or []` below still guards the
+            # parse; what it no longer does is erase the distinction.
+            raw_yes = msg.get("yes_dollars_fp")
+            raw_no = msg.get("no_dollars_fp")
+            presence = {
+                SIDE_YES: LADDER_SUPPLIED if raw_yes is not None else LADDER_OMITTED,
+                SIDE_NO: LADDER_SUPPLIED if raw_no is not None else LADDER_OMITTED,
+            }
+            yes_levels = self._parse_levels(raw_yes or [], "yes")
+            no_levels = self._parse_levels(raw_no or [], "no")
             yes = {p: q for p, q in yes_levels if q > 0}
             no = {p: q for p, q in no_levels if q > 0}
             self._require_uncrossed(yes, no)
         except Exception as exc:
             self._halt(f"snapshot rejected: {type(exc).__name__}: {exc}")
             raise
+        self.ladder_presence = presence
         self.yes, self.no = yes, no
         if sid is not None and self.sid is not None and sid != self.sid:
             self.stats["resyncs"] += 1
@@ -407,7 +441,12 @@ class OrderBook:
         self.snapshot_receive_time = receive_time or utcnow()
         self.stats["snapshots"] += 1
         return {"action": "snapshot", "generation": self.generation,
-                "yes_levels": len(self.yes), "no_levels": len(self.no)}
+                "yes_levels": len(self.yes), "no_levels": len(self.no),
+                # On the RESULT too, not only on the object: the dispatch
+                # return value is what a caller reads to decide whether a
+                # snapshot told it anything, and `yes_levels: 0` alone cannot
+                # answer that.
+                "ladder_presence": dict(self.ladder_presence)}
 
     def _require_uncrossed(self, yes: dict, no: dict) -> None:
         """A crossed book is the observable symptom of a wrong NO mapping.
@@ -609,6 +648,12 @@ class OrderBook:
             "spread_units": (ask - bid) if (bid is not None and ask is not None)
                             else None,
             "yes_levels": len(self.yes), "no_levels": len(self.no),
+            # Beside every level count, always. `yes_levels: 0` with
+            # `ladder_presence.yes == "omitted_by_venue"` is a book with no
+            # observation on that side; the same zero with `"supplied"` is a
+            # side the venue said was empty. A consumer that treats those the
+            # same is inventing depth information it does not have.
+            "ladder_presence": dict(self.ladder_presence),
         }
 
     def yes_scale_ladder(self) -> dict:
@@ -653,6 +698,7 @@ class OrderBook:
                 # data rather than only in a docstring.
                 "use_yes_price_requested": self.use_yes_price,
                 "no_side_normalization": "identity_yes_scaled",
+                "ladder_presence": dict(self.ladder_presence),
                 "bids": bids, "asks": asks}
 
     def checksum(self) -> str:
@@ -718,6 +764,21 @@ class SubscriptionState:
     message was lost, and nothing in the hole tells us which market it belonged
     to, so **every** book on this subscription is suspect. Repairing only the
     market named in the next message would leave the others silently wrong.
+
+    **ONE sid IS ONE CHANNEL, and only the orderbook channel needs a base.**
+    Measured on the DEMO wire 2026-08-17: a single `subscribe` naming three
+    channels produced three acks, `sid 1 = orderbook_delta`, `sid 2 = ticker`,
+    `sid 3 = trade`, each carrying its own `seq` namespace. `healthy` means "a
+    snapshot has based this book" — a requirement that exists so a DELTA is
+    never applied to a book that has no base, and which is meaningless for a
+    stream of trade prints. Applying it anyway is what put the collector in a
+    permanent fault state: the trade sid never receives an `orderbook_snapshot`,
+    so it could never become healthy, so all 218 of its frames faulted while its
+    sequence ran 1..219 with **zero** gaps, duplicates or regressions.
+
+    So ordering and basing are separated. `needs_base=False` validates sequence
+    CONTINUITY only, which is the whole of what a non-orderbook stream can be
+    wrong about, and the drop detector stays fully armed on both.
     """
 
     def __init__(self, sid: int, *, market_tickers=(), generation: int = 1):
@@ -726,6 +787,11 @@ class SubscriptionState:
         self.last_seq: int | None = None
         self.subscribed_market_tickers = tuple(market_tickers)
         self.healthy = False            # nothing is ordered until a snapshot
+        # Whether this subscription has ever carried an orderbook frame.
+        # OBSERVED, never assumed: it is what decides whether `get_snapshot` is
+        # a recovery this subscription can even accept (the venue answers
+        # `{"code":13,"msg":"Unsupported action"}` when it is not).
+        self.carries_orderbook = False
         self.state_reason: str | None = SUB_AWAITING_SNAPSHOT
         self.stats = {"accepted": 0, "duplicates": 0, "gaps": 0,
                       "regressions": 0, "wrong_sid": 0, "stale_generation": 0,
@@ -740,7 +806,42 @@ class SubscriptionState:
         self.state_reason = reason
         raise SubscriptionError(f"sid {self.sid}: {detail}")
 
-    def accept(self, *, sid, seq, generation=None, is_snapshot: bool = False) -> str:
+    def _reanchor_if_unbased(self, seq: int, *, needs_base: bool) -> None:
+        """After a discontinuity on an unbased stream, move to the new position.
+
+        The fault has already been COUNTED when this runs; what it prevents is
+        counting it forever. An orderbook subscription recovers by requesting a
+        snapshot, and `begin_recovery()` clears the position for it. A trade or
+        ticker stream has no such repair — a lost print is lost — so if the
+        anchor stayed where it was, every later frame would compare against a
+        position the venue has moved past and fault too. The counter would then
+        measure TIME SINCE the discontinuity rather than the NUMBER of them,
+        which is the permanently-pinned-counter defect this fix exists to
+        remove, reintroduced one level down.
+
+        Untouched when `needs_base` is set: an orderbook stream must not quietly
+        adopt a position it never based.
+        """
+        if not needs_base:
+            self.last_seq = seq
+
+    def note_orderbook_frame(self) -> None:
+        """This subscription carries the orderbook channel — observed, not assumed.
+
+        Set by the router on the first `orderbook_snapshot`/`orderbook_delta`
+        routed through it, which on the wire is the very first frame the
+        orderbook sid delivers. It is the only thing that makes a `get_snapshot`
+        recovery applicable, and it is deliberately derived from FRAMES rather
+        than from the subscribe command: the live lane and the replay lane see
+        the same frames, so both reach the same verdict, whereas only the live
+        lane ever saw the command. (The `subscribed` ack does name the channel,
+        but it carries no top-level `sid` — the sid is inside `msg` — so it is
+        not routable to a subscription and cannot serve as the source here.)
+        """
+        self.carries_orderbook = True
+
+    def accept(self, *, sid, seq, generation=None, is_snapshot: bool = False,
+               needs_base: bool = True) -> str:
         """Validate one message against this subscription. Ordering only.
 
         Order of checks matters: identity, then generation, then sequence. A
@@ -763,6 +864,15 @@ class SubscriptionState:
         The one thing this must not do is blind the drop detector: a gap
         *inside* a generation still raises, and only a strictly-greater,
         capture-time epoch re-bases the stream.
+
+        `needs_base` is the ORDERBOOK requirement and only the orderbook
+        requirement. Set — the default, and what an `orderbook_delta` passes —
+        a message arriving before any snapshot is a fault, because a delta
+        applied to an unbased book fabricates a book. Clear — a `trade` print,
+        a `ticker` update, an `error` frame — the first `seq` seen anchors the
+        stream and continuity is checked from there. A gap still faults; there
+        is simply no snapshot to wait for, and the drop detector is armed on
+        the first frame instead of never.
         """
         if sid is None or int(sid) != self.sid:
             self.stats["wrong_sid"] += 1
@@ -796,25 +906,37 @@ class SubscriptionState:
             self.stats["accepted"] += 1
             return SEQ_OK
 
-        if not self.healthy:
-            self._fail(self.state_reason or SUB_AWAITING_SNAPSHOT,
-                       "delta received while the subscription is not healthy; "
-                       "rejected rather than buffered")
-        if self.last_seq is None:
-            self._fail(SUB_AWAITING_SNAPSHOT,
-                       "delta received before any snapshot on this subscription")
+        if needs_base:
+            if not self.healthy:
+                self._fail(self.state_reason or SUB_AWAITING_SNAPSHOT,
+                           "delta received while the subscription is not healthy; "
+                           "rejected rather than buffered")
+            if self.last_seq is None:
+                self._fail(SUB_AWAITING_SNAPSHOT,
+                           "delta received before any snapshot on this subscription")
+        elif self.last_seq is None:
+            # ANCHOR, not a fault. This stream has no snapshot to wait for, so
+            # the first `seq` it delivers is the position everything after it is
+            # measured against. `healthy` is deliberately NOT set: it means "a
+            # snapshot has based this book", the books are the only thing that
+            # reads it, and a trade stream has none.
+            self.last_seq = seq
+            self.stats["accepted"] += 1
+            return SEQ_OK
         if seq == self.last_seq:
             self.stats["duplicates"] += 1
             return SEQ_DUPLICATE
+        expected = self.last_seq + 1
         if seq < self.last_seq:
             self.stats["regressions"] += 1
+            self._reanchor_if_unbased(seq, needs_base=needs_base)
             self._fail(SUB_REGRESSION,
-                       f"sequence regression: expected {self.last_seq + 1}, "
-                       f"got {seq}")
+                       f"sequence regression: expected {expected}, got {seq}")
         if seq > self.last_seq + 1:
             self.stats["gaps"] += 1
+            self._reanchor_if_unbased(seq, needs_base=needs_base)
             self._fail(SUB_GAP,
-                       f"sequence gap: expected {self.last_seq + 1}, got {seq}")
+                       f"sequence gap: expected {expected}, got {seq}")
         self.last_seq = seq
         self.stats["accepted"] += 1
         return SEQ_OK
@@ -927,7 +1049,8 @@ class SubscriptionRouter:
             book.begin_subscription_generation(generation)
         self._books_generation = generation
 
-    def _accept(self, record: dict, *, is_snapshot: bool = False) -> str:
+    def _accept(self, record: dict, *, is_snapshot: bool = False,
+                needs_base: bool = True) -> str:
         """`subscription.accept` plus the generation-boundary bookkeeping.
 
         The rebase has to land BETWEEN accepting the message and applying it:
@@ -938,7 +1061,7 @@ class SubscriptionRouter:
             return self.subscription.accept(
                 sid=record.get("sid"), seq=record.get("seq"),
                 generation=subscription_generation_of(record),
-                is_snapshot=is_snapshot)
+                is_snapshot=is_snapshot, needs_base=needs_base)
         finally:
             # `finally`, not `else`: a generation can advance and THEN fail
             # (a new generation whose first message is a delta, which genuinely
@@ -970,10 +1093,22 @@ class SubscriptionRouter:
             # connecting. Ordering is a property of the SUBSCRIPTION, so it has
             # to account for everything the subscription carries — not just the
             # frames we happen to route.
+            #
+            # `needs_base=False`: whatever this frame is, it is not a delta
+            # being applied to a book, so it must not be refused for want of a
+            # snapshot. That refusal is what made every `trade` frame a fault
+            # (2026-08-17 wire evidence, `SubscriptionState`). A frame with no
+            # `seq` at all — every `ticker` frame on the DEMO wire, 2,071 of
+            # 2,071 — is not ordered by anything and is passed over here rather
+            # than being counted as a fault for a number the venue never sent.
             if record.get("seq") is not None:
                 try:
-                    self._accept(record)
+                    self._accept(record, needs_base=False)
                 except SubscriptionError:
+                    # A gap on a sid that carries books means a message that
+                    # could have belonged to any of them was lost, so they are
+                    # all suspect. On a sid that carries none — trade, ticker —
+                    # this is a no-op, which is the correct amount of damage.
                     self._unpublish_all(
                         self.subscription.state_reason or "sequence fault")
                     raise
@@ -981,6 +1116,10 @@ class SubscriptionRouter:
         msg = (record.get("raw") or {}).get("msg") or {}
         ticker = record.get("market_ticker") or msg.get("market_ticker")
         is_snapshot = etype == "orderbook_snapshot"
+        # Recorded BEFORE the accept, so a subscription whose very first
+        # orderbook frame faults is still known to be an orderbook subscription
+        # and still gets the recovery that applies to it.
+        self.subscription.note_orderbook_frame()
 
         try:
             status = self._accept(record, is_snapshot=is_snapshot)
