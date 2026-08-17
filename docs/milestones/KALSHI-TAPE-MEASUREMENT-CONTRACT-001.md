@@ -19,22 +19,37 @@ Two narrowly-required fixes are made and are argued individually in §10.
 ## 0. VERDICT
 
 ```
-P3 measurement contract          COMPLETE
-Semantic blockers for P4         NONE
-Operational blockers for P4      TWO, both outside P3's scope (§11)
+P3 measurement contract                       COMPLETE
 
-KALSHI-PROD-OBSERVATIONAL-QUALIFICATION-001   GO, conditional on §11
+KALSHI-PROD-OBSERVATIONAL-QUALIFICATION-001
+  CAPTURE  (read-only production tape)        GO, conditional on B1, B2, B4
+  REPLAY-EQUALITY VERDICT                     NO-GO until B3 is closed
 ```
 
-**GO.** No unresolved *semantic* blocker stands between the tape as it exists
-and a read-only production observational qualification. Every quantity the tape
-carries has a provenance, a reconstructability class and a stated limitation;
-every limitation that could be mistaken for a measurement is either typed at the
-API or listed in §12 as known and non-blocking.
+**This is not one verdict, because P4 is not one act.** P4 captures a production
+tape and then computes a CP9-style qualification verdict over it. Those have
+different blockers, and collapsing them would be the same mistake CP8's
+`checks.state_equality` bit made.
 
-The two remaining P4 blockers are **operational, not semantic**, and neither is
-P3's to close: an unverified production WebSocket host, and an unmerged branch
-stack. They are stated in §11 so that P4 does not start against them.
+**GO for capture.** The tape's *semantics* are sound. Every quantity has a
+provenance, a reconstructability class and a stated limitation; every limitation
+that could be mistaken for a measurement is either typed at the API or listed in
+§12. Nothing found here damages a captured record: the durable evidence is
+complete, digest-chained and re-replayable, so a defect in a pure offline
+function can be fixed **after** a capture and re-run against the same bytes.
+
+**NO-GO for the replay-equality verdict until B3 is closed.** `archive.replay()`
+skips non-orderbook frames *before* dispatch and therefore does not consume the
+sequence number an `error` frame occupies on the orderbook sid — a shape the
+2026-08-08 DEMO capture proves the venue produces. **Replay then manufactures a
+sequence gap that never happened.** Demonstrated in §11 B3: live 0 faults and
+publishable, replay 1 fault and `book_halted`, from the same four records. P4's
+qualification asserts replay equality; this construct breaks it, and no
+operational workaround exists because the trigger is a venue frame.
+
+Four blockers, three of them outside P3's scope. **One of them, B3, is a genuine
+semantic defect found by this milestone** and is deliberately *reported with its
+remedy rather than patched* — see §10.3 for why.
 
 **P3 stops here.** No production observation is begun by this milestone.
 
@@ -237,6 +252,35 @@ encoder, everywhere. Prices, sizes and durations are integers or `Decimal`;
 not stylistic — a bare float written and re-read as `Decimal` re-serialises
 differently, which once made every record carrying a venue timestamp fail its own
 digest and vanish on read.
+
+**What the envelope does NOT carry, and it matters:** there is **no session
+identity**. Not a `session_id`, and not derivable — `connection_generation`
+restarts per session and `segment_id` is `venue.YYYY-MM-DDTHH[.rNNNN]`, a
+wall-clock partition plus a rotation counter. See §11 B4.
+
+### 4.2 Integrity, ordering and durability
+
+| property | mechanism |
+|---|---|
+| record self-integrity | `record_digest = digest_hex({k: record[k] for k in RECORD_FIELDS})` — a field added later cannot silently fall outside the digest |
+| record **order** | `previous_record_digest` chain, seeded by `genesis_digest = "genesis:" + digest_hex({schema_version, segment_id, environment})`. A constant sentinel would let record #1 of one segment splice into another segment's head and still chain |
+| segment order | `ordered_stream_digest = fold(previous, record_digest)` — two records that swap places produce the same *set* of self-digests and a different fold |
+| segment identity | `manifest.json`: `record_count`, `first`/`last_record_digest`, `ordered_stream_digest`, `event_file_sha256`, `event_file_size_bytes`, `previous_segment_digest`, `close_status`, `partition_identity`, `writer_version` |
+| archive order | the **committed head's generation chain**, not directory order. `read_verified()` refuses if the history cannot be resolved; `read_unverified_diagnostic()` falls back to directory order and sets `diagnostic_order_unauthenticated` |
+| acceptance | `submit()` canonicalises and appends on the **caller's** thread under one lock — *a caller is never told ACCEPTED before the canonical writer owns the event* |
+| durability | flush cadence `flush_every = 256`; manifest written to a temp file, fsynced, atomically renamed, directory fsynced. **Rename-after-fsync is the durability contract, not `close()`** |
+| commit | `close()`. Until it runs there is **no authoritative record count and an unclosed segment is explicitly not evidence** |
+| environment isolation | `append()` refuses a `demo` envelope into a `production` archive — *demo events must never become production evidence* |
+| creation | an archive must **already exist**; a collector consumes one and can never bring one into existence. Operator step: `archive-init --confirm` |
+
+Reads that drop records **count** them rather than omitting silently:
+`truncated_records` (could not be decoded), `tampered_records` (decoded, chain
+broken), `foreign_environment_records`, `missing_committed_segments`. *"Nothing
+was lost" must not be asserted by omission.*
+
+**Archive order equals wire order only under a single producer per
+subscription** — which the collector structurally is: one task, one socket, one
+synchronous `append()` on its own stack.
 
 ---
 
@@ -673,7 +717,39 @@ into one bit, so it reads `false` while `state_equality.differences == []`. The
 CP6–CP9 report splits it by hand. If that checker is reused for P4 it should
 emit two bits. **Instrument-level, outside `app/`; noted for whoever runs P4.**
 
-### 9.8 REJECTED as candidates
+### 9.9 `OrderBook.stats["gaps"|"regressions"|"duplicates"]` — **STRUCTURALLY UNREACHABLE. FIXED AT THE READOUT (§10.3)**
+
+Found by this milestone, and the sharpest instance of the class.
+
+`SubscriptionRouter` settles ordering **once, per sid, before routing**, and then
+calls `apply_delta(..., ordered_externally=True)`. Under that flag
+`OrderBook.classify_seq` **never runs**. The book's own `gaps`, `regressions` and
+`duplicates` counters are therefore dead code on the only path production uses —
+they can never leave zero.
+
+Those are exactly the numbers `replay()["stats"]` returns per market, and exactly
+the numbers `kalshi-realtime-replay` printed:
+
+```
+    KXTEST-…      publishable=False  checksum=…
+      snapshots=1 deltas=0 dups=0 gaps=0 regressions=0
+```
+
+on a tape carrying a **real, unrepaired four-message sequence gap**. Measured:
+
+| | `replay()["stats"][market]` | `replay()["subscription_stats"]["1"]` |
+|---|---:|---:|
+| `gaps` | **0** | **1** |
+
+A reader summing per-market `gaps` across a production tape gets **zero, always**.
+This is the doctrine-7 shape in its purest form: not a metric that happened to be
+zero, but a metric whose measurement path cannot become non-benign.
+
+**This one is fixed rather than merely listed** (§10.3), because the misreading
+happens on the operator's primary readout and the correct numbers were already in
+the same return value, one key away.
+
+### 9.10 REJECTED as candidates
 
 - `spread_units = null`, `bid_levels = []` with a typed reason, `ladder_presence`,
   `reader_lag_frames_max`, absence of `transport_dropped`, `data_age_us` negatives
@@ -726,12 +802,65 @@ no generation, no `last_seq` and no `sid` — i.e. the *pre-fix* digest, which
 would call two books at different positions the same observation. Unreachable
 today, and a trap for the next reader. Removed; no behaviour changes.
 
+### 10.3 `kalshi-realtime-replay` printed a structurally-unreachable zero for the fault it exists to report — **FIXED AT THE READOUT**
+
+§9.9's defect, at the surface where it does damage. The per-market line printed
+`gaps` and `regressions` from `OrderBook.stats`, where they can never be
+non-zero on the routed path, so a tape with a real sequence gap reported
+`gaps=0` for every market.
+
+**Only the readout is changed. No counter, no book, no replay semantics.** The
+two unreachable fields are removed from the per-market line (which keeps the
+counters that *are* reachable there, including
+`rejected_pre_generation_snapshot`), and a per-**sid** block is printed with the
+numbers that are actually measured — `accepted`, `gaps`, `regressions`,
+`duplicates`, `wrong_sid`, `stale_generation`, `missing_seq`,
+`generation_advances` — under a header that states where sequence integrity
+lives. Two contract facts are printed beside them so they cannot be read off the
+screen wrongly:
+
+```
+  sequence integrity is a property of the SUBSCRIPTION, not the market:
+    sid=1    accepted=1 gaps=1 regressions=0 dups=0 …
+    NOT MEASURABLE from a tape: `recoveries` is a COLLECTOR action and is not
+      archived; a replayed value of 0 is not evidence that none happened.
+    An UNSEQUENCED channel (ticker) has an EMPTY sequence domain: gaps=0 there
+      is arithmetic, not an observation, and licenses no completeness claim.
+```
+
+**Why fix rather than list.** §9's candidates are *typing* decisions that change
+an API contract, and the milestone reserves those. This is a display bug: the
+correct numbers were already in the same `replay()` return value under
+`subscription_stats`, and the command was printing the wrong key. Leaving it
+would mean P4's operator reads `gaps=0` off a production tape and believes it.
+
+### 10.4 What was deliberately NOT fixed, and why
+
+**B3 (`replay()` does not consume an `error` frame's sequence number) is
+reported, not patched.** The fix is roughly four lines — mirror
+`SubscriptionRouter.dispatch`'s `needs_base=False` branch inside `replay()`'s
+skip. It was not applied because `archive.replay()` is the lane CP8's
+**QUALIFIED** verdict rests on, and changing its fault semantics means the
+committed CP8 numbers no longer describe the shipped function. That is a
+re-qualification decision, not a contract-milestone edit. The repository's own
+standing bar says so: *"a live surprise is a FINDING, not something to patch
+around during the qualification run."* It is pinned by a characterization test
+(§13) so the fix turns it red and forces §11 B3 to be retired deliberately.
+
 ---
 
 ## 11. TRUE BLOCKERS FOR P4
 
-Both are **operational**. Neither is a semantic defect in the measurement
-contract, and neither is P3's to close.
+Four. **B1 and B2 are operational and pre-existing** — P4 names them itself.
+**B3 and B4 were found by this milestone** and are semantic: they are ways the
+current code reaches a *wrong* answer, not a missing one.
+
+| | blocks | closable by |
+|---|---|---|
+| B1 unverified production WS host + credential | capture | an operator |
+| B2 unmerged branch stack | capture | a merge |
+| B3 `replay()` skips an `error` frame's `seq` | the **replay-equality verdict** | ~4 lines + a CP8 re-run |
+| B4 no session identity on the durable record | capture, **conditionally** | a run-procedure rule (no code) |
 
 ### B1. The production WebSocket host is UNVERIFIED
 
@@ -761,9 +890,90 @@ defect, the absence/empty conflation, the `max_seconds` defect and the CP7
 per-market defect. `KALSHI-REPLAY-GENERATION-CONSISTENCY-001` is explicitly
 prerequisite 2 of P4.
 
-**Neither is a P3 finding.** They are stated here because P4's entry criteria
-name them and because a GO on the contract is not a GO on the operational
-readiness.
+Neither B1 nor B2 is a P3 finding. They are stated because P4's entry criteria
+name them and because a GO on the contract is not a GO on operational readiness.
+
+### B3. `archive.replay()` manufactures a sequence gap on an `error` frame — **FOUND HERE**
+
+**The one semantic defect this milestone found in a path P4 depends on.**
+
+`replay()` skips every non-orderbook `event_type` with a bare `continue`
+(`archive.py:1177-1179`) — *before* dispatch. The live lane does the opposite:
+`SubscriptionRouter.dispatch` routes every frame carrying a `seq` through
+`_accept(..., needs_base=False)` precisely because **control frames consume a
+sequence number** (§3.2, wire-confirmed twice).
+
+So replay never advances past the `seq` an `error` frame occupies, and reports a
+gap where none exists. Demonstrated on the captured wire shape
+(`{"type":"error","sid":1,"seq":3}` between deltas at seq 2 and seq 4):
+
+| | live lane | `replay()` |
+|---|---|---|
+| faults | **0** | **1** |
+| publication state | `publishable` | **`book_halted`** |
+| fault text | — | `sequence gap: expected 3, got 4` |
+
+**Why it is a blocker for the verdict and not for the capture.** It corrupts no
+record. The tape is complete, digest-chained and re-replayable, so the fix can be
+applied *after* a production capture and re-run over the same bytes. What it
+cannot survive is P4 computing a replay-equality verdict with it in place — the
+qualification would report loss the venue never caused, on a claim
+(`Replay equality QUALIFIED`) that is one of the five things P4 exists to
+re-establish in production.
+
+**Why DEMO never caught it.** CP6–CP9 recorded **0 error frames** in all three
+sessions, because the P0 fix removed the invalid command that was producing them.
+The only capture that ever contained an orderbook-sid `error` frame is
+2026-08-08, which predates `replay()`'s current shape. **A venue-initiated error
+on the orderbook subscription in production triggers it immediately, and there is
+no operational workaround** — we do not control which frames the venue sends.
+
+**Remedy** (not applied here, §10.4): inside `replay()`'s skip branch, mirror the
+live path — when a skipped record carries a `seq`, drive it through the router
+with `needs_base=False` instead of `continue`. Recorded as `STILL DEBT` in
+`KALSHI-REPLAY-GENERATION-CONSISTENCY-001`'s deferred list; this milestone
+escalates it from debt to blocker because P4 is the milestone that will hit it.
+
+### B4. The durable record carries no session identity — **FOUND HERE. CONDITIONAL.**
+
+`subscription_generation` is monotonic **within one collection session** and
+restarts at 1 in the next. This is documented as a known limitation of
+KALSHI-TAPE-GENERATION. What the contract adds is the consequence:
+
+**`RECORD_FIELDS` has no session field.** Not `session_id`, not anything —
+`connection_generation` restarts too, and `segment_id` is
+`venue.YYYY-MM-DDTHH[.rNNNN]`, i.e. wall-clock partition plus a rotation
+counter, so a new session starting in a new hour is indistinguishable from a
+rotation inside one. **The true sequence identity `(session, generation, sid)`
+is not representable on the tape.**
+
+Two sessions appended to one archive root therefore cannot be told apart by a
+replay reader — and `read_verified()` returns *every* record for an environment
+in committed order, which is what the CLI replays. Measured:
+
+```
+session 1 (generations 1, 2) then session 2 (generation 1 again):
+  events_rejected      = every record of session 2
+  stale_generation     = 2
+  publishable          = {market: False}
+  the identical session 1 alone replays clean, 0 rejected, publishable=True
+```
+
+Every record after the boundary is refused as a straggler from an epoch the
+subscription has already left. That is the **correct** reading of the record
+schema — which is why the schema is the defect.
+
+**Remedy, and why this is conditional.** No code change is required if P4 adopts
+one rule:
+
+> **One archive root per collection session.** A P4 run that captures several
+> sessions writes several archive roots and replays them separately. Concatenating
+> them into one root produces a tape that cannot be replayed past the first
+> boundary.
+
+If P4 wants a single multi-session archive, the record envelope needs a session
+identity — a `RECORD_SCHEMA_VERSION` bump, which is a schema decision outside
+this contract's authority and must not be made silently.
 
 ---
 
@@ -788,6 +998,11 @@ that no amount of work on this tape can change.
 | L12 | **DEMO is a load-test rig, not a market.** 98.3% of eligible frames come from 194 venue test instruments; the frozen 12-market pool produced 0.75 frames/s against a 100 000-frame floor (9.2× short) and **0.00/s** on replication. | **This is the entire reason P4 exists.** It is P4's premise, not an obstacle to it. |
 | L13 | **`events_rejected` is structurally 0 under `dry_run`.** | P4 archives for real. §9.6. |
 | L14 | **The wall-clock test flake class** (baseline 5,195 / 8, rotating membership). | Pre-existing, attributed by measurement, unrelated to any realtime module. |
+| L15 | **The tape has no retention policy and no owner.** The collector milestone's own open question Q4 says so: *"a tape with an unowned growth curve is how the SQLite growth alert story started."* | Not a semantic defect. It is a P4 **operational** input: production rate is unknown until P4 measures it, so a retention rule cannot be sized before the run. It must be sized *from* P4's first hour, not guessed before it. |
+| L16 | **The closer's margin over the append ceiling is under 2×.** Synchronous append sustains ~3,440 events/s; the closer keeps up only below roughly 6,900 events/s at `DEFAULT_MAX_SEGMENT_RECORDS = 13_000`. | Overload is designed to become a **timestamped disconnect, not a silent gap** — append latency *is* reader stall, on purpose, and a collector that cannot keep up stops and says so. Measuring where production sits against that ceiling is P4's job. |
+| L17 | **Archive order equals wire order only under a single producer per subscription.** | Structural in the collector: exactly one task reads exactly one socket and calls `append()` on its own stack. Stated so a future concurrent writer does not silently void it. |
+| L18 | **The SIGKILL loss window is the unflushed tail plus the whole uncommitted segment** (`flush_every = 256`; `close()` is the commit point and an unclosed segment is explicitly not evidence). | Bounded, documented, and the same for DEMO and production. Rename-after-fsync is the durability contract, not `close()`. |
+| L19 | **`OrderBook.stats["gaps"|"regressions"|"duplicates"]` are structurally unreachable on the routed path** (§9.9). | Fixed at the operator readout (§10.3) and pinned by a test. The reachable numbers are in `subscription_stats`. A future consumer reading the per-market block must be told, and now is. |
 
 ---
 
@@ -809,31 +1024,63 @@ the measurement path has been demonstrated capable of becoming non-zero.*
 | ticker gaining a `seq` | the drift detector FAILS | `test_the_ticker_channel_still_carries_no_sequence_number` |
 | pointing the CP7 verifier at the FAILED artifact | it fails, and fails on the CP7 shape | *"a checker that cannot fail is not a check"* |
 
-**Added by this milestone** — narrow, and only where a contract claim had no
-guard: `tests/test_kalshi_tape_measurement_contract_001.py`. See §14.
+**Added by this milestone** — `tests/test_kalshi_tape_measurement_contract_001.py`,
+**14 tests, all green**, narrow and only where a contract claim had no guard.
+Every one carries its own anti-vacuity control.
+
+| test | claim it guards | its anti-vacuity control |
+|---|---|---|
+| `test_a_non_orderbook_sid_never_becomes_a_subscription` | §1: `replay()` is book replay — three sids on the wire, one in the output | the orderbook sid *was* processed (2 applied, publishable) |
+| `test_the_tape_itself_is_not_the_limitation` | §1: the same records re-derive the trade sid's ordering | that sid's gap detector fires on an injected hole |
+| `test_live_absorbs_the_error_frames_sequence_number` | §11 B3, live half | — |
+| `test_replay_manufactures_a_gap_that_never_happened` | §11 B3, replay half | — |
+| `test_anti_vacuity_without_the_error_frame_the_lanes_agree` | §11 B3 | the divergence is caused by the error frame and nothing else |
+| `test_the_durable_record_has_no_session_identity` | §11 B4 | the fields the contract *does* claim are pinned are present |
+| `test_replaying_two_sessions_halts_every_book_at_the_boundary` | §11 B4 | the identical first session alone replays clean |
+| `test_omitted_and_empty_ladders_are_distinguishable_after_replay` | §5.1, §7: `NOT_PROVIDED != EMPTY` survives replay | `checksum()` **cannot** tell them apart — which is why the check exists |
+| `test_a_market_awaiting_its_own_snapshot_is_not_halted` | §7.1, §8.3: a reconnect boundary is not an integrity fault | a real within-generation gap **does** halt |
+| `test_the_three_candidates_emit_zero_while_the_correct_one_emits_null` | §9.1, §9.2 | the record really was built and is schema-valid |
+| `test_per_market_fault_counters_are_structurally_unreachable` | §9.9 | the reachable per-market counters did move |
+| `test_there_is_no_transport_dropped_field` | §8.4 | the schema is populated and the one legitimate drop field is there |
+| `test_text_output_reports_the_halt_instead_of_crashing` | §10.1, §10.3 | — |
+| `test_anti_vacuity_a_healthy_tape_still_prints_a_real_checksum` | §10.1 | a healthy tape prints a real digest and `gaps=0` truthfully |
+
+Three are **characterization** tests (`B3`×2, `B4`×1): they pin behaviour this
+document reports as a defect, not behaviour it endorses. That is the
+repository's own pattern — pinning a limitation is what makes it *retire on
+evidence*. **When B3 or B4 is fixed its test turns red, and whoever fixes it must
+delete the corresponding paragraph from this contract.**
 
 ---
 
 ## 14. WHAT THIS MILESTONE ADDED
 
 1. This document — the canonical P3 measurement-contract artifact.
-2. `tests/test_kalshi_tape_measurement_contract_001.py` — narrow guards for the
-   contract claims that had none, each with its own anti-vacuity control.
-3. Two narrowly-required fixes (§10), each argued individually.
+2. `tests/test_kalshi_tape_measurement_contract_001.py` — 14 narrow guards.
+3. Three narrowly-required fixes (§10.1, §10.2, §10.3), each argued individually
+   and none of them a semantics change.
 
-**Deliberately NOT done:** tape replay (§1.1), the `NOT_MEASURABLE` retypings
-(§9 — candidates only, implementation is a separate decision), and any
-production observation whatsoever.
+**Deliberately NOT done, and each said out loud rather than omitted:**
+
+- **Tape replay** (§1.1) — no named downstream experiment requires it today.
+- **The `NOT_MEASURABLE` retypings** (§9) — candidates with reasoning; the
+  implementation is a separate decision, as the milestone requires.
+- **The B3 fix** (§10.4) — a re-qualification decision, not a contract edit.
+- **The B4 schema bump** (§11 B4) — a `RECORD_SCHEMA_VERSION` change, and an
+  operational rule closes it without one.
+- **Any production observation whatsoever.** P3 and P4 are not rolled together.
 
 ---
 
 ## 15. SAFETY
 
-Read-only. **No venue was touched by this milestone** — every measurement quoted
-here is from artifacts already committed to the repository, and the only code
-executed was pure, offline `replay()` over synthetic records. No credential was
-read, copied or printed. EVO was not contacted; the live Solana lane was not
-disturbed.
+Read-only. **No venue was touched by this milestone.** Every venue measurement
+quoted here is from artifacts already committed to the repository. The only code
+executed was pure and offline: `replay()` and `SubscriptionRouter` over
+synthetic, venue-shaped records, and the new test file against `tmp_path`
+archives. **No socket was opened, no credential was read, copied or printed, no
+database session was created.** EVO was not contacted; the live Solana lane was
+not disturbed.
 
 Safety grep over `app/realtime/`: **two hits, both boundary-statement docstrings**
 (`collector.py:862`'s `BOUNDARY_NOTE` and `auth.py:8`'s OBSERVE_ONLY statement).
