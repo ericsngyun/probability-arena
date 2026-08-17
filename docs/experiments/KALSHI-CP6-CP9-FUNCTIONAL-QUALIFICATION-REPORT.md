@@ -584,6 +584,42 @@ before and after, and no process was left running.
 Safety grep (`AGENTS.md`) over the three new files: one hit, a boundary
 statement in a docstring. Over `app/`: unchanged, because `app/` is untouched.
 
+### 8.1 Suite state, and the attribution of every failure
+
+`pytest -q -p no:randomly`, this host: **5,148 passed, 13 failed, 6 skipped,
+5 xfailed** in **24 m 13 s**. The recorded baseline is **5,132 / 7 / 6 / 4** in
+12 m 49 s.
+
+The deltas reconcile exactly: **+22 passed** and **+1 xfailed** are the new
+harness file (§1); the 6 extra failures are **more members of the same
+wall-clock/staleness class the baseline already carries**, surfaced by a run
+that took nearly twice as long. Three independent checks, as in the P0 finding:
+
+1. **All 13 pass in isolation** — 16 tests, **16 s**, green.
+2. **Every visible assertion is a duration bound blown by elapsed time**, not a
+   behavioural difference: `market_freshness_s` 1130.5 against a `30…600`
+   bound; `market_quote_age_s` 1593.6 against `120…900`;
+   `age_minutes == approx(104, abs=1)`; `max_age_minutes <= 60.1`; and packets
+   reporting `stale_market_quotes` where the test seeded them fresh. Each is a
+   fixture seeded at a fixed offset from module import and asserted 24 minutes
+   later. The one non-obvious member,
+   `TestRealProcessKillMidWrite`, fails with *"SIGKILL landed after the writer
+   opened its files, not before"* — a timing race against a real child process,
+   and load-sensitive for the same reason.
+3. **None of the seven files imports anything this branch adds**, and this
+   branch adds no `app/` change at all: the complete diff against `a656909` is
+   three new files plus documents.
+
+**The elapsed time is partly my own doing and is stated rather than glossed:**
+the full run overlapped two targeted `pytest` invocations of the new harness
+file and several `ssh`/`scp` transfers to EVO on the same host. The class is
+known to widen with suite duration — the baseline itself records `assert
+120 <= 943.1 <= 900` from a 12 m 49 s run — so a 24 m run producing more of the
+same members is the predicted behaviour, not a new signal. It is also a
+standing weakness: these tests assert against wall clock rather than an
+injectable clock, so the suite's own runtime is an uncontrolled variable in
+them.
+
 ---
 
 ## 9. What should happen next
