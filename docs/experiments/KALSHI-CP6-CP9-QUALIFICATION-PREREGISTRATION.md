@@ -204,3 +204,34 @@ Microstructure realism   NOT ESTABLISHED
 
 The four lower lines are **not** caveats to be dropped when the top five pass.
 They are the scope of the claim.
+
+---
+
+## 9. Deviations actually taken (2026-08-17) — §7's required record
+
+The CP6–CP9 sessions ran on 2026-08-17. Five departures from §1–§5, each forced
+by the §8 rescope or by DEMO's nature, are recorded in full in
+`KALSHI-CP6-CP9-FUNCTIONAL-QUALIFICATION-REPORT.md` §6 and summarised here so
+this document is not silent about them:
+
+1. **§1's ≥100,000-frame floor** — withdrawn by §8. Three sessions totalling
+   24,396 frames. No rate, tail or capacity claim is made from them.
+2. **§1's "12 live tickers, 4/4/4 message-rate strata"** — not constructible:
+   `KALSHI-TAPE-MANIFEST-001` REFUSED the manifest because DEMO has an empty
+   middle. 60 venue test instruments were used instead — the P0 capture's set,
+   frozen before capture, legitimate for a functional proof and worthless for a
+   microstructure one.
+3. **CP6 and CP8 share one unperturbed session**, which also serves as the
+   negative control for the two perturbed ones.
+4. **CP7's reconnect is forced by tearing down the real socket**, not by
+   waiting for a venue-initiated disconnect. The teardown is genuine; the cause
+   is ours, and whether a venue-initiated disconnect behaves identically is not
+   established.
+5. **CP7's live sequence gap is forced by withholding a frame**, not by
+   observing a natural drop. No natural gap has ever been observed on any DEMO
+   subscription.
+
+**Outcome:** CP6 QUALIFIED, **CP7 FAILED** (per-market re-acquisition across a
+generation boundary), CP8 QUALIFIED with two named non-reconstructible
+collector-action counters, fault isolation QUALIFIED. The four lower lines of
+the §8 block stand unchanged.

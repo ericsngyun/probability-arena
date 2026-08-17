@@ -263,6 +263,12 @@ At frame 604 exactly one market had been re-snapshotted. **The other 59 were
 republished on a sibling's snapshot**, still carrying ladders from the epoch
 the venue had just abandoned. The same thing happened again at frame 1204.
 
+(The `subscribed` frames at 601 and 1201 did not *cause* the unpublish —
+`_begin_subscription_epoch()` runs as soon as the resubscribe is accepted by the
+socket, before any frame of the new generation can be read. They are simply the
+first frames at which the observer could sample the change. The collector's
+ordering is correct; it is the re-acquisition that is not.)
+
 Contrast the cold start in the same session — 60 separate per-market entries —
 and the fault path in `s3-drop` — 60 separate per-market re-acquisitions. The
 collector achieves per-market independence on both of those. It loses it
@@ -329,6 +335,15 @@ is vacuous.
 | **per-market terminal state equality** | **PASS** | **PASS** | **PASS** |
 | — negative control (corrupted delta `seq`) detected | PASS | PASS | PASS |
 | subscription counters reconstructible from tape | PASS | **FAIL** | **FAIL** |
+
+**Reading this table against the raw JSON.** The `-cp8.json` artifacts carry a
+`checks.state_equality` boolean that folds the per-market comparison *and* the
+per-subscription counter comparison into one bit, so it reads `false` for `s2`
+and `s3` and the file's own `cp8_verdict` reads `FAILED`. This table splits
+that bit, because the two halves are different claims about different things:
+the market row is `state_equality.differences == []` (empty in all three
+sessions) and the counter row is the `recoveries` divergence of §4.5. The raw
+files are the evidence and are deliberately the stricter of the two.
 
 ### 4.1 Raw-frame conservation
 
