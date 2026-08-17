@@ -273,16 +273,38 @@ second copy of key material was ever written to disk.
 * `tests/test_kalshi_replay_generation_consistency_001.py` — **25 passed**.
 * The `realtime / kalshi / collector / archive / replay` keyword selection, run
   together: **1,768 passed, 5 skipped, 4 xfailed, 0 failed** (3,424 deselected).
-* Full suite: **5,183 passed, 16 failed, 6 skipped, 4 xfailed**, against the
-  recorded 5,171 / 17 baseline. The 12 new passes are this milestone's.
-  **All 16 failures are the known wall-clock/staleness class**, in the files
-  that class already owns; the 17th — the `tests/meta_inventory` drift — was
-  fixed in the previous milestone and stays green. Attributed by measurement:
-  this branch changes nothing under `app/`, and every file that imports
-  `app.realtime` passes.
+* Full suite, `pytest -q -p no:randomly`, loaded host: **5,195 passed, 8
+  failed, 6 skipped, 4 xfailed** in 16 m 22 s, against the recorded
+  **5,171 / 17** baseline.
 
-Safety grep (`AGENTS.md`) over `app/`: **clean** — unchanged from the baseline,
-and this branch adds nothing to `app/` at all.
+Passes rise by 24: **16 are this milestone's** (12 new in
+`test_kalshi_cp7_live_rerun_001.py`, 4 added to
+`test_kalshi_cp6_cp9_functional_001.py`) and the rest are members of the
+wall-clock class that happened to pass this time.
+
+**All 8 failures are the known wall-clock/staleness class**, in the files that
+class already owns — `test_live_market_001` (4), `test_marketops`,
+`test_ops009`, `test_tennis_candidate_order_001`, `test_tennis_live_source_001`.
+The count is *lower* than the baseline's 16 because **the failing membership of
+that class rotates under load**; it is not a number this branch improved, and it
+is not read as one. The visible assertion is literally a clock:
+`assert 1152.6 <= 900` on a quote age, in a suite that took 16 minutes.
+
+Attributed by **measurement**, the three checks the CP9 report requires:
+
+1. **All 8 pass in isolation** — those five files together: **113 passed in
+   9.3 s**, green.
+2. **None of those five files imports `app.realtime`** at all (grep returns
+   nothing), and this branch's diff against `app/` is **empty** — it changes no
+   production code whatsoever.
+3. The `realtime / kalshi / collector / archive / replay` selection, run
+   together: **1,768 passed, 0 failed**.
+
+Safety grep (`AGENTS.md`) over `app/`: **clean and unchanged** — necessarily, on
+an empty `app/` diff. The single hit across this milestone's own files is a
+pre-existing docstring boundary statement in the probe ("No order, position,
+portfolio, wallet or key-management surface is reached"), which is the declared
+acceptable form.
 
 ---
 
