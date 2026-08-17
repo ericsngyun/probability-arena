@@ -344,9 +344,9 @@ the venue are incompatible as currently written.
 5. **Anything at all about production.** A DEMO rate is not a production rate.
    Nothing here licenses a claim about production capacity, and CP10's separate
    Tier-2 approval is unaffected by this document.
-6. **What the single `error` frame in each ≥200-market run was.** It appears
-   once per run at ≥200 subscribed markets and never at 12; its body was not
-   captured. Probably a per-subscription limit. Unresolved.
+6. **The `error` frame's body.** Its *cause* was determined (§9.1) — it is the
+   venue rejecting the collector's own recovery command — but the message body
+   was not captured, so the venue's error code is unknown.
 
 ---
 
@@ -379,13 +379,29 @@ preregistration says so.
    that the frozen pool stayed silent for well over half an hour**, from a run
    that was not designed to measure it.
 
-1. **Every `trade` frame produces a `sequence_fault`.** Sequence faults equalled
-   trade frames plus one in all three runs that saw trades (1,777 faults /
-   1,776 trades; 231 / 230; 57 / 56), and the run with zero trades had zero
-   faults. The collector also issued a `get_snapshot` recovery in each
-   (`commands_sent = 2`). Whether `trade` frames carry no `seq`, or a `seq` on a
-   different `sid`, was not determined. **CP7 should not be attempted before
-   this is understood**, because it would fire the same counter for a different
+1. **Every `trade` frame produces a `sequence_fault`, and the recovery it
+   triggers is REFUSED by the venue.** The chain is exact in all three runs
+   that saw trades, and absent in the one that did not:
+
+   | run | trades | sequence faults | recoveries requested | `error` frames |
+   |---|---:|---:|---:|---:|
+   | control-test-instruments-200 | 1,776 | **1,777** | 1 | 1 |
+   | control-wide-eligible-all-388 | 230 | **231** | 1 | 1 |
+   | control-wide-eligible-200 | 56 | **57** | 1 | 1 |
+   | main-pool-12-900s | 0 | **0** | 0 | 0 |
+
+   Faults = trades + 1 every time; the +1 and the `error` are the same event.
+   The first `trade` frame is treated as a sequence fault, the collector sends
+   one `get_snapshot` recovery, the venue answers `error`, and that error is
+   itself counted as a fault. Every subsequent trade faults too and is
+   correctly *not* re-recovered — `_recovery_pending` does its job and there is
+   no command storm — but the subscription never regains health, so **on a
+   venue with trade flow the collector spends the whole session in a permanent
+   fault state.** Whether `trade` frames carry no `seq` or a `seq` on a
+   different `sid` was not determined, and the error body was not captured.
+   **CP7 should not be attempted before this is understood**: CP7's proof is
+   that a generation boundary drops and re-acquires publishability, and it
+   would be reading a counter that is already pinned high for an unrelated
    reason.
 2. **`orderbook_snapshot` on DEMO carries no ladder.** The observed message
    shape is `{market_id, market_ticker, no_dollars_fp, yes_dollars_fp}` — no
