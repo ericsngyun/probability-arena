@@ -155,9 +155,9 @@ Established on four independent sockets: the P0 wire capture
 
 | | `orderbook_delta` | `ticker` | `trade` | control (`subscribed`, `error`, `ok`) |
 |---|---|---|---|---|
-| **observed sid** | **1** | **2** | **3** | `subscribed`: none; `error`: the sid it answers |
+| **sid in the 3-channel subscribe** (assignment-dependent, **not** a constant — §3.1) | **1** | **2** | **3** | `subscribed`: none; `error`: the sid it answers |
 | **event types carried** | `orderbook_snapshot`, `orderbook_delta` | `ticker` | `trade` | `subscribed`, `error` |
-| **sequence domain** | `(session, subscription_generation, sid=1)` | **NONE** | `(session, subscription_generation, sid=3)` | shares the answered sid's domain |
+| **sequence domain** | `(session, subscription_generation, sid)` | **NONE — an empty domain** | `(session, subscription_generation, sid)` | shares the answered sid's domain |
 | **`seq` present** | 5,886/5,886 · 7,311/7,311 | **0 / 2,071** · **0 / 1,852** · **0 / 1,694** · **0 / 1,454** | 219/219 · 143/143 | `subscribed`: no seq **and no sid**; `error`: **yes, and it consumes one** |
 | **ordering guarantee** | `seq_{n+1} = seq_n + 1` within a generation | **none. Arrival order only, and arrival order is not venue order.** | `seq_{n+1} = seq_n + 1` within a generation | n/a |
 | **loss detectable?** | **YES** — a hole in `seq` | **NO. Not now, not by any amount of further work on this tape.** | **YES** — a hole in `seq` | via the sid it consumes from |
@@ -167,7 +167,32 @@ Established on four independent sockets: the P0 wire capture
 | **default-on?** | yes (`DEFAULT_CHANNELS`) | yes | **NO** — operator must name it | implicit |
 | **`replay()` covers?** | **YES** | no | no | no |
 
-### 3.1 The three facts that must never be forgotten
+### 3.1 A sid is NOT a per-channel constant
+
+The table above records the sid assignment **observed under one particular
+subscribe**, and it is a property of that subscribe, not of the venue.
+
+| capture | channels named | sid assignment |
+|---|---|---|
+| P0 / CP6–CP9 (2026-08-17) | `orderbook_delta`, `ticker`, `trade` | orderbook **1**, ticker **2**, trade **3** |
+| DEMO wire (2026-08-08) | four channels | ticker **1**, lifecycle **2**, trade **3**, orderbook **4** |
+
+**The venue assigns sids in ack order for the channels that subscribe names.**
+Change the channel list and every sid moves. Nothing may hard-code
+`sid == 1 -> orderbook`; the mapping is discovered from **frames**
+(`SubscriptionState.carries_orderbook`, set on the first orderbook frame routed
+through) and deliberately **not** from the subscribe command, because the live
+lane and the replay lane both see frames and only the live lane ever saw the
+command — so both reach the same verdict.
+
+The `subscribed` ack does name the channel, but it carries **no top-level
+`sid`** (the sid is inside `msg`), so it is not routable to a subscription and
+cannot serve as the source.
+
+This also matters for §11 B3: the orderbook-sid `error` frame on the wire was
+`sid 4`, because on that day the orderbook channel was sid 4.
+
+### 3.2 The three facts that must never be forgotten
 
 1. **Sequence identity is `(session/connection, subscription_generation, sid)`.**
    It is not market-level. Assuming `seq = f(market)` produced 219 false faults
@@ -189,7 +214,7 @@ Established on four independent sockets: the P0 wire capture
    drift detector (`test_the_ticker_channel_still_carries_no_sequence_number`)
    retires this caveat on evidence if the venue ever starts sequencing ticker.
 
-### 3.2 Control frames consume sequence numbers
+### 3.3 Control frames consume sequence numbers
 
 Confirmed on the wire: `{"type":"error","sid":3,"seq":2,...}` arrived as the
 219th frame on a stream of 218 trades, and a 2026-08-08 capture shows
@@ -901,7 +926,7 @@ name them and because a GO on the contract is not a GO on operational readiness.
 (`archive.py:1177-1179`) — *before* dispatch. The live lane does the opposite:
 `SubscriptionRouter.dispatch` routes every frame carrying a `seq` through
 `_accept(..., needs_base=False)` precisely because **control frames consume a
-sequence number** (§3.2, wire-confirmed twice).
+sequence number** (§3.3, wire-confirmed twice).
 
 So replay never advances past the `seq` an `error` frame occupies, and reports a
 gap where none exists. Demonstrated on the captured wire shape
