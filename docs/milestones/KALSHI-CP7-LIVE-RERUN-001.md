@@ -166,12 +166,20 @@ in its entire timeline.
 
 **One number differs from the original session and should not be read as a
 regression.** `sequence_faults` is **9** here against **14** in the original
-`s3-drop`. Both decompose the same way — one gap, then the deltas refused while
-the subscription awaited its new base — and the second term is how many deltas
-the venue happened to send before the recovery snapshot landed. It is a venue
-timing quantity, not a detector quantity. The **detector** numbers are identical
-in both runs: `sequence_gaps` 1, recoveries 1, all 60 books unpublished, and the
-halt caused by the frame immediately after the hole.
+`s3-drop`. The decomposition was measured rather than assumed: the counter
+stands at **1** at the halt (frame 372) and at **9** by the first re-acquisition
+(frame 381), so it is **1 gap + 8 deltas refused while the subscription awaited
+its new base**. The second term is how many deltas the venue happened to send
+before the recovery snapshot landed — a venue timing quantity, not a detector
+quantity. The **detector** numbers are identical across both runs:
+`sequence_gaps` 1, `sequence_regressions` 0, `sequence_duplicates` 0,
+recoveries 1, all 60 books unpublished, halt caused by the frame immediately
+after the hole.
+
+**And none of those 9 was a generation refusal**, which matters because a
+refusal also lands in `sequence_faults` (see below):
+`rejected_pre_generation_snapshot` is **0** on every book in this session, so
+the fault count here is entirely the withheld frame and its aftermath.
 
 ## The delta-refusal path — **NOT EXERCISED**. Reported, not claimed.
 
@@ -201,6 +209,14 @@ more than the original run's:
 To exercise it live we would need the venue to interleave a delta into the
 re-snapshot window, which we cannot cause without perturbing frame order — and
 a tap that reordered frames would be measuring the tap.
+
+**A trap this milestone pins, because it will otherwise be misread once the
+guard does fire.** A refusal reaches the collector as a `BookIntegrityError`
+and is counted by the generic book-level handler, so **`sequence_faults` moves
+even though no message was lost**. A future reconnect session with a non-zero
+fault count is therefore not necessarily a faulting one. The discriminator is
+`rejected_pre_generation_snapshot`, which the probe now records per book and
+per event, and the pairing is asserted in the positive control.
 
 ---
 
@@ -286,3 +302,12 @@ venue actually suffered; both frames were removed by us.
 
 **Open, and narrower than before:** the delta-refusal path has never been
 exercised on the venue, in either run.
+
+**One thing that cannot be gone back for.** CP8 was **not** re-run — it was
+already QUALIFIED and this milestone is scoped to CP7 — and the three tapes
+were deleted with the throwaway clone, so these particular sessions can never
+be replayed. What survives is the session JSON: the transition log, the typed
+per-market terminal state, the wire census and the command audit, which is
+everything CP7's three properties are computed from. A future conservation or
+replay claim needs its own capture; it must not be back-derived from these
+artifacts.
