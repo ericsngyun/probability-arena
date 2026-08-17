@@ -1,0 +1,291 @@
+{
+  "archive": "runs/s1-observe/archive",
+  "check": "CP8 \u2014 conservation and deterministic replay",
+  "checks": {
+    "generation_conservation": true,
+    "integrity_intact": true,
+    "ladder_presence_conserved": true,
+    "normalization_negative_control": true,
+    "normalized_frame_conservation": true,
+    "per_sid_findings_conserved": true,
+    "raw_frame_conservation": true,
+    "replay_deterministic": true,
+    "state_equality": true,
+    "state_equality_negative_control": true,
+    "subscription_findings_reconstructible_from_tape": true
+  },
+  "cp8_verdict": "QUALIFIED",
+  "generation_conservation": {
+    "conserved": true,
+    "live_connection_generation_final": 1,
+    "live_subscription_epoch_final": 1,
+    "records_with_unknown_connection_generation": 0,
+    "records_with_unknown_subscription_generation": 0,
+    "tape_connection_generations": {
+      "1": 9309
+    },
+    "tape_max_subscription_generation": 1,
+    "tape_subscription_generations": {
+      "1": 9309
+    }
+  },
+  "integrity": {
+    "abandoned_segments": [],
+    "archive_id": "83aa4149df5a4c89b98f3de4b6b28cee",
+    "closed_segments": 1,
+    "foreign_environment_records": 0,
+    "generations_present": [
+      0,
+      1
+    ],
+    "head_generation": 1,
+    "head_state": "CURRENT",
+    "intact": true,
+    "invalid_segments": 0,
+    "mismatched": [],
+    "missing_committed_segments": [],
+    "open_segments": 0,
+    "orphaned_committed_segments": [],
+    "reasons": [],
+    "records": 9309,
+    "records_expected": 9309,
+    "segment_verdicts": [
+      {
+        "chain_valid": true,
+        "environment_valid": true,
+        "file_digest_match": true,
+        "file_size_match": true,
+        "first_digest_match": true,
+        "last_digest_match": true,
+        "manifest_valid": true,
+        "reasons": [],
+        "records_abandoned": 0,
+        "records_expected": 9309,
+        "records_read": 9309,
+        "residue_classification": null,
+        "segment_id": "kalshi.2026-08-17T17",
+        "state": "CLOSED",
+        "stream_digest_match": true,
+        "subscription_metadata_match": true,
+        "valid": true
+      }
+    ],
+    "segments": 1,
+    "truncated_records": 0,
+    "uncommitted_segments": [],
+    "verdict": "VALID",
+    "warnings": []
+  },
+  "ladder_presence_conservation": {
+    "conserved": true,
+    "differences": [],
+    "live_states_observed": {
+      "no=omitted_by_venue": 21,
+      "no=supplied": 39,
+      "yes=omitted_by_venue": 30,
+      "yes=supplied": 30
+    },
+    "markets_compared": 60,
+    "note": "`OrderBook.checksum()` does NOT digest `ladder_presence`, so an equal checksum is not evidence that the typed absence survived the round trip. It is compared here on its own."
+  },
+  "milestone": "KALSHI-CP6-CP9-FUNCTIONAL",
+  "mode": "observe",
+  "normalized_frame_conservation": {
+    "checked_by_event_type": {
+      "orderbook_delta": 7251,
+      "orderbook_snapshot": 60,
+      "subscribed": 3,
+      "ticker": 1852,
+      "trade": 143
+    },
+    "conserved": true,
+    "mismatch_examples": [],
+    "mismatched": 0,
+    "negative_control": {
+      "control_detected_the_corruption": true,
+      "corruption": {
+        "event_type": "subscribed",
+        "index": 0
+      },
+      "mismatched_under_corruption": 1
+    },
+    "recomputed_not_canonically_encodable": 0,
+    "records_checked": 9309,
+    "unparseable_receive_time": 0
+  },
+  "per_sid_sequence_findings": [
+    {
+      "agrees": true,
+      "channels": {
+        "orderbook_delta": 7251,
+        "orderbook_snapshot": 60
+      },
+      "frames": 7311,
+      "live_census_present": true,
+      "mismatches": {},
+      "ordering_findings_establishable": true,
+      "seq_absent": 0,
+      "sid": "1",
+      "unsequenced_channel": false
+    },
+    {
+      "agrees": true,
+      "channels": {
+        "ticker": 1852
+      },
+      "frames": 1852,
+      "live_census_present": true,
+      "mismatches": {},
+      "ordering_findings_establishable": false,
+      "seq_absent": 1852,
+      "sid": "2",
+      "unsequenced_channel": true
+    },
+    {
+      "agrees": true,
+      "channels": {
+        "trade": 143
+      },
+      "frames": 143,
+      "live_census_present": true,
+      "mismatches": {},
+      "ordering_findings_establishable": true,
+      "seq_absent": 0,
+      "sid": "3",
+      "unsequenced_channel": false
+    },
+    {
+      "agrees": true,
+      "channels": {
+        "subscribed": 3
+      },
+      "frames": 3,
+      "live_census_present": true,
+      "mismatches": {},
+      "ordering_findings_establishable": false,
+      "seq_absent": 3,
+      "sid": "__no_sid__",
+      "unsequenced_channel": true
+    }
+  ],
+  "raw_frame_conservation": {
+    "conserved": true,
+    "disk_equals_archived": true,
+    "integrity_records": 9309,
+    "per_event_type_differences": {},
+    "received_equals_archived_plus_rejected_plus_malformed": true,
+    "records_on_disk": 9309,
+    "session_events_archived": 9309,
+    "session_events_received": 9309,
+    "session_events_rejected": 0,
+    "session_frames_malformed": 0,
+    "wire_equals_received": true,
+    "wire_frames_tapped": 9309
+  },
+  "replay": {
+    "events_applied": 7311,
+    "events_rejected": 0,
+    "fault_count": 0,
+    "faults": [],
+    "markets": 60,
+    "subscription_stats": {
+      "1": {
+        "accepted": 7311,
+        "duplicates": 0,
+        "gaps": 0,
+        "generation_advances": 0,
+        "missing_seq": 0,
+        "recoveries": 0,
+        "regressions": 0,
+        "stale_generation": 0,
+        "wrong_sid": 0
+      }
+    },
+    "subscriptions": 1
+  },
+  "replay_deterministic_across_two_runs": true,
+  "run_label": "cp6-observe-test-instruments-60",
+  "scope_note": "FUNCTIONAL PROOF ON KALSHI DEMO. Venue test instruments are used deliberately: they are dense enough to exercise every code path a functional proof needs. NO rate, latency-tail, throughput, capacity or microstructure-realism claim may be derived from this artifact. Those belong to KALSHI-PROD-OBSERVATIONAL-QUALIFICATION-001.",
+  "session_json": "runs/s1-observe/session.json",
+  "state_equality": {
+    "differences": [],
+    "equal": true,
+    "markets_compared": 60,
+    "markets_live": 60,
+    "markets_replay": 60,
+    "subscription_sids_compared": [
+      "1"
+    ],
+    "subscription_stat_differences": [],
+    "subscription_stats_live_only": [
+      "2",
+      "3"
+    ],
+    "subscription_stats_replay_only": []
+  },
+  "state_equality_negative_control": {
+    "control_detected_the_corruption": true,
+    "corruption": {
+      "index": 63,
+      "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T69299.99",
+      "seq_after_corruption": 62,
+      "sid": 1
+    },
+    "differences_detected": 60,
+    "replay_faults_under_corruption": 7251,
+    "still_equal_under_corruption": false
+  },
+  "subscription_findings_reconstructible_from_tape": {
+    "carries_orderbook_from_tape": {
+      "1": true,
+      "2": false,
+      "3": false
+    },
+    "conserved": true,
+    "differences": [],
+    "live_sids": [
+      "1",
+      "2",
+      "3"
+    ],
+    "replay_function_sids": [
+      "1"
+    ],
+    "sids_the_shipped_replay_omits": [
+      "2",
+      "3"
+    ],
+    "tape_sids": [
+      "1",
+      "2",
+      "3"
+    ]
+  },
+  "ticker_limits": {
+    "established": [
+      "every ticker frame the collector RECEIVED is on disk and is counted in raw-frame conservation",
+      "every ticker frame re-normalizes byte-identically from its archived raw, and carries the generation it arrived under"
+    ],
+    "measured_seq_absent_by_sid": {
+      "2": {
+        "channels": {
+          "ticker": 1852
+        },
+        "frames": 1852,
+        "seq_absent": 1852
+      },
+      "__no_sid__": {
+        "channels": {
+          "subscribed": 3
+        },
+        "frames": 3,
+        "seq_absent": 3
+      }
+    },
+    "not_establishable": [
+      "whether any ticker frame was LOST between the venue and the collector \u2014 there is no ordering field, so no gap, duplicate or regression finding exists to conserve",
+      "therefore no completeness claim, and no feature derived from ticker may be described as lossless"
+    ],
+    "statement": "The venue sends `ticker` with no `seq`. Three things follow, and only the first two are established here."
+  }
+}

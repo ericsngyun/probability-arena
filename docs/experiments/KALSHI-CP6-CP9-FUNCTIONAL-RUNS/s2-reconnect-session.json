@@ -1,0 +1,6206 @@
+{
+  "config": {
+    "archive_root": "runs/s2-reconnect/archive",
+    "channels": [
+      "orderbook_delta",
+      "ticker",
+      "trade"
+    ],
+    "drop_arm_after_orderbook_frames": null,
+    "force_close_after_frames": 600,
+    "force_close_budget": 2,
+    "market_tickers": [
+      "KXTESTMATCH-26AUG150030INDSRI-IND",
+      "KXTESTMATCH-26AUG122030BANAUS-TIE",
+      "KXTESTMATCH-26AUG150030INDSRI-TIE",
+      "KXTESTMATCH-26AUG122030BANAUS-BAN",
+      "KXTESTMATCH-26AUG122030BANAUS-AUS",
+      "KXTESTMATCH-26AUG150030INDSRI-SRI",
+      "KXMAXSHARDINGTEST-26AUG2818-T68399.99",
+      "KXMAXSHARDINGTEST-26AUG2818-T56399.99",
+      "KXMAXSHARDINGTEST-26AUG2818-T65399.99",
+      "KXMAXSHARDINGTEST-26AUG2818-T69899.99",
+      "KXMAXSHARDINGTEST-26AUG2818-T62899.99",
+      "KXMAXSHARDINGTEST-26AUG2818-T67899.99",
+      "KXMAXSHARDINGTEST-26AUG2818-T55599.99",
+      "KXMAXSHARDINGTEST-26AUG2818-T63699.99",
+      "KXMAXSHARDINGTEST-26AUG2818-T64299.99",
+      "KXMAXSHARDINGTEST-26AUG2818-T61199.99",
+      "KXMAXSHARDINGTEST-26AUG2818-T65899.99",
+      "KXMAXSHARDINGTEST-26AUG2818-T56099.99",
+      "KXMAXSHARDINGTEST-26AUG2818-T70099.99",
+      "KXMAXSHARDINGTEST-26AUG2818-T72499.99",
+      "KXMAXSHARDINGTEST-26AUG2818-T57599.99",
+      "KXMAXSHARDINGTEST-26AUG2818-T58799.99",
+      "KXMAXSHARDINGTEST-26AUG2818-T60499.99",
+      "KXMAXSHARDINGTEST-26AUG2818-T73699.99",
+      "KXMAXSHARDINGTEST-26AUG2818-T59599.99",
+      "KXMAXSHARDINGTEST-26AUG2818-T58199.99",
+      "KXMAXSHARDINGTEST-26AUG2818-T58999.99",
+      "KXMAXSHARDINGTEST-26AUG2818-T60799.99",
+      "KXMAXSHARDINGTEST-26AUG2818-T62699.99",
+      "KXMAXSHARDINGTEST-26AUG2818-T63199.99",
+      "KXMAXSHARDINGTEST-26AUG2818-T68299.99",
+      "KXMAXSHARDINGTEST-26AUG2818-T68999.99",
+      "KXMAXSHARDINGTEST-26AUG2818-T69299.99",
+      "KXMAXSHARDINGTEST-26AUG2818-T57299.99",
+      "KXMAXSHARDINGTEST-26AUG2818-T71699.99",
+      "KXMAXSHARDINGTEST-26AUG2818-T55199.99",
+      "KXMAXSHARDINGTEST-26AUG2818-T56199.99",
+      "KXMAXSHARDINGTEST-26AUG2818-T56799.99",
+      "KXMAXSHARDINGTEST-26AUG2818-T57899.99",
+      "KXMAXSHARDINGTEST-26AUG2818-T58099.99",
+      "KXMAXSHARDINGTEST-26AUG2818-T61899.99",
+      "KXMAXSHARDINGTEST-26AUG2818-T63299.99",
+      "KXMAXSHARDINGTEST-26AUG2818-T63399.99",
+      "KXMAXSHARDINGTEST-26AUG2818-T64399.99",
+      "KXMAXSHARDINGTEST-26AUG2818-T65699.99",
+      "KXMAXSHARDINGTEST-26AUG2818-T68799.99",
+      "KXMAXSHARDINGTEST-26AUG2818-T72099.99",
+      "KXMAXSHARDINGTEST-26AUG2818-T56499.99",
+      "KXMAXSHARDINGTEST-26AUG2818-T57399.99",
+      "KXMAXSHARDINGTEST-26AUG2818-T62299.99",
+      "KXMAXSHARDINGTEST-26AUG2818-T64499.99",
+      "KXMAXSHARDINGTEST-26AUG2818-T66299.99",
+      "KXMAXSHARDINGTEST-26AUG2818-T55099.99",
+      "KXMAXSHARDINGTEST-26AUG2818-T60899.99",
+      "KXMAXSHARDINGTEST-26AUG2818-T60999.99",
+      "KXMAXSHARDINGTEST-26AUG2818-T61099.99",
+      "KXMAXSHARDINGTEST-26AUG2818-T63899.99",
+      "KXMAXSHARDINGTEST-26AUG2818-T63999.99",
+      "KXMAXSHARDINGTEST-26AUG2818-T65499.99",
+      "KXMAXSHARDINGTEST-26AUG2818-T65599.99"
+    ],
+    "market_tickers_count": 60,
+    "max_events": 200000,
+    "max_reconnects": 3,
+    "max_seconds": 180,
+    "read_timeout_s": 300.0
+  },
+  "connection_generation_final": 3,
+  "credential_audit": {
+    "detail": "verified against GET /trade-api/v2/api_keys",
+    "environment": "demo",
+    "key_id_fingerprint": "sha256:355d3cd2c0177448",
+    "proven_read_only": true,
+    "scopes": [
+      "read"
+    ],
+    "verified_at": "2026-08-17T17:42:02.966870+00:00"
+  },
+  "environment": "demo",
+  "finished_at": "2026-08-17T17:45:04.653181+00:00",
+  "live_terminal_state": {
+    "1": {
+      "books": {
+        "KXMAXSHARDINGTEST-26AUG2818-T55099.99": {
+          "book_generation": 3,
+          "checksum": "b7ecaf61bd9c54fa",
+          "integrity_reason": null,
+          "ladder_presence": {
+            "no": "supplied",
+            "yes": "supplied"
+          },
+          "last_seq": 5774,
+          "levels_no": 1,
+          "levels_yes": 3,
+          "publishable": true,
+          "stats": {
+            "deltas": 124,
+            "duplicates": 0,
+            "gaps": 0,
+            "generation_boundaries": 2,
+            "regressions": 0,
+            "rejected_pre_snapshot": 0,
+            "resyncs": 0,
+            "snapshots": 3
+          },
+          "subscription_generation": 3,
+          "synced": true
+        },
+        "KXMAXSHARDINGTEST-26AUG2818-T55199.99": {
+          "book_generation": 3,
+          "checksum": "42957abd056400a9",
+          "integrity_reason": null,
+          "ladder_presence": {
+            "no": "supplied",
+            "yes": "supplied"
+          },
+          "last_seq": 5772,
+          "levels_no": 1,
+          "levels_yes": 3,
+          "publishable": true,
+          "stats": {
+            "deltas": 122,
+            "duplicates": 0,
+            "gaps": 0,
+            "generation_boundaries": 2,
+            "regressions": 0,
+            "rejected_pre_snapshot": 0,
+            "resyncs": 0,
+            "snapshots": 3
+          },
+          "subscription_generation": 3,
+          "synced": true
+        },
+        "KXMAXSHARDINGTEST-26AUG2818-T55599.99": {
+          "book_generation": 3,
+          "checksum": "3ec91f8b8bb9691e",
+          "integrity_reason": null,
+          "ladder_presence": {
+            "no": "supplied",
+            "yes": "supplied"
+          },
+          "last_seq": 5770,
+          "levels_no": 1,
+          "levels_yes": 3,
+          "publishable": true,
+          "stats": {
+            "deltas": 123,
+            "duplicates": 0,
+            "gaps": 0,
+            "generation_boundaries": 2,
+            "regressions": 0,
+            "rejected_pre_snapshot": 0,
+            "resyncs": 0,
+            "snapshots": 3
+          },
+          "subscription_generation": 3,
+          "synced": true
+        },
+        "KXMAXSHARDINGTEST-26AUG2818-T56099.99": {
+          "book_generation": 3,
+          "checksum": "ecad2a8414fb90d8",
+          "integrity_reason": null,
+          "ladder_presence": {
+            "no": "supplied",
+            "yes": "supplied"
+          },
+          "last_seq": 5768,
+          "levels_no": 1,
+          "levels_yes": 2,
+          "publishable": true,
+          "stats": {
+            "deltas": 124,
+            "duplicates": 0,
+            "gaps": 0,
+            "generation_boundaries": 2,
+            "regressions": 0,
+            "rejected_pre_snapshot": 0,
+            "resyncs": 0,
+            "snapshots": 3
+          },
+          "subscription_generation": 3,
+          "synced": true
+        },
+        "KXMAXSHARDINGTEST-26AUG2818-T56199.99": {
+          "book_generation": 3,
+          "checksum": "482576a129d080fe",
+          "integrity_reason": null,
+          "ladder_presence": {
+            "no": "supplied",
+            "yes": "supplied"
+          },
+          "last_seq": 5766,
+          "levels_no": 1,
+          "levels_yes": 3,
+          "publishable": true,
+          "stats": {
+            "deltas": 124,
+            "duplicates": 0,
+            "gaps": 0,
+            "generation_boundaries": 2,
+            "regressions": 0,
+            "rejected_pre_snapshot": 0,
+            "resyncs": 0,
+            "snapshots": 3
+          },
+          "subscription_generation": 3,
+          "synced": true
+        },
+        "KXMAXSHARDINGTEST-26AUG2818-T56399.99": {
+          "book_generation": 3,
+          "checksum": "3c89d754f9d62f2d",
+          "integrity_reason": null,
+          "ladder_presence": {
+            "no": "supplied",
+            "yes": "supplied"
+          },
+          "last_seq": 5764,
+          "levels_no": 1,
+          "levels_yes": 3,
+          "publishable": true,
+          "stats": {
+            "deltas": 122,
+            "duplicates": 0,
+            "gaps": 0,
+            "generation_boundaries": 2,
+            "regressions": 0,
+            "rejected_pre_snapshot": 0,
+            "resyncs": 0,
+            "snapshots": 3
+          },
+          "subscription_generation": 3,
+          "synced": true
+        },
+        "KXMAXSHARDINGTEST-26AUG2818-T56499.99": {
+          "book_generation": 3,
+          "checksum": "66a59b2070bae460",
+          "integrity_reason": null,
+          "ladder_presence": {
+            "no": "supplied",
+            "yes": "supplied"
+          },
+          "last_seq": 5762,
+          "levels_no": 1,
+          "levels_yes": 2,
+          "publishable": true,
+          "stats": {
+            "deltas": 121,
+            "duplicates": 0,
+            "gaps": 0,
+            "generation_boundaries": 2,
+            "regressions": 0,
+            "rejected_pre_snapshot": 0,
+            "resyncs": 0,
+            "snapshots": 3
+          },
+          "subscription_generation": 3,
+          "synced": true
+        },
+        "KXMAXSHARDINGTEST-26AUG2818-T56799.99": {
+          "book_generation": 3,
+          "checksum": "f524022d684d4c06",
+          "integrity_reason": null,
+          "ladder_presence": {
+            "no": "supplied",
+            "yes": "supplied"
+          },
+          "last_seq": 5760,
+          "levels_no": 1,
+          "levels_yes": 2,
+          "publishable": true,
+          "stats": {
+            "deltas": 122,
+            "duplicates": 0,
+            "gaps": 0,
+            "generation_boundaries": 2,
+            "regressions": 0,
+            "rejected_pre_snapshot": 0,
+            "resyncs": 0,
+            "snapshots": 3
+          },
+          "subscription_generation": 3,
+          "synced": true
+        },
+        "KXMAXSHARDINGTEST-26AUG2818-T57299.99": {
+          "book_generation": 3,
+          "checksum": "5009fd5060996490",
+          "integrity_reason": null,
+          "ladder_presence": {
+            "no": "supplied",
+            "yes": "supplied"
+          },
+          "last_seq": 5758,
+          "levels_no": 1,
+          "levels_yes": 3,
+          "publishable": true,
+          "stats": {
+            "deltas": 121,
+            "duplicates": 0,
+            "gaps": 0,
+            "generation_boundaries": 2,
+            "regressions": 0,
+            "rejected_pre_snapshot": 0,
+            "resyncs": 0,
+            "snapshots": 3
+          },
+          "subscription_generation": 3,
+          "synced": true
+        },
+        "KXMAXSHARDINGTEST-26AUG2818-T57399.99": {
+          "book_generation": 3,
+          "checksum": "9522f3f1379b30ab",
+          "integrity_reason": null,
+          "ladder_presence": {
+            "no": "supplied",
+            "yes": "supplied"
+          },
+          "last_seq": 5756,
+          "levels_no": 1,
+          "levels_yes": 3,
+          "publishable": true,
+          "stats": {
+            "deltas": 120,
+            "duplicates": 0,
+            "gaps": 0,
+            "generation_boundaries": 2,
+            "regressions": 0,
+            "rejected_pre_snapshot": 0,
+            "resyncs": 0,
+            "snapshots": 3
+          },
+          "subscription_generation": 3,
+          "synced": true
+        },
+        "KXMAXSHARDINGTEST-26AUG2818-T57599.99": {
+          "book_generation": 3,
+          "checksum": "a80f0ca42ca4e990",
+          "integrity_reason": null,
+          "ladder_presence": {
+            "no": "supplied",
+            "yes": "supplied"
+          },
+          "last_seq": 5754,
+          "levels_no": 1,
+          "levels_yes": 2,
+          "publishable": true,
+          "stats": {
+            "deltas": 125,
+            "duplicates": 0,
+            "gaps": 0,
+            "generation_boundaries": 2,
+            "regressions": 0,
+            "rejected_pre_snapshot": 0,
+            "resyncs": 0,
+            "snapshots": 3
+          },
+          "subscription_generation": 3,
+          "synced": true
+        },
+        "KXMAXSHARDINGTEST-26AUG2818-T57899.99": {
+          "book_generation": 3,
+          "checksum": "46be9911b3f7d0fc",
+          "integrity_reason": null,
+          "ladder_presence": {
+            "no": "supplied",
+            "yes": "supplied"
+          },
+          "last_seq": 5738,
+          "levels_no": 1,
+          "levels_yes": 3,
+          "publishable": true,
+          "stats": {
+            "deltas": 124,
+            "duplicates": 0,
+            "gaps": 0,
+            "generation_boundaries": 2,
+            "regressions": 0,
+            "rejected_pre_snapshot": 0,
+            "resyncs": 0,
+            "snapshots": 3
+          },
+          "subscription_generation": 3,
+          "synced": true
+        },
+        "KXMAXSHARDINGTEST-26AUG2818-T58099.99": {
+          "book_generation": 3,
+          "checksum": "080b3c5f363d5843",
+          "integrity_reason": null,
+          "ladder_presence": {
+            "no": "supplied",
+            "yes": "supplied"
+          },
+          "last_seq": 5778,
+          "levels_no": 1,
+          "levels_yes": 3,
+          "publishable": true,
+          "stats": {
+            "deltas": 122,
+            "duplicates": 0,
+            "gaps": 0,
+            "generation_boundaries": 2,
+            "regressions": 0,
+            "rejected_pre_snapshot": 0,
+            "resyncs": 0,
+            "snapshots": 3
+          },
+          "subscription_generation": 3,
+          "synced": true
+        },
+        "KXMAXSHARDINGTEST-26AUG2818-T58199.99": {
+          "book_generation": 3,
+          "checksum": "3d654f8a5a88dec8",
+          "integrity_reason": null,
+          "ladder_presence": {
+            "no": "supplied",
+            "yes": "supplied"
+          },
+          "last_seq": 5734,
+          "levels_no": 1,
+          "levels_yes": 3,
+          "publishable": true,
+          "stats": {
+            "deltas": 124,
+            "duplicates": 0,
+            "gaps": 0,
+            "generation_boundaries": 2,
+            "regressions": 0,
+            "rejected_pre_snapshot": 0,
+            "resyncs": 0,
+            "snapshots": 3
+          },
+          "subscription_generation": 3,
+          "synced": true
+        },
+        "KXMAXSHARDINGTEST-26AUG2818-T58799.99": {
+          "book_generation": 3,
+          "checksum": "cb5da3c282b282ba",
+          "integrity_reason": null,
+          "ladder_presence": {
+            "no": "supplied",
+            "yes": "supplied"
+          },
+          "last_seq": 5724,
+          "levels_no": 1,
+          "levels_yes": 3,
+          "publishable": true,
+          "stats": {
+            "deltas": 122,
+            "duplicates": 0,
+            "gaps": 0,
+            "generation_boundaries": 2,
+            "regressions": 0,
+            "rejected_pre_snapshot": 0,
+            "resyncs": 0,
+            "snapshots": 3
+          },
+          "subscription_generation": 3,
+          "synced": true
+        },
+        "KXMAXSHARDINGTEST-26AUG2818-T58999.99": {
+          "book_generation": 3,
+          "checksum": "803412cd772e87b4",
+          "integrity_reason": null,
+          "ladder_presence": {
+            "no": "supplied",
+            "yes": "supplied"
+          },
+          "last_seq": 5722,
+          "levels_no": 1,
+          "levels_yes": 3,
+          "publishable": true,
+          "stats": {
+            "deltas": 122,
+            "duplicates": 0,
+            "gaps": 0,
+            "generation_boundaries": 2,
+            "regressions": 0,
+            "rejected_pre_snapshot": 0,
+            "resyncs": 0,
+            "snapshots": 3
+          },
+          "subscription_generation": 3,
+          "synced": true
+        },
+        "KXMAXSHARDINGTEST-26AUG2818-T59599.99": {
+          "book_generation": 3,
+          "checksum": "e3cff2f1ed7daa59",
+          "integrity_reason": null,
+          "ladder_presence": {
+            "no": "supplied",
+            "yes": "supplied"
+          },
+          "last_seq": 5720,
+          "levels_no": 1,
+          "levels_yes": 3,
+          "publishable": true,
+          "stats": {
+            "deltas": 120,
+            "duplicates": 0,
+            "gaps": 0,
+            "generation_boundaries": 2,
+            "regressions": 0,
+            "rejected_pre_snapshot": 0,
+            "resyncs": 0,
+            "snapshots": 3
+          },
+          "subscription_generation": 3,
+          "synced": true
+        },
+        "KXMAXSHARDINGTEST-26AUG2818-T60499.99": {
+          "book_generation": 3,
+          "checksum": "fff56c3fba9666c3",
+          "integrity_reason": null,
+          "ladder_presence": {
+            "no": "supplied",
+            "yes": "supplied"
+          },
+          "last_seq": 5712,
+          "levels_no": 1,
+          "levels_yes": 2,
+          "publishable": true,
+          "stats": {
+            "deltas": 123,
+            "duplicates": 0,
+            "gaps": 0,
+            "generation_boundaries": 2,
+            "regressions": 0,
+            "rejected_pre_snapshot": 0,
+            "resyncs": 0,
+            "snapshots": 3
+          },
+          "subscription_generation": 3,
+          "synced": true
+        },
+        "KXMAXSHARDINGTEST-26AUG2818-T60799.99": {
+          "book_generation": 3,
+          "checksum": "7731b1e7335ed819",
+          "integrity_reason": null,
+          "ladder_presence": {
+            "no": "supplied",
+            "yes": "supplied"
+          },
+          "last_seq": 5704,
+          "levels_no": 2,
+          "levels_yes": 2,
+          "publishable": true,
+          "stats": {
+            "deltas": 121,
+            "duplicates": 0,
+            "gaps": 0,
+            "generation_boundaries": 2,
+            "regressions": 0,
+            "rejected_pre_snapshot": 0,
+            "resyncs": 0,
+            "snapshots": 3
+          },
+          "subscription_generation": 3,
+          "synced": true
+        },
+        "KXMAXSHARDINGTEST-26AUG2818-T60899.99": {
+          "book_generation": 3,
+          "checksum": "13369352618fe11b",
+          "integrity_reason": null,
+          "ladder_presence": {
+            "no": "supplied",
+            "yes": "supplied"
+          },
+          "last_seq": 5702,
+          "levels_no": 2,
+          "levels_yes": 2,
+          "publishable": true,
+          "stats": {
+            "deltas": 122,
+            "duplicates": 0,
+            "gaps": 0,
+            "generation_boundaries": 2,
+            "regressions": 0,
+            "rejected_pre_snapshot": 0,
+            "resyncs": 0,
+            "snapshots": 3
+          },
+          "subscription_generation": 3,
+          "synced": true
+        },
+        "KXMAXSHARDINGTEST-26AUG2818-T60999.99": {
+          "book_generation": 3,
+          "checksum": "8f3d5e25d788373a",
+          "integrity_reason": null,
+          "ladder_presence": {
+            "no": "supplied",
+            "yes": "supplied"
+          },
+          "last_seq": 5700,
+          "levels_no": 2,
+          "levels_yes": 1,
+          "publishable": true,
+          "stats": {
+            "deltas": 122,
+            "duplicates": 0,
+            "gaps": 0,
+            "generation_boundaries": 2,
+            "regressions": 0,
+            "rejected_pre_snapshot": 0,
+            "resyncs": 0,
+            "snapshots": 3
+          },
+          "subscription_generation": 3,
+          "synced": true
+        },
+        "KXMAXSHARDINGTEST-26AUG2818-T61099.99": {
+          "book_generation": 3,
+          "checksum": "1190c70215f8b83c",
+          "integrity_reason": null,
+          "ladder_presence": {
+            "no": "supplied",
+            "yes": "supplied"
+          },
+          "last_seq": 5698,
+          "levels_no": 2,
+          "levels_yes": 2,
+          "publishable": true,
+          "stats": {
+            "deltas": 121,
+            "duplicates": 0,
+            "gaps": 0,
+            "generation_boundaries": 2,
+            "regressions": 0,
+            "rejected_pre_snapshot": 0,
+            "resyncs": 0,
+            "snapshots": 3
+          },
+          "subscription_generation": 3,
+          "synced": true
+        },
+        "KXMAXSHARDINGTEST-26AUG2818-T61199.99": {
+          "book_generation": 3,
+          "checksum": "0590d456085ff694",
+          "integrity_reason": null,
+          "ladder_presence": {
+            "no": "supplied",
+            "yes": "supplied"
+          },
+          "last_seq": 5780,
+          "levels_no": 2,
+          "levels_yes": 1,
+          "publishable": true,
+          "stats": {
+            "deltas": 122,
+            "duplicates": 0,
+            "gaps": 0,
+            "generation_boundaries": 2,
+            "regressions": 0,
+            "rejected_pre_snapshot": 0,
+            "resyncs": 0,
+            "snapshots": 3
+          },
+          "subscription_generation": 3,
+          "synced": true
+        },
+        "KXMAXSHARDINGTEST-26AUG2818-T61899.99": {
+          "book_generation": 3,
+          "checksum": "f0b32c4fc3ef54d2",
+          "integrity_reason": null,
+          "ladder_presence": {
+            "no": "supplied",
+            "yes": "supplied"
+          },
+          "last_seq": 5692,
+          "levels_no": 1,
+          "levels_yes": 1,
+          "publishable": true,
+          "stats": {
+            "deltas": 125,
+            "duplicates": 0,
+            "gaps": 0,
+            "generation_boundaries": 2,
+            "regressions": 0,
+            "rejected_pre_snapshot": 0,
+            "resyncs": 0,
+            "snapshots": 3
+          },
+          "subscription_generation": 3,
+          "synced": true
+        },
+        "KXMAXSHARDINGTEST-26AUG2818-T62299.99": {
+          "book_generation": 3,
+          "checksum": "9b5cfeef6fdc2a04",
+          "integrity_reason": null,
+          "ladder_presence": {
+            "no": "supplied",
+            "yes": "supplied"
+          },
+          "last_seq": 5690,
+          "levels_no": 2,
+          "levels_yes": 1,
+          "publishable": true,
+          "stats": {
+            "deltas": 124,
+            "duplicates": 0,
+            "gaps": 0,
+            "generation_boundaries": 2,
+            "regressions": 0,
+            "rejected_pre_snapshot": 0,
+            "resyncs": 0,
+            "snapshots": 3
+          },
+          "subscription_generation": 3,
+          "synced": true
+        },
+        "KXMAXSHARDINGTEST-26AUG2818-T62699.99": {
+          "book_generation": 3,
+          "checksum": "a035e8ec9d89ac7b",
+          "integrity_reason": null,
+          "ladder_presence": {
+            "no": "supplied",
+            "yes": "supplied"
+          },
+          "last_seq": 5677,
+          "levels_no": 2,
+          "levels_yes": 1,
+          "publishable": true,
+          "stats": {
+            "deltas": 124,
+            "duplicates": 0,
+            "gaps": 0,
+            "generation_boundaries": 2,
+            "regressions": 0,
+            "rejected_pre_snapshot": 0,
+            "resyncs": 0,
+            "snapshots": 3
+          },
+          "subscription_generation": 3,
+          "synced": true
+        },
+        "KXMAXSHARDINGTEST-26AUG2818-T62899.99": {
+          "book_generation": 3,
+          "checksum": "b062d11f35828eb4",
+          "integrity_reason": null,
+          "ladder_presence": {
+            "no": "supplied",
+            "yes": "supplied"
+          },
+          "last_seq": 5675,
+          "levels_no": 2,
+          "levels_yes": 1,
+          "publishable": true,
+          "stats": {
+            "deltas": 120,
+            "duplicates": 0,
+            "gaps": 0,
+            "generation_boundaries": 2,
+            "regressions": 0,
+            "rejected_pre_snapshot": 0,
+            "resyncs": 0,
+            "snapshots": 3
+          },
+          "subscription_generation": 3,
+          "synced": true
+        },
+        "KXMAXSHARDINGTEST-26AUG2818-T63199.99": {
+          "book_generation": 3,
+          "checksum": "2b52fa0b1fc44f38",
+          "integrity_reason": null,
+          "ladder_presence": {
+            "no": "supplied",
+            "yes": "supplied"
+          },
+          "last_seq": 5673,
+          "levels_no": 2,
+          "levels_yes": 1,
+          "publishable": true,
+          "stats": {
+            "deltas": 121,
+            "duplicates": 0,
+            "gaps": 0,
+            "generation_boundaries": 2,
+            "regressions": 0,
+            "rejected_pre_snapshot": 0,
+            "resyncs": 0,
+            "snapshots": 3
+          },
+          "subscription_generation": 3,
+          "synced": true
+        },
+        "KXMAXSHARDINGTEST-26AUG2818-T63299.99": {
+          "book_generation": 3,
+          "checksum": "f340af0f41d695e9",
+          "integrity_reason": null,
+          "ladder_presence": {
+            "no": "supplied",
+            "yes": "supplied"
+          },
+          "last_seq": 5776,
+          "levels_no": 3,
+          "levels_yes": 1,
+          "publishable": true,
+          "stats": {
+            "deltas": 121,
+            "duplicates": 0,
+            "gaps": 0,
+            "generation_boundaries": 2,
+            "regressions": 0,
+            "rejected_pre_snapshot": 0,
+            "resyncs": 0,
+            "snapshots": 3
+          },
+          "subscription_generation": 3,
+          "synced": true
+        },
+        "KXMAXSHARDINGTEST-26AUG2818-T63399.99": {
+          "book_generation": 3,
+          "checksum": "0a183c2f9d3d0f2d",
+          "integrity_reason": null,
+          "ladder_presence": {
+            "no": "supplied",
+            "yes": "supplied"
+          },
+          "last_seq": 5669,
+          "levels_no": 2,
+          "levels_yes": 1,
+          "publishable": true,
+          "stats": {
+            "deltas": 121,
+            "duplicates": 0,
+            "gaps": 0,
+            "generation_boundaries": 2,
+            "regressions": 0,
+            "rejected_pre_snapshot": 0,
+            "resyncs": 0,
+            "snapshots": 3
+          },
+          "subscription_generation": 3,
+          "synced": true
+        },
+        "KXMAXSHARDINGTEST-26AUG2818-T63699.99": {
+          "book_generation": 3,
+          "checksum": "69f24455ea45e1cd",
+          "integrity_reason": null,
+          "ladder_presence": {
+            "no": "supplied",
+            "yes": "supplied"
+          },
+          "last_seq": 5660,
+          "levels_no": 3,
+          "levels_yes": 1,
+          "publishable": true,
+          "stats": {
+            "deltas": 121,
+            "duplicates": 0,
+            "gaps": 0,
+            "generation_boundaries": 2,
+            "regressions": 0,
+            "rejected_pre_snapshot": 0,
+            "resyncs": 0,
+            "snapshots": 3
+          },
+          "subscription_generation": 3,
+          "synced": true
+        },
+        "KXMAXSHARDINGTEST-26AUG2818-T63899.99": {
+          "book_generation": 3,
+          "checksum": "b87eb83b27ef25b0",
+          "integrity_reason": null,
+          "ladder_presence": {
+            "no": "supplied",
+            "yes": "supplied"
+          },
+          "last_seq": 5657,
+          "levels_no": 3,
+          "levels_yes": 1,
+          "publishable": true,
+          "stats": {
+            "deltas": 121,
+            "duplicates": 0,
+            "gaps": 0,
+            "generation_boundaries": 2,
+            "regressions": 0,
+            "rejected_pre_snapshot": 0,
+            "resyncs": 0,
+            "snapshots": 3
+          },
+          "subscription_generation": 3,
+          "synced": true
+        },
+        "KXMAXSHARDINGTEST-26AUG2818-T63999.99": {
+          "book_generation": 3,
+          "checksum": "080af33a36e40955",
+          "integrity_reason": null,
+          "ladder_presence": {
+            "no": "supplied",
+            "yes": "supplied"
+          },
+          "last_seq": 5654,
+          "levels_no": 3,
+          "levels_yes": 1,
+          "publishable": true,
+          "stats": {
+            "deltas": 121,
+            "duplicates": 0,
+            "gaps": 0,
+            "generation_boundaries": 2,
+            "regressions": 0,
+            "rejected_pre_snapshot": 0,
+            "resyncs": 0,
+            "snapshots": 3
+          },
+          "subscription_generation": 3,
+          "synced": true
+        },
+        "KXMAXSHARDINGTEST-26AUG2818-T64299.99": {
+          "book_generation": 3,
+          "checksum": "f9deeebe136efe1c",
+          "integrity_reason": null,
+          "ladder_presence": {
+            "no": "supplied",
+            "yes": "supplied"
+          },
+          "last_seq": 5647,
+          "levels_no": 3,
+          "levels_yes": 1,
+          "publishable": true,
+          "stats": {
+            "deltas": 123,
+            "duplicates": 0,
+            "gaps": 0,
+            "generation_boundaries": 2,
+            "regressions": 0,
+            "rejected_pre_snapshot": 0,
+            "resyncs": 0,
+            "snapshots": 3
+          },
+          "subscription_generation": 3,
+          "synced": true
+        },
+        "KXMAXSHARDINGTEST-26AUG2818-T64399.99": {
+          "book_generation": 3,
+          "checksum": "88a3191ad2bf2223",
+          "integrity_reason": null,
+          "ladder_presence": {
+            "no": "supplied",
+            "yes": "supplied"
+          },
+          "last_seq": 5645,
+          "levels_no": 3,
+          "levels_yes": 1,
+          "publishable": true,
+          "stats": {
+            "deltas": 125,
+            "duplicates": 0,
+            "gaps": 0,
+            "generation_boundaries": 2,
+            "regressions": 0,
+            "rejected_pre_snapshot": 0,
+            "resyncs": 0,
+            "snapshots": 3
+          },
+          "subscription_generation": 3,
+          "synced": true
+        },
+        "KXMAXSHARDINGTEST-26AUG2818-T64499.99": {
+          "book_generation": 3,
+          "checksum": "6396255259c53d8d",
+          "integrity_reason": null,
+          "ladder_presence": {
+            "no": "supplied",
+            "yes": "supplied"
+          },
+          "last_seq": 5643,
+          "levels_no": 3,
+          "levels_yes": 1,
+          "publishable": true,
+          "stats": {
+            "deltas": 121,
+            "duplicates": 0,
+            "gaps": 0,
+            "generation_boundaries": 2,
+            "regressions": 0,
+            "rejected_pre_snapshot": 0,
+            "resyncs": 0,
+            "snapshots": 3
+          },
+          "subscription_generation": 3,
+          "synced": true
+        },
+        "KXMAXSHARDINGTEST-26AUG2818-T65399.99": {
+          "book_generation": 3,
+          "checksum": "77ed4118011271c1",
+          "integrity_reason": null,
+          "ladder_presence": {
+            "no": "supplied",
+            "yes": "supplied"
+          },
+          "last_seq": 5640,
+          "levels_no": 3,
+          "levels_yes": 1,
+          "publishable": true,
+          "stats": {
+            "deltas": 124,
+            "duplicates": 0,
+            "gaps": 0,
+            "generation_boundaries": 2,
+            "regressions": 0,
+            "rejected_pre_snapshot": 0,
+            "resyncs": 0,
+            "snapshots": 3
+          },
+          "subscription_generation": 3,
+          "synced": true
+        },
+        "KXMAXSHARDINGTEST-26AUG2818-T65499.99": {
+          "book_generation": 3,
+          "checksum": "ec67af848dd34740",
+          "integrity_reason": null,
+          "ladder_presence": {
+            "no": "supplied",
+            "yes": "supplied"
+          },
+          "last_seq": 5637,
+          "levels_no": 3,
+          "levels_yes": 1,
+          "publishable": true,
+          "stats": {
+            "deltas": 121,
+            "duplicates": 0,
+            "gaps": 0,
+            "generation_boundaries": 2,
+            "regressions": 0,
+            "rejected_pre_snapshot": 0,
+            "resyncs": 0,
+            "snapshots": 3
+          },
+          "subscription_generation": 3,
+          "synced": true
+        },
+        "KXMAXSHARDINGTEST-26AUG2818-T65599.99": {
+          "book_generation": 3,
+          "checksum": "ae16a641539f684e",
+          "integrity_reason": null,
+          "ladder_presence": {
+            "no": "supplied",
+            "yes": "supplied"
+          },
+          "last_seq": 5634,
+          "levels_no": 3,
+          "levels_yes": 1,
+          "publishable": true,
+          "stats": {
+            "deltas": 121,
+            "duplicates": 0,
+            "gaps": 0,
+            "generation_boundaries": 2,
+            "regressions": 0,
+            "rejected_pre_snapshot": 0,
+            "resyncs": 0,
+            "snapshots": 3
+          },
+          "subscription_generation": 3,
+          "synced": true
+        },
+        "KXMAXSHARDINGTEST-26AUG2818-T65699.99": {
+          "book_generation": 3,
+          "checksum": "81cf87ec51551e76",
+          "integrity_reason": null,
+          "ladder_presence": {
+            "no": "supplied",
+            "yes": "supplied"
+          },
+          "last_seq": 5777,
+          "levels_no": 3,
+          "levels_yes": 1,
+          "publishable": true,
+          "stats": {
+            "deltas": 122,
+            "duplicates": 0,
+            "gaps": 0,
+            "generation_boundaries": 2,
+            "regressions": 0,
+            "rejected_pre_snapshot": 0,
+            "resyncs": 0,
+            "snapshots": 3
+          },
+          "subscription_generation": 3,
+          "synced": true
+        },
+        "KXMAXSHARDINGTEST-26AUG2818-T65899.99": {
+          "book_generation": 3,
+          "checksum": "fd32db9c09973d7f",
+          "integrity_reason": null,
+          "ladder_presence": {
+            "no": "supplied",
+            "yes": "supplied"
+          },
+          "last_seq": 5621,
+          "levels_no": 3,
+          "levels_yes": 1,
+          "publishable": true,
+          "stats": {
+            "deltas": 124,
+            "duplicates": 0,
+            "gaps": 0,
+            "generation_boundaries": 2,
+            "regressions": 0,
+            "rejected_pre_snapshot": 0,
+            "resyncs": 0,
+            "snapshots": 3
+          },
+          "subscription_generation": 3,
+          "synced": true
+        },
+        "KXMAXSHARDINGTEST-26AUG2818-T66299.99": {
+          "book_generation": 3,
+          "checksum": "8745bd400e45bb2c",
+          "integrity_reason": null,
+          "ladder_presence": {
+            "no": "supplied",
+            "yes": "supplied"
+          },
+          "last_seq": 5775,
+          "levels_no": 3,
+          "levels_yes": 1,
+          "publishable": true,
+          "stats": {
+            "deltas": 122,
+            "duplicates": 0,
+            "gaps": 0,
+            "generation_boundaries": 2,
+            "regressions": 0,
+            "rejected_pre_snapshot": 0,
+            "resyncs": 0,
+            "snapshots": 3
+          },
+          "subscription_generation": 3,
+          "synced": true
+        },
+        "KXMAXSHARDINGTEST-26AUG2818-T67899.99": {
+          "book_generation": 3,
+          "checksum": "b2603ada72082f6c",
+          "integrity_reason": null,
+          "ladder_presence": {
+            "no": "supplied",
+            "yes": "supplied"
+          },
+          "last_seq": 5605,
+          "levels_no": 3,
+          "levels_yes": 1,
+          "publishable": true,
+          "stats": {
+            "deltas": 121,
+            "duplicates": 0,
+            "gaps": 0,
+            "generation_boundaries": 2,
+            "regressions": 0,
+            "rejected_pre_snapshot": 0,
+            "resyncs": 0,
+            "snapshots": 3
+          },
+          "subscription_generation": 3,
+          "synced": true
+        },
+        "KXMAXSHARDINGTEST-26AUG2818-T68299.99": {
+          "book_generation": 3,
+          "checksum": "8ffb2663cd61d051",
+          "integrity_reason": null,
+          "ladder_presence": {
+            "no": "supplied",
+            "yes": "supplied"
+          },
+          "last_seq": 5678,
+          "levels_no": 3,
+          "levels_yes": 1,
+          "publishable": true,
+          "stats": {
+            "deltas": 124,
+            "duplicates": 0,
+            "gaps": 0,
+            "generation_boundaries": 2,
+            "regressions": 0,
+            "rejected_pre_snapshot": 0,
+            "resyncs": 0,
+            "snapshots": 3
+          },
+          "subscription_generation": 3,
+          "synced": true
+        },
+        "KXMAXSHARDINGTEST-26AUG2818-T68399.99": {
+          "book_generation": 3,
+          "checksum": "f59843ec76f8cfd2",
+          "integrity_reason": null,
+          "ladder_presence": {
+            "no": "supplied",
+            "yes": "supplied"
+          },
+          "last_seq": 5601,
+          "levels_no": 3,
+          "levels_yes": 1,
+          "publishable": true,
+          "stats": {
+            "deltas": 120,
+            "duplicates": 0,
+            "gaps": 0,
+            "generation_boundaries": 2,
+            "regressions": 0,
+            "rejected_pre_snapshot": 0,
+            "resyncs": 0,
+            "snapshots": 3
+          },
+          "subscription_generation": 3,
+          "synced": true
+        },
+        "KXMAXSHARDINGTEST-26AUG2818-T68799.99": {
+          "book_generation": 3,
+          "checksum": "e575741385dc1eed",
+          "integrity_reason": null,
+          "ladder_presence": {
+            "no": "supplied",
+            "yes": "supplied"
+          },
+          "last_seq": 5599,
+          "levels_no": 3,
+          "levels_yes": 1,
+          "publishable": true,
+          "stats": {
+            "deltas": 121,
+            "duplicates": 0,
+            "gaps": 0,
+            "generation_boundaries": 2,
+            "regressions": 0,
+            "rejected_pre_snapshot": 0,
+            "resyncs": 0,
+            "snapshots": 3
+          },
+          "subscription_generation": 3,
+          "synced": true
+        },
+        "KXMAXSHARDINGTEST-26AUG2818-T68999.99": {
+          "book_generation": 3,
+          "checksum": "41acfbb3409c8f18",
+          "integrity_reason": null,
+          "ladder_presence": {
+            "no": "supplied",
+            "yes": "supplied"
+          },
+          "last_seq": 5597,
+          "levels_no": 3,
+          "levels_yes": 1,
+          "publishable": true,
+          "stats": {
+            "deltas": 124,
+            "duplicates": 0,
+            "gaps": 0,
+            "generation_boundaries": 2,
+            "regressions": 0,
+            "rejected_pre_snapshot": 0,
+            "resyncs": 0,
+            "snapshots": 3
+          },
+          "subscription_generation": 3,
+          "synced": true
+        },
+        "KXMAXSHARDINGTEST-26AUG2818-T69299.99": {
+          "book_generation": 3,
+          "checksum": "c495d1c01a3b2f5d",
+          "integrity_reason": null,
+          "ladder_presence": {
+            "no": "supplied",
+            "yes": "supplied"
+          },
+          "last_seq": 5595,
+          "levels_no": 3,
+          "levels_yes": 1,
+          "publishable": true,
+          "stats": {
+            "deltas": 120,
+            "duplicates": 0,
+            "gaps": 0,
+            "generation_boundaries": 2,
+            "regressions": 0,
+            "rejected_pre_snapshot": 0,
+            "resyncs": 0,
+            "snapshots": 3
+          },
+          "subscription_generation": 3,
+          "synced": true
+        },
+        "KXMAXSHARDINGTEST-26AUG2818-T69899.99": {
+          "book_generation": 3,
+          "checksum": "ff201b1c574e092d",
+          "integrity_reason": null,
+          "ladder_presence": {
+            "no": "supplied",
+            "yes": "supplied"
+          },
+          "last_seq": 5779,
+          "levels_no": 3,
+          "levels_yes": 1,
+          "publishable": true,
+          "stats": {
+            "deltas": 124,
+            "duplicates": 0,
+            "gaps": 0,
+            "generation_boundaries": 2,
+            "regressions": 0,
+            "rejected_pre_snapshot": 0,
+            "resyncs": 0,
+            "snapshots": 3
+          },
+          "subscription_generation": 3,
+          "synced": true
+        },
+        "KXMAXSHARDINGTEST-26AUG2818-T70099.99": {
+          "book_generation": 3,
+          "checksum": "0a739251d3b61453",
+          "integrity_reason": null,
+          "ladder_presence": {
+            "no": "supplied",
+            "yes": "supplied"
+          },
+          "last_seq": 5585,
+          "levels_no": 3,
+          "levels_yes": 1,
+          "publishable": true,
+          "stats": {
+            "deltas": 121,
+            "duplicates": 0,
+            "gaps": 0,
+            "generation_boundaries": 2,
+            "regressions": 0,
+            "rejected_pre_snapshot": 0,
+            "resyncs": 0,
+            "snapshots": 3
+          },
+          "subscription_generation": 3,
+          "synced": true
+        },
+        "KXMAXSHARDINGTEST-26AUG2818-T71699.99": {
+          "book_generation": 3,
+          "checksum": "a3feb26d9868ef20",
+          "integrity_reason": null,
+          "ladder_presence": {
+            "no": "supplied",
+            "yes": "supplied"
+          },
+          "last_seq": 5573,
+          "levels_no": 3,
+          "levels_yes": 1,
+          "publishable": true,
+          "stats": {
+            "deltas": 121,
+            "duplicates": 0,
+            "gaps": 0,
+            "generation_boundaries": 2,
+            "regressions": 0,
+            "rejected_pre_snapshot": 0,
+            "resyncs": 0,
+            "snapshots": 3
+          },
+          "subscription_generation": 3,
+          "synced": true
+        },
+        "KXMAXSHARDINGTEST-26AUG2818-T72099.99": {
+          "book_generation": 3,
+          "checksum": "ccb3fdfab993a851",
+          "integrity_reason": null,
+          "ladder_presence": {
+            "no": "supplied",
+            "yes": "supplied"
+          },
+          "last_seq": 5571,
+          "levels_no": 3,
+          "levels_yes": 1,
+          "publishable": true,
+          "stats": {
+            "deltas": 122,
+            "duplicates": 0,
+            "gaps": 0,
+            "generation_boundaries": 2,
+            "regressions": 0,
+            "rejected_pre_snapshot": 0,
+            "resyncs": 0,
+            "snapshots": 3
+          },
+          "subscription_generation": 3,
+          "synced": true
+        },
+        "KXMAXSHARDINGTEST-26AUG2818-T72499.99": {
+          "book_generation": 3,
+          "checksum": "15a0013b4670a532",
+          "integrity_reason": null,
+          "ladder_presence": {
+            "no": "supplied",
+            "yes": "supplied"
+          },
+          "last_seq": 5569,
+          "levels_no": 3,
+          "levels_yes": 1,
+          "publishable": true,
+          "stats": {
+            "deltas": 125,
+            "duplicates": 0,
+            "gaps": 0,
+            "generation_boundaries": 2,
+            "regressions": 0,
+            "rejected_pre_snapshot": 0,
+            "resyncs": 0,
+            "snapshots": 3
+          },
+          "subscription_generation": 3,
+          "synced": true
+        },
+        "KXMAXSHARDINGTEST-26AUG2818-T73699.99": {
+          "book_generation": 3,
+          "checksum": "2b46d1c1e2913a63",
+          "integrity_reason": null,
+          "ladder_presence": {
+            "no": "supplied",
+            "yes": "supplied"
+          },
+          "last_seq": 5561,
+          "levels_no": 3,
+          "levels_yes": 1,
+          "publishable": true,
+          "stats": {
+            "deltas": 123,
+            "duplicates": 0,
+            "gaps": 0,
+            "generation_boundaries": 2,
+            "regressions": 0,
+            "rejected_pre_snapshot": 0,
+            "resyncs": 0,
+            "snapshots": 3
+          },
+          "subscription_generation": 3,
+          "synced": true
+        },
+        "KXTESTMATCH-26AUG122030BANAUS-AUS": {
+          "book_generation": 3,
+          "checksum": "e3df8d119fb9a1ed",
+          "integrity_reason": null,
+          "ladder_presence": {
+            "no": "omitted_by_venue",
+            "yes": "omitted_by_venue"
+          },
+          "last_seq": 55,
+          "levels_no": 0,
+          "levels_yes": 0,
+          "publishable": true,
+          "stats": {
+            "deltas": 0,
+            "duplicates": 0,
+            "gaps": 0,
+            "generation_boundaries": 2,
+            "regressions": 0,
+            "rejected_pre_snapshot": 0,
+            "resyncs": 0,
+            "snapshots": 3
+          },
+          "subscription_generation": 3,
+          "synced": true
+        },
+        "KXTESTMATCH-26AUG122030BANAUS-BAN": {
+          "book_generation": 3,
+          "checksum": "cc5f2f455d176473",
+          "integrity_reason": null,
+          "ladder_presence": {
+            "no": "omitted_by_venue",
+            "yes": "omitted_by_venue"
+          },
+          "last_seq": 56,
+          "levels_no": 0,
+          "levels_yes": 0,
+          "publishable": true,
+          "stats": {
+            "deltas": 0,
+            "duplicates": 0,
+            "gaps": 0,
+            "generation_boundaries": 2,
+            "regressions": 0,
+            "rejected_pre_snapshot": 0,
+            "resyncs": 0,
+            "snapshots": 3
+          },
+          "subscription_generation": 3,
+          "synced": true
+        },
+        "KXTESTMATCH-26AUG122030BANAUS-TIE": {
+          "book_generation": 3,
+          "checksum": "ccc721e77c2c8b6e",
+          "integrity_reason": null,
+          "ladder_presence": {
+            "no": "omitted_by_venue",
+            "yes": "omitted_by_venue"
+          },
+          "last_seq": 57,
+          "levels_no": 0,
+          "levels_yes": 0,
+          "publishable": true,
+          "stats": {
+            "deltas": 0,
+            "duplicates": 0,
+            "gaps": 0,
+            "generation_boundaries": 2,
+            "regressions": 0,
+            "rejected_pre_snapshot": 0,
+            "resyncs": 0,
+            "snapshots": 3
+          },
+          "subscription_generation": 3,
+          "synced": true
+        },
+        "KXTESTMATCH-26AUG150030INDSRI-IND": {
+          "book_generation": 3,
+          "checksum": "52275caa5124d65e",
+          "integrity_reason": null,
+          "ladder_presence": {
+            "no": "supplied",
+            "yes": "supplied"
+          },
+          "last_seq": 58,
+          "levels_no": 11,
+          "levels_yes": 4,
+          "publishable": true,
+          "stats": {
+            "deltas": 0,
+            "duplicates": 0,
+            "gaps": 0,
+            "generation_boundaries": 2,
+            "regressions": 0,
+            "rejected_pre_snapshot": 0,
+            "resyncs": 0,
+            "snapshots": 3
+          },
+          "subscription_generation": 3,
+          "synced": true
+        },
+        "KXTESTMATCH-26AUG150030INDSRI-SRI": {
+          "book_generation": 3,
+          "checksum": "61f3edc27a455778",
+          "integrity_reason": null,
+          "ladder_presence": {
+            "no": "supplied",
+            "yes": "supplied"
+          },
+          "last_seq": 59,
+          "levels_no": 7,
+          "levels_yes": 5,
+          "publishable": true,
+          "stats": {
+            "deltas": 0,
+            "duplicates": 0,
+            "gaps": 0,
+            "generation_boundaries": 2,
+            "regressions": 0,
+            "rejected_pre_snapshot": 0,
+            "resyncs": 0,
+            "snapshots": 3
+          },
+          "subscription_generation": 3,
+          "synced": true
+        },
+        "KXTESTMATCH-26AUG150030INDSRI-TIE": {
+          "book_generation": 3,
+          "checksum": "84e08aace5697cf2",
+          "integrity_reason": null,
+          "ladder_presence": {
+            "no": "supplied",
+            "yes": "supplied"
+          },
+          "last_seq": 60,
+          "levels_no": 7,
+          "levels_yes": 8,
+          "publishable": true,
+          "stats": {
+            "deltas": 0,
+            "duplicates": 0,
+            "gaps": 0,
+            "generation_boundaries": 2,
+            "regressions": 0,
+            "rejected_pre_snapshot": 0,
+            "resyncs": 0,
+            "snapshots": 3
+          },
+          "subscription_generation": 3,
+          "synced": true
+        }
+      },
+      "carries_orderbook": true,
+      "generation": 3,
+      "healthy": true,
+      "last_seq": 5780,
+      "sid": 1,
+      "state_reason": null,
+      "stats": {
+        "accepted": 6781,
+        "duplicates": 0,
+        "gaps": 0,
+        "generation_advances": 2,
+        "missing_seq": 0,
+        "recoveries": 2,
+        "regressions": 0,
+        "stale_generation": 0,
+        "wrong_sid": 0
+      }
+    },
+    "2": {
+      "books": {},
+      "carries_orderbook": false,
+      "generation": 3,
+      "healthy": false,
+      "last_seq": null,
+      "sid": 2,
+      "state_reason": "awaiting_snapshot",
+      "stats": {
+        "accepted": 0,
+        "duplicates": 0,
+        "gaps": 0,
+        "generation_advances": 2,
+        "missing_seq": 0,
+        "recoveries": 2,
+        "regressions": 0,
+        "stale_generation": 0,
+        "wrong_sid": 0
+      }
+    },
+    "3": {
+      "books": {},
+      "carries_orderbook": false,
+      "generation": 3,
+      "healthy": false,
+      "last_seq": 104,
+      "sid": 3,
+      "state_reason": "awaiting_snapshot",
+      "stats": {
+        "accepted": 115,
+        "duplicates": 0,
+        "gaps": 0,
+        "generation_advances": 2,
+        "missing_seq": 0,
+        "recoveries": 2,
+        "regressions": 0,
+        "stale_generation": 0,
+        "wrong_sid": 0
+      }
+    }
+  },
+  "metrics": {
+    "append_calls": 8599,
+    "disconnects": 2,
+    "event_bytes_total": 2719825,
+    "events_archived": 8599,
+    "events_received": 8599,
+    "events_rejected": 0,
+    "frames_malformed": 0,
+    "observe_errors": 0,
+    "reconnects": 2,
+    "rotations_started": 0,
+    "segments_closed": 1,
+    "sequence_duplicates": 0,
+    "sequence_gaps": 0,
+    "sequence_regressions": 0,
+    "subscription_generation": 3
+  },
+  "milestone": "KALSHI-CP6-CP9-FUNCTIONAL",
+  "mode": "reconnect",
+  "perturbation_journal": [
+    {
+      "at": "2026-08-17T17:42:05.284674+00:00",
+      "event": "forced_socket_close",
+      "frames_on_this_connection": 600,
+      "remaining_budget": 1
+    },
+    {
+      "at": "2026-08-17T17:42:26.899869+00:00",
+      "event": "forced_socket_close",
+      "frames_on_this_connection": 600,
+      "remaining_budget": 0
+    }
+  ],
+  "publishability_timeline": [
+    {
+      "at": "2026-08-17T17:42:03.273150+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T55099.99",
+        "seq": 1,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": null,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T55099.99",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 1,
+      "frame_ordinal": 4,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 1
+    },
+    {
+      "at": "2026-08-17T17:42:03.273791+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T55199.99",
+        "seq": 2,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": null,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T55199.99",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 1,
+      "frame_ordinal": 5,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 1
+    },
+    {
+      "at": "2026-08-17T17:42:03.274499+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T55599.99",
+        "seq": 3,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": null,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T55599.99",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 1,
+      "frame_ordinal": 6,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 1
+    },
+    {
+      "at": "2026-08-17T17:42:03.275064+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T56099.99",
+        "seq": 4,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": null,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T56099.99",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 1,
+      "frame_ordinal": 7,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 1
+    },
+    {
+      "at": "2026-08-17T17:42:03.275668+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T56199.99",
+        "seq": 5,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": null,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T56199.99",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 1,
+      "frame_ordinal": 8,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 1
+    },
+    {
+      "at": "2026-08-17T17:42:03.276332+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T56399.99",
+        "seq": 6,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": null,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T56399.99",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 1,
+      "frame_ordinal": 9,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 1
+    },
+    {
+      "at": "2026-08-17T17:42:03.276880+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T56499.99",
+        "seq": 7,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": null,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T56499.99",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 1,
+      "frame_ordinal": 10,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 1
+    },
+    {
+      "at": "2026-08-17T17:42:03.277413+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T56799.99",
+        "seq": 8,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": null,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T56799.99",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 1,
+      "frame_ordinal": 11,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 1
+    },
+    {
+      "at": "2026-08-17T17:42:03.278220+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T57299.99",
+        "seq": 9,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": null,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T57299.99",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 1,
+      "frame_ordinal": 12,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 1
+    },
+    {
+      "at": "2026-08-17T17:42:03.278791+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T57399.99",
+        "seq": 10,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": null,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T57399.99",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 1,
+      "frame_ordinal": 13,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 1
+    },
+    {
+      "at": "2026-08-17T17:42:03.279322+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T57599.99",
+        "seq": 11,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": null,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T57599.99",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 1,
+      "frame_ordinal": 14,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 1
+    },
+    {
+      "at": "2026-08-17T17:42:03.279880+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T57899.99",
+        "seq": 12,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": null,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T57899.99",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 1,
+      "frame_ordinal": 15,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 1
+    },
+    {
+      "at": "2026-08-17T17:42:03.280481+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T58099.99",
+        "seq": 13,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": null,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T58099.99",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 1,
+      "frame_ordinal": 16,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 1
+    },
+    {
+      "at": "2026-08-17T17:42:03.281038+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T58199.99",
+        "seq": 14,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": null,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T58199.99",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 1,
+      "frame_ordinal": 17,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 1
+    },
+    {
+      "at": "2026-08-17T17:42:03.281596+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T58799.99",
+        "seq": 15,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": null,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T58799.99",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 1,
+      "frame_ordinal": 18,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 1
+    },
+    {
+      "at": "2026-08-17T17:42:03.282162+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T58999.99",
+        "seq": 16,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": null,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T58999.99",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 1,
+      "frame_ordinal": 19,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 1
+    },
+    {
+      "at": "2026-08-17T17:42:03.282718+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T59599.99",
+        "seq": 17,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": null,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T59599.99",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 1,
+      "frame_ordinal": 20,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 1
+    },
+    {
+      "at": "2026-08-17T17:42:03.283232+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T60499.99",
+        "seq": 18,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": null,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T60499.99",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 1,
+      "frame_ordinal": 21,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 1
+    },
+    {
+      "at": "2026-08-17T17:42:03.284106+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T60799.99",
+        "seq": 19,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": null,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T60799.99",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 1,
+      "frame_ordinal": 22,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 1
+    },
+    {
+      "at": "2026-08-17T17:42:03.284671+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T60899.99",
+        "seq": 20,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": null,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T60899.99",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 1,
+      "frame_ordinal": 23,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 1
+    },
+    {
+      "at": "2026-08-17T17:42:03.285207+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T60999.99",
+        "seq": 21,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": null,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T60999.99",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 1,
+      "frame_ordinal": 24,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 1
+    },
+    {
+      "at": "2026-08-17T17:42:03.285766+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T61099.99",
+        "seq": 22,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": null,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T61099.99",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 1,
+      "frame_ordinal": 25,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 1
+    },
+    {
+      "at": "2026-08-17T17:42:03.286287+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T61199.99",
+        "seq": 23,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": null,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T61199.99",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 1,
+      "frame_ordinal": 26,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 1
+    },
+    {
+      "at": "2026-08-17T17:42:03.286767+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T61899.99",
+        "seq": 24,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": null,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T61899.99",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 1,
+      "frame_ordinal": 27,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 1
+    },
+    {
+      "at": "2026-08-17T17:42:03.287247+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T62299.99",
+        "seq": 25,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": null,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T62299.99",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 1,
+      "frame_ordinal": 28,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 1
+    },
+    {
+      "at": "2026-08-17T17:42:03.287756+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T62699.99",
+        "seq": 26,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": null,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T62699.99",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 1,
+      "frame_ordinal": 29,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 1
+    },
+    {
+      "at": "2026-08-17T17:42:03.288271+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T62899.99",
+        "seq": 27,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": null,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T62899.99",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 1,
+      "frame_ordinal": 30,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 1
+    },
+    {
+      "at": "2026-08-17T17:42:03.288781+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T63199.99",
+        "seq": 28,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": null,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T63199.99",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 1,
+      "frame_ordinal": 31,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 1
+    },
+    {
+      "at": "2026-08-17T17:42:03.289664+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T63299.99",
+        "seq": 29,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": null,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T63299.99",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 1,
+      "frame_ordinal": 32,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 1
+    },
+    {
+      "at": "2026-08-17T17:42:03.294942+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T63399.99",
+        "seq": 30,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": null,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T63399.99",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 1,
+      "frame_ordinal": 33,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 1
+    },
+    {
+      "at": "2026-08-17T17:42:03.295531+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T63699.99",
+        "seq": 31,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": null,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T63699.99",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 1,
+      "frame_ordinal": 34,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 1
+    },
+    {
+      "at": "2026-08-17T17:42:03.296092+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T63899.99",
+        "seq": 32,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": null,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T63899.99",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 1,
+      "frame_ordinal": 35,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 1
+    },
+    {
+      "at": "2026-08-17T17:42:03.296657+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T63999.99",
+        "seq": 33,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": null,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T63999.99",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 1,
+      "frame_ordinal": 36,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 1
+    },
+    {
+      "at": "2026-08-17T17:42:03.297218+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T64299.99",
+        "seq": 34,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": null,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T64299.99",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 1,
+      "frame_ordinal": 37,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 1
+    },
+    {
+      "at": "2026-08-17T17:42:03.297773+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T64399.99",
+        "seq": 35,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": null,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T64399.99",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 1,
+      "frame_ordinal": 38,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 1
+    },
+    {
+      "at": "2026-08-17T17:42:03.298357+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T64499.99",
+        "seq": 36,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": null,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T64499.99",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 1,
+      "frame_ordinal": 39,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 1
+    },
+    {
+      "at": "2026-08-17T17:42:03.298923+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T65399.99",
+        "seq": 37,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": null,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T65399.99",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 1,
+      "frame_ordinal": 40,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 1
+    },
+    {
+      "at": "2026-08-17T17:42:03.299480+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T65499.99",
+        "seq": 38,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": null,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T65499.99",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 1,
+      "frame_ordinal": 41,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 1
+    },
+    {
+      "at": "2026-08-17T17:42:03.300368+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T65599.99",
+        "seq": 39,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": null,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T65599.99",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 1,
+      "frame_ordinal": 42,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 1
+    },
+    {
+      "at": "2026-08-17T17:42:03.300971+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T65699.99",
+        "seq": 40,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": null,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T65699.99",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 1,
+      "frame_ordinal": 43,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 1
+    },
+    {
+      "at": "2026-08-17T17:42:03.301545+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T65899.99",
+        "seq": 41,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": null,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T65899.99",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 1,
+      "frame_ordinal": 44,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 1
+    },
+    {
+      "at": "2026-08-17T17:42:03.302100+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T66299.99",
+        "seq": 42,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": null,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T66299.99",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 1,
+      "frame_ordinal": 45,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 1
+    },
+    {
+      "at": "2026-08-17T17:42:03.302664+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T67899.99",
+        "seq": 43,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": null,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T67899.99",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 1,
+      "frame_ordinal": 46,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 1
+    },
+    {
+      "at": "2026-08-17T17:42:03.303221+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T68299.99",
+        "seq": 44,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": null,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T68299.99",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 1,
+      "frame_ordinal": 47,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 1
+    },
+    {
+      "at": "2026-08-17T17:42:03.303777+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T68399.99",
+        "seq": 45,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": null,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T68399.99",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 1,
+      "frame_ordinal": 48,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 1
+    },
+    {
+      "at": "2026-08-17T17:42:03.304341+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T68799.99",
+        "seq": 46,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": null,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T68799.99",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 1,
+      "frame_ordinal": 49,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 1
+    },
+    {
+      "at": "2026-08-17T17:42:03.304896+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T68999.99",
+        "seq": 47,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": null,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T68999.99",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 1,
+      "frame_ordinal": 50,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 1
+    },
+    {
+      "at": "2026-08-17T17:42:03.305453+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T69299.99",
+        "seq": 48,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": null,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T69299.99",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 1,
+      "frame_ordinal": 51,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 1
+    },
+    {
+      "at": "2026-08-17T17:42:03.306361+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T69899.99",
+        "seq": 49,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": null,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T69899.99",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 1,
+      "frame_ordinal": 52,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 1
+    },
+    {
+      "at": "2026-08-17T17:42:03.306951+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T70099.99",
+        "seq": 50,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": null,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T70099.99",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 1,
+      "frame_ordinal": 53,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 1
+    },
+    {
+      "at": "2026-08-17T17:42:03.307528+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T71699.99",
+        "seq": 51,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": null,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T71699.99",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 1,
+      "frame_ordinal": 54,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 1
+    },
+    {
+      "at": "2026-08-17T17:42:03.308097+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T72099.99",
+        "seq": 52,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": null,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T72099.99",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 1,
+      "frame_ordinal": 55,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 1
+    },
+    {
+      "at": "2026-08-17T17:42:03.308679+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T72499.99",
+        "seq": 53,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": null,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T72499.99",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 1,
+      "frame_ordinal": 56,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 1
+    },
+    {
+      "at": "2026-08-17T17:42:03.309254+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T73699.99",
+        "seq": 54,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": null,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T73699.99",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 1,
+      "frame_ordinal": 57,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 1
+    },
+    {
+      "at": "2026-08-17T17:42:03.309661+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXTESTMATCH-26AUG122030BANAUS-AUS",
+        "seq": 55,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": null,
+          "market_ticker": "KXTESTMATCH-26AUG122030BANAUS-AUS",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 1,
+      "frame_ordinal": 58,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 1
+    },
+    {
+      "at": "2026-08-17T17:42:03.310065+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXTESTMATCH-26AUG122030BANAUS-BAN",
+        "seq": 56,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": null,
+          "market_ticker": "KXTESTMATCH-26AUG122030BANAUS-BAN",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 1,
+      "frame_ordinal": 59,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 1
+    },
+    {
+      "at": "2026-08-17T17:42:03.310454+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXTESTMATCH-26AUG122030BANAUS-TIE",
+        "seq": 57,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": null,
+          "market_ticker": "KXTESTMATCH-26AUG122030BANAUS-TIE",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 1,
+      "frame_ordinal": 60,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 1
+    },
+    {
+      "at": "2026-08-17T17:42:03.311486+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXTESTMATCH-26AUG150030INDSRI-IND",
+        "seq": 58,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": null,
+          "market_ticker": "KXTESTMATCH-26AUG150030INDSRI-IND",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 1,
+      "frame_ordinal": 61,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 1
+    },
+    {
+      "at": "2026-08-17T17:42:03.312838+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXTESTMATCH-26AUG150030INDSRI-SRI",
+        "seq": 59,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": null,
+          "market_ticker": "KXTESTMATCH-26AUG150030INDSRI-SRI",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 1,
+      "frame_ordinal": 62,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 1
+    },
+    {
+      "at": "2026-08-17T17:42:03.313883+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXTESTMATCH-26AUG150030INDSRI-TIE",
+        "seq": 60,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": null,
+          "market_ticker": "KXTESTMATCH-26AUG150030INDSRI-TIE",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 1,
+      "frame_ordinal": 63,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 1
+    },
+    {
+      "at": "2026-08-17T17:42:15.888613+00:00",
+      "cause": {
+        "event_type": "subscribed",
+        "market_ticker": null,
+        "seq": null,
+        "sid": null
+      },
+      "changes": [
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T55099.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T55199.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T55599.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T56099.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T56199.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T56399.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T56499.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T56799.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T57299.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T57399.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T57599.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T57899.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T58099.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T58199.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T58799.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T58999.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T59599.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T60499.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T60799.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T60899.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T60999.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T61099.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T61199.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T61899.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T62299.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T62699.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T62899.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T63199.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T63299.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T63399.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T63699.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T63899.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T63999.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T64299.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T64399.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T64499.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T65399.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T65499.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T65599.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T65699.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T65899.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T66299.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T67899.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T68299.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T68399.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T68799.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T68999.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T69299.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T69899.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T70099.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T71699.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T72099.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T72499.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T73699.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXTESTMATCH-26AUG122030BANAUS-AUS",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXTESTMATCH-26AUG122030BANAUS-BAN",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXTESTMATCH-26AUG122030BANAUS-TIE",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXTESTMATCH-26AUG150030INDSRI-IND",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXTESTMATCH-26AUG150030INDSRI-SRI",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXTESTMATCH-26AUG150030INDSRI-TIE",
+          "sid": 1,
+          "to": false
+        }
+      ],
+      "connection_generation": 2,
+      "frame_ordinal": 601,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 2
+    },
+    {
+      "at": "2026-08-17T17:42:15.926514+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T55099.99",
+        "seq": 1,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T55099.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T55199.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T55599.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T56099.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T56199.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T56399.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T56499.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T56799.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T57299.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T57399.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T57599.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T57899.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T58099.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T58199.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T58799.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T58999.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T59599.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T60499.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T60799.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T60899.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T60999.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T61099.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T61199.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T61899.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T62299.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T62699.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T62899.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T63199.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T63299.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T63399.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T63699.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T63899.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T63999.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T64299.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T64399.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T64499.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T65399.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T65499.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T65599.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T65699.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T65899.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T66299.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T67899.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T68299.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T68399.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T68799.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T68999.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T69299.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T69899.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T70099.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T71699.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T72099.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T72499.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T73699.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXTESTMATCH-26AUG122030BANAUS-AUS",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXTESTMATCH-26AUG122030BANAUS-BAN",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXTESTMATCH-26AUG122030BANAUS-TIE",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXTESTMATCH-26AUG150030INDSRI-IND",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXTESTMATCH-26AUG150030INDSRI-SRI",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXTESTMATCH-26AUG150030INDSRI-TIE",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 2,
+      "frame_ordinal": 604,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 2
+    },
+    {
+      "at": "2026-08-17T17:42:38.379940+00:00",
+      "cause": {
+        "event_type": "subscribed",
+        "market_ticker": null,
+        "seq": null,
+        "sid": null
+      },
+      "changes": [
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T55099.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T55199.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T55599.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T56099.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T56199.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T56399.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T56499.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T56799.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T57299.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T57399.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T57599.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T57899.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T58099.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T58199.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T58799.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T58999.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T59599.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T60499.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T60799.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T60899.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T60999.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T61099.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T61199.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T61899.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T62299.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T62699.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T62899.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T63199.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T63299.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T63399.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T63699.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T63899.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T63999.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T64299.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T64399.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T64499.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T65399.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T65499.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T65599.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T65699.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T65899.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T66299.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T67899.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T68299.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T68399.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T68799.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T68999.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T69299.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T69899.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T70099.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T71699.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T72099.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T72499.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T73699.99",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXTESTMATCH-26AUG122030BANAUS-AUS",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXTESTMATCH-26AUG122030BANAUS-BAN",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXTESTMATCH-26AUG122030BANAUS-TIE",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXTESTMATCH-26AUG150030INDSRI-IND",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXTESTMATCH-26AUG150030INDSRI-SRI",
+          "sid": 1,
+          "to": false
+        },
+        {
+          "from": true,
+          "market_ticker": "KXTESTMATCH-26AUG150030INDSRI-TIE",
+          "sid": 1,
+          "to": false
+        }
+      ],
+      "connection_generation": 3,
+      "frame_ordinal": 1201,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 3
+    },
+    {
+      "at": "2026-08-17T17:42:38.417466+00:00",
+      "cause": {
+        "event_type": "orderbook_snapshot",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T55099.99",
+        "seq": 1,
+        "sid": 1
+      },
+      "changes": [
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T55099.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T55199.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T55599.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T56099.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T56199.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T56399.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T56499.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T56799.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T57299.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T57399.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T57599.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T57899.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T58099.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T58199.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T58799.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T58999.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T59599.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T60499.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T60799.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T60899.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T60999.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T61099.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T61199.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T61899.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T62299.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T62699.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T62899.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T63199.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T63299.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T63399.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T63699.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T63899.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T63999.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T64299.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T64399.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T64499.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T65399.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T65499.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T65599.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T65699.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T65899.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T66299.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T67899.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T68299.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T68399.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T68799.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T68999.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T69299.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T69899.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T70099.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T71699.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T72099.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T72499.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T73699.99",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXTESTMATCH-26AUG122030BANAUS-AUS",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXTESTMATCH-26AUG122030BANAUS-BAN",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXTESTMATCH-26AUG122030BANAUS-TIE",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXTESTMATCH-26AUG150030INDSRI-IND",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXTESTMATCH-26AUG150030INDSRI-SRI",
+          "sid": 1,
+          "to": true
+        },
+        {
+          "from": false,
+          "market_ticker": "KXTESTMATCH-26AUG150030INDSRI-TIE",
+          "sid": 1,
+          "to": true
+        }
+      ],
+      "connection_generation": 3,
+      "frame_ordinal": 1204,
+      "sequence_faults_so_far": 0,
+      "subscription_epoch": 3
+    }
+  ],
+  "run_label": "cp7-forced-reconnect-test-instruments-60",
+  "scope_note": "FUNCTIONAL PROOF ON KALSHI DEMO. Venue test instruments are used deliberately: they are dense enough to exercise every code path a functional proof needs. NO rate, latency-tail, throughput, capacity or microstructure-realism claim may be derived from this artifact. Those belong to KALSHI-PROD-OBSERVATIONAL-QUALIFICATION-001.",
+  "session_result": {
+    "archive_root": "runs/s2-reconnect/archive",
+    "boundary_note": "OBSERVE_ONLY: authenticated read-only Kalshi market-data observation. The session sends channel subscriptions only, over a closed allowlist ('orderbook_delta', 'ticker', 'trade', 'market_lifecycle_v2'); no order, position, wallet, key-management or write-scoped surface exists in this package. Evidence is appended to a filesystem archive; no database session is opened.",
+    "channels": [
+      "orderbook_delta",
+      "ticker",
+      "trade"
+    ],
+    "detail": "max_seconds=180 reached",
+    "dry_run": false,
+    "duration_ms": 181652,
+    "environment": "demo",
+    "events_archived": 8599,
+    "events_received": 8599,
+    "events_rejected": 0,
+    "finished_at": "2026-08-17T17:45:04.651789Z",
+    "frames_malformed": 0,
+    "markets_subscribed": 60,
+    "measurement_path": null,
+    "metrics_errors": 0,
+    "reconnects": 2,
+    "recoveries_requested": 0,
+    "rejection_reasons": [],
+    "rotation_failures": 0,
+    "segments_committed": 1,
+    "sequence_faults": 0,
+    "started_at": "2026-08-17T17:42:02.999465Z",
+    "status": "capped_time",
+    "subscription_generations": 9
+  },
+  "started_at": "2026-08-17T17:42:02.999243+00:00",
+  "subscription_epoch_final": 3,
+  "wire": {
+    "by_type": {
+      "orderbook_delta": 6601,
+      "orderbook_snapshot": 180,
+      "subscribed": 9,
+      "ticker": 1694,
+      "trade": 115
+    },
+    "commands_sent": [
+      {
+        "at": "2026-08-17T17:42:03.181174+00:00",
+        "command": {
+          "cmd": "subscribe",
+          "id": 1,
+          "params": {
+            "channels": [
+              "orderbook_delta",
+              "ticker",
+              "trade"
+            ],
+            "market_tickers": [
+              "KXTESTMATCH-26AUG150030INDSRI-IND",
+              "KXTESTMATCH-26AUG122030BANAUS-TIE",
+              "KXTESTMATCH-26AUG150030INDSRI-TIE",
+              "KXTESTMATCH-26AUG122030BANAUS-BAN",
+              "KXTESTMATCH-26AUG122030BANAUS-AUS",
+              "KXTESTMATCH-26AUG150030INDSRI-SRI",
+              "KXMAXSHARDINGTEST-26AUG2818-T68399.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T56399.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T65399.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T69899.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T62899.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T67899.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T55599.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T63699.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T64299.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T61199.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T65899.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T56099.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T70099.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T72499.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T57599.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T58799.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T60499.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T73699.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T59599.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T58199.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T58999.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T60799.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T62699.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T63199.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T68299.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T68999.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T69299.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T57299.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T71699.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T55199.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T56199.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T56799.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T57899.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T58099.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T61899.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T63299.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T63399.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T64399.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T65699.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T68799.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T72099.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T56499.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T57399.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T62299.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T64499.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T66299.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T55099.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T60899.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T60999.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T61099.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T63899.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T63999.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T65499.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T65599.99"
+            ],
+            "use_yes_price": true
+          }
+        },
+        "sent_after_frame_ordinal": 0
+      },
+      {
+        "at": "2026-08-17T17:42:15.798006+00:00",
+        "command": {
+          "cmd": "subscribe",
+          "id": 2,
+          "params": {
+            "channels": [
+              "orderbook_delta",
+              "ticker",
+              "trade"
+            ],
+            "market_tickers": [
+              "KXTESTMATCH-26AUG150030INDSRI-IND",
+              "KXTESTMATCH-26AUG122030BANAUS-TIE",
+              "KXTESTMATCH-26AUG150030INDSRI-TIE",
+              "KXTESTMATCH-26AUG122030BANAUS-BAN",
+              "KXTESTMATCH-26AUG122030BANAUS-AUS",
+              "KXTESTMATCH-26AUG150030INDSRI-SRI",
+              "KXMAXSHARDINGTEST-26AUG2818-T68399.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T56399.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T65399.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T69899.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T62899.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T67899.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T55599.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T63699.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T64299.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T61199.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T65899.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T56099.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T70099.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T72499.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T57599.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T58799.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T60499.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T73699.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T59599.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T58199.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T58999.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T60799.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T62699.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T63199.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T68299.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T68999.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T69299.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T57299.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T71699.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T55199.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T56199.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T56799.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T57899.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T58099.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T61899.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T63299.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T63399.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T64399.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T65699.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T68799.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T72099.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T56499.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T57399.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T62299.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T64499.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T66299.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T55099.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T60899.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T60999.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T61099.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T63899.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T63999.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T65499.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T65599.99"
+            ],
+            "use_yes_price": true
+          }
+        },
+        "sent_after_frame_ordinal": 600
+      },
+      {
+        "at": "2026-08-17T17:42:38.311114+00:00",
+        "command": {
+          "cmd": "subscribe",
+          "id": 3,
+          "params": {
+            "channels": [
+              "orderbook_delta",
+              "ticker",
+              "trade"
+            ],
+            "market_tickers": [
+              "KXTESTMATCH-26AUG150030INDSRI-IND",
+              "KXTESTMATCH-26AUG122030BANAUS-TIE",
+              "KXTESTMATCH-26AUG150030INDSRI-TIE",
+              "KXTESTMATCH-26AUG122030BANAUS-BAN",
+              "KXTESTMATCH-26AUG122030BANAUS-AUS",
+              "KXTESTMATCH-26AUG150030INDSRI-SRI",
+              "KXMAXSHARDINGTEST-26AUG2818-T68399.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T56399.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T65399.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T69899.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T62899.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T67899.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T55599.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T63699.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T64299.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T61199.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T65899.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T56099.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T70099.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T72499.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T57599.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T58799.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T60499.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T73699.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T59599.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T58199.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T58999.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T60799.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T62699.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T63199.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T68299.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T68999.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T69299.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T57299.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T71699.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T55199.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T56199.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T56799.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T57899.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T58099.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T61899.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T63299.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T63399.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T64399.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T65699.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T68799.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T72099.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T56499.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T57399.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T62299.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T64499.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T66299.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T55099.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T60899.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T60999.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T61099.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T63899.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T63999.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T65499.99",
+              "KXMAXSHARDINGTEST-26AUG2818-T65599.99"
+            ],
+            "use_yes_price": true
+          }
+        },
+        "sent_after_frame_ordinal": 1200
+      }
+    ],
+    "error_frames_verbatim": [],
+    "frame_samples_by_type": {
+      "orderbook_delta": [
+        {
+          "at": "2026-08-17T17:42:03.809329+00:00",
+          "frame": {
+            "msg": {
+              "delta_fp": "-100.00",
+              "market_id": "0033ff5b-ab9a-456d-90c4-2d4dd2dcbb26",
+              "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T73699.99",
+              "price_dollars": "0.0800",
+              "side": "yes",
+              "ts": "2026-08-17T17:42:03.79234Z",
+              "ts_ms": 1786988523792
+            },
+            "seq": 61,
+            "sid": 1,
+            "type": "orderbook_delta"
+          },
+          "ordinal": 64
+        },
+        {
+          "at": "2026-08-17T17:42:03.810067+00:00",
+          "frame": {
+            "msg": {
+              "delta_fp": "-100.00",
+              "market_id": "0542596c-0742-4d21-9898-9427005cfa5a",
+              "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T70099.99",
+              "price_dollars": "0.2200",
+              "side": "no",
+              "ts": "2026-08-17T17:42:03.79234Z",
+              "ts_ms": 1786988523792
+            },
+            "seq": 62,
+            "sid": 1,
+            "type": "orderbook_delta"
+          },
+          "ordinal": 65
+        },
+        {
+          "at": "2026-08-17T17:42:03.810652+00:00",
+          "frame": {
+            "msg": {
+              "delta_fp": "-100.00",
+              "market_id": "07a2d48e-5655-4425-b565-b5fffa219289",
+              "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T60799.99",
+              "price_dollars": "0.7200",
+              "side": "no",
+              "ts": "2026-08-17T17:42:03.79234Z",
+              "ts_ms": 1786988523792
+            },
+            "seq": 63,
+            "sid": 1,
+            "type": "orderbook_delta"
+          },
+          "ordinal": 66
+        },
+        {
+          "at": "2026-08-17T17:42:03.811183+00:00",
+          "frame": {
+            "msg": {
+              "delta_fp": "-100.00",
+              "market_id": "02806c74-1ffb-4806-8b4b-84aaf764ab1b",
+              "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T60899.99",
+              "price_dollars": "0.7100",
+              "side": "no",
+              "ts": "2026-08-17T17:42:03.79234Z",
+              "ts_ms": 1786988523792
+            },
+            "seq": 64,
+            "sid": 1,
+            "type": "orderbook_delta"
+          },
+          "ordinal": 67
+        },
+        {
+          "at": "2026-08-17T17:42:03.811687+00:00",
+          "frame": {
+            "msg": {
+              "delta_fp": "-98.00",
+              "market_id": "07a2d48e-5655-4425-b565-b5fffa219289",
+              "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T60799.99",
+              "price_dollars": "0.6800",
+              "side": "yes",
+              "ts": "2026-08-17T17:42:03.79234Z",
+              "ts_ms": 1786988523792
+            },
+            "seq": 65,
+            "sid": 1,
+            "type": "orderbook_delta"
+          },
+          "ordinal": 68
+        },
+        {
+          "at": "2026-08-17T17:42:03.812185+00:00",
+          "frame": {
+            "msg": {
+              "delta_fp": "-100.00",
+              "market_id": "0542596c-0742-4d21-9898-9427005cfa5a",
+              "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T70099.99",
+              "price_dollars": "0.1800",
+              "side": "yes",
+              "ts": "2026-08-17T17:42:03.79234Z",
+              "ts_ms": 1786988523792
+            },
+            "seq": 66,
+            "sid": 1,
+            "type": "orderbook_delta"
+          },
+          "ordinal": 69
+        },
+        {
+          "at": "2026-08-17T17:42:03.812914+00:00",
+          "frame": {
+            "msg": {
+              "delta_fp": "-100.00",
+              "market_id": "02806c74-1ffb-4806-8b4b-84aaf764ab1b",
+              "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T60899.99",
+              "price_dollars": "0.6700",
+              "side": "yes",
+              "ts": "2026-08-17T17:42:03.79234Z",
+              "ts_ms": 1786988523792
+            },
+            "seq": 67,
+            "sid": 1,
+            "type": "orderbook_delta"
+          },
+          "ordinal": 70
+        },
+        {
+          "at": "2026-08-17T17:42:03.813470+00:00",
+          "frame": {
+            "msg": {
+              "delta_fp": "-100.00",
+              "market_id": "2319c30d-c24d-46ea-b15d-82e2079124ee",
+              "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T60999.99",
+              "price_dollars": "0.7100",
+              "side": "no",
+              "ts": "2026-08-17T17:42:03.79234Z",
+              "ts_ms": 1786988523792
+            },
+            "seq": 68,
+            "sid": 1,
+            "type": "orderbook_delta"
+          },
+          "ordinal": 71
+        }
+      ],
+      "orderbook_snapshot": [
+        {
+          "at": "2026-08-17T17:42:03.272373+00:00",
+          "frame": {
+            "msg": {
+              "market_id": "c0c20d5f-7946-41d7-9eda-6b184855c5ab",
+              "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T55099.99",
+              "no_dollars_fp": [
+                [
+                  "0.9500",
+                  "200.00"
+                ]
+              ],
+              "yes_dollars_fp": [
+                [
+                  "0.7700",
+                  "2500.00"
+                ],
+                [
+                  "0.7800",
+                  "191.00"
+                ],
+                [
+                  "0.9100",
+                  "200.00"
+                ]
+              ]
+            },
+            "seq": 1,
+            "sid": 1,
+            "type": "orderbook_snapshot"
+          },
+          "ordinal": 4
+        },
+        {
+          "at": "2026-08-17T17:42:03.273185+00:00",
+          "frame": {
+            "msg": {
+              "market_id": "17c0d1c6-0400-4871-a079-08ada6571dc7",
+              "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T55199.99",
+              "no_dollars_fp": [
+                [
+                  "0.9500",
+                  "200.00"
+                ]
+              ],
+              "yes_dollars_fp": [
+                [
+                  "0.7700",
+                  "2500.00"
+                ],
+                [
+                  "0.7800",
+                  "321.00"
+                ],
+                [
+                  "0.9100",
+                  "200.00"
+                ]
+              ]
+            },
+            "seq": 2,
+            "sid": 1,
+            "type": "orderbook_snapshot"
+          },
+          "ordinal": 5
+        },
+        {
+          "at": "2026-08-17T17:42:03.273824+00:00",
+          "frame": {
+            "msg": {
+              "market_id": "17c58dec-bb65-4ee8-839b-a1f2ea3082da",
+              "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T55599.99",
+              "no_dollars_fp": [
+                [
+                  "0.9400",
+                  "200.00"
+                ]
+              ],
+              "yes_dollars_fp": [
+                [
+                  "0.7600",
+                  "2500.00"
+                ],
+                [
+                  "0.7700",
+                  "334.00"
+                ],
+                [
+                  "0.9000",
+                  "200.00"
+                ]
+              ]
+            },
+            "seq": 3,
+            "sid": 1,
+            "type": "orderbook_snapshot"
+          },
+          "ordinal": 6
+        },
+        {
+          "at": "2026-08-17T17:42:03.274528+00:00",
+          "frame": {
+            "msg": {
+              "market_id": "de0a00c1-d1bf-40c1-b099-63644d51267b",
+              "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T56099.99",
+              "no_dollars_fp": [
+                [
+                  "0.9200",
+                  "200.00"
+                ]
+              ],
+              "yes_dollars_fp": [
+                [
+                  "0.7400",
+                  "2343.00"
+                ],
+                [
+                  "0.8800",
+                  "200.00"
+                ]
+              ]
+            },
+            "seq": 4,
+            "sid": 1,
+            "type": "orderbook_snapshot"
+          },
+          "ordinal": 7
+        },
+        {
+          "at": "2026-08-17T17:42:03.275089+00:00",
+          "frame": {
+            "msg": {
+              "market_id": "16f71e6d-8c50-4c0b-bd6a-2387a1d30df1",
+              "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T56199.99",
+              "no_dollars_fp": [
+                [
+                  "0.9200",
+                  "200.00"
+                ]
+              ],
+              "yes_dollars_fp": [
+                [
+                  "0.7400",
+                  "2500.00"
+                ],
+                [
+                  "0.7500",
+                  "12.00"
+                ],
+                [
+                  "0.8800",
+                  "200.00"
+                ]
+              ]
+            },
+            "seq": 5,
+            "sid": 1,
+            "type": "orderbook_snapshot"
+          },
+          "ordinal": 8
+        },
+        {
+          "at": "2026-08-17T17:42:03.275692+00:00",
+          "frame": {
+            "msg": {
+              "market_id": "227f4cc9-9901-45f7-a6fa-fb7ee811bb9b",
+              "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T56399.99",
+              "no_dollars_fp": [
+                [
+                  "0.9100",
+                  "200.00"
+                ]
+              ],
+              "yes_dollars_fp": [
+                [
+                  "0.7400",
+                  "2500.00"
+                ],
+                [
+                  "0.7500",
+                  "483.00"
+                ],
+                [
+                  "0.8700",
+                  "200.00"
+                ]
+              ]
+            },
+            "seq": 6,
+            "sid": 1,
+            "type": "orderbook_snapshot"
+          },
+          "ordinal": 9
+        },
+        {
+          "at": "2026-08-17T17:42:03.276360+00:00",
+          "frame": {
+            "msg": {
+              "market_id": "a3472f02-4395-49c0-a3c1-e500e18e5839",
+              "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T56499.99",
+              "no_dollars_fp": [
+                [
+                  "0.9100",
+                  "200.00"
+                ]
+              ],
+              "yes_dollars_fp": [
+                [
+                  "0.7300",
+                  "2332.00"
+                ],
+                [
+                  "0.8700",
+                  "200.00"
+                ]
+              ]
+            },
+            "seq": 7,
+            "sid": 1,
+            "type": "orderbook_snapshot"
+          },
+          "ordinal": 10
+        },
+        {
+          "at": "2026-08-17T17:42:03.276904+00:00",
+          "frame": {
+            "msg": {
+              "market_id": "46e0a294-f345-43e1-b3d3-fd45989448ae",
+              "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T56799.99",
+              "no_dollars_fp": [
+                [
+                  "0.9000",
+                  "198.00"
+                ]
+              ],
+              "yes_dollars_fp": [
+                [
+                  "0.7200",
+                  "2312.00"
+                ],
+                [
+                  "0.8600",
+                  "198.00"
+                ]
+              ]
+            },
+            "seq": 8,
+            "sid": 1,
+            "type": "orderbook_snapshot"
+          },
+          "ordinal": 11
+        }
+      ],
+      "subscribed": [
+        {
+          "at": "2026-08-17T17:42:03.257501+00:00",
+          "frame": {
+            "id": 1,
+            "msg": {
+              "channel": "orderbook_delta",
+              "sid": 1
+            },
+            "type": "subscribed"
+          },
+          "ordinal": 1
+        },
+        {
+          "at": "2026-08-17T17:42:03.271471+00:00",
+          "frame": {
+            "id": 1,
+            "msg": {
+              "channel": "ticker",
+              "sid": 2
+            },
+            "type": "subscribed"
+          },
+          "ordinal": 2
+        },
+        {
+          "at": "2026-08-17T17:42:03.271870+00:00",
+          "frame": {
+            "id": 1,
+            "msg": {
+              "channel": "trade",
+              "sid": 3
+            },
+            "type": "subscribed"
+          },
+          "ordinal": 3
+        },
+        {
+          "at": "2026-08-17T17:42:15.887869+00:00",
+          "frame": {
+            "id": 2,
+            "msg": {
+              "channel": "orderbook_delta",
+              "sid": 1
+            },
+            "type": "subscribed"
+          },
+          "ordinal": 601
+        },
+        {
+          "at": "2026-08-17T17:42:15.888667+00:00",
+          "frame": {
+            "id": 2,
+            "msg": {
+              "channel": "ticker",
+              "sid": 2
+            },
+            "type": "subscribed"
+          },
+          "ordinal": 602
+        },
+        {
+          "at": "2026-08-17T17:42:15.889073+00:00",
+          "frame": {
+            "id": 2,
+            "msg": {
+              "channel": "trade",
+              "sid": 3
+            },
+            "type": "subscribed"
+          },
+          "ordinal": 603
+        },
+        {
+          "at": "2026-08-17T17:42:38.379300+00:00",
+          "frame": {
+            "id": 3,
+            "msg": {
+              "channel": "orderbook_delta",
+              "sid": 1
+            },
+            "type": "subscribed"
+          },
+          "ordinal": 1201
+        },
+        {
+          "at": "2026-08-17T17:42:38.379976+00:00",
+          "frame": {
+            "id": 3,
+            "msg": {
+              "channel": "ticker",
+              "sid": 2
+            },
+            "type": "subscribed"
+          },
+          "ordinal": 1202
+        }
+      ],
+      "ticker": [
+        {
+          "at": "2026-08-17T17:42:04.258404+00:00",
+          "frame": {
+            "msg": {
+              "dollar_open_interest": 3633,
+              "dollar_volume": 54241,
+              "last_trade_size_fp": "1.00",
+              "market_id": "17c58dec-bb65-4ee8-839b-a1f2ea3082da",
+              "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T55599.99",
+              "open_interest_fp": "7266.00",
+              "price_dollars": "0.9000",
+              "time": "2026-08-17T17:42:04.003537Z",
+              "ts": 1786988524,
+              "ts_ms": 1786988524003,
+              "volume_fp": "108482.00",
+              "yes_ask_dollars": "1.0000",
+              "yes_ask_size_fp": "0.00",
+              "yes_bid_dollars": "0.7700",
+              "yes_bid_size_fp": "334.00"
+            },
+            "sid": 2,
+            "type": "ticker"
+          },
+          "ordinal": 304
+        },
+        {
+          "at": "2026-08-17T17:42:04.259648+00:00",
+          "frame": {
+            "msg": {
+              "dollar_open_interest": 1311,
+              "dollar_volume": 54104,
+              "last_trade_size_fp": "2.00",
+              "market_id": "257c82e5-7195-4845-87e1-6609867ce141",
+              "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T61199.99",
+              "open_interest_fp": "2622.00",
+              "price_dollars": "0.6600",
+              "time": "2026-08-17T17:42:04.003537Z",
+              "ts": 1786988524,
+              "ts_ms": 1786988524003,
+              "volume_fp": "108208.36",
+              "yes_ask_dollars": "0.6800",
+              "yes_ask_size_fp": "857.00",
+              "yes_bid_dollars": "0.0000",
+              "yes_bid_size_fp": "0.00"
+            },
+            "sid": 2,
+            "type": "ticker"
+          },
+          "ordinal": 305
+        },
+        {
+          "at": "2026-08-17T17:42:04.260286+00:00",
+          "frame": {
+            "msg": {
+              "dollar_open_interest": 1350,
+              "dollar_volume": 53981,
+              "last_trade_size_fp": "2.00",
+              "market_id": "2319c30d-c24d-46ea-b15d-82e2079124ee",
+              "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T60999.99",
+              "open_interest_fp": "2700.00",
+              "price_dollars": "0.6700",
+              "time": "2026-08-17T17:42:04.003537Z",
+              "ts": 1786988524,
+              "ts_ms": 1786988524003,
+              "volume_fp": "107962.36",
+              "yes_ask_dollars": "0.6900",
+              "yes_ask_size_fp": "721.00",
+              "yes_bid_dollars": "0.0000",
+              "yes_bid_size_fp": "0.00"
+            },
+            "sid": 2,
+            "type": "ticker"
+          },
+          "ordinal": 306
+        },
+        {
+          "at": "2026-08-17T17:42:04.260877+00:00",
+          "frame": {
+            "msg": {
+              "dollar_open_interest": 3683,
+              "dollar_volume": 54711,
+              "last_trade_size_fp": "2.00",
+              "market_id": "17c0d1c6-0400-4871-a079-08ada6571dc7",
+              "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T55199.99",
+              "open_interest_fp": "7366.00",
+              "price_dollars": "0.9100",
+              "time": "2026-08-17T17:42:04.003537Z",
+              "ts": 1786988524,
+              "ts_ms": 1786988524003,
+              "volume_fp": "109422.00",
+              "yes_ask_dollars": "1.0000",
+              "yes_ask_size_fp": "0.00",
+              "yes_bid_dollars": "0.7800",
+              "yes_bid_size_fp": "321.00"
+            },
+            "sid": 2,
+            "type": "ticker"
+          },
+          "ordinal": 307
+        },
+        {
+          "at": "2026-08-17T17:42:04.262191+00:00",
+          "frame": {
+            "msg": {
+              "dollar_open_interest": 1797,
+              "dollar_volume": 54271,
+              "last_trade_size_fp": "1.00",
+              "market_id": "a8111d7f-5ddf-42a1-807f-8b5c007074c3",
+              "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T62299.99",
+              "open_interest_fp": "3594.00",
+              "price_dollars": "0.6300",
+              "time": "2026-08-17T17:42:04.003537Z",
+              "ts": 1786988524,
+              "ts_ms": 1786988524003,
+              "volume_fp": "108542.36",
+              "yes_ask_dollars": "0.6400",
+              "yes_ask_size_fp": "1257.00",
+              "yes_bid_dollars": "0.0000",
+              "yes_bid_size_fp": "0.00"
+            },
+            "sid": 2,
+            "type": "ticker"
+          },
+          "ordinal": 308
+        },
+        {
+          "at": "2026-08-17T17:42:04.262969+00:00",
+          "frame": {
+            "msg": {
+              "dollar_open_interest": 5017,
+              "dollar_volume": 54641,
+              "last_trade_size_fp": "2.00",
+              "market_id": "4a15d891-70ed-41bb-b1de-5359b5603da4",
+              "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T65499.99",
+              "open_interest_fp": "10034.02",
+              "price_dollars": "0.4400",
+              "time": "2026-08-17T17:42:04.003537Z",
+              "ts": 1786988524,
+              "ts_ms": 1786988524003,
+              "volume_fp": "109283.36",
+              "yes_ask_dollars": "0.5200",
+              "yes_ask_size_fp": "1854.00",
+              "yes_bid_dollars": "0.0000",
+              "yes_bid_size_fp": "0.00"
+            },
+            "sid": 2,
+            "type": "ticker"
+          },
+          "ordinal": 309
+        },
+        {
+          "at": "2026-08-17T17:42:04.263585+00:00",
+          "frame": {
+            "msg": {
+              "dollar_open_interest": 4983,
+              "dollar_volume": 54140,
+              "last_trade_size_fp": "2.00",
+              "market_id": "61c08bb6-c103-41cc-b173-c7e6019be171",
+              "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T65899.99",
+              "open_interest_fp": "9967.00",
+              "price_dollars": "0.4200",
+              "time": "2026-08-17T17:42:04.003537Z",
+              "ts": 1786988524,
+              "ts_ms": 1786988524003,
+              "volume_fp": "108281.36",
+              "yes_ask_dollars": "0.5100",
+              "yes_ask_size_fp": "1586.00",
+              "yes_bid_dollars": "0.0000",
+              "yes_bid_size_fp": "0.00"
+            },
+            "sid": 2,
+            "type": "ticker"
+          },
+          "ordinal": 310
+        },
+        {
+          "at": "2026-08-17T17:42:04.264168+00:00",
+          "frame": {
+            "msg": {
+              "dollar_open_interest": 5291,
+              "dollar_volume": 54269,
+              "last_trade_size_fp": "2.00",
+              "market_id": "57aad6d7-6e24-4e04-b053-404c6b2ea0a7",
+              "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T68799.99",
+              "open_interest_fp": "10582.02",
+              "price_dollars": "0.2300",
+              "time": "2026-08-17T17:42:04.003537Z",
+              "ts": 1786988524,
+              "ts_ms": 1786988524003,
+              "volume_fp": "108538.34",
+              "yes_ask_dollars": "0.4100",
+              "yes_ask_size_fp": "1611.00",
+              "yes_bid_dollars": "0.0000",
+              "yes_bid_size_fp": "0.00"
+            },
+            "sid": 2,
+            "type": "ticker"
+          },
+          "ordinal": 311
+        }
+      ],
+      "trade": [
+        {
+          "at": "2026-08-17T17:42:04.406166+00:00",
+          "frame": {
+            "msg": {
+              "count_fp": "2.00",
+              "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T70099.99",
+              "no_price_dollars": "0.7800",
+              "taker_book_side": "bid",
+              "taker_outcome_side": "yes",
+              "taker_side": "yes",
+              "trade_id": "a25a4f2f-d5ca-6b2c-a915-559227ab8c0c",
+              "ts": 1786988524,
+              "ts_ms": 1786988524390,
+              "yes_price_dollars": "0.2200"
+            },
+            "seq": 1,
+            "sid": 3,
+            "type": "trade"
+          },
+          "ordinal": 383
+        },
+        {
+          "at": "2026-08-17T17:42:05.011462+00:00",
+          "frame": {
+            "msg": {
+              "count_fp": "2.00",
+              "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T58799.99",
+              "no_price_dollars": "0.2200",
+              "taker_book_side": "ask",
+              "taker_outcome_side": "no",
+              "taker_side": "no",
+              "trade_id": "d7b1b817-1f7e-5b1f-7f7e-c9c12d7de721",
+              "ts": 1786988524,
+              "ts_ms": 1786988524994,
+              "yes_price_dollars": "0.7800"
+            },
+            "seq": 2,
+            "sid": 3,
+            "type": "trade"
+          },
+          "ordinal": 517
+        },
+        {
+          "at": "2026-08-17T17:42:05.208556+00:00",
+          "frame": {
+            "msg": {
+              "count_fp": "2.00",
+              "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T72499.99",
+              "no_price_dollars": "0.8600",
+              "taker_book_side": "bid",
+              "taker_outcome_side": "yes",
+              "taker_side": "yes",
+              "trade_id": "de08db56-f2a5-7db6-67b6-64cc5ea87c9c",
+              "ts": 1786988525,
+              "ts_ms": 1786988525192,
+              "yes_price_dollars": "0.1400"
+            },
+            "seq": 3,
+            "sid": 3,
+            "type": "trade"
+          },
+          "ordinal": 555
+        },
+        {
+          "at": "2026-08-17T17:42:18.827772+00:00",
+          "frame": {
+            "msg": {
+              "count_fp": "2.00",
+              "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T56399.99",
+              "no_price_dollars": "0.1300",
+              "taker_book_side": "ask",
+              "taker_outcome_side": "no",
+              "taker_side": "no",
+              "trade_id": "18534ec5-bad4-6208-8533-83ba6fb7f043",
+              "ts": 1786988538,
+              "ts_ms": 1786988538809,
+              "yes_price_dollars": "0.8700"
+            },
+            "seq": 1,
+            "sid": 3,
+            "type": "trade"
+          },
+          "ordinal": 674
+        },
+        {
+          "at": "2026-08-17T17:42:21.283941+00:00",
+          "frame": {
+            "msg": {
+              "count_fp": "1.00",
+              "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T56199.99",
+              "no_price_dollars": "0.0800",
+              "taker_book_side": "bid",
+              "taker_outcome_side": "yes",
+              "taker_side": "yes",
+              "trade_id": "561a3717-85d4-4158-28a5-a0eb79f482e6",
+              "ts": 1786988541,
+              "ts_ms": 1786988541265,
+              "yes_price_dollars": "0.9200"
+            },
+            "seq": 2,
+            "sid": 3,
+            "type": "trade"
+          },
+          "ordinal": 677
+        },
+        {
+          "at": "2026-08-17T17:42:21.413759+00:00",
+          "frame": {
+            "msg": {
+              "count_fp": "2.00",
+              "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T56199.99",
+              "no_price_dollars": "0.0800",
+              "taker_book_side": "bid",
+              "taker_outcome_side": "yes",
+              "taker_side": "yes",
+              "trade_id": "28ec96b0-de68-63e0-b580-70562d04bf7a",
+              "ts": 1786988541,
+              "ts_ms": 1786988541397,
+              "yes_price_dollars": "0.9200"
+            },
+            "seq": 3,
+            "sid": 3,
+            "type": "trade"
+          },
+          "ordinal": 679
+        },
+        {
+          "at": "2026-08-17T17:42:22.607423+00:00",
+          "frame": {
+            "msg": {
+              "count_fp": "2.00",
+              "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T72499.99",
+              "no_price_dollars": "0.8600",
+              "taker_book_side": "bid",
+              "taker_outcome_side": "yes",
+              "taker_side": "yes",
+              "trade_id": "523e7e1c-19a0-41b0-b22d-3afbaade04a3",
+              "ts": 1786988542,
+              "ts_ms": 1786988542591,
+              "yes_price_dollars": "0.1400"
+            },
+            "seq": 4,
+            "sid": 3,
+            "type": "trade"
+          },
+          "ordinal": 681
+        },
+        {
+          "at": "2026-08-17T17:42:23.807801+00:00",
+          "frame": {
+            "msg": {
+              "count_fp": "2.00",
+              "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T65899.99",
+              "no_price_dollars": "0.6200",
+              "taker_book_side": "ask",
+              "taker_outcome_side": "no",
+              "taker_side": "no",
+              "trade_id": "06680a44-76de-4f3b-7e96-5468baaa33ef",
+              "ts": 1786988543,
+              "ts_ms": 1786988543792,
+              "yes_price_dollars": "0.3800"
+            },
+            "seq": 5,
+            "sid": 3,
+            "type": "trade"
+          },
+          "ordinal": 684
+        }
+      ]
+    },
+    "frames_tapped": 8599,
+    "orderbook_snapshot_ladder_census": {
+      "yes=1_levels no=1_levels": 4,
+      "yes=1_levels no=2_levels": 20,
+      "yes=1_levels no=3_levels": 75,
+      "yes=2_levels no=1_levels": 15,
+      "yes=2_levels no=2_levels": 9,
+      "yes=3_levels no=1_levels": 39,
+      "yes=4_levels no=11_levels": 3,
+      "yes=5_levels no=7_levels": 3,
+      "yes=8_levels no=7_levels": 3,
+      "yes=absent no=absent": 9
+    },
+    "orderbook_snapshots_with_ladder": [
+      {
+        "at": "2026-08-17T17:42:03.272373+00:00",
+        "frame": {
+          "msg": {
+            "market_id": "c0c20d5f-7946-41d7-9eda-6b184855c5ab",
+            "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T55099.99",
+            "no_dollars_fp": [
+              [
+                "0.9500",
+                "200.00"
+              ]
+            ],
+            "yes_dollars_fp": [
+              [
+                "0.7700",
+                "2500.00"
+              ],
+              [
+                "0.7800",
+                "191.00"
+              ],
+              [
+                "0.9100",
+                "200.00"
+              ]
+            ]
+          },
+          "seq": 1,
+          "sid": 1,
+          "type": "orderbook_snapshot"
+        },
+        "ladder_shape": "yes=3_levels no=1_levels",
+        "ordinal": 4
+      },
+      {
+        "at": "2026-08-17T17:42:03.273185+00:00",
+        "frame": {
+          "msg": {
+            "market_id": "17c0d1c6-0400-4871-a079-08ada6571dc7",
+            "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T55199.99",
+            "no_dollars_fp": [
+              [
+                "0.9500",
+                "200.00"
+              ]
+            ],
+            "yes_dollars_fp": [
+              [
+                "0.7700",
+                "2500.00"
+              ],
+              [
+                "0.7800",
+                "321.00"
+              ],
+              [
+                "0.9100",
+                "200.00"
+              ]
+            ]
+          },
+          "seq": 2,
+          "sid": 1,
+          "type": "orderbook_snapshot"
+        },
+        "ladder_shape": "yes=3_levels no=1_levels",
+        "ordinal": 5
+      },
+      {
+        "at": "2026-08-17T17:42:03.273824+00:00",
+        "frame": {
+          "msg": {
+            "market_id": "17c58dec-bb65-4ee8-839b-a1f2ea3082da",
+            "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T55599.99",
+            "no_dollars_fp": [
+              [
+                "0.9400",
+                "200.00"
+              ]
+            ],
+            "yes_dollars_fp": [
+              [
+                "0.7600",
+                "2500.00"
+              ],
+              [
+                "0.7700",
+                "334.00"
+              ],
+              [
+                "0.9000",
+                "200.00"
+              ]
+            ]
+          },
+          "seq": 3,
+          "sid": 1,
+          "type": "orderbook_snapshot"
+        },
+        "ladder_shape": "yes=3_levels no=1_levels",
+        "ordinal": 6
+      },
+      {
+        "at": "2026-08-17T17:42:03.274528+00:00",
+        "frame": {
+          "msg": {
+            "market_id": "de0a00c1-d1bf-40c1-b099-63644d51267b",
+            "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T56099.99",
+            "no_dollars_fp": [
+              [
+                "0.9200",
+                "200.00"
+              ]
+            ],
+            "yes_dollars_fp": [
+              [
+                "0.7400",
+                "2343.00"
+              ],
+              [
+                "0.8800",
+                "200.00"
+              ]
+            ]
+          },
+          "seq": 4,
+          "sid": 1,
+          "type": "orderbook_snapshot"
+        },
+        "ladder_shape": "yes=2_levels no=1_levels",
+        "ordinal": 7
+      },
+      {
+        "at": "2026-08-17T17:42:03.275089+00:00",
+        "frame": {
+          "msg": {
+            "market_id": "16f71e6d-8c50-4c0b-bd6a-2387a1d30df1",
+            "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T56199.99",
+            "no_dollars_fp": [
+              [
+                "0.9200",
+                "200.00"
+              ]
+            ],
+            "yes_dollars_fp": [
+              [
+                "0.7400",
+                "2500.00"
+              ],
+              [
+                "0.7500",
+                "12.00"
+              ],
+              [
+                "0.8800",
+                "200.00"
+              ]
+            ]
+          },
+          "seq": 5,
+          "sid": 1,
+          "type": "orderbook_snapshot"
+        },
+        "ladder_shape": "yes=3_levels no=1_levels",
+        "ordinal": 8
+      },
+      {
+        "at": "2026-08-17T17:42:03.275692+00:00",
+        "frame": {
+          "msg": {
+            "market_id": "227f4cc9-9901-45f7-a6fa-fb7ee811bb9b",
+            "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T56399.99",
+            "no_dollars_fp": [
+              [
+                "0.9100",
+                "200.00"
+              ]
+            ],
+            "yes_dollars_fp": [
+              [
+                "0.7400",
+                "2500.00"
+              ],
+              [
+                "0.7500",
+                "483.00"
+              ],
+              [
+                "0.8700",
+                "200.00"
+              ]
+            ]
+          },
+          "seq": 6,
+          "sid": 1,
+          "type": "orderbook_snapshot"
+        },
+        "ladder_shape": "yes=3_levels no=1_levels",
+        "ordinal": 9
+      },
+      {
+        "at": "2026-08-17T17:42:03.276360+00:00",
+        "frame": {
+          "msg": {
+            "market_id": "a3472f02-4395-49c0-a3c1-e500e18e5839",
+            "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T56499.99",
+            "no_dollars_fp": [
+              [
+                "0.9100",
+                "200.00"
+              ]
+            ],
+            "yes_dollars_fp": [
+              [
+                "0.7300",
+                "2332.00"
+              ],
+              [
+                "0.8700",
+                "200.00"
+              ]
+            ]
+          },
+          "seq": 7,
+          "sid": 1,
+          "type": "orderbook_snapshot"
+        },
+        "ladder_shape": "yes=2_levels no=1_levels",
+        "ordinal": 10
+      },
+      {
+        "at": "2026-08-17T17:42:03.276904+00:00",
+        "frame": {
+          "msg": {
+            "market_id": "46e0a294-f345-43e1-b3d3-fd45989448ae",
+            "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T56799.99",
+            "no_dollars_fp": [
+              [
+                "0.9000",
+                "198.00"
+              ]
+            ],
+            "yes_dollars_fp": [
+              [
+                "0.7200",
+                "2312.00"
+              ],
+              [
+                "0.8600",
+                "198.00"
+              ]
+            ]
+          },
+          "seq": 8,
+          "sid": 1,
+          "type": "orderbook_snapshot"
+        },
+        "ladder_shape": "yes=2_levels no=1_levels",
+        "ordinal": 11
+      }
+    ],
+    "orderbook_snapshots_without_ladder": [
+      {
+        "at": "2026-08-17T17:42:03.309277+00:00",
+        "frame": {
+          "msg": {
+            "market_id": "",
+            "market_ticker": "KXTESTMATCH-26AUG122030BANAUS-AUS"
+          },
+          "seq": 55,
+          "sid": 1,
+          "type": "orderbook_snapshot"
+        },
+        "ladder_shape": "yes=absent no=absent",
+        "ordinal": 58
+      },
+      {
+        "at": "2026-08-17T17:42:03.309686+00:00",
+        "frame": {
+          "msg": {
+            "market_id": "",
+            "market_ticker": "KXTESTMATCH-26AUG122030BANAUS-BAN"
+          },
+          "seq": 56,
+          "sid": 1,
+          "type": "orderbook_snapshot"
+        },
+        "ladder_shape": "yes=absent no=absent",
+        "ordinal": 59
+      },
+      {
+        "at": "2026-08-17T17:42:03.310085+00:00",
+        "frame": {
+          "msg": {
+            "market_id": "",
+            "market_ticker": "KXTESTMATCH-26AUG122030BANAUS-TIE"
+          },
+          "seq": 57,
+          "sid": 1,
+          "type": "orderbook_snapshot"
+        },
+        "ladder_shape": "yes=absent no=absent",
+        "ordinal": 60
+      },
+      {
+        "at": "2026-08-17T17:42:15.958513+00:00",
+        "frame": {
+          "msg": {
+            "market_id": "",
+            "market_ticker": "KXTESTMATCH-26AUG122030BANAUS-AUS"
+          },
+          "seq": 55,
+          "sid": 1,
+          "type": "orderbook_snapshot"
+        },
+        "ladder_shape": "yes=absent no=absent",
+        "ordinal": 658
+      },
+      {
+        "at": "2026-08-17T17:42:15.958910+00:00",
+        "frame": {
+          "msg": {
+            "market_id": "",
+            "market_ticker": "KXTESTMATCH-26AUG122030BANAUS-BAN"
+          },
+          "seq": 56,
+          "sid": 1,
+          "type": "orderbook_snapshot"
+        },
+        "ladder_shape": "yes=absent no=absent",
+        "ordinal": 659
+      },
+      {
+        "at": "2026-08-17T17:42:15.959300+00:00",
+        "frame": {
+          "msg": {
+            "market_id": "",
+            "market_ticker": "KXTESTMATCH-26AUG122030BANAUS-TIE"
+          },
+          "seq": 57,
+          "sid": 1,
+          "type": "orderbook_snapshot"
+        },
+        "ladder_shape": "yes=absent no=absent",
+        "ordinal": 660
+      },
+      {
+        "at": "2026-08-17T17:42:38.449004+00:00",
+        "frame": {
+          "msg": {
+            "market_id": "",
+            "market_ticker": "KXTESTMATCH-26AUG122030BANAUS-AUS"
+          },
+          "seq": 55,
+          "sid": 1,
+          "type": "orderbook_snapshot"
+        },
+        "ladder_shape": "yes=absent no=absent",
+        "ordinal": 1258
+      },
+      {
+        "at": "2026-08-17T17:42:38.449404+00:00",
+        "frame": {
+          "msg": {
+            "market_id": "",
+            "market_ticker": "KXTESTMATCH-26AUG122030BANAUS-BAN"
+          },
+          "seq": 56,
+          "sid": 1,
+          "type": "orderbook_snapshot"
+        },
+        "ladder_shape": "yes=absent no=absent",
+        "ordinal": 1259
+      }
+    ],
+    "per_sid_census": [
+      {
+        "frames": 6781,
+        "gap_examples": [],
+        "seq_absent": 0,
+        "seq_contiguous": 5779,
+        "seq_duplicates": 2,
+        "seq_first": 1,
+        "seq_gaps": 0,
+        "seq_last": 5780,
+        "seq_regressions": 999,
+        "sid": 1,
+        "types": {
+          "orderbook_delta": 6601,
+          "orderbook_snapshot": 180
+        }
+      },
+      {
+        "frames": 1694,
+        "gap_examples": [],
+        "seq_absent": 1694,
+        "seq_contiguous": 0,
+        "seq_duplicates": 0,
+        "seq_first": null,
+        "seq_gaps": 0,
+        "seq_last": null,
+        "seq_regressions": 0,
+        "sid": 2,
+        "types": {
+          "ticker": 1694
+        }
+      },
+      {
+        "frames": 115,
+        "gap_examples": [],
+        "seq_absent": 0,
+        "seq_contiguous": 103,
+        "seq_duplicates": 2,
+        "seq_first": 1,
+        "seq_gaps": 0,
+        "seq_last": 104,
+        "seq_regressions": 9,
+        "sid": 3,
+        "types": {
+          "trade": 115
+        }
+      },
+      {
+        "frames": 9,
+        "gap_examples": [],
+        "seq_absent": 9,
+        "seq_contiguous": 0,
+        "seq_duplicates": 0,
+        "seq_first": null,
+        "seq_gaps": 0,
+        "seq_last": null,
+        "seq_regressions": 0,
+        "sid": "__no_sid__",
+        "types": {
+          "subscribed": 9
+        }
+      }
+    ],
+    "subscribed_acks_verbatim": [
+      {
+        "at": "2026-08-17T17:42:03.257501+00:00",
+        "frame": {
+          "id": 1,
+          "msg": {
+            "channel": "orderbook_delta",
+            "sid": 1
+          },
+          "type": "subscribed"
+        },
+        "ordinal": 1
+      },
+      {
+        "at": "2026-08-17T17:42:03.271471+00:00",
+        "frame": {
+          "id": 1,
+          "msg": {
+            "channel": "ticker",
+            "sid": 2
+          },
+          "type": "subscribed"
+        },
+        "ordinal": 2
+      },
+      {
+        "at": "2026-08-17T17:42:03.271870+00:00",
+        "frame": {
+          "id": 1,
+          "msg": {
+            "channel": "trade",
+            "sid": 3
+          },
+          "type": "subscribed"
+        },
+        "ordinal": 3
+      },
+      {
+        "at": "2026-08-17T17:42:15.887869+00:00",
+        "frame": {
+          "id": 2,
+          "msg": {
+            "channel": "orderbook_delta",
+            "sid": 1
+          },
+          "type": "subscribed"
+        },
+        "ordinal": 601
+      },
+      {
+        "at": "2026-08-17T17:42:15.888667+00:00",
+        "frame": {
+          "id": 2,
+          "msg": {
+            "channel": "ticker",
+            "sid": 2
+          },
+          "type": "subscribed"
+        },
+        "ordinal": 602
+      },
+      {
+        "at": "2026-08-17T17:42:15.889073+00:00",
+        "frame": {
+          "id": 2,
+          "msg": {
+            "channel": "trade",
+            "sid": 3
+          },
+          "type": "subscribed"
+        },
+        "ordinal": 603
+      },
+      {
+        "at": "2026-08-17T17:42:38.379300+00:00",
+        "frame": {
+          "id": 3,
+          "msg": {
+            "channel": "orderbook_delta",
+            "sid": 1
+          },
+          "type": "subscribed"
+        },
+        "ordinal": 1201
+      },
+      {
+        "at": "2026-08-17T17:42:38.379976+00:00",
+        "frame": {
+          "id": 3,
+          "msg": {
+            "channel": "ticker",
+            "sid": 2
+          },
+          "type": "subscribed"
+        },
+        "ordinal": 1202
+      },
+      {
+        "at": "2026-08-17T17:42:38.380381+00:00",
+        "frame": {
+          "id": 3,
+          "msg": {
+            "channel": "trade",
+            "sid": 3
+          },
+          "type": "subscribed"
+        },
+        "ordinal": 1203
+      }
+    ]
+  },
+  "wire_counters_per_connection": [
+    {
+      "bytes_received": 184792,
+      "closes": 1,
+      "commands_refused": 0,
+      "commands_sent": 1,
+      "connects": 1,
+      "frames_malformed": 0,
+      "frames_oversize": 0,
+      "frames_received": 600,
+      "frames_yielded": 600,
+      "read_timeouts": 0,
+      "reader_stall_ms_max": 496
+    },
+    {
+      "bytes_received": 181902,
+      "closes": 1,
+      "commands_refused": 0,
+      "commands_sent": 1,
+      "connects": 1,
+      "frames_malformed": 0,
+      "frames_oversize": 0,
+      "frames_received": 600,
+      "frames_yielded": 600,
+      "read_timeouts": 0,
+      "reader_stall_ms_max": 2393
+    },
+    {
+      "bytes_received": 2353131,
+      "closes": 1,
+      "commands_refused": 0,
+      "commands_sent": 1,
+      "connects": 1,
+      "frames_malformed": 0,
+      "frames_oversize": 0,
+      "frames_received": 7399,
+      "frames_yielded": 7399,
+      "read_timeouts": 0,
+      "reader_stall_ms_max": 5869
+    }
+  ]
+}

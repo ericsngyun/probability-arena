@@ -1,0 +1,428 @@
+{
+  "archive": "runs/s3-drop/archive",
+  "check": "CP8 \u2014 conservation and deterministic replay",
+  "checks": {
+    "generation_conservation": true,
+    "integrity_intact": true,
+    "ladder_presence_conserved": true,
+    "normalization_negative_control": true,
+    "normalized_frame_conservation": true,
+    "per_sid_findings_conserved": true,
+    "raw_frame_conservation": true,
+    "replay_deterministic": true,
+    "state_equality": false,
+    "state_equality_negative_control": true,
+    "subscription_findings_reconstructible_from_tape": false
+  },
+  "cp8_verdict": "FAILED",
+  "generation_conservation": {
+    "conserved": true,
+    "live_connection_generation_final": 1,
+    "live_subscription_epoch_final": 1,
+    "records_with_unknown_connection_generation": 0,
+    "records_with_unknown_subscription_generation": 0,
+    "tape_connection_generations": {
+      "1": 6488
+    },
+    "tape_max_subscription_generation": 1,
+    "tape_subscription_generations": {
+      "1": 6488
+    }
+  },
+  "integrity": {
+    "abandoned_segments": [],
+    "archive_id": "69c72bed010745889e723293abc5362d",
+    "closed_segments": 1,
+    "foreign_environment_records": 0,
+    "generations_present": [
+      0,
+      1
+    ],
+    "head_generation": 1,
+    "head_state": "CURRENT",
+    "intact": true,
+    "invalid_segments": 0,
+    "mismatched": [],
+    "missing_committed_segments": [],
+    "open_segments": 0,
+    "orphaned_committed_segments": [],
+    "reasons": [],
+    "records": 6488,
+    "records_expected": 6488,
+    "segment_verdicts": [
+      {
+        "chain_valid": true,
+        "environment_valid": true,
+        "file_digest_match": true,
+        "file_size_match": true,
+        "first_digest_match": true,
+        "last_digest_match": true,
+        "manifest_valid": true,
+        "reasons": [],
+        "records_abandoned": 0,
+        "records_expected": 6488,
+        "records_read": 6488,
+        "residue_classification": null,
+        "segment_id": "kalshi.2026-08-17T17",
+        "state": "CLOSED",
+        "stream_digest_match": true,
+        "subscription_metadata_match": true,
+        "valid": true
+      }
+    ],
+    "segments": 1,
+    "truncated_records": 0,
+    "uncommitted_segments": [],
+    "verdict": "VALID",
+    "warnings": []
+  },
+  "ladder_presence_conservation": {
+    "conserved": true,
+    "differences": [],
+    "live_states_observed": {
+      "no=omitted_by_venue": 21,
+      "no=supplied": 39,
+      "yes=omitted_by_venue": 3,
+      "yes=supplied": 57
+    },
+    "markets_compared": 60,
+    "note": "`OrderBook.checksum()` does NOT digest `ladder_presence`, so an equal checksum is not evidence that the typed absence survived the round trip. It is compared here on its own."
+  },
+  "milestone": "KALSHI-CP6-CP9-FUNCTIONAL",
+  "mode": "drop",
+  "normalized_frame_conservation": {
+    "checked_by_event_type": {
+      "orderbook_delta": 4831,
+      "orderbook_snapshot": 120,
+      "subscribed": 3,
+      "ticker": 1454,
+      "trade": 80
+    },
+    "conserved": true,
+    "mismatch_examples": [],
+    "mismatched": 0,
+    "negative_control": {
+      "control_detected_the_corruption": true,
+      "corruption": {
+        "event_type": "subscribed",
+        "index": 0
+      },
+      "mismatched_under_corruption": 1
+    },
+    "recomputed_not_canonically_encodable": 0,
+    "records_checked": 6488,
+    "unparseable_receive_time": 0
+  },
+  "per_sid_sequence_findings": [
+    {
+      "agrees": true,
+      "channels": {
+        "orderbook_delta": 4831,
+        "orderbook_snapshot": 120
+      },
+      "frames": 4951,
+      "live_census_present": true,
+      "mismatches": {},
+      "ordering_findings_establishable": true,
+      "seq_absent": 0,
+      "sid": "1",
+      "unsequenced_channel": false
+    },
+    {
+      "agrees": true,
+      "channels": {
+        "ticker": 1454
+      },
+      "frames": 1454,
+      "live_census_present": true,
+      "mismatches": {},
+      "ordering_findings_establishable": false,
+      "seq_absent": 1454,
+      "sid": "2",
+      "unsequenced_channel": true
+    },
+    {
+      "agrees": true,
+      "channels": {
+        "trade": 80
+      },
+      "frames": 80,
+      "live_census_present": true,
+      "mismatches": {},
+      "ordering_findings_establishable": true,
+      "seq_absent": 0,
+      "sid": "3",
+      "unsequenced_channel": false
+    },
+    {
+      "agrees": true,
+      "channels": {
+        "subscribed": 3
+      },
+      "frames": 3,
+      "live_census_present": true,
+      "mismatches": {},
+      "ordering_findings_establishable": false,
+      "seq_absent": 3,
+      "sid": "__no_sid__",
+      "unsequenced_channel": true
+    }
+  ],
+  "raw_frame_conservation": {
+    "conserved": true,
+    "disk_equals_archived": true,
+    "integrity_records": 6488,
+    "per_event_type_differences": {},
+    "received_equals_archived_plus_rejected_plus_malformed": true,
+    "records_on_disk": 6488,
+    "session_events_archived": 6488,
+    "session_events_received": 6488,
+    "session_events_rejected": 0,
+    "session_frames_malformed": 0,
+    "wire_equals_received": true,
+    "wire_frames_tapped": 6488
+  },
+  "replay": {
+    "events_applied": 4937,
+    "events_rejected": 14,
+    "fault_count": 14,
+    "faults": [
+      {
+        "error": "SubscriptionError: sid 1: sequence gap: expected 401, got 402",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T61199.99",
+        "seq": 402,
+        "sid": 1
+      },
+      {
+        "error": "SubscriptionError: sid 1: delta received while the subscription is not healthy; rejected rather than buffered",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T61199.99",
+        "seq": 403,
+        "sid": 1
+      },
+      {
+        "error": "SubscriptionError: sid 1: delta received while the subscription is not healthy; rejected rather than buffered",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T61099.99",
+        "seq": 404,
+        "sid": 1
+      },
+      {
+        "error": "SubscriptionError: sid 1: delta received while the subscription is not healthy; rejected rather than buffered",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T61099.99",
+        "seq": 405,
+        "sid": 1
+      },
+      {
+        "error": "SubscriptionError: sid 1: delta received while the subscription is not healthy; rejected rather than buffered",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T60999.99",
+        "seq": 406,
+        "sid": 1
+      },
+      {
+        "error": "SubscriptionError: sid 1: delta received while the subscription is not healthy; rejected rather than buffered",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T60999.99",
+        "seq": 407,
+        "sid": 1
+      },
+      {
+        "error": "SubscriptionError: sid 1: delta received while the subscription is not healthy; rejected rather than buffered",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T60899.99",
+        "seq": 408,
+        "sid": 1
+      },
+      {
+        "error": "SubscriptionError: sid 1: delta received while the subscription is not healthy; rejected rather than buffered",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T60899.99",
+        "seq": 409,
+        "sid": 1
+      },
+      {
+        "error": "SubscriptionError: sid 1: delta received while the subscription is not healthy; rejected rather than buffered",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T60799.99",
+        "seq": 410,
+        "sid": 1
+      },
+      {
+        "error": "SubscriptionError: sid 1: delta received while the subscription is not healthy; rejected rather than buffered",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T60799.99",
+        "seq": 411,
+        "sid": 1
+      },
+      {
+        "error": "SubscriptionError: sid 1: delta received while the subscription is not healthy; rejected rather than buffered",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T62299.99",
+        "seq": 412,
+        "sid": 1
+      },
+      {
+        "error": "SubscriptionError: sid 1: delta received while the subscription is not healthy; rejected rather than buffered",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T62299.99",
+        "seq": 413,
+        "sid": 1
+      },
+      {
+        "error": "SubscriptionError: sid 1: delta received while the subscription is not healthy; rejected rather than buffered",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T61899.99",
+        "seq": 414,
+        "sid": 1
+      },
+      {
+        "error": "SubscriptionError: sid 1: delta received while the subscription is not healthy; rejected rather than buffered",
+        "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T61899.99",
+        "seq": 415,
+        "sid": 1
+      }
+    ],
+    "markets": 60,
+    "subscription_stats": {
+      "1": {
+        "accepted": 4937,
+        "duplicates": 0,
+        "gaps": 1,
+        "generation_advances": 0,
+        "missing_seq": 0,
+        "recoveries": 0,
+        "regressions": 0,
+        "stale_generation": 0,
+        "wrong_sid": 0
+      }
+    },
+    "subscriptions": 1
+  },
+  "replay_deterministic_across_two_runs": true,
+  "run_label": "cp7-antivacuity-forced-gap-60",
+  "scope_note": "FUNCTIONAL PROOF ON KALSHI DEMO. Venue test instruments are used deliberately: they are dense enough to exercise every code path a functional proof needs. NO rate, latency-tail, throughput, capacity or microstructure-realism claim may be derived from this artifact. Those belong to KALSHI-PROD-OBSERVATIONAL-QUALIFICATION-001.",
+  "session_json": "runs/s3-drop/session.json",
+  "state_equality": {
+    "differences": [],
+    "equal": false,
+    "markets_compared": 60,
+    "markets_live": 60,
+    "markets_replay": 60,
+    "subscription_sids_compared": [
+      "1"
+    ],
+    "subscription_stat_differences": [
+      {
+        "live": {
+          "accepted": 4937,
+          "duplicates": 0,
+          "gaps": 1,
+          "generation_advances": 0,
+          "missing_seq": 0,
+          "recoveries": 14,
+          "regressions": 0,
+          "stale_generation": 0,
+          "wrong_sid": 0
+        },
+        "replay": {
+          "accepted": 4937,
+          "duplicates": 0,
+          "gaps": 1,
+          "generation_advances": 0,
+          "missing_seq": 0,
+          "recoveries": 0,
+          "regressions": 0,
+          "stale_generation": 0,
+          "wrong_sid": 0
+        },
+        "sid": "1"
+      }
+    ],
+    "subscription_stats_live_only": [
+      "2",
+      "3"
+    ],
+    "subscription_stats_replay_only": []
+  },
+  "state_equality_negative_control": {
+    "control_detected_the_corruption": true,
+    "corruption": {
+      "index": 63,
+      "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T68399.99",
+      "seq_after_corruption": 62,
+      "sid": 1
+    },
+    "differences_detected": 54,
+    "replay_faults_under_corruption": 354,
+    "still_equal_under_corruption": false
+  },
+  "subscription_findings_reconstructible_from_tape": {
+    "carries_orderbook_from_tape": {
+      "1": true,
+      "2": false,
+      "3": false
+    },
+    "conserved": false,
+    "differences": [
+      {
+        "from_tape": {
+          "accepted": 4937,
+          "duplicates": 0,
+          "gaps": 1,
+          "generation_advances": 0,
+          "missing_seq": 0,
+          "recoveries": 0,
+          "regressions": 0,
+          "stale_generation": 0,
+          "wrong_sid": 0
+        },
+        "live": {
+          "accepted": 4937,
+          "duplicates": 0,
+          "gaps": 1,
+          "generation_advances": 0,
+          "missing_seq": 0,
+          "recoveries": 14,
+          "regressions": 0,
+          "stale_generation": 0,
+          "wrong_sid": 0
+        },
+        "sid": "1"
+      }
+    ],
+    "live_sids": [
+      "1",
+      "2",
+      "3"
+    ],
+    "replay_function_sids": [
+      "1"
+    ],
+    "sids_the_shipped_replay_omits": [
+      "2",
+      "3"
+    ],
+    "tape_sids": [
+      "1",
+      "2",
+      "3"
+    ]
+  },
+  "ticker_limits": {
+    "established": [
+      "every ticker frame the collector RECEIVED is on disk and is counted in raw-frame conservation",
+      "every ticker frame re-normalizes byte-identically from its archived raw, and carries the generation it arrived under"
+    ],
+    "measured_seq_absent_by_sid": {
+      "2": {
+        "channels": {
+          "ticker": 1454
+        },
+        "frames": 1454,
+        "seq_absent": 1454
+      },
+      "__no_sid__": {
+        "channels": {
+          "subscribed": 3
+        },
+        "frames": 3,
+        "seq_absent": 3
+      }
+    },
+    "not_establishable": [
+      "whether any ticker frame was LOST between the venue and the collector \u2014 there is no ordering field, so no gap, duplicate or regression finding exists to conserve",
+      "therefore no completeness claim, and no feature derived from ticker may be described as lossless"
+    ],
+    "statement": "The venue sends `ticker` with no `seq`. Three things follow, and only the first two are established here."
+  }
+}
