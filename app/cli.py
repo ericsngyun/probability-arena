@@ -825,10 +825,32 @@ def kalshi_realtime_replay(
     for ticker, chk in out["checksums"].items():
         pub = out["publishable"][ticker]
         st = out["stats"][ticker]
-        print(f"    {ticker:24} publishable={pub} checksum={chk[:16]}…")
+        # KALSHI-TAPE-MEASUREMENT-CONTRACT-001 §10.1. `replay()` sets a
+        # market's checksum to None when the book is NOT publishable —
+        # deliberately, so a consumer comparing checksums cannot accept a torn
+        # book. This line used to slice it unconditionally, so the default
+        # (text) output raised `TypeError: 'NoneType' object is not
+        # subscriptable` the moment any market was halted or awaiting its own
+        # snapshot for the current generation. After
+        # KALSHI-REPLAY-GENERATION-CONSISTENCY-001 that is the NORMAL state for
+        # every market for a short window after every reconnect, so the one
+        # operator command for reading a tape died on exactly the fault it
+        # exists to report — and only in the interesting case, because a
+        # healthy tape printed fine.
+        #
+        # The typed publication state is printed instead of a truncated digest:
+        # "why is this book not publishable" is the question a reader has at
+        # that moment, and `book_halted` / `awaiting_snapshot_for_generation` /
+        # `subscription_unhealthy` are different answers.
+        state = out.get("publication_states", {}).get(ticker) or {}
+        digest = f"{chk[:16]}…" if isinstance(chk, str) else "NOT_PUBLISHABLE"
+        print(f"    {ticker:24} publishable={pub} "
+              f"state={state.get('state', 'unknown')} checksum={digest}")
         print(f"      snapshots={st['snapshots']} deltas={st['deltas']} "
               f"dups={st['duplicates']} gaps={st['gaps']} "
-              f"regressions={st['regressions']}")
+              f"regressions={st['regressions']} "
+              f"pre_generation_refusals="
+              f"{st.get('rejected_pre_generation_snapshot', 0)}")
     if out["faults"]:
         print("  faults (never absorbed silently):")
         for f in out["faults"][:10]:
