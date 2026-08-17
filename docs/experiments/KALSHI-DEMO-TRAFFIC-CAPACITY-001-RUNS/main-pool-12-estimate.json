@@ -1,0 +1,154 @@
+{
+  "arms": {
+    "all_archived_frames": {
+      "N_4h_lower_bound": 7727.999999999999,
+      "N_4h_point": 10848.0,
+      "bin_seconds": 5.0,
+      "bins_used": 180,
+      "bootstrap_percentiles_of_lambda_sum": {
+        "p01": 0.4577777777777778,
+        "p05": 0.5366666666666666,
+        "p50": 0.7522222222222222,
+        "p95": 0.9733333333333334,
+        "p99": 1.0577777777777777
+      },
+      "frames_observed": 678,
+      "lambda_sum_lower_bound_per_second": 0.5366666666666666,
+      "lambda_sum_point_per_second": 0.7533333333333333,
+      "observed_seconds": 900.0
+    },
+    "continuous_frames_only": {
+      "N_4h_lower_bound": 7520.000000000001,
+      "N_4h_point": 10608.0,
+      "bin_seconds": 5.0,
+      "bins_used": 180,
+      "bootstrap_percentiles_of_lambda_sum": {
+        "p01": 0.44222222222222224,
+        "p05": 0.5222222222222223,
+        "p50": 0.7366666666666667,
+        "p95": 0.9544444444444444,
+        "p99": 1.04
+      },
+      "frames_observed": 663,
+      "lambda_sum_lower_bound_per_second": 0.5222222222222223,
+      "lambda_sum_point_per_second": 0.7366666666666667,
+      "observed_seconds": 900.0
+    }
+  },
+  "decision_rule": {
+    "BORDERLINE": "point estimate >= 100,000 but lower bound < 125,000",
+    "REACHABLE": "conservative lower bound >= 125,000",
+    "UNREACHABLE": "point estimate < 100,000",
+    "formula": "N_4h = 14,400 x sum_i lambda_hat_i",
+    "frozen_in": "docs/experiments/KALSHI-DEMO-TRAFFIC-CAPACITY-001-PREREGISTRATION.md"
+  },
+  "environment": "demo",
+  "frames_attributed_to_non_pool_tickers": {},
+  "incomplete_bins_dropped": 1,
+  "interval_method": {
+    "block_seconds": 60.0,
+    "draws": 20000,
+    "name": "circular moving-block bootstrap on per-bin pool totals",
+    "one_sided_lower_percentile": 0.05,
+    "seed": 20260817,
+    "what_it_does_not_cover": "variation BETWEEN this window and a four-hour session. This is a within-window sampling interval, not a four-hour guarantee.",
+    "why_not_poisson": "per-market rates are not independent within an event, so a sum of independent per-market Poisson intervals would understate the variance of the sum. Resampling the POOL TOTAL per bin carries the cross-market dependence without modelling it; resampling contiguous blocks carries serial dependence."
+  },
+  "milestone": "KALSHI-DEMO-TRAFFIC-CAPACITY-001",
+  "one_off_frames_in_window": 15,
+  "per_market": {
+    "KXECONSTATCPIYOY-26AUG-T3.6": {
+      "frames_in_window": 664,
+      "frames_per_4h_if_this_rate_held": 10624.0,
+      "lambda_hat_per_second": 0.7377777777777778
+    },
+    "KXHEISMAN-27-CCARR": {
+      "frames_in_window": 1,
+      "frames_per_4h_if_this_rate_held": 16.0,
+      "lambda_hat_per_second": 0.0011111111111111111
+    },
+    "KXLIGAMXGAME-26AUG16SLACDG-SLA": {
+      "frames_in_window": 1,
+      "frames_per_4h_if_this_rate_held": 16.0,
+      "lambda_hat_per_second": 0.0011111111111111111
+    },
+    "KXMLB-26-TEX": {
+      "frames_in_window": 1,
+      "frames_per_4h_if_this_rate_held": 16.0,
+      "lambda_hat_per_second": 0.0011111111111111111
+    },
+    "KXNASCARRACE-COOO81526-ROCH": {
+      "frames_in_window": 1,
+      "frames_per_4h_if_this_rate_held": 16.0,
+      "lambda_hat_per_second": 0.0011111111111111111
+    },
+    "KXNBA-27-TOR": {
+      "frames_in_window": 1,
+      "frames_per_4h_if_this_rate_held": 16.0,
+      "lambda_hat_per_second": 0.0011111111111111111
+    },
+    "KXPGATOP10-FESJC26-CCON": {
+      "frames_in_window": 1,
+      "frames_per_4h_if_this_rate_held": 16.0,
+      "lambda_hat_per_second": 0.0011111111111111111
+    },
+    "KXPGATOP20-FESJC26-NHOJ": {
+      "frames_in_window": 1,
+      "frames_per_4h_if_this_rate_held": 16.0,
+      "lambda_hat_per_second": 0.0011111111111111111
+    },
+    "KXPGATOUR-FESJC26-ARAI": {
+      "frames_in_window": 1,
+      "frames_per_4h_if_this_rate_held": 16.0,
+      "lambda_hat_per_second": 0.0011111111111111111
+    },
+    "KXPRESNOMR-28-ITRU": {
+      "frames_in_window": 1,
+      "frames_per_4h_if_this_rate_held": 16.0,
+      "lambda_hat_per_second": 0.0011111111111111111
+    },
+    "KXSB-27-KC": {
+      "frames_in_window": 1,
+      "frames_per_4h_if_this_rate_held": 16.0,
+      "lambda_hat_per_second": 0.0011111111111111111
+    },
+    "KXVOTEPRIMARY-GOVFLNOMR26JFISJFIS-14": {
+      "frames_in_window": 1,
+      "frames_per_4h_if_this_rate_held": 16.0,
+      "lambda_hat_per_second": 0.0011111111111111111
+    }
+  },
+  "run_label": "main-pool-12-900s",
+  "session_result": {
+    "archive_root": null,
+    "boundary_note": "OBSERVE_ONLY: authenticated read-only Kalshi market-data observation. The session sends channel subscriptions only, over a closed allowlist ('orderbook_delta', 'ticker', 'trade', 'market_lifecycle_v2'); no order, position, wallet, key-management or write-scoped surface exists in this package. Evidence is appended to a filesystem archive; no database session is opened.",
+    "channels": [
+      "orderbook_delta",
+      "ticker",
+      "trade"
+    ],
+    "detail": "max_seconds=900 reached",
+    "dry_run": true,
+    "duration_ms": 910696,
+    "environment": "demo",
+    "events_archived": 0,
+    "events_received": 679,
+    "events_rejected": 0,
+    "finished_at": "2026-08-17T06:06:26.679151Z",
+    "frames_malformed": 0,
+    "markets_subscribed": 12,
+    "measurement_path": null,
+    "metrics_errors": 0,
+    "reconnects": 0,
+    "recoveries_requested": 0,
+    "rejection_reasons": [],
+    "rotation_failures": 0,
+    "segments_committed": 0,
+    "sequence_faults": 0,
+    "started_at": "2026-08-17T05:51:15.983071Z",
+    "status": "capped_time",
+    "subscription_generations": 2
+  },
+  "verdict": "UNREACHABLE",
+  "verdict_computed_on": "all_archived_frames"
+}
