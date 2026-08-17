@@ -46,6 +46,7 @@ from decimal import Decimal
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(REPO / "scripts"))
 
 from app.realtime.archive import EventArchive, replay  # noqa: E402
@@ -267,14 +268,17 @@ def generation_conservation(records, session: dict) -> dict:
 def live_flat_state(session: dict) -> dict:
     """Flatten the collector's terminal view to the quantities replay produces."""
     checksums, publishable, stats, sub_stats = {}, {}, {}, {}
+    ladder_presence = {}
     for sid, entry in (session.get("live_terminal_state") or {}).items():
         sub_stats[str(sid)] = dict(entry.get("stats") or {})
         for ticker, book in (entry.get("books") or {}).items():
             checksums[ticker] = book.get("checksum")
             publishable[ticker] = bool(book.get("publishable"))
             stats[ticker] = dict(book.get("stats") or {})
+            ladder_presence[ticker] = dict(book.get("ladder_presence") or {})
     return {"checksums": checksums, "publishable": publishable,
-            "stats": stats, "subscription_stats": sub_stats}
+            "stats": stats, "subscription_stats": sub_stats,
+            "ladder_presence": ladder_presence}
 
 
 def compare_state(live: dict, out: dict) -> dict:
@@ -366,12 +370,24 @@ def subscription_findings_from_tape(records) -> dict:
             faults += 1
         except Exception:                      # noqa: BLE001 - book-level refusal
             faults += 1
+    # Doctrine 10, carried through the replay lane. `OrderBook.checksum()`
+    # digests `{market_ticker, generation, last_seq, sid, yes, no}` and NOT
+    # `ladder_presence`, so an equal checksum says nothing about whether a
+    # zero-level side is "the venue said empty" or "the venue said nothing".
+    # That distinction is the whole of doctrine 10, so it is compared here
+    # explicitly rather than assumed to ride along with the digest.
+    ladder_presence = {}
+    for router in routers.values():
+        for ticker, book in router.books.items():
+            ladder_presence[ticker] = {str(k): str(v)
+                                       for k, v in book.ladder_presence.items()}
     return {
         "faults": faults,
         "subscription_stats": {str(sid): dict(r.subscription.stats)
                                for sid, r in sorted(routers.items())},
         "carries_orderbook": {str(sid): r.subscription.carries_orderbook
                               for sid, r in sorted(routers.items())},
+        "ladder_presence": ladder_presence,
     }
 
 
@@ -528,6 +544,17 @@ def main() -> None:
         if _canon(live_sub.get(sid)) != _canon(tape_sub.get(sid)):
             sub_recon_diff.append({"sid": sid, "live": live_sub.get(sid),
                                    "from_tape": tape_sub.get(sid)})
+    live_ladder = live["ladder_presence"]
+    tape_ladder = tape_findings["ladder_presence"]
+    ladder_diff = [{"market_ticker": t, "live": live_ladder.get(t),
+                    "from_tape": tape_ladder.get(t)}
+                   for t in sorted(set(live_ladder) | set(tape_ladder))
+                   if _canon(live_ladder.get(t)) != _canon(tape_ladder.get(t))]
+    ladder_states_observed: Counter = Counter()
+    for sides in live_ladder.values():
+        for side, state in sides.items():
+            ladder_states_observed[f"{side}={state}"] += 1
+
     findings_reconstructible = {
         "live_sids": sorted(live_sub),
         "tape_sids": sorted(tape_sub),
@@ -566,6 +593,16 @@ def main() -> None:
         "replay_deterministic_across_two_runs": deterministic,
         "state_equality": equality,
         "subscription_findings_reconstructible_from_tape": findings_reconstructible,
+        "ladder_presence_conservation": {
+            "note": ("`OrderBook.checksum()` does NOT digest `ladder_presence`, "
+                     "so an equal checksum is not evidence that the typed "
+                     "absence survived the round trip. It is compared here on "
+                     "its own."),
+            "markets_compared": len(set(live_ladder) | set(tape_ladder)),
+            "differences": ladder_diff,
+            "live_states_observed": dict(ladder_states_observed),
+            "conserved": not ladder_diff and bool(live_ladder),
+        },
         "state_equality_negative_control": {
             "corruption": corruption,
             "still_equal_under_corruption": equality_control["equal"],
@@ -608,6 +645,8 @@ def main() -> None:
         "per_sid_findings_conserved": all(s["agrees"] for s in sid_findings),
         "subscription_findings_reconstructible_from_tape":
             findings_reconstructible["conserved"],
+        "ladder_presence_conserved":
+            verdict["ladder_presence_conservation"]["conserved"],
         "replay_deterministic": deterministic,
         "state_equality": equality["equal"],
         "state_equality_negative_control": verdict[

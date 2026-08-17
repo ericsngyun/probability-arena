@@ -48,6 +48,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
+# `python scripts/x.py` puts `scripts/` on the path and NOT the repo root, so
+# both are made explicit rather than left to the caller's PYTHONPATH — a probe
+# that only runs from one working directory is a probe that will be run from
+# the other one at 3am.
+sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(REPO / "scripts"))
 
 # Reused VERBATIM from the P0 probe, on purpose: the per-sid ordering census and
