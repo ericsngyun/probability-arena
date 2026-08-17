@@ -349,6 +349,9 @@ def main() -> None:
         REPO / "docs/experiments/KALSHI-DEMO-TRAFFIC-CAPACITY-001-POOL.json"))
     parser.add_argument("--tickers", default="",
                         help="comma-separated override, for control runs only")
+    parser.add_argument("--tickers-file", default="",
+                        help="file holding a comma-separated override, for "
+                             "control runs only")
     parser.add_argument("--channels", default="orderbook_delta,ticker,trade")
     parser.add_argument("--max-seconds", type=int, default=900)
     parser.add_argument("--max-events", type=int, default=5_000_000)
@@ -363,7 +366,10 @@ def main() -> None:
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
 
-    if args.tickers:
+    if args.tickers_file:
+        raw = Path(args.tickers_file).read_text()
+        tickers = [t for t in (x.strip() for x in raw.split(",")) if t]
+    elif args.tickers:
         tickers = [t for t in args.tickers.split(",") if t]
     else:
         tickers = json.loads(Path(args.pool).read_text())["tickers"]
