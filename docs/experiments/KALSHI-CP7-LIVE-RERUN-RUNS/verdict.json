@@ -1,0 +1,101 @@
+{
+  "milestone": "KALSHI-CP7-LIVE-RERUN",
+  "property_1_generation_advances": {
+    "boundaries": [
+      {
+        "after": 2,
+        "before": 1
+      },
+      {
+        "after": 3,
+        "before": 2
+      }
+    ],
+    "connection_generation_final": 3,
+    "control_epoch_final": 1,
+    "control_reconnects": 0,
+    "epoch_sequence_observed": [
+      1,
+      2,
+      3
+    ],
+    "forced_closes": 2,
+    "metrics_disconnects": 2,
+    "metrics_reconnects": 2,
+    "subscription_epoch_final": 3,
+    "verdict": "PROVEN"
+  },
+  "property_2_per_market_independence": {
+    "boundary_epochs": [
+      2,
+      3
+    ],
+    "per_epoch": {
+      "2": {
+        "acquisition_span_frames": 59,
+        "acquisitions": 60,
+        "entries_carrying_an_acquisition": 60,
+        "first_new_generation_snapshot_frame": 604,
+        "markets_left_awaiting_their_own_snapshot": 59,
+        "max_acquisitions_in_one_entry": 1
+      },
+      "3": {
+        "acquisition_span_frames": 59,
+        "acquisitions": 60,
+        "entries_carrying_an_acquisition": 60,
+        "first_new_generation_snapshot_frame": 1204,
+        "markets_left_awaiting_their_own_snapshot": 59,
+        "max_acquisitions_in_one_entry": 1
+      }
+    },
+    "universe": 60,
+    "verdict": "PROVEN"
+  },
+  "property_3_within_generation_gap_still_faults": {
+    "books_halted": 60,
+    "control_faults": 0,
+    "control_halts": 0,
+    "halt_cause_seq": 302,
+    "halt_frame_ordinal": 372,
+    "metrics_sequence_gaps": 1,
+    "per_market_re_acquisitions_after_the_halt": 60,
+    "recoveries_requested": 1,
+    "reported_as_benign_boundary_state": 0,
+    "session_sequence_faults": 9,
+    "typed_state": "book_halted",
+    "verdict": "PROVEN",
+    "withheld": {
+      "at": "2026-08-17T22:13:09.414822+00:00",
+      "event": "dropped_frame",
+      "event_type": "orderbook_delta",
+      "market_ticker": "KXMAXSHARDINGTEST-26AUG2818-T69299.99",
+      "orderbook_frames_before": 301,
+      "seq": 301,
+      "sid": 1
+    }
+  },
+  "property_4_delta_refusal_path": {
+    "note": "No new-generation delta arrived for a market before that market's own new-generation snapshot, so the refusal path was never entered. This is a statement about the VENUE'S FRAME ORDERING in this session, not about the guard. The observer that would have recorded a refusal is proved to work by a forced positive control in tests/test_kalshi_cp6_cp9_functional_001.py::TestTheGenerationDeltaRefusalIsObservable, so an empty list here means 'did not fire', not 'nothing was watching'.",
+    "observed_refusals": 0,
+    "re_snapshot_windows": {
+      "2": {
+        "first": 604,
+        "last": 663,
+        "span_frames": 59
+      },
+      "3": {
+        "first": 1204,
+        "last": 1263,
+        "span_frames": 59
+      }
+    },
+    "rejected_pre_generation_snapshot_total": 0,
+    "verdict": "NOT EXERCISED \u2014 the guard was not contradicted, which is NOT the same as proven"
+  },
+  "scope_note": "VENUE TEST INSTRUMENTS, FUNCTIONAL PROOF ONLY. The 60 markets are the venue's own test instruments (KXMAXSHARDINGTEST / KXTESTMATCH), used deliberately because a functional proof needs frames that exercise the code paths. NO rate, latency-tail, throughput, capacity or microstructure-realism claim may be derived from anything here.",
+  "sessions": {
+    "control": "s1-observe-rerun",
+    "drop": "s3-drop-rerun",
+    "reconnect": "s2-reconnect-rerun"
+  }
+}

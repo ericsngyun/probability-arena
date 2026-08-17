@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -74,36 +75,66 @@ def series_of(ticker: str) -> str:
     return ticker.split("-", 1)[0]
 
 
-def fetch_open_test_markets(timeout: float) -> list:
-    """Every open market in the two test series. Public route, no credential."""
-    out, cursor, pages = [], None, 0
+def _get(client, params, *, pause: float, attempts: int = 6):
+    """One GET, with backoff on the venue's rate limiter.
+
+    DEMO returns 429 when the whole open universe is paginated, which is what
+    this route did on the first attempt. Backing off is the correct response to
+    a venue telling us we are asking too fast; retrying without one would just
+    ask again.
+    """
+    delay = pause
+    for attempt in range(attempts):
+        response = client.get(DEMO_MARKETS_URL, params=params)
+        if response.status_code == 429 and attempt < attempts - 1:
+            time.sleep(delay)
+            delay *= 2
+            continue
+        response.raise_for_status()
+        return response.json()
+    raise SystemExit("refused: the venue rate-limited every attempt; a "
+                     "partially-paginated population is not a sampling frame")
+
+
+def fetch_open_test_markets(timeout: float, *, pause: float = 1.0) -> list:
+    """Every open market in the two test series. Public route, no credential.
+
+    Queried **per series** rather than by paginating the whole venue. That is
+    politer — DEMO rate-limited the full walk — and it is also the more exact
+    statement of the population: the series are named in the rule, so they are
+    what is asked for, instead of being filtered out of everything.
+    """
+    out = []
     with httpx.Client(timeout=timeout) as client:
-        while True:
-            params = {"status": "open", "limit": 1000}
-            if cursor:
-                params["cursor"] = cursor
-            response = client.get(DEMO_MARKETS_URL, params=params)
-            response.raise_for_status()
-            body = response.json()
-            pages += 1
-            for market in body.get("markets") or []:
-                ticker = market.get("ticker")
-                if not ticker or series_of(ticker) not in TEST_SERIES:
-                    continue
-                # ONLY identity fields are kept. Recording a volume or a rate
-                # here would make it available to a later rule, and a frozen
-                # universe that carries its own activity statistics is one
-                # amendment away from being a chosen one.
-                out.append({"ticker": ticker,
-                            "event_ticker": market.get("event_ticker"),
-                            "series": series_of(ticker),
-                            "status": market.get("status"),
-                            "close_time": market.get("close_time")})
-            cursor = body.get("cursor")
-            if not cursor:
-                break
-            if pages > 200:
-                raise SystemExit("refused: pagination did not terminate")
+        for series in TEST_SERIES:
+            cursor, pages = None, 0
+            while True:
+                params = {"status": "open", "limit": 1000,
+                          "series_ticker": series}
+                if cursor:
+                    params["cursor"] = cursor
+                body = _get(client, params, pause=pause)
+                pages += 1
+                for market in body.get("markets") or []:
+                    ticker = market.get("ticker")
+                    if not ticker or series_of(ticker) != series:
+                        continue
+                    # ONLY identity fields are kept. Recording a volume or a
+                    # rate here would make it available to a later rule, and a
+                    # frozen universe that carries its own activity statistics
+                    # is one amendment away from being a chosen one.
+                    out.append({"ticker": ticker,
+                                "event_ticker": market.get("event_ticker"),
+                                "series": series,
+                                "status": market.get("status"),
+                                "close_time": market.get("close_time")})
+                cursor = body.get("cursor")
+                if not cursor:
+                    break
+                if pages > 200:
+                    raise SystemExit(
+                        f"refused: pagination did not terminate for {series}")
+                time.sleep(pause)
     return out
 
 
@@ -129,7 +160,8 @@ def build(candidates: list, prior: list, size: int) -> dict:
         "milestone": "KALSHI-CP7-LIVE-RERUN",
         "scope_note": SCOPE_NOTE,
         "frozen_at": datetime.now(timezone.utc).isoformat(),
-        "route": "GET /trade-api/v2/markets?status=open (public, no credential)",
+        "route": ("GET /trade-api/v2/markets?status=open&series_ticker=<series>"
+                  " (public, no credential), one call per test series"),
         "selection_rule": {
             "test_series": list(TEST_SERIES),
             "continuity": "prior CP7 session tickers still open, in their "
