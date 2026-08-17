@@ -515,7 +515,13 @@ run.
 `app/` was not modified. The measurement is a delegating transport wrapper on
 the existing `transport_factory` seam, so the collector ran exactly as shipped.
 
-EVO's production checkout was never modified: the scripts ran from
+EVO's production checkout was never modified: the scripts ran from a throwaway
 `/tmp/kalshi-capacity-001` with `PYTHONPATH` pointing at the checkout, and
 `~/projects/probability-arena` stayed on `main` at `d7fd8d1`, working tree
-clean, before and after.
+clean, verified before and after. The temp directory was removed once the
+artifacts were collected, and no probe process was left running.
+
+Six deviations from the preregistration are recorded in its §7, each marked
+with whether it was decided **before or after any rate was seen**. Only one
+(D4, the replication run's bounded read timeout) was decided after, and the
+replication's conclusion rests on the arm that deviation cannot affect.
