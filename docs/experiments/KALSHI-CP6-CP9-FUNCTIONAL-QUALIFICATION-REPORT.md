@@ -3,7 +3,7 @@
 **Branch `KALSHI-CP6-CP9-FUNCTIONAL`. Not merged.**
 Scope governed by §8 of `KALSHI-CP6-CP9-QUALIFICATION-PREREGISTRATION.md`.
 
-> **ADDENDUM 2026-08-17 — the CP7 failure is FIXED, on a branch, and this
+> **ADDENDUM 1, 2026-08-17 — the CP7 failure is FIXED, on a branch, and this
 > document is NOT rewritten.** Everything below remains the record of what the
 > code did during the three live sessions, which is what an experiment report
 > is for. What changed since: `KALSHI-REPLAY-GENERATION-CONSISTENCY-001` made
@@ -21,13 +21,30 @@ Scope governed by §8 of `KALSHI-CP6-CP9-QUALIFICATION-PREREGISTRATION.md`.
 > throughput, latency, capacity and microstructure realism are exactly as
 > unestablished as they were.
 
+> **ADDENDUM 2, 2026-08-17 — CP7 WAS RE-RUN LIVE, and `Reconnect behavior` is
+> now QUALIFIED.** The live session addendum 1 declined to claim has been run:
+> three fresh read-only DEMO sessions, two forced socket teardowns, and all
+> three preregistered CP7 properties proved on the venue rather than on its
+> captured frames. The record is `KALSHI-CP7-LIVE-RERUN-001.md` and
+> `docs/experiments/KALSHI-CP7-LIVE-RERUN-RUNS/`; the verdict line below is
+> changed and **§3 is left standing exactly as written**, because the record of
+> the defect and its correction is the valuable part of this document.
+>
+> **What did NOT become qualified.** The delta-refusal guard — a
+> new-generation delta landing on an un-re-snapshotted book — was **not
+> exercised**: the venue again sent every snapshot before any delta for those
+> markets. That is now a *measured* absence rather than an inferred one (the
+> re-run's probe records refusals on their own axis), but it is still luck, and
+> it is reported as `NOT EXERCISED` rather than as a pass. The four lower lines
+> of the verdict block do not move at all.
+
 ---
 
 ## 0. The verdict
 
 ```
 Collector semantics      QUALIFIED
-Reconnect behavior       FAILED
+Reconnect behavior       QUALIFIED   (was FAILED; re-run live 2026-08-17)
 Archive conservation     QUALIFIED
 Replay equality          QUALIFIED
 Fault isolation          QUALIFIED
@@ -38,6 +55,13 @@ Production capacity      NOT MEASURED
 Microstructure realism   NOT ESTABLISHED
 ```
 
+**`Reconnect behavior` moved on live evidence, and on nothing else.** It read
+FAILED from the original sessions, stayed FAILED through the offline fix
+(addendum 1 declined to move it), and moved only after
+`KALSHI-CP7-LIVE-RERUN-001` re-ran the forced-reconnect session on the venue.
+§3 below is the FAILED session and is not edited; §3.4 records what the re-run
+measured against it.
+
 **The four lower lines are the scope of the claim, not caveats.** Nothing in
 this document supports a rate, latency-tail, throughput, capacity or
 microstructure statement, and no frame count here should be read as one. DEMO
@@ -47,10 +71,13 @@ come from 194 venue test instruments, and this qualification uses 60 of them
 paths, not frames that resemble production activity. Rate and capacity belong
 to `KALSHI-PROD-OBSERVATIONAL-QUALIFICATION-001`.
 
-**One correctness property does not hold.** CP7's per-market requirement is
-violated on the live venue, at both forced generation boundaries, for 59 of 60
-markets. It is stated in §3 and it is the reason `Reconnect behavior` is
-FAILED rather than qualified-with-a-note.
+**One correctness property did not hold, and now does.** As originally
+measured, CP7's per-market requirement was violated on the live venue at both
+forced generation boundaries, for 59 of 60 markets — stated in §3, and the
+reason `Reconnect behavior` read FAILED rather than qualified-with-a-note. It
+was repaired by `KALSHI-REPLAY-GENERATION-CONSISTENCY-001` and **re-measured
+live** by `KALSHI-CP7-LIVE-RERUN-001`; §3.4 has the re-run's numbers beside the
+originals.
 
 **Where a line was drawn, and where you may want to draw it differently.** §4 of
 the preregistration says "any state that cannot be reconstructed from the
@@ -208,9 +235,13 @@ manufacturing the next fault — did not occur in any session.
 
 ---
 
-## 3. CP7 — reconnect correctness. FAILED.
+## 3. CP7 — reconnect correctness. FAILED **as measured here**; re-run live and QUALIFIED, see §3.4.
 
 Two of the three required properties hold. The third does not.
+
+> **§3.1–§3.3 are the original 2026-08-17 sessions and are NOT edited.** They
+> are the record of what the shipped code did on the venue that day, including
+> the defect. §3.4 reports the live re-run against the fixed code.
 
 ### 3.1 `generation_after > generation_before` — PROVEN
 
@@ -345,6 +376,56 @@ narrowing it. The proofs are re-run against `s2-reconnect`'s own verbatim frames
 in `tests/test_kalshi_replay_generation_consistency_001.py`. **The live sessions
 were not re-run**; see the addendum at the top of this document for what that
 does and does not retire.
+
+### 3.4 The live re-run, 2026-08-17 — `Reconnect behavior` QUALIFIED
+
+Full record: `docs/milestones/KALSHI-CP7-LIVE-RERUN-001.md`. Three fresh
+read-only DEMO sessions on the same 60-instrument universe (57 of the original
+60 still open; 3 topped up by a telemetry-blind rule frozen before any socket
+opened). The sentence above — *"the live sessions were not re-run"* — no longer
+holds, and this is what replaced it.
+
+**§3.3's own timeline, re-measured.** The unedited publishability transition log
+from `s2-reconnect-rerun`, at the same place in the session:
+
+```
+frame    4 …  63   epoch 1   60 SEPARATE entries, one per market
+frame  601        epoch 2   subscribed ack → 60 markets → subscription_unhealthy
+frame  604        epoch 2   orderbook_snapshot seq=1 for T53599.99
+                            →  1 market  publishable                  (that market)
+                            → 59 markets awaiting_snapshot_for_generation
+frame  605 … 663  epoch 2   59 SEPARATE entries, one acquisition each
+frame 1201/1204   epoch 3   the same shape again
+```
+
+Frame 604 is the exact frame that republished all 60 markets in the original
+session. It now republishes **one** — the market whose own snapshot it is.
+
+| CP7 property | original | live re-run |
+|---|---|---|
+| `generation_after > generation_before` | PROVEN (1→2→3) | **PROVEN** (1→2→3, 2 forced closes, 2 reconnects) |
+| per-market independent re-acquisition | **VIOLATED**, 59 of 60 at both boundaries | **PROVEN**: 60 acquisitions in **60 separate entries**, max **1** per entry, every one caused by an `orderbook_snapshot` naming that same market |
+| a within-generation gap still faults | PROVEN | **PROVEN**, and now typed: 60 books `book_halted`, **0** filed under the benign boundary state |
+
+The paired controls are live too: `s1-observe-rerun`, same universe, no
+perturbation — epoch 1, 0 reconnects, 0 faults, 0 halted books.
+
+**Asserted on the SHAPE of the transition log, not on an aggregate.** The
+aggregate is what hid this defect for a whole qualification session. The
+verifier `scripts/kalshi_cp7_live_rerun_verify.py` rejects the CP7 signature —
+one entry carrying an acquisition for more than one market — and it is checked
+against **this document's own failed artifact**: pointed at
+`KALSHI-CP6-CP9-FUNCTIONAL-RUNS/s2-reconnect-session.json` it fails, and fails
+on the CP7 shape. A checker that cannot fail is not a check.
+
+**What is still NOT established.** The delta-refusal path
+(`rejected_pre_generation_snapshot`) was **NOT EXERCISED**. No new-generation
+delta arrived for any market before that market's own new-generation snapshot,
+so nothing entered the guard — the venue's ordering was favourable again,
+across a 59-frame re-snapshot window at each boundary. The re-run measures this
+rather than inferring it, and the observer is proved live-capable by a forced
+positive control offline, so the zero means *"did not fire"* and not *"nothing
+was watching"*. **It remains luck, not proof, and is not claimed as more.**
 
 ---
 
@@ -589,7 +670,10 @@ Logged per §7, all forced by the §8 amendment or by DEMO's nature.
 5. **The CP7 exposure window under other conditions.** Zero deltas landed on an
    abandoned ladder here because the venue sent all 60 snapshots contiguously.
    The bound is the venue's behaviour on the day, not a property of the
-   collector.
+   collector. **Still true after the live re-run** (§3.4): the guard that would
+   make it a property of the collector now exists and refuses such a delta, but
+   the venue's ordering was favourable again and the refusal path was **not
+   exercised live** in either run.
 6. **Rotation constants.** `DEFAULT_MAX_SEGMENT_RECORDS = 13_000` still rests on
    an assumed peak rate. Every session committed exactly one segment and
    started zero rotations, so nothing here bears on retuning it — that was
@@ -660,9 +744,14 @@ them.
    reconnect.**~~ **DONE 2026-08-17** on branch
    `KALSHI-REPLAY-GENERATION-CONSISTENCY`, unmerged: publishability is now
    per-market and generation-aware, the strict xfail passes with its marker
-   removed, and six proofs run over `s2-reconnect`'s verbatim frames. Still
-   open, and deliberately: **a live reconnect session has not been re-run**, so
-   the FAILED verdict in §0 stands as a record of the sessions that were.
+   removed, and six proofs run over `s2-reconnect`'s verbatim frames.
+   ~~Still open, and deliberately: **a live reconnect session has not been
+   re-run**, so the FAILED verdict in §0 stands as a record of the sessions
+   that were.~~ **CLOSED 2026-08-17 by `KALSHI-CP7-LIVE-RERUN-001`**: the live
+   reconnect session was re-run, all three CP7 properties hold on the venue,
+   and §0 now reads QUALIFIED. §3 keeps the FAILED sessions verbatim; §3.4 is
+   the re-run. What remains open is narrower and is item 5 of §7 — the
+   **delta-refusal path has never been exercised live**, in either run.
 2. **Decide whether the tape must record collector actions** (§4.5) before a
    recovery count becomes an experimental variable.
 3. **Consider widening `archive.replay()`** to the non-orderbook sids (§4.6),

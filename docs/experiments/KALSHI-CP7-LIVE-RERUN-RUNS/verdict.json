@@ -34,17 +34,27 @@
       "2": {
         "acquisition_span_frames": 59,
         "acquisitions": 60,
+        "boundary_states": {
+          "awaiting_snapshot_for_generation": 59,
+          "subscription_unhealthy": 1
+        },
         "entries_carrying_an_acquisition": 60,
         "first_new_generation_snapshot_frame": 604,
         "markets_left_awaiting_their_own_snapshot": 59,
+        "markets_unpublished_at_the_boundary": 60,
         "max_acquisitions_in_one_entry": 1
       },
       "3": {
         "acquisition_span_frames": 59,
         "acquisitions": 60,
+        "boundary_states": {
+          "awaiting_snapshot_for_generation": 59,
+          "subscription_unhealthy": 1
+        },
         "entries_carrying_an_acquisition": 60,
         "first_new_generation_snapshot_frame": 1204,
         "markets_left_awaiting_their_own_snapshot": 59,
+        "markets_unpublished_at_the_boundary": 60,
         "max_acquisitions_in_one_entry": 1
       }
     },

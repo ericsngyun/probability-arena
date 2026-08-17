@@ -225,7 +225,28 @@ def property_2(reconnect: dict) -> dict:
                   f"epoch {epoch}: a left-behind book does not carry the "
                   "abandoned epoch", c)
 
+        # (e) "NO BOOK MAY SILENTLY SURVIVE A GENERATION BOUNDARY AS IF NOTHING
+        #     HAPPENED" — the preregistration's own words. Between the last
+        #     acquisition of the previous epoch and the first of this one,
+        #     every market must have been taken out of publishable state.
+        prev_last = max((a["frame_ordinal"]
+                         for a in acquisitions(timeline, epoch=epoch - 1)),
+                        default=0)
+        dropped = {}
+        for entry in timeline:
+            if not prev_last < entry["frame_ordinal"] <= first:
+                continue
+            for c in entry["changes"]:
+                if c["to"] is False:
+                    dropped[c["market_ticker"]] = c["to_state"]["state"]
+        check(set(dropped) == universe,
+              f"epoch {epoch}: a book survived the boundary without ever "
+              "becoming nonpublishable",
+              {"survived": sorted(universe - set(dropped))})
+
         per_epoch[epoch] = {
+            "markets_unpublished_at_the_boundary": len(dropped),
+            "boundary_states": dict(Counter(dropped.values())),
             "acquisitions": len(acq),
             "max_acquisitions_in_one_entry": worst,
             "entries_carrying_an_acquisition":

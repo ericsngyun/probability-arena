@@ -117,6 +117,14 @@ class TestTheThreePropertiesHoldLive:
             assert per["entries_carrying_an_acquisition"] == 60
             assert per["max_acquisitions_in_one_entry"] == 1
             assert per["markets_left_awaiting_their_own_snapshot"] == 59
+            # "No book may silently survive across a generation boundary as if
+            # nothing happened" — the preregistration's own words. All 60.
+            assert per["markets_unpublished_at_the_boundary"] == 60
+            assert per["boundary_states"] == {
+                "awaiting_snapshot_for_generation": 59,
+                # The one market that re-acquired on the rebasing frame itself;
+                # its last unpublished state in the window is the ack's.
+                "subscription_unhealthy": 1}
 
     def test_property_3_a_real_gap_still_faults_and_is_typed_as_a_fault(
             self, rerun):
