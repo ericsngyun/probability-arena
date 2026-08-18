@@ -12,7 +12,9 @@ claimed from it.**
 It is a contract, not an implementation milestone. Where it identifies an API
 that emits a plausible benign number for something unmeasurable, it **names the
 candidate and justifies the change** (§9); it does not make broad API changes.
-Two narrowly-required fixes are made and are argued individually in §10.
+Three narrowly-required fixes are made and are argued individually in §10; a
+fourth defect it found is reported with its remedy rather than patched, and §10.4
+says why.
 
 ---
 
@@ -791,7 +793,9 @@ the same return value, one key away.
 
 ## 10. NARROWLY-REQUIRED CHANGES MADE BY THIS MILESTONE
 
-Two, each argued against the contract. Nothing else in `app/` is touched.
+Three, each argued against the contract. None is a semantics change: two are
+operator-readout repairs and one deletes unreachable code. Nothing else in
+`app/` is touched, and §10.4 records what was deliberately left alone.
 
 ### 10.1 `kalshi-realtime-replay` crashed on exactly the tape it exists to inspect — **FIXED**
 
