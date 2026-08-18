@@ -100,8 +100,8 @@ credential arrives:
 | structural order-API guard | `scripts/kalshi_prod_observation_guard.py` | CLEAN on `main`'s closure; red state demonstrated 13 ways |
 | one archive root per session (§11 B4) | `app/realtime/session_root.py` | refusal proven; `RECORD_SCHEMA_VERSION` untouched |
 | the pre-capture gate | `scripts/kalshi_prod_precapture_preflight.py` | guard → endpoint → session root, in that order |
-| the endpoint disagreement | `docs/KALSHI_PRODUCTION_ENDPOINT_001.md` | recorded, NOT resolved |
-| tests | `tests/test_kalshi_prod_qual_precapture_001.py` | 44 passed |
+| the endpoint disagreement | `docs/KALSHI_PRODUCTION_ENDPOINT_001.md` | **RESOLVED** — the AsyncAPI spec names `external-api-ws.kalshi.com` and the collector already dials it; `settings.kalshi_ws_url` has no reader, so the `.env` value cannot mis-route a capture |
+| tests | `tests/test_kalshi_prod_qual_precapture_001.py` | **46 passed** (measured on `main`) |
 
 **Run this before capture:**
 
