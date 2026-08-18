@@ -321,6 +321,9 @@ synchronous `append()` on its own stack.
 one inherits its channel row from §3. The table records the wire representation,
 the normalized representation, units, and the missing-value semantics.
 
+The sid numbers in the headings below are the **three-channel subscribe's**
+assignment and are not venue constants — see §3.1.
+
 ### 5.1 `orderbook_snapshot` / `orderbook_delta` (sid 1)
 
 | wire field | normalized as | units / precision | missing-value semantics |
