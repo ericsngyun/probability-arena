@@ -81,3 +81,48 @@ one**. CP10 was already written to check this; the manifest finding makes it the
 central question rather than a footnote. If DEMO does not predict production,
 say so plainly — it bears on every rotation constant tuned against DEMO, and on
 whether DEMO is useful for anything beyond functional correctness.
+
+---
+
+## PRE-CAPTURE STATUS — 2026-08-17 (`KALSHI-PROD-QUAL-PRECAPTURE`)
+
+**CAPTURE IS BLOCKED, and nothing here attempted one.** No production
+connection, no capture, no credential read. The blocker is operational and
+belongs to an operator: `KALSHI_PRIVATE_KEY_PATH=` is set-but-empty on EVO and
+the only key present is the DEMO observer credential, so the authenticated
+production handshake cannot be attempted at all.
+
+What now exists, so that capture is a short, well-guarded step when the
+credential arrives:
+
+| | artifact | state |
+|---|---|---|
+| structural order-API guard | `scripts/kalshi_prod_observation_guard.py` | CLEAN on `main`'s closure; red state demonstrated 13 ways |
+| one archive root per session (§11 B4) | `app/realtime/session_root.py` | refusal proven; `RECORD_SCHEMA_VERSION` untouched |
+| the pre-capture gate | `scripts/kalshi_prod_precapture_preflight.py` | guard → endpoint → session root, in that order |
+| the endpoint disagreement | `docs/KALSHI_PRODUCTION_ENDPOINT_001.md` | recorded, NOT resolved |
+| tests | `tests/test_kalshi_prod_qual_precapture_001.py` | 44 passed |
+
+**Run this before capture:**
+
+```bash
+python scripts/kalshi_prod_precapture_preflight.py --archive-root <ROOT>
+```
+
+It exits non-zero unless the order-API guard is clean and the archive root is
+free for this session. It opens no socket and reads no credential; the capture
+command is a separate, separately-authorized step.
+
+**Prerequisite 4 is still open, and is still the only thing blocking.** The
+production WS host remains **UNVERIFIED**: the official Kalshi AsyncAPI spec
+names `wss://external-api-ws.kalshi.com/trade-api/ws/v2` and the collector
+already uses it, but documentation is not a handshake. §11 B1 closes on the
+first successful production connection and not before — the preflight reports
+`verified_on_the_wire: false` for exactly that reason.
+
+**§11 B4 is closed by run rule, not by schema.** The contract's text is
+unchanged and its characterization test still pins the record schema; what
+changed is that the run rule is now enforced by a typed refusal instead of
+remembered. A P4 run that wants a single multi-session archive still needs a
+`RECORD_SCHEMA_VERSION` bump, and that decision is still outside this
+milestone's authority.
