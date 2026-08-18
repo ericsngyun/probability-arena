@@ -44,6 +44,24 @@ instead of passing every ban silently.
 Stdlib only, and it imports nothing from `app/` — the guard must be able to
 audit a tree it is not itself running inside (that is how its own positive
 controls work).
+
+**What this guard does NOT cover, stated plainly** (doctrine 4 — a measurement
+must report its own noise floor):
+
+* **The runner script, if one is ever written outside `app/`.** The closure
+  audited here starts at `app.realtime.collector`, so it covers everything the
+  collector can execute. A future `scripts/kalshi_prod_capture.py` is a
+  different file, and a bad import there would not be seen — the mitigation is
+  that `scripts/kalshi_prod_precapture_preflight.py` runs this guard and
+  refuses to proceed, and a runner that skips the preflight is out of scope
+  for a static check.
+* **Runtime dynamic imports.** `importlib.import_module(name)` with a computed
+  name is invisible to an AST walk. Covered separately by
+  `test_the_RUNTIME_closure_matches_the_static_one`, which imports the entry
+  point in a fresh interpreter and compares `sys.modules` against this
+  closure.
+* **What the venue does with a well-formed subscription.** This guard is about
+  what we can SEND. It says nothing about what comes back.
 """
 
 from __future__ import annotations
