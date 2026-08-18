@@ -440,6 +440,22 @@ class TestSessionRoot:
             claim_session_root(tmp_path, ENV_PRODUCTION,
                                session_id=new_session_id())
 
+    def test_a_CANONICALLY_VALID_forgery_is_still_corrupt(self, tmp_path):
+        """The test above could be passing on the parser rather than on the
+        digest — a forged claim re-encoded canonically parses cleanly. This one
+        isolates the digest check, and is the reason `claim_digest` is a field
+        rather than a decoration."""
+        from app.realtime.canonical import canonical_bytes, parse_canonical
+        claim_session_root(tmp_path, ENV_PRODUCTION, session_id=new_session_id())
+        path = session_claim_path(tmp_path, ENV_PRODUCTION)
+        forged = parse_canonical(path.read_bytes())
+        forged["session_id"] = "s-forged-000000000000"
+        path.unlink()
+        path.write_bytes(canonical_bytes(forged))
+        with pytest.raises(SessionRootCorrupt) as excinfo:
+            read_session_claim(tmp_path, ENV_PRODUCTION)
+        assert "digest" in str(excinfo.value)
+
     def test_a_truncated_claim_is_corrupt(self, tmp_path):
         claim_session_root(tmp_path, ENV_PRODUCTION, session_id=new_session_id())
         path = session_claim_path(tmp_path, ENV_PRODUCTION)
