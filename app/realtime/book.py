@@ -877,13 +877,6 @@ class OrderBook:
             json.dumps(payload, sort_keys=True, separators=(",", ":"))
             .encode("utf-8")).hexdigest()[:16]
 
-        payload = {
-            "market_ticker": self.market_ticker,
-            "yes": sorted(self.yes.items()), "no": sorted(self.no.items()),
-        }
-        return hashlib.sha256(json.dumps(
-            payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-
 
 # --- subscription-level sequencing ------------------------------------------------
 
