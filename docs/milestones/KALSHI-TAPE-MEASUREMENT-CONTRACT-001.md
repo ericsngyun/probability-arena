@@ -24,7 +24,7 @@ says why.
 P3 measurement contract                       COMPLETE
 
 KALSHI-PROD-OBSERVATIONAL-QUALIFICATION-001
-  CAPTURE  (read-only production tape)        GO, conditional on B1, B2, B4
+  CAPTURE  (read-only production tape)        GO, conditional on B1, B4  (B2 struck)
   REPLAY-EQUALITY VERDICT                     NO-GO until B3 is closed
 ```
 
@@ -887,14 +887,14 @@ around during the qualification run."* It is pinned by a characterization test
 
 ## 11. TRUE BLOCKERS FOR P4
 
-Four. **B1 and B2 are operational and pre-existing** — P4 names them itself.
+Four as written; **B2 is struck on measurement**, leaving three. **B1 is operational and pre-existing** — P4 names it itself.
 **B3 and B4 were found by this milestone** and are semantic: they are ways the
 current code reaches a *wrong* answer, not a missing one.
 
 | | blocks | closable by |
 |---|---|---|
 | B1 unverified production WS host + credential | capture | an operator |
-| B2 unmerged branch stack | capture | a merge |
+| ~~B2 unmerged branch stack~~ | ~~capture~~ | **STRUCK — already merged, verified on `main`** |
 | B3 `replay()` skips an `error` frame's `seq` | the **replay-equality verdict** | ~4 lines + a CP8 re-run |
 | B4 no session identity on the durable record | capture, **conditionally** | a run-procedure rule (no code) |
 
@@ -915,18 +915,33 @@ words. It also requires a production read-scoped credential whose scopes are
 verified against the live key-metadata route — the DEMO credential is on EVO
 only and is not a production credential.
 
-### B2. The branch stack is unmerged
+### B2. ~~The branch stack is unmerged~~ — RESOLVED, verified 2026-08-17
 
-`KALSHI-COLLECTOR-P0-FIXES`, `KALSHI-CP6-CP9-FUNCTIONAL`,
-`KALSHI-REPLAY-GENERATION-CONSISTENCY`, `KALSHI-TAPE-MANIFEST`, and this branch
-are all unmerged. **P4 is defined as "same collector, unchanged"** — but the
-collector that was qualified is the one on those branches, not the one on `main`.
-Running P4 against `main` would qualify a collector that has the trade-sid basing
-defect, the absence/empty conflation, the `max_seconds` defect and the CP7
-per-market defect. `KALSHI-REPLAY-GENERATION-CONSISTENCY-001` is explicitly
-prerequisite 2 of P4.
+**This blocker was STALE WHEN WRITTEN and is struck.** It was derived from P4's
+prerequisite list — a document written *before* the merges — rather than from
+the tree the analysis was standing in. Doctrine 9 applies to internal documents
+too: a milestone's prerequisite list is a claim about the repository, and a
+claim about reality must be checked against reality.
 
-Neither B1 nor B2 is a P3 finding. They are stated because P4's entry criteria
+The branch this analysis started from (`fa52c9f`) **already contained** all four
+fixes it names as missing. Verified by measurement on `main`:
+
+| claimed missing | marker | occurrences in `main` |
+|---|---|---|
+| trade-sid basing defect | `needs_base` | **13** |
+| absence/empty conflation | `ABSENT_NOT_SUPPLIED` / `no_ladder_supplied` | **19** |
+| `max_seconds` defect | `wait_for` | **2** |
+| CP7 per-market defect | `based_for_current_generation` | **3** |
+
+Merge lineage: P0 at `1549984`, P2 at `52f4f31`, CP7 live re-run at `fa52c9f`,
+this contract at `ccb95ec`. **P4's "same collector, unchanged" therefore holds
+against `main` today.**
+
+The remaining true blockers are **B1** (operational: production host and
+credential), **B3** (blocks the replay-equality verdict only), and **B4**
+(closable by one run rule, zero code).
+
+B1 is not a P3 finding. They are stated because P4's entry criteria
 name them and because a GO on the contract is not a GO on operational readiness.
 
 ### B3. `archive.replay()` manufactures a sequence gap on an `error` frame — **FOUND HERE**
