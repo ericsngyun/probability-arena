@@ -123,11 +123,17 @@ RAW_CONNECTION_NAME = "conn"
 
 # --- word-level identifier tripwire ----------------------------------------------
 #
-# Identifiers are split into WORDS (snake_case and camelCase), so `orderbook` is
-# the word "orderbook" and never the word "order". That is what lets this arm
-# ban `order` outright while `OrderBook`, `_read_order` and `_TRUNCATION_ORDER`
-# are simply different words, and it is why a renamed identifier does not
-# evade it while a docstring does not trip it.
+# Identifiers are split into WORDS (snake_case and camelCase), so the channel
+# `orderbook_delta` is the word "orderbook" and never the word "order", and a
+# substring match — which would have hit it — is not what happens here.
+#
+# `order` is deliberately NOT a forbidden word. Three identifiers in the real
+# closure contain it (`OrderBook`, `_read_order`, `_TRUNCATION_ORDER`) and all
+# three mean *ordering*. Banning it would make the guard fire on the permitted
+# thing, so the order surface is caught by BIGRAM instead: `place_order`,
+# `order_id`, `user_orders`. Words that have no market-data homonym in this
+# closure — `fill`, `position`, `portfolio`, `wallet` — are banned outright,
+# and each was verified to have zero occurrences before it was added.
 FORBIDDEN_WORDS = frozenset({
     "portfolio", "wallet", "kelly",
     "fill", "fills", "filled",
