@@ -188,6 +188,50 @@ class TestStructuralOrderApiGuard:
         report = GUARD.audit(root)
         assert report.clean, [f.to_dict() for f in report.findings]
 
+    def test_the_RUNTIME_closure_matches_the_static_one(self):
+        """The static walk's one blind spot, closed by measurement.
+
+        An `importlib.import_module` or `__import__` inside the closure would
+        not appear in the AST import set. So a FRESH interpreter imports the
+        production-observation entry point and reports what actually landed in
+        `sys.modules`. The runtime set may legitimately be a SUBSET (some
+        imports are function-local), but it must never contain an `app.*`
+        module the static equality does not know about.
+
+        `app` and `app.telemetry` are implicit parent packages — Python creates
+        them to hold a submodule and nothing imports them by name — so they are
+        named here rather than added to the reviewed closure, which would have
+        weakened the equality for two empty `__init__.py` files.
+        """
+        probe = (
+            "import sys; sys.path.insert(0, %r)\n"
+            "import app.realtime.collector\n"
+            "import json\n"
+            "print(json.dumps({\n"
+            "  'app': sorted(m for m in sys.modules"
+            "         if m == 'app' or m.startswith('app.')),\n"
+            "  'roots': sorted({m.split('.')[0] for m in sys.modules}),\n"
+            "}))\n" % str(REPO))
+        proc = subprocess.run([sys.executable, "-c", probe], cwd=str(REPO),
+                              capture_output=True, text=True, timeout=180)
+        assert proc.returncode == 0, proc.stderr
+        payload = json.loads(proc.stdout.strip().splitlines()[-1])
+        implicit_parents = {"app", "app.telemetry"}
+        runtime = set(payload["app"])
+        unexpected = runtime - set(GUARD.EXPECTED_CLOSURE) - implicit_parents
+        assert unexpected == set(), unexpected
+        # anti-vacuity: the entry point really was imported, and the permitted
+        # network dependency really did load.
+        assert "app.realtime.collector" in runtime
+        assert "websockets" in payload["roots"]
+        # No outbound HTTP client, no database, no chain library, at RUNTIME.
+        # Stdlib `urllib` is deliberately NOT asserted here: any third-party
+        # dependency may pull it in, so it is checked where it belongs — in the
+        # closure's own declared imports, by the `http` arm.
+        for banned in ("requests", "httpx", "aiohttp", "urllib3", "sqlalchemy",
+                       "psycopg2", "solana", "solders", "web3", "eth_account"):
+            assert banned not in payload["roots"], banned
+
     def test_the_guard_cli_exits_zero_on_this_tree(self):
         proc = subprocess.run(
             [sys.executable, str(REPO / "scripts" / "kalshi_prod_observation_guard.py"),
