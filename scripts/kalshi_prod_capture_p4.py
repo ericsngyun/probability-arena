@@ -71,6 +71,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import math
 import socket
 import ssl
 import statistics
@@ -426,7 +427,13 @@ class ProductionVerifyingConnector:
         headers = getattr(response, "headers", None)
 
         sans = None
-        if isinstance(cert, dict):
+        # `getpeercert()` returns an EMPTY DICT, not None, when the socket has
+        # no validated peer certificate. `{}` is a dict, so an isinstance check
+        # alone sends "there is no certificate" down the "this certificate is
+        # wrong" path -- both refuse, but the refusal would name the wrong
+        # cause, and a refusal that misdescribes itself is how the next
+        # operator debugs the wrong thing.
+        if isinstance(cert, dict) and cert:
             sans = sorted({v for k, v in (cert.get("subjectAltName") or ())
                            if k == "DNS"})
             if not _san_covers(sans, self._expected_host):
@@ -665,8 +672,11 @@ def _percentiles(values, points=(50, 90, 95, 99)) -> dict:
                 f"NOT_MEASURABLE:below_min_samples("
                 f"n={len(ordered)}<{floors[point]})")
             continue
+        # Nearest-rank: ceil(P/100 * N), 1-indexed. `round()` is banker's
+        # rounding and returned the 2nd of 5 samples for p50 -- a median that
+        # is not the middle value.
         index = min(len(ordered) - 1,
-                    max(0, int(round((point / 100.0) * len(ordered))) - 1))
+                    max(0, math.ceil((point / 100.0) * len(ordered)) - 1))
         out[f"p{point}"] = ordered[index]
     return out
 
