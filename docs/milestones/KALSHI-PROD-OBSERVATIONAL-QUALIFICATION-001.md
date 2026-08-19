@@ -302,3 +302,71 @@ relative to `now()` makes the fixture self-maintaining but makes its arithmetic
 non-reproducible, while re-pinning the constant re-arms the same bomb on a
 later date. That choice deserves its own small change with its own review.
 Recorded here so the next reader does not spend the time re-deriving it.
+
+### The comparison that matters — answered at the REST layer, not the wire
+
+The credential stop blocks the WebSocket capture. It does **not** block the one
+production measurement that needs no credential: the same read-only
+`GET /markets` census, with the same measured statistic, that produced the DEMO
+finding this milestone was written around. So it was run.
+
+`kalshi-tape-manifest --environment production`, 2026-08-19T23:30:26Z, 488
+pages, 207.6 s census, then a 7.6-minute timed activity probe.
+Artifact: `docs/evidence/KALSHI-PROD-QUAL-CAPTURE-production-activity-distribution.json`.
+
+| | DEMO (`KALSHI-TAPE-MANIFEST-001`) | **PRODUCTION (measured here)** |
+|---|---|---|
+| verdict | **REFUSED** — the middle was empty | **QUALIFIED** |
+| frame | — | **97,408** open markets |
+| eligible | could not reach 12 | **618**, across **296 events / 141 series** |
+| shape | 4 hyperactive → **98.3× cliff** → broad quasi-flat plateau | **no cliff anywhere** |
+| largest adjacent ratio in the ranked population | **98.3×**, after rank 4 | **2.53×**, and it occurs at **rank 617** — the very tail |
+| plateau | 30.9% of eligible inside a single **15–17 c/min** band | no comparable band; the body is continuous |
+| median | — | **68.17 c/min** |
+| decile spread | — | p10 1,428 · p25 324 · p50 68.2 · p75 11.1 · p90 2.35 |
+| max / dynamic range | — | 48,939.55 c/min · **2.48 million ×** min-to-max |
+
+**The DEMO rate distribution did NOT predict the production one, and the
+difference is categorical rather than a matter of scale.** DEMO was four
+hyperactive instruments separated from a flat plateau by a two-order-of-magnitude
+discontinuity. Production is a smooth, continuous distribution spanning roughly
+six orders of magnitude in which **the single largest step between adjacent
+ranked markets is 2.53×** — there is no cliff, no plateau, and no separated
+tier. DEMO's entire plateau band (15–17 c/min) lands near production's *lowest*
+selected stratum (18.6–19.2 c/min): the whole of DEMO's "broad middle"
+corresponds to the bottom of production's range, with two further tiers above
+it that DEMO had no analogue for at all.
+
+**A trap in the artifact, flagged before someone falls into it.**
+`strata_ranges.high_over_medium.ratio` reads **94.77×** — arrestingly close to
+DEMO's 98.3×, and it means something completely different. That ratio is a gap
+between *selected strata*, and the selection rule requires separated strata
+(`min_separation_ratio = 2.0`); it is manufactured by the procedure, not
+observed in the venue. The comparable statistic is the largest adjacent ratio in
+the **ranked population**, and that is **2.53×**. Reading 94.77 as "production
+looks like DEMO after all" would invert this entire finding.
+
+**What this does and does not answer.** It is the **traded-contracts-per-minute**
+distribution measured over REST. It is **not** the WebSocket frame-rate
+distribution, which remains **NOT MEASURED** and needs the capture. Frame rate
+is driven by quote updates as much as by trades, and nothing here observes a
+quote update. So this settles the shape question at the layer it was originally
+raised on, and leaves the message-rate question — the one that bears on
+`DEFAULT_MAX_SEGMENT_RECORDS`, rotation constants and the append ceiling
+(contract L9, L16) — open.
+
+**Stated limitations, because the funnel is narrow.** The 618 eligible are not
+618 of 97,408. They are the survivors of a three-stage funnel: census (97,408) →
+screen to the top **1,200** by 24-hour volume → timed probe (618 eligible).
+**96,208 markets were never probed at all.** So `low` means *least active among
+the eligible*, not *inactive on Kalshi*, and the distribution above describes
+the actively-traded head of the venue rather than the venue. The artifact says
+so on its face under `representativeness`, and `lifetime_volume_is_monotonic`
+was re-verified **True** in production — the doctrine-8 precondition for the
+statistic holds there too, and was not assumed from DEMO.
+
+**This is a measurement, NOT the frozen session manifest for a capture.** It
+must not be reused as one: the manifest's value is its proximity to the session
+it governs, and one frozen today would be stale and authoritative-looking by the
+time attempt 2 runs. Attempt 2 freezes its own. What this run establishes is
+that a production manifest **can** qualify — which DEMO's could not.
