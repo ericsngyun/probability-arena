@@ -85,7 +85,12 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(REPO / "scripts"))
 
+# Imported at module scope, NOT inside `capture()`. These are only needed to
+# BUILD the artifact, which happens after the session has already run -- so a
+# late ImportError would destroy the record of a completed production capture
+# rather than refusing before one started. The import must fail at second 0.
 from kalshi_collector_p0_wire_probe import WireRecorder, _plain  # noqa: E402
+from kalshi_cp6_cp9_functional_probe import capture_state  # noqa: E402
 
 from app.config import get_settings  # noqa: E402
 from app.realtime.auth import ReadOnlyRequestSigner  # noqa: E402
@@ -867,8 +872,6 @@ def capture(*, tickers, channels, max_seconds, max_events, max_reconnects,
     result = asyncio.run(_go())
     session = holder["session"]
     finished_wall = _now()
-
-    from kalshi_cp6_cp9_functional_probe import capture_state
 
     payload = {
         "milestone": "KALSHI-PROD-OBSERVATIONAL-QUALIFICATION-001",
