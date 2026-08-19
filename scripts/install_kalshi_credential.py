@@ -83,15 +83,52 @@ def install_key(env: str) -> int:
     return 0
 
 
+UUID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+                     r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+
+
 def install_id(env: str) -> int:
-    raw = sys.stdin.read().strip()
-    if not raw:
+    raw = sys.stdin.read()
+    if not raw.strip():
         print("REFUSED: stdin was empty. Nothing written.", file=sys.stderr)
         return 2
-    if "\n" in raw or len(raw.split()) != 1:
-        print("REFUSED: the api key id must be a single token. Nothing written.",
-              file=sys.stderr)
+
+    # A Kalshi api key id is a UUID (measured: 36 chars, hex+dash, 8-4-4-4-12).
+    # Notes rarely hold a bare token -- they hold "API Key ID: <uuid>", or the
+    # id next to other lines. Extracting the UUID is unambiguous, so require it
+    # to be unambiguous rather than requiring the human to hand-trim a secret,
+    # which is itself an error-prone operation on something that cannot be
+    # checked afterwards.
+    found = UUID_RE.findall(raw)
+    unique = sorted(set(found))
+
+    if len(unique) == 1:
+        key_id = unique[0]
+        if raw.strip() != key_id:
+            print(f"note       : extracted the api key id from a "
+                  f"{len(raw.splitlines())}-line paste", file=sys.stderr)
+    else:
+        # Diagnostics describe the SHAPE, never the value.
+        looks_like_pem = "-----BEGIN" in raw
+        print("REFUSED: could not identify exactly one api key id. "
+              "Nothing written.", file=sys.stderr)
+        print(f"  what arrived: {len(raw)} chars, "
+              f"{len(raw.splitlines())} line(s), "
+              f"{len(raw.split())} whitespace-token(s)", file=sys.stderr)
+        print(f"  uuid-shaped tokens found: {len(unique)}", file=sys.stderr)
+        if looks_like_pem:
+            print("  it contains PEM armour -- that looks like the PRIVATE KEY. "
+                  "Use --field key for that; --field id wants the uuid.",
+                  file=sys.stderr)
+        elif not unique:
+            print("  expected a uuid like 8-4-4-4-12 hex "
+                  "(xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx).", file=sys.stderr)
+        else:
+            print("  more than one distinct uuid is ambiguous; paste just the "
+                  "api key id.", file=sys.stderr)
         return 2
+
+    raw = key_id
     dest = SECRETS_DIR / f"kalshi-{env}.pem"
     if not dest.exists():
         print(f"REFUSED: {dest} does not exist yet — install the key first, so "
