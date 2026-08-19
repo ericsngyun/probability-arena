@@ -168,10 +168,20 @@ different findings wearing one halt:
    identity question. A demo key does not authenticate here. **This is the
    strongest production evidence this milestone has ever held**, and it arrived
    in the same response that stopped the run.
-2. **The credential is order-capable.** `write` is on it. The observer must
-   never hold such a key — that is the boundary, not a preference, and it is
-   the reason `audit_scopes` exists as a separate one-shot entry point that the
-   collector runtime can never reach.
+2. **The credential carries `write`, and the boundary refuses it.** The
+   observer must never hold such a key — that is the boundary, not a
+   preference, and it is the reason `audit_scopes` exists as a separate
+   one-shot entry point the collector runtime can never reach.
+
+   **Doctrine 8 applies to `write` too, and is stated rather than assumed.**
+   The measured fact is the scope *string* the venue returned. What `write`
+   actually enables at Kalshi was **not** verified, will **not** be verified,
+   and must not be: the only experiment that would establish it is addressing
+   a write route, which is the thing forbidden. So the refusal deliberately
+   does not depend on knowing — `verify_scopes` refuses any key carrying
+   `write` whatever it turns out to permit. That is the correct direction of
+   the unknown: assuming `write` is harmless could authorize an order-capable
+   session, whereas assuming it is not cannot hide anything.
 
 **Prerequisite 4 is therefore still open, and for a new reason.** It was
 written as *"a production read-scoped credential whose scopes are verified
