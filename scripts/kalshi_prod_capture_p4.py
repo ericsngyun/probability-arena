@@ -78,6 +78,7 @@ import sys
 import time
 from collections import Counter
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -482,8 +483,15 @@ class RateRecorder:
         self.per_market: Counter = Counter()
         self.per_market_orderbook: Counter = Counter()
         self.venue_offset_ms_contaminated: list = []
-        self.spread_samples: list = []
+        # Snapshot spreads and ticker spreads are kept APART. They are
+        # different observations: a snapshot's spread is `full_ladder` depth
+        # and a ticker's is `top_of_book_only` (P3 s5.2, s6.3). Pooling them
+        # would produce one distribution describing two quantities, which is
+        # the same defect as `depth` once being hardcoded to `full_ladder`.
+        self.spread_samples_snapshot: list = []
+        self.spread_samples_ticker: list = []
         self.ladder_presence_census: Counter = Counter()
+        self.venue_field_names: Counter = Counter()
 
     def observe(self, message: object) -> None:
         now_ns = time.monotonic_ns()
@@ -540,20 +548,32 @@ class RateRecorder:
             # Both ladders arrive on the YES price scale and the NO side is the
             # YES ask with NO complement applied (P3 §5.1). Reversing that is
             # the two-cent error the contract records.
-            best_bid = max(float(level[0]) for level in msg["yes_dollars_fp"])
-            best_ask = min(float(level[0]) for level in msg["no_dollars_fp"])
-        except (TypeError, ValueError, IndexError):
+            #
+            # `Decimal`, not `float`: the contract refuses float in the
+            # canonical encoder because a value written and re-read as Decimal
+            # re-serialises differently. A statistic computed off the same
+            # values has no reason to be looser than the tape that carries them.
+            best_bid = max(Decimal(str(level[0]))
+                           for level in msg["yes_dollars_fp"])
+            best_ask = min(Decimal(str(level[0]))
+                           for level in msg["no_dollars_fp"])
+        except (TypeError, ValueError, IndexError, InvalidOperation):
             return
-        self.spread_samples.append(round(best_ask - best_bid, 6))
+        self.spread_samples_snapshot.append(best_ask - best_bid)
 
     def _observe_ticker(self, msg: dict) -> None:
-        bid = msg.get("yes_bid_dollars", msg.get("yes_bid"))
-        ask = msg.get("yes_ask_dollars", msg.get("yes_ask"))
-        try:
-            if bid is None or ask is None:
+        # Which field NAME supplied the value is itself an observation
+        # (P3 §5.4), so the two spellings are counted rather than collapsed.
+        for bid_key, ask_key in (("yes_bid_dollars", "yes_ask_dollars"),
+                                 ("yes_bid", "yes_ask")):
+            if msg.get(bid_key) is None or msg.get(ask_key) is None:
+                continue
+            try:
+                spread = (Decimal(str(msg[ask_key])) - Decimal(str(msg[bid_key])))
+            except (TypeError, ValueError, InvalidOperation):
                 return
-            self.spread_samples.append(round(float(ask) - float(bid), 6))
-        except (TypeError, ValueError):
+            self.spread_samples_ticker.append(spread)
+            self.venue_field_names[f"{bid_key}/{ask_key}"] += 1
             return
 
 
@@ -612,6 +632,21 @@ class RateTap:
 # ================================================================================
 # analysis — every quantity carries its epistemic class
 # ================================================================================
+
+
+def _spread_summary(samples) -> dict:
+    """A spread distribution, or a typed absence. Never a zero-filled one."""
+    if not samples:
+        return {"n": 0,
+                "state": "NOT_MEASURABLE:no_frame_of_this_kind_carried_both_sides"}
+    ordered = sorted(samples)
+    return {
+        "n": len(ordered),
+        "min": str(ordered[0]),
+        "median": str(ordered[len(ordered) // 2]),
+        "max": str(ordered[-1]),
+        "locked_or_crossed_samples": sum(1 for s in ordered if s <= 0),
+    }
 
 
 def _percentiles(values, points=(50, 90, 95, 99)) -> dict:
@@ -698,19 +733,21 @@ def analyse(rates: RateRecorder, wire: WireRecorder) -> dict:
         },
         "orderbook_frames_per_market": rates.per_market_orderbook.most_common(),
         "ladder_presence_census": dict(rates.ladder_presence_census),
-        "spread_units_dollars": {
-            "n": len(rates.spread_samples),
-            **({"min": min(rates.spread_samples),
-                "median": statistics.median(rates.spread_samples),
-                "max": max(rates.spread_samples)}
-               if rates.spread_samples else
-               {"state": "NOT_MEASURABLE:no_frame_carried_both_sides"}),
+        "spread_dollars_by_depth_class": {
+            "full_ladder_from_snapshots": _spread_summary(
+                rates.spread_samples_snapshot),
+            "top_of_book_only_from_ticker": _spread_summary(
+                rates.spread_samples_ticker),
             "epistemic_note": (
-                "computed ONLY from frames the contract says carry a spread: "
-                "snapshots with BOTH ladders PRESENT, and ticker frames with "
-                "both quotes. A snapshot missing a ladder contributes nothing "
-                "and is never read as a zero spread (P3 s6.2)."),
+                "TWO distributions, never pooled: a snapshot spread is "
+                "`full_ladder` depth and a ticker spread is `top_of_book_only` "
+                "(P3 s6.3). Each is computed ONLY from frames the contract says "
+                "carry a spread -- a snapshot missing a ladder contributes "
+                "nothing and is never read as a zero spread (P3 s6.2). Spread "
+                "is never 0 by absence; a 0 here would be a genuinely locked "
+                "market."),
         },
+        "ticker_quote_field_names_observed": dict(rates.venue_field_names),
         "venue_to_receive_offset_contaminated_ms": {
             "n": len(rates.venue_offset_ms_contaminated),
             **_percentiles(rates.venue_offset_ms_contaminated),
@@ -732,7 +769,7 @@ def analyse(rates: RateRecorder, wire: WireRecorder) -> dict:
     }
 
 
-def typed_absences(wire: WireRecorder, session) -> dict:
+def typed_absences(wire: WireRecorder) -> dict:
     """The quantities the contract forbids reporting as numbers."""
     ticker_sids = sorted(
         str(sid) for sid, entry in wire.sids.items()
@@ -884,7 +921,7 @@ def capture(*, tickers, channels, max_seconds, max_events, max_reconnects,
         },
         "wire_counters_per_connection": [t.counters.snapshot() for t in transports],
         "load": analyse(rates, wire),
-        "typed_absences": typed_absences(wire, session),
+        "typed_absences": typed_absences(wire),
         "wire": wire.to_dict(),
         "connection_journal": journal,
         "live_terminal_state": capture_state(session),
