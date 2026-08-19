@@ -314,9 +314,32 @@ def prove_read_only_production() -> tuple:
             response.raise_for_status()
             return response.json()
 
-    audit = audit_scopes(signer=bootstrap, key_id=key_id,
-                         environment=ENVIRONMENT, fetch=fetch,
-                         timestamp_ms=int(time.time() * 1000))
+    try:
+        audit = audit_scopes(signer=bootstrap, key_id=key_id,
+                             environment=ENVIRONMENT, fetch=fetch,
+                             timestamp_ms=int(time.time() * 1000))
+    except Exception as exc:
+        # A HALT stays a HALT. What is added here is only the RECORD of what
+        # was learned on the way to it, because "the audit failed" and "the
+        # audit reached the production account and found the key order-capable"
+        # are different findings and an operator must be able to tell them
+        # apart. `audit_scopes` remains the only verdict path; nothing here
+        # re-reads the metadata or reconstructs a decision from it.
+        raise ProductionEvidenceError(json.dumps({
+            "gate": "credential_production_identity",
+            "passed": False,
+            "halt": f"{type(exc).__name__}: {exc}",
+            "metadata_route_host": seen.get("request_host"),
+            "metadata_route_status": seen.get("status_code"),
+            "metadata_route_http_version": seen.get("http_version"),
+            "key_id_fingerprint": None,
+            "credential_path_basename": Path(credential_path).name,
+            "key_material_read_by_this_script": False,
+            "what_the_halt_establishes": (
+                "the reached-host and status fields say whether the signature "
+                "was accepted by the production identity store BEFORE the "
+                "scope check refused the key"),
+        }, sort_keys=True)) from None
     signer = load_observer_signer(environment=ENVIRONMENT,
                                   reported_scopes=list(audit.scopes))
     evidence = {
