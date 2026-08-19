@@ -264,3 +264,41 @@ claim (deliberately not made).
 
 Everything else is ready and was exercised: the instrument, the evidence chain,
 the guard, and the throwaway-clone run procedure. Attempt 2 is a short step.
+
+### Test attribution — 2 failures, and they are a fixture time bomb on `main`
+
+The kalshi selection ran **1,799 passed / 2 failed / 5 skipped** against a
+stated baseline of 1,801 passed / 0 failed. Attributed by measurement, not by
+argument:
+
+| | |
+|---|---|
+| failing | `test_kalshi_tape_manifest_001.py::test_no_credential_is_read_when_the_snapshot_runs`, `::test_cli_command_is_reachable_and_writes_both_artifacts` |
+| on this branch | **2 failed** |
+| on pristine `main` (`975d1b3`, detached worktree) | **2 failed, identically** |
+| `git diff main -- app/ tests/` | **empty** — the code under test and the tests are byte-identical to `main` |
+
+**Root cause: a hardcoded fixture epoch that has expired.** The fake venue pins
+`T0 = 2026-08-15T12:00:00Z` (`tests/test_kalshi_tape_manifest_001.py:58`) and
+gives every synthetic market `close_time = T0 + 3 days`, i.e.
+**2026-08-18T12:00:00Z**. Today is 2026-08-19. So all 24 synthetic markets have
+already closed, the eligibility funnel correctly rejects all 24 under `closes`,
+the manifest correctly returns REFUSED, and the two tests that assert *"a
+healthy venue must exit 0 (QUALIFIED)"* correctly fail.
+
+**Every component behaved correctly. The fixture is wrong about what time it
+is.** This is doctrine 9 turned on the suite itself: a fixture is an executable
+claim about external reality, and this one claims a date.
+
+**This is NOT the known wall-clock flake class** (contract L14, rotating
+membership, baseline 5,195/8). It is worse in one specific way and better in
+another: it is **deterministic and permanent** — it became due at
+2026-08-18T12:00Z, it will fail on every run from now on, and it will never
+recover on its own — but for the same reason it cannot mislead intermittently.
+
+**Not fixed here.** It is outside this run's authority (capture phase, no
+repairs), and the fix is a design choice rather than a typo: pinning `T0`
+relative to `now()` makes the fixture self-maintaining but makes its arithmetic
+non-reproducible, while re-pinning the constant re-arms the same bomb on a
+later date. That choice deserves its own small change with its own review.
+Recorded here so the next reader does not spend the time re-deriving it.
