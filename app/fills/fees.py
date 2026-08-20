@@ -304,11 +304,15 @@ def find_lamport_transfers(instructions: list[dict]) -> list[LamportTransfer]:
 
 @dataclass(frozen=True, slots=True)
 class TipFinding:
+    #: What the tip account ACTUALLY received. Authoritative.
     tip_lamports: Maybe[Decimal]
+    #: What the instructions ASKED to send. On a failed transaction this is
+    #: non-zero while `tip_lamports` is zero, because the transfer reverted.
+    tip_attempted_lamports: Maybe[Decimal]
     destinations: Maybe[tuple[str, ...]]
-    #: lamports the party sent to accounts we could not classify. Surfaced so
-    #: a reviewer can see a candidate tip to an account outside the registry
-    #: instead of it silently becoming "no tip".
+    #: lamports the party actually sent to accounts we could not classify.
+    #: Surfaced so a reviewer can see a candidate tip to an account outside
+    #: the registry instead of it silently becoming "no tip".
     unattributed_outflow_lamports: int
     notes: tuple[str, ...]
 
@@ -318,50 +322,132 @@ def attribute_tip(
     *,
     parsed_instructions_available: bool,
     party_accounts: frozenset[str],
+    tip_account_deltas: dict[str, int] | None,
+    succeeded: bool,
     tip_accounts: frozenset[str] = KNOWN_TIP_ACCOUNTS,
 ) -> TipFinding:
     """Separate MEV tip from ordinary transfers.
 
-    A tip is identified **by destination**, because that is the only thing that
-    distinguishes it — on chain it is an ordinary `system::transfer`. The
+    A tip is identified **by destination**, because that is the only thing
+    that distinguishes it — on chain it is an ordinary `system::transfer`. The
     registry is therefore a closed list with stated provenance, and its
     incompleteness is reported, not hidden.
+
+    **The amount comes from the tip account's BALANCE DELTA, not from the
+    instruction operand.** Measured on two real failed mainnet transactions
+    (`4pqbgr92…`, `4VFstbam…`): the transfer instructions asked for 1,500,000
+    and 11,300,000 lamports and the tip accounts' balances moved **0** — a
+    failed transaction reverts every state change except the fee. Reading the
+    operand would have booked a 1.5M-lamport cost that was never paid, and on
+    the two matched successful transactions operand and delta agree exactly.
+    That is doctrine 8 applied to our own field: the operand is *intent*, the
+    delta is *what happened*, and only one of them belongs in a cost basis.
     """
-    if not parsed_instructions_available:
+    if tip_account_deltas is None and not parsed_instructions_available:
         return TipFinding(
             tip_lamports=absent(
                 AbsenceReason.NOT_RECONSTRUCTABLE,
-                "instructions not available in parsed form; a tip is "
-                "indistinguishable from any other lamport transfer",
+                "neither balance deltas nor parsed instructions are available; "
+                "a tip is indistinguishable from any other lamport transfer",
             ),
+            tip_attempted_lamports=absent(AbsenceReason.NOT_RECONSTRUCTABLE),
             destinations=absent(AbsenceReason.NOT_RECONSTRUCTABLE),
             unattributed_outflow_lamports=0,
-            notes=("tip not reconstructable without jsonParsed instructions",),
+            notes=("tip not reconstructable: no balance deltas, no parsed "
+                   "instructions",),
         )
-
-    total = 0
-    dests: list[str] = []
-    unattributed = 0
-    for t in transfers:
-        if t.destination in tip_accounts:
-            total += t.lamports
-            dests.append(t.destination)
-        elif t.source in party_accounts:
-            unattributed += t.lamports
 
     notes: list[str] = []
-    if unattributed:
-        notes.append(
-            f"{unattributed} lamports transferred to accounts outside the tip "
-            "registry; if one is an unregistered tip account the tip is "
-            "understated"
+
+    attempted_total = 0
+    attempted_dests: list[str] = []
+    unattributed_intent: list[LamportTransfer] = []
+    if parsed_instructions_available:
+        for t in transfers:
+            if t.destination in tip_accounts:
+                attempted_total += t.lamports
+                attempted_dests.append(t.destination)
+            elif t.source in party_accounts:
+                unattributed_intent.append(t)
+        attempted: Maybe[Decimal] = observed(
+            Decimal(attempted_total),
+            source="system-transfer operands to registered tip accounts",
         )
+    else:
+        attempted = absent(
+            AbsenceReason.NOT_PROVIDED,
+            "instructions not in parsed form; transfer intent unreadable",
+        )
+        notes.append(
+            "tip intent unreadable (unparsed instructions); the balance-delta "
+            "figure stands alone with no cross-check"
+        )
+
+    if tip_account_deltas is None:
+        # Fall back to intent, and say so loudly. This is DERIVED_LOSSY and
+        # it over-states the tip on any failed transaction.
+        notes.append(
+            "tip taken from instruction operands because balance deltas are "
+            "unavailable; on a failed transaction this OVERSTATES the tip"
+        )
+        return TipFinding(
+            tip_lamports=attempted,
+            tip_attempted_lamports=attempted,
+            destinations=observed(
+                tuple(attempted_dests), source="transfer destinations"
+            ),
+            unattributed_outflow_lamports=sum(
+                t.lamports for t in unattributed_intent
+            ),
+            notes=tuple(notes),
+        )
+
+    paid_total = 0
+    paid_dests: list[str] = []
+    for account, delta in tip_account_deltas.items():
+        if delta > 0:
+            paid_total += delta
+            paid_dests.append(account)
+    tip_paid: Maybe[Decimal] = observed(
+        Decimal(paid_total),
+        source="balance delta of registered tip accounts",
+    )
+
+    if isinstance(attempted, Observed) and attempted.value != paid_total:
+        if succeeded:
+            # Disagreement on a SUCCESSFUL transaction is not explainable by
+            # revert semantics and must not be papered over.
+            notes.append(
+                f"tip intent {attempted.value} != tip account delta "
+                f"{paid_total} on a SUCCESSFUL transaction; a tip account may "
+                "have received lamports from another instruction, or the "
+                "registry is wrong"
+            )
+        else:
+            notes.append(
+                f"transaction failed: tip intent {attempted.value} lamports "
+                f"reverted, {paid_total} actually paid"
+            )
+
+    unattributed_paid = 0
+    for t in unattributed_intent:
+        # Only count intent we can corroborate; on a failed transaction none
+        # of it moved.
+        if succeeded:
+            unattributed_paid += t.lamports
+    if unattributed_paid:
+        notes.append(
+            f"{unattributed_paid} lamports transferred to accounts outside "
+            "the tip registry; if one is an unregistered tip account the tip "
+            "is understated"
+        )
+
     return TipFinding(
-        tip_lamports=observed(
-            Decimal(total),
-            source="system transfers to registered tip accounts",
+        tip_lamports=tip_paid,
+        tip_attempted_lamports=attempted,
+        destinations=observed(
+            tuple(paid_dests or attempted_dests), source="tip destinations"
         ),
-        destinations=observed(tuple(dests), source="transfer destinations"),
-        unattributed_outflow_lamports=unattributed,
+        unattributed_outflow_lamports=unattributed_paid,
         notes=tuple(notes),
     )

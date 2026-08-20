@@ -575,21 +575,6 @@ def decode_transaction(
         if isinstance(p.account_pubkey, Observed)
     }
 
-    # --- tip --------------------------------------------------------------
-    transfers = find_lamport_transfers(every) if parsed_ok else []
-    tip = attribute_tip(
-        transfers,
-        parsed_instructions_available=parsed_ok,
-        party_accounts=frozenset(party_account_pubkeys),
-        tip_accounts=tip_accounts,
-    )
-    notes.extend(tip.notes)
-    recon["tip"] = (
-        Reconstructability.DERIVED
-        if isinstance(tip.tip_lamports, Observed)
-        else Reconstructability.NOT_RECONSTRUCTABLE
-    )
-
     # --- lamport ledger ---------------------------------------------------
     pre_bal = meta.get("preBalances")
     post_bal = meta.get("postBalances")
@@ -598,6 +583,38 @@ def decode_transaction(
         and isinstance(post_bal, list)
         and len(pre_bal) == len(post_bal) == len(keys)
     )
+
+    # --- tip --------------------------------------------------------------
+    # Balance deltas are the authority; instruction operands are the
+    # cross-check. Measured: on a failed transaction the operand says 1.5M
+    # lamports and the tip account moves 0.
+    transfers = find_lamport_transfers(every) if parsed_ok else []
+    tip_deltas: dict[str, int] | None = None
+    if balances_ok:
+        tip_deltas = {
+            key.pubkey: int(post_bal[key.index]) - int(pre_bal[key.index])
+            for key in keys
+            if key.pubkey in tip_accounts
+        }
+    tip = attribute_tip(
+        transfers,
+        parsed_instructions_available=parsed_ok,
+        party_accounts=frozenset(party_account_pubkeys),
+        tip_account_deltas=tip_deltas,
+        succeeded=succeeded,
+        tip_accounts=tip_accounts,
+    )
+    notes.extend(tip.notes)
+    recon["tip"] = (
+        Reconstructability.VENUE_FACT
+        if tip_deltas is not None and isinstance(tip.tip_lamports, Observed)
+        else (
+            Reconstructability.DERIVED_LOSSY
+            if isinstance(tip.tip_lamports, Observed)
+            else Reconstructability.NOT_RECONSTRUCTABLE
+        )
+    )
+
     if not balances_ok:
         notes.append(
             "preBalances/postBalances missing or not aligned with the account "
@@ -678,10 +695,20 @@ def decode_transaction(
         adjustment = Decimal(0)
         if party_is_fee_payer:
             adjustment += total_fee.value
-        tip_from_party = sum(
-            t.lamports
-            for t in transfers
-            if t.destination in tip_accounts and t.source in party_account_pubkeys
+        # Only a tip that ACTUALLY moved is added back. On a failed
+        # transaction every transfer reverted, so the party's lamport delta
+        # already contains no tip and adding the operand back would
+        # manufacture a positive SOL leg out of a transaction that traded
+        # nothing.
+        tip_from_party = (
+            sum(
+                t.lamports
+                for t in transfers
+                if t.destination in tip_accounts
+                and t.source in party_account_pubkeys
+            )
+            if succeeded
+            else 0
         )
         adjustment += Decimal(tip_from_party)
         adjustment += rent_net.value
@@ -761,6 +788,7 @@ def decode_transaction(
         network_fee_lamports=base_fee,
         priority_fee_lamports=priority_fee,
         tip_lamports=tip.tip_lamports,
+        tip_attempted_lamports=tip.tip_attempted_lamports,
         compute_units_consumed=cu_consumed,
         compute_unit_price_micro_lamports=budget.unit_price_micro_lamports,
         rent_lamports_net=rent_net,

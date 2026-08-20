@@ -245,6 +245,11 @@ class CostBreakdown:
     network_fee_lamports: Maybe[Decimal]
     priority_fee_lamports: Maybe[Decimal]
     tip_lamports: Maybe[Decimal]
+    #: What the instructions ASKED to tip. Differs from `tip_lamports` on any
+    #: failed transaction, where the transfer reverted but the fee did not.
+    #: Kept because "we tried to pay 1.5M and did not" is a fact about our own
+    #: execution behaviour that a cost model built only on paid tips loses.
+    tip_attempted_lamports: Maybe[Decimal]
     compute_units_consumed: Maybe[int]
     compute_unit_price_micro_lamports: Maybe[int]
     #: rent debited for ATA creation, and rent credited back on close. Not a
@@ -269,6 +274,7 @@ class CostBreakdown:
             "network_fee_lamports": as_json(self.network_fee_lamports),
             "priority_fee_lamports": as_json(self.priority_fee_lamports),
             "tip_lamports": as_json(self.tip_lamports),
+            "tip_attempted_lamports": as_json(self.tip_attempted_lamports),
             "compute_units_consumed": as_json(self.compute_units_consumed),
             "compute_unit_price_micro_lamports": as_json(
                 self.compute_unit_price_micro_lamports
