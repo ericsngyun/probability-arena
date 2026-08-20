@@ -1632,3 +1632,84 @@ mistake a ten-minute clean run for a qualification of everything:
 
 **Replay equality is not in this table and is not this amendment's to report.**
 See §11 B3, which its owner is closing.
+
+---
+
+## 17. AMENDMENT CHANGELOG — 2026-08-20
+
+### What production CONFIRMED (DEMO provenance retained, never overwritten)
+
+| # | property | where |
+|---|---|---|
+| 1 | `orderbook` **independently sequenced** — 79,256 records, contiguous 1 → 79,256, all fault counters 0 | §3, §3.2 |
+| 2 | `trade` **independently sequenced** — 2,516 records, contiguous 1 → 2,516 | §3, §3.2 |
+| 3 | `ticker` **UNSEQUENCED** — 0 of 2,395 carry a `seq`; `missing_seq = 0` is the same empty-domain artefact | §3, §3.2, L1 |
+| 4 | sid assignment follows ack order; acks carry **no top-level `sid`**; the orderbook sid is discovered from **frames**, not from the subscribe | §3.1 |
+| 5 | **snapshot ladder typing reproduced** — 10 `PRESENT/PRESENT`, 1 `NOT_PROVIDED/PRESENT`, 2 `NOT_PROVIDED/NOT_PROVIDED` | §5.1 |
+| 6 | the `use_yes_price` / no-complement convention — **0 locked-or-crossed** in 2,405 spread samples | §5.1 |
+| 7 | `ladder_presence` is load-bearing on real data — 2 of 12 markets ended `publishable` with zero levels on both sides | §5.1, §7.1 |
+| 8 | ticker field naming settled — `yes_bid_dollars`/`yes_ask_dollars` on **2,395 / 2,395** | §5.4 |
+| 9 | envelope, digest chain, rotation and commit semantics — archive `VALID`, 84,170 = 84,170, 7/7 segments closed, `head_state CURRENT` | §4.2 |
+| 10 | the B4 **run rule works**: one archive root, one session, no schema bump | §11 B4 |
+
+### What production CHANGED
+
+| # | change | where |
+|---|---|---|
+| 1 | **`~500 events/s` is no longer an assumption — it is a SUPERSEDED DESIGN PRIOR, and it was 13% LOW.** Observed 1-second peak **565 f/s**. Safe by a ~12× margin against the closer ceiling, not by the prior's accuracy | §16.2, L9, L16 |
+| 2 | **Production is ~187× DEMO** on an identically sized and selected 12-market universe — ~140 f/s vs 0.75 f/s, 0 silent seconds vs mostly silence, 6 rotations vs 0 ever | §16.1, L12 |
+| 3 | **The load-bearing rotation bound inverted** — records fire every ~93 s; the 900 s age bound never fired; the bytes bound is ~15× away | §16.2 |
+| 4 | **The universe-selection rule** — Spearman(trading rate, wire frame rate) ≈ **0.52**; `top_of_book_change_rate` degenerate (1.00 for 11 of 12, Spearman **−0.20**). *Do not select a microstructure universe on trading volume* | §16.3, L21 |
+| 5 | **L15 has its denominator** — ~83 MB/hour, ~2.0 GB/day compressed at 12 markets. Still unowned | L15 |
+| 6 | **B1 CLOSED on measurement** — HTTP 101 on the production host, certificate read off the capture socket, credential scopes `["read"]` attested by the venue | §0, §11 B1 |
+| 7 | **§9.1 Defect A demonstrated on production data** — `reader_stall_ms_max: 580` equals the maximum *interarrival* (580.913 ms) in a session where the reader never stalled | §9.1 |
+| 8 | **A correction to the P4 findings document** — the 1-second peak is **565, not 485**, and the conclusion reverses from "prior 3% high, essentially correct" to "prior 13% low, exceeded" | §16.2.1 |
+| 9 | Two limitations added: **L20** (every rate comes from one ten-minute overnight window) and **L21** (trading rate is a weak proxy for message rate) | §12 |
+
+### What remains UNOBSERVED after production — nothing here is softened
+
+- the **`EMPTY`** ladder state — 0 of 13 production snapshots on top of 0 of 360 DEMO snapshots (**L4**);
+- **`error`-frame behaviour on production** — zero arrived in 600 s, so whether an `error` consumes a `seq` on the orderbook sid is still unsettled and the conservative assumption stands (**L8**);
+- **venue-initiated disconnect** — zero disconnects, zero reconnects (**L7**);
+- the **delta-refusal path** `rejected_pre_generation_snapshot` — never exercised; three live runs of luck is not a proof (**L5**);
+- **scaling past 12 markets** — and §16.3 argues market count is the wrong axis anyway;
+- **any hour but this one** — 00:36–00:46 UTC, 20:36 ET, sports-dominated universe, a single window (**L20**);
+- **host clock offset**, hence any true latency (**L11**);
+- **interval telemetry** — no `kalshi-live-tape.jsonl` was emitted at all: absent, not zero (**§9.1**).
+
+Every `NOT_MEASURABLE` and `NOT_RECONSTRUCTABLE` state in §7–§9 and §12 is
+carried forward **unchanged**. Production emitted them as typed states rather
+than as zeroes — `ticker_sequence_gaps: NOT_MEASURABLE:empty_sequence_domain`,
+`ticker_completeness: NOT_MEASURABLE:no_loss_detector_exists`,
+`transport_dropped_frames: NOT_MEASURABLE:no_source_exists`,
+`recoveries_from_tape: NOT_RECONSTRUCTABLE_BY_DESIGN`,
+`generation_advances_on_unsequenced_sid: NOT_RECONSTRUCTABLE_BY_DESIGN` — which
+is this contract working, on production, for the first time.
+
+### Nothing production CONTRADICTED
+
+**No production observation contradicted a semantic claim in §1–§15.** Every
+DEMO-derived property that production exercised, production reproduced. The one
+reversal in this amendment (§16.2.1) is a correction of a *P4 figure* against a
+recount of the same tape — an arithmetic disagreement between two readings of
+one artifact, not production disagreeing with the contract. Two contract
+statements were *superseded by measurement* rather than contradicted: L9's
+assumed peak (now measured, and low) and L12's DEMO baseline (now quantified).
+
+### Deliberately NOT done by this amendment
+
+- **§11 B3 untouched.** Its owner is closing it; the replay-equality verdict is not this amendment's to report.
+- **No `app/`, `tests/` or `scripts/` edit.** `app/realtime/kalshi.py:52-55` still says the production host is unverified even though §11 B1 now closes; that edit belongs with the B1 closure, not with a docs amendment.
+- **No edit to `KALSHI-PROD-QUAL-CAPTURE-2-FINDINGS.md` or to any evidence JSON.** The 485 → 565 correction is recorded in §16.2.1 and pointed at from here; an evidence artifact is a frozen record of what the tooling computed and must not be rewritten after the fact.
+- **No limitation retired.** Four became two-venue facts (L1, L11, L17, L18); none was closed.
+- **No new test.** The contract's own testing bar (§13) is unchanged; §16's quantities are measurements from a committed artifact, not new claims about `app/` behaviour that a guard could pin. A recount harness for §16.2.1 would be the obvious next guard and is **not** written here.
+- **The four secondary P4 readout findings** (`subscription_generations = 3`, `segments_committed = 1`, `healthy = False` on the unsequenced sids, the session-claim directory) are noted only where they bear on this contract; they belong to their own owner.
+
+### Editorial note
+
+§2 describes "the remaining eight" per-field attributes and then enumerates nine
+(provenance, wire representation, normalized representation, units/precision,
+missing-value semantics, reconstructability, current replay support, positive
+control, known limitations). §16.1 reproduces the attribute set **faithfully**
+rather than dropping one to make the count come out. The discrepancy is
+editorial, predates this amendment, and is flagged rather than silently patched.
