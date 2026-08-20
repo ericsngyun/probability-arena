@@ -41,8 +41,20 @@ def _get(path: str) -> dict:
         return json.load(resp)
 
 
+EVENT_TIME_FIELDS = ("occurrence_datetime", "expected_expiration_time")
+
+
 def candidates_closing_on(day_et: str, *, series: list[str]) -> dict:
-    """Open markets whose close_time falls on `day_et` (YYYY-MM-DD, ET).
+    """Open markets whose EVENT occurs on `day_et` (YYYY-MM-DD, ET).
+
+    NOT `close_time`. `close_time` is a SETTLEMENT DEADLINE, typically days
+    after the event: `KXMLBGAME-26AUG222040MINSD-SD` has an event at
+    2026-08-23T03:40Z and a `close_time` of 2026-08-26T00:40Z, and
+    `KXATPMATCH-26AUG20TIRFIL-TIR` closes 2026-09-03. Selecting on it returned
+    ZERO candidates for both profile days. The activity we are profiling
+    follows the EVENT, so the field is `occurrence_datetime`
+    (== `expected_expiration_time`). A field name is not evidence of its
+    semantics.
 
     Series are enumerated explicitly rather than paged blindly: the venue
     reports ~12,000 open markets dominated by one non-orderbook series, and
@@ -60,12 +72,14 @@ def candidates_closing_on(day_et: str, *, series: list[str]) -> dict:
                 q += f"&cursor={cursor}"
             d = _get(q)
             for m in d.get("markets", []):
-                ct = m.get("close_time")
+                ct = next((m[f] for f in EVENT_TIME_FIELDS if m.get(f)), None)
                 if not ct:
                     continue
                 when = datetime.fromisoformat(ct.replace("Z", "+00:00"))
                 if start <= when.astimezone(ET) < end:
-                    out[m["ticker"]] = {"close_time": ct, "series": s}
+                    out[m["ticker"]] = {"event_time": ct,
+                                        "close_time": m.get("close_time"),
+                                        "series": s}
             cursor = d.get("cursor")
             pages += 1
             if not cursor or not d.get("markets"):
