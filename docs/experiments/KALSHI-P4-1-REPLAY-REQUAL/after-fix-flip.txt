@@ -1,0 +1,15 @@
+...................F..........                                           [100%]
+=================================== FAILURES ===================================
+_ TestErrorFrameSequenceDivergence.test_replay_manufactures_a_gap_that_never_happened _
+
+self = <tests.test_kalshi_tape_measurement_contract_001.TestErrorFrameSequenceDivergence object at 0x1066513a0>
+
+    def test_replay_manufactures_a_gap_that_never_happened(self):
+        out = replay(self.RECORDS)
+>       assert out["events_rejected"] == 1
+E       assert 0 == 1
+
+tests/test_kalshi_tape_measurement_contract_001.py:178: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_kalshi_tape_measurement_contract_001.py::TestErrorFrameSequenceDivergence::test_replay_manufactures_a_gap_that_never_happened
+1 failed, 29 passed in 2.41s
