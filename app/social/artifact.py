@@ -404,6 +404,15 @@ class SocialArtifact:
 
     raw_content: bytes
     raw_content_hash: str
+    #: The human-authored text, extracted from the payload. This — NOT the raw
+    #: frame — is what `content_identity` hashes.
+    #:
+    #: Hashing the raw frame instead would silently destroy every propagation
+    #: measurement: a retweet's envelope carries a different message id,
+    #: author, and reference block, so two frames carrying identical text hash
+    #: differently and the spread is never seen. The extracted text is stored
+    #: beside the raw bytes so the identity is auditable rather than implicit.
+    content_text: str
 
     #: Which configured rule matched. Never a free-text description of "crypto
     #: twitter": the rule id is what makes the source universe measurable.
@@ -471,7 +480,7 @@ class SocialArtifact:
 
     @property
     def content_identity(self) -> str:
-        return content_identity(self.raw_text)
+        return content_identity(self.content_text)
 
     @property
     def delivery_identity(self) -> tuple[str, str, str, int, int]:
@@ -523,6 +532,7 @@ class SocialArtifact:
                 "ascii"
             ),
             "raw_content_hash": self.raw_content_hash,
+            "content_text": self.content_text,
             "matching_rule": self.matching_rule,
             "parent": self.parent.to_json(),
             "delivery_mode": self.delivery_mode.value,
@@ -571,6 +581,7 @@ class SocialArtifact:
             our_received_at=OurReceivedAt.from_json(payload["our_received_at"]),
             raw_content=raw,
             raw_content_hash=str(payload["raw_content_hash"]),
+            content_text=str(payload["content_text"]),
             matching_rule=str(payload["matching_rule"]),
             parent=ParentRef.from_json(payload["parent"]),
             delivery_mode=DeliveryMode(payload["delivery_mode"]),

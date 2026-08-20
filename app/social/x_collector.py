@@ -365,7 +365,7 @@ class XFilteredStreamCollector:
         try:
             payload = parse_x_payload(frame.raw)
             artifact = self._build_artifact(frame, payload, received)
-        except (XPayloadError, ValueError, KeyError) as exc:
+        except (XPayloadError, SourceUniverseError, ValueError, KeyError) as exc:
             report.unparseable_frames += 1
             self._tape.append_stream_event(
                 "unparseable_frame",
@@ -426,6 +426,11 @@ class XFilteredStreamCollector:
             fidelity=self.SOURCE_TIME_FIDELITY,
         )
 
+        # The authored text, extracted once and stored, because content
+        # identity must be over what was SAID, not over the envelope it
+        # arrived in — see `SocialArtifact.content_text`.
+        text = str(data.get("text") or "")
+
         parent = _parent_from_payload(data)
         media = _media_from_payload(payload)
 
@@ -455,11 +460,12 @@ class XFilteredStreamCollector:
             our_received_at=received,
             raw_content=frame.raw,
             raw_content_hash=raw_content_digest(frame.raw),
+            content_text=text,
             matching_rule=",".join(matched),
             parent=parent,
             delivery_mode=delivery_mode,
             media=media,
-            entity_resolution=self._resolver.resolve(str(data.get("text") or "")),
+            entity_resolution=self._resolver.resolve(text),
             # Explicitly ABSENT. Later milestones fill these; nothing here does.
             first_onchain_reaction=Deferred(),
             first_price_reaction=Deferred(),

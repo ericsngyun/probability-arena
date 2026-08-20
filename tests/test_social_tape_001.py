@@ -87,6 +87,7 @@ def make_artifact(
     message_id: str = "m1",
     author_id: str = "a1",
     body: bytes = b'{"text":"hello"}',
+    content_text: str | None = None,
     delivery_sequence: int = 0,
     subscription_generation: int = 0,
     delivery_mode: DeliveryMode = DeliveryMode.LIVE,
@@ -103,6 +104,11 @@ def make_artifact(
         our_received_at=received,
         raw_content=body,
         raw_content_hash=raw_content_digest(body),
+        content_text=(
+            content_text
+            if content_text is not None
+            else json.loads(body.decode("utf-8")).get("text", "")
+        ),
         matching_rule="caller.example-account-01",
         parent=parent or ParentRef(kind=PropagationKind.ORIGINAL),
         delivery_mode=delivery_mode,
@@ -308,6 +314,7 @@ class TestArtifactSchema:
                 our_received_at=capture_receipt(epoch),
                 raw_content=b"one",
                 raw_content_hash=raw_content_digest(b"two"),
+                content_text="one",
                 matching_rule="r",
                 parent=ParentRef(kind=PropagationKind.ORIGINAL),
                 delivery_mode=DeliveryMode.LIVE,
@@ -329,6 +336,7 @@ class TestArtifactSchema:
                 our_received_at=capture_receipt(epoch),
                 raw_content=b"x",
                 raw_content_hash=raw_content_digest(b"x"),
+                content_text="x",
                 matching_rule="",
                 parent=ParentRef(kind=PropagationKind.ORIGINAL),
                 delivery_mode=DeliveryMode.LIVE,
@@ -446,10 +454,10 @@ class TestPropagationIdentity:
     def test_edited_post_under_a_stable_id_is_a_revision(self):
         epoch = process_epoch()
         ledger = PropagationLedger()
-        ledger.record(make_artifact(epoch, message_id="m1", body=b'{"text":"a"}'))
+        ledger.record(make_artifact(epoch, message_id="m1", content_text="a"))
         decision = ledger.record(
             make_artifact(
-                epoch, message_id="m1", body=b'{"text":"b"}', delivery_sequence=1
+                epoch, message_id="m1", content_text="b", delivery_sequence=1
             )
         )
         assert decision.verdict is DedupeVerdict.REVISION
@@ -467,13 +475,42 @@ class TestPropagationIdentity:
 
     def test_content_identity_normalisation_is_conservative(self):
         epoch = process_epoch()
-        a = make_artifact(epoch, message_id="m1", body=b'{"text": "hello"}')
-        b = make_artifact(epoch, message_id="m2", body=b'{"text":  "hello"}')
+        a = make_artifact(epoch, message_id="m1", content_text="hello  world")
+        b = make_artifact(epoch, message_id="m2", content_text="hello world")
         # Whitespace collapses...
         assert a.content_identity == b.content_identity
-        c = make_artifact(epoch, message_id="m3", body=b'{"text":"HELLO"}')
+        c = make_artifact(epoch, message_id="m3", content_text="HELLO WORLD")
         # ...but case does NOT, so genuinely different posts stay different.
         assert a.content_identity != c.content_identity
+
+    def test_content_identity_ignores_the_transport_envelope(self):
+        """A retweet arrives in a different envelope carrying the same text.
+
+        Hashing the raw frame would make the spread invisible; hashing the
+        extracted text is what keeps it measurable.
+        """
+
+        epoch = process_epoch()
+        original = make_artifact(
+            epoch,
+            message_id="m1",
+            body=b'{"id":"m1","author_id":"a1","text":"gm"}',
+            content_text="gm",
+        )
+        retweet = make_artifact(
+            epoch,
+            message_id="m2",
+            author_id="a2",
+            body=b'{"id":"m2","author_id":"a2","text":"gm","rt":"m1"}',
+            content_text="gm",
+            delivery_sequence=1,
+            parent=ParentRef(
+                kind=PropagationKind.REBROADCAST, parent_message_id="m1"
+            ),
+        )
+        assert original.raw_content != retweet.raw_content
+        assert original.raw_content_hash != retweet.raw_content_hash
+        assert original.content_identity == retweet.content_identity
 
     def test_positive_control_eviction_counter_becomes_non_benign(self):
         """Force the condition; the metric must move (doctrine 7)."""
@@ -486,7 +523,7 @@ class TestPropagationIdentity:
                 make_artifact(
                     epoch,
                     message_id=f"m{i}",
-                    body=f'{{"text":"post-{i}"}}'.encode(),
+                    content_text=f"post-{i}",
                     delivery_sequence=i,
                 )
             )
