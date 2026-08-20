@@ -1,0 +1,34 @@
+.F...F                                                                   [100%]
+=================================== FAILURES ===================================
+_ TestCP8ReplayQualificationWithAnErrorFrameOnTheBookSid.test_CP8_state_equality_live_vs_replay _
+
+self = <tests.test_kalshi_p4_1_replay_requal_001.TestCP8ReplayQualificationWithAnErrorFrameOnTheBookSid object at 0x1072911f0>
+qualified = {'checker': <module 'kalshi_cp6_cp9_conservation_check' from '/Users/ericyun/code-stuff/probability-arena/.claude/work...lse, 'state_reason': 'awaiting_snapshot', ...}}, 'subscription_epoch_final': 1, 'connection_generation_final': 1}, ...}
+
+    def test_CP8_state_equality_live_vs_replay(self, qualified):
+        """The replay-equality verdict itself, on the input that used to break it."""
+        checker = qualified["checker"]
+        equality = checker.compare_state(qualified["live"],
+                                         replay(qualified["records"]))
+>       assert equality["equal"] is True, equality["differences"]
+E       AssertionError: [{'market_ticker': 'KXMAXSHARDINGTEST-26AUG2818-T57399.99', 'live': {'checksum': 'f7ab85c0207b63df', 'publishable': Tr...y': {'checksum': None, 'publishable': False, 'stats': {'snapshots': 1, 'deltas': 0, 'duplicates': 0, 'gaps': 0, ...}}}]
+E       assert False is True
+
+tests/test_kalshi_p4_1_replay_requal_001.py:522: AssertionError
+_ TestCP8ReplayQualificationWithAnErrorFrameOnTheBookSid.test_the_live_lane_recorded_no_sequence_fault _
+
+self = <tests.test_kalshi_p4_1_replay_requal_001.TestCP8ReplayQualificationWithAnErrorFrameOnTheBookSid object at 0x107292150>
+qualified = {'checker': <module 'kalshi_cp6_cp9_conservation_check' from '/Users/ericyun/code-stuff/probability-arena/.claude/work...lse, 'state_reason': 'awaiting_snapshot', ...}}, 'subscription_epoch_final': 1, 'connection_generation_final': 1}, ...}
+
+    def test_the_live_lane_recorded_no_sequence_fault(self, qualified):
+        """The collector saw the error frame and did not call it loss..."""
+        session = qualified["out"]["session"]
+        assert session.sequence_faults == 0
+        out = replay(qualified["records"])
+        # ...and neither does replay, which is the entire claim of B3.
+>       assert out["events_rejected"] == 0, out["faults"]
+E       AssertionError: [{'market_ticker': 'KXMAXSHARDINGTEST-26AUG2818-T57399.99', 'sid': 1, 'seq': 5, 'error': 'SubscriptionError: sid 1: se... 'SubscriptionError: sid 1: delta received while the subscription is not healthy; rejected rather than buffered'}, ...]
+E       assert 12 == 0
+
+tests/test_kalshi_p4_1_replay_requal_001.py:557: AssertionError
+2 failed, 4 passed in 0.91s

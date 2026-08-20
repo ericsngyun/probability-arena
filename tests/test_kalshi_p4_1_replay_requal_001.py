@@ -63,12 +63,13 @@ encoded — not their effect on a book (none), not a recovery, not a meaning.
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 from pathlib import Path
 
 import pytest
 
-from app.realtime.archive import replay
+from app.realtime.archive import EventArchive, replay
 from app.realtime.book import (
     PUB_BOOK_HALTED,
     SubscriptionRouter,
@@ -411,3 +412,147 @@ class TestNoInventedVenueSemantics:
         out = replay([snapshot(1), delta(2), unknown, delta(4)])
         assert out["events_rejected"] == 0, out["faults"]
         assert out["publishable"] == {MARKET: True}
+
+
+# =====================================================================================
+# Requirement 7 — CP8 / replay qualification, RE-RUN over a tape that has an
+# error frame on the ORDERBOOK sid
+# =====================================================================================
+#
+# WHY THIS SECTION EXISTS AT ALL, stated plainly so it cannot be mistaken:
+#
+# The P4 production tape contains ZERO error frames. So do all three DEMO
+# CP6-CP9 sessions. Replaying any of them cleanly after this fix proves nothing
+# whatsoever about B3 — it proves only that the fix broke nothing. B3 needs a
+# tape that actually contains the frame, and no captured tape does.
+#
+# So this builds one: a real `ObservedSession` over the real collector, writing
+# a real digest-chained archive to disk, containing the verbatim captured
+# `error` frame positioned on the orderbook subscription. The tape is then read
+# back through `read_verified()` and put through the SAME CP8 instrument the
+# qualification uses — `compare_state`, `normalization_conservation`,
+# `generation_conservation`, and CP8's own negative control. Nothing is
+# simulated at the layer under test.
+#
+# The production tape is not touched, re-captured, or replayed here.
+
+REPO = Path(__file__).resolve().parents[1]
+
+
+def _load(name: str):
+    """Import a `scripts/` module by path — `scripts/` is not a package."""
+    spec = importlib.util.spec_from_file_location(
+        name, REPO / "scripts" / f"{name}.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class TestCP8ReplayQualificationWithAnErrorFrameOnTheBookSid:
+    """The requalification. Real collector, real archive, real CP8 instrument."""
+
+    @staticmethod
+    def _stream(functional):
+        """A clean venue stream with the captured `error` frame spliced in.
+
+        The error frame sits on the ORDERBOOK sid and consumes one number in
+        that sid's space, so the deltas after it continue from the next number.
+        That is the whole shape of the defect, on a real tape.
+        """
+        from tests.test_kalshi_collector_p0_fixes_001 import (
+            SID_ORDERBOOK,
+            error_frame,
+            laddered_snapshot,
+            orderbook_delta,
+            subscribed_acks,
+            ticker_frame,
+            trade_frame,
+        )
+        m1, m2 = functional.M1, functional.M2
+        frames = list(subscribed_acks())
+        frames.append(laddered_snapshot(seq=1, market=m1))
+        frames.append(laddered_snapshot(seq=2, market=m2))
+        frames.append(orderbook_delta(seq=3, market=m1))
+        # <- the frame the qualification has never seen on a tape
+        frames.append(error_frame(seq=4, sid=SID_ORDERBOOK))
+        frames.append(ticker_frame(market=m1))
+        frames.append(trade_frame(seq=1, market=m1))
+        for n, seq in enumerate(range(5, 17)):
+            frames.append(orderbook_delta(seq=seq, market=(m1, m2)[n % 2]))
+        return frames
+
+    @pytest.fixture
+    def qualified(self, tmp_path):
+        import importlib as _il
+
+        probe = _load("kalshi_cp6_cp9_functional_probe")
+        checker = _load("kalshi_cp6_cp9_conservation_check")
+        functional = _il.import_module("tests.test_kalshi_cp6_cp9_functional_001")
+
+        functional.init_archive(tmp_path)
+        out = functional.drive(tmp_path, [self._stream(functional)])
+        store = EventArchive(tmp_path, environment=functional.ENV)
+        records = store.read_verified()
+        session_json = {
+            "live_terminal_state": probe.capture_state(out["session"]),
+            "subscription_epoch_final": out["session"].subscription_epoch,
+            "connection_generation_final": out["session"].connection_generation,
+        }
+        return {"checker": checker, "records": records, "out": out,
+                "session_json": session_json,
+                "live": checker.live_flat_state(session_json)}
+
+    def test_the_tape_really_does_contain_the_error_frame(self, qualified):
+        """ANTI-VACUITY FIRST. Everything below is void if this is not true."""
+        errors = [r for r in qualified["records"]
+                  if r.get("event_type") == "error"]
+        assert len(errors) == 1, "the requalification tape has no error frame"
+        assert errors[0]["sid"] == 1, "the error frame is not on the book sid"
+        assert errors[0]["seq"] == 4
+        # And it is on the same sid the books are on, or it proves nothing.
+        book_sids = {r["sid"] for r in qualified["records"]
+                     if str(r.get("event_type", "")).startswith("orderbook")}
+        assert book_sids == {errors[0]["sid"]}
+
+    def test_CP8_state_equality_live_vs_replay(self, qualified):
+        """The replay-equality verdict itself, on the input that used to break it."""
+        checker = qualified["checker"]
+        equality = checker.compare_state(qualified["live"],
+                                         replay(qualified["records"]))
+        assert equality["equal"] is True, equality["differences"]
+        assert equality["markets_compared"] == 2
+
+    def test_CP8_negative_control_still_fails(self, qualified):
+        """A checker that cannot fail is not a check.
+
+        CP8's own corruption — one delta's `seq` moved forward — must still
+        break state equality on this tape. If the B3 fix had made replay
+        tolerant of sequence movement in general, this is where it would show.
+        """
+        checker = qualified["checker"]
+        bad, corruption = checker.corrupt_one_delta(qualified["records"])
+        assert corruption is not None
+        assert checker.compare_state(qualified["live"],
+                                     replay(bad))["equal"] is False
+
+    def test_CP8_conservation_holds(self, qualified):
+        checker, records = qualified["checker"], qualified["records"]
+        norm = checker.normalization_conservation(records)
+        assert norm["records_checked"] > 0 and norm["mismatched"] == 0
+        assert norm["conserved"] is True
+        assert checker.generation_conservation(
+            records, qualified["session_json"])["conserved"] is True
+
+    def test_replay_is_deterministic_across_two_runs(self, qualified):
+        """Requirement 6, on the real tape rather than on hand-built records."""
+        records = qualified["records"]
+        assert replay(records) == replay(list(records))
+
+    def test_the_live_lane_recorded_no_sequence_fault(self, qualified):
+        """The collector saw the error frame and did not call it loss..."""
+        session = qualified["out"]["session"]
+        assert session.sequence_faults == 0
+        out = replay(qualified["records"])
+        # ...and neither does replay, which is the entire claim of B3.
+        assert out["events_rejected"] == 0, out["faults"]
+        assert all(out["publishable"].values()), out["publication_states"]
