@@ -1041,6 +1041,9 @@ class CollectorResult:
     frames_malformed: int = 0
     reconnects: int = 0
     subscription_generations: int = 0
+    # How many times a SubscriptionState was created or moved onto a new epoch.
+    # Not a generation count: with N sids it advances N times per generation.
+    subscription_router_epochs: int = 0
     sequence_faults: int = 0
     recoveries_requested: int = 0
     segments_committed: int = 0
@@ -1706,7 +1709,17 @@ class _Session:
                     # THE COMMIT POINT. Until it runs there is no authoritative
                     # record count and an unclosed segment is explicitly not
                     # evidence (`archive.py:653-657`), so it runs in a `finally`.
-                    segments_committed = len(self._archive.close())
+                    # ROTATIONS COUNT. `close()` returns only the segments
+                    # still OPEN at close time — one per partition — so this
+                    # reported 1 for the P4 production session whose tape holds
+                    # SEVEN distinct `segment_id`s: six had already rotated and
+                    # committed mid-run, and every one of them was dropped from
+                    # the total. A capture that rotates more reported LESS.
+                    # `rotations` is incremented only on a successful rotation
+                    # commit (`archive.py:636`), so this sum is the number of
+                    # segments the session actually committed: 6 + 1 = 7.
+                    segments_committed = (self._archive.rotations
+                                          + len(self._archive.close()))
                 except ArchiveError as exc:
                     status = STATUS_ARCHIVE_ERROR
                     detail = f"close failed: {type(exc).__name__}: {exc}"
@@ -1769,7 +1782,19 @@ class _Session:
             events_rejected=self.events_rejected,
             frames_malformed=self.frames_malformed,
             reconnects=self.reconnects,
-            subscription_generations=self.subscription_generations,
+            # THE HONEST NUMBER. `self.subscription_generations` counts
+            # ROUTER instantiations — it is incremented once per new sid and
+            # once per sid on every epoch advance — so a clean single-generation
+            # session subscribed to three channels reported THREE generations.
+            # The P4 capture did exactly that, and shipped
+            # `subscription_generations: 3` in the same file as
+            # `subscription_epoch_final: 1`: two fields answering one question
+            # and disagreeing. `subscription_epoch` is the value stamped on
+            # every envelope and validated on replay, so it is the one a reader
+            # can check against the tape. The router count is kept, under a name
+            # that says what it counts.
+            subscription_generations=self.subscription_epoch,
+            subscription_router_epochs=self.subscription_generations,
             sequence_faults=self.sequence_faults,
             recoveries_requested=self.recoveries_requested,
             segments_committed=segments_committed,

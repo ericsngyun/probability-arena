@@ -292,6 +292,19 @@ def capture_state(session) -> dict:
             "sid": sub.sid,
             "generation": sub.generation,
             "healthy": sub.healthy,
+            # TYPED, because `healthy=False` on a channel that has no order
+            # book is not a fault (doctrine 10). `healthy` means "based on a
+            # snapshot", and the ticker and trade channels never receive one —
+            # so the P4 production capture reported `healthy: false` for sid 2
+            # (ticker, 2,395 frames) and sid 3 (trade, 2,516 frames) even
+            # though BOTH delivered every frame the venue sent. Read as a
+            # summary that says two of three subscriptions were broken, in a
+            # capture whose order-book sid replayed seq 1..79,256 contiguous
+            # with zero faults. `carries_orderbook` was already here and
+            # already carried the answer; nothing joined the two.
+            "liveness": ("NOT_APPLICABLE:carries_no_orderbook"
+                         if not sub.carries_orderbook
+                         else "healthy" if sub.healthy else "awaiting_base"),
             "state_reason": sub.state_reason,
             "last_seq": sub.last_seq,
             "carries_orderbook": sub.carries_orderbook,

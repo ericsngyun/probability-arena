@@ -129,7 +129,26 @@ def new_session_id(*, now: datetime | None = None) -> str:
 
 
 def env_root(root, environment: str) -> Path:
-    return Path(root) / environment
+    """The archive's OWN environment directory — `env=<name>`, not `<name>`.
+
+    B4's claim is a guarantee only if it sits in the directory the archive
+    actually writes to. This returned `root / environment`, so every claim was
+    planted in a SIBLING of the real evidence — `root/production/` beside
+    `root/env=production/` — and the two directories are visible side by side
+    in the P4 production tape, one holding 7 segments and 84,170 records and
+    the other holding nothing but the claim.
+
+    That made the whole guard vacuous rather than merely mislabelled: a second
+    concurrent session writing to `env=production/` never touched the claimed
+    path, so `claim_session_root` would succeed for BOTH sessions and report
+    the boundary as enforced while enforcing nothing. `EventArchive` uses
+    `env={environment}` at every one of its own path sites
+    (`archive.py:448,695,719,860,909`); this is the one place that disagreed.
+
+    Pinned in tests against `EventArchive`'s own construction rather than
+    against a string literal, so the two cannot drift apart again.
+    """
+    return Path(root) / f"env={environment}"
 
 
 def session_claim_path(root, environment: str) -> Path:
