@@ -1107,7 +1107,7 @@ current code reaches a *wrong* answer, not a missing one.
 |---|---|---|
 | B1 unverified production WS host + credential — **CLOSED 2026-08-20** | capture | an operator |
 | ~~B2 unmerged branch stack~~ | ~~capture~~ | **STRUCK — already merged, verified on `main`** |
-| ~~B3 `replay()` skips an `error` frame's `seq`~~ | ~~the **replay-equality verdict**~~ | **CLOSED 2026-08-19 — KALSHI-P4-1-REPLAY-REQUAL** |
+| ~~B3 `replay()` skips an `error` frame's `seq`~~ | ~~the **replay-equality verdict**~~ | **CLOSED 2026-08-19 — KALSHI-P4-1-REPLAY-REQUAL.** The verdict it blocked is now **COMPUTED and QUALIFIED** over the frozen production tape in two arms (KALSHI-P4-4) |
 | B4 no session identity on the durable record — **run rule APPLIED 2026-08-20** | capture, **conditionally** | a run-procedure rule (no code) |
 
 ### B1. The production WebSocket host is UNVERIFIED — **CLOSED 2026-08-20 on measurement**

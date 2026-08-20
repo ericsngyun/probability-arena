@@ -858,21 +858,30 @@ def typed_absences(wire: WireRecorder) -> dict:
                     "drop counter; a zero would be fabricated (P3 s8.4)."),
         },
         "replay_equality": {
-            # B3 was the reason this was blocked. It was closed on 2026-08-19
-            # by KALSHI-P4-1-REPLAY-REQUAL, so the BLOCKER is gone — but the
-            # verdict is still NOT QUALIFIED, because no replay-equality verdict
-            # has been computed over a production tape. A closed blocker is not
-            # a computed result, and collapsing the two is precisely the error
-            # this `absences` table exists to prevent.
-            "state": "NOT_QUALIFIED:NOT_YET_COMPUTED",
-            "why": ("B3 (`archive.replay()` skipping a non-orderbook frame's "
-                    "seq and manufacturing a gap that never happened) is CLOSED "
-                    "as of 2026-08-19. Capture is authorized; the "
-                    "replay-equality verdict over a production tape has still "
-                    "not been RUN, so it is not claimed here. Note also that the "
-                    "production tape contains zero error frames, so replaying it "
-                    "cleanly is not evidence about B3 — that proof is separate "
-                    "(`tests/test_kalshi_p4_1_replay_requal_001.py`)."),
+            # COMPUTED 2026-08-19 over the frozen P4 production tape, in TWO
+            # arms, because neither is sufficient alone. The production tape
+            # contains zero error frames, so replaying it cleanly cannot touch
+            # the branch B3 repaired; and a synthetic control alone says nothing
+            # about real venue traffic.
+            "state": "QUALIFIED",
+            "why": ("Arm 1 — the frozen production tape (84,170 records, 12 "
+                    "markets): archive integrity, frame conservation, "
+                    "generation conservation, per-sid sequence classification, "
+                    "no fabricated B3 gap, market-set equality, and terminal "
+                    "state equal on checksum, publishable, publication_state, "
+                    "last_seq and 9 stat counters. Arm 2 — the wire-faithful B3 "
+                    "positive control, which proves the repaired branch is "
+                    "actually exercised: the error frame's seq is consumed, the "
+                    "ladder is not mutated, and a drop ADJACENT to it still "
+                    "halts the book. `recoveries` is excluded by contract "
+                    "(P3 s8.2a): it counts a collector ACTION, so requiring "
+                    "equality would require the tape to contain something it is "
+                    "defined not to contain."),
+            "arm_1_production": "scripts/kalshi_p4_replay_equality.py",
+            "arm_2_b3_control": "tests/test_kalshi_p4_1_replay_requal_001.py",
+            "anti_vacuity": ("corrupting one checksum in one of the 12 markets "
+                             "turns the verdict NOT_QUALIFIED with an exact "
+                             "diff — the harness is not green by construction"),
             "b3_closed_by": "KALSHI-P4-1-REPLAY-REQUAL",
         },
     }

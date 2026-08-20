@@ -1,0 +1,102 @@
+{
+  "archive_root": "/home/miko_node_001/kalshi-prod-tape/p4-attempt2-20260820T003519Z",
+  "checks": [
+    {
+      "check": "archive_integrity",
+      "detail": "84170 records, 0 digest mismatches, 0 truncated",
+      "pass": true
+    },
+    {
+      "check": "frame_conservation",
+      "detail": "every one of the 79256 orderbook frames was applied",
+      "pass": true
+    },
+    {
+      "check": "no_replay_faults",
+      "detail": "0 rejected, 0 faults",
+      "pass": true
+    },
+    {
+      "check": "generation_conservation",
+      "detail": "subscription_generation=['1'], connection_generation=['1'], every record stamped",
+      "pass": true
+    },
+    {
+      "check": "sequence_classification_per_sid",
+      "detail": {
+        "1": {
+          "contiguous": true,
+          "distinct": 79256,
+          "frames": 79256,
+          "max": 79256,
+          "min": 1
+        },
+        "3": {
+          "contiguous": true,
+          "distinct": 2516,
+          "frames": 2516,
+          "max": 2516,
+          "min": 1
+        }
+      },
+      "pass": true
+    },
+    {
+      "check": "no_fabricated_b3_gap",
+      "detail": "0 markets report a gap; 0 markets halted",
+      "pass": true
+    },
+    {
+      "check": "segment_accounting_informational",
+      "detail": {
+        "frozen_capture_reported": 1,
+        "note": "the frozen capture predates the P4.2 readout repair; 6 rotations + 1 open at close = 7",
+        "segments_on_disk": 7
+      },
+      "pass": true
+    },
+    {
+      "check": "market_set_equality",
+      "detail": "12 markets both sides",
+      "pass": true
+    },
+    {
+      "check": "terminal_state_equality",
+      "detail": "12 markets: checksum, publishable, publication_state, last_seq and 9 stat counters all equal",
+      "pass": true
+    }
+  ],
+  "external_calls": 0,
+  "milestone": "KALSHI-P4-4-REPLAY-EQUALITY",
+  "persisted": false,
+  "records": 84170,
+  "replay": {
+    "events_applied": 79256,
+    "events_rejected": 0,
+    "faults": [],
+    "markets": 12
+  },
+  "tape_census": {
+    "by_sid": {
+      "1": 79256,
+      "2": 2395,
+      "3": 2516,
+      "None": 3
+    },
+    "by_type": {
+      "orderbook_delta": 79243,
+      "orderbook_snapshot": 13,
+      "subscribed": 3,
+      "ticker": 2395,
+      "trade": 2516
+    },
+    "committed_segments": 7,
+    "connection_generations": {
+      "1": 84170
+    },
+    "subscription_generations": {
+      "1": 84170
+    }
+  },
+  "verdict": "QUALIFIED"
+}
