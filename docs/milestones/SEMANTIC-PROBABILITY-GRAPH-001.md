@@ -131,3 +131,125 @@ those are identical, which is false by default.
 never be violated, so it can never be *wrong* — which is exactly how a guess
 gets laundered into a graph that otherwise looks rigorous. **Every admitted
 relation must be falsifiable by a price.**
+
+## 4. The gate pipeline — ordered cheapest-to-kill
+
+> semantic relationship → payoff identity → book depth → fees → capital lockup
+> → venue transformation → **executable edge**
+
+| gate | needs | have it? |
+|---|---|---|
+| **G1 semantic** | resolution-digest equality, agent-extracted | agent work, unbuilt |
+| **G2 payoff identity** | the constraint from §3 | pure math — **yes** |
+| **G3 depth** | executable size at the quoted prices | **yes**, from the fabric |
+| **G4 fees** | the venue fee schedule | **assumption only** — `kalshi_fee_rate_assumption = 0.07`, unverified against realised fills |
+| **G5 capital lockup** | `occurrence_datetime` → annualised return | **yes** (L23) |
+| **G6 venue transformation** | does Kalshi permit the required position transformation | **yes — and the answer is usually no** |
+| **G7 executable** | all of the above survive simultaneously | — |
+
+### The worked example, carried all the way through
+
+Trump-2028 nomination, two markets quoted `A: 30/31` and `B: 34/35`, where the
+graph asserts `complement`:
+
+```
+buy A YES @ 31c  +  buy B NO @ 66c   =  97c  for a guaranteed $1
+gross                                 =   3.00c
+fees (0.07 · P · (1−P), both legs)    =   1.50c + 1.57c  =  3.07c
+--------------------------------------------------------------------
+net                                   =  −0.07c        DEAD AT G4
+```
+
+**It dies at the fee gate, before capital is even considered.** And had it
+survived: 3c on 97c locked for ~23 months to resolution is **1.60% annualised** —
+which G5 would then kill against any reasonable hurdle. This is doctrine 11 in
+one worked case: the payoff identity was real, and there was never a trade.
+
+**G6 is the gate that matters most on Kalshi and is the least familiar.** The
+$1.086M route in the literature required a venue primitive that converts
+positions pre-settlement. Kalshi has none. So every Kalshi structural trade is a
+**hold-to-settlement basket** — the route that was ~2.9% of realised profit
+elsewhere. G6 must be evaluated *before* anyone gets excited about a spread, not
+after.
+
+**Ordering is a cost decision, not a correctness one.** G2–G6 are cheap and
+deterministic; G1 is expensive and fallible. We run the cheap gates first to
+discard most candidates — but §5 explains why that ordering also creates the
+design's central hazard.
+
+## 5. Agent controls, and the single most likely false positive
+
+**The failure mode: only G1 can be wrong in a way no later gate can detect.**
+G2–G7 measure cost. **None of them ever re-checks semantics.** So a false
+`equivalent` passes through every downstream gate untouched.
+
+**Worse, the pipeline selects for the error.** On genuinely equivalent markets
+the gap is small and usually dies at G4. On markets that merely *look*
+equivalent, the price difference **is the market's priced probability of the
+divergence the agent asserted away** — so it is large, and large gaps are
+exactly what survives the cost gates. **The candidate most likely to reach G7 is
+the one built on a wrong G1.**
+
+Concretely, with a bad `implication` edge — "Trump wins the presidency ⇒ Trump is
+the Republican nominee":
+
+```
+collect 2c   risking 98c on the third-party / independent-run branch
+break-even at a 2% exception rate
+```
+
+The ontology has silently emitted a probability assertion it claims never to
+make: it asserted `P(exception) < 2%`. **A constraint violation is evidence
+against the constraint at least as much as it is evidence of mispricing**, and
+nothing downstream of G1 can tell those two apart.
+
+### Controls, all aimed at G1
+
+* **An adversarial refuter.** A second agent is given the proposed edge and
+  tasked *only* with refuting it — construct a world where both markets resolve
+  differently. Its default answer is REFUTED under uncertainty. An edge survives
+  only if refutation fails.
+* **Asymmetric confidence thresholds.** The bar for asserting an edge is far
+  higher than for withdrawing one. Edges are cheap to remove and expensive to be
+  wrong about.
+* **Human review tiers**, scaled to what the edge would authorise — a
+  `cross_venue_equivalent` on an ambiguous adjudication source is not the same
+  risk as `parent_child` over parsed numeric strikes.
+* **Size-inverse-to-gap.** Deliberately counter-intuitive and it follows from the
+  selection effect above: a *larger* surviving gap warrants *more* scepticism,
+  not more size.
+
+### Positive control (doctrine 7)
+
+A fixed corpus of pairs the pipeline must classify correctly, containing **both**
+known-equivalent and known-NOT-equivalent pairs — the second kind chosen to be
+*paraphrase-similar but semantically distinct*, since that is the discriminating
+case. If the pipeline cannot fail on those, its passes mean nothing. Run before
+any edge is trusted, and re-run whenever the extraction prompt changes, because a
+prompt edit is a silent model change.
+
+## 6. What this cannot do, and what would falsify it
+
+**Cannot:**
+
+* trade — it emits graph edges offline, consumed by deterministic code. **No
+  agent is in the synchronous market path** (doctrine 12).
+* establish that an edge is *profitable*; G7 says only that it is not obviously
+  impossible. The house prior of `e_net ≤ 0` still applies afterwards.
+* verify the papers' magnitudes. See the citation section.
+* see cross-market transformations Kalshi does not expose — G6 is a venue fact,
+  not a modelling choice.
+
+**Falsified if:** the refuter never refutes anything (it is decorative); the
+positive control's paraphrase-similar negatives are classified as equivalent;
+surviving gaps do not shrink after fees and lockup are applied honestly, which
+would suggest a cost bug rather than an edge; or observed violations turn out to
+cluster on the **executable** side, which would contradict the paper's finding
+and mean the whole G6-first framing is wrong.
+
+**Ordering discipline.** This lane is independent of `MARKET-MICROSTRUCTURE-EDGE-001`
+and may proceed on its own, but it does not begin implementation until the
+activity profile completes and its own G1 controls are built. The most valuable
+early output is not an edge — it is a measured answer to *how often Kalshi
+permits the transformation at all*, which is cheap to obtain and bounds the
+entire lane.
