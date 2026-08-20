@@ -723,6 +723,32 @@ class TestTape:
         records = read_segment_records(writer.directory / "events.jsonl.gz")
         assert records[0]["record_kind"] == RecordKind.REDELIVERY.value
 
+    def test_an_empty_segment_verifies_and_replays_as_empty(self, tmp_path):
+        """A clean shutdown during a quiet window produces exactly this.
+
+        It must verify. An empty segment that fails its own check is
+        indistinguishable from a corrupted one, and would make "we were up and
+        nothing happened" unrepresentable.
+        """
+
+        epoch = process_epoch()
+        writer = self._writer(tmp_path, epoch, segment_id="empty-1")
+        manifest = writer.close()
+
+        assert manifest["record_count"] == 0
+        assert manifest["ordered_stream_digest"] is None
+        assert manifest["first_record_digest"] is None
+
+        verdict = verify_segment(writer.directory)
+        assert verdict.ok, verdict.reason
+        assert list(replay(writer.directory)) == []
+
+    def test_an_empty_chain_reports_no_ordered_stream(self):
+        verdict = verify_chain([], segment_id="seg-1", environment="test")
+        assert verdict.ok
+        assert verdict.record_count == 0
+        assert verdict.ordered_stream_digest is None
+
     def test_universe_is_pinned_into_the_manifest(self, tmp_path):
         epoch = process_epoch()
         writer = self._writer(tmp_path, epoch)

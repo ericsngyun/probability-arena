@@ -273,7 +273,15 @@ def verify_chain(
         last = digest
         count += 1
 
-    return ChainVerdict(True, count, first, last, stream, None, None)
+    # An EMPTY segment has no ordered stream, and must not report the genesis
+    # anchor as one. The writer records `None` for a segment it closed with no
+    # records, so returning the anchor here made a legitimately empty segment
+    # fail its own verification — a fail-CLOSED bug, but a bug: an empty
+    # segment is exactly what a clean shutdown during a quiet window produces,
+    # and it must verify.
+    return ChainVerdict(
+        True, count, first, last, stream if count else None, None, None
+    )
 
 
 MANIFEST_FIELDS = (
