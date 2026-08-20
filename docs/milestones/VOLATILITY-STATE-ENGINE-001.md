@@ -141,3 +141,111 @@ mode; it is the default one.
 **Eligibility is not an instruction.** This engine emits `ELIGIBLE` or
 `NO_TRADE` and never a size. Sizing belongs to `RISK-GOVERNOR-001`, which holds
 veto authority independently.
+
+## 5. The uncertainty layer: forecast an interval, size against the adverse end
+
+Per doctrine 14, the engine emits `[σ⁻, σ⁺]` and never a bare `σ̂`.
+
+```
+expected volatility   18%
+90% interval          12% – 39%
+```
+
+**The risk system must reason about 39%, not 18%.** The interval is not
+decoration around a point estimate; the *adverse end is the input*. A position
+sized on 18% when the realised value is 39% is roughly half the size it should
+have been, and the error arrives precisely during the transition that caused it.
+
+**Why point estimates fail here specifically.** A conditional variance model is
+fitted on history; regime transitions are, by construction, the moments when the
+recent past stops describing the present. So the model is **most confidently
+wrong exactly when the answer matters most** — its interval should widen at a
+transition, and a point estimate has no way to say so.
+
+**Calibration is the acceptance test, not fit.** The interval must be validated
+on **coverage**: does the realised σ fall inside the nominal 90% band 90% of the
+time, *conditional on regime*? An interval that is well-calibrated in R0 and
+badly calibrated in R2 is worse than useless, because R2 is when it is consulted.
+Report coverage **per regime**, never pooled — pooled coverage is dominated by
+R0, which is most of the sample and none of the risk.
+
+**Widening is a signal in itself.** A rapidly widening interval is evidence of
+regime transition and should feed §6 rather than merely inflating a haircut.
+
+## 6. EXTREME-STATE-DETECTOR-001 — a risk switch, not a strategy
+
+**It predicts nothing about direction and must never be used to take one.**
+
+Target:
+
+> `P( |Δp_{t:t+h}| > q₀.₉₉  ∨  σ_{t+h} > q₀.₉₅  |  X_t )`
+
+The disjunction is deliberate. Defining the label **jointly over future movement
+and future volatility state** gives a denser, better-posed target than
+predicting rare price extremes directly, where positives are so scarce that a
+classifier learns the base rate and reports a plausible-looking 99% accuracy
+while detecting nothing. Quantiles are computed **per market and per regime**,
+not globally — a global `q₀.₉₉` is dominated by whichever markets are most
+volatile and would label calm markets as permanently normal.
+
+**The response ladder is mechanical, not discretionary.**
+
+| P(extreme) | response |
+|---|---|
+| < 5% | normal operation |
+| 5 – 25% | reduced size |
+| 25 – 50% | maker restrictions, tighter risk, larger required edge |
+| > 50% | **no new directional risk**; specialised high-volatility strategies only, if any exist |
+
+**This has strategic value even at zero directional profit.** A system that
+reduces exposure before a liquidity event survives volatility rather than
+discovering it through losses. That is a real economic contribution and it does
+not require predicting direction at all — a distinction most retail-grade
+systems never make.
+
+**Positive control (doctrine 7).** The detector must be run against a period
+containing a **known** extreme event with the label withheld; if it does not
+fire, the metric is broken. And it must be run against a synthetically calm
+series where it must **not** fire. Without both arms, a detector that always
+outputs 4% looks excellent on a calm sample.
+
+## 7. Feature computability audit — what our tape can and cannot see
+
+Doctrine 8 and doctrine 9: a feature list that quietly includes uncomputable
+features is a design that fails at implementation time, so each candidate is
+audited against what the archive actually contains.
+
+| candidate feature | computable from our tape? |
+|---|---|
+| spread acceleration | **yes** — second difference of fabric `spread` |
+| depth depletion | **yes** — `depth_*` trajectory at touch |
+| OFI acceleration | **partial — see below** |
+| trade intensity | **yes**, on the trade sid, subject to the cross-sid lag |
+| **cancellation intensity** | **NO — not separably observable** |
+| volatility acceleration | **yes** — derived |
+| volatility of volatility | **yes** — derived, but noisy at 1 s sampling |
+| liquidity replenishment | **yes** — depth recovery after consumption |
+| microprice deviation | **yes** — fabric #11 |
+
+**Cancellation intensity is the one that must be struck, and it matters.** The
+venue sends order-book **deltas**: a net change in resting size at a price
+level. A level falling from 500 to 300 is reported as −200, and that is
+consistent with a cancellation of 200, a trade of 200, or a cancellation of 300
+against a new order of 100. The delta stream **cannot distinguish cancellation
+from execution**, and cannot see order-level identity at all.
+
+Partial recovery is possible and its limits must be stated: the trade sid tells
+us how much traded, so `depth_removed − traded ≈ cancelled` **in aggregate over
+a window**. That inference is (a) only as good as the cross-sid timestamp
+alignment, which L22 tells us carries no venue guarantee, and (b) aggregate
+only — it yields no per-order cancellation and no queue dynamics. Any feature
+built on it must be typed as **`DERIVED_LOSSY`**, and no result may be reported
+as a cancellation measurement.
+
+**This is why OFI is "partial."** Textbook OFI is defined over order additions
+and cancellations at the touch. What we can compute is a **net-depth-change
+imbalance**, which coincides with OFI only when cancellations are negligible —
+an assumption we cannot check with this data. It is therefore named
+`net_depth_flow_imbalance`, not `OFI`, everywhere in the implementation. Calling
+it OFI would be a field name asserting semantics the data does not support,
+which is the exact failure doctrine 8 exists to prevent.
