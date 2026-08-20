@@ -171,3 +171,63 @@ A frozen `universe.json` — the ranked, criteria-passing market list with every
 input count beside it — plus the six per-window rate profiles with their spread.
 That file is the sole input `MARKET-MICROSTRUCTURE-EDGE-001` is permitted to
 take from this experiment.
+
+---
+
+## Amendment 1 — 2026-08-19, BEFORE ANY DATA WAS COLLECTED
+
+**Provenance, stated first because it is what makes this amendment legitimate.**
+This amendment rests on exactly two things: the **frozen P4 production tape**
+(captured 2026-08-20, unchanged since) and a **demonstrated defect in the peak
+estimator**. It uses **no data from PROD-ACTIVITY-PROFILE-001**, because none
+exists — not one window has been captured. Nothing here was chosen after seeing
+a result this experiment produced.
+
+**The metric basis is now explicit.** The capture tooling emits two figures, and
+the guard in §6 is evaluated against the first:
+
+| field | role |
+|---|---|
+| `peak_1s_sliding` | **PRIMARY capacity metric.** R_max,1s = max_t #{frames : τ_i ∈ [t, t+1s)} |
+| `peak_1s_calendar_bucket` | secondary diagnostic, retained for comparability with earlier evidence |
+
+The previous field name `frames_per_second_peak_1s` is **removed rather than
+repointed**. Repointing it would silently change what every historical evidence
+file's field means; leaving it would keep shipping the biased statistic. A stale
+reader now gets a loud `KeyError`.
+
+**The estimator defect is worse than "biased low" — it is phase-dependent.**
+Measured on the same 84,170 records:
+
+| estimator | value |
+|---|---:|
+| calendar bucket, monotonic-clock alignment (what the tooling shipped) | **485** |
+| calendar bucket, wall-clock alignment | **565** |
+| **sliding window — no free parameter** | **612** |
+
+Two *equally legitimate* bucket alignments of one dataset disagree by 17%. A
+statistic whose value depends on an arbitrary phase offset cannot bound
+anything. The sliding window has no such parameter.
+
+`tests/test_kalshi_p4_3_peak_estimator_001.py` pins the reason permanently with
+a synthetic burst of 800 frames straddling a second boundary — 400 in the last
+500 ms of second N, 400 in the first 500 ms of N+1. Sliding reports ~800; fixed
+buckets report two quiet ~400 f/s seconds, and one test asserts the exact
+consequence: **a 500 f/s guard reads as cleared by traffic that breached it.**
+
+**No threshold in this preregistration changes.** §3 and §6 already specified a
+sliding-1s window, so the guard remains **3,500 f/s** and the universe remains
+**40 markets**. This amendment makes the basis explicit and names the fields; it
+does not move a decision boundary. That is recorded plainly so a later reader
+cannot mistake it for a threshold that was quietly relaxed.
+
+**The 500 f/s design prior is RETIRED.** It was exceeded by 22% in the first
+ten-minute production window ever captured, and that window was not selected as
+a known venue peak. It may no longer be cited as a sizing assumption anywhere.
+
+**`DEFAULT_MAX_SEGMENT_RECORDS` is deliberately NOT changed.** The observed
+612 f/s peak still sits roughly 11× under the ~6,900 f/s closer ceiling and no
+capacity defect has been demonstrated. The correct order is: change the
+measurement basis (done), collect the six windows, then decide whether the
+segment constant needs tuning. Tuning it now would be a change made on one
+overnight window — the exact error that produced the retired prior.

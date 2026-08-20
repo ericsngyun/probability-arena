@@ -152,3 +152,20 @@ preregistration with a new name.
   effect found is explicitly untested out-of-regime.
 * Nothing that licenses capital. The gate to capital is a separate, prospective,
   preregistered milestone that does not yet exist.
+
+---
+
+## Amendment 1 — 2026-08-19, BEFORE ANY DATA WAS COLLECTED
+
+**No change required, recorded rather than left silent.** The peak-rate
+estimator was corrected on 2026-08-19 (see PROD-ACTIVITY-PROFILE-001 Amendment 1:
+`peak_1s_sliding` is now the primary capacity metric, and the biased
+`frames_per_second_peak_1s` field is removed).
+
+This preregistration defines no quantity in terms of a peak or load statistic —
+its thresholds are statistical (FDR 10%), temporal (300 s embargo) and economic
+(half-spread plus fees). It therefore inherits the correction through the frozen
+`universe.json` it consumes and needs no edit of its own.
+
+Recorded explicitly because "we checked and nothing needed changing" and "we did
+not check" are indistinguishable in a document that stays silent.
