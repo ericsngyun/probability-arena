@@ -459,3 +459,41 @@ inaccurate about which directory that is.
   series, are unmeasured.
 * **Scaling in market count.** Measured at 12 markets only.
 * **Host clock offset**, hence any true latency.
+
+---
+
+## 10. Validation
+
+| | |
+|---|---|
+| `git diff main -- app/ tests/` | **empty** — the collector ran exactly as shipped; this branch adds evidence and this document only |
+| kalshi selection | **1,819 passed, 5 skipped, 4 xfailed, 0 failed** (378 s) |
+| `tests/test_kalshi_tape_manifest_001.py` | **60 passed / 0 failed** — the fixture time bomb defused at `b0db246` stays defused; attempt 1's two failures do not recur |
+| `tests/test_kalshi_prod_qual_precapture_001.py` | **46 passed** |
+| structural order-API guard | **CLEAN** — 16 modules, 3,292 identifiers, 0 findings, on the throwaway clone |
+| safety grep (AGENTS.md) | **clean** — every hit is a boundary-statement docstring; no implementation surface |
+| credential | never copied, printed or logged. Only a key-id fingerprint (`sha256:cfdd78afeded1c22`) and a path basename appear in any artifact; `key_material_read_by_this_script: false` |
+
+### Boundary
+
+`OBSERVE_ONLY` throughout. **One** outbound command reached the venue — the
+`subscribe` for three market-data channels — with `commands_refused: 0` and no
+`get_snapshot` required. No order, cancel, portfolio mutation, private
+order/fill channel, capital or execution-module dependency was involved.
+
+### EVO
+
+The live Solana lane (`watch-loop`, 15 days uptime) was untouched and is still
+running. Every process this run started has exited. The throwaway clone at
+`/tmp/kalshi-p4-attempt2` — which held a copy of `.env` — was removed. EVO's own
+checkout is on `main` at `b0db246` with a clean working tree. The tape (14 MB)
+is retained as evidence at
+`~/kalshi-prod-tape/p4-attempt2-20260820T003519Z`, session
+`s-20260820T003520Z-f450f75ed1fc`.
+
+### Not done, deliberately
+
+No B3 repair. No alpha, features or model work. No collector-semantics change to
+accommodate production — none was needed. `kalshi.py:52-55` not edited despite
+B1 now being closable. The four secondary findings in §8 not fixed. Nothing
+merged; `main` untouched.
