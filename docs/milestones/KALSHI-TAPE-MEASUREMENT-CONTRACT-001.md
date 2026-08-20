@@ -3,6 +3,16 @@
 **The durable measurement contract for the Kalshi live tape.**
 Branch `KALSHI-TAPE-MEASUREMENT-CONTRACT`. Not merged.
 
+> **AMENDED 2026-08-20 with MEASURED PRODUCTION FACTS.** The contract below was
+> written entirely from DEMO evidence. It has since been checked against the
+> first production capture — session `s-20260820T003520Z-f450f75ed1fc`, **84,170
+> records / 7 segments / 599.6 s** on a 12-market, three-channel universe. Read
+> **§0.1** for what changed, **§16** for the production-measured quantities and
+> the **universe-selection rule**, and **§17** for the changelog. Where a
+> DEMO-derived property is now confirmed on production it is marked *confirmed
+> on production* and the DEMO provenance is **kept** — two venues agreeing is
+> itself a measurement. Where production **differs**, the difference is stated.
+
 This is prerequisite 3 of `KALSHI-PROD-OBSERVATIONAL-QUALIFICATION-001` — *"tape
 schema frozen and reviewed as a measurement contract"*. It defines, for every
 important raw field, normalized field, counter, channel and reconstructed state,
@@ -57,7 +67,62 @@ Four blockers, three of them outside P3's scope. **One of them, B3, is a genuine
 semantic defect found by this milestone** and is deliberately *reported with its
 remedy rather than patched* — see §10.3 for why.
 
-**P3 stops here.** No production observation is begun by this milestone.
+**P3 stops here.** No production observation is begun by this milestone. *(The
+production observation reported throughout this amendment was begun by P4, not
+by P3. P3 opened no socket; see §15.)*
+
+---
+
+## 0.1 PRODUCTION AMENDMENT — what the first production capture changed
+
+Evidence: `docs/milestones/KALSHI-PROD-QUAL-CAPTURE-2-FINDINGS.md` and
+`docs/evidence/KALSHI-PROD-QUAL-CAPTURE-2-*.json`. Session
+`s-20260820T003520Z-f450f75ed1fc`, 00:36:00.199Z → 00:46:01.437Z,
+**84,170 records, 7 segments (all closed), 599.643 s, 12 markets, 3 channels**,
+archive verdict `VALID`, `truncated_records 0`, `sequence_faults 0`.
+
+**CONFIRMED ON PRODUCTION** (DEMO provenance retained — §3, §5):
+
+| property | production evidence |
+|---|---|
+| `orderbook` is **independently sequenced** | 79,256 records, `seq` on 79,256/79,256, contiguous **1 → 79,256**, all fault counters 0 |
+| `trade` is **independently sequenced** | 2,516 records, `seq` on 2,516/2,516, contiguous **1 → 2,516**, all fault counters 0 |
+| `ticker` is **UNSEQUENCED** | **0 of 2,395** records carry a `seq`. L1 unchanged |
+| sid ↔ channel from ack order, ack carries no top-level `sid` | orderbook 1 / ticker 2 / trade 3; three acks, top-level `sid` absent on all three (§3.1) |
+| **snapshot ladder typing** reproduced | 13 snapshots: **10** `PRESENT/PRESENT`, **1** `NOT_PROVIDED/PRESENT`, **2** `NOT_PROVIDED/NOT_PROVIDED` |
+| **`EMPTY` is still NOT OBSERVED** | 0 of 13 production snapshots, on top of 0 of 360 DEMO snapshots. **L4 stays open** |
+| the `use_yes_price` / no-complement convention | 0 locked-or-crossed samples in 2,405 spread samples |
+
+**DIFFERS FROM DEMO** (§16):
+
+| | DEMO | **PRODUCTION** |
+|---|---|---|
+| mean frame rate, same-size 12-market universe | **0.75 f/s** | **~140 f/s — ~187×** |
+| observed 1-second peak | never reached | **565 f/s** |
+| rotations | **0**, ever | **6** in 10 minutes |
+
+**THE SIZING PRIOR IS SUPERSEDED, AND IT WAS LOW, NOT CONSERVATIVE.**
+`~500 events/s` is no longer an assumption; the measured 1-second peak is
+**565 f/s, 13% ABOVE it**. See §16.2 — and note that §16.2 also **corrects a
+figure in the P4 findings document**, which reported 485 f/s.
+
+**THE UNIVERSE-SELECTION FINDING — read §16.3 before designing any
+microstructure study.** Spearman(trading rate, wire frame rate) **≈ 0.52** on
+n=12; the market ranked **last** by trading rate produced the **4th-most** wire
+frames, and a medium-stratum market produced **one frame in 600 s**. Therefore:
+
+> **Do not select the microstructure universe using trading volume/activity as a
+> proxy for message activity. Our own production measurement says that
+> relationship is too weak.**
+
+**STILL UNOBSERVED AFTER PRODUCTION** — none of these is softened by this
+amendment: the `EMPTY` ladder (L4), `error`-frame behaviour on production (L8 —
+**zero** error frames arrived), venue-initiated disconnect (L7 — **zero**
+disconnects), the delta-refusal path (L5), scaling past 12 markets, and **any
+hour but this one**.
+
+**One ten-minute overnight capture is not a peak-capacity estimate.** Every rate
+figure in this amendment carries that limit (§16.1).
 
 ---
 
