@@ -471,21 +471,42 @@ plausible, wrong. The convention is recorded **on the data**
 only in a docstring, and `_require_uncrossed` is the cheap invariant that catches
 its reversal.
 
+**Confirmed on production.** Across **2,405** spread samples (10 full-ladder +
+2,395 top-of-book) there were **0 locked-or-crossed** samples. Had the NO side
+needed complementing, crossed books would have appeared at that sample size.
+The two distributions are reported separately and never pooled — full-ladder
+median $0.0100 (n=10); top-of-book median $0.0100, max $1.0000 (n=2,395) — and
+no absence became a zero (§6.2).
+
 **Ladder presence is typed and is not a level count.**
 `NOT_PROVIDED != EMPTY != PRESENT`, carried beside every level count in
 `top_of_book()`, `yes_scale_ladder()` and the snapshot result. Measured over 360
 live snapshots:
 
-| | s1 (60) | s2 (180) | s3 (120) | P0 (60) |
-|---|---:|---:|---:|---:|
-| both ladders present | 12 | 171 | 96 | 57 |
-| one side's key absent | 45 | 0 | 18 | 0 |
-| **both** absent | 3 | 9 | 6 | 3 |
-| a side present but **EMPTY** | **0** | **0** | **0** | **0** |
+| | s1 (60) | s2 (180) | s3 (120) | P0 (60) | **PROD (13)** |
+|---|---:|---:|---:|---:|---:|
+| both ladders present | 12 | 171 | 96 | 57 | **10** |
+| one side's key absent | 45 | 0 | 18 | 0 | **1** |
+| **both** absent | 3 | 9 | 6 | 3 | **2** |
+| a side present but **EMPTY** | **0** | **0** | **0** | **0** | **0** |
 
 48 of `s1`'s 60 snapshots omitted at least one side. **The case that used to be
 collapsed into "present with zero levels" is the common case, not an edge case.**
 `EMPTY` has **never been observed live** (§12).
+
+**Reproduced on production, and it is load-bearing there on real money.** 3 of
+13 production snapshots omitted at least one ladder (1 `NOT_PROVIDED/PRESENT`,
+2 `NOT_PROVIDED/NOT_PROVIDED`). **Two production books terminated
+`publishable: true` with `levels_yes = levels_no = 0`**, and the only field
+separating that from a genuinely empty book is `ladder_presence =
+omitted_by_venue`, which was present and correct on both. §7.1's rule — *"a
+zero-level book is never observed emptiness unless `ladder_presence` says so"* —
+would have been violated on **2 of 12 production markets** by a consumer reading
+`levels_*` alone.
+
+**`EMPTY` is still NOT OBSERVED — 0 of 13 on production, on top of 0 of 360 on
+DEMO.** n = 13 is small and this is weak evidence. It is **not** a retirement of
+the `NOT_PROVIDED != EMPTY != PRESENT` distinction, and **L4 stays open.**
 
 ### 5.2 `ticker` (sid 2) — **UNSEQUENCED**
 
@@ -538,6 +559,16 @@ a third-party mirror of the venue docs marked UNVERIFIED for `trade` and
 *"0.5100 came from `yes_price`"* and *"0.5100 came from `yes_price_dollars`"* are
 **different observations about the venue**. The first real session settles the
 question from the tape instead of from a document.
+
+**SETTLED on production, for `ticker`.** Production quotes used
+`yes_bid_dollars` / `yes_ask_dollars` on **2,395 of 2,395** frames; the bare
+`yes_bid` / `yes_ask` spelling **never appeared**. This is a fact about the
+production venue at this hour, not a proof that the bare spelling is
+unreachable — the alternate names stay in the reader. `trade` and
+`market_lifecycle_v2` field naming remains UNVERIFIED against venue docs; the
+production `trade` sid carried 2,516 records and the same census should be run
+over them before any `trade` field name is used as an experimental variable
+(doctrine 8).
 
 ---
 
@@ -629,6 +660,17 @@ venue had just abandoned. After the fix, frames 605…663 give 59 separate entri
 one acquisition each.
 
 **A zero-level book is never observed emptiness unless `ladder_presence` says so.**
+
+**This rule fired on production.** Two of twelve production markets terminated
+`publishable: true` with zero levels on both sides and
+`ladder_presence = omitted_by_venue` (§5.1). The distinction is no longer a
+hypothetical defended by fixtures; it is the only thing standing between a
+reader and a fabricated empty book on 17% of a real production universe.
+
+The per-market boundary machinery was **not exercised** in production: one
+connection, one `subscription_generation`, 0 reconnects, so no book ever entered
+`awaiting_snapshot_for_generation` there. That path's evidence remains the CP7
+DEMO re-run.
 
 ### 7.2 Book quantities
 
@@ -764,6 +806,13 @@ A permanently-empty `normalize_to_book_us` hop was **deleted** rather than kept:
 a permanently empty hop reads as "measured, and fast", which is worse than an
 absent one.
 
+**Production changed the sample size, not the epistemic status.** n = 84,154
+samples: p50 **45.03 ms**, p90 47.93, p95 59.62, p99 511.61. It is reported
+under the same contaminated name and **is still not a latency** —
+`host_clock_offset_characterised: false` on the production artifact too. 84,154
+samples of an uncharacterised offset is 84,154 samples of an uncharacterised
+offset. Do not quote these as production latency.
+
 ---
 
 ## 9. CANDIDATES: benign numbers that should become typed `NOT_MEASURABLE`
@@ -797,6 +846,19 @@ it nullable on exactly the same rule.
 and no venue fact. But it is a *plausible benign value emitted by a path that
 cannot know*, on a field whose name asserts a cause it never measured — the exact
 class doctrine 7 and 8 name.
+
+**Defect A is now DEMONSTRATED ON PRODUCTION, not merely argued.** The session
+reported `reader_stall_ms_max: 580` while the measured **maximum interarrival**
+was **580.913 ms** — the same event, to the millisecond. The reader never
+stalled: `frames_received == frames_yielded` (84,170 = 84,170), `read_timeouts:
+0`, and `append_calls == events_received == records on disk`. The field measured
+**venue quiet**, on a stream that never went silent for a whole second, and
+named it a reader stall. The recommended rename to
+`inter_frame_interval_ms_max` is upgraded from a reading of the code to a
+reading of production data. *(P4 could not cross-check Defect B: the run emitted
+no `kalshi-live-tape.jsonl` interval record at all, so `reader_lag_frames_max`,
+`append_us_max` and `segment_close_ms_max` were **not captured** — absent, not
+zero, and not to be reported as lag figures.)*
 
 ### 9.2 `rotation_failures` and `closer_outstanding_max` — **RECOMMEND CHANGE (nullable)**
 
