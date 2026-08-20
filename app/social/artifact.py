@@ -40,6 +40,7 @@ __all__ = [
     "KNOWN_INGESTION_VERSIONS",
     "Platform",
     "PropagationKind",
+    "DeliveryMode",
     "ParentRef",
     "MediaRef",
     "ResolutionConfidence",
@@ -72,6 +73,32 @@ class Platform(str, Enum):
     X = "X"
     TELEGRAM = "TELEGRAM"
     DISCORD = "DISCORD"
+
+
+class DeliveryMode(str, Enum):
+    """HOW this item reached us — the field that protects `our_received_at`.
+
+    ``our_received_at`` means "when our process first held the bytes". That is
+    only a statement about *information arrival* when the bytes arrived because
+    the platform pushed them live. A backfilled or polled item also has an
+    honest ``our_received_at``, and pooling the two produces a delivery-latency
+    distribution with a fabricated tail — the exact shape of finding that "we
+    learn about posts 40 minutes late", when in truth 3% of them were
+    recovered after an outage.
+
+    So the mode is a REQUIRED field with no default. Every consumer must
+    condition on it, and no consumer can forget it exists.
+    """
+
+    #: Pushed to us by the live stream while we were connected.
+    LIVE = "LIVE"
+    #: Re-sent by the platform to cover a gap we were absent for. Delivery
+    #: timing is NOT live timing.
+    BACKFILL = "BACKFILL"
+    #: Fetched by us on purpose, e.g. hydrating a referenced parent post.
+    PULLED = "PULLED"
+    #: The transport could not say. Recorded, never guessed as LIVE.
+    UNKNOWN = "UNKNOWN"
 
 
 class PropagationKind(str, Enum):
@@ -383,6 +410,8 @@ class SocialArtifact:
     matching_rule: str
 
     parent: ParentRef
+    #: Required, no default. See :class:`DeliveryMode`.
+    delivery_mode: DeliveryMode = DeliveryMode.UNKNOWN
     media: tuple[MediaRef, ...] = ()
     entity_resolution: EntityResolution = field(
         default_factory=EntityResolution.unresolved
@@ -458,6 +487,12 @@ class SocialArtifact:
         return bytes(self.raw_content).decode("utf-8", errors="replace")
 
     @property
+    def is_live_delivery(self) -> bool:
+        """True only for LIVE. UNKNOWN is not optimistically treated as live."""
+
+        return self.delivery_mode is DeliveryMode.LIVE
+
+    @property
     def is_propagation(self) -> bool:
         return self.parent.kind in {
             PropagationKind.REBROADCAST,
@@ -490,6 +525,7 @@ class SocialArtifact:
             "raw_content_hash": self.raw_content_hash,
             "matching_rule": self.matching_rule,
             "parent": self.parent.to_json(),
+            "delivery_mode": self.delivery_mode.value,
             "media": [m.to_json() for m in self.media],
             "entity_resolution": self.entity_resolution.to_json(),
             "first_onchain_reaction": self.first_onchain_reaction.to_json(),
@@ -537,6 +573,7 @@ class SocialArtifact:
             raw_content_hash=str(payload["raw_content_hash"]),
             matching_rule=str(payload["matching_rule"]),
             parent=ParentRef.from_json(payload["parent"]),
+            delivery_mode=DeliveryMode(payload["delivery_mode"]),
             media=tuple(MediaRef.from_json(m) for m in payload.get("media", [])),
             entity_resolution=EntityResolution.from_json(
                 payload["entity_resolution"]
