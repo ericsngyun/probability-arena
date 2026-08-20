@@ -6,12 +6,19 @@ of them carries its own anti-vacuity control**: a companion assertion proving
 the measurement path can reach the other answer. A guard satisfied by a
 repository in which nothing works is not a guard (AGENTS.md doctrine 4).
 
-Three of these are CHARACTERIZATION tests. They pin behaviour the contract
-reports as a defect (§11 B3, §11 B4) rather than behaviour it endorses. That is
-deliberate and is the repository's own pattern: pinning a limitation is what
-makes it **retire on evidence** instead of being carried forever in prose. When
-either defect is fixed, its test turns red, and the person fixing it is
-required to delete the corresponding paragraph from the contract.
+Some of these are CHARACTERIZATION tests. They pin behaviour the contract
+reports as a defect rather than behaviour it endorses. That is deliberate and is
+the repository's own pattern: pinning a limitation is what makes it **retire on
+evidence** instead of being carried forever in prose. When either defect is
+fixed, its test turns red, and the person fixing it is required to delete the
+corresponding paragraph from the contract.
+
+**The pattern worked.** §11 B3's characterization tests turned red on
+2026-08-19 and were retired by KALSHI-P4-1-REPLAY-REQUAL; see the flagged
+amendment above `TestErrorFrameSequenceIsConsumedByBothLanes`. §11 B4's
+characterization test (`test_replaying_two_sessions_halts_every_book_at_the_
+boundary`) is still live and still pinning an open defect — do not read B3's
+closure as covering it.
 """
 
 from __future__ import annotations
@@ -148,23 +155,31 @@ class TestReplayIsOrderbookOnly:
 
 
 # =====================================================================================
-# §11 B3 — CHARACTERIZATION: an error frame on the orderbook sid diverges
+# §11 B3 — CLOSED 2026-08-19 by KALSHI-P4-1-REPLAY-REQUAL.
+#
+# The three CHARACTERIZATION tests that stood here are RETIRED ON EVIDENCE, which
+# is the outcome they were written to produce. They asserted that `replay()`
+# skipped the sequence number an `error` frame occupies and therefore
+# **manufactured a gap that never happened**; `test_replay_manufactures_a_gap_
+# that_never_happened` turned red the moment `archive.replay()` began driving
+# sequenced non-orderbook frames through the router, exactly as this file's
+# module docstring promised it would.
+#
+# AMENDING A STANDING AUDIT — flagged, and NET-STRONGER (doctrine). What replaces
+# them asserts the harder claim: the two lanes now AGREE on the input that used
+# to split them, which is a statement about both lanes rather than about one. It
+# keeps the original anti-vacuity control (the divergence was caused by the error
+# frame and nothing else) and adds a second one (the drop detector still fires),
+# because a "the lanes agree" test is satisfied by two lanes that both do
+# nothing. The full B3 closure argument — the wire provenance, the ladder
+# non-mutation proof, determinism, and the scope boundary — lives in
+# `tests/test_kalshi_p4_1_replay_requal_001.py`; this class is the contract
+# file's own record that its blocker closed.
 # =====================================================================================
 
 
-class TestErrorFrameSequenceDivergence:
-    """`replay()` skips non-orderbook frames BEFORE dispatch, so it never
-    consumes the sequence number an `error` frame occupies. The live lane does.
-
-    Recorded in KALSHI-REPLAY-GENERATION-CONSISTENCY-001 as STILL DEBT and
-    escalated by this contract to a P4 blocker (§11 B3), because it makes replay
-    **manufacture a sequence gap that never happened** — replay reports loss the
-    venue never caused.
-
-    THIS TEST PINS THE DEFECT. Fixing `replay()` to consume the sequence number
-    (mirroring `SubscriptionRouter.dispatch`'s `needs_base=False` branch) turns
-    it red, and §11 B3 must then be deleted from the contract.
-    """
+class TestErrorFrameSequenceIsConsumedByBothLanes:
+    """§11 B3, closed: a sequenced control frame is a sequence event in BOTH lanes."""
 
     RECORDS = [snapshot(1), delta(2), error_frame(3), delta(4)]
 
@@ -173,20 +188,40 @@ class TestErrorFrameSequenceDivergence:
         assert faults == 0
         assert publishable == {MARKET: True}
 
-    def test_replay_manufactures_a_gap_that_never_happened(self):
+    def test_replay_no_longer_manufactures_a_gap(self):
+        """Was `test_replay_manufactures_a_gap_that_never_happened`."""
         out = replay(self.RECORDS)
-        assert out["events_rejected"] == 1
-        assert out["publishable"] == {MARKET: False}
-        assert out["publication_states"][MARKET]["state"] == PUB_BOOK_HALTED
-        assert "sequence gap: expected 3, got 4" in out["faults"][0]["error"]
+        assert out["events_rejected"] == 0, out["faults"]
+        assert out["publishable"] == {MARKET: True}
+        assert out["publication_states"][MARKET]["state"] != PUB_BOOK_HALTED
+        assert out["checksums"][MARKET] is not None
 
-    def test_anti_vacuity_without_the_error_frame_the_lanes_agree(self):
-        """The divergence is caused by the error frame and by nothing else."""
+    def test_the_two_lanes_agree_frame_for_frame(self):
+        live_faults, live_publishable = drive_live(self.RECORDS)
+        out = replay(self.RECORDS)
+        assert out["events_rejected"] == live_faults
+        assert out["publishable"] == live_publishable
+
+    def test_anti_vacuity_the_error_frame_was_the_only_difference(self):
+        """Retained from the retired class: nothing else moved."""
         clean = [snapshot(1), delta(2), delta(3), delta(4)]
         live_faults, live_publishable = drive_live(clean)
         out = replay(clean)
         assert live_faults == 0 and out["events_rejected"] == 0
         assert live_publishable == out["publishable"] == {MARKET: True}
+
+    def test_anti_vacuity_the_lanes_still_agree_that_a_REAL_drop_is_a_fault(self):
+        """ADDED. "Both lanes are quiet" must not be reachable by both lanes
+        being blind — the agreement above is only worth something if the same
+        pair still reports loss when loss actually happened."""
+        dropped = [snapshot(1), delta(2), error_frame(3), delta(5)]
+        live_faults, live_publishable = drive_live(dropped)
+        out = replay(dropped)
+        assert live_faults == 1
+        assert out["events_rejected"] == 1
+        assert out["publishable"] == live_publishable == {MARKET: False}
+        assert out["publication_states"][MARKET]["state"] == PUB_BOOK_HALTED
+        assert "sequence gap: expected 4, got 5" in out["faults"][0]["error"]
 
 
 # =====================================================================================

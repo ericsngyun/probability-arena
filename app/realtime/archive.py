@@ -1175,11 +1175,44 @@ def replay(records, *, grid=None) -> dict:
     faults, applied, rejected = [], 0, 0
     for r in records:
         etype = r.get("event_type")
-        if etype not in ("orderbook_snapshot", "orderbook_delta"):
-            continue
         sid = r.get("sid")
         router = routers.get(sid)
-        if router is None:
+        if etype not in ("orderbook_snapshot", "orderbook_delta"):
+            # A SEQUENCED FRAME IS A SEQUENCE EVENT even when it mutates no
+            # ladder. `seq` counts frames on a SUBSCRIPTION, so a control frame
+            # consumes a number in its sid's space and the next delta's number
+            # is one higher because of it. Skipping it here — which is what this
+            # branch used to do with a bare `continue` — left replay expecting
+            # the number the control frame had already spent, and it reported a
+            # gap the venue never caused: live 0 faults and publishable, replay
+            # 1 fault and `book_halted` (KALSHI-TAPE-MEASUREMENT-CONTRACT-001
+            # §11 B3). `SubscriptionRouter.dispatch` has always had this right;
+            # replay simply never reached it.
+            #
+            # Wire evidence, not inference: on 2026-08-17 sid 3 carried 218
+            # `trade` frames and 1 `error` frame over `seq` 1..219 with zero
+            # gaps. 219 numbers, 219 frames — the `error` spent one of them.
+            #
+            # TWO deliberate narrowings, each of which would be a defect if
+            # dropped:
+            #
+            # * `router is None` -> skip. A control frame never CREATES a
+            #   subscription. `replay()` is book replay and a sid that carries
+            #   no orderbook frame is out of scope (asserted by CP6-CP9's
+            #   `test_the_shipped_replay_omits_the_non_orderbook_sids`).
+            #   Admitting one here would half-model that sid — its control
+            #   frames ordered, its 218 trades not — which is worse than
+            #   leaving it alone. Widening replay to every sid is a separate
+            #   decision with its own guard; this is not it. Skipping is also
+            #   harmless to ordering: `SubscriptionState.accept` anchors on the
+            #   first `seq` it sees, so a control frame preceding a
+            #   subscription's first orderbook frame cannot leave a hole behind.
+            # * `seq is None` -> skip. A frame the venue never ordered must not
+            #   be faulted for a number it never had — every `ticker` frame on
+            #   the wire, 2,071 of 2,071, carries no `seq`.
+            if router is None or r.get("seq") is None:
+                continue
+        elif router is None:
             # Tickers are not constrained on replay: the archive is the record
             # of what the subscription actually carried, and re-deriving the
             # subscribe list from it would just assert the file against itself.
