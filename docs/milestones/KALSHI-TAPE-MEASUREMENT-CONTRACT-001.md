@@ -26,11 +26,24 @@ P3 measurement contract                       COMPLETE
 KALSHI-PROD-OBSERVATIONAL-QUALIFICATION-001
   CAPTURE  (read-only production tape)        GO, conditional on B1, B4  (B2 struck)
   REPLAY-EQUALITY VERDICT                     NO-GO until B3 is closed
+                                              -> B3 CLOSED 2026-08-19,
+                                                 KALSHI-P4-1-REPLAY-REQUAL
 ```
 
 **One sentence, if you read nothing else:** *proceed to P4, but B3 must be
 closed before P4 computes a replay-equality verdict — and it is a ~4-line fix
 plus a CP8 re-run, not a research problem.*
+
+> **AMENDMENT 2026-08-19 — B3 IS CLOSED.** `KALSHI-P4-1-REPLAY-REQUAL` applied
+> the §10.4 remedy and re-ran the replay qualification. The estimate above held:
+> the change is confined to `replay()`'s skip branch. **The severity estimate did
+> not.** §11 B3 said "live 0 faults, replay 1 fault"; measured on a real
+> digest-chained archive that actually contains the frame, it is **live 0 faults,
+> replay 12** — the phantom gap halts the subscription and every subsequent delta
+> is then refused as unhealthy, so B3 costs the remainder of the tape rather than
+> one record. §11 B3 below is amended in place with its outcome; the paragraphs
+> that state the defect in the present tense are preserved as the record of what
+> was found, and marked. **B1 and B4 are untouched by that work and remain open.**
 
 **This is not one verdict, because P4 is not one act.** P4 captures a production
 tape and then computes a CP9-style qualification verdict over it. Those have
@@ -872,6 +885,12 @@ would mean P4's operator reads `gaps=0` off a production tape and believes it.
 
 ### 10.4 What was deliberately NOT fixed, and why
 
+> **2026-08-19: the deferral ended as intended.** B3 was patched by
+> `KALSHI-P4-1-REPLAY-REQUAL` as a separate re-qualification — not during this
+> milestone — and the CP8 numbers were re-derived rather than assumed. The
+> reasoning below is preserved because it is the reasoning that produced the
+> right sequencing.
+
 **B3 (`replay()` does not consume an `error` frame's sequence number) is
 reported, not patched.** The fix is roughly four lines — mirror
 `SubscriptionRouter.dispatch`'s `needs_base=False` branch inside `replay()`'s
@@ -895,7 +914,7 @@ current code reaches a *wrong* answer, not a missing one.
 |---|---|---|
 | B1 unverified production WS host + credential | capture | an operator |
 | ~~B2 unmerged branch stack~~ | ~~capture~~ | **STRUCK — already merged, verified on `main`** |
-| B3 `replay()` skips an `error` frame's `seq` | the **replay-equality verdict** | ~4 lines + a CP8 re-run |
+| ~~B3 `replay()` skips an `error` frame's `seq`~~ | ~~the **replay-equality verdict**~~ | **CLOSED 2026-08-19 — KALSHI-P4-1-REPLAY-REQUAL** |
 | B4 no session identity on the durable record | capture, **conditionally** | a run-procedure rule (no code) |
 
 ### B1. The production WebSocket host is UNVERIFIED
@@ -944,7 +963,55 @@ credential), **B3** (blocks the replay-equality verdict only), and **B4**
 B1 is not a P3 finding. They are stated because P4's entry criteria
 name them and because a GO on the contract is not a GO on operational readiness.
 
-### B3. `archive.replay()` manufactures a sequence gap on an `error` frame — **FOUND HERE**
+### B3. `archive.replay()` manufactures a sequence gap on an `error` frame — **FOUND HERE. CLOSED 2026-08-19.**
+
+> **OUTCOME — closed by `KALSHI-P4-1-REPLAY-REQUAL` (branch
+> `KALSHI-P4-1-REPLAY-REQUAL`), 2026-08-19.**
+>
+> The §10.4 remedy was applied as written: `archive.replay()` now drives a
+> sequenced non-orderbook record through the router instead of `continue`-ing
+> past it, so a control frame consumes the number it occupies. The rule it
+> enforces is **a sequenced frame must affect the relevant sequence domain even
+> if that frame is not an order-book state mutation**. No venue semantics were
+> added — `SubscriptionRouter.dispatch` already held this behaviour and replay
+> simply never reached it.
+>
+> **Two narrowings, both deliberate and both guarded.** A control frame never
+> *creates* a subscription, and a frame with no `seq` is still passed over.
+> `replay()` remains **book replay**: §1's
+> `test_a_non_orderbook_sid_never_becomes_a_subscription` and CP6-CP9's
+> `test_the_shipped_replay_omits_the_non_orderbook_sids` are both still green,
+> so this closure must not be read as widening replay to every sid. That remains
+> a separate decision with its own guard.
+>
+> **The severity stated below was understated.** The table says live 0 / replay
+> 1. Re-measured on a real digest-chained archive that actually contains the
+> frame — built for this purpose, because no captured tape has one — it is
+> **live 0 faults / replay 12**: the phantom gap halts the subscription, and
+> every later delta is then refused with *"delta received while the subscription
+> is not healthy"*. B3 cost the remainder of the tape, not one record. On that
+> tape CP8's `state_equality` verdict itself **failed** before the fix and
+> **passes** after it, while CP8's own `corrupt_one_delta` negative control
+> still fails — the instrument reaches both answers.
+>
+> **The production tape did not and could not prove this.** The P4 tape
+> (`p4-attempt2-20260820T003519Z`, 84,170 records, 7 segments) contains **zero**
+> error frames, as do all three DEMO CP6-CP9 sessions. Replaying them cleanly
+> after the fix proves only that nothing broke. B3's proof is separate and is
+> the requalification described above. The production tape was not re-captured,
+> mutated, or claimed.
+>
+> **The three characterization tests are RETIRED ON EVIDENCE** — the outcome
+> §13 was written to produce. See §13 for the retirement and its net-stronger
+> replacement.
+>
+> Evidence: `docs/experiments/KALSHI-P4-1-REPLAY-REQUAL/` —
+> `before-fix-red.txt`, `after-fix-flip.txt`,
+> `cp8-requal-PREFIX-fails.txt`, `cp8-requal-POSTFIX-passes.txt`.
+> Guards: `tests/test_kalshi_p4_1_replay_requal_001.py` (22 tests).
+
+**What follows is preserved in the present tense as the record of what was
+found. It describes the defect, not the current code.**
 
 **The one semantic defect this milestone found in a path P4 depends on.**
 
@@ -1083,9 +1150,9 @@ Every one carries its own anti-vacuity control.
 |---|---|---|
 | `test_a_non_orderbook_sid_never_becomes_a_subscription` | §1: `replay()` is book replay — three sids on the wire, one in the output | the orderbook sid *was* processed (2 applied, publishable) |
 | `test_the_tape_itself_is_not_the_limitation` | §1: the same records re-derive the trade sid's ordering | that sid's gap detector fires on an injected hole |
-| `test_live_absorbs_the_error_frames_sequence_number` | §11 B3, live half | — |
-| `test_replay_manufactures_a_gap_that_never_happened` | §11 B3, replay half | — |
-| `test_anti_vacuity_without_the_error_frame_the_lanes_agree` | §11 B3 | the divergence is caused by the error frame and nothing else |
+| ~~`test_live_absorbs_the_error_frames_sequence_number`~~ | ~~§11 B3, live half~~ | RETIRED 2026-08-19 — see below |
+| ~~`test_replay_manufactures_a_gap_that_never_happened`~~ | ~~§11 B3, replay half~~ | RETIRED 2026-08-19 — see below |
+| ~~`test_anti_vacuity_without_the_error_frame_the_lanes_agree`~~ | ~~§11 B3~~ | RETIRED 2026-08-19 — see below |
 | `test_the_durable_record_has_no_session_identity` | §11 B4 | the fields the contract *does* claim are pinned are present |
 | `test_replaying_two_sessions_halts_every_book_at_the_boundary` | §11 B4 | the identical first session alone replays clean |
 | `test_omitted_and_empty_ladders_are_distinguishable_after_replay` | §5.1, §7: `NOT_PROVIDED != EMPTY` survives replay | `checksum()` **cannot** tell them apart — which is why the check exists |
@@ -1101,6 +1168,34 @@ document reports as a defect, not behaviour it endorses. That is the
 repository's own pattern — pinning a limitation is what makes it *retire on
 evidence*. **When B3 or B4 is fixed its test turns red, and whoever fixes it must
 delete the corresponding paragraph from this contract.**
+
+#### The B3 characterization tests are RETIRED ON EVIDENCE — 2026-08-19
+
+**The mechanism worked exactly as designed, and this is the record of it.** When
+`KALSHI-P4-1-REPLAY-REQUAL` applied the §10.4 remedy,
+`test_replay_manufactures_a_gap_that_never_happened` turned red on the same
+commit — `1 failed, 29 passed`, captured in
+`docs/experiments/KALSHI-P4-1-REPLAY-REQUAL/after-fix-flip.txt`. The three tests
+of `TestErrorFrameSequenceDivergence` are retired, and the class is replaced by
+`TestErrorFrameSequenceIsConsumedByBothLanes`.
+
+**The replacement is a flagged amendment to a standing audit and is
+net-stronger**, per doctrine:
+
+- it asserts the two lanes now **agree** on the input that used to split them —
+  a claim about *both* lanes, where the retired pair each described one;
+- it **retains** the original anti-vacuity control (the divergence was caused by
+  the error frame and by nothing else);
+- it **adds** a second one: the same pair must still report a fault when a drop
+  actually happened, because *"both lanes are quiet"* is otherwise satisfiable
+  by two lanes that have both gone blind — the exact failure mode a sequence fix
+  risks introducing.
+
+The full closure argument — wire provenance under doctrine 9, the
+ladder-non-mutation proof, determinism, the scope boundary, and the CP8
+requalification — lives in `tests/test_kalshi_p4_1_replay_requal_001.py`
+(22 tests). **§11 B4's characterization test is still live and still pinning an
+open defect**; B3's closure says nothing about it.
 
 ---
 

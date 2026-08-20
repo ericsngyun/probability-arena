@@ -389,6 +389,82 @@ class TestDeterminismAndScope:
         assert on_book_sid["events_rejected"] == 0, on_book_sid["faults"]
         assert on_book_sid["subscription_stats"]["1"]["accepted"] == 3
 
+    def test_the_production_tape_shape_is_unperturbed(self):
+        """The P4 tape's own sid split, scaled down. Measured 2026-08-19:
+
+            sid 1  orderbook_delta + orderbook_snapshot  79,256  seq 1..79,256
+            sid 2  ticker                                 2,395  seq ALWAYS NULL
+            sid 3  trade                                  2,516  seq present
+            --     subscribed acks                            3  seq null
+
+        THE TRAP THIS PINS. The 2,516 `trade` frames look like B3's production
+        surface: they pass through the very branch this milestone changed, and
+        unlike `ticker` they DO carry a non-null `seq`. They are not B3
+        evidence and must not be consumed. They live on sid 3, where replay
+        builds no router, so no orderbook sequence can be perturbed by passing
+        over them — which is why `router is None -> skip` is load-bearing and
+        not a convenience. B3's surface on the production tape is genuinely
+        zero, and this test is what keeps it zero.
+        """
+        records = [snapshot(1), snapshot(2, ticker="OTHER-MARKET")]
+        for n, seq in enumerate(range(3, 13)):
+            records.append(delta(seq, ticker=(MARKET, "OTHER-MARKET")[n % 2]))
+            records.append({"event_type": "ticker", "sid": 2, "seq": None,
+                            "market_ticker": MARKET,
+                            "subscription_generation": 1,
+                            "raw": {"msg": {"market_ticker": MARKET}}})
+            records.append({"event_type": "trade", "sid": 3, "seq": n + 1,
+                            "market_ticker": MARKET,
+                            "subscription_generation": 1,
+                            "raw": {"msg": {"market_ticker": MARKET,
+                                            "taker_side": "yes",
+                                            "yes_price_dollars": "0.5000",
+                                            "count_fp": "2.00"}}})
+        out = replay(records)
+
+        assert out["subscriptions"] == 1
+        assert set(out["subscription_stats"]) == {"1"}
+        assert out["events_rejected"] == 0, out["faults"]
+        assert out["events_applied"] == 12          # 2 snapshots + 10 deltas
+        assert all(out["publishable"].values())
+        # The orderbook sid's own position, untouched by the other two sids.
+        assert out["subscription_stats"]["1"]["gaps"] == 0
+
+        # A mid-generation RE-SNAPSHOT is ordinary venue behaviour (13 snapshots
+        # for 12 markets on the real tape) and is not a generation boundary.
+        resnap = replay(records + [snapshot(13), delta(14)])
+        assert resnap["events_rejected"] == 0, resnap["faults"]
+        assert all(resnap["publishable"].values())
+
+    def test_sequence_domains_stay_PER_SID(self):
+        """A control frame advances ITS sid and no other.
+
+        A fix that advanced one global counter across sids would look correct on
+        a single-subscription tape and destroy every multi-sid one. Two
+        orderbook subscriptions here run their own `seq` 1..3 concurrently, and
+        the control frame on sid 1 must be invisible to sid 4.
+        """
+        other = "KXTESTMATCH-26AUG150030INDSRI-TIE"
+        records = [
+            snapshot(1, sid=1), snapshot(1, sid=4, ticker=other),
+            delta(2, sid=1), delta(2, sid=4, ticker=other),
+            wire_error_record(3, sid=1),          # consumes seq 3 on sid 1 ONLY
+            delta(4, sid=1), delta(3, sid=4, ticker=other),
+        ]
+        out = replay(records)
+
+        assert out["subscriptions"] == 2
+        assert out["events_rejected"] == 0, out["faults"]
+        assert out["publishable"] == {MARKET: True, other: True}
+        assert out["subscription_stats"]["1"]["gaps"] == 0
+        assert out["subscription_stats"]["4"]["gaps"] == 0
+
+        # ANTI-VACUITY: sid 4 really is running its own counter — its seq 3 is
+        # a number sid 1 had already spent on the control frame, and neither
+        # lane called that a duplicate or a regression.
+        assert out["subscription_stats"]["4"]["duplicates"] == 0
+        assert out["subscription_stats"]["1"]["duplicates"] == 0
+
 
 class TestNoInventedVenueSemantics:
     """Requirement 3. The fix encodes ordering and NOTHING about what an error means."""

@@ -178,7 +178,13 @@ def test_ticker_sequence_gaps_are_typed_NOT_MEASURABLE_never_zero():
 
     assert absences["recoveries_from_tape"]["state"] == (
         "NOT_RECONSTRUCTABLE_BY_DESIGN")
-    assert absences["replay_equality"]["state"] == "NOT_QUALIFIED:B3_OPEN"
+    # B3 CLOSED 2026-08-19 (KALSHI-P4-1-REPLAY-REQUAL). The blocker is gone; the
+    # verdict is still not claimed, because it has never been RUN over a
+    # production tape — and it stays typed rather than becoming a bare False.
+    replay_equality = absences["replay_equality"]
+    assert replay_equality["state"] == "NOT_QUALIFIED:NOT_YET_COMPUTED"
+    assert replay_equality["b3_closed_by"] == "KALSHI-P4-1-REPLAY-REQUAL"
+    assert "B3_OPEN" not in replay_equality["state"]
     assert absences["transport_dropped_frames"]["state"] == (
         "NOT_MEASURABLE:no_source_exists")
 

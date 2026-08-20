@@ -820,10 +820,22 @@ def typed_absences(wire: WireRecorder) -> dict:
                     "drop counter; a zero would be fabricated (P3 s8.4)."),
         },
         "replay_equality": {
-            "state": "NOT_QUALIFIED:B3_OPEN",
-            "why": ("`archive.replay()` skips a non-orderbook frame's seq and "
-                    "manufactures a gap that never happened. Capture is "
-                    "authorized; the replay-equality verdict is not."),
+            # B3 was the reason this was blocked. It was closed on 2026-08-19
+            # by KALSHI-P4-1-REPLAY-REQUAL, so the BLOCKER is gone — but the
+            # verdict is still NOT QUALIFIED, because no replay-equality verdict
+            # has been computed over a production tape. A closed blocker is not
+            # a computed result, and collapsing the two is precisely the error
+            # this `absences` table exists to prevent.
+            "state": "NOT_QUALIFIED:NOT_YET_COMPUTED",
+            "why": ("B3 (`archive.replay()` skipping a non-orderbook frame's "
+                    "seq and manufacturing a gap that never happened) is CLOSED "
+                    "as of 2026-08-19. Capture is authorized; the "
+                    "replay-equality verdict over a production tape has still "
+                    "not been RUN, so it is not claimed here. Note also that the "
+                    "production tape contains zero error frames, so replaying it "
+                    "cleanly is not evidence about B3 — that proof is separate "
+                    "(`tests/test_kalshi_p4_1_replay_requal_001.py`)."),
+            "b3_closed_by": "KALSHI-P4-1-REPLAY-REQUAL",
         },
     }
 
