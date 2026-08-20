@@ -310,3 +310,103 @@ nothing.
 **Host load is recorded with every window** (load average, CPU count, memory,
 disk) so venue intensity can be told apart from EVO contention. A rate figure
 without it cannot distinguish a quiet venue from a busy host.
+
+---
+
+## Amendment 3 — the ANALYSIS stage, preregistered 2026-08-20 before any window data exists
+
+Written while the capture is running and **before a single window has been
+read**. That ordering is the point: specifying the statistics now costs nothing
+and removes the possibility of choosing them once their answers are visible.
+
+**Nothing here alters the running capture.** No threshold, universe rule,
+channel, schedule or gate is touched. This section is inert until the analysis
+gate opens.
+
+### Standing rules while the six windows are live
+
+1. **No intermediate universe optimisation.** Day 2's criteria are not changed
+   because day 1 looked surprising.
+2. **No preliminary alpha analysis.** Not even a glance at imbalance — a
+   hypothesis designed after an informal look is no longer preregistered.
+3. **No capacity retuning from one slot.** `DEFAULT_MAX_SEGMENT_RECORDS` stays
+   at 13,000 unless the §6 gate fires or the *completed* profile demonstrates a
+   real operational defect.
+4. **Invalid windows are preserved, never silently replaced.** A semantic
+   failure is part of the profile. §3 permits re-running a window lost to
+   *infrastructure* failure at the same slot on a later day, and requires the
+   loss to be reported; nothing else may be substituted.
+
+### The analysis gate
+
+Analysis begins only when **all six windows have completed**, or when the set
+has **halted** under §6. A partial set is reported as partial.
+
+### A — is production capacity healthy enough to leave the collector frozen?
+
+Mechanical, from the six window artifacts:
+
+* `max(peak_1s_sliding)` across all six, against the **3,500 f/s** stop and the
+  ~**6,900 f/s** closer envelope.
+* segment rotations per window, and records per segment against the 13,000
+  constant.
+* close latency and append behaviour; `rotation_failures`; `segments_committed`.
+* host load (`loadavg`, memory, disk) beside each rate, so venue intensity is
+  distinguishable from EVO contention.
+
+**Default is FROZEN.** Unfreezing collector engineering requires a demonstrated
+operational defect, not a large number.
+
+### B — the smallest stable panel with enough real sequenced traffic
+
+Descriptive only at this stage. **The universe-selection rule for the first
+panel is NOT defined here** — it is preregistered separately once these
+measurements exist, so that its thresholds are set against a known distribution
+rather than guessed.
+
+Per market, per window: order-book frames, trade frames, ticker frames,
+sequenced order-book rate, share of venue traffic, and window coverage.
+
+**Rank stability by channel** — the statistic that decides whether a stable
+"high microstructure activity" market exists at all, or whether activity is
+regime- and event-dependent:
+
+> ρ( OB activity in window *i* , OB activity in window *j* )
+
+computed as **Spearman rank correlation** over every window pair, and
+**separately for trade activity**, because the two channels may not agree and
+the first experiment leans on both.
+
+* **within day** — market-level, across that day's three slots (3 pairs/day).
+* **across days** — **series** level only, because market identity does not
+  persist (L23).
+
+Reported beside it, since a correlation alone cannot distinguish them:
+**persistence vs burstiness** — for each market, the median per-window frame
+count against its maximum, and the number of windows in which it cleared the §4
+activity floor. A market producing 20,000 frames in one window and nothing in
+five is explicitly *less* useful to the first experiment than one producing
+3,000–5,000 in all six, and the report must make that visible rather than
+ranking on totals.
+
+**§7 positive control:** the known-inactive market must **FAIL** §4's criteria.
+If it passes, the measurement is broken and the run is void.
+
+### C — does `MARKET-MICROSTRUCTURE-EDGE-001` need amendment?
+
+Checked **only** against assumptions already embedded in that document, and
+**only** against production facts — never against an edge result, which does not
+exist yet and must not exist when this check is made.
+
+| embedded assumption | what the profile checks |
+|---|---|
+| a 40-market universe clears §4's ≥1 snapshot + ≥500 deltas | how many markets actually clear it |
+| ≈360,000 rows at 1 Hz ⇒ ≈12,000 quasi-independent 30 s blocks | realised publishable-second count |
+| trade features need a lag on the order of the 580 ms max interarrival | measured cross-SID interarrival |
+| 30 s primary horizon carries measurable mid movement | realised mid-change distribution |
+| cost floor ≈ half-spread + fees is meaningful at these spreads | realised spread distribution |
+| 40 markets sit ~3.4× under the stop | realised peak against the projection |
+
+If every assumption survives, **run the preregistration unchanged.** If one is
+objectively wrong, **amend it, document why, and only then run** — with the
+amendment timestamped before any M0/M1 output is produced.
