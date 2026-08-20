@@ -1917,3 +1917,51 @@ research consumer reading the summary rather than the tape inherits a wrong
 generation count, a wrong segment count, and a false unhealthy flag, from a
 capture that was in fact clean. Repair is scoped to the reporting path; the raw
 tape is not to be touched.
+
+---
+
+## §18 — L23: the event time is `occurrence_datetime`, not `close_time`
+
+**L23 (binding).** A Kalshi market carries **two unrelated times**, and the one
+whose name suggests "when this market's life ends" is not the one that governs
+when it is active.
+
+| field | what it actually is |
+|---|---|
+| `occurrence_datetime` (== `expected_expiration_time`) | **the underlying event** — first pitch, match start. Activity tracks this. |
+| `close_time` (== `expiration_time`, `latest_expiration_time`) | a **settlement deadline**, typically *days* later |
+| `open_time` | when trading opened — often days *before* the event |
+
+Measured on the live production book:
+
+* `KXMLBGAME-26AUG222040MINSD-SD` — event `2026-08-23T03:40Z`, `close_time`
+  `2026-08-26T00:40Z`. **Three days apart.**
+* `KXATPMATCH-26AUG20TIRFIL-TIR` — event on 26 Aug 20, `close_time`
+  `2026-09-03`. **Two weeks apart.**
+
+**How this was found, because the failure mode is the point.** The first
+`PROD-ACTIVITY-PROFILE-001` universe rule selected markets "closing on the
+profile day" using `close_time`, and returned **zero candidates for both
+days** — a loud, unambiguous failure. Had the two fields been merely *close*
+rather than days apart, it would instead have returned a plausible-looking
+universe of markets whose events were elsewhere in the week, and the entire
+activity profile would have measured near-silent instruments while reporting a
+full 40-market universe. This is the recurring class in one sentence: **the
+field name was evidence of nothing, and the benign-looking answer was the
+dangerous one.**
+
+**Consequences for anything that selects a universe.**
+
+1. Select on `occurrence_datetime`. `close_time` answers a different question.
+2. A market being `status=open` says nothing about whether it is *active* —
+   markets are listed days ahead and are near-silent until their event
+   approaches. Openness is necessary, not sufficient.
+3. **Time-of-day and time-to-event are distinct axes and are easy to
+   conflate.** A universe held fixed across two days is, for event-driven
+   instruments, a universe whose activity is dominated by proximity to its
+   event rather than by the hour of the day. That is why
+   `PROD-ACTIVITY-PROFILE-001` freezes its universe **per day** (Amendment 2).
+4. **Same-day settlement means market identity does not persist.** Every
+   sampled market from the P4 tape was already `NOT OPEN` ~6 h after capture.
+   Cross-day comparison must therefore be made at **series** level; only
+   within-day comparison can use market identity.
