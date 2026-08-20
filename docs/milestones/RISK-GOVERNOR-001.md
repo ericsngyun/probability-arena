@@ -1442,3 +1442,131 @@ Now delete detection #1 and #2 and suppose the graph simply has no edge:
 
 The second half is the part that matters. The failure mode is not a governor
 that misses the edge; it is a governor that treats **missing** as **absent**.
+
+## 10. What the governor needs and does not have
+
+**The governor cannot be trusted until three models exist, and none does.**
+
+| missing model | what it would answer | why its absence is disqualifying |
+|---|---|---|
+| **fill model** | would this order have filled, at what size, at what queue position | every constraint in §6 is expressed in units of a position we assume we can obtain |
+| **markout model** | after a fill, does the price move against us, and for how long | the only way to measure adverse selection — R4 in `VOLATILITY-STATE-ENGINE-001` is `NOT_COMPUTABLE` for the same reason |
+| **verified cost model** | what did the round trip actually cost, measured against realised fills | the economic gate everywhere in this repo currently rests on a *modelled* cost |
+
+**A governor calibrated on assumed fills fails exactly when it matters.** In R0
+the assumption is nearly harmless — a resting order in a deep quiet book fills
+roughly as modelled. In R3 and R4 it is wrong in the same direction as the risk:
+the book is thin, the queue is adverse, and the fills you *do* get are
+disproportionately the ones you did not want. An assumed-fill governor is
+therefore most optimistic precisely in the states it exists to protect against,
+and it will report healthy sizing into a liquidity vacuum.
+
+**This is one dependency, not three caveats.** The same missing artifact — a
+**realized-fill corpus** — is the binding constraint on three specs:
+
+* `ALPHA-FACTORY-001` — its economic gate has no machine-checkable truth source
+  and bottoms out in human attestation.
+* `VOLATILITY-STATE-ENGINE-001` — R4 toxic flow cannot be computed at all.
+* this document — every constraint in §6 is denominated in unobtainable units.
+
+`ALPHA-FACTORY-001`'s worked example sets the scale precisely:
+EDGE-DISCOVERY-001's **E2 was a real, out-of-sample-replicating lead at 70% of
+its cost floor.** A cost model **30% optimistic** converts our one genuine
+historical finding into a graduate. A conservatism multiplier does **not**
+protect against this: it scales the terms you *modelled* and is blind to an
+omitted one such as the `ceil_to_cent` fee minimum, which does not improve with
+better execution and which was the binding constraint the last time we measured.
+
+**Therefore, binding:** until a realized-fill corpus exists the governor operates
+in `UNCALIBRATED` mode, in which its only trustworthy output is `NO_TRADE`. A
+permissive verdict from an uncalibrated governor is not a verdict.
+
+## 11. The escalation ladder
+
+Each rung requires evidence the rung below could not have produced, so passage is
+never a matter of time served.
+
+| rung | required evidence | what it still cannot show |
+|---|---|---|
+| **SHADOW** | decisions logged prospectively against live tape, zero capital, full veto audit trail; `NO_TRADE` rate and reasons stable and explicable | nothing about fills — shadow decisions are never filled |
+| **TINY CAPITAL** | shadow clean over a preregistered window; **a fill corpus begins to exist**; per-trade loss bounded to a rounding error of total capital | statistical power — n is tiny by construction |
+| **SCALE** | fill and markout models fitted on *realised* fills and validated out-of-sample; cost model verified against them; governor recalibrated and re-passing shadow **with measured numbers replacing every placeholder** | regime coverage it has not yet lived through |
+
+**Tiny capital's purpose is not profit — it is to create the fill corpus §10
+requires.** It is a measurement instrument, and must be sized so that being
+completely wrong is affordable, not so that being right is meaningful.
+
+**The ratchet is one-directional.** Demotion is automatic on any kill-switch
+trigger; promotion always requires fresh evidence and an explicit human
+decision. No rung is regained by waiting.
+
+## 12. Kill switches
+
+Deterministic, evaluated before every decision, and each one **latches** — it
+does not clear when the condition passes, because an oscillating condition is
+exactly the case where automatic re-entry is worst.
+
+| trigger | action |
+|---|---|
+| realised drawdown exceeds `D_max` **[PLACEHOLDER]** | halt all new risk; positions to exit-only |
+| realised slippage exceeds modelled cost by `κ_break` **[PLACEHOLDER]** over `n` fills | halt — the cost model is falsified, so every §6 constraint is wrong |
+| markout adverse beyond `m_max` **[PLACEHOLDER]** over a rolling window | halt — this is R4 arriving |
+| any §6 input unavailable or stale beyond `t_stale` **[PLACEHOLDER]** | halt — a missing input is never a permissive one |
+| governor decision latency exceeds budget | halt — a late veto is not a veto |
+| position or exposure disagrees with venue state | halt immediately — reconciliation failure means we do not know what we own |
+| `UNCALIBRATED` mode with a non-`NO_TRADE` verdict requested | halt and raise — a logic error, not a market event |
+
+**Un-latching requires a human and a written reason**, recorded with the same
+provenance discipline as a preregistration amendment.
+
+## 13. Observability — every veto auditable after the fact
+
+Emitted for **every** decision, including permissive ones:
+
+```
+decision_id, timestamp, market, strategy_id, regime_label,
+alpha_input, alpha_interval,
+constraint_values: {kelly, cvar, liquidity, inventory, drawdown},
+binding_constraint,            # which min() term actually bound
+budget_terms: {sigma, liquidity, drawdown, model_uncertainty},
+cost_floor_used, cost_model_version, calibration_mode,
+verdict, verdict_reason_code,
+inputs_missing: [...]          # typed absence, never silently defaulted
+```
+
+`binding_constraint` is what makes the record useful: a size is uninterpretable
+without knowing *which* limit produced it, and a governor whose binding term
+never varies has one real rule and four decorative ones — a defect worth
+detecting.
+
+**A veto with no reason code is a defect, not a veto.** `inputs_missing` must be
+present-and-empty rather than absent, so "we had everything" and "we never
+checked" stay distinguishable in the record.
+
+## 14. What would falsify this design, and what it cannot do
+
+**Falsified if:**
+
+1. **The `min()` is decorative.** If one term binds in essentially every
+   decision, the others are ornaments and §6's composition claim is false.
+2. **Regime conditioning does not change outcomes.** If realised slippage and
+   markout conditional on regime are indistinguishable, §8's ladder is ceremony.
+3. **Placeholders never converge.** If measured values land wildly outside the
+   placeholder ranges once a fill corpus exists, the structure was
+   mis-specified rather than merely un-tuned.
+4. **Abstention is never correct.** If `NO_TRADE` decisions, evaluated
+   counterfactually, would have been profitable at least as often as not, the
+   governor destroys value rather than protecting it. **This must be measured,
+   not assumed** — an unfalsifiable risk system always looks prudent.
+
+**It cannot:**
+
+* size anything trustworthily before §10's models exist;
+* detect toxicity today — no fills, no markouts;
+* protect against a correlated exposure the semantic graph never analysed, which
+  is why coverage gaps return `NO_TRADE(GRAPH_COVERAGE_UNKNOWN)` rather than an
+  assumption of independence;
+* substitute for an edge. A governor cannot make a negative-expectancy strategy
+  positive; it can only stop it compounding. Per `g(f*) = KL(p‖q)` and a prior of
+  `e_net ≤ 0`, **the most likely correct action of this system, for a long time,
+  is to refuse.**
