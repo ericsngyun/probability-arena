@@ -45,3 +45,89 @@ which one it is.
 Absent from both abstracts, therefore **unverified**: sample construction and selection; whether "execution-aware" nets fees, half-spread, capital lock-up, or all three (this ambiguity alone makes the 2–4% unusable as a design input); the human-validation protocol and inter-rater agreement; any error bars, confidence intervals, or robustness checks; venue list; peer-review status; replication. Neither number has been reproduced in-repo, and neither venue-behaviour claim has been checked against wire evidence.
 
 **Load-bearing consequence:** the executable-vs-theoretical *distinction* stands on its own logic and needs neither paper to be true. The *magnitudes* (2–4%, $1.12M) are third-party claims about other people's venues and must not be treated as effect sizes for our own prior.
+
+---
+
+## 1. What the verification actually changed
+
+Three findings from retrieval matter more than the two figures that were relayed.
+
+**The two papers are not independent.** They share a first author. Treat them as
+one research programme, not as corroboration.
+
+**The $1.12M splits in a way that nearly deletes the opportunity for us.**
+`$1.086M` was **converter-enabled** — it depended on Polymarket's NegRisk
+Adapter operationalizing a NO→YES transformation *before settlement*. Only
+**$32K (~2.9%)** came from the **hold-to-settlement basket** route. Kalshi
+exposes **no cross-market merge primitive**, so the settlement route is the only
+one available to us. The headline number is real and describes a mechanism we do
+not have.
+
+**Violations concentrate on the side that cannot be executed.** This is the
+paper's own finding and it is the most important sentence for this design.
+Mispricings persist *precisely where the venue forbids the transformation*. An
+efficient market can leave a payoff identity violated indefinitely if nobody can
+act on it — so a large observed gap is **weak evidence of opportunity and strong
+evidence that the transformation is blocked.** The naive reading of a big number
+is inverted.
+
+Also: **~6% of events are cross-listed at all**, a hard ceiling on any
+cross-venue lane before any edge question is asked. And the **2–4% figure is not
+usable as a design input** — the abstracts never say whether "execution-aware"
+nets fees, half-spread, capital lock-up, or all three, and a number whose cost
+basis is unknown cannot be compared against our cost floor. Comparing it anyway
+is the error doctrine 2 exists to prevent.
+
+**Net effect.** The *distinction* between mathematical and executable arbitrage
+(doctrine 11) is confirmed and is the paper's central framing. The *magnitudes*
+are third-party claims about a different venue with a primitive we lack. They
+motivate; they do not license.
+
+## 2. Nodes are propositions, not tickers
+
+A node is a **canonical proposition**, identified by a digest over its
+resolution semantics:
+
+| field | why it is in the digest |
+|---|---|
+| `resolution_criteria` | the actual test that decides the outcome |
+| `resolution_source` | who adjudicates — two markets on "the winner" can differ on the arbiter |
+| `resolution_timing` | when it is decided, anchored on `occurrence_datetime` (L23) |
+| `scope_qualifiers` | exclusions, tie handling, void conditions, partial settlement |
+
+**Titles are never compared.** Two markets are equivalent only if their
+resolution semantics are. Paraphrase similarity is precisely the signal that
+produces confident false equivalences, which §5 shows is the failure mode the
+rest of the pipeline cannot catch.
+
+**`NOT_EXTRACTED` or `NOT_STATED` in any digest field BLOCKS equivalence**
+rather than defaulting to a match (doctrine 10). Unknown is not equal.
+
+**Markets attach as expiring bindings.** Per L23 a ticker's identity does not
+persist — `KXMLBGAME-26AUG19…` is gone within a day. A `MarketBinding` therefore
+carries the rules-text hash plus a validity window, and **a rules amendment
+marks every edge touching it `STALE`**, never "still valid". An edge is a claim
+about two rule sets, so it dies when either changes.
+
+## 3. The relationship ontology (closed vocabulary)
+
+| relation | constraint |
+|---|---|
+| `equivalent` | `P(A) = P(B)` — requires resolution-digest equality |
+| `complement` | `P(A) + P(B) = 1` |
+| `implication` | `P(A) ≤ P(B)` — direction is load-bearing and easy to invert |
+| `mutually_exclusive` | `ΣP ≤ 1` |
+| `exhaustive` | `ΣP ≥ 1` |
+| `conditional` | `P(A∧B) = P(A\|B)·P(B)` |
+| `parent_child` | monotone CDF over parsed strikes ("over 3.5" vs "over 4.5") |
+| `cross_venue_equivalent` | `\|P₁ − P₂\| ≤ δ`, **δ typed `UNKNOWN`, never 0** |
+
+`δ` is not zero because venues differ in fees, settlement timing, void rules and
+adjudication source. A cross-venue edge asserting exact equality is asserting
+those are identical, which is false by default.
+
+**Deliberately excluded: `independent`, `correlated`, `similar`, `related`.**
+"Similar" is the relation that kills you: it carries no constraint, so it can
+never be violated, so it can never be *wrong* — which is exactly how a guess
+gets laundered into a graph that otherwise looks rigorous. **Every admitted
+relation must be falsifiable by a price.**
