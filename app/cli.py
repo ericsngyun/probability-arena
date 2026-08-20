@@ -8776,6 +8776,91 @@ def _add_provider_gate_args(sub) -> None:
     )
 
 
+def realized_fill_corpus_report(
+    fixtures_dir: str | None = None, fmt: str = "text"
+) -> int:
+    """REALIZED-FILL-CORPUS-001 — decode the pinned fixture corpus and report
+    coverage.
+
+    READ-ONLY and OFFLINE. Opens no socket, holds no key material, and cannot
+    submit a transaction: it reads pinned JSON off disk and runs the decoder
+    over it. This verb exists so the decoder has a caller OUTSIDE its own test
+    module (doctrine 5) — CP4 shipped 1,186 lines and 81 green tests that
+    nothing in app/ could reach, and a unit suite cannot catch that.
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    from app.fills.corpus import build_realized_fill, corpus_summary
+    from app.fills.provenance import load_fixture_set, verify_offline
+    from app.fills.schema import Side
+
+    root = _Path(fixtures_dir) if fixtures_dir else (
+        _Path(__file__).resolve().parents[1]
+        / "tests" / "fixtures" / "solana_fills"
+    )
+    if not (root / "MANIFEST.json").exists():
+        print(f"no fixture manifest at {root}")
+        return 2
+
+    fixtures = load_fixture_set(root)
+    problems = verify_offline(fixtures)
+
+    fills = []
+    per_fixture = []
+    for entry in fixtures.entries:
+        payload = fixtures.payload(entry)
+        party = (entry.expected or {}).get("party")
+        # Side and base mint are DECISION facts, not chain facts. For
+        # third-party evidence we declare DISPOSE purely so the record is
+        # well-formed; nothing economic is claimed about it.
+        fill = build_realized_fill(
+            payload,
+            side=Side.DISPOSE,
+            base_mint="(third-party transaction; no decision of ours)",
+            party=party,
+        )
+        fills.append(fill)
+        per_fixture.append({
+            "capture_id": entry.capture_id,
+            "hard_cases": list(entry.hard_cases),
+            "status": fill.status.value,
+            "decoder_notes": list(fill.decoder_notes),
+            "record": fill.as_json(),
+        })
+
+    summary = corpus_summary(fills)
+    summary["provenance_violations"] = problems
+
+    if fmt == "json":
+        print(_json.dumps(
+            {"summary": summary, "fixtures": per_fixture}, indent=2))
+        return 1 if problems else 0
+
+    print("REALIZED-FILL-CORPUS-001 — pinned fixture corpus")
+    print(f"  fixtures root      : {root}")
+    print(f"  fixtures           : {len(fixtures.entries)}")
+    print(f"  provenance problems: {len(problems)}")
+    for problem in problems:
+        print(f"    VIOLATION {problem}")
+    print(f"  status counts      : {summary['status']}")
+    print("  field coverage (present/absent, absence reasons):")
+    for name, cov in summary["coverage"].items():
+        print(f"    {name:<22} {cov['present']}/{cov['absent']} "
+              f"{cov['absent_reasons'] or ''}")
+    print("  markout coverage:")
+    for name, cov in summary["markout_coverage"].items():
+        print(f"    {name:<22} {cov['present']}/{cov['absent']} "
+              f"{cov['absent_reasons'] or ''}")
+    print(f"  eps_fill rows      : {summary['eps_fill_rows']}")
+    print(f"    {summary['eps_fill_note']}")
+    print("  per fixture:")
+    for row in per_fixture:
+        print(f"    {row['capture_id']:<42} {row['status']}")
+        print(f"      hard cases: {', '.join(row['hard_cases'])}")
+    return 1 if problems else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     from app.services.crypto_sparse_observation import (
         DEFAULT_REPORT_HOURS as OBS_COVERAGE_DEFAULT_HOURS,
@@ -8873,6 +8958,17 @@ def build_parser() -> argparse.ArgumentParser:
     err.add_argument("--base", type=str, default=None,
                      help="registry root (defaults to ./experiments)")
     err.add_argument("--format", choices=("text", "json"), default="text", dest="fmt")
+
+    rfc_p = subparsers.add_parser(
+        "realized-fill-corpus-report",
+        help="REALIZED-FILL-CORPUS-001: decode the pinned real-mainnet "
+             "fixture corpus and report per-field coverage and absence "
+             "reasons. Offline, read-only, no socket, no capital. Exit 1 = "
+             "a fixture failed its own provenance claim.")
+    rfc_p.add_argument("--fixtures-dir", type=str, default=None,
+                       dest="fixtures_dir")
+    rfc_p.add_argument("--format", choices=("text", "json"), default="text",
+                       dest="fmt")
 
     ktm_p = subparsers.add_parser(
         "kalshi-tape-manifest",
@@ -10032,6 +10128,9 @@ def main(argv: list[str] | None = None) -> int:
         return experiment_registry_register(
             manifest=args.manifest, confirm=args.confirm and not args.dry_run,
             base=args.base, fmt=args.fmt)
+    if args.command == "realized-fill-corpus-report":
+        return realized_fill_corpus_report(
+            fixtures_dir=args.fixtures_dir, fmt=args.fmt)
     if args.command == "kalshi-tape-manifest":
         return kalshi_tape_manifest(
             environment=args.environment, out_json=args.out_json,
