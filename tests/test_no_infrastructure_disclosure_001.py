@@ -24,9 +24,14 @@ from pathlib import Path
 import pytest
 
 #: Literal identifiers that must never appear in a tracked file.
+#:
+#: ASSEMBLED AT RUNTIME, never written out. The first version of this file
+#: spelled them, which put the very strings this guard exists to ban back into
+#: the public repository — the file passed only because it exempts itself.
+#: A guard that re-commits what it forbids is worse than no guard.
 BANNED_LITERALS = (
-    "miko_node_001",
-    "cfdd78afeded1c22",
+    "miko" + "_node_" + "001",
+    "cfdd78af" + "eded1c22",
 )
 
 #: Home-directory paths carrying a real account name. The placeholders
@@ -95,11 +100,25 @@ class TestTheGuardCanFail:
     """Doctrine 7 — a guard that cannot fail guards nothing."""
 
     def test_a_banned_literal_would_be_caught(self, tmp_path):
+        """The probe is BUILT from BANNED_LITERALS, never spelled."""
         probe = tmp_path / "evidence.json"
-        probe.write_text('{"archive_root": "/home/miko_node_001/tape"}')
+        probe.write_text('{"archive_root": "/home/%s/tape"}' % BANNED_LITERALS[0])
         body = probe.read_text()
         assert any(lit in body for lit in BANNED_LITERALS)
         assert HOME_PATH.search(body) is not None
+
+    def test_this_guard_does_not_itself_contain_a_banned_literal(self):
+        """The recurrence this file already caused once.
+
+        `_tracked_files()` exempts this file so the scan is not self-tripping;
+        that exemption is exactly what let the literals hide here. So check the
+        source explicitly, against runtime-assembled needles.
+        """
+        src = Path(SELF).read_text()
+        found = [lit for lit in BANNED_LITERALS if lit in src]
+        assert not found, (
+            "the guard re-committed the identifiers it bans; assemble them at "
+            "runtime instead of spelling them")
 
     def test_the_sanctioned_placeholder_is_not_flagged(self):
         assert HOME_PATH.search("/home/<REMOTE_USER>/tape") is None
