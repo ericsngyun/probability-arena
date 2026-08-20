@@ -570,6 +570,55 @@ condition and requiring the metric to become non-benign:
 A decoder that returned the same answer under any of these would be reading
 something other than the ledger it claims to measure.
 
+### 11.1 Full suite
+
+```
+5,398 passed, 11 failed, 7 skipped, 4 xfailed   (847 s)
+```
+
+**None of the 11 failures is in a file this branch touched.** The branch
+changed exactly `app/fills/*`, `app/adapters/solana_rpc.py`, `app/cli.py`,
+`scripts/fetch_realized_fill_fixtures.py`, `tests/fixtures/solana_fills/*` and
+`tests/test_realized_fill_*.py`. The failures are:
+
+| failure | assessment |
+|---|---|
+| `test_live_market_001.py::TestEndToEnd` ×4 | the documented flaky CLASS (`docs` / repo memory: the failing member rotates under load) |
+| `test_crypto_horizon_obs_001.py::TestCohort` ×3 | **pass in isolation** — order/time dependent |
+| `test_ops009.py::…marketops_report_cli_surfaces_promotion` | **passes in isolation** |
+| `test_marketops.py`, `test_tennis_live_source_001.py` | source-backed provider tests, unrelated lane |
+| `test_kalshi_prod_capture_p4_001.py::…NOT_MEASURABLE_never_zero` | fails in isolation too; Kalshi replay-equality state at this branch point. `app/realtime/` and the Kalshi path were **not touched** (frozen, per the milestone's constraints) |
+
+### 11.2 Safety
+
+Canonical text grep over the new surface — **no hits**:
+
+```
+grep -rinE "expected_value|kelly|position_siz|paper_trad|place_order|submit_order|
+create_order|wallet|recommended_side|trade_recommend|execute_trade" \
+  app/fills/ app/adapters/solana_rpc.py --include="*.py"
+```
+
+AST identifier audit (`FrontierEvalService.safety_audit`, the stricter
+identifier-level check behind `frontier-eval-report --include-safety`):
+
+```
+files_scanned: 137
+safety_ok    : True
+violations   : 0
+```
+
+**No allowlist entry was added or requested.** The package is written in
+domain vocabulary — route, leg, fee payer, owner account, venue program — that
+does not collide with the banned fragments.
+
+### 11.3 Deployment state
+
+**Nothing is deployed.** Not on EVO-X2, not anywhere. No flag was added, no
+timer, no systemd unit, no migration, no model, no table. The branch is not
+merged. `PROD-ACTIVITY-PROFILE-001`'s live Kalshi capture on `evo-x2` was not
+contacted and `app/realtime/` was not modified.
+
 ---
 
 ## 12. The single most likely way this corpus produces a wrong cost basis
