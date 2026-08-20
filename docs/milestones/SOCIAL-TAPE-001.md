@@ -453,14 +453,23 @@ Two runners-up, recorded for the same reason:
 |---|---|
 | `tests/test_social_tape_001.py` | 72 |
 | `tests/test_social_cost_guard_001.py` | 29 |
-| `tests/test_social_x_collector_001.py` | 42 |
-| **total** | **143** |
+| `tests/test_social_x_collector_001.py` | 46 |
+| **total** | **147** |
 
 All fixture-driven. No network, no credentials, no live transport exists.
 Fixture frames carry provenance (doctrine 9) and are honestly marked
 `SYNTHETIC` — no wire capture exists, because nothing has been connected. A
 later milestone that captures real frames replaces the basis field, and only
 then do these tests certify venue truth rather than our own imagination.
+
+**Doctrine 5 (reachability), stated honestly.** `TestSeam` drives the real tape
+writer, the real cost guard and the real ledger and asserts state OUTSIDE the
+collector — bytes on disk, a counter re-read from disk through a fresh guard,
+ledger membership. But **nothing in `app/` imports `app.social`**: there is no
+CLI command, no flag, and no scheduled caller, because building one is part of
+the activation decision. `test_no_module_in_app_imports_app_social` states that
+gap as an assertion, so if it ever fails, a production caller has appeared and
+that requires an explicit decision.
 
 Positive controls included, per doctrine 7: the AST guard can fail, the import
 scan can fail, a forced reconnect moves `subscription_generation`, a forced
