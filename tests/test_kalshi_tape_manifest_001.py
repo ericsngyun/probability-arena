@@ -56,6 +56,15 @@ from app.services.kalshi_tape_manifest import (
 )
 
 T0 = datetime(2026, 8, 15, 12, 0, 0, tzinfo=timezone.utc)
+
+
+def _now_utc() -> datetime:
+    """The same clock the code under test reads.
+
+    A fixture that pins an absolute future date is a time bomb with a known
+    detonation date; one that tracks the clock the assertion depends on is not.
+    """
+    return datetime.now(timezone.utc)
 PROBE = ProbePolicy(reads=4, interval_seconds=150.0)
 
 
@@ -110,7 +119,21 @@ def mkt(
         "yes_ask_size_fp": ask_size,
         "updated_time": (updated or (T0 - timedelta(minutes=5))).isoformat().replace(
             "+00:00", "Z"),
-        "close_time": (close or (T0 + timedelta(days=3))).isoformat().replace(
+        # ANCHORED TO REAL `now`, NOT TO T0 -- DELIBERATELY.
+        #
+        # `T0 + 3 days` expired on 2026-08-18 and silently turned the POSITIVE
+        # CONTROL below into a REFUSED: 0 of 24 markets were still open, so the
+        # one test proving the tool CAN return QUALIFIED on a healthy venue
+        # stopped proving it. Every REFUSED verdict this suite produces is only
+        # meaningful because that control passes (doctrine 7), so the bomb did
+        # not merely break a test -- it disarmed the guard that makes the
+        # milestone's refusals trustworthy.
+        #
+        # The eligibility filter under test compares `close_time` against the
+        # REAL clock, so the fixture must too. T0 stays fixed for everything
+        # snapshot-level (`census_started_at == T0` still holds) and the frame
+        # digest is unaffected: it commits to (ticker, screen_statistic) only.
+        "close_time": (close or (_now_utc() + timedelta(days=3))).isoformat().replace(
             "+00:00", "Z"),
     }
 
