@@ -799,6 +799,72 @@ class TestEndToEnd:
         assert artifact.media[0].retrieved is False
 
 
+class TestSeam:
+    """Doctrine 5: prove observable state changes through the REAL collaborators.
+
+    A unit suite cannot catch an unreachable module, because from inside the
+    module everything works. These assertions instantiate the real tape writer,
+    the real cost guard and the real ledger, drive the real collector path, and
+    check state OUTSIDE the collector: bytes on disk, a persisted counter, and
+    ledger membership.
+
+    Known and deliberate gap, recorded rather than hidden: nothing in `app/`
+    imports `app.social` — there is no CLI command, no flag, and no scheduled
+    caller, because building one is part of the activation decision and this
+    milestone activates nothing. The seam proven here is collector-to-
+    collaborators, NOT collector-to-production.
+    """
+
+    async def test_the_tape_file_actually_grows_on_disk(self, tmp_path):
+        harness = Harness(tmp_path, frames=[frame(post_bytes("1001"))])
+        events = harness.tape.directory / "events.jsonl.gz"
+        before = events.stat().st_size
+        await harness.collector.run()
+        harness.tape.close()
+        assert events.stat().st_size > before
+        assert (harness.tape.directory / "manifest.json").exists()
+
+    async def test_the_persisted_cost_counter_actually_moves(self, tmp_path):
+        ledger_path = tmp_path / "cost.json"
+        harness = Harness(
+            tmp_path,
+            frames=[frame(post_bytes("1001"), seq=0), frame(post_bytes("1002"), seq=1)],
+        )
+        assert harness.guard.read_state().consumed == 0
+        await harness.collector.run()
+        # Re-read from disk through a NEW guard: the count is durable, not
+        # merely in-memory.
+        reborn = MonthlyReadCostGuard(ledger_path, CostBudget(max_reads_per_month=100))
+        assert reborn.read_state().consumed == 2
+
+    async def test_the_shared_ledger_instance_is_the_one_that_is_updated(
+        self, tmp_path
+    ):
+        harness = Harness(tmp_path, frames=[frame(post_bytes("1001"))])
+        assert harness.ledger.counters()["tracked_messages"] == 0
+        await harness.collector.run()
+        assert harness.ledger.counters()["tracked_messages"] == 1
+
+    def test_no_module_in_app_imports_app_social(self):
+        """States the gap as a fact so a future milestone must change it.
+
+        If this ever fails, `app.social` has gained a production caller — which
+        is exactly the activation event this milestone forbids, so the failure
+        is the alarm, not a nuisance.
+        """
+
+        importers: list[str] = []
+        for path in APP_ROOT.rglob("*.py"):
+            if path.is_relative_to(SOCIAL_PACKAGE):
+                continue
+            if "app.social" in path.read_text(encoding="utf-8"):
+                importers.append(str(path.relative_to(APP_ROOT)))
+        assert importers == [], (
+            "app/social is now reachable from production code; SOCIAL-TAPE-001 "
+            f"activates nothing, so this needs an explicit decision: {importers}"
+        )
+
+
 class TestPayloadParsing:
     def test_non_json_is_refused(self):
         with pytest.raises(XPayloadError):
