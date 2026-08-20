@@ -1754,3 +1754,57 @@ of §16.2.1 nor the 14× first stated.
 exceeds it. The sizing input was **low, not conservative**. L20 still binds —
 one ten-minute overnight window is not a peak-capacity estimate, and the true
 daily peak is very likely higher than 612.
+
+---
+
+## §16.4 — the sequence domain is per-SID, measured on production
+
+The P4 tape carries four subscription identities, and each channel has its own:
+
+| sid | channels carried | frames | `seq` |
+|---|---|---:|---|
+| 1 | `orderbook_delta`, `orderbook_snapshot` | 79,256 | **1 … 79,256, perfectly contiguous** |
+| 2 | `ticker` | 2,395 | **always null** — unsequenced |
+| 3 | `trade` | 2,516 | present, own domain |
+| — | `subscribed` (control acks) | 3 | null |
+
+**L22 (binding). `seq` is global within a SID, not within a connection.** Each
+channel is subscribed separately and gets its own counter. This is the
+production confirmation of the DEMO-derived claim in §4, and it sharpens it: the
+sequence domain is `(session, subscription_generation, sid)` — the sid component
+is load-bearing, not decorative.
+
+**Consequence for B3, recorded so it is not re-litigated.** It is tempting to
+read the 2,516 skipped `trade` frames as B3's production surface, because
+`replay()` skips them through the same `continue` and they *do* carry a non-null
+`seq`. **They are not.** They live on sid 3, where replay never builds a router
+at all, so no orderbook sequence can be perturbed by skipping them. The
+orderbook sid replays **1 … 79,256 with zero gaps, zero faults, zero refusals,
+and every book publishable** — measured, not asserted. B3's surface on this tape
+is genuinely **zero**, and B3 must continue to be closed against a wire-faithful
+`error`-frame fixture rather than against production evidence.
+
+**Snapshot behaviour.** 13 snapshots for 12 markets: one market
+(`KXMLBGAME-26AUG191805MIAPHI-PHI`) was re-snapshotted **inside a single
+generation**, with `connection_generation` and `subscription_generation` both
+constant at 1 for all 84,170 records. A mid-generation re-snapshot is ordinary
+venue behaviour and must not be read as a reconnect.
+
+### §16.4.1 — root causes of the P4 readout defects, from this tape
+
+Each of the reported figures is contradicted by the tape, and three of the four
+causes are now identified rather than merely observed:
+
+| readout reported | tape measures | cause |
+|---|---|---|
+| `subscription_generations: 3` | **1** distinct generation | **counts SIDS (3), labels them generations** |
+| `segments_committed: 1` | **7** distinct `segment_id` | undercount — commit accounting |
+| `healthy: false` | all 12 books `publishable`, 0 faults | readout, not state |
+| claim path `ROOT/production/` | on disk `ROOT/env=production/` | partition prefix dropped |
+
+These are **readout** defects: the archived evidence is correct and the replayed
+state is correct in every case. That is precisely why they are dangerous — a
+research consumer reading the summary rather than the tape inherits a wrong
+generation count, a wrong segment count, and a false unhealthy flag, from a
+capture that was in fact clean. Repair is scoped to the reporting path; the raw
+tape is not to be touched.
