@@ -276,12 +276,24 @@ class XFilteredStreamCollector:
 
     async def run(self, *, max_frames: int | None = None) -> CollectorReport:
         """Consume frames until the stream ends, the budget stops us, or
-        ``max_frames`` is reached."""
+        ``max_frames`` is reached.
+
+        The transport is released in a ``finally`` on every exit path,
+        including the budget stop and an exception, so a run that ends early
+        never leaves the stream half-consumed.
+        """
 
         self.assert_startable()
         report = CollectorReport()
         await self.reconcile_rules()
+        try:
+            return await self._consume(report, max_frames)
+        finally:
+            await self._transport.aclose()
 
+    async def _consume(
+        self, report: CollectorReport, max_frames: int | None
+    ) -> CollectorReport:
         async for frame in self._transport.frames():
             report.frames_seen += 1
 

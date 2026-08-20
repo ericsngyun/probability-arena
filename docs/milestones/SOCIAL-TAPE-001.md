@@ -453,8 +453,8 @@ Two runners-up, recorded for the same reason:
 |---|---|
 | `tests/test_social_tape_001.py` | 73 |
 | `tests/test_social_cost_guard_001.py` | 30 |
-| `tests/test_social_x_collector_001.py` | 46 |
-| **total** | **149** |
+| `tests/test_social_x_collector_001.py` | 47 |
+| **total** | **150** |
 
 All fixture-driven. No network, no credentials, no live transport exists.
 Fixture frames carry provenance (doctrine 9) and are honestly marked

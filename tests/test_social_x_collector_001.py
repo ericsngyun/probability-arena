@@ -578,6 +578,21 @@ class TestStreamLifecycle:
         ]
         assert "platform_error" in events
 
+    async def test_the_transport_is_released_on_every_exit_path(self, tmp_path):
+        # normal end
+        harness = Harness(tmp_path / "a", frames=[frame(post_bytes())])
+        await harness.collector.run()
+        assert harness.transport.closed is True
+
+        # early stop on the budget
+        stopped = Harness(
+            tmp_path / "b",
+            budget=1,
+            frames=[frame(post_bytes("1"), seq=0), frame(post_bytes("2"), seq=1)],
+        )
+        await stopped.collector.run()
+        assert stopped.transport.closed is True
+
     async def test_max_frames_stops_the_run(self, tmp_path):
         frames = [frame(post_bytes(str(1000 + i)), seq=i) for i in range(10)]
         harness = Harness(tmp_path, frames=frames)
