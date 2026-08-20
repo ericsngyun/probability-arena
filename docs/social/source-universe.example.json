@@ -1,0 +1,105 @@
+{
+  "_README": [
+    "SOCIAL-TAPE-001 — EXAMPLE source universe. This file is documentation.",
+    "",
+    "It is NOT loaded by anything. The live universe in this repository is",
+    "empty (app.social.sources.EMPTY_SOURCE_UNIVERSE), and configuring one is",
+    "a precondition for activation, alongside a configured monthly cost cap",
+    "and separate authorization.",
+    "",
+    "The selectors below are deliberately placeholders (EXAMPLE_*). Copying",
+    "this file does not configure a universe; it shows the SHAPE of one.",
+    "",
+    "Design target: 100-300 named rules whose individual value is being",
+    "measured. Every rule must carry a rationale you could defend when asked",
+    "to retire it, and an active_from you could condition a statistic on.",
+    "",
+    "Rules are RETIRED (active_until), never deleted, so that tape collected",
+    "under an older universe stays interpretable."
+  ],
+  "universe_id": "example-solana-v0",
+  "max_rules": 300,
+  "rules": [
+    {
+      "rule_id": "exchange.listing.example-venue",
+      "platform": "X",
+      "kind": "ACCOUNT",
+      "selector": "from:EXAMPLE_VENUE_ANNOUNCEMENTS",
+      "rationale": "Venue listing announcements are a scheduled, attributable information event with a known publisher.",
+      "active_from": "2026-09-01",
+      "tags": ["exchange_listing"]
+    },
+    {
+      "rule_id": "launchpad.example-pad",
+      "platform": "X",
+      "kind": "ACCOUNT",
+      "selector": "from:EXAMPLE_LAUNCHPAD",
+      "rationale": "Launchpad accounts publish graduation and migration events that have an on-chain counterpart we can align against.",
+      "active_from": "2026-09-01",
+      "tags": ["launchpad"]
+    },
+    {
+      "rule_id": "ecosystem.example-protocol",
+      "platform": "X",
+      "kind": "ACCOUNT",
+      "selector": "from:EXAMPLE_PROTOCOL",
+      "rationale": "Protocol accounts announce integrations and incidents that move attention across many entities at once.",
+      "active_from": "2026-09-01",
+      "tags": ["ecosystem"]
+    },
+    {
+      "rule_id": "caller.example-account-01",
+      "platform": "X",
+      "kind": "ACCOUNT",
+      "selector": "from:EXAMPLE_EARLY_CALLER_01",
+      "rationale": "Named individually rather than as a bucket so this account's contribution can be measured and this account alone retired.",
+      "active_from": "2026-09-01",
+      "tags": ["early_caller"]
+    },
+    {
+      "rule_id": "pattern.solana-address",
+      "platform": "X",
+      "kind": "ADDRESS_PATTERN",
+      "selector": "EXAMPLE_BASE58_ADDRESS_SHAPE",
+      "rationale": "Address-shaped strings are the only text form that can be aligned to an on-chain entity without a name lookup.",
+      "active_from": "2026-09-01",
+      "tags": ["address_pattern"]
+    },
+    {
+      "rule_id": "keyword.listing-migration",
+      "platform": "X",
+      "kind": "KEYWORD",
+      "selector": "EXAMPLE_LISTING_OR_MIGRATION_TERMS",
+      "rationale": "Listing and migration vocabulary marks a state change with a definite on-chain or venue counterpart.",
+      "active_from": "2026-09-01",
+      "tags": ["listing_keyword"]
+    },
+    {
+      "rule_id": "keyword.incident",
+      "platform": "X",
+      "kind": "KEYWORD",
+      "selector": "EXAMPLE_EXPLOIT_OR_RUG_TERMS",
+      "rationale": "Incident vocabulary marks the negative tail, which is the half of the distribution an attention-driven universe otherwise under-samples.",
+      "active_from": "2026-09-01",
+      "tags": ["incident_keyword"]
+    },
+    {
+      "rule_id": "channel.example-telegram",
+      "platform": "TELEGRAM",
+      "kind": "CHANNEL",
+      "selector": "EXAMPLE_TELEGRAM_CHANNEL",
+      "rationale": "Placeholder only. Telegram collection requires a recorded authorization grant and is NOT implemented in SOCIAL-TAPE-001.",
+      "active_from": "2026-09-01",
+      "tags": ["authorized_connector_placeholder"]
+    },
+    {
+      "rule_id": "channel.example-discord",
+      "platform": "DISCORD",
+      "kind": "CHANNEL",
+      "selector": "EXAMPLE_DISCORD_CHANNEL",
+      "rationale": "Placeholder only. Discord collection requires a recorded authorization grant and is NOT implemented in SOCIAL-TAPE-001.",
+      "active_from": "2026-09-01",
+      "tags": ["authorized_connector_placeholder"]
+    }
+  ]
+}
