@@ -230,6 +230,9 @@ def main(argv) -> int:
     short = span < a.seconds * 0.9
     # The capture exits 0 even when the SESSION failed, so its own status is
     # read rather than the process return code.
+    # `capped_time` and `capped_events` are the NORMAL terminal statuses for a
+    # bounded window -- the session stopped because it was TOLD to. Treating
+    # them as failures would have marked all six windows invalid.
     cap_status = None
     if cap_out.exists():
         try:
@@ -241,8 +244,12 @@ def main(argv) -> int:
     validity = "VALID"
     if proc.returncode != 0:
         validity = f"INVALID:capture_exit_{proc.returncode}"
-    elif cap_status not in (None, "ok", "completed", "complete"):
+    elif cap_status in ("archive_error",):
         validity = f"INVALID:session_status_{cap_status}"
+    elif cap_status == "capped_reconnects":
+        # The session gave up reconnecting. It produced evidence, but not for
+        # the window that was asked for.
+        validity = "TERMINATED_EARLY:capped_reconnects"
     elif tape.get("frames", 0) == 0:
         validity = "INVALID:no_frames"
     elif short:
