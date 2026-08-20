@@ -1085,3 +1085,360 @@ t4   σ returns to 1.1·σ_ref, spread 1c, depth 750, sequence clean.
 The step that matters is `t4`. Every other transition is arithmetic. `t4` is
 where an operator wants to type "conditions look fine now", and the design does
 not let them.
+
+---
+
+## 9. Prediction-market specifics that break the equities intuition
+
+Three properties of this venue make a risk layer ported from equities wrong in
+ways that do not announce themselves. Each gets a mechanism, not a warning.
+
+### 9.1 Terminal binary settlement risk — why mark-to-market understates the tail
+
+**The structural fact.** A position held to resolution pays **0 or 1**. There is
+no continuous liquidation of risk over the holding period and no partial
+outcome. The variance of the payoff is not *dissipated* along the path; it is
+**realised instantaneously at a known future timestamp**.
+
+Mark-to-market treats the current price as the position's value. That is correct
+as a *valuation* and wrong as a *risk measure*, and the error is not small:
+
+| | mark-to-market says | terminal settlement says |
+|---|---|---|
+| a position at mid 0.97 | very low volatility; the price barely moves; this is a quiet position | **a 3% chance of losing 100% of its marked value** |
+| a position at mid 0.50 | maximum MTM volatility | a 50/50 two-point payoff; the *variance* is high but the *tail* is no worse than the stake |
+| ten independent positions at 0.97 | ten quiet positions | `1 − 0.97¹⁰ = 26%` chance at least one resolves against; and if they share an underlying, **≈3% chance all ten do** |
+
+> **The inversion is the point.** In equities, low realised volatility usually
+> means low tail risk. On a binary, **low realised volatility means the market is
+> confident, which concentrates the entire remaining risk into a single instant
+> and a single Bernoulli draw.** A governor that reads MTM volatility as risk
+> will size *up* exactly on the positions whose tail is most concentrated.
+
+**Worked example.** A contract bought at 0.60, now marked 0.97.
+
+```
+MTM view:      unrealised gain +0.37 per contract; realised vol over the last
+               hour ≈ 0; the position "looks safe"; a vol-scaled risk model
+               allocates MORE room to it
+Terminal view: max terminal loss = the full stake, and the position now carries
+               0.97 of marked equity against a 3% chance of paying 0.
+               In marked-equity terms this is a 3% chance of −100%.
+```
+
+Both statements are true. Only the second is a risk statement.
+
+#### The three mechanisms the governor uses instead
+
+**(1) Settlement-Exposed Notional (`SEN`).** For a binary, maximum terminal loss
+per position equals the premium paid — long YES at 0.40 can lose 0.40; long NO
+at 0.60 can lose 0.60. So:
+
+```
+SEN_i        = stake_i                        (premium at risk, per position)
+SEN_cluster  = Σ_{i ∈ cluster} stake_i        (§9.3 defines the cluster)
+SEN_book     = Σ_i stake_i
+```
+
+`f_inventory,i` — the fourth term of the §6 `min` — is the largest `f_i` keeping
+`SEN_cluster ≤ S_max,c` and `SEN_book ≤ S_max` . **`S_max,c` and `S_max` are
+PLACEHOLDERS** (§17); their derivation must come from the §7.3 drawdown
+tolerance once that tolerance is declared, not from a number someone likes.
+
+`SEN` is deliberately **not** volatility-scaled, not price-scaled, and not
+discounted for how "certain" the market appears. A position at 0.97 consumes the
+same `SEN` per dollar staked as one at 0.50, because the maximum terminal loss is
+the same quantity — the stake. Any discount applied here is a bet that the market
+is right, which is the one bet the whole programme is trying to test rather than
+assume.
+
+**(2) The resolution calendar, and why the halt rule cannot save you.** This is
+the sharpest of the three, and it is easy to miss.
+
+> **A halt rule cannot fire between two simultaneous resolutions.** The soft and
+> hard halts of §12 are triggered by wealth crossing a level. If twenty positions
+> resolve inside the same minute, the wealth transition from "above the soft
+> halt" to "below the hard halt" happens in **one step**, with no decision point
+> in between. The halt rule's entire protective value assumes the losses arrive
+> *sequentially*. Resolution concentration voids that assumption.
+
+Therefore concentration in *resolution time* is constrained **ex ante**, not
+managed reactively:
+
+```
+for each time bucket b (bucket width DECLARED, PLACEHOLDER):
+    Σ  stake_i   ≤  S_bucket        over positions whose Δt lands in b
+```
+
+Breach → `NO_TRADE(RESOLUTION_CONCENTRATION_AT_LIMIT)`. Note that the bucket is
+keyed on **expected resolution time**, so it inherits every problem of §9.2's
+`Δt` estimate, and it uses the **pessimistic tail** of `Δt` on entry and the
+**optimistic** end when checking whether a bucket has cleared — the conservative
+direction on both sides.
+
+**(3) Resolution risk is not a Bernoulli.** Markets void, resolve ambiguously,
+resolve late, or resolve against the plain reading of the rule. These are
+**model-misspecification events living entirely outside `p`**. They are
+fat-tailed in the only sense that matters here: a rare event that takes the whole
+position and is not in the model.
+
+The governor's handling is structural, not probabilistic:
+
+* `RESOLUTION_CRITERIA_AMBIGUOUS` is a **gate**, evaluated before sizing — if the
+  resolution rule is not machine-checkable, or its source is disputed, the answer
+  is `NO_TRADE` and no amount of edge overrides it.
+* Void/ambiguous/adverse-adjudication scenarios are **enumerated entries in the
+  scenario floor** of §6.2 with *assigned* probabilities, not estimated ones.
+  This is required rather than optional: §6.2 established that at n = 50, **59%
+  of samples contain no instance of a 0.6%-frequency regime**, so the empirical
+  tail estimator is confidently and systematically too small precisely for this
+  class of event.
+
+**(4) And the mark itself must be executable.** Inherited from QDK §7.3 and
+non-negotiable:
+
+> **A position is marked off an executable EXIT quote, never off a reported
+> price or a mid.** For a CLOB long, mark off the **bid** side of the executable
+> ladder, walked to the position size. A mid-price mark on a thin binary book
+> manufactures half the spread per position on **every** valuation. If no
+> executable exit quote exists, the position is `NOT_MARKABLE` — a typed absence
+> and an abstention code — and **not** marked at the mid "for now".
+
+The Solana analogue quantifies how violent this can get: a $500 buy into the
+median observed pool raises the *reported* price by **82%** and, if marked
+there, shows an instantaneous **35% "profit" that is entirely the trade's own
+footprint**. The CLOB version of the same error is smaller per event and
+identical in kind, and it compounds because it is applied at every valuation
+rather than once.
+
+### 9.2 Capital is locked until resolution
+
+**`g` is per resolution.** Capital is committed for the duration, so the
+quantity to rank and budget is `g(f)/Δt`, and `Δt` is the **pessimistic tail**
+across every leg, not the expected value — markets extend, sports get postponed,
+elections get contested.
+
+The arithmetic of what a locked edge is actually worth, on a captured edge held
+to resolution:
+
+| captured edge | 7d | 30d | 90d | 365d |
+|---|---|---|---|---|
+| 1¢ | 68.9% | 13.0% | 4.2% | 1.0% |
+| 2¢ | 186.7% | 27.9% | 8.5% | **2.0%** |
+| 5¢ | 1350.6% | 86.7% | 23.1% | 5.3% |
+
+> **A 2-cent arbitrage on a one-year market annualizes to 2.0%** — worse than
+> T-bills, for unbounded tail risk and full operational cost.
+
+Two governor consequences:
+
+* **A capital-days budget.** `Σ_i stake_i · Δt_i ≤ CD_max` **[PLACEHOLDER]**.
+  Breach → `NO_TRADE(CAPITAL_LOCK_BUDGET_EXHAUSTED)`. Without this, a book can be
+  well inside every notional cap and still have committed its entire bankroll for
+  a year.
+* **Long-horizon markets are unvalidatable at any edge**, and the correct
+  response is to **decline them rather than lower the bar**. §11.1's sample
+  arithmetic needs 30,000–75,000 prospective observations; a 2 pp edge on
+  six-month markets cannot accumulate that in any human timeframe. `ADR-004`
+  already says the quiet part: *"If challengers never beat the baseline, the
+  correct outcome is improving models — not lowering the gate."*
+
+#### The kill switch is not an exit
+
+This deserves its own statement because it is the most likely thing to be assumed
+away:
+
+> **Every kill switch in §12 stops NEW exposure. Not one of them exits an
+> existing position.** Exiting requires a counterparty at a price, and §8
+> established that liquidity degrades precisely in the states where a kill switch
+> fires. A locked position resolves on the venue's schedule regardless of what
+> the governor decides.
+
+Two design rules follow, and they are strong:
+
+1. **The maximum loss the governor can actually control is the exposure it has
+   already permitted.** Everything beyond that is a hope about the exit book. So
+   the governor must size as though **no exit exists** — `f_inventory` is
+   computed on a hold-to-resolution assumption **always**, regardless of the
+   strategy's stated intent.
+2. **Exit intent is not an input.** A strategy that declares "I will be flat in
+   30 seconds" receives no credit for it. If exit intent could relax a cap, then
+   every strategy would declare a short holding period, and the cap would be set
+   by the strategy rather than by the governor — which is the failure mode §1
+   exists to prevent. Once a fill model and a markout model exist (§10), a
+   *measured* exit-fill distribution may inform the cap. A *declared* one never
+   may.
+
+### 9.3 Correlated exposure — when nominally different markets are the same bet
+
+**The problem, stated concretely.** "Team A wins" and "Team A wins by more than
+3" are two tickers, two order books, two positions in any naive ledger — and one
+bet. "Fed cuts in March" and "Fed cuts by June" are logically nested. A strike
+ladder on a single underlying is a partition of one event's outcome space. Every
+diversification statistic computed across these is a fiction, and the fiction is
+in the direction that permits more exposure.
+
+#### The rule that inverts the statistical convention
+
+> **The null hypothesis for correlation is DEPENDENCE, not independence.**
+>
+> A pair whose relationship is unresolved is treated as **correlated**. In
+> inference, the cost of wrongly assuming dependence is lost power. In risk, the
+> cost of wrongly assuming independence is the blow-up. The asymmetry is not
+> close, so the default flips.
+
+There is direct in-repo precedent for the label discipline this needs:
+POLY-PRECISION-001 already degrades ambiguity to `unresolved_semantic_match`
+rather than forcing a match. **The risk layer must read that same label as
+*correlated until proven otherwise*** — which makes it, for risk purposes, the
+most important output of that subsystem rather than the least.
+
+#### The detection ladder, ordered by reliability
+
+| # | mechanism | cost | precision | role |
+|---|---|---|---|---|
+| 1 | **Venue metadata** — same event ticker, same series ticker, same underlying, same resolution source, same settlement date | free | exact | catches most *logical* correlation at zero cost. **Never skip it in favour of something cleverer** |
+| 2 | **Structural partition detection** — a series whose members partition one event's outcome space (strike ladders, candidate fields) | free | exact | positions across a partition are one bet with a known linear relation, readable off the venue's own series structure |
+| 3 | **The existing cross-venue normalizer** — POLY-002 / POLY-PRECISION-001 `comparable_market_candidate` labels | already built | good | **a correlation detector that already exists in this repository and is currently used only for observation.** Its `unresolved_semantic_match` output is a risk input |
+| 4 | **Shared-entity / shared-resolution-source graph** — named-entity overlap, identical resolution source, overlapping resolution windows | cheap | high recall, moderate precision | catches operational correlation |
+| 5 | **Embedding similarity** | cheap | poor precision | **propose** edges only; **never** accept one. It will happily link markets that share vocabulary and not risk |
+| 6 | **Residual correlation `ρ_model`** — `corr(r_i, r_j)` over residuals `r = Y − p̂`, grouped by feature / model version / regime / time bucket | free (data already exists) | measures the failure that actually happens | **the primary statistical instrument** |
+
+**Why #6 is primary despite being last in the ordering.** Mechanisms 1–5 detect
+correlation *between events*. Mechanism 6 detects correlation **between our
+errors**, which is a different and more dangerous thing:
+
+> Even if the events are independent, **our P&L across them is correlated through
+> our own error.** If ten positions were taken because the same feature fired,
+> and that feature is mis-signed in the current regime, all ten lose together.
+> The events were independent. The losses were not.
+
+It is simultaneously the most dangerous mechanism and the **cheapest to
+measure**, because it needs no new data — 12,945 scored forecasts already carry
+the residuals. And this repository has already produced a textbook instance: all
+six EDGE-SELECTION-001 candidates failed out of sample **together**, and the
+`spread_only` negative control beat all of them. Six "independent" candidate
+policies producing one correlated failure is this mechanism in pure form.
+
+#### Typed edges, clusters, and the asymmetry rule
+
+Edges are **typed, not free-text** — the same discipline REGISTRY-002A applied
+to its predicate schema, for the same reason (prose is paraphrase-bypassable and
+cannot be aggregated).
+
+| edge | meaning | treatment |
+|---|---|---|
+| `IMPLIES(A→B)` | A true ⇒ B true | **treat as one position** |
+| `SAME_UNDERLYING(A,B)` | same event, different framing | **one position** |
+| `MUTUALLY_EXCLUSIVE(A,B)` | at most one true | negative correlation — **and it may not increase size**, see the asymmetry rule |
+| `SHARES_RESOLUTION_SOURCE(A,B)` | same oracle / source / adjudicator | correlated **operationally** even where logically independent. This is the prediction-market-specific edge: two positions can be a perfect logical hedge and still both lose if the single adjudicator resolves in an unexpected way |
+| `SHARES_FACTOR(A,B,f)` | common driver | `ρ` from the factor loading |
+| `UNRESOLVED_RELATION(A,B)` | the graph could not type the relation | **counts as correlated** |
+
+**Cluster** = connected component under any edge with confidence ≥ threshold,
+**including `UNRESOLVED_RELATION`**. Clusters, not positions, are the unit the
+book budgets.
+
+**The asymmetry rule — the single most important line in this section:**
+
+> **The correlation graph may only ever REDUCE allowed size. It may never
+> increase it.**
+>
+> A graph edge that reveals correlation shrinks the budget. A graph *silence* —
+> or even a positive `INDEPENDENT` finding, or a `MUTUALLY_EXCLUSIVE` edge that
+> mathematically justifies a hedging credit — must **not** grow any position. The
+> entire value of a tail constraint is the diversification credit it grants, and
+> the correlation estimate behind that credit is the least reliable number in the
+> system. A one-directional graph is wrong in the direction that costs growth; a
+> two-directional graph is wrong in the direction that costs the bankroll.
+
+**Coverage is a first-class output.** The graph must report, per market, whether
+it was *analysed and found unrelated* or *not analysed*. These are different and
+the difference is the whole safety property. Unexamined → `NO_TRADE
+(GRAPH_COVERAGE_UNKNOWN)`. **Absence of an edge is not evidence of
+independence.**
+
+**Version and freshness.** A cluster assignment carries the graph version and its
+computation time. A stale graph is `STALE_STATE`, not a usable graph.
+
+#### The ceiling that governs the whole book
+
+```
+K_eff = K / (1 + (K−1)·ρ)     →   1/ρ   as K → ∞
+```
+
+| K | ρ=0.05 | ρ=0.1 | ρ=0.2 | ρ=0.3 | ρ=0.6 |
+|---|---|---|---|---|---|
+| 10 | 6.90 | 5.26 | 3.57 | 2.70 | 1.56 |
+| 25 | 11.4 | 7.35 | 4.24 | 3.05 | 1.62 |
+| 100 | 16.8 | 9.17 | 4.78 | 3.26 | 1.66 |
+| ∞ (**ceiling**) | **20.0** | **10.0** | **5.0** | **3.33** | **1.67** |
+
+> **At ρ = 0.3 you can never hold more than 3.33 independent bets, no matter how
+> many markets you enter.** Entering 100 markets instead of 25 buys you **0.21 of
+> an effective position.**
+
+Which sets the cluster budget's order of magnitude:
+
+```
+B_c  ≈  λ_dd / K_eff  ≈  0.14 / 3.33  ≈  4% of the modelled bankroll
+```
+
+> ### ⚠ THE 4% IS A DERIVED ORDER OF MAGNITUDE, NOT A CALIBRATED LIMIT.
+> It inherits `λ_dd = 0.139` (a placeholder standing in for an unmade policy
+> decision, §7.3) and `ρ = 0.3` (**an assumed correlation we have never
+> measured**). Both inputs are placeholders, so the output is a placeholder
+> squared. What survives measurement is the *shape*: the constraint permits
+> something on the order of a few percent per cluster, **not the 20–25% of
+> correlated exposure that trading folklore suggests.**
+
+And the book-level constraints, jointly, not as `min` terms:
+
+```
+per cluster c:   Σ_{i ∈ c} f_i  ≤  B_c
+book level:      Σ_i f_i        ≤  B_total
+                 EVaR_α(book)   ≤  D_max
+                 K_eff(book)    ≥  K_min      ← refuse a book that is secretly one position
+```
+
+`K_eff(book) < K_min` → `NO_TRADE(CORRELATED_EXPOSURE_AT_LIMIT)`. That last
+constraint is the one that catches the failure §7.1(d) describes, where ten
+individually-conservative positions aggregate to full Kelly and **each one passes
+its own check**.
+
+#### The coherence trap, named so nobody walks into it
+
+> **A constraint on probabilities is not a constraint on quotes.**
+
+To capture an apparent coherence violation across an N-leg partition you must buy
+**every leg at its ask**. Evaluating the same violation on midpoints manufactures
+phantom edge equal to half the summed spread — on an N-leg partition, **N/2
+spreads of pure fiction**. This is why `CROSS_MARKET_COHERENCE` is a prohibited
+class in §8.5 and why any future proposal must be evaluated on executable prices
+from the first line, not retrofitted with costs afterwards.
+
+#### Worked example — two positions, one bet, and a governor that notices
+
+```
+Position A   "Team X wins"                    stake 3% of bankroll, mid 0.62
+Position B   "Team X wins by more than 3"     stake 3% of bankroll, mid 0.41
+
+Naive ledger:      two markets, two books, two tickers, 6% deployed,
+                   "diversified across two positions"
+
+Detection #1 (venue metadata):  same event ticker, same settlement date,
+                                same resolution source          → SAME_UNDERLYING
+Detection #2 (partition):       B ⊂ A structurally              → IMPLIES(B→A)
+
+Governor:   A and B are ONE cluster.
+            SEN_cluster = 3% + 3% = 6%   against  B_c ≈ 4%  [PLACEHOLDER]
+            K_eff for this pair ≈ 1, not 2
+                                        → NO_TRADE(CORRELATED_EXPOSURE_AT_LIMIT)
+
+Now delete detection #1 and #2 and suppose the graph simply has no edge:
+            coverage says "not analysed"  → NO_TRADE(GRAPH_COVERAGE_UNKNOWN)
+            NOT "no edge found, therefore independent, therefore 6% is fine"
+```
+
+The second half is the part that matters. The failure mode is not a governor
+that misses the edge; it is a governor that treats **missing** as **absent**.
