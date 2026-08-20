@@ -193,6 +193,59 @@ already cost this project months.
     lossless**. A feature like `rolling_ticker_volume_30s` must inherit "no
     sequence-based loss detection" from its source.
 
+11. **Mathematical arbitrage is not executable arbitrage.** A payoff identity
+    is a hypothesis, not an edge. Between "these two prices are inconsistent"
+    and "we can capture the difference" sit gates that each kill independently:
+
+    > semantic relationship → payoff identity → book depth → fees →
+    > **capital lockup** → **venue transformation support** → executable edge
+
+    The last two are where prediction markets differ from equities and where
+    naive analyses die. Capital is locked until resolution, so a 3% spread held
+    for four months is not 3% — quote the **annualised** figure or quote
+    nothing. And the venue must actually support the transformation the
+    identity requires; an identity the exchange will not let you assemble
+    before settlement is arithmetic, not a trade.
+
+12. **Statistics proposes, the agent screens, deterministic code decides.**
+    The permitted direction is:
+
+    > numerical screen finds a candidate → agent judges whether a *mechanism*
+    > is plausible → deterministic evaluator tests the economics
+
+    The forbidden direction is an LLM inventing a correlation and statistics
+    being used to confirm it. An agent supplies **semantics, hypotheses,
+    interpretations and critiques** — never an action. Anything that selects a
+    trade must be deterministic and inspectable, and **no agent may sit in the
+    synchronous market path**, ever.
+
+13. **`NO_TRADE` is a first-class action, not the absence of one.** A system
+    that must always choose a side has no way to express "the edge is real and
+    still not worth taking here". Action is a function of more than the signal:
+
+    > Action = f(alpha, volatility regime, liquidity, execution cost,
+    > uncertainty, portfolio state)
+
+    The same +2% signal is a trade in one regime and a refusal in another. A
+    strategy that cannot abstain will be adversely selected precisely when
+    conditions are worst, because that is when its signal looks strongest.
+
+14. **Size against the adverse end of the uncertainty interval, not the point
+    estimate.** Forecast `[σ⁻, σ⁻⁺]`, not `σ̂`. A point estimate of 18% with a
+    90% interval of 12–39% is not an 18% risk — the position must survive 39%.
+    Point estimates encode false precision exactly where the tails matter, and
+    a model is most confidently wrong during the regime shifts that hurt most.
+
+15. **A bounding statistic must not depend on a free parameter.** A peak is an
+    upper bound, so an estimator that can be moved by an arbitrary choice
+    cannot bound anything. Measured on one 84,170-record tape, the *same*
+    calendar-second peak estimator returned **485** under monotonic-clock
+    alignment and **565** under wall-clock alignment, while the sliding window —
+    which has no alignment to choose — returned **612**. Three live production
+    samples reproduced the bias at 44%, 23% and 6%. Fixed buckets do not merely
+    add noise; they are **phase-sensitive**, and they err **low**, which is the
+    one direction capacity work cannot absorb.
+
 ## Parallel-agent composition (binding)
 
 > **Every parallel-agent milestone with a shared runtime path must have an
