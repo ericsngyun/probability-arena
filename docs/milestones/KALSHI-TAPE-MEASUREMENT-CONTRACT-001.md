@@ -1386,3 +1386,249 @@ No implementation surface. Repo-wide count unchanged from baseline.
 construction — a forbidden channel in a config file, an environment variable or a
 CLI argument is a `CapabilityError` before any object exists that could open a
 socket.
+
+**This amendment (§0.1, §16, §17) is docs-only and did not change that.** No
+socket was opened, no credential read, no file under `app/`, `tests/` or
+`scripts/` modified. Every production number quoted is from artifacts already
+committed to the repository, or from an independent recount over them (§16.2.1).
+
+---
+
+## 16. PRODUCTION-MEASURED QUANTITIES — **ADDED BY AMENDMENT, 2026-08-20**
+
+Everything in §1–§15 above was derived from DEMO. This section holds the
+quantities that **only production could supply**, under the same discipline: a
+provenance, a reconstructability class, and a stated limitation on every number.
+
+**Provenance of the whole section.** Session `s-20260820T003520Z-f450f75ed1fc`,
+production environment, `wss://external-api-ws.kalshi.com/trade-api/ws/v2`,
+00:36:00.199Z → 00:46:01.437Z, `status=capped_time` (`max_seconds=600`).
+**84,170 records, 7 segments (7 closed, 0 open, 0 invalid), 599.643 s span, 12
+markets, 3 channels.** Archive verifier: `VALID`, `reasons []`, `warnings []`,
+`records_read == records_expected == 84,170`, `truncated_records 0`,
+`head_state CURRENT`. `git diff main -- app/` empty — the collector ran exactly
+as shipped. Evidence: `docs/milestones/KALSHI-PROD-QUAL-CAPTURE-2-FINDINGS.md`,
+`docs/evidence/KALSHI-PROD-QUAL-CAPTURE-2-*.json`.
+
+### 16.1 `wire_frame_rate` — a new contract quantity
+
+The contract had no entry for *how fast frames arrive*, because DEMO could not
+produce a meaningful one. It has one now, and it needs typing more than most: it
+is the quantity most likely to be quoted outside the window that produced it.
+
+| attribute | value |
+|---|---|
+| **provenance** | **`COLLECTOR_FACT`.** The venue never states a rate. This is *frames that crossed our socket*, timestamped by our clock (`received_at_utc`, `received_monotonic_ns`). It is an observation about a joint system — venue, network, host — not a venue fact, and must never be written as one. |
+| **wire representation** | none. No frame carries a rate. |
+| **normalized representation** | none. Not a field on any record; computed by the reader from record timestamps. |
+| **channel and SID semantics** | measured **across all sids**, decomposable per sid (mix below). Per-sid rates are the useful ones; the aggregate is what the archive layer sees. |
+| **sequence domain** | not applicable — a rate is not sequenced. Note the asymmetry: on sids 1 and 3 the *count* is verifiable against `seq` contiguity; on sid 2 it is not (L1). |
+| **ordering guarantees** | inherits §3 per sid. The rate itself asserts no ordering. |
+| **frame-loss detectable?** | **only on the sequenced sids.** A measured rate is a **lower bound** on the venue's emission rate wherever loss cannot be excluded — which on `ticker` is always. |
+| **source completeness knowable?** | **NO, and it matters here.** Every rate is conditioned on *"we were connected"*. This session had 0 disconnects, so the condition is trivially satisfied **for this window and no other** — the same optimistic conditioning §8.5 names for latency. |
+| **subscription-generation semantics** | one generation for the whole window; a rate spanning a reconnect must be reported per generation or not at all. |
+| **units / precision** | frames per second. Two means are reportable and differ by denominator — see below. Peaks are integer counts in 1-second buckets, and depend on bucket alignment (§16.2.1). |
+| **missing-value semantics** | a bucket with no frames is **`0`, and that zero is an observation** — the one place in this contract where a zero is legitimate, because the collector was connected and counting. `silent_seconds = 0` here. It is **not** the same as an unmeasured second: a window we were disconnected for is `NOT_MEASURABLE:not_connected`, never 0. |
+| **reconstructability** | **`DERIVABLE_FROM_RAW`** in the tape's sense — `received_at_utc` is on every record, so any reader can recount every figure below from the archive. It is *not* `RAW_REPLAYABLE`: the timestamps are collector facts, so a different host would produce different numbers from the same venue behaviour. |
+| **current replay support** | **not `archive.replay()`.** `replay()` is book replay (§1) and returns no rate. Recounting is a plain read of `read_verified()`. |
+| **positive control** | the measurement path is demonstrably capable of a non-benign value: DEMO's identically-computed rate read **0.75 f/s**, and its replication read **0.00 f/s**, on the same code. A rate reader that could only print a healthy number would not have printed those. |
+| **known limitations** | **L20** (one ten-minute overnight window), **L12** (DEMO is not comparable), **L21** (the universe was not selected on message rate). All three apply to every row below. |
+
+**Measured (12 markets, 3 channels, 599.643 s):**
+
+| | measured |
+|---|---|
+| frames | **84,170** |
+| mean, by observed span (÷ 599.643 s) | **140.37 f/s** |
+| mean, by calendar-second buckets (÷ 601 buckets) | **140.05 f/s** |
+| median, 1-second bucket | **115 f/s** |
+| **peak, 1-second bucket** | **565 f/s** — next two peak seconds **523** and **455** |
+| silent seconds | **0 of 600** |
+| burstiness (index of dispersion) | **54.55** (Poisson = 1.0) |
+| interarrival | p50 **1.135 ms** · p90 17.31 · p95 31.18 · p99 92.14 · max **580.91 ms** |
+| bytes | 23,395,915 received · **~13.8 MB compressed on disk** |
+| rotations | **6**, at exactly 13,000 records each plus a 6,170 partial — one per **~92.6 s** |
+
+**The two means are both correct and are not interchangeable.** 140.37 divides
+by the observed span between first and last frame; 140.05 divides by the 601
+calendar seconds the session touched, whose first and last are partial. Quote
+the denominator with the number. Nothing turns on the 0.3 f/s difference; the
+habit does.
+
+**Channel mix — the book feed IS the load.** `orderbook_delta` 79,243 (94.1%) ·
+`trade` 2,516 (3.0%) · `ticker` 2,395 (2.8%) · `orderbook_snapshot` 13 ·
+`subscribed` 3. A sizing exercise that ignores `ticker` and `trade` entirely is
+wrong by under 6% at this universe; one that ignores the book feed is wrong by
+16×.
+
+**Continuous but violently bursty.** Not one silent second in ten minutes, and a
+dispersion index of 54.5 with a p50 interarrival of 1.1 ms against a p99 of
+92 ms. **Sizing on the mean understates the observed peak by ~4×.**
+
+### 16.2 `~500 events/s` is a SUPERSEDED DESIGN PRIOR, and it was LOW
+
+`segment.py:200-208` chose `DEFAULT_MAX_SEGMENT_RECORDS = 13_000` to target a
+~2 s close, and sized the rotation cadence against a **"~500 events/s assumed
+peak."** That sentence is the only empirical claim the constant rests on.
+
+> **It is no longer an assumption. The comparable measured quantity — the
+> observed 1-second peak — is 565 f/s. The prior is EXCEEDED by 13%.**
+
+**Record it as a LOW input, not a conservative one.** That distinction is the
+whole point: a conservative input is one reality stays under, and reality did not
+stay under this one. The constant is nonetheless **safe**, for a reason that has
+nothing to do with the prior's accuracy — 565 f/s sits **~12× under the
+~6,900 f/s closer ceiling** (L16) and ~6× under the ~3,440 f/s synchronous-append
+ceiling, and the session ran with `rotation_failures: 0` and perfect append
+conservation. **Safe by margin, not by forecast.**
+
+**Which bound is load-bearing has inverted.** In DEMO the record bound was
+unreachable and `DEFAULT_MAX_SEGMENT_AGE_S = 900 s` was the only thing that ever
+rotated. In production the record bound fired every ~93 s and **the age bound
+never fired at all**. `DEFAULT_MAX_SEGMENT_BYTES = 32 MiB` was ~15× away
+(~2.1 MB/segment) and is not load-bearing either.
+
+**Verdict: `DEFAULT_MAX_SEGMENT_RECORDS = 13_000` does not need retuning for a
+12-market universe — but it must stop being described as a conservative bound,
+and it must be understood as universe-size-dependent.** Retuning is a rate
+question, and rate is universe-dependent (§16.3): a different universe moves the
+peak, and the peak is what this constant is sized against.
+
+#### 16.2.1 A CORRECTION to the P4 findings document — 485 vs 565
+
+`docs/milestones/KALSHI-PROD-QUAL-CAPTURE-2-FINDINGS.md` §5.1/§5.2 and
+`docs/evidence/KALSHI-PROD-QUAL-CAPTURE-2-capture.json`
+(`load.frames_per_second_peak_1s`) report the 1-second peak as **485 f/s**, and
+§5.2 concludes from it that the ~500 e/s prior was *"~3% high — essentially
+correct."*
+
+**An independent recount over all 84,170 records, bucketed by calendar second,
+gives 565 f/s** — next two peak seconds **523** and **455**, mean **140.05**
+over 601 buckets. **This contract adopts 565.**
+
+The two figures differ because they bucket on different boundaries: a 1-second
+window's contents depend entirely on where its edges fall. 485 is therefore not
+*wrong*, it is *a different alignment* — and **a peak is an upper-bound
+statistic, so the larger valid alignment is the one a capacity claim must use.**
+Taking the smaller one biases the estimate downward exactly where downward bias
+is most dangerous.
+
+**The conclusion reverses, not merely the number.** At 485 the prior reads 3%
+high and vindicated; at 565 it reads **13% low and exceeded**. Recorded as a
+correction rather than a silent overwrite because the findings document's
+*reasoning* is sound and its warning still stands: *comparing an assumed **peak**
+against an observed **mean** and calling the assumption "3.5× conservative" is a
+category error.* That warning is right. It is the peak that was mismeasured, not
+the argument.
+
+**Downstream figures that move with it:**
+
+| | at 485 (findings) | **at 565 (adopted)** |
+|---|---|---|
+| vs the `~500 e/s` prior | 3% high, "essentially correct" | **13% LOW, exceeded** |
+| peak ÷ mean | 3.5× | **~4.0×** |
+| headroom vs the ~6,900 f/s closer ceiling (L16) | ~14× | **~12×** |
+| naive linear market-count marker | ~170 markets | **~145 markets** |
+
+The market-count marker is an order-of-magnitude sanity check and nothing more —
+§16.3 shows per-market frame rates spanning four orders of magnitude, so frame
+rate is **not** linear in market count and 145 is not a capacity limit.
+
+**Not applied to the source artifacts, deliberately.** The evidence JSON is a
+frozen record of what the capture tooling computed and must not be rewritten
+after the fact; the findings document belongs to P4. Both should carry a pointer
+to this subsection. **If a third recount disagrees with 565, that is a finding
+about the counting method and it supersedes this paragraph, not §16.1's table
+silently.**
+
+### 16.3 THE UNIVERSE-SELECTION FINDING — this changes research design
+
+The P4 universe was selected by stratifying markets on **trading rate** (traded
+contracts/minute) from a REST census. The tape then measured what those markets
+actually did on the wire.
+
+| manifest rank | wire rank | stratum | traded c/min | frames in 600 s |
+|---:|---:|---|---:|---:|
+| 1 | 1 | high | 29,328.1 | 19,741 |
+| 2 | 5 | high | 23,582.8 | 9,744 |
+| 3 | **8** | high | 19,534.9 | 1,914 |
+| 4 | 2 | high | 18,865.5 | 17,655 |
+| 5 | 3 | medium | 202.2 | 12,510 |
+| 6 | 7 | medium | 197.0 | 2,978 |
+| 7 | **12** | medium | 197.0 | **1** |
+| 8 | 6 | medium | 196.8 | 6,962 |
+| 9 | 9 | low | 16.2 | 715 |
+| 10 | 11 | low | 15.8 | 28 |
+| 11 | 10 | low | 15.8 | 34 |
+| 12 | **4** | **low** | **15.7** | **11,885** |
+
+```
+Spearman(trading rate, wire frame rate) ≈ 0.52          n = 12
+```
+
+Directionally right in aggregate — high 58.3% of frames, medium 26.7%, low
+15.0% — and **severely wrong per market**:
+
+- the market ranked **last of twelve on trading rate produced the 4th-most wire
+  frames** (11,885 in ten minutes);
+- a **medium**-stratum market produced **exactly one frame in 600 seconds**;
+- the selection statistic spans **1,868×** across the universe while wire frames
+  span **19,741×**. The screen is not measuring the thing that varies.
+
+**`top_of_book_change_rate` is degenerate as a screen.** It read **1.00 for 11 of
+12** markets and its Spearman against wire frames is **−0.20**. At the probe
+resolution used (4 reads over 7.6 minutes) it reduces to *"did top-of-book move
+at least once"*, which is almost always yes. A statistic that is 1.00 for 92% of
+its inputs is not ranking anything — doctrine 8, applied to one of our own
+statistics rather than to a venue's field.
+
+**The operational rule, and it is a rule:**
+
+> **Do not select the microstructure universe using trading volume/activity as a
+> proxy for message activity. Our own production measurement says that
+> relationship is too weak.**
+
+**This is the subtler recurrence of the manifest mistake.** That one was
+`updated_time` → presumed freshness, and it reported 73,057 of 73,630 markets
+stale. This one is **`trading volume` → presumed microstructure activity**, and
+the two are now *measured* as not interchangeable. The first was caught because
+its output was absurd. This one produces a universe that looks entirely
+reasonable and is silently mis-stratified — which makes it the more dangerous of
+the two.
+
+**Consequences, stated so they are not rediscovered:**
+
+1. **A universe stratified on REST trading rate is NOT stratified on message
+   rate.** Any `MARKET-MICROSTRUCTURE-EDGE-001` design that wants message-rate
+   strata must **measure message rate**, which requires a **WebSocket probe** and
+   cannot be done from a REST census.
+2. **Every rate in §16.1 inherits this.** 140 f/s mean and 565 f/s peak are
+   properties of *this* twelve markets, chosen by a screen now known to be weakly
+   related to the quantity being measured. They are not "the rate of a 12-market
+   universe"; they are the rate of *these* twelve.
+3. **Capacity extrapolation by market count is doubly unsound** — once because
+   frame rate is not linear in count, and once because *which* markets are
+   counted matters more than *how many*, by four orders of magnitude.
+4. The manifest already declares this limitation on its own face
+   (`STATISTIC_LIMITATIONS`, `stronger_alternative_not_used`). It is now
+   **quantified**, which is the difference between a caveat and a finding.
+
+### 16.4 What production did NOT settle
+
+Recorded here as well as in §12, so that a reader of this section alone cannot
+mistake a ten-minute clean run for a qualification of everything:
+
+| unobserved | production evidence | limitation |
+|---|---|---|
+| the `EMPTY` ladder state | 0 of 13 snapshots | **L4 open** |
+| `error`-frame behaviour on production, hence whether it consumes a `seq` | **0 error frames in 600 s** | **L8 open** |
+| venue-initiated disconnect | **0 disconnects, 0 reconnects** | **L7 open** |
+| the delta-refusal path `rejected_pre_generation_snapshot` | never exercised; every snapshot preceded its deltas | **L5 open** |
+| the per-market generation-boundary path | one `subscription_generation` throughout | evidence stays CP7/DEMO |
+| scaling past 12 markets | measured at 12 only — and §16.3 says count is the wrong axis | **L20** |
+| **any hour but this one** | one window, 20:36 ET, sports-dominated universe | **L20** |
+| host clock offset, hence any true latency | uncharacterised; 84,154 contaminated samples | **L11** |
+| interval telemetry (`reader_lag_frames_max`, `append_us_max`, `segment_close_ms_max`) | **no `kalshi-live-tape.jsonl` was emitted** — absent, not zero | §9.1 |
+
+**Replay equality is not in this table and is not this amendment's to report.**
+See §11 B3, which its owner is closing.
