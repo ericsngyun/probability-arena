@@ -38,6 +38,15 @@ KALSHI-PROD-OBSERVATIONAL-QUALIFICATION-001
   REPLAY-EQUALITY VERDICT                     NO-GO until B3 is closed
 ```
 
+> **AMENDMENT 2026-08-20.** Capture **happened**, under that conditional GO.
+> **B1 is now CLOSED on measurement** (production handshake + read-only
+> credential — §11 B1) and **B4 was closed operationally** by the run rule this
+> contract specified: one archive root, one session
+> (`~/kalshi-prod-tape/p4-attempt2-20260820T003519Z`), no schema bump. The P4
+> capture returned **Production semantics QUALIFIED** and **Capture integrity
+> QUALIFIED**. The replay-equality line is unchanged by this amendment and is
+> not this amendment's to change.
+
 **One sentence, if you read nothing else:** *proceed to P4, but B3 must be
 closed before P4 computes a replay-equality verdict — and it is a ~4-line fix
 plus a CP8 re-run, not a research problem.*
@@ -1077,12 +1086,33 @@ current code reaches a *wrong* answer, not a missing one.
 
 | | blocks | closable by |
 |---|---|---|
-| B1 unverified production WS host + credential | capture | an operator |
+| B1 unverified production WS host + credential — **CLOSED 2026-08-20** | capture | an operator |
 | ~~B2 unmerged branch stack~~ | ~~capture~~ | **STRUCK — already merged, verified on `main`** |
 | B3 `replay()` skips an `error` frame's `seq` | the **replay-equality verdict** | ~4 lines + a CP8 re-run |
-| B4 no session identity on the durable record | capture, **conditionally** | a run-procedure rule (no code) |
+| B4 no session identity on the durable record — **run rule APPLIED 2026-08-20** | capture, **conditionally** | a run-procedure rule (no code) |
 
-### B1. The production WebSocket host is UNVERIFIED
+### B1. The production WebSocket host is UNVERIFIED — **CLOSED 2026-08-20 on measurement**
+
+> **B1 CLOSES.** The production host has now been reached. HTTP **101** on
+> `wss://external-api-ws.kalshi.com/trade-api/ws/v2`, peer `16.58.202.54`,
+> certificate read **off that same socket** between handshake completion and the
+> collector's first `recv()`: SAN `["*.kalshi.com"]`, zero demo names,
+> `TLS_AES_128_GCM_SHA256`. The credential was separately proven read-only on
+> the venue's own testimony — `GET /trade-api/v2/api_keys` answered **200** by
+> `api.elections.kalshi.com`, key `sha256:cfdd78afeded1c22` present, scopes
+> `["read"]`, `proven_read_only: true`, `verified_before_first_frame: true`.
+> Production and demo DNS sets are disjoint (8 addresses vs 2) and the
+> certificates are cryptographically distinct (`*.kalshi.com` vs
+> `CN=demo.kalshi.co`).
+>
+> The original objection was *"documentation and a certificate are both stronger
+> than a name, and neither is a handshake."* There is now a handshake. The
+> source comment at `app/realtime/kalshi.py:52-55` still says UNVERIFIED and
+> **has deliberately not been edited** — that edit belongs with the B1 closure,
+> not with a capture phase or a docs amendment.
+
+The paragraph below is retained as the original statement of the blocker.
+
 
 `app/realtime/kalshi.py:52-55`:
 
@@ -1209,6 +1239,21 @@ one rule:
 If P4 wants a single multi-session archive, the record envelope needs a session
 identity — a `RECORD_SCHEMA_VERSION` bump, which is a schema decision outside
 this contract's authority and must not be made silently.
+
+**The run rule was APPLIED and it worked (2026-08-20).** P4 wrote one archive
+root for one session (`~/kalshi-prod-tape/p4-attempt2-20260820T003519Z`, session
+`s-20260820T003520Z-f450f75ed1fc`), and the tape verified `VALID` with
+`records_read == records_expected == 84,170` and `head_state CURRENT`. **The
+schema defect is not repaired — it is avoided**, exactly as this section
+prescribed, and the rule must be carried into every subsequent production run.
+One operational caveat found by P4 and recorded here because it bears on the
+rule's mechanism: the session claim is published at `ROOT/production/` while the
+archive writes to `ROOT/env=production/`, so the claim sits in an empty sibling
+directory rather than "beside the genesis". **The guarantee still holds** —
+`session_claim_path()` is deterministic and per-environment, so a second session
+against the same root still collides and is refused — but the stated rationale
+about *which* directory the boundary lives in is wrong and should be corrected
+when someone owns that file.
 
 ---
 
