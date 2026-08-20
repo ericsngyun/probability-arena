@@ -681,6 +681,32 @@ def _percentiles(values, points=(50, 90, 95, 99)) -> dict:
     return out
 
 
+def _sliding_peak_1s(timestamps_ns) -> int | None:
+    """R_max,1s = max_t #{frames : tau_i in [t, t+1s)} — the true 1 s maximum.
+
+    Anchoring a window at every frame is sufficient to find the maximum: moving
+    a window's start backwards off a frame can only ever lose frames from the
+    right before it gains one on the left, so some maximising window starts
+    exactly at a frame.
+
+    This exists because the calendar-bucket estimator it replaces is biased in
+    one direction. A burst of 800 frames centred on a second boundary — 400 in
+    the last 500 ms of second N and 400 in the first 500 ms of N+1 — is a real
+    800 f/s event that fixed buckets report as two quiet 400 f/s seconds.
+    `tests/test_kalshi_p4_3_peak_estimator_001.py` pins exactly that case.
+    """
+    ts = sorted(timestamps_ns)
+    if not ts:
+        return None
+    best, j = 0, 0
+    for i, t in enumerate(ts):
+        while j < len(ts) and ts[j] < t + 1_000_000_000:
+            j += 1
+        if j - i > best:
+            best = j - i
+    return best
+
+
 def analyse(rates: RateRecorder, wire: WireRecorder) -> dict:
     rows = rates.rows
     if not rows:
@@ -719,7 +745,19 @@ def analyse(rates: RateRecorder, wire: WireRecorder) -> dict:
         "frames": len(rows),
         "span_seconds": round(span_s, 3),
         "frames_per_second_mean": round(len(rows) / span_s, 4) if span_s else None,
-        "frames_per_second_peak_1s": max(per_second) if per_second else None,
+        # PRIMARY CAPACITY METRIC.
+        #   R_max,1s = max_t #{frames : tau_i in [t, t+1s)}
+        # A fixed calendar-second bucket can split one burst across a clock
+        # boundary and therefore biases the peak DOWNWARD — the dangerous
+        # direction for capacity engineering. On the frozen P4 tape the two
+        # estimators differ by 21% (612 sliding vs 485 bucketed), and the
+        # sliding figure EXCEEDS the ~500 f/s prior that was used to size
+        # `DEFAULT_MAX_SEGMENT_RECORDS` rather than sitting safely under it.
+        "peak_1s_sliding": _sliding_peak_1s([row[0] for row in rows]),
+        # SECONDARY / diagnostic. Retained deliberately, not deleted: it is the
+        # statistic every earlier evidence file recorded, and keeping it is what
+        # lets a reader reproduce those numbers and see the bias for themselves.
+        "peak_1s_calendar_bucket": max(per_second) if per_second else None,
         "frames_per_second_p50_1s": (statistics.median(per_second)
                                      if per_second else None),
         "silent_seconds": sum(1 for v in per_second if v == 0),
