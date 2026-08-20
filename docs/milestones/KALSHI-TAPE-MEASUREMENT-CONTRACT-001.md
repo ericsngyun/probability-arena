@@ -3,6 +3,16 @@
 **The durable measurement contract for the Kalshi live tape.**
 Branch `KALSHI-TAPE-MEASUREMENT-CONTRACT`. Not merged.
 
+> **AMENDED 2026-08-20 with MEASURED PRODUCTION FACTS.** The contract below was
+> written entirely from DEMO evidence. It has since been checked against the
+> first production capture — session `s-20260820T003520Z-f450f75ed1fc`, **84,170
+> records / 7 segments / 599.6 s** on a 12-market, three-channel universe. Read
+> **§0.1** for what changed, **§16** for the production-measured quantities and
+> the **universe-selection rule**, and **§17** for the changelog. Where a
+> DEMO-derived property is now confirmed on production it is marked *confirmed
+> on production* and the DEMO provenance is **kept** — two venues agreeing is
+> itself a measurement. Where production **differs**, the difference is stated.
+
 This is prerequisite 3 of `KALSHI-PROD-OBSERVATIONAL-QUALIFICATION-001` — *"tape
 schema frozen and reviewed as a measurement contract"*. It defines, for every
 important raw field, normalized field, counter, channel and reconstructed state,
@@ -27,6 +37,15 @@ KALSHI-PROD-OBSERVATIONAL-QUALIFICATION-001
   CAPTURE  (read-only production tape)        GO, conditional on B1, B4  (B2 struck)
   REPLAY-EQUALITY VERDICT                     NO-GO until B3 is closed
 ```
+
+> **AMENDMENT 2026-08-20.** Capture **happened**, under that conditional GO.
+> **B1 is now CLOSED on measurement** (production handshake + read-only
+> credential — §11 B1) and **B4 was closed operationally** by the run rule this
+> contract specified: one archive root, one session
+> (`~/kalshi-prod-tape/p4-attempt2-20260820T003519Z`), no schema bump. The P4
+> capture returned **Production semantics QUALIFIED** and **Capture integrity
+> QUALIFIED**. The replay-equality line is unchanged by this amendment and is
+> not this amendment's to change.
 
 **One sentence, if you read nothing else:** *proceed to P4, but B3 must be
 closed before P4 computes a replay-equality verdict — and it is a ~4-line fix
@@ -57,7 +76,62 @@ Four blockers, three of them outside P3's scope. **One of them, B3, is a genuine
 semantic defect found by this milestone** and is deliberately *reported with its
 remedy rather than patched* — see §10.3 for why.
 
-**P3 stops here.** No production observation is begun by this milestone.
+**P3 stops here.** No production observation is begun by this milestone. *(The
+production observation reported throughout this amendment was begun by P4, not
+by P3. P3 opened no socket; see §15.)*
+
+---
+
+## 0.1 PRODUCTION AMENDMENT — what the first production capture changed
+
+Evidence: `docs/milestones/KALSHI-PROD-QUAL-CAPTURE-2-FINDINGS.md` and
+`docs/evidence/KALSHI-PROD-QUAL-CAPTURE-2-*.json`. Session
+`s-20260820T003520Z-f450f75ed1fc`, 00:36:00.199Z → 00:46:01.437Z,
+**84,170 records, 7 segments (all closed), 599.643 s, 12 markets, 3 channels**,
+archive verdict `VALID`, `truncated_records 0`, `sequence_faults 0`.
+
+**CONFIRMED ON PRODUCTION** (DEMO provenance retained — §3, §5):
+
+| property | production evidence |
+|---|---|
+| `orderbook` is **independently sequenced** | 79,256 records, `seq` on 79,256/79,256, contiguous **1 → 79,256**, all fault counters 0 |
+| `trade` is **independently sequenced** | 2,516 records, `seq` on 2,516/2,516, contiguous **1 → 2,516**, all fault counters 0 |
+| `ticker` is **UNSEQUENCED** | **0 of 2,395** records carry a `seq`. L1 unchanged |
+| sid ↔ channel from ack order, ack carries no top-level `sid` | orderbook 1 / ticker 2 / trade 3; three acks, top-level `sid` absent on all three (§3.1) |
+| **snapshot ladder typing** reproduced | 13 snapshots: **10** `PRESENT/PRESENT`, **1** `NOT_PROVIDED/PRESENT`, **2** `NOT_PROVIDED/NOT_PROVIDED` |
+| **`EMPTY` is still NOT OBSERVED** | 0 of 13 production snapshots, on top of 0 of 360 DEMO snapshots. **L4 stays open** |
+| the `use_yes_price` / no-complement convention | 0 locked-or-crossed samples in 2,405 spread samples |
+
+**DIFFERS FROM DEMO** (§16):
+
+| | DEMO | **PRODUCTION** |
+|---|---|---|
+| mean frame rate, same-size 12-market universe | **0.75 f/s** | **~140 f/s — ~187×** |
+| observed 1-second peak | never reached | **565 f/s** |
+| rotations | **0**, ever | **6** in 10 minutes |
+
+**THE SIZING PRIOR IS SUPERSEDED, AND IT WAS LOW, NOT CONSERVATIVE.**
+`~500 events/s` is no longer an assumption; the measured 1-second peak is
+**565 f/s, 13% ABOVE it**. See §16.2 — and note that §16.2 also **corrects a
+figure in the P4 findings document**, which reported 485 f/s.
+
+**THE UNIVERSE-SELECTION FINDING — read §16.3 before designing any
+microstructure study.** Spearman(trading rate, wire frame rate) **≈ 0.52** on
+n=12; the market ranked **last** by trading rate produced the **4th-most** wire
+frames, and a medium-stratum market produced **one frame in 600 s**. Therefore:
+
+> **Do not select the microstructure universe using trading volume/activity as a
+> proxy for message activity. Our own production measurement says that
+> relationship is too weak.**
+
+**STILL UNOBSERVED AFTER PRODUCTION** — none of these is softened by this
+amendment: the `EMPTY` ladder (L4), `error`-frame behaviour on production (L8 —
+**zero** error frames arrived), venue-initiated disconnect (L7 — **zero**
+disconnects), the delta-refusal path (L5), scaling past 12 markets, and **any
+hour but this one**.
+
+**One ten-minute overnight capture is not a peak-capacity estimate.** Every rate
+figure in this amendment carries that limit (§16.1).
 
 ---
 
@@ -159,6 +233,29 @@ Established on four independent sockets: the P0 wire capture
 (`p0-wire-test-instruments-60`, 8,179 frames) and CP6–CP9's `s1-observe` /
 `s2-reconnect` / `s3-drop` (24,396 frames), 2026-08-17, DEMO.
 
+**Confirmed on production 2026-08-20** on a fifth, independent socket — session
+`s-20260820T003520Z-f450f75ed1fc`, **84,170 frames** over 599.6 s, three
+channels, 12 markets. The DEMO basis is **retained, not replaced**: this table
+was derived from DEMO and is now known to hold on both venues, which is a
+stronger statement than either alone. Production census, generation-blind:
+
+| sid | channel | frames | `seq` present | first → last | contiguous | gaps | dups | regressions |
+|---|---|---:|---:|---|---:|---:|---:|---:|
+| 1 | `orderbook_delta` (+ 13 snapshots) | 79,256 | **79,256 / 79,256** | **1 → 79,256** | 79,255 | **0** | 0 | 0 |
+| 2 | `ticker` | 2,395 | **0 / 2,395** | — | 0 | *empty domain* | 0 | 0 |
+| 3 | `trade` | 2,516 | **2,516 / 2,516** | **1 → 2,516** | 2,515 | **0** | 0 | 0 |
+| — | `subscribed` | 3 | 0 | — | — | — | — | — |
+
+The collector's own **generation-aware** counters agree on every sid, and every
+one of `gaps / duplicates / regressions / wrong_sid / stale_generation /
+missing_seq / recoveries / generation_advances` is **0**, under a single
+`subscription_generation = 1` with 0 disconnects and 0 reconnects.
+
+Two rows of the table above were **not exercised** in production and are stated
+as such, not as passes: the `error` control frame (**zero arrived in 600 s** —
+§3.3, L8) and the repair path (`get_snapshot`/`update_subscription` — **never
+needed**, `commands_refused: 0`, one outbound `subscribe` and nothing else).
+
 | | `orderbook_delta` | `ticker` | `trade` | control (`subscribed`, `error`, `ok`) |
 |---|---|---|---|---|
 | **sid in the 3-channel subscribe** (assignment-dependent, **not** a constant — §3.1) | **1** | **2** | **3** | `subscribed`: none; `error`: the sid it answers |
@@ -180,8 +277,19 @@ subscribe**, and it is a property of that subscribe, not of the venue.
 
 | capture | channels named | sid assignment |
 |---|---|---|
-| P0 / CP6–CP9 (2026-08-17) | `orderbook_delta`, `ticker`, `trade` | orderbook **1**, ticker **2**, trade **3** |
+| P0 / CP6–CP9 (2026-08-17, DEMO) | `orderbook_delta`, `ticker`, `trade` | orderbook **1**, ticker **2**, trade **3** |
 | DEMO wire (2026-08-08) | four channels | ticker **1**, lifecycle **2**, trade **3**, orderbook **4** |
+| **PRODUCTION (2026-08-20)** | `orderbook_delta`, `ticker`, `trade` | orderbook **1**, ticker **2**, trade **3** |
+
+**Confirmed on production, and confirmed in the way that matters.** The
+production acks assigned sids in ack order for the channels the subscribe named,
+and the ack order matched the request order — so the *same* subscribe produced
+the *same* assignment on a different venue. That **confirms §3.1 rather than
+retiring it**: it is still a property of the subscribe, and nothing here
+licenses hard-coding `sid == 1 -> orderbook`. All three production acks again
+carried **no top-level `sid`**, so they remain unroutable; the collector
+discovered the orderbook sid from frames (`carries_orderbook` true on sid 1
+only), exactly as this section requires.
 
 **The venue assigns sids in ack order for the channels that subscribe names.**
 Change the channel list and every sid moves. Nothing may hard-code
@@ -213,12 +321,28 @@ This also matters for §11 B3: the orderbook-sid `error` frame on the wire was
    1 unpublished all 60 books on sid 1 and left sid 3 untouched — `trade` ran
    1…80 with zero gaps straight through the event.
 
+   **Confirmed on production, at scale and without an injected fault.** Over the
+   same wall clock, sid 1 ran **1 → 79,256** and sid 3 ran **1 → 2,516**, each
+   perfectly contiguous from 1. A shared sequence space would have manufactured
+   tens of thousands of faults; the observed count is **0**. DEMO proved this by
+   forcing a gap on one sid and watching the other survive; production proves it
+   by two independent counters running 31× apart in the healthy case. **Two
+   different experiments, same conclusion.**
+
 3. **`sequence_gaps = 0` on `ticker` is an arithmetic artefact of an empty
    domain, not an observation.** Any feature derived from `ticker` — a rolling
    volume, a quote-update rate, anything — inherits *"no sequence-based loss
    detection"* from its source and **may never be described as lossless.** A
    drift detector (`test_the_ticker_channel_still_carries_no_sequence_number`)
    retires this caveat on evidence if the venue ever starts sequencing ticker.
+
+   **Confirmed on production: 0 of 2,395 ticker records carry a `seq`.** The
+   empty domain is a property of the *venue's* ticker channel, not of DEMO. The
+   production run reported `sequence_gaps = 0` and `missing_seq = 0` on sid 2
+   and typed **both** — `missing_seq` is unreachable there for the same reason
+   (`dispatch` passes over frames carrying no `seq` at all), so it too is
+   arithmetic rather than an observation. **L1 is unchanged and is now a
+   two-venue fact.**
 
 ### 3.3 Control frames consume sequence numbers
 
@@ -233,6 +357,13 @@ next real one.
 **Not settled:** whether `error` consumes a `seq` on the *orderbook* sid was not
 re-observed in P0, because the fix removed the command that was producing errors.
 The 2026-08-08 capture says yes. Listed in §12.
+
+**Production did NOT settle it either, and this amendment does not soften it.**
+The 2026-08-20 session received **zero `error` frames in 600 s**, so the run
+neither confirms nor refutes the rule. Recorded as *not re-observed*, never as a
+pass. The conservative assumption in the code (an `error` does consume one)
+stands untouched — assuming *no* would manufacture gaps, assuming *yes* cannot
+hide one. **L8 remains OPEN after production.**
 
 ---
 
@@ -349,21 +480,42 @@ plausible, wrong. The convention is recorded **on the data**
 only in a docstring, and `_require_uncrossed` is the cheap invariant that catches
 its reversal.
 
+**Confirmed on production.** Across **2,405** spread samples (10 full-ladder +
+2,395 top-of-book) there were **0 locked-or-crossed** samples. Had the NO side
+needed complementing, crossed books would have appeared at that sample size.
+The two distributions are reported separately and never pooled — full-ladder
+median $0.0100 (n=10); top-of-book median $0.0100, max $1.0000 (n=2,395) — and
+no absence became a zero (§6.2).
+
 **Ladder presence is typed and is not a level count.**
 `NOT_PROVIDED != EMPTY != PRESENT`, carried beside every level count in
 `top_of_book()`, `yes_scale_ladder()` and the snapshot result. Measured over 360
 live snapshots:
 
-| | s1 (60) | s2 (180) | s3 (120) | P0 (60) |
-|---|---:|---:|---:|---:|
-| both ladders present | 12 | 171 | 96 | 57 |
-| one side's key absent | 45 | 0 | 18 | 0 |
-| **both** absent | 3 | 9 | 6 | 3 |
-| a side present but **EMPTY** | **0** | **0** | **0** | **0** |
+| | s1 (60) | s2 (180) | s3 (120) | P0 (60) | **PROD (13)** |
+|---|---:|---:|---:|---:|---:|
+| both ladders present | 12 | 171 | 96 | 57 | **10** |
+| one side's key absent | 45 | 0 | 18 | 0 | **1** |
+| **both** absent | 3 | 9 | 6 | 3 | **2** |
+| a side present but **EMPTY** | **0** | **0** | **0** | **0** | **0** |
 
 48 of `s1`'s 60 snapshots omitted at least one side. **The case that used to be
 collapsed into "present with zero levels" is the common case, not an edge case.**
 `EMPTY` has **never been observed live** (§12).
+
+**Reproduced on production, and it is load-bearing there on real money.** 3 of
+13 production snapshots omitted at least one ladder (1 `NOT_PROVIDED/PRESENT`,
+2 `NOT_PROVIDED/NOT_PROVIDED`). **Two production books terminated
+`publishable: true` with `levels_yes = levels_no = 0`**, and the only field
+separating that from a genuinely empty book is `ladder_presence =
+omitted_by_venue`, which was present and correct on both. §7.1's rule — *"a
+zero-level book is never observed emptiness unless `ladder_presence` says so"* —
+would have been violated on **2 of 12 production markets** by a consumer reading
+`levels_*` alone.
+
+**`EMPTY` is still NOT OBSERVED — 0 of 13 on production, on top of 0 of 360 on
+DEMO.** n = 13 is small and this is weak evidence. It is **not** a retirement of
+the `NOT_PROVIDED != EMPTY != PRESENT` distinction, and **L4 stays open.**
 
 ### 5.2 `ticker` (sid 2) — **UNSEQUENCED**
 
@@ -416,6 +568,16 @@ a third-party mirror of the venue docs marked UNVERIFIED for `trade` and
 *"0.5100 came from `yes_price`"* and *"0.5100 came from `yes_price_dollars`"* are
 **different observations about the venue**. The first real session settles the
 question from the tape instead of from a document.
+
+**SETTLED on production, for `ticker`.** Production quotes used
+`yes_bid_dollars` / `yes_ask_dollars` on **2,395 of 2,395** frames; the bare
+`yes_bid` / `yes_ask` spelling **never appeared**. This is a fact about the
+production venue at this hour, not a proof that the bare spelling is
+unreachable — the alternate names stay in the reader. `trade` and
+`market_lifecycle_v2` field naming remains UNVERIFIED against venue docs; the
+production `trade` sid carried 2,516 records and the same census should be run
+over them before any `trade` field name is used as an experimental variable
+(doctrine 8).
 
 ---
 
@@ -507,6 +669,17 @@ venue had just abandoned. After the fix, frames 605…663 give 59 separate entri
 one acquisition each.
 
 **A zero-level book is never observed emptiness unless `ladder_presence` says so.**
+
+**This rule fired on production.** Two of twelve production markets terminated
+`publishable: true` with zero levels on both sides and
+`ladder_presence = omitted_by_venue` (§5.1). The distinction is no longer a
+hypothetical defended by fixtures; it is the only thing standing between a
+reader and a fabricated empty book on 17% of a real production universe.
+
+The per-market boundary machinery was **not exercised** in production: one
+connection, one `subscription_generation`, 0 reconnects, so no book ever entered
+`awaiting_snapshot_for_generation` there. That path's evidence remains the CP7
+DEMO re-run.
 
 ### 7.2 Book quantities
 
@@ -642,6 +815,13 @@ A permanently-empty `normalize_to_book_us` hop was **deleted** rather than kept:
 a permanently empty hop reads as "measured, and fast", which is worse than an
 absent one.
 
+**Production changed the sample size, not the epistemic status.** n = 84,154
+samples: p50 **45.03 ms**, p90 47.93, p95 59.62, p99 511.61. It is reported
+under the same contaminated name and **is still not a latency** —
+`host_clock_offset_characterised: false` on the production artifact too. 84,154
+samples of an uncharacterised offset is 84,154 samples of an uncharacterised
+offset. Do not quote these as production latency.
+
 ---
 
 ## 9. CANDIDATES: benign numbers that should become typed `NOT_MEASURABLE`
@@ -675,6 +855,19 @@ it nullable on exactly the same rule.
 and no venue fact. But it is a *plausible benign value emitted by a path that
 cannot know*, on a field whose name asserts a cause it never measured — the exact
 class doctrine 7 and 8 name.
+
+**Defect A is now DEMONSTRATED ON PRODUCTION, not merely argued.** The session
+reported `reader_stall_ms_max: 580` while the measured **maximum interarrival**
+was **580.913 ms** — the same event, to the millisecond. The reader never
+stalled: `frames_received == frames_yielded` (84,170 = 84,170), `read_timeouts:
+0`, and `append_calls == events_received == records on disk`. The field measured
+**venue quiet**, on a stream that never went silent for a whole second, and
+named it a reader stall. The recommended rename to
+`inter_frame_interval_ms_max` is upgraded from a reading of the code to a
+reading of production data. *(P4 could not cross-check Defect B: the run emitted
+no `kalshi-live-tape.jsonl` interval record at all, so `reader_lag_frames_max`,
+`append_us_max` and `segment_close_ms_max` were **not captured** — absent, not
+zero, and not to be reported as lag figures.)*
 
 ### 9.2 `rotation_failures` and `closer_outstanding_max` — **RECOMMEND CHANGE (nullable)**
 
@@ -893,12 +1086,33 @@ current code reaches a *wrong* answer, not a missing one.
 
 | | blocks | closable by |
 |---|---|---|
-| B1 unverified production WS host + credential | capture | an operator |
+| B1 unverified production WS host + credential — **CLOSED 2026-08-20** | capture | an operator |
 | ~~B2 unmerged branch stack~~ | ~~capture~~ | **STRUCK — already merged, verified on `main`** |
 | B3 `replay()` skips an `error` frame's `seq` | the **replay-equality verdict** | ~4 lines + a CP8 re-run |
-| B4 no session identity on the durable record | capture, **conditionally** | a run-procedure rule (no code) |
+| B4 no session identity on the durable record — **run rule APPLIED 2026-08-20** | capture, **conditionally** | a run-procedure rule (no code) |
 
-### B1. The production WebSocket host is UNVERIFIED
+### B1. The production WebSocket host is UNVERIFIED — **CLOSED 2026-08-20 on measurement**
+
+> **B1 CLOSES.** The production host has now been reached. HTTP **101** on
+> `wss://external-api-ws.kalshi.com/trade-api/ws/v2`, peer `16.58.202.54`,
+> certificate read **off that same socket** between handshake completion and the
+> collector's first `recv()`: SAN `["*.kalshi.com"]`, zero demo names,
+> `TLS_AES_128_GCM_SHA256`. The credential was separately proven read-only on
+> the venue's own testimony — `GET /trade-api/v2/api_keys` answered **200** by
+> `api.elections.kalshi.com`, key `sha256:cfdd78afeded1c22` present, scopes
+> `["read"]`, `proven_read_only: true`, `verified_before_first_frame: true`.
+> Production and demo DNS sets are disjoint (8 addresses vs 2) and the
+> certificates are cryptographically distinct (`*.kalshi.com` vs
+> `CN=demo.kalshi.co`).
+>
+> The original objection was *"documentation and a certificate are both stronger
+> than a name, and neither is a handshake."* There is now a handshake. The
+> source comment at `app/realtime/kalshi.py:52-55` still says UNVERIFIED and
+> **has deliberately not been edited** — that edit belongs with the B1 closure,
+> not with a capture phase or a docs amendment.
+
+The paragraph below is retained as the original statement of the blocker.
+
 
 `app/realtime/kalshi.py:52-55`:
 
@@ -1026,6 +1240,21 @@ If P4 wants a single multi-session archive, the record envelope needs a session
 identity — a `RECORD_SCHEMA_VERSION` bump, which is a schema decision outside
 this contract's authority and must not be made silently.
 
+**The run rule was APPLIED and it worked (2026-08-20).** P4 wrote one archive
+root for one session (`~/kalshi-prod-tape/p4-attempt2-20260820T003519Z`, session
+`s-20260820T003520Z-f450f75ed1fc`), and the tape verified `VALID` with
+`records_read == records_expected == 84,170` and `head_state CURRENT`. **The
+schema defect is not repaired — it is avoided**, exactly as this section
+prescribed, and the rule must be carried into every subsequent production run.
+One operational caveat found by P4 and recorded here because it bears on the
+rule's mechanism: the session claim is published at `ROOT/production/` while the
+archive writes to `ROOT/env=production/`, so the claim sits in an empty sibling
+directory rather than "beside the genesis". **The guarantee still holds** —
+`session_claim_path()` is deterministic and per-environment, so a second session
+against the same root still collides and is refused — but the stated rationale
+about *which* directory the boundary lives in is wrong and should be corrected
+when someone owns that file.
+
 ---
 
 ## 12. KNOWN LIMITATIONS THAT DO **NOT** BLOCK P4
@@ -1033,27 +1262,35 @@ this contract's authority and must not be made silently.
 Each is either typed at the API, guarded by a test, or is a property of the venue
 that no amount of work on this tape can change.
 
+**Production status is recorded inline below, 2026-08-20.** No limitation is
+retired by this amendment. Four are now **two-venue facts** (L1, L11, L17, L18);
+three were **not exercised at all** in production and stay open on that basis
+(L4, L5, L7, L8); three had their **missing empirical input supplied** (L9, L15,
+L16); and L12's premise is now quantified against the venue it was written about.
+
 | # | limitation | why it does not block P4 |
 |---|---|---|
-| L1 | **`ticker` completeness is permanently unknowable.** No `seq`, no gap detector, no repair. | Typed (`ordering_findings_establishable: false`), stated in this contract, and drift-detected. It is a *measurement-contract fact for* `MARKET-MICROSTRUCTURE-EDGE-001`, not a bug. |
+| L1 | **`ticker` completeness is permanently unknowable.** No `seq`, no gap detector, no repair. | Typed (`ordering_findings_establishable: false`), stated in this contract, and drift-detected. It is a *measurement-contract fact for* `MARKET-MICROSTRUCTURE-EDGE-001`, not a bug. **PRODUCTION: CONFIRMED, 0 of 2,395 records carry a `seq`.** Now a two-venue fact. `missing_seq = 0` on that sid is the same empty-domain artefact and is typed too. |
 | L2 | **`recoveries` and `generation_advances` do not reconstruct.** | Collector actions, not market state. Every book, checksum, publishability flag and ordering finding on every sequenced sid reconstructs exactly (§8.2). Candidates in §9.3–9.4. |
 | L3 | **`archive.replay()` is orderbook-only.** | Documented as the boundary (§1), pinned by a test, and no named downstream experiment requires more (§1.1). |
-| L4 | **The `EMPTY` ladder state has never been observed live** — 0 in 360 snapshots. Fixtures only. | The distinction it protects (`NOT_PROVIDED != EMPTY`) is exercised on real frames; only the third state is fixture-backed. Production may well produce it, which is a reason to run P4, not to delay it. |
-| L5 | **The delta-refusal path (`rejected_pre_generation_snapshot`) has never been exercised live**, in either CP7 run. | The guard exists and is unit-proven. The venue sent all 60 snapshots contiguously both times — luck, and reported as `NOT EXERCISED` rather than as a pass. Production's ordering may differ, which again argues for running P4. |
+| L4 | **The `EMPTY` ladder state has never been observed live** — 0 in 360 DEMO snapshots **and 0 in 13 production snapshots**. Fixtures only. | The distinction it protects (`NOT_PROVIDED != EMPTY`) is exercised on real frames; only the third state is fixture-backed. **PRODUCTION: STILL NOT OBSERVED. L4 STAYS OPEN** — n=13 is far too small to retire it, and the distinction earned its keep anyway: 2 of 12 production markets ended `publishable` with zero levels on both sides, distinguishable from a genuinely empty book **only** by `ladder_presence` (§5.1, §7.1). |
+| L5 | **The delta-refusal path (`rejected_pre_generation_snapshot`) has never been exercised live**, in either CP7 run **or in production**. | The guard exists and is unit-proven. The venue sent all 60 snapshots contiguously both times — luck, and reported as `NOT EXERCISED` rather than as a pass. **PRODUCTION: STILL NOT EXERCISED** — every snapshot again arrived before its deltas, and with one subscription generation there was no epoch boundary to refuse across at all. Three live runs of luck is not a proof. |
 | L6 | **No natural sequence gap has ever been observed** on any DEMO subscription. Both gaps were forced. | The detector is proven not to fire falsely (0 in the control) and proven to fire on injected gaps (14/14, live and replay). Only the *origin* is ours. |
-| L7 | **Whether a venue-initiated disconnect behaves like a forced one is not established.** | The reconnect ladder is bounded and the epoch model does not depend on the cause. P4 will run long enough to observe real ones. |
-| L8 | **Whether `error` consumes a `seq` on the orderbook sid** was not re-observed in P0. | The 2026-08-08 capture says yes and the code assumes yes — the conservative assumption. Assuming *no* would manufacture gaps; assuming *yes* cannot hide one. |
-| L9 | **Rotation constants rest on an assumed 500 events/s peak.** Every CP session started **zero** rotations. | A rate question, and rate is exactly what P4 measures. `DEFAULT_MAX_SEGMENT_RECORDS` will be retuned *from* P4, not before it. |
+| L7 | **Whether a venue-initiated disconnect behaves like a forced one is not established.** | The reconnect ladder is bounded and the epoch model does not depend on the cause. **PRODUCTION: STILL NOT ESTABLISHED — 0 disconnects and 0 reconnects in 600 s.** The expectation that "P4 will run long enough to observe real ones" was wrong for a ten-minute run; a longer run is the only way to close this. |
+| L8 | **Whether `error` consumes a `seq` on the orderbook sid** was not re-observed in P0 **and was not observed in production**. | The 2026-08-08 capture says yes and the code assumes yes — the conservative assumption. Assuming *no* would manufacture gaps; assuming *yes* cannot hide one. **PRODUCTION: NOT RE-OBSERVED — zero `error` frames in 600 s.** Recorded as not-observed, never as a pass. Note the coupling: the same absence is why B3 did not fire in production, so B3 is **unexercised, not disproven**. |
+| L9 | ~~**Rotation constants rest on an assumed 500 events/s peak.**~~ **SUPERSEDED 2026-08-20 — the prior is now a measurement, and it was LOW.** Every CP session started **zero** rotations; production started **6** in ten minutes. | A rate question, and rate is exactly what P4 measured. **`~500 events/s` is no longer an assumption — it is a superseded design prior. The observed 1-second peak is 565 f/s, 13% ABOVE it: the sizing input was slightly LOW, not conservative.** 565 f/s is still ~12× under the ~6,900 f/s closer ceiling (L16), so nothing is unsafe — but the constant must stop being described as a conservative bound, and it is **universe-size-dependent**, not absolute. Full treatment, provenance and caveats in **§16.2**. |
 | L10 | **`event_bytes_total` per-frame attribution is approximate** when a malformed frame precedes a good one. | Aggregate is exact; `frames_malformed` was 0 in every session measured. |
 | L11 | **`venue_to_receive_offset_contaminated_ms` is not a latency.** Host clock offset uncharacterised. | Named at length, flagged on its own artifact, negatives retained. It is evidence and is labelled as such. |
-| L12 | **DEMO is a load-test rig, not a market.** 98.3% of eligible frames come from 194 venue test instruments; the frozen 12-market pool produced 0.75 frames/s against a 100 000-frame floor (9.2× short) and **0.00/s** on replication. | **This is the entire reason P4 exists.** It is P4's premise, not an obstacle to it. |
+| L12 | **DEMO is a load-test rig, not a market.** 98.3% of eligible frames come from 194 venue test instruments; the frozen 12-market pool produced 0.75 frames/s against a 100 000-frame floor (9.2× short) and **0.00/s** on replication. | **This is the entire reason P4 exists.** It is P4's premise, not an obstacle to it. **PRODUCTION: QUANTIFIED — ~187×.** Identically sized (12 markets), identically selected, same three channels, same collector: DEMO **0.75 f/s**, production **~140 f/s** mean, peak **565 f/s**, **0** silent seconds in 600, **6** rotations vs DEMO's **0** ever. **Every constant tuned against DEMO's rate was tuned against a regime ~187× slower.** |
 | L13 | **`events_rejected` is structurally 0 under `dry_run`.** | P4 archives for real. §9.6. |
 | L14 | **The wall-clock test flake class** (baseline 5,195 / 8, rotating membership). | Pre-existing, attributed by measurement, unrelated to any realtime module. |
-| L15 | **The tape has no retention policy and no owner.** The collector milestone's own open question Q4 says so: *"a tape with an unowned growth curve is how the SQLite growth alert story started."* | Not a semantic defect. It is a P4 **operational** input: production rate is unknown until P4 measures it, so a retention rule cannot be sized before the run. It must be sized *from* P4's first hour, not guessed before it. |
-| L16 | **The closer's margin over the append ceiling is under 2×.** Synchronous append sustains ~3,440 events/s; the closer keeps up only below roughly 6,900 events/s at `DEFAULT_MAX_SEGMENT_RECORDS = 13_000`. | Overload is designed to become a **timestamped disconnect, not a silent gap** — append latency *is* reader stall, on purpose, and a collector that cannot keep up stops and says so. Measuring where production sits against that ceiling is P4's job. |
+| L15 | **The tape has no retention policy and no owner.** The collector milestone's own open question Q4 says so: *"a tape with an unowned growth curve is how the SQLite growth alert story started."* | Not a semantic defect. It is a P4 **operational** input: production rate is unknown until P4 measures it, so a retention rule cannot be sized before the run. It must be sized *from* P4's first hour, not guessed before it. **PRODUCTION SUPPLIED THE INPUT: ~13.8 MB compressed per 600 s at 12 markets = ~83 MB/hour, ~2.0 GB/day.** That is the number L15 was waiting for, for **this** universe size and **this** hour. **The tape still has no retention policy and no owner** — L15 does not retire; it now has a denominator. |
+| L16 | **The closer's margin over the append ceiling is under 2×.** Synchronous append sustains ~3,440 events/s; the closer keeps up only below roughly 6,900 events/s at `DEFAULT_MAX_SEGMENT_RECORDS = 13_000`. | Overload is designed to become a **timestamped disconnect, not a silent gap** — append latency *is* reader stall, on purpose, and a collector that cannot keep up stops and says so. **PRODUCTION: MEASURED.** Peak **565 f/s** at 12 markets is **~12× under** the ~6,900 f/s closer ceiling and ~6× under the ~3,440 f/s synchronous-append ceiling. Append kept up for the whole session — `frames_received == frames_yielded == append_calls == records on disk == 84,170`, `read_timeouts 0`, `rotation_failures 0`. **Under naive linear scaling in market count the peak would reach the closer ceiling at roughly 145 markets** — an order-of-magnitude marker only: §16.3 measures per-market frame rates spanning four orders of magnitude, so frame rate is emphatically **not** linear in market count. |
 | L17 | **Archive order equals wire order only under a single producer per subscription.** | Structural in the collector: exactly one task reads exactly one socket and calls `append()` on its own stack. Stated so a future concurrent writer does not silently void it. |
 | L18 | **The SIGKILL loss window is the unflushed tail plus the whole uncommitted segment** (`flush_every = 256`; `close()` is the commit point and an unclosed segment is explicitly not evidence). | Bounded, documented, and the same for DEMO and production. Rename-after-fsync is the durability contract, not `close()`. |
 | L19 | **`OrderBook.stats["gaps"|"regressions"|"duplicates"]` are structurally unreachable on the routed path** (§9.8). | Fixed at the operator readout (§10.3) and pinned by a test. The reachable numbers are in `subscription_stats`. A future consumer reading the per-market block must be told, and now is. |
+| **L20** | **Every production rate in this contract comes from ONE ten-minute overnight window.** 00:36–00:46 UTC (20:36 ET), a sports-dominated 12-market universe (MLB, ATP, MLS, WNBA in play), one session, one venue hour. **ADDED BY THIS AMENDMENT.** | It does not block anything — it **bounds every number in §16**. A single window cannot estimate a peak: 565 f/s is *the largest second we saw*, not *the largest second there is*, and the true daily peak is unbounded above by this evidence. Rates at other hours, on other weekdays, and for non-sports series are **unmeasured**. Any capacity, retention or cost claim that quotes §16 must quote this limit with it. |
+| **L21** | **Trading rate is a WEAK proxy for message rate — Spearman ≈ 0.52 on our own production data.** `top_of_book_change_rate` is degenerate as a screen (1.00 for 11 of 12 markets, Spearman **−0.20**). **ADDED BY THIS AMENDMENT.** | It does not block P4 — the capture is done and the tape is valid. It **changes research design**, which is why it is stated as a rule in **§16.3** rather than a caveat here: a universe stratified on REST trading rate is **not** stratified on message rate, and selecting a microstructure universe that way is the subtler recurrence of the manifest mistake (doctrine 8). |
 
 ---
 
@@ -1149,3 +1386,330 @@ No implementation surface. Repo-wide count unchanged from baseline.
 construction — a forbidden channel in a config file, an environment variable or a
 CLI argument is a `CapabilityError` before any object exists that could open a
 socket.
+
+**This amendment (§0.1, §16, §17) is docs-only and did not change that.** No
+socket was opened, no credential read, no file under `app/`, `tests/` or
+`scripts/` modified. Every production number quoted is from artifacts already
+committed to the repository, or from an independent recount over them (§16.2.1).
+
+---
+
+## 16. PRODUCTION-MEASURED QUANTITIES — **ADDED BY AMENDMENT, 2026-08-20**
+
+Everything in §1–§15 above was derived from DEMO. This section holds the
+quantities that **only production could supply**, under the same discipline: a
+provenance, a reconstructability class, and a stated limitation on every number.
+
+**Provenance of the whole section.** Session `s-20260820T003520Z-f450f75ed1fc`,
+production environment, `wss://external-api-ws.kalshi.com/trade-api/ws/v2`,
+00:36:00.199Z → 00:46:01.437Z, `status=capped_time` (`max_seconds=600`).
+**84,170 records, 7 segments (7 closed, 0 open, 0 invalid), 599.643 s span, 12
+markets, 3 channels.** Archive verifier: `VALID`, `reasons []`, `warnings []`,
+`records_read == records_expected == 84,170`, `truncated_records 0`,
+`head_state CURRENT`. `git diff main -- app/` empty — the collector ran exactly
+as shipped. Evidence: `docs/milestones/KALSHI-PROD-QUAL-CAPTURE-2-FINDINGS.md`,
+`docs/evidence/KALSHI-PROD-QUAL-CAPTURE-2-*.json`.
+
+### 16.1 `wire_frame_rate` — a new contract quantity
+
+The contract had no entry for *how fast frames arrive*, because DEMO could not
+produce a meaningful one. It has one now, and it needs typing more than most: it
+is the quantity most likely to be quoted outside the window that produced it.
+
+| attribute | value |
+|---|---|
+| **provenance** | **`COLLECTOR_FACT`.** The venue never states a rate. This is *frames that crossed our socket*, timestamped by our clock (`received_at_utc`, `received_monotonic_ns`). It is an observation about a joint system — venue, network, host — not a venue fact, and must never be written as one. |
+| **wire representation** | none. No frame carries a rate. |
+| **normalized representation** | none. Not a field on any record; computed by the reader from record timestamps. |
+| **channel and SID semantics** | measured **across all sids**, decomposable per sid (mix below). Per-sid rates are the useful ones; the aggregate is what the archive layer sees. |
+| **sequence domain** | not applicable — a rate is not sequenced. Note the asymmetry: on sids 1 and 3 the *count* is verifiable against `seq` contiguity; on sid 2 it is not (L1). |
+| **ordering guarantees** | inherits §3 per sid. The rate itself asserts no ordering. |
+| **frame-loss detectable?** | **only on the sequenced sids.** A measured rate is a **lower bound** on the venue's emission rate wherever loss cannot be excluded — which on `ticker` is always. |
+| **source completeness knowable?** | **NO, and it matters here.** Every rate is conditioned on *"we were connected"*. This session had 0 disconnects, so the condition is trivially satisfied **for this window and no other** — the same optimistic conditioning §8.5 names for latency. |
+| **subscription-generation semantics** | one generation for the whole window; a rate spanning a reconnect must be reported per generation or not at all. |
+| **units / precision** | frames per second. Two means are reportable and differ by denominator — see below. Peaks are integer counts in 1-second buckets, and depend on bucket alignment (§16.2.1). |
+| **missing-value semantics** | a bucket with no frames is **`0`, and that zero is an observation** — the one place in this contract where a zero is legitimate, because the collector was connected and counting. `silent_seconds = 0` here. It is **not** the same as an unmeasured second: a window we were disconnected for is `NOT_MEASURABLE:not_connected`, never 0. |
+| **reconstructability** | **`DERIVABLE_FROM_RAW`** in the tape's sense — `received_at_utc` is on every record, so any reader can recount every figure below from the archive. It is *not* `RAW_REPLAYABLE`: the timestamps are collector facts, so a different host would produce different numbers from the same venue behaviour. |
+| **current replay support** | **not `archive.replay()`.** `replay()` is book replay (§1) and returns no rate. Recounting is a plain read of `read_verified()`. |
+| **positive control** | the measurement path is demonstrably capable of a non-benign value: DEMO's identically-computed rate read **0.75 f/s**, and its replication read **0.00 f/s**, on the same code. A rate reader that could only print a healthy number would not have printed those. |
+| **known limitations** | **L20** (one ten-minute overnight window), **L12** (DEMO is not comparable), **L21** (the universe was not selected on message rate). All three apply to every row below. |
+
+**Measured (12 markets, 3 channels, 599.643 s):**
+
+| | measured |
+|---|---|
+| frames | **84,170** |
+| mean, by observed span (÷ 599.643 s) | **140.37 f/s** |
+| mean, by calendar-second buckets (÷ 601 buckets) | **140.05 f/s** |
+| median, 1-second bucket | **115 f/s** |
+| **peak, 1-second bucket** | **565 f/s** — next two peak seconds **523** and **455** |
+| silent seconds | **0 of 600** |
+| burstiness (index of dispersion) | **54.55** (Poisson = 1.0) |
+| interarrival | p50 **1.135 ms** · p90 17.31 · p95 31.18 · p99 92.14 · max **580.91 ms** |
+| bytes | 23,395,915 received · **~13.8 MB compressed on disk** |
+| rotations | **6**, at exactly 13,000 records each plus a 6,170 partial — one per **~92.6 s** |
+
+**The two means are both correct and are not interchangeable.** 140.37 divides
+by the observed span between first and last frame; 140.05 divides by the 601
+calendar seconds the session touched, whose first and last are partial. Quote
+the denominator with the number. Nothing turns on the 0.3 f/s difference; the
+habit does.
+
+**Channel mix — the book feed IS the load.** `orderbook_delta` 79,243 (94.1%) ·
+`trade` 2,516 (3.0%) · `ticker` 2,395 (2.8%) · `orderbook_snapshot` 13 ·
+`subscribed` 3. A sizing exercise that ignores `ticker` and `trade` entirely is
+wrong by under 6% at this universe; one that ignores the book feed is wrong by
+16×.
+
+**Continuous but violently bursty.** Not one silent second in ten minutes, and a
+dispersion index of 54.5 with a p50 interarrival of 1.1 ms against a p99 of
+92 ms. **Sizing on the mean understates the observed peak by ~4×.**
+
+### 16.2 `~500 events/s` is a SUPERSEDED DESIGN PRIOR, and it was LOW
+
+`segment.py:200-208` chose `DEFAULT_MAX_SEGMENT_RECORDS = 13_000` to target a
+~2 s close, and sized the rotation cadence against a **"~500 events/s assumed
+peak."** That sentence is the only empirical claim the constant rests on.
+
+> **It is no longer an assumption. The comparable measured quantity — the
+> observed 1-second peak — is 565 f/s. The prior is EXCEEDED by 13%.**
+
+**Record it as a LOW input, not a conservative one.** That distinction is the
+whole point: a conservative input is one reality stays under, and reality did not
+stay under this one. The constant is nonetheless **safe**, for a reason that has
+nothing to do with the prior's accuracy — 565 f/s sits **~12× under the
+~6,900 f/s closer ceiling** (L16) and ~6× under the ~3,440 f/s synchronous-append
+ceiling, and the session ran with `rotation_failures: 0` and perfect append
+conservation. **Safe by margin, not by forecast.**
+
+**Which bound is load-bearing has inverted.** In DEMO the record bound was
+unreachable and `DEFAULT_MAX_SEGMENT_AGE_S = 900 s` was the only thing that ever
+rotated. In production the record bound fired every ~93 s and **the age bound
+never fired at all**. `DEFAULT_MAX_SEGMENT_BYTES = 32 MiB` was ~15× away
+(~2.1 MB/segment) and is not load-bearing either.
+
+**Verdict: `DEFAULT_MAX_SEGMENT_RECORDS = 13_000` does not need retuning for a
+12-market universe — but it must stop being described as a conservative bound,
+and it must be understood as universe-size-dependent.** Retuning is a rate
+question, and rate is universe-dependent (§16.3): a different universe moves the
+peak, and the peak is what this constant is sized against.
+
+#### 16.2.1 A CORRECTION to the P4 findings document — 485 vs 565
+
+`docs/milestones/KALSHI-PROD-QUAL-CAPTURE-2-FINDINGS.md` §5.1/§5.2 and
+`docs/evidence/KALSHI-PROD-QUAL-CAPTURE-2-capture.json`
+(`load.frames_per_second_peak_1s`) report the 1-second peak as **485 f/s**, and
+§5.2 concludes from it that the ~500 e/s prior was *"~3% high — essentially
+correct."*
+
+**An independent recount over all 84,170 records, bucketed by calendar second,
+gives 565 f/s** — next two peak seconds **523** and **455**, mean **140.05**
+over 601 buckets. **This contract adopts 565.**
+
+The two figures differ because they bucket on different boundaries: a 1-second
+window's contents depend entirely on where its edges fall. 485 is therefore not
+*wrong*, it is *a different alignment* — and **a peak is an upper-bound
+statistic, so the larger valid alignment is the one a capacity claim must use.**
+Taking the smaller one biases the estimate downward exactly where downward bias
+is most dangerous.
+
+**The conclusion reverses, not merely the number.** At 485 the prior reads 3%
+high and vindicated; at 565 it reads **13% low and exceeded**. Recorded as a
+correction rather than a silent overwrite because the findings document's
+*reasoning* is sound and its warning still stands: *comparing an assumed **peak**
+against an observed **mean** and calling the assumption "3.5× conservative" is a
+category error.* That warning is right. It is the peak that was mismeasured, not
+the argument.
+
+**Downstream figures that move with it:**
+
+| | at 485 (findings) | **at 565 (adopted)** |
+|---|---|---|
+| vs the `~500 e/s` prior | 3% high, "essentially correct" | **13% LOW, exceeded** |
+| peak ÷ mean | 3.5× | **~4.0×** |
+| headroom vs the ~6,900 f/s closer ceiling (L16) | ~14× | **~12×** |
+| naive linear market-count marker | ~170 markets | **~145 markets** |
+
+The market-count marker is an order-of-magnitude sanity check and nothing more —
+§16.3 shows per-market frame rates spanning four orders of magnitude, so frame
+rate is **not** linear in market count and 145 is not a capacity limit.
+
+**Not applied to the source artifacts, deliberately.** The evidence JSON is a
+frozen record of what the capture tooling computed and must not be rewritten
+after the fact; the findings document belongs to P4. Both should carry a pointer
+to this subsection. **If a third recount disagrees with 565, that is a finding
+about the counting method and it supersedes this paragraph, not §16.1's table
+silently.**
+
+### 16.3 THE UNIVERSE-SELECTION FINDING — this changes research design
+
+The P4 universe was selected by stratifying markets on **trading rate** (traded
+contracts/minute) from a REST census. The tape then measured what those markets
+actually did on the wire.
+
+| manifest rank | wire rank | stratum | traded c/min | frames in 600 s |
+|---:|---:|---|---:|---:|
+| 1 | 1 | high | 29,328.1 | 19,741 |
+| 2 | 5 | high | 23,582.8 | 9,744 |
+| 3 | **8** | high | 19,534.9 | 1,914 |
+| 4 | 2 | high | 18,865.5 | 17,655 |
+| 5 | 3 | medium | 202.2 | 12,510 |
+| 6 | 7 | medium | 197.0 | 2,978 |
+| 7 | **12** | medium | 197.0 | **1** |
+| 8 | 6 | medium | 196.8 | 6,962 |
+| 9 | 9 | low | 16.2 | 715 |
+| 10 | 11 | low | 15.8 | 28 |
+| 11 | 10 | low | 15.8 | 34 |
+| 12 | **4** | **low** | **15.7** | **11,885** |
+
+```
+Spearman(trading rate, wire frame rate) ≈ 0.52          n = 12
+```
+
+Directionally right in aggregate — high 58.3% of frames, medium 26.7%, low
+15.0% — and **severely wrong per market**:
+
+- the market ranked **last of twelve on trading rate produced the 4th-most wire
+  frames** (11,885 in ten minutes);
+- a **medium**-stratum market produced **exactly one frame in 600 seconds**;
+- the selection statistic spans **1,868×** across the universe while wire frames
+  span **19,741×**. The screen is not measuring the thing that varies.
+
+**`top_of_book_change_rate` is degenerate as a screen.** It read **1.00 for 11 of
+12** markets and its Spearman against wire frames is **−0.20**. At the probe
+resolution used (4 reads over 7.6 minutes) it reduces to *"did top-of-book move
+at least once"*, which is almost always yes. A statistic that is 1.00 for 92% of
+its inputs is not ranking anything — doctrine 8, applied to one of our own
+statistics rather than to a venue's field.
+
+**The operational rule, and it is a rule:**
+
+> **Do not select the microstructure universe using trading volume/activity as a
+> proxy for message activity. Our own production measurement says that
+> relationship is too weak.**
+
+**This is the subtler recurrence of the manifest mistake.** That one was
+`updated_time` → presumed freshness, and it reported 73,057 of 73,630 markets
+stale. This one is **`trading volume` → presumed microstructure activity**, and
+the two are now *measured* as not interchangeable. The first was caught because
+its output was absurd. This one produces a universe that looks entirely
+reasonable and is silently mis-stratified — which makes it the more dangerous of
+the two.
+
+**Consequences, stated so they are not rediscovered:**
+
+1. **A universe stratified on REST trading rate is NOT stratified on message
+   rate.** Any `MARKET-MICROSTRUCTURE-EDGE-001` design that wants message-rate
+   strata must **measure message rate**, which requires a **WebSocket probe** and
+   cannot be done from a REST census.
+2. **Every rate in §16.1 inherits this.** 140 f/s mean and 565 f/s peak are
+   properties of *this* twelve markets, chosen by a screen now known to be weakly
+   related to the quantity being measured. They are not "the rate of a 12-market
+   universe"; they are the rate of *these* twelve.
+3. **Capacity extrapolation by market count is doubly unsound** — once because
+   frame rate is not linear in count, and once because *which* markets are
+   counted matters more than *how many*, by four orders of magnitude.
+4. The manifest already declares this limitation on its own face
+   (`STATISTIC_LIMITATIONS`, `stronger_alternative_not_used`). It is now
+   **quantified**, which is the difference between a caveat and a finding.
+
+### 16.4 What production did NOT settle
+
+Recorded here as well as in §12, so that a reader of this section alone cannot
+mistake a ten-minute clean run for a qualification of everything:
+
+| unobserved | production evidence | limitation |
+|---|---|---|
+| the `EMPTY` ladder state | 0 of 13 snapshots | **L4 open** |
+| `error`-frame behaviour on production, hence whether it consumes a `seq` | **0 error frames in 600 s** | **L8 open** |
+| venue-initiated disconnect | **0 disconnects, 0 reconnects** | **L7 open** |
+| the delta-refusal path `rejected_pre_generation_snapshot` | never exercised; every snapshot preceded its deltas | **L5 open** |
+| the per-market generation-boundary path | one `subscription_generation` throughout | evidence stays CP7/DEMO |
+| scaling past 12 markets | measured at 12 only — and §16.3 says count is the wrong axis | **L20** |
+| **any hour but this one** | one window, 20:36 ET, sports-dominated universe | **L20** |
+| host clock offset, hence any true latency | uncharacterised; 84,154 contaminated samples | **L11** |
+| interval telemetry (`reader_lag_frames_max`, `append_us_max`, `segment_close_ms_max`) | **no `kalshi-live-tape.jsonl` was emitted** — absent, not zero | §9.1 |
+
+**Replay equality is not in this table and is not this amendment's to report.**
+See §11 B3, which its owner is closing.
+
+---
+
+## 17. AMENDMENT CHANGELOG — 2026-08-20
+
+### What production CONFIRMED (DEMO provenance retained, never overwritten)
+
+| # | property | where |
+|---|---|---|
+| 1 | `orderbook` **independently sequenced** — 79,256 records, contiguous 1 → 79,256, all fault counters 0 | §3, §3.2 |
+| 2 | `trade` **independently sequenced** — 2,516 records, contiguous 1 → 2,516 | §3, §3.2 |
+| 3 | `ticker` **UNSEQUENCED** — 0 of 2,395 carry a `seq`; `missing_seq = 0` is the same empty-domain artefact | §3, §3.2, L1 |
+| 4 | sid assignment follows ack order; acks carry **no top-level `sid`**; the orderbook sid is discovered from **frames**, not from the subscribe | §3.1 |
+| 5 | **snapshot ladder typing reproduced** — 10 `PRESENT/PRESENT`, 1 `NOT_PROVIDED/PRESENT`, 2 `NOT_PROVIDED/NOT_PROVIDED` | §5.1 |
+| 6 | the `use_yes_price` / no-complement convention — **0 locked-or-crossed** in 2,405 spread samples | §5.1 |
+| 7 | `ladder_presence` is load-bearing on real data — 2 of 12 markets ended `publishable` with zero levels on both sides | §5.1, §7.1 |
+| 8 | ticker field naming settled — `yes_bid_dollars`/`yes_ask_dollars` on **2,395 / 2,395** | §5.4 |
+| 9 | envelope, digest chain, rotation and commit semantics — archive `VALID`, 84,170 = 84,170, 7/7 segments closed, `head_state CURRENT` | §4.2 |
+| 10 | the B4 **run rule works**: one archive root, one session, no schema bump | §11 B4 |
+
+### What production CHANGED
+
+| # | change | where |
+|---|---|---|
+| 1 | **`~500 events/s` is no longer an assumption — it is a SUPERSEDED DESIGN PRIOR, and it was 13% LOW.** Observed 1-second peak **565 f/s**. Safe by a ~12× margin against the closer ceiling, not by the prior's accuracy | §16.2, L9, L16 |
+| 2 | **Production is ~187× DEMO** on an identically sized and selected 12-market universe — ~140 f/s vs 0.75 f/s, 0 silent seconds vs mostly silence, 6 rotations vs 0 ever | §16.1, L12 |
+| 3 | **The load-bearing rotation bound inverted** — records fire every ~93 s; the 900 s age bound never fired; the bytes bound is ~15× away | §16.2 |
+| 4 | **The universe-selection rule** — Spearman(trading rate, wire frame rate) ≈ **0.52**; `top_of_book_change_rate` degenerate (1.00 for 11 of 12, Spearman **−0.20**). *Do not select a microstructure universe on trading volume* | §16.3, L21 |
+| 5 | **L15 has its denominator** — ~83 MB/hour, ~2.0 GB/day compressed at 12 markets. Still unowned | L15 |
+| 6 | **B1 CLOSED on measurement** — HTTP 101 on the production host, certificate read off the capture socket, credential scopes `["read"]` attested by the venue | §0, §11 B1 |
+| 7 | **§9.1 Defect A demonstrated on production data** — `reader_stall_ms_max: 580` equals the maximum *interarrival* (580.913 ms) in a session where the reader never stalled | §9.1 |
+| 8 | **A correction to the P4 findings document** — the 1-second peak is **565, not 485**, and the conclusion reverses from "prior 3% high, essentially correct" to "prior 13% low, exceeded" | §16.2.1 |
+| 9 | Two limitations added: **L20** (every rate comes from one ten-minute overnight window) and **L21** (trading rate is a weak proxy for message rate) | §12 |
+
+### What remains UNOBSERVED after production — nothing here is softened
+
+- the **`EMPTY`** ladder state — 0 of 13 production snapshots on top of 0 of 360 DEMO snapshots (**L4**);
+- **`error`-frame behaviour on production** — zero arrived in 600 s, so whether an `error` consumes a `seq` on the orderbook sid is still unsettled and the conservative assumption stands (**L8**);
+- **venue-initiated disconnect** — zero disconnects, zero reconnects (**L7**);
+- the **delta-refusal path** `rejected_pre_generation_snapshot` — never exercised; three live runs of luck is not a proof (**L5**);
+- **scaling past 12 markets** — and §16.3 argues market count is the wrong axis anyway;
+- **any hour but this one** — 00:36–00:46 UTC, 20:36 ET, sports-dominated universe, a single window (**L20**);
+- **host clock offset**, hence any true latency (**L11**);
+- **interval telemetry** — no `kalshi-live-tape.jsonl` was emitted at all: absent, not zero (**§9.1**).
+
+Every `NOT_MEASURABLE` and `NOT_RECONSTRUCTABLE` state in §7–§9 and §12 is
+carried forward **unchanged**. Production emitted them as typed states rather
+than as zeroes — `ticker_sequence_gaps: NOT_MEASURABLE:empty_sequence_domain`,
+`ticker_completeness: NOT_MEASURABLE:no_loss_detector_exists`,
+`transport_dropped_frames: NOT_MEASURABLE:no_source_exists`,
+`recoveries_from_tape: NOT_RECONSTRUCTABLE_BY_DESIGN`,
+`generation_advances_on_unsequenced_sid: NOT_RECONSTRUCTABLE_BY_DESIGN` — which
+is this contract working, on production, for the first time.
+
+### Nothing production CONTRADICTED
+
+**No production observation contradicted a semantic claim in §1–§15.** Every
+DEMO-derived property that production exercised, production reproduced. The one
+reversal in this amendment (§16.2.1) is a correction of a *P4 figure* against a
+recount of the same tape — an arithmetic disagreement between two readings of
+one artifact, not production disagreeing with the contract. Two contract
+statements were *superseded by measurement* rather than contradicted: L9's
+assumed peak (now measured, and low) and L12's DEMO baseline (now quantified).
+
+### Deliberately NOT done by this amendment
+
+- **§11 B3 untouched.** Its owner is closing it; the replay-equality verdict is not this amendment's to report.
+- **No `app/`, `tests/` or `scripts/` edit.** `app/realtime/kalshi.py:52-55` still says the production host is unverified even though §11 B1 now closes; that edit belongs with the B1 closure, not with a docs amendment.
+- **No edit to `KALSHI-PROD-QUAL-CAPTURE-2-FINDINGS.md` or to any evidence JSON.** The 485 → 565 correction is recorded in §16.2.1 and pointed at from here; an evidence artifact is a frozen record of what the tooling computed and must not be rewritten after the fact.
+- **No limitation retired.** Four became two-venue facts (L1, L11, L17, L18); none was closed.
+- **No new test.** The contract's own testing bar (§13) is unchanged; §16's quantities are measurements from a committed artifact, not new claims about `app/` behaviour that a guard could pin. A recount harness for §16.2.1 would be the obvious next guard and is **not** written here.
+- **The four secondary P4 readout findings** (`subscription_generations = 3`, `segments_committed = 1`, `healthy = False` on the unsequenced sids, the session-claim directory) are noted only where they bear on this contract; they belong to their own owner.
+
+### Editorial note
+
+§2 describes "the remaining eight" per-field attributes and then enumerates nine
+(provenance, wire representation, normalized representation, units/precision,
+missing-value semantics, reconstructability, current replay support, positive
+control, known limitations). §16.1 reproduces the attribute set **faithfully**
+rather than dropping one to make the count come out. The discrepancy is
+editorial, predates this amendment, and is flagged rather than silently patched.
