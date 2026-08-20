@@ -1713,3 +1713,44 @@ missing-value semantics, reconstructability, current replay support, positive
 control, known limitations). §16.1 reproduces the attribute set **faithfully**
 rather than dropping one to make the count come out. The discrepancy is
 editorial, predates this amendment, and is flagged rather than silently patched.
+
+
+---
+
+## §16.2.2 — the peak is 612 f/s, and the capture tooling UNDERSTATES it
+
+Third and final correction to this number. Measured on the same 84,170 records,
+which carry **sub-second receive timestamps** (verified), so a sliding window is
+computable and is the correct statistic:
+
+| method | peak 1 s | vs the superseded ~500 f/s prior |
+|---|---:|---|
+| capture tooling (`…-capture.json`, `frames_per_second_peak_1s`) | **485** | 3% below |
+| calendar-second recount (§16.2.1) | **565** | 13% above |
+| **sliding 1 s window — ADOPTED** | **612** | **22% above** |
+
+Peak at `2026-08-20T00:45:22.107Z`.
+
+**Why the sliding window is the one a capacity claim must use.** A peak is an
+upper-bound statistic. Fixed calendar-second buckets split any burst that
+straddles a boundary, so they systematically **understate** it — and
+understating a peak is the dangerous direction. The three figures are not in
+conflict; they are progressively less lossy views of one burst.
+
+**This makes the capture tooling's peak computation a DEMONSTRATED MEASUREMENT
+DEFECT**, not merely a differing convention: it reports a capacity-relevant
+upper bound that is **21% low**, and a research or operator report reading
+`frames_per_second_peak_1s` would inherit that. It qualifies for repair under
+the standing rule. `docs/evidence/KALSHI-PROD-QUAL-CAPTURE-2-capture.json` is a
+frozen record of what the tooling computed and is **deliberately not edited**;
+the defect is in the tooling, not in the record of it.
+
+**Downstream figures that move.** Peak ÷ mean burst factor **≈ 4.4×**
+(612 / 140). Headroom under the ~6,900 f/s closer ceiling **≈ 11×**, not the 12×
+of §16.2.1 nor the 14× first stated.
+
+**The prior's status is unchanged and is the point:** `~500 events/s` was an
+*assumption* used to size `DEFAULT_MAX_SEGMENT_RECORDS`, and the measured peak
+exceeds it. The sizing input was **low, not conservative**. L20 still binds —
+one ten-minute overnight window is not a peak-capacity estimate, and the true
+daily peak is very likely higher than 612.
