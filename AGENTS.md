@@ -246,6 +246,37 @@ already cost this project months.
     add noise; they are **phase-sensitive**, and they err **low**, which is the
     one direction capacity work cannot absorb.
 
+16. **A source's reputation is its forward return NET of the state-conditional
+    expectation, never its hit rate.** For a source `i` and horizon `h`:
+
+    > `α_i(h) = r_{t,t+h} − E[r_{t,t+h} | S_t]`
+
+    Subtracting the state term is the whole measurement. A caller who posts
+    *after* a token is already moving can show a 70% "win rate" while
+    contributing exactly zero information — the move was already in `S_t`, and
+    the reputation score is measuring the market, not the source. This is
+    doctrine 1 in another domain, and it is the same error the sports
+    forecaster taught us: **the model was the market, blurred.**
+
+    Reputation is therefore a **vector, not a number** — lead time, novelty,
+    α at several horizons, rug/adverse-outcome rate, and the sample size behind
+    each. A single score hides which of those is carrying it.
+
+17. **Infrastructure must earn its cost from a measured constraint, not from
+    sounding serious.** Do not buy latency before proving expectancy at a
+    slower timescale. The ladder is:
+
+    | tier | when it is justified |
+    |---|---|
+    | **0** — standard RPC / WSS, public endpoints | always start here |
+    | **1** — managed streaming with replay | only once completeness or latency is **demonstrably** blocking a validated experiment |
+    | **2** — preconfirmation / shred-level / MEV-class access | only once a latency-sensitive edge has actually been established |
+
+    The test for moving up a tier is a *measurement showing the current tier is
+    the binding constraint* — not a hypothesis that it might be. Optimising
+    microseconds before demonstrating positive expectancy over seconds or
+    minutes is spending money to make an unproven edge arrive faster.
+
 ## Parallel-agent composition (binding)
 
 > **Every parallel-agent milestone with a shared runtime path must have an
