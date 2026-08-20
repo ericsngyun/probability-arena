@@ -1897,8 +1897,22 @@ causes are now identified rather than merely observed:
 | `healthy: false` | all 12 books `publishable`, 0 faults | readout, not state |
 | claim path `ROOT/production/` | on disk `ROOT/env=production/` | partition prefix dropped |
 
-These are **readout** defects: the archived evidence is correct and the replayed
-state is correct in every case. That is precisely why they are dangerous — a
+**ALL FOUR REPAIRED 2026-08-19 (P4.2), each pinned by a test proven red against
+the pre-fix code.** `segments_committed` is now `rotations + len(close())` = 7;
+`subscription_generations` now reports `subscription_epoch` (1) with the router
+count preserved as `subscription_router_epochs` (3); the terminal-state readout
+gained a typed `liveness` of `NOT_APPLICABLE:carries_no_orderbook`, leaving
+`healthy` untouched for the book model.
+
+**The B4 path was not a readout defect at all — it was a guard that guarded
+nothing.** `session_root.env_root` returned `root / environment` while the
+archive writes to `env={environment}`, so a second concurrent session would
+never have collided with the claim and BOTH would have succeeded while the
+boundary reported itself enforced. The P4 tape root shows both directories side
+by side.
+
+The other three are **readout** defects: the archived evidence is correct and
+the replayed state is correct in every case. That is precisely why they are dangerous — a
 research consumer reading the summary rather than the tape inherits a wrong
 generation count, a wrong segment count, and a false unhealthy flag, from a
 capture that was in fact clean. Repair is scoped to the reporting path; the raw
