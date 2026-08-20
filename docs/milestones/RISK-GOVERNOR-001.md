@@ -656,3 +656,233 @@ The corollary, stated as policy: **on Kalshi, microstructure is an
 execution-cost tool, not an alpha source.** Any proposal to trade a pure
 microstructure signal is measured against 0.70¢-versus-3.50¢ and, absent a
 specific stated reason it does not apply, declined.
+
+---
+
+## 7. Kelly as an upper theoretical reference, and what `λ` should be
+
+### 7.1 Why Kelly is a ceiling and never an instruction
+
+Kelly is in the `min` because it is the only term that is an upper bound derived
+from **the edge itself**. Every other term is a bound derived from the venue, the
+book, or our wealth. That is its correct and only role.
+
+It is not an instruction to wager, for four reasons in descending order of
+strength.
+
+**(a) Its optimality is conditional on a known `p`, and `p` is the one thing we
+do not have.** This is not a philosophical objection. It is measured, and the
+sign flips inside the error bar of its own input.
+
+`f*` is **linear in `p` with slope `1/(1−q)`**, so a bias `δ` in `p` produces an
+error in `f` of `δ/(1−q)` — amplified without limit as `q → 1` — while `g` is
+concave, so the damage grows quadratically as the bias grows linearly.
+
+| condition | result |
+|---|---|
+| **2× Kelly** | **exactly zero growth.** Past 2×, growth is negative — you lose money *while holding a genuine edge* |
+| the bias that produces 2× Kelly | `δ = e`, the edge itself. Realistic net edges are 1–3 pp, so **a 2 pp forecasting bias zeroes out the growth of a genuine 2 pp edge** — and a forecaster calibrated to ±2 pp is considered excellent |
+| `q = 0.90`, `p_true = 0.93`, bias +3 pp | +0.0055 → **−0.0041**, and it demands **60% of bankroll on one contract** |
+
+**(b) Bias is not required. Unbiased noise alone does it.** `g` is concave, so by
+Jensen `E[g(f(p̂))] < g(f(E[p̂]))` even when `E[p̂] = p_true` exactly. The
+expansion is `E[g] ≈ g(f*) + ½·g''(f*)·Var(p̂)/(1−q)²`, so the penalty carries a
+`1/(1−q)²` factor:
+
+| `q` | `p_true` | sd(`p̂`) | E[g] as % of `g*` |
+|---|---|---|---|
+| 0.50 | 0.550 | 0.02 | 84.0% |
+| 0.50 | 0.550 | 0.05 | **21.7%** |
+| 0.90 | 0.930 | 0.02 | 37.2% |
+| **0.90** | **0.930** | **0.03** | **−136.0% (negative growth)** |
+
+> **At `q = 0.90`, an unbiased forecaster with 3 pp of honest noise turns a real
+> +3 pp edge into negative growth.** No overconfidence, no model error — just
+> ordinary sampling noise on an honest estimate. **Favourites are the trap**, and
+> the `1/(1−q)` amplification is where an unconstrained implementation blows up
+> first.
+
+**(c) The error is asymmetric, and every error source pushes the same way.** The
+growth curve is symmetric about full Kelly; the risk curve is not.
+
+| λ (×Kelly) | % of `g*` | median max drawdown | P(drawdown > 50%) | P(end < start) |
+|---|---|---|---|---|
+| 0.14 | 26.0% | 21.4% | 0.0008 | 0.0016 |
+| 0.50 | 74.9% | 61.4% | 0.8576 | 0.0097 |
+| **0.75** | **93.7%** | 78.6% | 0.9990 | **2.4%** |
+| 1.00 | 100.0% | **89.4%** | **1.0000** | 6.3% |
+| **1.25** | **93.7%** | 95.4% | 1.0000 | **12.0%** |
+| 2.00 | −2.8% | 99.9% | 1.0000 | 50.6% |
+
+`0.75×` and `1.25×` earn **identical** growth (93.7%) at 2.4% versus 12.0% risk
+of ending below where you started. **Underbetting is nearly free; overbetting is
+not** — and every failure mode above (bias, noise, correlation, rounding) pushes
+`f` *upward*. That asymmetry, not caution as a temperament, is the entire
+argument for `λ < 1`.
+
+Note also the fourth row: full Kelly has a **median maximum drawdown of 89.4%**
+over 1,000 bets and `P(drawdown > 50%) = 1.0000` across all 20,000 simulated
+paths — **with `p` known exactly.** Full Kelly is not a strategy a human can run.
+
+**(d) It composes wrongly across positions.** Kelly for `K` simultaneous
+positions is a joint optimisation, not `K` independent applications. Applying
+`f*` independently and summing assumes `ρ = 0`; with `K` positions at fraction
+`f` and pairwise correlation `ρ`, the aggregate stake variance is
+`K·f²·(1 + (K−1)ρ)`, inflating the effective single position by `√(1 + (K−1)ρ)`.
+
+> At `K = 10, ρ = 0.3` that is **√3.7 = 1.92**: a portfolio of ten "individually
+> half-Kelly" positions runs at roughly **full Kelly in aggregate** — the exact
+> regime the tables above show as maximally dangerous. **Each individual position
+> passes its own check.** The failure is silent by construction.
+
+### 7.2 `λ` is not a tweak. It is an admission of estimation error.
+
+The name for `λ` is not "the fractional Kelly knob". It is **the fraction of the
+theoretical optimum we are willing to claim, given that we cannot verify the
+input the optimum is computed from.** It is priced, decomposed, and each factor
+is separately measurable or separately absent.
+
+```
+λ = λ_calib × λ_dd × κ(W) × λ_evidence
+```
+
+| factor | what it admits | how it is obtained | absence |
+|---|---|---|---|
+| `λ_calib` | systematic overconfidence in `p̂` | **measured**: the Cox calibration slope `β̂` per regime, in log-odds space, applied as `p_cal = σ(â + β̂·logit(p̂))` **before** any Kelly computation — shrinking log-odds and shrinking `f` are different operations, and only the former has a probabilistic justification | `CALIBRATION_UNKNOWN_FOR_REGIME` → **`NO_TRADE`, never a pooled slope** |
+| `λ_dd` | path risk given `p` | **derived from a stated tolerance**: `λ_dd = 2/(1 + ln ε / ln α_dd)` | the tolerance is a declared human input; there is no default |
+| `κ(W)` | remaining room before the halt | `clamp((W − W_hard)/(W_0 − W_hard), 0, 1)` | a wealth read failure is `GOVERNOR_INPUT_INCOHERENT`, never `κ = 1` |
+| `λ_evidence` | **that we have not yet measured an edge at all** | the escalation rung's declared value (§11) | at rung 0, `λ_evidence = 0` |
+
+**`p_conservative`, and doctrine 14.** Separately from `λ`, the *input* to Kelly
+is the adverse end of the uncertainty interval, never the point estimate:
+
+```
+p_con = Q_α( measured dispersion )        applied AFTER recalibration
+```
+
+Because `f*` is linear in `p`, the quantile has an exact interpretation:
+
+```
+P( f(p_α) > f*(p_true) ) = P( p_α > p_true ) = α       (if the dispersion is calibrated)
+```
+
+> **Choosing the α-quantile sets the probability of overbetting relative to true
+> Kelly to exactly α.** That is a real design knob with a stated meaning, not a
+> heuristic fudge.
+
+The dispersion **must come from a measurable source** — bootstrap/refit
+dispersion, ensemble disagreement, or regime-conditional residual dispersion. A
+self-reported posterior width is **unfalsifiable by the only data available**:
+`p` is never observed, only the binary outcome `Y` is, and a forecaster reporting
+±2 pp and one reporting ±15 pp produce **identical likelihoods for every possible
+outcome sequence** provided their means agree. No dispersion source → `NO_TRADE
+(DISPERSION_SOURCE_ABSENT)`.
+
+Two traps worth naming so nobody re-derives them:
+
+* **"Bayesian Kelly" does nothing here.** For a single binary contract `g` is
+  *linear in `p`*, so the expected objective under the posterior is identical to
+  the objective at the posterior mean. The width, skew and shape of the posterior
+  have **literally zero** effect on the Bayes-optimal log-growth bet. Anyone
+  implementing "Bayesian Kelly" expecting shrinkage has implemented
+  Kelly-at-the-mean with extra steps. The shrinkage must be justified as
+  **ambiguity aversion against an unidentifiable posterior width** — an honest
+  reason, and the reason `p_con` requires a *measured* dispersion or nothing.
+* **The quantile controls the frequency of overbetting, not its magnitude**, so
+  it is **not a substitute for `λ`.** `p_con` handles parameter uncertainty in
+  `p`; `λ_dd` handles path risk given `p`; `λ_calib` handles systematic
+  overconfidence. Three different jobs; all three needed.
+
+### 7.3 What `λ` should be, given `e_net ≤ 0`
+
+**At escalation rung 0 (shadow), `λ_evidence = 0`, therefore `λ = 0`, therefore
+the Kelly ceiling is zero and every candidate is `NO_TRADE`.** This is not a
+degenerate configuration to be worked around. It is the direct arithmetic
+consequence of §3: if we have never measured a positive market-relative edge,
+the growth-optimal claim on the bankroll is zero. The governor is *correct*
+today, and it is correct by returning nothing.
+
+**At the first rung that touches capital**, the recommendation is:
+
+> ### λ ≤ 0.15 — approximately one-seventh Kelly
+> ### ⚠ PLACEHOLDER. DERIVED FROM A TOLERANCE STATEMENT NOBODY HAS MADE YET.
+> ### NOT CALIBRATED AGAINST ANY DATA OF OURS. See §17.
+
+The derivation, so the number can be argued with rather than inherited:
+
+| max drawdown from epoch start | `α_dd` | ε = 0.20 | ε = 0.10 | **ε = 0.05** | ε = 0.01 |
+|---|---|---|---|---|---|
+| 10% | 0.90 | 0.123 | 0.088 | 0.068 | 0.045 |
+| **20%** | **0.80** | 0.244 | 0.177 | **0.139** | 0.092 |
+| 30% | 0.70 | 0.363 | 0.268 | 0.213 | 0.144 |
+| 50% | 0.50 | 0.602 | 0.463 | 0.376 | 0.262 |
+
+A "**20% maximum drawdown at no more than 5% probability**" statement implies
+`λ_dd = 0.139`. **The 0.139 is exact arithmetic on an input that does not
+exist**: the tolerance `(20%, 5%)` is a *human policy choice nobody has made*, so
+the number is a placeholder standing in for a decision, not a measurement.
+Changing the tolerance is the only legitimate way to change the number, and the
+table prices both knobs. Quoting `0.139` to three digits without this paragraph
+attached would be precisely the kind of precise-looking uncalibrated number this
+document exists to prevent.
+
+Three things make `λ ≈ 0.14–0.15` the right order of magnitude rather than a
+timid one:
+
+1. **The price is known and it is payable.** `λ = 0.14` earns **26% of the
+   optimal growth rate**. That is the cost of the drawdown statement, stated
+   openly rather than discovered later.
+2. **It is *robust*, not merely safe** — the strongest argument. Simulating
+   `λ·f*(p̂)` with noisy `p̂` and mapping realised growth back onto the `g(λ)`
+   curve:
+
+   | λ intended | s = 0.00 | s = 0.01 | s = 0.02 | s = 0.03 |
+   |---|---|---|---|---|
+   | **0.14** | 0.140 | 0.140 | 0.138 | **0.138** |
+   | 0.50 | 0.500 | 0.490 | 0.463 | 0.428 |
+   | 1.00 | 1.000 | 0.800 | 0.601 | **0.420** |
+
+   Read it correctly: **noise gives you the risk profile of `λ` and the growth of
+   `λ_eff < λ`.** At `λ = 1.0, s = 0.03` you take full-Kelly drawdowns (median
+   peak 89%) while earning what an honest `λ = 0.42` would have earned. But at
+   `λ = 0.14` the effective value moves 0.140 → 0.138 across the *entire* range
+   of noise. **Low `λ` stops depending on a quantity we cannot measure.** That is
+   the property. Safety is a side effect of it.
+3. **A separate `λ_evidence` factor keeps the two admissions apart.** `λ_dd`
+   admits *we cannot tolerate the path*; `λ_evidence` admits *we have not
+   established the edge*. Collapsing them into one number would let a future
+   operator "improve" the drawdown tolerance and silently claim edge evidence
+   that does not exist.
+
+### 7.4 The ratchet on `λ`
+
+> **`λ` is not a performance dial. It may not be raised because results have
+> been good.**
+
+| operation | requirement |
+|---|---|
+| **lower `λ`** | any operator, any time, no evidence required, effective immediately |
+| **raise `λ_dd`** | a new declared drawdown tolerance, recorded as a dated human decision, opening a **new epoch with a new `W_0`** |
+| **raise `λ_calib`** | it *is* `β̂`; it moves only when `β̂` is refitted on schedule, per regime, at `n ≥ 500` per cell |
+| **raise `λ_evidence`** | the rung evidence of §11, requiring a **prospective** sample of the size §11.1 states |
+| **raise `λ` because P&L is good** | **forbidden.** The point estimate of the optimal `λ` is itself upward-biased for exactly the reason §7.1(b) describes. `λ` is validated on a **lower confidence bound** on realised growth, never on the point estimate (doctrine 14) |
+
+### 7.5 The free-parameter audit (doctrine 15)
+
+> **A bounding statistic must not depend on a free parameter.** Where one does,
+> either the parameter is fixed by a declared, dated human decision *before* data
+> is seen, or the bound is reported across the whole admissible range and the
+> **worst value is the operative one**.
+
+This document contains four such parameters. Hiding them would make every number
+in it look more calibrated than it is.
+
+| parameter | where | why it is dangerous | disposition |
+|---|---|---|---|
+| `α` in `EVaR_α` / `CVaR_α` | `f_tail` (§6.2) | **the canonical instance.** For a two-point binary loss the sign of `α − (1 − p)` silently switches the constraint between an exact flat cap and a **no-op that reports the position as guaranteed profit** (`CVaR = −0.0102` at `p = 0.93, α = 0.20`). The notation gives no warning | `α` **declared and dated before any data**; the constraint additionally evaluated at `α ∈ {0.01, 0.05, 0.10}` with the **most binding** value operative. If candidate ranking changes with `α`, the result is an artefact of `α` and is reported as one |
+| `α` in `p_con = Q_α(dispersion)` | §7.2 | it sets the overbetting frequency exactly — a real knob, and therefore one an operator can turn until a candidate passes | declared before data; admissible range **`α ∈ [0.10, 0.25]`**, toward the low end when dispersion comes from a single source rather than bootstrap **and** ensemble agreement. Sensitivity across the range travels on the artefact |
+| `γ` in `f(σ_t)` | §5.2 | an exponent chosen after seeing which markets it excludes is not a bound, it is a fit | `γ = 1` **[PLACEHOLDER]**, frozen until a measured volatility-versus-loss relationship exists. No tuning against outcomes |
+| the `κ ≥ 2` cost-kill floor | §6.3 step 4 | a threshold on a robustness scalar | **not free** — inherited unchanged from QDK §7.4, where 2 is justified as "our cost stack has non-closable terms and a stale liquidity estimate; a result that dies if costs are twice the model has not survived our own measurement error." `κ` is computed by the **evaluator**, not the author, which is what makes it hard to game |
+
+The general rule: **if changing a free parameter within its admissible range
+turns a veto into an approval, the correct output is the veto.**
