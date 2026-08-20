@@ -121,6 +121,33 @@ class TestBudgetStopsSpending:
         with pytest.raises(BudgetExhaustedError):
             tightened.reserve(1)
 
+    def test_raising_the_cap_mid_period_does_NOT_take_effect_until_rollover(
+        self, tmp_path
+    ):
+        """The asymmetry: lowering applies at once, raising waits.
+
+        The direction that can only reduce spending is applied immediately; the
+        direction that can only increase it waits for a period boundary where
+        someone had to look at the number again.
+        """
+
+        path = tmp_path / "l.json"
+        MonthlyReadCostGuard(
+            path, CostBudget(max_reads_per_month=5), now=at(2026, 8)
+        ).reserve(5)
+
+        raised = MonthlyReadCostGuard(
+            path, CostBudget(max_reads_per_month=500), now=at(2026, 8)
+        )
+        with pytest.raises(BudgetExhaustedError):
+            raised.reserve(1)
+
+        # At the period boundary the new cap does apply.
+        september = MonthlyReadCostGuard(
+            path, CostBudget(max_reads_per_month=500), now=at(2026, 9)
+        )
+        assert september.reserve(100).consumed == 100
+
     def test_reserve_rejects_nonsense_counts(self, tmp_path):
         guard = MonthlyReadCostGuard(
             tmp_path / "l.json", CostBudget(max_reads_per_month=5)

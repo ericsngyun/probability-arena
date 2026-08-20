@@ -736,6 +736,28 @@ class TestTape:
         manifest = writer.close()
         assert manifest["process_epoch"]["epoch_id"] == epoch.epoch_id
 
+    def test_a_float_payload_is_refused_at_write_time(self, tmp_path):
+        """A value that could not survive its own digest never reaches the tape.
+
+        This is the KALSHI-ARCHIVE-REPLAY-INTEGRITY-001 defect class: a float
+        is not canonically representable, so writing one bare and re-reading it
+        re-serialises differently and every record carrying it fails its own
+        digest on read. Rejecting it at append time is the fail-closed
+        direction — a refused record is visible, a silently unverifiable one
+        is not.
+        """
+
+        from app.realtime.canonical import CanonicalError
+
+        epoch = process_epoch()
+        writer = self._writer(tmp_path, epoch)
+        with pytest.raises(CanonicalError):
+            writer.append_stream_event("bad", {"latency_seconds": 1.5})
+        # And the healthy control: the integer form is accepted.
+        writer.append_stream_event("good", {"latency_us": 1_500_000})
+        writer.close()
+        assert verify_segment(writer.directory).ok
+
     def test_uncommitted_segment_does_not_verify(self, tmp_path):
         epoch = process_epoch()
         writer = self._writer(tmp_path, epoch)

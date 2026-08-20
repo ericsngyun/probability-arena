@@ -25,6 +25,15 @@ between the increment and the read over-counts by at most the in-flight
 reservation. The opposite ordering under-counts, and under-counting is the only
 error direction that can produce a bill nobody authorized.
 
+Cap changes mid-period
+----------------------
+The effective cap is ``min(stored_budget, configured_budget)``, so LOWERING the
+cap takes effect immediately, while RAISING it does not take effect until the
+next period. That asymmetry is the same one as rollover, for the same reason:
+the direction that can only reduce spending is applied at once, and the
+direction that can only increase it waits for a period boundary where someone
+had to look at the number again.
+
 Rollover
 --------
 The period is a UTC calendar month, ``YYYY-MM``. A new period is entered only
