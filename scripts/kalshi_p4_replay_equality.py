@@ -54,9 +54,14 @@ def tape_census(records) -> dict:
         segs.add(r.get("segment_id"))
         if r.get("seq") is not None:
             seq_by_sid.setdefault(sid, []).append(r["seq"])
-    return {"by_type": dict(by_type), "by_sid": dict(by_sid),
-            "subscription_generations": dict(gens),
-            "connection_generations": dict(conn_gens),
+    def _k(c):
+        # Keys are stringified because a sid of `None` (control acks) and an
+        # int sid cannot be sorted against each other by `json.dumps`.
+        return {str(k): v for k, v in c.items()}
+
+    return {"by_type": _k(by_type), "by_sid": _k(by_sid),
+            "subscription_generations": _k(gens),
+            "connection_generations": _k(conn_gens),
             "segment_ids": len(segs), "seq_by_sid": seq_by_sid}
 
 
