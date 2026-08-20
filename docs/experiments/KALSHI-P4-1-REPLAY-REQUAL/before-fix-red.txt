@@ -1,0 +1,191 @@
+...FFFF..FFFFF.F..............                                           [100%]
+=================================== FAILURES ===================================
+_ TestSequencedControlFrameIsASequenceEvent.test_replay_does_not_manufacture_a_gap _
+
+self = <tests.test_kalshi_p4_1_replay_requal_001.TestSequencedControlFrameIsASequenceEvent object at 0x108b6b800>
+
+    def test_replay_does_not_manufacture_a_gap(self):
+        out = replay(self.records())
+>       assert out["events_rejected"] == 0, out["faults"]
+E       AssertionError: [{'market_ticker': 'KXTESTMATCH-26AUG150030INDSRI-IND', 'sid': 1, 'seq': 4, 'error': 'SubscriptionError: sid 1: sequence gap: expected 3, got 4'}]
+E       assert 1 == 0
+
+tests/test_kalshi_p4_1_replay_requal_001.py:239: AssertionError
+_ TestSequencedControlFrameIsASequenceEvent.test_replay_and_live_reach_the_same_verdict _
+
+self = <tests.test_kalshi_p4_1_replay_requal_001.TestSequencedControlFrameIsASequenceEvent object at 0x108b6bb60>
+
+    def test_replay_and_live_reach_the_same_verdict(self):
+        """The replay-equality claim, on the exact input that used to break it."""
+        records = self.records()
+        live_faults, live_publishable, live_last_seq = drive_live(records)
+        out = replay(records)
+    
+        assert (live_faults, live_publishable) == (0, {MARKET: True})
+>       assert out["events_rejected"] == live_faults
+E       assert 1 == 0
+
+tests/test_kalshi_p4_1_replay_requal_001.py:251: AssertionError
+_ TestSequencedControlFrameIsASequenceEvent.test_the_error_frames_actual_sequence_is_consumed _
+
+self = <tests.test_kalshi_p4_1_replay_requal_001.TestSequencedControlFrameIsASequenceEvent object at 0x108b6bec0>
+
+    def test_the_error_frames_actual_sequence_is_consumed(self):
+        """Its ACTUAL number — not "one more", not "skip ahead"."""
+        out = replay([snapshot(1), wire_error_record(2)])
+>       assert out["subscription_stats"]["1"]["accepted"] == 2
+E       assert 1 == 2
+
+tests/test_kalshi_p4_1_replay_requal_001.py:260: AssertionError
+_ TestTheLadderIsNotTouched.test_the_error_frame_advances_the_sequence_and_nothing_else _
+
+self = <tests.test_kalshi_p4_1_replay_requal_001.TestTheLadderIsNotTouched object at 0x108ba0290>
+
+    def test_the_error_frame_advances_the_sequence_and_nothing_else(self):
+        before = replay([snapshot(1), delta(2)])
+        after = replay([snapshot(1), delta(2), wire_error_record(3)])
+    
+        # The book is bit-identical...
+        assert after["checksums"][MARKET] == before["checksums"][MARKET]
+        assert after["checksums"][MARKET] is not None
+        assert after["stats"] == before["stats"]
+        # ...and no book event was counted for it...
+        assert after["events_applied"] == before["events_applied"] == 2
+        assert after["markets"] == before["markets"] == 1
+        # ...while the SUBSCRIPTION did move.
+>       assert (after["subscription_stats"]["1"]["accepted"]
+                == before["subscription_stats"]["1"]["accepted"] + 1)
+E       assert 2 == (2 + 1)
+
+tests/test_kalshi_p4_1_replay_requal_001.py:285: AssertionError
+_ TestARealDropStillFaults.test_a_drop_ADJACENT_to_an_error_frame_still_halts_the_book _
+
+self = <tests.test_kalshi_p4_1_replay_requal_001.TestARealDropStillFaults object at 0x108ba0cb0>
+
+    def test_a_drop_ADJACENT_to_an_error_frame_still_halts_the_book(self):
+        """The dangerous case: the error frame must absorb its own number only.
+    
+        If the fix absorbed "whatever comes next" instead of `seq` 3, this real
+        loss at 4 would be silently swallowed — which is the precise way a
+        sequence fix turns into a sequence blindfold.
+        """
+        out = replay([snapshot(1), delta(2), wire_error_record(3), delta(5)])
+        assert out["events_rejected"] == 1
+        assert out["publishable"] == {MARKET: False}
+        assert out["publication_states"][MARKET]["state"] == PUB_BOOK_HALTED
+>       assert "sequence gap: expected 4, got 5" in out["faults"][0]["error"]
+E       AssertionError: assert 'sequence gap: expected 4, got 5' in 'SubscriptionError: sid 1: sequence gap: expected 3, got 5'
+
+tests/test_kalshi_p4_1_replay_requal_001.py:327: AssertionError
+_ TestARealDropStillFaults.test_a_gap_CARRIED_BY_the_error_frame_still_halts_the_book _
+
+self = <tests.test_kalshi_p4_1_replay_requal_001.TestARealDropStillFaults object at 0x108b6ba10>
+
+    def test_a_gap_CARRIED_BY_the_error_frame_still_halts_the_book(self):
+        """The loss can be the frame before the error frame."""
+        out = replay([snapshot(1), delta(2), wire_error_record(5)])
+>       assert out["events_rejected"] == 1
+E       assert 0 == 1
+
+tests/test_kalshi_p4_1_replay_requal_001.py:332: AssertionError
+_ TestARealDropStillFaults.test_the_live_lane_agrees_about_every_one_of_those __
+
+self = <tests.test_kalshi_p4_1_replay_requal_001.TestARealDropStillFaults object at 0x108b6b2c0>
+
+    def test_the_live_lane_agrees_about_every_one_of_those(self):
+        """Parity is the point: replay must not be a second opinion."""
+        for records in ([snapshot(1), delta(2), delta(4)],
+                        [snapshot(1), delta(2), wire_error_record(3), delta(5)],
+                        [snapshot(1), delta(2), wire_error_record(5)]):
+            live_faults, live_publishable, _ = drive_live(records)
+            out = replay(records)
+>           assert out["events_rejected"] == live_faults == 1, records
+E           AssertionError: [{'event_type': 'orderbook_snapshot', 'sid': 1, 'seq': 1, 'market_ticker': 'KXTESTMATCH-26AUG150030INDSRI-IND', ...}, ...r': 'KXTESTMATCH-26AUG150030INDSRI-IND', ...}, {'event_type': 'error', 'sid': 1, 'seq': 5, 'market_ticker': None, ...}]
+E           assert 0 == 1
+
+tests/test_kalshi_p4_1_replay_requal_001.py:343: AssertionError
+_____ TestDeterminismAndScope.test_replay_terminal_state_is_deterministic ______
+
+self = <tests.test_kalshi_p4_1_replay_requal_001.TestDeterminismAndScope object at 0x108b6ae40>
+
+    def test_replay_terminal_state_is_deterministic(self):
+        """Requirement 6. Same records, same everything — twice."""
+        records = [snapshot(1), delta(2), wire_error_record(3), delta(4)]
+        first, second = replay(records), replay(list(records))
+        assert first == second
+        for key in ("checksums", "publishable", "publication_states", "stats",
+                    "subscription_stats", "events_applied", "events_rejected"):
+            assert first[key] == second[key]
+    
+        # ANTI-VACUITY: the terminal state is a function of the records, so a
+        # DIFFERENT tape reaches a different one. Equality above is not the
+        # trivial equality of two empty results.
+        assert replay(records[:2]) != first
+>       assert first["checksums"][MARKET] is not None
+E       assert None is not None
+
+tests/test_kalshi_p4_1_replay_requal_001.py:362: AssertionError
+______ TestDeterminismAndScope.test_the_fix_did_not_widen_replay_s_scope _______
+
+self = <tests.test_kalshi_p4_1_replay_requal_001.TestDeterminismAndScope object at 0x108ba0860>
+
+    def test_the_fix_did_not_widen_replay_s_scope(self):
+        """B3 is not "replay now models every sid". It still does not.
+    
+        A control frame advances a subscription replay is ALREADY
+        reconstructing. It never brings a new subscription into existence —
+        that is the separate, deliberately-guarded decision recorded in
+        `test_the_shipped_replay_omits_the_non_orderbook_sids` (CP6-CP9).
+        """
+        trade = {
+            "event_type": "trade", "sid": 3, "seq": 1,
+            "market_ticker": MARKET, "subscription_generation": 1,
+            "raw": {"msg": {"market_ticker": MARKET, "taker_side": "yes",
+                            "yes_price_dollars": "0.5000", "count_fp": "2.00"}},
+        }
+        error_on_a_bookless_sid = wire_error_record(2, sid=3)
+        out = replay([snapshot(1), trade, error_on_a_bookless_sid, delta(2)])
+    
+        assert out["subscriptions"] == 1
+        assert set(out["subscription_stats"]) == {"1"}
+    
+        # ANTI-VACUITY: on the sid that DOES carry books the very same error
+        # frame is consumed, so the "1" above is a scope boundary rather than
+        # the fix failing to run at all.
+        on_book_sid = replay([snapshot(1), wire_error_record(2), delta(3)])
+>       assert on_book_sid["events_rejected"] == 0, on_book_sid["faults"]
+E       AssertionError: [{'market_ticker': 'KXTESTMATCH-26AUG150030INDSRI-IND', 'sid': 1, 'seq': 3, 'error': 'SubscriptionError: sid 1: sequence gap: expected 2, got 3'}]
+E       assert 1 == 0
+
+tests/test_kalshi_p4_1_replay_requal_001.py:388: AssertionError
+_ TestNoInventedVenueSemantics.test_an_unknown_control_type_is_treated_identically _
+
+self = <tests.test_kalshi_p4_1_replay_requal_001.TestNoInventedVenueSemantics object at 0x108ba1220>
+
+    def test_an_unknown_control_type_is_treated_identically(self):
+        """Ordering is a property of the SUBSCRIPTION, not of the frame's name.
+    
+        Nothing special-cases the string "error". A frame type we have never
+        seen, carrying a `seq` on a sid we are reconstructing, consumes it the
+        same way — which is what keeps this a sequence rule instead of a
+        hard-coded list of venue vocabulary.
+        """
+        unknown = {**wire_error_record(3), "event_type": "some_future_frame"}
+        out = replay([snapshot(1), delta(2), unknown, delta(4)])
+>       assert out["events_rejected"] == 0, out["faults"]
+E       AssertionError: [{'market_ticker': 'KXTESTMATCH-26AUG150030INDSRI-IND', 'sid': 1, 'seq': 4, 'error': 'SubscriptionError: sid 1: sequence gap: expected 3, got 4'}]
+E       assert 1 == 0
+
+tests/test_kalshi_p4_1_replay_requal_001.py:412: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_kalshi_p4_1_replay_requal_001.py::TestSequencedControlFrameIsASequenceEvent::test_replay_does_not_manufacture_a_gap
+FAILED tests/test_kalshi_p4_1_replay_requal_001.py::TestSequencedControlFrameIsASequenceEvent::test_replay_and_live_reach_the_same_verdict
+FAILED tests/test_kalshi_p4_1_replay_requal_001.py::TestSequencedControlFrameIsASequenceEvent::test_the_error_frames_actual_sequence_is_consumed
+FAILED tests/test_kalshi_p4_1_replay_requal_001.py::TestTheLadderIsNotTouched::test_the_error_frame_advances_the_sequence_and_nothing_else
+FAILED tests/test_kalshi_p4_1_replay_requal_001.py::TestARealDropStillFaults::test_a_drop_ADJACENT_to_an_error_frame_still_halts_the_book
+FAILED tests/test_kalshi_p4_1_replay_requal_001.py::TestARealDropStillFaults::test_a_gap_CARRIED_BY_the_error_frame_still_halts_the_book
+FAILED tests/test_kalshi_p4_1_replay_requal_001.py::TestARealDropStillFaults::test_the_live_lane_agrees_about_every_one_of_those
+FAILED tests/test_kalshi_p4_1_replay_requal_001.py::TestDeterminismAndScope::test_replay_terminal_state_is_deterministic
+FAILED tests/test_kalshi_p4_1_replay_requal_001.py::TestDeterminismAndScope::test_the_fix_did_not_widen_replay_s_scope
+FAILED tests/test_kalshi_p4_1_replay_requal_001.py::TestNoInventedVenueSemantics::test_an_unknown_control_type_is_treated_identically
+10 failed, 20 passed in 1.38s
