@@ -886,3 +886,202 @@ in it look more calibrated than it is.
 
 The general rule: **if changing a free parameter within its admissible range
 turns a veto into an approval, the correct output is the veto.**
+
+---
+
+## 8. High-volatility operating mode
+
+### 8.1 The four principles
+
+1. **Mechanical.** Entry into and exit from every volatility state is a pure
+   function of observables. No discretionary override, no "the operator judged
+   conditions to be normal", no per-strategy exemption.
+2. **Asymmetric hysteresis.** Enter fast (one observation), leave slow (a
+   sustained dwell). The cost of being late to caution is the bankroll; the cost
+   of being early to leave it is a little growth.
+3. **Latching on faults.** A state entered because of an *infrastructure* fault
+   rather than a market condition does not un-latch automatically at all — it
+   requires the §12 reset path.
+4. **Ratchet-only.** The volatility state may only reduce `B_t`, tighten a gate,
+   or prohibit a class. It may never raise a budget, relax a gate, or enable a
+   class — so no future trigger can be written in the wrong direction even by
+   accident.
+
+### 8.2 The state ladder
+
+| state | name | meaning |
+|---|---|---|
+| `V0` | CALM | all volatility observables inside their reference bands |
+| `V1` | ELEVATED | one or more observables outside band, none extreme |
+| `V2` | STRESSED | multiple observables extreme, or one extreme with degraded liquidity |
+| `V3` | DISLOCATED | venue-level or infrastructure-level condition; the state of the market is not reliably knowable |
+| `VU` | **UNKNOWN** | the state could **not be computed**. Distinct from `V0`, and treated as strictly worse than `V3` |
+
+> **`VU` is the state this system is in today**, because `σ_ref` does not exist
+> (§5.2). `VU` is not a transitional inconvenience — it is the honest label for
+> "we do not know this market's volatility regime", and encoding it as `V0`
+> would be the `None → 0` defect doctrine 10 forbids, applied to a regime label
+> instead of to a price.
+
+### 8.3 Triggers — observable, deterministic, every threshold a loud placeholder
+
+All inputs are MARKET-STATE-FABRIC-v1 fields or governor-internal counters.
+
+> ### ⚠ NOT ONE `k` IN THIS TABLE HAS BEEN MEASURED.
+> Every `_ref` value and every `k` multiplier is a **PLACEHOLDER AWAITING
+> MEASUREMENT** (§17). The table expresses **shape and direction only**. An
+> implementation that ships these as numeric literals has shipped an
+> uncalibrated governor and must be treated as such.
+
+| # | trigger (observable) | source | threshold | → state |
+|---|---|---|---|---|
+| T1 | `realized_vol_30s > k1 · σ_ref(regime)` | fabric `realized_vol_Δ` | k1 **[PLACEHOLDER]** | `V1` |
+| T2 | `realized_vol_30s > k2 · σ_ref(regime)` | fabric | k2 **[PLACEHOLDER]** | `V2` |
+| T3 | `spread > k3 · s_ref(regime)` | fabric `spread` | k3 **[PLACEHOLDER]** | `V1` |
+| T4 | `depth_5c < k4 · D_ref(regime)`, either side | fabric `depth_*_5c` | k4 **[PLACEHOLDER]** | `V1` |
+| T5 | T2 **and** T4 simultaneously | — | — | `V2` |
+| T6 | `quote_reversal_30s > k6 · reversal_ref` | fabric `quote_reversal_Δ` | k6 **[PLACEHOLDER]** | `V1` |
+| T7 | `dist_to_bound < k7` — contract near 0 or 1 | fabric `dist_to_bound` | k7 **[PLACEHOLDER]** | `V1`, this market only |
+| T8 | `seconds_to_close < k8` | fabric covariate | k8 **[PLACEHOLDER]** | `V1`, this market only |
+| T9 | order-book sequence gap, or `PublicationState` not publishable | collector state | any occurrence | **`V3`, latching** |
+| T10 | `subscription_generation` changed inside the freshness window | collector state | any occurrence | **`V3`, latching** |
+| T11 | clock skew beyond bound | host/venue clocks | **[PLACEHOLDER]** | **`V3`, latching** |
+| T12 | `book_age_ms` beyond the regime's staleness bound | fabric covariate | **[PLACEHOLDER]** | `V2` |
+| T13 | realised markout worse than bound over the trailing window | **markout model — DOES NOT EXIST** | n/a | `V2` (§10) |
+| T14 | realised fill rate diverges from the fill model's prediction | **fill model — DOES NOT EXIST** | n/a | `V2` (§10) |
+| T15 | `Ĉ(s) − C_realized(s)` exceeds its declared adverse bound | **cost model — UNVERIFIED** | n/a | **`V3`, latching** (§10) |
+| T16 | any volatility observable is `NOT_MEASURED` | — | any occurrence | **`VU`** |
+
+Two things about this table are load-bearing:
+
+* **T7 and T8 are prediction-market triggers with no equities analogue.** A
+  Kalshi contract is bounded in `[0,1]`: a 1¢ move at mid 0.50 and a 1¢ move at
+  mid 0.02 are not the same event — the second is a 50% relative move that cannot
+  continue far in one direction. A volatility measure that ignores the bound sees
+  structurally different behaviour near the boundary **and calls it a regime**.
+  T7 makes the boundary an explicit trigger rather than letting it contaminate
+  `σ`. T8 exists because a market's terminal hours are a different process, not a
+  noisier version of the same one.
+* **T13–T15 are inert today, and their inertness is itself a trigger.** See §8.5
+  and §10: at `V1` and above, a strategy class whose supervising trigger is
+  inoperative is **prohibited**, not merely unsupervised. This is the mechanism
+  that stops §10's missing models from being a footnote.
+
+**Dwell and exit.** Entry is on a single qualifying observation. Exit from `Vn`
+to `Vn−1` requires the triggering observable to sit inside the lower band for a
+declared dwell `T_dwell` **[PLACEHOLDER]** with no re-trigger in that window.
+`V3` and `VU` never exit automatically.
+
+### 8.4 Responses — deterministic, and the mapping is the specification
+
+Every response is a *function of the state*, applied without discretion. All
+numeric multipliers `m1..m13` are **PLACEHOLDERS**. The *ordering* — monotone
+non-increasing left to right in every row — is **binding and must hold under any
+future calibration**. A calibration that produces `m2 > m1` is not a calibration,
+it is a bug.
+
+| # | required response | `V0` | `V1` | `V2` | `V3` / `VU` |
+|---|---|---|---|---|---|
+| R1 | **reduce notional** — multiply `B_t` | ×1.0 | ×m1 **[PH]** | ×m2 **[PH]** | **×0** |
+| R2 | **reduce gross** — cap `Σ f_i` | `B_total` | ×m3 **[PH]** | ×m4 **[PH]** | **0 (no new exposure)** |
+| R3 | **reduce correlated exposure** — cluster budget `B_c` | `B_c` | ×m5 **[PH]** | ×m6 **[PH]** | **0** |
+| R4 | **demand larger edge** — required net-edge multiple over the cost floor | ×1.0 | ×m7 **[PH]** | ×m8 **[PH]** | **∞ (nothing qualifies)** |
+| R5 | **increase uncertainty haircut** — `α` for `p_con` moves toward its adverse end | `α_declared` | tighter | tightest admissible | n/a |
+| R6 | **limit maker inventory** — cap on resting size | `I_max` | ×m9 **[PH]** | **0 (no resting orders)** | **0** |
+| R7 | **increase post-fill markout scrutiny** — window and threshold | baseline | shorter window, tighter bound | tightest; a breach latches `V3` | n/a |
+| R8 | **prohibit strategy classes** | — | §8.5 | §8.5 | **all classes** |
+| R9 | **raise the `κ` cost-kill floor** | 2 | m10 **[PH]** | m11 **[PH]** | n/a |
+| R10 | **shorten every freshness bound** | baseline | ×m12 **[PH]** | ×m13 **[PH]** | n/a |
+
+Two remarks:
+
+* **R1 and R2 are not the same response.** R1 shrinks the *risk budget* — how
+  much may be lost. R2 shrinks *gross* — how much is deployed. In a venue where
+  positions can be near-perfectly correlated (§9.3), gross and risk diverge
+  sharply, and a system that controls only one of them controls neither.
+* **R5 is the only response that touches the belief pipeline**, and it does so by
+  moving a *declared* parameter within its *declared admissible range* (§7.5). It
+  never edits `p̂`, never re-runs a model, and never calls the asynchronous plane
+  (doctrine 12).
+
+### 8.5 Strategy-class prohibition
+
+Classes are declared, typed, and closed. A strategy declares its class at
+registration; the governor never infers it.
+
+| class | `V0` | `V1` | `V2` | `V3`/`VU` | note |
+|---|---|---|---|---|---|
+| `HELD_TO_RESOLUTION_TAKER` | allowed | allowed | allowed, reduced | prohibited | pays fees **once** — the cheapest class on this venue |
+| `SHORT_HORIZON_TAKER_ROUNDTRIP` | allowed | **prohibited** | prohibited | prohibited | pays the round trip **twice**; §6.3 shows the best documented microstructure edge is one fifth of that cost |
+| `MAKER_PASSIVE` | allowed **only if** the markout model exists | prohibited | prohibited | prohibited | see below |
+| `NAIVE_TWO_SIDED_QUOTE_AT_TOUCH_WITH_REQUOTE_ON_MOVE` | **prohibited at every state** | — | — | — | a **named prohibited baseline**, recorded so nobody rediscovers it |
+| `CROSS_MARKET_COHERENCE` | prohibited (not built; cut by QDK §3.1) | — | — | — | |
+| any class whose supervising trigger (T13/T14/T15) is inoperative | allowed only at `V0` | **prohibited** | prohibited | prohibited | §10 |
+
+**Why `MAKER_PASSIVE` is prohibited above `V0`, and why the reason is not
+fees.** Kalshi's maker fee multiplier `M` defaults to **0**, so maker fees are
+typically zero and the maker's per-filled-contract advantage over taker is
+*larger* than a naïve reading suggests. "Fees make maker uneconomic" is **false**
+and would be corrected by the first person to read the schedule. Maker is killed
+by two other things:
+
+* **Queue position is unobservable after submission.** Kalshi's websocket is L2:
+  `orderbook_delta` carries `side`, `price_dollars` and a single net `delta_fp`
+  per price level — **no order IDs, no per-order events**. Queue-ahead *at
+  submission* is observable; thereafter, when a level shrinks by `δ`, we cannot
+  tell whether the cancellations came from ahead of or behind us, so our position
+  evolves as an **interval** `Q_ahead ∈ [max(0, Q_ahead − δ), Q_ahead]`. The
+  uniform-cancellation assumption needed to model it **cannot be validated from
+  observation alone** — identifying it requires placing orders and observing our
+  own fills, which is forbidden. It is a **permanently unfalsifiable parameter
+  under this capability boundary**, and §7.5's rule applies: a bound that rests on
+  an unidentifiable parameter is not a bound.
+* **The fill/return relationship is mechanically adverse.** Under a
+  requote-on-move policy, `P(fill | favourable next move) = 0` and
+  `P(fill | adverse next move) = 1`. This holds **by construction on any CLOB**,
+  not as an empirical regularity. **Fill rate is therefore a diagnostic and never
+  an objective.** Naive two-sided quoting at the touch with requote-on-move has
+  been measured at annualized Sharpe **−109** — hence the permanent prohibition
+  above.
+
+Consequence for reporting as well as for sizing: **maker P&L must be reported as
+a bracket `(optimistic, point, pessimistic)`, never a single number**, and the
+first prospective measurement is **taker-only** — more expensive, exactly
+computable from the visible ladder, and free of unidentifiable parameters.
+Honest beats cheap.
+
+### 8.6 Worked example — the state machine doing its job
+
+Assume, hypothetically, that reference values have been measured. Placeholders
+are shown as the multipliers they are.
+
+```
+t0   V0   σ = 1.0·σ_ref   spread = 1c   depth_5c = 800
+          B_t = B_0 · 1.0 · 1.0 · 0.95 · 0.60 = 0.57·B_0
+          Kelly ceiling λ·f_K = 0.021, and it is the min
+                                        → CEILING(0.021), binding = KELLY
+
+t1   T1 fires (σ = 2.4·σ_ref) → V1
+     R1 ×m1 · R4 ×m7 · R6 ×m9 · R10 ×m12
+          net edge 1.4c against a cost floor of 3.5c·m7
+                                        → NO_TRADE(EXECUTION_COST_EXCEEDS_EDGE)
+
+t2   T4 also fires (depth_5c = 90) → T5 → V2
+     R6 forces resting size to 0; MAKER_PASSIVE and SHORT_HORIZON prohibited.
+     Existing inventory is NOT liquidated by the governor (§9.2).
+     The governor controls NEW exposure. It is not an exit engine.
+
+t3   T9 fires (orderbook sequence gap) → V3, LATCHING
+     B_t = 0. Every class prohibited.
+                                        → NO_TRADE(BOOK_UNPUBLISHABLE)
+     Note the CODE ORDER: BOOK_UNPUBLISHABLE (5) outranks
+     LIQUIDITY_BELOW_THRESHOLD (19), so the record says "we were blind",
+     not "the market was thin". §4.1.
+
+t4   σ returns to 1.1·σ_ref, spread 1c, depth 750, sequence clean.
+     V3 does NOT exit. It is latched. Reset requires §12 and a human.
+```
+
+The step that matters is `t4`. Every other transition is arithmetic. `t4` is
+where an operator wants to type "conditions look fine now", and the design does
+not let them.
