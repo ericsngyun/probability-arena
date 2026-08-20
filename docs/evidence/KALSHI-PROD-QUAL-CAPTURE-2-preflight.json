@@ -1,0 +1,34 @@
+{
+  "capture_attempted": false,
+  "credential_read": false,
+  "gates": [
+    {
+      "findings": [],
+      "gate": "structural_guard",
+      "identifiers_scanned": 3292,
+      "modules_in_closure": 16,
+      "passed": true
+    },
+    {
+      "collector_would_connect_to": "wss://external-api-ws.kalshi.com/trade-api/ws/v2",
+      "env_file_records": "wss://api.elections.kalshi.com/trade-api/ws/v2",
+      "gate": "endpoint",
+      "hosts_agree": false,
+      "note": "RECORDED, NOT RESOLVED \u2014 see docs/KALSHI_PRODUCTION_ENDPOINT_001.md",
+      "passed": true,
+      "verified_on_the_wire": false
+    },
+    {
+      "claim_path": "/home/miko_node_001/kalshi-prod-tape/p4-attempt2-20260820T003519Z/production/collection-session.json",
+      "claimed_at": "2026-08-20T00:35:20.254284Z",
+      "gate": "session_root",
+      "passed": true,
+      "record_schema_version_bumped": false,
+      "reused_existing_claim": false,
+      "session_id": "s-20260820T003520Z-f450f75ed1fc"
+    }
+  ],
+  "milestone": "KALSHI-PROD-QUAL-PRECAPTURE",
+  "passed": true,
+  "socket_opened": false
+}
