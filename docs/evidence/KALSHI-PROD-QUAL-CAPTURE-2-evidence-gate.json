@@ -1,0 +1,126 @@
+{
+  "credential": {
+    "credential_path_basename": "kalshi-production.pem",
+    "detail": "verified against GET /trade-api/v2/api_keys",
+    "environment": "production",
+    "gate": "credential_production_identity",
+    "key_id_fingerprint": "sha256:cfdd78afeded1c22",
+    "key_material_read_by_this_script": false,
+    "metadata_route_host": "api.elections.kalshi.com",
+    "metadata_route_http_version": "HTTP/1.1",
+    "metadata_route_status": 200,
+    "passed": true,
+    "proven_read_only": true,
+    "scopes": [
+      "read"
+    ],
+    "verified_at": "2026-08-20T00:22:29.157250+00:00"
+  },
+  "endpoint": {
+    "at": "2026-08-20T00:22:28.913563+00:00",
+    "collector_would_dial": "wss://external-api-ws.kalshi.com/trade-api/ws/v2",
+    "demo_rest_host": "https://external-api.demo.kalshi.co/trade-api/v2",
+    "demo_ws_constant": "wss://external-api-ws.demo.kalshi.co/trade-api/ws/v2",
+    "demo_ws_tls_for_contrast": {
+      "at": "2026-08-20T00:22:28.685474+00:00",
+      "certificate_issuer": {
+        "commonName": "Amazon RSA 2048 M01",
+        "countryName": "US",
+        "organizationName": "Amazon"
+      },
+      "certificate_subject": {
+        "commonName": "demo.kalshi.co"
+      },
+      "cipher": "TLS_AES_128_GCM_SHA256",
+      "hostname": "external-api-ws.demo.kalshi.co",
+      "hostname_checked": true,
+      "not_after": "Mar  3 23:59:59 2027 GMT",
+      "not_before": "Feb  2 00:00:00 2026 GMT",
+      "peer_address": "44.239.83.101",
+      "port": 443,
+      "resolved_addresses": [
+        "44.239.83.101",
+        "44.253.221.95"
+      ],
+      "serial_number": "0DD3A15A2169EE8BF8DA91ED95097940",
+      "subject_alt_names": [
+        "*.demo.kalshi.co",
+        "demo.kalshi.co"
+      ],
+      "tls_version": "TLSv1.3",
+      "verified_by_default_trust_store": true
+    },
+    "findings": [],
+    "gate": "endpoint_evidence",
+    "hosts_are_distinct_names": true,
+    "passed": true,
+    "production_rest_host": "https://api.elections.kalshi.com/trade-api/v2",
+    "production_rest_tls": {
+      "at": "2026-08-20T00:22:28.593940+00:00",
+      "certificate_issuer": {
+        "commonName": "Amazon RSA 2048 M04",
+        "countryName": "US",
+        "organizationName": "Amazon"
+      },
+      "certificate_subject": {
+        "commonName": "elections.kalshi.com"
+      },
+      "cipher": "TLS_AES_128_GCM_SHA256",
+      "hostname": "api.elections.kalshi.com",
+      "hostname_checked": true,
+      "not_after": "Jan 28 23:59:59 2027 GMT",
+      "not_before": "Jul 15 00:00:00 2026 GMT",
+      "peer_address": "52.84.20.45",
+      "port": 443,
+      "resolved_addresses": [
+        "52.84.20.129",
+        "52.84.20.45",
+        "52.84.20.58",
+        "52.84.20.75"
+      ],
+      "serial_number": "077DAD34C9F5027B68034402D6A62114",
+      "subject_alt_names": [
+        "*.elections.kalshi.com",
+        "elections.kalshi.com"
+      ],
+      "tls_version": "TLSv1.3",
+      "verified_by_default_trust_store": true
+    },
+    "production_ws_tls": {
+      "at": "2026-08-20T00:22:28.386876+00:00",
+      "certificate_issuer": {
+        "commonName": "Amazon RSA 2048 M01",
+        "countryName": "US",
+        "organizationName": "Amazon"
+      },
+      "certificate_subject": {
+        "commonName": "*.kalshi.com"
+      },
+      "cipher": "TLS_AES_128_GCM_SHA256",
+      "hostname": "external-api-ws.kalshi.com",
+      "hostname_checked": true,
+      "not_after": "Feb  2 23:59:59 2027 GMT",
+      "not_before": "Jan  5 00:00:00 2026 GMT",
+      "peer_address": "3.142.159.67",
+      "port": 443,
+      "resolved_addresses": [
+        "16.58.202.54",
+        "18.227.50.250",
+        "3.134.246.140",
+        "3.142.159.67",
+        "3.18.17.239",
+        "3.18.240.36",
+        "3.22.13.229",
+        "52.14.254.177"
+      ],
+      "serial_number": "0207918390B1DA2DC3F0252A99129C6E",
+      "subject_alt_names": [
+        "*.kalshi.com"
+      ],
+      "tls_version": "TLSv1.3",
+      "verified_by_default_trust_store": true
+    },
+    "spec_production_ws": "wss://external-api-ws.kalshi.com/trade-api/ws/v2"
+  },
+  "passed": true
+}
