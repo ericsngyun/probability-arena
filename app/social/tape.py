@@ -196,8 +196,8 @@ def verify_record_self_digest(record: Mapping[str, Any]) -> bool:
 def fold_stream_digest(previous: str, record_digest: str) -> str:
     """Running digest over the ORDER of records, not merely their contents.
 
-    Two records that swap places produce the same set of self-digests but a
-    different fold, which is what makes a reorder detectable.
+    Two records in reversed order produce the same set of self-digests but
+    a different fold, which is what makes a reorder detectable.
     """
 
     return hashlib.sha256(
