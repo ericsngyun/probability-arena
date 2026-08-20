@@ -1,9 +1,11 @@
-# SEMANTIC-PROBABILITY-GRAPH-001 — citation verification
+# SEMANTIC-PROBABILITY-GRAPH-001
 
-**Status: STUB. Design not written.** This file currently contains ONE section:
-the retrieval record for the two user-supplied papers. Retrieval was performed
-2026-08-16 in a session that was interrupted; it is committed on its own so the
-verification is not lost. Nothing here is accepted, built, or authorized.
+**Status: DESIGN, NOT IMPLEMENTED.** Agents map markets to canonical
+propositions; deterministic math enforces probability constraints. **No agent
+ever selects an action.** Nothing here is built or authorized.
+
+The citation-verification section is kept first, because what it found
+constrains what the rest of this document is allowed to assume.
 
 **Doctrine 9 applies to this section.** "The paper exists and is about this
 topic" is a different claim from "this figure is correct". Each row below says
