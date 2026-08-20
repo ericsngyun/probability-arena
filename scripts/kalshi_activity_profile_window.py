@@ -192,6 +192,20 @@ def main(argv) -> int:
         return 2
     root.mkdir(parents=True, exist_ok=True)
 
+    # The archive must be brought into existence BEFORE the collector runs.
+    # It fails closed if it is not (`ArchiveNotInitializedError: no genesis
+    # marker`), which is correct and is how this omission was caught -- the
+    # capture reported `status: archive_error` while still exiting 0.
+    from app.realtime import archive_head, session_root
+    archive_head.initialize_archive(root, "production",
+                                    archive_identity="kalshi-realtime")
+    # B4: one archive root belongs to one session, claimed durably BEFORE the
+    # socket opens. Now lands in `env=production/` -- the directory the archive
+    # actually writes to -- since the P4.2 repair.
+    session_id = session_root.new_session_id()
+    claim = session_root.claim_session_root(root, "production",
+                                            session_id=session_id)
+
     before = host_load()
     started = datetime.now(timezone.utc).isoformat()
     cap_out = root / "capture.json"
@@ -214,9 +228,21 @@ def main(argv) -> int:
     # that ran to completion, and is reported as such rather than pooled.
     span = tape.get("span_seconds") or 0
     short = span < a.seconds * 0.9
+    # The capture exits 0 even when the SESSION failed, so its own status is
+    # read rather than the process return code.
+    cap_status = None
+    if cap_out.exists():
+        try:
+            cap_status = json.loads(cap_out.read_text())[
+                "session_result"].get("status")
+        except Exception:
+            cap_status = "UNREADABLE"
+
     validity = "VALID"
     if proc.returncode != 0:
         validity = f"INVALID:capture_exit_{proc.returncode}"
+    elif cap_status not in (None, "ok", "completed", "complete"):
+        validity = f"INVALID:session_status_{cap_status}"
     elif tape.get("frames", 0) == 0:
         validity = "INVALID:no_frames"
     elif short:
@@ -230,6 +256,10 @@ def main(argv) -> int:
         "validity": validity,
         "host_load_before": before, "host_load_after": after,
         "capture_returncode": proc.returncode,
+        "capture_session_status": cap_status,
+        "session_id": session_id,
+        "session_claim_digest": (claim.claim_digest
+                                 if hasattr(claim, "claim_digest") else None),
         "capture_stderr_tail": proc.stderr[-2000:] if proc.stderr else "",
         "tape": tape,
         "hard_stop": {
