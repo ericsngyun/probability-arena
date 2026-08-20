@@ -231,3 +231,82 @@ capacity defect has been demonstrated. The correct order is: change the
 measurement basis (done), collect the six windows, then decide whether the
 segment constant needs tuning. Tuning it now would be a change made on one
 overnight window — the exact error that produced the retired prior.
+
+---
+
+## Amendment 2 — 2026-08-20, BEFORE ANY WINDOW WAS CAPTURED
+
+**A circularity in this document, found on preflight.** §3 said the observation
+universe is "selected by the rule in §4", but §4's rule is evaluated **pooled
+across all six windows** — it is the *output* rule and needs the data this
+experiment has not yet collected. The preregistration therefore never defined
+what to subscribe to *during* the profile. This amendment fills that hole. It
+changes **no threshold, no window count, and no §4 criterion.**
+
+**Measured facts that forced the resolution** (read-only `GET /markets`, public
+route, no credential, telemetry-blind):
+
+* Every sampled market from the P4 tape — `KXATPMATCH-26AUG19BORNAK-BOR`,
+  `KXMLBGAME-26AUG191805MIAPHI-PHI`, `KXMLBGAME-26AUG191835NYYBAL-BAL`,
+  `KXMLBTOTAL-26AUG191840SFCLE-4` — was **already NOT OPEN** ~6 h after capture.
+  Same-day sports markets settle same day.
+* Markets *are* listed in advance: `KXMLBGAME` had 18 open closing 26AUG20, 30
+  closing 26AUG21, 30 closing 26AUG22; `KXNFLGAME` out to 26SEP13.
+
+So a literally "fixed 40-market universe" across two weekdays is satisfiable
+**only** with future-dated markets — which are open but essentially silent a day
+before their event. Three of the six windows would then capture near-nothing,
+and the time-of-day comparison would in fact be measuring **time-to-event**.
+That answers Q2 with a confound rather than a measurement.
+
+**RESOLUTION — the observation universe is frozen PER DAY.**
+
+| | |
+|---|---|
+| day 1 | 40 markets whose `close_time` falls on profile day 1 |
+| day 2 | 40 markets whose `close_time` falls on profile day 2 |
+| market-level rank stability | measured **within day**, across that day's 3 slots |
+| cross-day stability | measured at **series** level (`KXMLBGAME`, `KXATPMATCH`, …) |
+
+Both days therefore carry real traffic, and time-of-day is measured rather than
+entangled with time-to-event. The cost is stated plainly: **no market-level rank
+statistic spans the two days**, because no market does.
+
+**THE SELECTION RULE, written before the query that uses it runs.** §5 already
+authorises `ticker` as a candidate-discovery heuristic and nothing more; this is
+that, and only that.
+
+1. **Candidate population** — every market the venue reports `status=open` whose
+   `close_time` falls within profile day *d* (ET). Enumerated from REST. No
+   volume, open-interest, liquidity or top-of-book field is read.
+2. **Discovery** — one **5-minute global `ticker` pass** before that day's first
+   window. A market is a candidate if it emitted **≥ 1 ticker frame**.
+3. **Selection** — the **40** candidates with the highest ticker-frame count,
+   ties broken by **ticker ascending**.
+4. **Positive control (§7)** — a **41st** market closing the same day that
+   emitted **zero** ticker frames during discovery, first by ticker ascending.
+   It must **FAIL** §4's criteria or the run is void.
+
+This selects the *observation* universe only. **§4's output rule is untouched**
+and still governs which markets may enter `MARKET-MICROSTRUCTURE-EDGE-001`, and
+its criteria are still evaluated **exclusively from order-book evidence**.
+
+**Channels.** Each window subscribes `orderbook_delta`, `trade` and `ticker`.
+`trade` is required because §2 of the deliverable asks for per-market trade
+frames and `MARKET-STATE-FABRIC-v1`'s M1 block reads that channel; on the P4
+tape it added 2,516 frames against 79,256 order-book frames (~3%), so its
+capacity cost is immaterial. **Order-book and trade are the channels the first
+experiment leans on; `ticker` remains discovery and context only**, because it
+is unsequenced and its completeness is unknowable.
+
+**The 3,500 f/s hard stop is evaluated per window, immediately on completion,
+before the next window is permitted to start.** It is deliberately **not**
+in-flight: an in-flight rate governor would mean editing the collector, and the
+collector is frozen. A breach halts the set exactly as §6 requires — no later
+window runs on a breached configuration. `peak_1s_sliding` is the sole statistic
+the gate reads; `peak_1s_calendar_bucket` is recorded as a diagnostic and gates
+nothing.
+
+**Host load is recorded with every window** (load average, CPU count, memory,
+disk) so venue intensity can be told apart from EVO contention. A rate figure
+without it cannot distinguish a quiet venue from a busy host.
