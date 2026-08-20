@@ -224,6 +224,29 @@ Established on four independent sockets: the P0 wire capture
 (`p0-wire-test-instruments-60`, 8,179 frames) and CP6–CP9's `s1-observe` /
 `s2-reconnect` / `s3-drop` (24,396 frames), 2026-08-17, DEMO.
 
+**Confirmed on production 2026-08-20** on a fifth, independent socket — session
+`s-20260820T003520Z-f450f75ed1fc`, **84,170 frames** over 599.6 s, three
+channels, 12 markets. The DEMO basis is **retained, not replaced**: this table
+was derived from DEMO and is now known to hold on both venues, which is a
+stronger statement than either alone. Production census, generation-blind:
+
+| sid | channel | frames | `seq` present | first → last | contiguous | gaps | dups | regressions |
+|---|---|---:|---:|---|---:|---:|---:|---:|
+| 1 | `orderbook_delta` (+ 13 snapshots) | 79,256 | **79,256 / 79,256** | **1 → 79,256** | 79,255 | **0** | 0 | 0 |
+| 2 | `ticker` | 2,395 | **0 / 2,395** | — | 0 | *empty domain* | 0 | 0 |
+| 3 | `trade` | 2,516 | **2,516 / 2,516** | **1 → 2,516** | 2,515 | **0** | 0 | 0 |
+| — | `subscribed` | 3 | 0 | — | — | — | — | — |
+
+The collector's own **generation-aware** counters agree on every sid, and every
+one of `gaps / duplicates / regressions / wrong_sid / stale_generation /
+missing_seq / recoveries / generation_advances` is **0**, under a single
+`subscription_generation = 1` with 0 disconnects and 0 reconnects.
+
+Two rows of the table above were **not exercised** in production and are stated
+as such, not as passes: the `error` control frame (**zero arrived in 600 s** —
+§3.3, L8) and the repair path (`get_snapshot`/`update_subscription` — **never
+needed**, `commands_refused: 0`, one outbound `subscribe` and nothing else).
+
 | | `orderbook_delta` | `ticker` | `trade` | control (`subscribed`, `error`, `ok`) |
 |---|---|---|---|---|
 | **sid in the 3-channel subscribe** (assignment-dependent, **not** a constant — §3.1) | **1** | **2** | **3** | `subscribed`: none; `error`: the sid it answers |
@@ -245,8 +268,19 @@ subscribe**, and it is a property of that subscribe, not of the venue.
 
 | capture | channels named | sid assignment |
 |---|---|---|
-| P0 / CP6–CP9 (2026-08-17) | `orderbook_delta`, `ticker`, `trade` | orderbook **1**, ticker **2**, trade **3** |
+| P0 / CP6–CP9 (2026-08-17, DEMO) | `orderbook_delta`, `ticker`, `trade` | orderbook **1**, ticker **2**, trade **3** |
 | DEMO wire (2026-08-08) | four channels | ticker **1**, lifecycle **2**, trade **3**, orderbook **4** |
+| **PRODUCTION (2026-08-20)** | `orderbook_delta`, `ticker`, `trade` | orderbook **1**, ticker **2**, trade **3** |
+
+**Confirmed on production, and confirmed in the way that matters.** The
+production acks assigned sids in ack order for the channels the subscribe named,
+and the ack order matched the request order — so the *same* subscribe produced
+the *same* assignment on a different venue. That **confirms §3.1 rather than
+retiring it**: it is still a property of the subscribe, and nothing here
+licenses hard-coding `sid == 1 -> orderbook`. All three production acks again
+carried **no top-level `sid`**, so they remain unroutable; the collector
+discovered the orderbook sid from frames (`carries_orderbook` true on sid 1
+only), exactly as this section requires.
 
 **The venue assigns sids in ack order for the channels that subscribe names.**
 Change the channel list and every sid moves. Nothing may hard-code
@@ -278,12 +312,28 @@ This also matters for §11 B3: the orderbook-sid `error` frame on the wire was
    1 unpublished all 60 books on sid 1 and left sid 3 untouched — `trade` ran
    1…80 with zero gaps straight through the event.
 
+   **Confirmed on production, at scale and without an injected fault.** Over the
+   same wall clock, sid 1 ran **1 → 79,256** and sid 3 ran **1 → 2,516**, each
+   perfectly contiguous from 1. A shared sequence space would have manufactured
+   tens of thousands of faults; the observed count is **0**. DEMO proved this by
+   forcing a gap on one sid and watching the other survive; production proves it
+   by two independent counters running 31× apart in the healthy case. **Two
+   different experiments, same conclusion.**
+
 3. **`sequence_gaps = 0` on `ticker` is an arithmetic artefact of an empty
    domain, not an observation.** Any feature derived from `ticker` — a rolling
    volume, a quote-update rate, anything — inherits *"no sequence-based loss
    detection"* from its source and **may never be described as lossless.** A
    drift detector (`test_the_ticker_channel_still_carries_no_sequence_number`)
    retires this caveat on evidence if the venue ever starts sequencing ticker.
+
+   **Confirmed on production: 0 of 2,395 ticker records carry a `seq`.** The
+   empty domain is a property of the *venue's* ticker channel, not of DEMO. The
+   production run reported `sequence_gaps = 0` and `missing_seq = 0` on sid 2
+   and typed **both** — `missing_seq` is unreachable there for the same reason
+   (`dispatch` passes over frames carrying no `seq` at all), so it too is
+   arithmetic rather than an observation. **L1 is unchanged and is now a
+   two-venue fact.**
 
 ### 3.3 Control frames consume sequence numbers
 
@@ -298,6 +348,13 @@ next real one.
 **Not settled:** whether `error` consumes a `seq` on the *orderbook* sid was not
 re-observed in P0, because the fix removed the command that was producing errors.
 The 2026-08-08 capture says yes. Listed in §12.
+
+**Production did NOT settle it either, and this amendment does not soften it.**
+The 2026-08-20 session received **zero `error` frames in 600 s**, so the run
+neither confirms nor refutes the rule. Recorded as *not re-observed*, never as a
+pass. The conservative assumption in the code (an `error` does consume one)
+stands untouched — assuming *no* would manufacture gaps, assuming *yes* cannot
+hide one. **L8 remains OPEN after production.**
 
 ---
 
