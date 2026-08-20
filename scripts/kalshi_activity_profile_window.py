@@ -226,10 +226,6 @@ def main(argv) -> int:
 
     # A window that ran short of its budget is SEMANTICALLY DIFFERENT from one
     # that ran to completion, and is reported as such rather than pooled.
-    span = tape.get("span_seconds") or 0
-    short = span < a.seconds * 0.9
-    # The capture exits 0 even when the SESSION failed, so its own status is
-    # read rather than the process return code.
     # `capped_time` and `capped_events` are the NORMAL terminal statuses for a
     # bounded window -- the session stopped because it was TOLD to. Treating
     # them as failures would have marked all six windows invalid.
@@ -241,6 +237,23 @@ def main(argv) -> int:
         except Exception:
             cap_status = "UNREADABLE"
 
+    # EARLY TERMINATION IS ABOUT THE SESSION, NOT THE TRAFFIC.
+    # This first tested `span_seconds` -- first frame to last frame -- and a
+    # 90 s validation window over quiet 03:20 ET markets was mislabelled
+    # TERMINATED_EARLY at "49s of 90s" purely because the last frame arrived
+    # early. A quiet venue is a MEASUREMENT, not a truncated window, and that
+    # rule would have voided legitimately calm slots.
+    span = tape.get("span_seconds") or 0
+    session_s = None
+    if cap_out.exists():
+        try:
+            session_s = json.loads(cap_out.read_text())[
+                "session_result"].get("duration_ms", 0) / 1000.0
+        except Exception:
+            session_s = None
+    short = session_s is not None and session_s < a.seconds * 0.9
+    # The capture exits 0 even when the SESSION failed, so its own status is
+    # read rather than the process return code.
     validity = "VALID"
     if proc.returncode != 0:
         validity = f"INVALID:capture_exit_{proc.returncode}"
@@ -253,7 +266,8 @@ def main(argv) -> int:
     elif tape.get("frames", 0) == 0:
         validity = "INVALID:no_frames"
     elif short:
-        validity = f"TERMINATED_EARLY:span_{span:.0f}s_of_{a.seconds}s"
+        validity = (f"TERMINATED_EARLY:session_{session_s:.0f}s_"
+                    f"of_{a.seconds}s")
 
     result = {
         "milestone": "PROD-ACTIVITY-PROFILE-001", "phase": "window",
@@ -269,6 +283,11 @@ def main(argv) -> int:
                                  if hasattr(claim, "claim_digest") else None),
         "capture_stderr_tail": proc.stderr[-2000:] if proc.stderr else "",
         "tape": tape,
+        "session_duration_s": session_s,
+        "frame_span_s": span,
+        "quiet_note": ("frame_span_s < session_duration_s means the venue went "
+                       "quiet before the window ended -- a measurement, not a "
+                       "truncation"),
         "hard_stop": {
             "threshold_fps": HARD_STOP_FPS,
             "statistic": "peak_1s_sliding",
