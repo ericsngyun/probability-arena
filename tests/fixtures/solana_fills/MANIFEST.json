@@ -1,0 +1,184 @@
+{
+ "milestone": "REALIZED-FILL-CORPUS-001",
+ "schema_version": 1,
+ "generated_by": "scripts/fetch_realized_fill_fixtures.py (REALIZED-FILL-CORPUS-001)",
+ "note": "Read-only capture of already-confirmed public mainnet transactions. NONE of these is ours: this system has never traded, holds no key material and can submit nothing. They are third-party transactions used as decoder ground truth.",
+ "fixtures": [
+  {
+   "capture_id": "direct_dispose_wrapped_sol_ata_cycle",
+   "venue": "solana-mainnet-beta",
+   "chain_genesis_hash": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+   "signature": "4FcuJFeixgzgoefRb2FE1hzYKWCjpTaX28Ui4NRdkj1XnwkVhcCd3KNbgq4wufJ34KxdgkogsC3d843kBQ8UWSKQ",
+   "slot": 440515194,
+   "block_time": 1787246482,
+   "rpc_endpoint": "https://api.mainnet-beta.solana.com",
+   "rpc_method": "getTransaction",
+   "rpc_encoding": "jsonParsed",
+   "rpc_commitment": "confirmed",
+   "rpc_max_supported_version": 0,
+   "retrieved_at": "2026-08-20T17:58:03.267364+00:00",
+   "retrieved_by": "scripts/fetch_realized_fill_fixtures.py (REALIZED-FILL-CORPUS-001)",
+   "schema_version": 1,
+   "content_sha256": "91c3cb12eaa48dfb0f018dc39979cc5c67a931a13ecb56c3ad0427ed9acb3d11",
+   "semantic_sha256": "0ce6ceaf9b25db790e0135e6f4412b322b250d5087aa3c7f2114476bd02ae6ff",
+   "hard_cases": [
+    "wrapped_sol",
+    "ata_creation_and_closure_rent",
+    "fee_payer_is_trade_party",
+    "versioned_transaction_lookup_table",
+    "mev_tip"
+   ],
+   "selection_reason": "A one-hop route that disposes an SPL token for SOL, wrapping through a WSOL associated token account that is created (createIdempotent) and closed (closeAccount) inside the same transaction. The wrapped-SOL account therefore never appears in pre/postTokenBalances, so the entire proceeds must come from the lamport ledger with the fee and the tip added back. It is also the POSITIVE CONTROL for log parsing: with a single hop the balance-delta answer and the instruction operand must agree exactly, and they do (316,053,825 lamports).",
+   "relative_path": "4FcuJFeixgzgoefRb2FE1hzYKWCjpTaX28Ui4NRdkj1XnwkVhcCd3KNbgq4wufJ34KxdgkogsC3d843kBQ8UWSKQ.json",
+   "expected": {
+    "party": null
+   }
+  },
+  {
+   "capture_id": "direct_dispose_no_ata_creation",
+   "venue": "solana-mainnet-beta",
+   "chain_genesis_hash": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+   "signature": "3zsiTE5P3jCVyoRv2uF6Eq8dKfC9gS1Gu9s9WwiUtCT2d2mUGuXr5LJ34EU1n64jgFWKRTQyjkJh3m9sES3Zsw84",
+   "slot": 440515193,
+   "block_time": 1787246482,
+   "rpc_endpoint": "https://api.mainnet-beta.solana.com",
+   "rpc_method": "getTransaction",
+   "rpc_encoding": "jsonParsed",
+   "rpc_commitment": "confirmed",
+   "rpc_max_supported_version": 0,
+   "retrieved_at": "2026-08-20T17:58:04.682527+00:00",
+   "retrieved_by": "scripts/fetch_realized_fill_fixtures.py (REALIZED-FILL-CORPUS-001)",
+   "schema_version": 1,
+   "content_sha256": "3883e996a66126f3c9f15fffd4e708e73239d50d238d94a1f1aedfb18b728f6c",
+   "semantic_sha256": "ba298a84866d07f8ce48c464e0f5ba9e45235d966b02ec546ad3674db6281531",
+   "hard_cases": [
+    "wrapped_sol",
+    "fee_payer_is_trade_party",
+    "versioned_transaction_lookup_table",
+    "mev_tip"
+   ],
+   "selection_reason": "A second direct dispose with no ATA creation, so the rent term is a MEASURED zero rather than an unexercised one. Without it 'rent = 0' in the primary fixture proves nothing about the rent path.",
+   "relative_path": "3zsiTE5P3jCVyoRv2uF6Eq8dKfC9gS1Gu9s9WwiUtCT2d2mUGuXr5LJ34EU1n64jgFWKRTQyjkJh3m9sES3Zsw84.json",
+   "expected": {
+    "party": null
+   }
+  },
+  {
+   "capture_id": "multi_hop_cyclic_route",
+   "venue": "solana-mainnet-beta",
+   "chain_genesis_hash": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+   "signature": "SFr9cfiYkEfuEFniLxmjDk4tPnAUJKMPaQrhcxYU3pMpwz7UzeztqZPsasZWAbQWbqFdjynhnRXTbWpw5WjYFR5",
+   "slot": 440515200,
+   "block_time": 1787246485,
+   "rpc_endpoint": "https://api.mainnet-beta.solana.com",
+   "rpc_method": "getTransaction",
+   "rpc_encoding": "jsonParsed",
+   "rpc_commitment": "confirmed",
+   "rpc_max_supported_version": 0,
+   "retrieved_at": "2026-08-20T17:58:06.167417+00:00",
+   "retrieved_by": "scripts/fetch_realized_fill_fixtures.py (REALIZED-FILL-CORPUS-001)",
+   "schema_version": 1,
+   "content_sha256": "bcd63bdafd95da994b7cc5619e1ebb57de2d5246fc87554f58fcbdf061241141",
+   "semantic_sha256": "f5538c57d4add1ee0d642b9a22eef367e5ff0f1de3241e97bfb438f45576c000",
+   "hard_cases": [
+    "multi_hop_route",
+    "naive_log_parse_is_wrong",
+    "wrapped_sol",
+    "fee_payer_is_trade_party",
+    "versioned_transaction_lookup_table",
+    "mev_tip"
+   ],
+   "selection_reason": "THE NEGATIVE CONTROL FOR LOG PARSING. A two-hop cyclic route through two pools: USDC -> WSOL -> USDC. The instruction operands report 107,232,267 and 107,232,992 USDC and 1,228,043,049 WSOL, while the party's true net position change is +725 USDC base units. A parser that reads the last transferChecked amount is wrong by a factor of ~148,000. Balance-delta accounting gets it right because the intermediate asset nets to exactly zero for the trading party.",
+   "relative_path": "SFr9cfiYkEfuEFniLxmjDk4tPnAUJKMPaQrhcxYU3pMpwz7UzeztqZPsasZWAbQWbqFdjynhnRXTbWpw5WjYFR5.json",
+   "expected": {
+    "party": null
+   }
+  },
+  {
+   "capture_id": "multi_hop_counterparty_view",
+   "venue": "solana-mainnet-beta",
+   "chain_genesis_hash": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+   "signature": "SFr9cfiYkEfuEFniLxmjDk4tPnAUJKMPaQrhcxYU3pMpwz7UzeztqZPsasZWAbQWbqFdjynhnRXTbWpw5WjYFR5",
+   "slot": 440515200,
+   "block_time": 1787246485,
+   "rpc_endpoint": "https://api.mainnet-beta.solana.com",
+   "rpc_method": "getTransaction",
+   "rpc_encoding": "jsonParsed",
+   "rpc_commitment": "confirmed",
+   "rpc_max_supported_version": 0,
+   "retrieved_at": "shared-with:SFr9cfiYkEfuEFniLxmjDk4tPnAUJKMPaQrhcxYU3pMpwz7UzeztqZPsasZWAbQWbqFdjynhnRXTbWpw5WjYFR5.json",
+   "retrieved_by": "scripts/fetch_realized_fill_fixtures.py (REALIZED-FILL-CORPUS-001)",
+   "schema_version": 1,
+   "content_sha256": "bcd63bdafd95da994b7cc5619e1ebb57de2d5246fc87554f58fcbdf061241141",
+   "semantic_sha256": "f5538c57d4add1ee0d642b9a22eef367e5ff0f1de3241e97bfb438f45576c000",
+   "hard_cases": [
+    "fee_payer_is_not_trade_party",
+    "multi_hop_route"
+   ],
+   "selection_reason": "The SAME real transaction decoded from a COUNTERPARTY's perspective \u2014 one of the two pool accounts. That account is a real trade party with real balance deltas and it did not pay the fee, which exercises the fee-payer-is-not-the-party branch on real data instead of on a fabricated one. It shares a stored payload with multi_hop_cyclic_route by design; the case is the (transaction, party) pair, not the transaction.",
+   "relative_path": "SFr9cfiYkEfuEFniLxmjDk4tPnAUJKMPaQrhcxYU3pMpwz7UzeztqZPsasZWAbQWbqFdjynhnRXTbWpw5WjYFR5.json",
+   "expected": {
+    "party": "8ekCy2jHHUbW2yeNGFWYJT9Hm9FW7SvZcZK66dSZCDiF"
+   }
+  },
+  {
+   "capture_id": "failed_transaction_legacy_high_priority",
+   "venue": "solana-mainnet-beta",
+   "chain_genesis_hash": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+   "signature": "4pqbgr92TafgYYfoCNooWsiGyYRQCgUtU8tKk8yDXYVbZ65LLuMfrXPDzcMxft8HiDUgtncuNqKRv2yLTWqL3WdC",
+   "slot": 440515754,
+   "block_time": 1787246713,
+   "rpc_endpoint": "https://api.mainnet-beta.solana.com",
+   "rpc_method": "getTransaction",
+   "rpc_encoding": "jsonParsed",
+   "rpc_commitment": "confirmed",
+   "rpc_max_supported_version": 0,
+   "retrieved_at": "2026-08-20T17:58:07.782219+00:00",
+   "retrieved_by": "scripts/fetch_realized_fill_fixtures.py (REALIZED-FILL-CORPUS-001)",
+   "schema_version": 1,
+   "content_sha256": "293d17fcf70aa49f8b62cf42c966d9dfa8ed32ac62531ddf7ca1d15a11f0be24",
+   "semantic_sha256": "be6211e760cd778ef196b7a23c1de8f9279663a79f89be76a4d9cf5ae72d2c65",
+   "hard_cases": [
+    "failed_transaction",
+    "priority_fee_nonzero",
+    "reverted_tip_intent",
+    "legacy_transaction"
+   ],
+   "selection_reason": "A FAILED legacy transaction (InstructionError Custom 6061) that still paid 605,000 lamports: 5,000 base + 600,000 priority. Its instructions asked to transfer 1,500,000 lamports to a tip account and 260,000,000 to another account, and BOTH reverted \u2014 the destinations' balances moved 0. This fixture is why the decoder reads tips from balance deltas rather than operands.",
+   "relative_path": "4pqbgr92TafgYYfoCNooWsiGyYRQCgUtU8tKk8yDXYVbZ65LLuMfrXPDzcMxft8HiDUgtncuNqKRv2yLTWqL3WdC.json",
+   "expected": {
+    "party": null
+   }
+  },
+  {
+   "capture_id": "failed_transaction_v0_high_priority",
+   "venue": "solana-mainnet-beta",
+   "chain_genesis_hash": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+   "signature": "4VFstbamwApnhvBcha7c9SZ4W5TqEKrT8CymLR1fNssySZF22DhRSZY2GPZu9a8ewrLgUcYZDNLn6TbncPhuqtV",
+   "slot": 440515757,
+   "block_time": 1787246715,
+   "rpc_endpoint": "https://api.mainnet-beta.solana.com",
+   "rpc_method": "getTransaction",
+   "rpc_encoding": "jsonParsed",
+   "rpc_commitment": "confirmed",
+   "rpc_max_supported_version": 0,
+   "retrieved_at": "2026-08-20T17:58:09.218196+00:00",
+   "retrieved_by": "scripts/fetch_realized_fill_fixtures.py (REALIZED-FILL-CORPUS-001)",
+   "schema_version": 1,
+   "content_sha256": "43364ecef3c550bf10006902d46e6ce31f930259503561b6531b1c8a1ada47c5",
+   "semantic_sha256": "db216fae6c527b9096c1af3e40ec508b502e4b65846a1d75575b0487197efad1",
+   "hard_cases": [
+    "failed_transaction",
+    "priority_fee_nonzero",
+    "reverted_tip_intent",
+    "priority_fee_charged_on_requested_limit",
+    "versioned_transaction_lookup_table"
+   ],
+   "selection_reason": "A FAILED v0 transaction that paid 1,005,000 lamports while consuming only 4,919 compute units at a unit price of 3,333,333 micro-lamports. price x CONSUMED would be 16,398 lamports; price x REQUESTED LIMIT (300,000) is 1,000,000, which matches the meta.fee residual exactly. This is the empirical refutation of the 'priority fee = price x units consumed' formulation.",
+   "relative_path": "4VFstbamwApnhvBcha7c9SZ4W5TqEKrT8CymLR1fNssySZF22DhRSZY2GPZu9a8ewrLgUcYZDNLn6TbncPhuqtV.json",
+   "expected": {
+    "party": null
+   }
+  }
+ ]
+}
