@@ -249,3 +249,82 @@ an assumption we cannot check with this data. It is therefore named
 `net_depth_flow_imbalance`, not `OFI`, everywhere in the implementation. Calling
 it OFI would be a field name asserting semantics the data does not support,
 which is the exact failure doctrine 8 exists to prevent.
+
+## 8. Citations — user-supplied, UNVERIFIED in-repo
+
+Eric supplied three references as motivation. **All three postdate this
+assistant's knowledge cutoff and none has been verified inside this
+repository.** Per doctrine 9, a claim about external reality carries its
+provenance, and a design must not silently depend on an unchecked one.
+
+| citation | claim as relayed | status |
+|---|---|---|
+| arXiv 2607.08199 | structural prediction-market volatility (Wright–Fisher deadline + Glosten–Milgrom order flow) outperforms plain ARCH/GARCH; residual GARCH improves it further | **unverified** |
+| arXiv 2607.17555 | volatility-aware extreme-event labels outperform direct rare-price-extreme prediction | **unverified** |
+| DOI 10.48550/arXiv.2606.09473 | conformal intervals are a mandatory baseline for probabilistic forecasting | **unverified** |
+
+**What survives if each is false.**
+
+* **2607.08199 false** → §1 is unaffected. The argument that bounded prices and
+  a known deadline make the variance path structurally non-stationary follows
+  from the contract's own definition, not from any paper. The specific
+  Wright–Fisher form would be dropped; the *decomposition* — model the
+  structural term explicitly, fit a residual model to what remains — stands on
+  the reasoning in §1 alone.
+* **2607.17555 false** → §6's disjunctive label would need its own justification
+  from our data. The independent argument, which does not depend on the paper,
+  is the class-imbalance one: direct rare-extreme labels are so sparse that a
+  classifier can score well by learning the base rate. That is checkable here
+  and is the reason to prefer the joint label.
+* **2606.09473 false** → §5 is unaffected in substance. Nothing in §5 requires
+  *conformal* intervals specifically; it requires **calibrated** intervals with
+  per-regime coverage validation. Any method achieving that is acceptable, and
+  the coverage test is the arbiter.
+
+**None of these may be cited as evidence in an Arena result** until verified
+against the source. They are motivation for a design, not measurements.
+
+## 9. What this cannot do, and what would falsify it
+
+**It cannot forecast direction, and produces no alpha.** A regime label is not a
+signal. If it were ever reported as one, that would be a category error — per
+`g(f*) = KL(p‖q)`, alpha means beating the market's probability, which this
+engine does not attempt.
+
+**It cannot detect R4 (toxic flow) at all today** — no fills, no markouts. That
+gap is shared with `RISK-GOVERNOR-001` and `ALPHA-FACTORY-001`, whose weakest
+gate is economic for the same underlying reason: **we have no realized-fill
+corpus**. One missing dataset is the binding constraint on three specs, and it
+should be named as a single dependency rather than three separate caveats.
+
+**It cannot measure cancellations** (§7), so any regime criterion that would
+require order-level book dynamics is out of reach with the current tape.
+
+**It is untested across regimes it has never seen.** Every threshold here is a
+**placeholder** pending the six-window activity profile and whatever follows.
+None is calibrated. They are written as structure, not as settings.
+
+### Falsification
+
+The engine is falsified — not merely improved — if any of these hold on real data:
+
+1. **The regime labels are not separable.** If R0–R3 cannot be distinguished
+   above the noise floor using only observables in §2, the taxonomy is a story.
+2. **Regime does not change execution outcomes.** If realised slippage
+   conditional on regime is statistically indistinguishable across R0/R1/R3,
+   then gating on regime buys nothing and §4's worked examples are fiction.
+3. **The interval is not calibrated where it matters.** If per-regime coverage
+   fails in R2/R3 while passing pooled, §5 is providing false comfort.
+4. **The extreme detector fails its positive control**, or fires on the calm
+   synthetic series.
+5. **The structural decomposition adds nothing** over a plain residual model
+   once `T_t` is included as a covariate — in which case §1's central claim is
+   real but not *useful*, which is a distinction worth reporting honestly rather
+   than burying.
+
+**Ordering discipline.** This engine is not built until
+`MARKET-MICROSTRUCTURE-EDGE-001` establishes that basic flow carries
+information at all. Building a regime model to condition a signal that does not
+exist would be sophistication in service of nothing — the escalation is
+`state → state + flow → state + flow + intensity → Hawkes`, and we are still
+waiting on the first arrow.
