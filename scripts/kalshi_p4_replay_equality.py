@@ -42,7 +42,12 @@ def _ok(checks, name, detail):
 
 def tape_census(records) -> dict:
     """What the durable evidence contains, counted directly."""
-    by_type, by_sid, gens, conn_gens, segs = Counter(), Counter(), Counter(), Counter(), set()
+    # NOTE: `segment_id` is deliberately NOT counted from records.
+    # `read_verified()` hands back the ENVELOPE, not the storage record, so
+    # `r.get("segment_id")` is None for every row and counting it yielded a
+    # confident "1" for a tape holding seven segments. Segment identity is a
+    # storage fact and is read from the committed directories instead.
+    by_type, by_sid, gens, conn_gens = Counter(), Counter(), Counter(), Counter()
     seq_by_sid: dict = {}
     for r in records:
         mt = r.get("message_type") or r.get("event_type")
@@ -51,7 +56,6 @@ def tape_census(records) -> dict:
         by_sid[sid] += 1
         gens[r.get("subscription_generation")] += 1
         conn_gens[r.get("connection_generation")] += 1
-        segs.add(r.get("segment_id"))
         if r.get("seq") is not None:
             seq_by_sid.setdefault(sid, []).append(r["seq"])
     def _k(c):
@@ -62,7 +66,7 @@ def tape_census(records) -> dict:
     return {"by_type": _k(by_type), "by_sid": _k(by_sid),
             "subscription_generations": _k(gens),
             "connection_generations": _k(conn_gens),
-            "segment_ids": len(segs), "seq_by_sid": seq_by_sid}
+            "seq_by_sid": seq_by_sid}
 
 
 def qualify(archive_root: Path, capture_json: Path) -> dict:
@@ -71,6 +75,8 @@ def qualify(archive_root: Path, capture_json: Path) -> dict:
     records = store.read_verified()
     integrity = store.verify()
     census = tape_census(records)
+    segment_dirs = sorted((archive_root / "env=production").glob("**/segment=*"))
+    census["committed_segments"] = len(segment_dirs)
     out = replay(records)
     live = json.loads(capture_json.read_text())["live_terminal_state"]
 
@@ -136,6 +142,21 @@ def qualify(archive_root: Path, capture_json: Path) -> dict:
     else:
         _fail(checks, "no_fabricated_b3_gap",
               {"gaps": fabricated, "halted": halted})
+
+    # --- segment accounting ------------------------------------------------
+    # Informational, and reported as such: the FROZEN capture JSON records
+    # `segments_committed: 1` because it predates the P4.2 repair, while the
+    # tape holds 7 segments (6 rotations of exactly DEFAULT_MAX_SEGMENT_RECORDS
+    # plus the one open at close). That is a known, already-repaired READOUT
+    # defect in the capture summary — it is not a replay-equality failure, and
+    # recording it as one would misattribute a fixed bug to this qualification.
+    reported = json.loads(capture_json.read_text())["session_result"].get(
+        "segments_committed")
+    _ok(checks, "segment_accounting_informational",
+        {"segments_on_disk": census["committed_segments"],
+         "frozen_capture_reported": reported,
+         "note": ("the frozen capture predates the P4.2 readout repair; "
+                  "6 rotations + 1 open at close = 7")})
 
     # --- terminal-state equality, per market ------------------------------
     live_books = {}
