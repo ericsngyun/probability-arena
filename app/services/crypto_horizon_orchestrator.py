@@ -16,6 +16,7 @@ import asyncio
 import contextlib
 import io
 import json
+import os
 import logging
 import re
 import subprocess
@@ -45,7 +46,12 @@ from app.services.crypto_tape import _aware, _is_db_locked, _now
 
 logger = logging.getLogger(__name__)
 
-HOST_HOME = Path("/home/miko_node_001")
+# Derived, never hardcoded. This was a literal `/home/<user>` path, which put
+# the deployment account's username into a PUBLIC repository and would silently
+# build wrong paths for any other operator. `Path.home()` resolves to the same
+# directory for the account this actually runs as, so behaviour on the
+# deployment host is unchanged; the env var exists for a non-default layout.
+HOST_HOME = Path(os.environ.get("PROBABILITY_ARENA_HOST_HOME") or Path.home())
 PROJECT_ROOT = HOST_HOME / "projects" / "probability-arena"
 PYTHON_PATH = PROJECT_ROOT / ".venv" / "bin" / "python"
 UNIT_DIR = HOST_HOME / ".config" / "systemd" / "user"

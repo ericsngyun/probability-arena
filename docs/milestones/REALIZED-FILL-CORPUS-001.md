@@ -616,7 +616,7 @@ does not collide with the banned fragments.
 
 **Nothing is deployed.** Not on EVO-X2, not anywhere. No flag was added, no
 timer, no systemd unit, no migration, no model, no table. The branch is not
-merged. `PROD-ACTIVITY-PROFILE-001`'s live Kalshi capture on `evo-x2` was not
+merged. `PROD-ACTIVITY-PROFILE-001`'s live Kalshi capture on `<OBSERVER_HOST>` was not
 contacted and `app/realtime/` was not modified.
 
 ---

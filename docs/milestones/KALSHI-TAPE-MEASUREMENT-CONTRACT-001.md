@@ -1118,7 +1118,7 @@ current code reaches a *wrong* answer, not a missing one.
 > collector's first `recv()`: SAN `["*.kalshi.com"]`, zero demo names,
 > `TLS_AES_128_GCM_SHA256`. The credential was separately proven read-only on
 > the venue's own testimony — `GET /trade-api/v2/api_keys` answered **200** by
-> `api.elections.kalshi.com`, key `sha256:cfdd78afeded1c22` present, scopes
+> `api.elections.kalshi.com`, key `sha256:<KEY_FINGERPRINT_REDACTED>` present, scopes
 > `["read"]`, `proven_read_only: true`, `verified_before_first_frame: true`.
 > Production and demo DNS sets are disjoint (8 addresses vs 2) and the
 > certificates are cryptographically distinct (`*.kalshi.com` vs

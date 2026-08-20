@@ -1,17 +1,17 @@
 {
   "action": "ANALYZE",
-  "db": "/home/miko_node_001/projects/probability-arena/data/probability_arena.db",
+  "db": "<REMOTE_HOME>/projects/probability-arena/data/probability_arena.db",
   "started_at": "2026-08-11T07:04:01.185995+00:00",
   "dry_run": true,
   "preflight": {
     "checks": {
       "db_exists": {
         "ok": true,
-        "detail": "/home/miko_node_001/projects/probability-arena/data/probability_arena.db"
+        "detail": "<REMOTE_HOME>/projects/probability-arena/data/probability_arena.db"
       },
       "confirm_path_matches": {
         "ok": true,
-        "detail": "'/home/miko_node_001/projects/probability-arena/data/probability_arena.db' vs /home/miko_node_001/projects/probability-arena/data/probability_arena.db"
+        "detail": "'<REMOTE_HOME>/projects/probability-arena/data/probability_arena.db' vs <REMOTE_HOME>/projects/probability-arena/data/probability_arena.db"
       },
       "confirm_phrase": {
         "ok": true,
@@ -52,7 +52,7 @@
     "sqlite_stat1_rows": 0,
     "alembic_version": "0027",
     "lock_telemetry": {
-      "file": "/home/miko_node_001/probability-arena-telemetry/sqlite-writes.jsonl",
+      "file": "<REMOTE_HOME>/probability-arena-telemetry/sqlite-writes.jsonl",
       "exists": true,
       "events": 6790,
       "lock_events": 8,

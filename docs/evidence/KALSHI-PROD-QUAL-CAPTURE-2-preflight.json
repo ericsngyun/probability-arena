@@ -19,7 +19,7 @@
       "verified_on_the_wire": false
     },
     {
-      "claim_path": "/home/miko_node_001/kalshi-prod-tape/p4-attempt2-20260820T003519Z/production/collection-session.json",
+      "claim_path": "<REMOTE_HOME>/kalshi-prod-tape/p4-attempt2-20260820T003519Z/production/collection-session.json",
       "claimed_at": "2026-08-20T00:35:20.254284Z",
       "gate": "session_root",
       "passed": true,

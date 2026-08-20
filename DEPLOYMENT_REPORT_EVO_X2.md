@@ -11,7 +11,7 @@ Companion: `DEPLOYMENT_AUDIT_EVO_X2.md` (Phase 1 audit and path rationale)
 | Item | Value |
 |---|---|
 | Path chosen | **Host Python venv + systemd user timer** (Docker Compose rejected: would add a redundant Postgres/Redis set to an already loaded shared host) |
-| Repo path | `/home/miko_node_001/projects/probability-arena` |
+| Repo path | `<REMOTE_HOME>/projects/probability-arena` |
 | Commit deployed | `d009433` (`main`; includes MVP-004D `0cd62b0`) |
 | Python / venv | Python 3.12.3 → `.venv` inside the repo (created `--without-pip` + get-pip bootstrap; host lacks `python3.12-venv` and passwordless sudo — no system packages installed) |
 | Database | **SQLite** at `~/projects/probability-arena/data/probability_arena.db`, Alembic at head **`0011`**, 14 tables. Not Postgres: `master-postgres` belongs to the awaas stack, publishes no host port, and pgbouncer has no db routing (see audit). |
@@ -2140,7 +2140,7 @@ First controlled canary: one small fresh-token cohort created manually and its f
 | 6h | Jul16 04:25:04 | Jul15 21:25:04 | Jul16 01:25:04 | not_due | `probability-arena-horizon-c4-j3` | `… --cohort-id 4 --job-id 3` | **no** |
 | 24h | Jul16 22:25:04 | Jul16 15:25:04 | Jul16 10:25:04 | not_due | `probability-arena-horizon-c4-j4` | `… --cohort-id 4 --job-id 4` | **no** |
 
-Full command path: `/home/miko_node_001/projects/probability-arena/.venv/bin/python`. Log paths: `/home/miko_node_001/crypto-horizon-observation/cohort-4/job-N.log`. No token strings interpolated into any unit name, command, or log path (cohort/job integers only).
+Full command path: `<REMOTE_HOME>/projects/probability-arena/.venv/bin/python`. Log paths: `<REMOTE_HOME>/crypto-horizon-observation/cohort-4/job-N.log`. No token strings interpolated into any unit name, command, or log path (cohort/job integers only).
 
 ### Generated systemd semantics (rendered read-only to a temp dir, never installed)
 

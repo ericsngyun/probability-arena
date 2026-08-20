@@ -4,7 +4,7 @@
     "detail": "verified against GET /trade-api/v2/api_keys",
     "environment": "production",
     "gate": "credential_production_identity",
-    "key_id_fingerprint": "sha256:cfdd78afeded1c22",
+    "key_id_fingerprint": "sha256:<KEY_FINGERPRINT_REDACTED>",
     "key_material_read_by_this_script": false,
     "metadata_route_host": "api.elections.kalshi.com",
     "metadata_route_http_version": "HTTP/1.1",

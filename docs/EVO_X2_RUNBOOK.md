@@ -1,6 +1,6 @@
 # EVO_X2_RUNBOOK
 
-Host `mikolabs` (Tailscale alias `evo-x2`), user `miko_node_001`, repo at
+Host `mikolabs` (Tailscale alias `<OBSERVER_HOST>`), user `<REMOTE_USER>`, repo at
 `~/projects/probability-arena`, `.venv` inside, SQLite at `data/probability_arena.db`.
 **Shared production host** — user-level systemd only, never touch other projects'
 services or the awaas Docker stack. See `DEPLOYMENT_AUDIT_EVO_X2.md` /
@@ -3132,7 +3132,7 @@ then drop the GitHub push URL here with:
 git remote set-url --delete --push origin https://github.com/ericsngyun/probability-arena.git
 ```
 
-An SSH key for EVO (`evo-x2-deploy`,
+An SSH key for EVO (`<OBSERVER_HOST>-deploy`,
 `SHA256:Pmpv1h/xYVZMvHJ/LfnZt1LCGKPEyBjSfvtYlpCAobA`) is already registered on
 the Origin account and can be removed with `origin ssh-key delete` if unused.
 

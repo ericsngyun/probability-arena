@@ -13,10 +13,10 @@ import sys
 
 import numpy as np
 
-CSV_PATH = ("/Users/ericyun/code-stuff/probability-arena/.claude/worktrees/"
+CSV_PATH = ("<LOCAL_HOME>/code-stuff/probability-arena/.claude/worktrees/"
             "agent-a1f91dc901d704820/docs/evidence/qdk-001/"
             "edge_discovery_001_dataset.csv")
-JSON_PATH = ("/Users/ericyun/code-stuff/probability-arena/.claude/worktrees/"
+JSON_PATH = ("<LOCAL_HOME>/code-stuff/probability-arena/.claude/worktrees/"
              "agent-a1f91dc901d704820/docs/evidence/qdk-001/"
              "e2_leadlag_results.json")
 HORIZONS = ["5m", "15m", "30m", "1h", "3h", "6h"]

@@ -30,7 +30,7 @@ Measured on EVO-X2 before this milestone was built:
 
 | Fact | Value |
 |---|---|
-| Backup root (`BACKUP_DIR`) | `/mnt/data/probability-arena-backups` (mode 700, `miko_node_001`, not a symlink) |
+| Backup root (`BACKUP_DIR`) | `/mnt/data/probability-arena-backups` (mode 700, `<REMOTE_USER>`, not a symlink) |
 | Timer | `probability-arena-backup.timer`, enabled, active/waiting, `Persistent=true` |
 | Measured production backup | `2026-08-03T00:02:15Z`, verified, `online_copy_restarts=0` |
 | First natural scheduled backup | `2026-08-03T01:34:25Z`, verified, `online_copy_restarts=0` |

@@ -3,7 +3,7 @@
 _ TestCP8ReplayQualificationWithAnErrorFrameOnTheBookSid.test_CP8_state_equality_live_vs_replay _
 
 self = <tests.test_kalshi_p4_1_replay_requal_001.TestCP8ReplayQualificationWithAnErrorFrameOnTheBookSid object at 0x1072911f0>
-qualified = {'checker': <module 'kalshi_cp6_cp9_conservation_check' from '/Users/ericyun/code-stuff/probability-arena/.claude/work...lse, 'state_reason': 'awaiting_snapshot', ...}}, 'subscription_epoch_final': 1, 'connection_generation_final': 1}, ...}
+qualified = {'checker': <module 'kalshi_cp6_cp9_conservation_check' from '<LOCAL_HOME>/code-stuff/probability-arena/.claude/work...lse, 'state_reason': 'awaiting_snapshot', ...}}, 'subscription_epoch_final': 1, 'connection_generation_final': 1}, ...}
 
     def test_CP8_state_equality_live_vs_replay(self, qualified):
         """The replay-equality verdict itself, on the input that used to break it."""
@@ -18,7 +18,7 @@ tests/test_kalshi_p4_1_replay_requal_001.py:522: AssertionError
 _ TestCP8ReplayQualificationWithAnErrorFrameOnTheBookSid.test_the_live_lane_recorded_no_sequence_fault _
 
 self = <tests.test_kalshi_p4_1_replay_requal_001.TestCP8ReplayQualificationWithAnErrorFrameOnTheBookSid object at 0x107292150>
-qualified = {'checker': <module 'kalshi_cp6_cp9_conservation_check' from '/Users/ericyun/code-stuff/probability-arena/.claude/work...lse, 'state_reason': 'awaiting_snapshot', ...}}, 'subscription_epoch_final': 1, 'connection_generation_final': 1}, ...}
+qualified = {'checker': <module 'kalshi_cp6_cp9_conservation_check' from '<LOCAL_HOME>/code-stuff/probability-arena/.claude/work...lse, 'state_reason': 'awaiting_snapshot', ...}}, 'subscription_epoch_final': 1, 'connection_generation_final': 1}, ...}
 
     def test_the_live_lane_recorded_no_sequence_fault(self, qualified):
         """The collector saw the error frame and did not call it loss..."""

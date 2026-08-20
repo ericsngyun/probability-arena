@@ -1,6 +1,6 @@
 # A8-SIGINT-CLASSIFY-002 scratch notes
 
-worktree: /Users/ericyun/code-stuff/probability-arena/.claude/worktrees/agent-a44bfe3e6902cc1da
+worktree: <LOCAL_HOME>/code-stuff/probability-arena/.claude/worktrees/agent-a44bfe3e6902cc1da
 HEAD at start: 3b513ef609e9925416a6a547abae08910f0a9558
 branch: A8-SIGINT-CLASSIFY-002
 

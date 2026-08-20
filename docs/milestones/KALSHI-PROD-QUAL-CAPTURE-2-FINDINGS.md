@@ -26,7 +26,7 @@ accepted as production data.
 | E1 | host constant | **PASS** | `WS_HOSTS[production]` = `wss://external-api-ws.kalshi.com/trade-api/ws/v2`, the AsyncAPI-published host, and not the demo constant |
 | E2 | DNS | recorded | production WS resolves to **8** addresses, demo WS to **2**, disjoint. Recorded, not asserted |
 | E3 | TLS out of band | **PASS** | production WS `CN=*.kalshi.com`, SAN `["*.kalshi.com"]`, issuer *Amazon RSA 2048 M01*, TLSv1.3, verified against the default trust store with hostname checking on. Demo presents `CN=demo.kalshi.co`. Cryptographically distinct |
-| E4 | credential identity **and scope** | **PASS** | `GET /trade-api/v2/api_keys` answered by **`api.elections.kalshi.com`**, HTTP **200**, key `sha256:cfdd78afeded1c22` present in that account, scopes **`["read"]`**, `proven_read_only: true` |
+| E4 | credential identity **and scope** | **PASS** | `GET /trade-api/v2/api_keys` answered by **`api.elections.kalshi.com`**, HTTP **200**, key `sha256:<KEY_FINGERPRINT_REDACTED>` present in that account, scopes **`["read"]`**, `proven_read_only: true` |
 | E5 | TLS **on the capture socket** | **PASS** | handshake **101**, peer `16.58.202.54`, SAN `["*.kalshi.com"]`, zero demo names, `TLS_AES_128_GCM_SHA256` — read between handshake completion and the collector's first `recv()` |
 | E6 | universe | recorded | all 12 tickers come from this session's own production REST census |
 
@@ -472,7 +472,7 @@ inaccurate about which directory that is.
 | `tests/test_kalshi_prod_qual_precapture_001.py` | **46 passed** |
 | structural order-API guard | **CLEAN** — 16 modules, 3,292 identifiers, 0 findings, on the throwaway clone |
 | safety grep (AGENTS.md) | **clean** — every hit is a boundary-statement docstring; no implementation surface |
-| credential | never copied, printed or logged. Only a key-id fingerprint (`sha256:cfdd78afeded1c22`) and a path basename appear in any artifact; `key_material_read_by_this_script: false` |
+| credential | never copied, printed or logged. Only a key-id fingerprint (`sha256:<KEY_FINGERPRINT_REDACTED>`) and a path basename appear in any artifact; `key_material_read_by_this_script: false` |
 
 ### Boundary
 

@@ -19,7 +19,7 @@ against it. The negative net numbers below are *costs*, not direction.
 - Script: `docs/evidence/qdk-001/e2_leadlag.py` — raw output
   `docs/evidence/qdk-001/e2_leadlag_results.json`.
 - **Interpreter and numerics.** The analysis script is **pure Python standard
-  library** and was run on `/Users/ericyun/code-stuff/probability-arena/.venv/bin/python`
+  library** and was run on `<LOCAL_HOME>/code-stuff/probability-arena/.venv/bin/python`
   (CPython 3.12.3), which has **neither numpy nor scipy** installed; installing
   was not authorised. This changed no part of the specification — drawing `E`
   events with replacement is exactly the multinomial cluster draw of D-3(6). All

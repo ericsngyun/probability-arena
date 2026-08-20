@@ -1,5 +1,5 @@
 {
-  "archive_root": "/home/miko_node_001/kalshi-prod-tape/p4-attempt2-20260820T003519Z",
+  "archive_root": "<REMOTE_HOME>/kalshi-prod-tape/p4-attempt2-20260820T003519Z",
   "checks": [
     {
       "check": "archive_integrity",

@@ -7,8 +7,8 @@ Date: 2026-07-03 (UTC) · Auditor: deployment agent · Phase 1 (read-only; no mu
 | Item | Finding |
 |---|---|
 | OS / kernel | Ubuntu 24.04.4 LTS, kernel `6.17.0-1020-oem` |
-| Access | Tailscale SSH, host alias `evo-x2` (100.73.88.88) |
-| User / home / shell | `miko_node_001` / `/home/miko_node_001` / `/bin/bash` |
+| Access | Tailscale SSH, host alias `<OBSERVER_HOST>` (100.73.88.88) |
+| User / home / shell | `<REMOTE_USER>` / `<REMOTE_HOME>` / `/bin/bash` |
 | CPU / RAM | 32 cores, 92 GiB RAM (62 GiB available) |
 | GPU stack | ROCm 6.3.1 under `/opt` (irrelevant to this deployment) |
 | Disk | `/` 236 G total, **79 G free (65% used)** — ample for this workload (SQLite DB will be MBs) |

@@ -131,7 +131,7 @@ abstain band: **5,529 trades / 945 events (TRAIN)** and **3,295 trades / 534 eve
 ### 1.7 Interpreters, and an independent cross-check
 
 `e4_proper_betting.py` is **pure stdlib** and was run on the repo venv,
-`/Users/ericyun/code-stuff/probability-arena/.venv/bin/python` (3.12.3), which has neither
+`<LOCAL_HOME>/code-stuff/probability-arena/.venv/bin/python` (3.12.3), which has neither
 numpy nor scipy installed; no installs were performed. This matches `delta_s_strict.py` in
 the same directory, which is also pure stdlib.
 

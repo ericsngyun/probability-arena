@@ -81,7 +81,7 @@ enforced by test.
 
 Destination is configurable via `BACKUP_DIR`. On EVO-X2 it is set to
 `/mnt/data/probability-arena-backups`: a **distinct ext4 filesystem** with
-712 GiB free (5% used), persistent in `/etc/fstab`, owned by `miko_node_001`.
+712 GiB free (5% used), persistent in `/etc/fstab`, owned by `<REMOTE_USER>`.
 This deliberately moves backups **off** the pressured root volume that already
 holds the 4.19 GiB database and is at 61%.
 

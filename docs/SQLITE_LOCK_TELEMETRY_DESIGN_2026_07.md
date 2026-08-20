@@ -15,7 +15,7 @@ read-only EVO-X2 host evidence on 2026-07-17.
 | Fact | Audit (2e2b86f) | Live re-check | Source |
 |---|---|---|---|
 | Mac / origin | — | `2f9d419` | `git rev-parse` |
-| EVO-X2 HEAD | `3f742c9` | `3f742c9` (pinned) | `ssh evo-x2 git rev-parse` |
+| EVO-X2 HEAD | `3f742c9` | `3f742c9` (pinned) | `ssh <OBSERVER_HOST> git rev-parse` |
 | Alembic | `0027` | `0027_crypto_horizon_obs` head | `alembic/versions` |
 | journal_mode | `delete` | `delete` | live `PRAGMA` |
 | synchronous | `FULL` | `2` (FULL) | live `PRAGMA` |
@@ -252,7 +252,7 @@ end state; 001A ships JSONL only.
   acceptable), configurable via `SQLITE_TELEMETRY_DIR`. **Must be a local filesystem**
   (NFS/network `O_APPEND` is client-emulated and can interleave — unsupported). Lives
   **outside the repo tree** so `git status` stays clean.
-- **Directory permissions:** `0700` (owner `miko_node_001` only); files `0600`.
+- **Directory permissions:** `0700` (owner `<REMOTE_USER>` only); files `0600`.
 - **Line schema:** exactly one JSON object per line = one event envelope; UTF-8; no
   embedded newlines.
 - **Append atomicity:** each emit is **one unbuffered `os.write()` on the raw fd** opened

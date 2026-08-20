@@ -1,7 +1,7 @@
 {
   "boundary_note": "OBSERVE_ONLY: authenticated read-only Kalshi production market-data observation. Subscriptions only, over a closed allowlist; no order, position, wallet, key-management or write-scoped surface is reachable from this script's import closure.",
   "config": {
-    "archive_root": "/home/miko_node_001/kalshi-prod-tape/p4-attempt2-20260820T003519Z",
+    "archive_root": "<REMOTE_HOME>/kalshi-prod-tape/p4-attempt2-20260820T003519Z",
     "channels": [
       "orderbook_delta",
       "ticker",
@@ -892,7 +892,7 @@
       "detail": "verified against GET /trade-api/v2/api_keys",
       "environment": "production",
       "gate": "credential_production_identity",
-      "key_id_fingerprint": "sha256:cfdd78afeded1c22",
+      "key_id_fingerprint": "sha256:<KEY_FINGERPRINT_REDACTED>",
       "key_material_read_by_this_script": false,
       "metadata_route_host": "api.elections.kalshi.com",
       "metadata_route_http_version": "HTTP/1.1",
@@ -943,7 +943,7 @@
   },
   "run_label": "p4-attempt2-600s",
   "session_result": {
-    "archive_root": "/home/miko_node_001/kalshi-prod-tape/p4-attempt2-20260820T003519Z",
+    "archive_root": "<REMOTE_HOME>/kalshi-prod-tape/p4-attempt2-20260820T003519Z",
     "boundary_note": "OBSERVE_ONLY: authenticated read-only Kalshi market-data observation. The session sends channel subscriptions only, over a closed allowlist ('orderbook_delta', 'ticker', 'trade', 'market_lifecycle_v2'); no order, position, wallet, key-management or write-scoped surface exists in this package. Evidence is appended to a filesystem archive; no database session is opened.",
     "channels": [
       "orderbook_delta",

@@ -194,12 +194,12 @@ markets chosen for activity rather than the first page of results.
 
 ## 14c. Host preparation completed on EVO-X2
 
-- `/home/miko_node_001/.config/pa-secrets` created, mode `0700`, owner
-  `miko_node_001`, outside the repository, not a symlink, fully resolved.
+- `<REMOTE_HOME>/.config/pa-secrets` created, mode `0700`, owner
+  `<REMOTE_USER>`, outside the repository, not a symlink, fully resolved.
 - `~/.config` tightened **0775 → 0750**. It was group-writable with no sticky
   bit, which the hardened loader refuses: a writable ancestor lets the
   credential directory be renamed out from under the permission check. Group
-  `miko_node_001` has no other members and `~` is already `0750`, so nothing
+  `<REMOTE_USER>` has no other members and `~` is already `0750`, so nothing
   lost access. **Rollback: `chmod 775 ~/.config`.**
 - `~/.config/pa-secrets/install-demo-credential.sh` (mode `0700`) written: it
   validates PEM confinement, parses the key to confirm RSA without displaying
@@ -217,7 +217,7 @@ stays inert and the existing guard narrows rather than being deleted.
 
 ## 16. AUTHENTICATED DEMO SESSION — 2026-08-08
 
-Credential installed and confined (mode 0600, owner `miko_node_001`, parent
+Credential installed and confined (mode 0600, owner `<REMOTE_USER>`, parent
 0700, outside the repo, fully resolved). `DEMO_LOCK_BASELINE = 6`.
 
 ### A. Scope — PROVEN `["read"]`
