@@ -141,3 +141,53 @@ silently mixed. It cannot validate a social→on-chain causal claim; cross-domai
 ordering by receive timestamps is **correlational**, and doctrine 12 puts the
 causal question to an agent screen and the economic question to a deterministic
 evaluator, never to the join itself.
+
+---
+
+## Amendment 1 — 2026-08-21: five corrections found by implementing it
+
+`SOCIAL-FILL-MEASUREMENT-SEAM-001` implemented this contract and found **four
+errors in it plus one pre-existing violation it had missed**. Recorded here
+rather than quietly fixed, because a specification that is wrong in a way its
+own implementation catches is evidence about how the specification was written.
+
+**1. §2's table enumerated 5 of `AbsenceReason`'s 7 members.** It omits
+`TRANSACTION_FAILED` and `CONFLICTING_SOURCES`. A mapping built from the table
+as written would have had **no image for two real members**.
+
+*Root cause, because it is more useful than the correction:* the table was
+written from a `grep … | head -14` whose output stopped at `NOT_AUTHORIZED`. A
+truncated read was presented as a complete enumeration. **A mapping table is a
+completeness claim, and a completeness claim may not be built from a
+`head`-limited view.**
+
+**2. The prescribed availability vocabulary dropped `NOT_APPLICABLE` — the one
+member both sides already agree on**, and the most common absence in
+`app/fills/corpus.py`. Omitting the single point of existing agreement forced
+every adapter to invent a mapping for it. Restored as a sixth member.
+
+**3. §2 calls `OBSERVED_NONE` "a real measurement", but `app/social`'s
+`Deferred(OBSERVED_NONE)` carries no observation window** — so the negative
+cannot state what it was measured over, and therefore cannot state its noise
+floor (doctrine 4). The seam refuses to invent one and **requires an explicit
+window**. This is an **unfixed gap in `app/social`**, recorded as an open item
+for a future milestone: a negative label without a window is not yet a
+measurement.
+
+**4. §3's prescription — "adopt `OurReceivedAt`" — was the wrong fix.** It
+would have imported that type's *process-epoch* comparability rule into
+`app/fills`, which refuses intervals across processes — i.e. **every interval
+this join exists to compute**. The correct key is `(host_id, host_boot_id)`,
+because `CLOCK_MONOTONIC` is **boot-relative, not process-relative**. The seam's
+`ObservationTimestamp` therefore *widens* what is computable rather than
+narrowing it, while weakening nothing. §3's binding rule 1 is superseded by
+this.
+
+**5. A violation this contract did not catch:** `submit → confirm` was
+**already** an untyped cross-domain interval — `OURS → CHAIN` — which §3's own
+rule 2 forbids. The contract enumerated the domains correctly and then failed to
+audit the existing code against them. **Stating a rule is not the same as
+checking what already breaks it.**
+
+**Status of §3 rule 1:** superseded, see correction 4. Everything else in §§1–7
+stands as written.
