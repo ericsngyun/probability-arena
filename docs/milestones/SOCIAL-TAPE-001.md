@@ -440,6 +440,16 @@ Two runners-up, recorded for the same reason:
   name is not evidence of its semantics, and nobody has re-read X's `created_at`
   across a known interval to see what moves it. Until someone does, every
   statistic conditioned on it inherits `SourceTimeFidelity.UNVERIFIED`.
+* **Rebroadcast text may not match the original's text.** `content_identity`
+  hashes `content_text`, and platforms do not always hand back a rebroadcast's
+  body verbatim — it can arrive prefixed, truncated, or only as a reference to
+  be expanded. Where that happens, the propagation goes undetected and the
+  diffusion curve reads as sparser than it was. The `parent` relation still
+  records it (`REBROADCAST` + `parent_message_id`), so propagation is
+  recoverable from the parent link even when content matching misses — which is
+  why both are on the schema rather than either alone. Verifying which form X
+  actually delivers is doctrine-8 work that has not been done, because nothing
+  has been connected.
 * **The propagation ledger is bounded**, so a long-running collector will
   eventually evict content keys and under-report propagation. The eviction
   counters are surfaced on every run report specifically so that fall is
