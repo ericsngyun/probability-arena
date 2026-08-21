@@ -684,7 +684,7 @@ class TestMeasurementLegality:
                 watcher_id="w",
             )
 
-    def test_exactly_seven_of_eighteen_combinations_are_legal(self):
+    def test_exactly_eight_of_eighteen_combinations_are_legal(self):
         legal = 0
         for availability in Availability:
             for observation in Observation:

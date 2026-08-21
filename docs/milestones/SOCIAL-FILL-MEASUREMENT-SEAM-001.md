@@ -49,7 +49,7 @@ first case, and only the first case answers `is_measured_negative`.
 | `NOT_ATTEMPTED` | any | must be `None` | forbidden |
 
 6 × 3 = 18 combinations; **8 are legal**, asserted directly by
-`test_exactly_seven_of_eighteen_combinations_are_legal`.
+`test_exactly_eight_of_eighteen_combinations_are_legal`.
 
 `Measurement` supports no arithmetic, no ordering and no truthiness —
 `bool(m)` raises, so `m or 0` cannot fabricate a zero.
