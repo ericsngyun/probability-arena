@@ -57,6 +57,7 @@ from app.social.x_collector import (
 
 APP_ROOT = Path(__file__).resolve().parents[1] / "app"
 SOCIAL_PACKAGE = APP_ROOT / "social"
+SEAM_PACKAGE = APP_ROOT / "seam"
 
 RULE_ID = "caller.example-account-01"
 OTHER_RULE_ID = "exchange.listing.example-venue"
@@ -866,17 +867,65 @@ class TestSeam:
         If this ever fails, `app.social` has gained a production caller — which
         is exactly the activation event this milestone forbids, so the failure
         is the alarm, not a nuisance.
+
+        **One explicit decision has been taken** (the alarm asked for one):
+        `app/seam/` — SOCIAL-FILL-MEASUREMENT-SEAM-001 — references
+        `app.social` **types**. The seam is a schema, not a caller: it starts
+        no connection, spends no quota and collects nothing. Activation is
+        guarded separately and more sharply below, by naming the modules that
+        would actually run a collector.
         """
 
         importers: list[str] = []
         for path in APP_ROOT.rglob("*.py"):
-            if path.is_relative_to(SOCIAL_PACKAGE):
+            if path.is_relative_to(SOCIAL_PACKAGE) or path.is_relative_to(
+                SEAM_PACKAGE
+            ):
                 continue
             if "app.social" in path.read_text(encoding="utf-8"):
                 importers.append(str(path.relative_to(APP_ROOT)))
         assert importers == [], (
             "app/social is now reachable from production code; SOCIAL-TAPE-001 "
             f"activates nothing, so this needs an explicit decision: {importers}"
+        )
+
+    def test_the_seam_references_social_types_but_never_activates_collection(
+        self,
+    ):
+        """The narrowed alarm. Types may cross; the collector may not.
+
+        Positive control (doctrine 7): the ACTIVATING modules are named, and
+        the guard asserts the permitted thing exists too — a guard satisfied
+        by an empty `app/seam/` would be satisfied by a repository in which
+        nothing works.
+        """
+
+        activating = (
+            "app.social.x_collector",
+            "app.social.transport",
+            "app.social.connectors",
+            "app.social.tape",
+            "app.social.cost_guard",
+        )
+        seam_files = sorted(SEAM_PACKAGE.rglob("*.py"))
+        assert seam_files, "app/seam does not exist; the guard guards nothing"
+
+        offenders: list[str] = []
+        references_social_types = False
+        for path in seam_files:
+            text = path.read_text(encoding="utf-8")
+            if "app.social" in text:
+                references_social_types = True
+            for module in activating:
+                if module in text:
+                    offenders.append(f"{path.name} -> {module}")
+        assert references_social_types, (
+            "app/seam references no app.social type at all; it cannot be the "
+            "seam between the two tapes"
+        )
+        assert offenders == [], (
+            "app/seam imports a COLLECTION module; the seam is a schema and "
+            f"must never start collection: {offenders}"
         )
 
 
