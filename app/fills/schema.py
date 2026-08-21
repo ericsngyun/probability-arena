@@ -27,7 +27,8 @@ from datetime import datetime
 from decimal import Decimal
 from enum import Enum
 
-from app.fills.absence import Absent, Maybe, as_json
+from app.fills.absence import Absent, Maybe, Observed, as_json, observed
+from app.seam.clock import ObservationTimestamp
 
 #: The native mint. Wrapped SOL uses this address as an SPL mint, which is
 #: exactly why wrapped-SOL accounting is a hard case: the same economic asset
@@ -35,6 +36,48 @@ from app.fills.absence import Absent, Maybe, as_json
 #: it is a live way to corrupt an input amount.
 WRAPPED_SOL_MINT = "So11111111111111111111111111111111111111112"
 LAMPORTS_PER_SOL = 1_000_000_000
+
+
+def _as_observation_timestamp(stamp: Maybe) -> Maybe:
+    """Normalize an OUR-CLOCK timestamp field to `ObservationTimestamp`.
+
+    EVIDENCE-JOIN-CONTRACT-001 §3 BINDING 1: the fill timestamps WE generate
+    (`t_quote`, `t_submit`) must carry a monotonic anchor and an epoch witness
+    before any social->quote interval is computed. Until every producer is
+    migrated, a bare `datetime` is still accepted and is wrapped as
+    `WALL_ONLY` on `UNKNOWN_HOST` — which is a HONEST DOWNGRADE, not a repair:
+    `app.seam.clock.interval()` returns NOT_COMPUTABLE for two such stamps,
+    so the bypass the contract found ("subtracts a bare wall-clock datetime
+    from a monotonic-anchored stamp") is now structurally impossible rather
+    than merely discouraged.
+
+    `slot` and `t_confirmed` are NOT normalized. They are CHAIN-domain stamps
+    and promoting them into an our-clock type is exactly the confusion §3.3
+    forbids.
+    """
+    if not isinstance(stamp, Observed):
+        return stamp
+    value = stamp.value
+    if isinstance(value, ObservationTimestamp):
+        return stamp
+    if isinstance(value, datetime):
+        return observed(
+            ObservationTimestamp.from_wall_clock(value),
+            source=stamp.source,
+        )
+    raise TypeError(
+        "an our-clock fill timestamp must be an ObservationTimestamp or a "
+        f"tz-aware datetime; got {type(value).__name__}"
+    )
+
+
+def _timestamp_json(stamp: Maybe):
+    if isinstance(stamp, Absent):
+        return as_json(stamp)
+    value = stamp.value
+    if isinstance(value, ObservationTimestamp):
+        return value.to_json()
+    return value.isoformat()
 
 
 class Reconstructability(str, Enum):
@@ -191,7 +234,10 @@ class QuoteRecord:
     fill is not a quote, it is a fit.
     """
 
-    t_quote: Maybe[datetime]
+    #: OUR clock. `ObservationTimestamp` (§3 BINDING 1). A tz-aware
+    #: `datetime` is still accepted at construction and normalized; see
+    #: `_as_observation_timestamp`.
+    t_quote: Maybe[ObservationTimestamp]
     quoted_input: Maybe[TokenAmount]
     quoted_output: Maybe[TokenAmount]
     #: output per unit input, in human units
@@ -204,13 +250,17 @@ class QuoteRecord:
     #: verbatim provider payload identifier, for audit
     quote_capture_id: Maybe[str]
 
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "t_quote", _as_observation_timestamp(self.t_quote)
+        )
+
     def as_json(self) -> dict:
         def amt(m):
             return as_json(m) if isinstance(m, Absent) else m.value.as_json()
 
-        t = self.t_quote
         return {
-            "t_quote": as_json(t) if isinstance(t, Absent) else t.value.isoformat(),
+            "t_quote": _timestamp_json(self.t_quote),
             "quoted_input": amt(self.quoted_input),
             "quoted_output": amt(self.quoted_output),
             "quoted_price": as_json(self.quoted_price),
@@ -364,7 +414,8 @@ class RealizedFill:
     quote: QuoteRecord
 
     # --- submission ---------------------------------------------------------
-    t_submit: Maybe[datetime]
+    #: OUR clock. See `_as_observation_timestamp`.
+    t_submit: Maybe[ObservationTimestamp]
     signature: Maybe[str]
 
     # --- confirmation -------------------------------------------------------
@@ -402,6 +453,11 @@ class RealizedFill:
     #: normal and is the honest state for most real routes.
     decoder_notes: tuple[str, ...] = ()
 
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "t_submit", _as_observation_timestamp(self.t_submit)
+        )
+
     def markout(self, horizon_seconds: int) -> Markout | None:
         for m in self.markouts:
             if m.horizon_seconds == horizon_seconds:
@@ -424,7 +480,7 @@ class RealizedFill:
             "quote_asset_mint": as_json(self.quote_asset_mint),
             "route": self.route.as_json(),
             "quote": self.quote.as_json(),
-            "t_submit": ts(self.t_submit),
+            "t_submit": _timestamp_json(self.t_submit),
             "signature": as_json(self.signature),
             "slot": as_json(self.slot),
             "t_confirmed": ts(self.t_confirmed),

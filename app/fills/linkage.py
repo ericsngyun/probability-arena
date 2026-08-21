@@ -41,6 +41,7 @@ from app.fills.absence import (
     observed,
 )
 from app.fills.schema import QuoteRecord, Side, TokenAmount
+from app.seam.clock import ObservationTimestamp
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,13 +58,41 @@ class LinkResult:
     notes: tuple[str, ...]
 
 
-def _ms(a: Maybe[datetime], b: Maybe[datetime], what: str) -> Maybe[int]:
+def _wall(stamp) -> datetime:
+    """Wall-clock reading of either stamp type.
+
+    `t_quote` / `t_submit` are `ObservationTimestamp` after
+    SOCIAL-FILL-MEASUREMENT-SEAM-001; `t_confirmed` is a CHAIN-domain
+    `datetime` and deliberately stays one (EVIDENCE-JOIN-CONTRACT-001 §3.3).
+    """
+    if isinstance(stamp, ObservationTimestamp):
+        return stamp.wall_datetime
+    return stamp
+
+
+def _ms(a: Maybe, b: Maybe, what: str) -> Maybe[int]:
+    """Millisecond difference between two fill-side stamps.
+
+    **This is deliberately the UNANCHORED wall-clock difference.** These
+    intervals are (i) submit->confirm, which crosses OURS -> CHAIN and can
+    therefore never be monotonic, and (ii) quote->submit, whose stamps today
+    come from producers that have not yet been migrated to
+    `capture_observation`. Both are exposed to an NTP step and both say so on
+    the record rather than pretending otherwise.
+
+    The interval the contract actually cared about — social receipt -> quote —
+    does NOT come through here. It goes through
+    `app.seam.clock.our_response_latency`, which refuses an unanchored pair
+    outright.
+    """
     if isinstance(a, Absent):
         return absent(a.reason, f"{what}: start timestamp absent")
     if isinstance(b, Absent):
         return absent(b.reason, f"{what}: end timestamp absent")
+    delta = _wall(b.value) - _wall(a.value)
     return observed(
-        int((b.value - a.value).total_seconds() * 1000), source=what
+        int(delta.total_seconds() * 1000),
+        source=f"{what} (unanchored wall-clock difference)",
     )
 
 
