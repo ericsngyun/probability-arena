@@ -592,9 +592,18 @@ class SocialTapeWriter:
             raise TapeImmutabilityError(
                 f"segment {self._segment_id} is already closed"
             )
+        # ORDER MATTERS. gzip writes its trailer in `close()`, so an fsync
+        # taken before the close would durably persist a stream that is
+        # missing its own terminator — a file that reads short, or not at
+        # all, after a power loss. Close first so the trailer is in the
+        # buffer, THEN fsync the finished file by path, then the directory.
         self._handle.flush()
-        os.fsync(self._handle.fileno())
         self._handle.close()
+        fd = os.open(str(self._events_path), os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
         _fsync_directory(self._directory)
 
         manifest = build_manifest(
