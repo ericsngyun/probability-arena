@@ -1254,6 +1254,58 @@ class TestSeamReachability:
         assert row.external_delivery.delivery_mode == "BACKFILL"
 
 
+class TestSeamActivatesNothing:
+    def test_importing_the_seam_pulls_in_no_collection_module(self):
+        """Import-time proof, not a text grep. The seam may reference social
+        SCHEMA; importing it must never load a transport, a collector or a
+        cost guard, because loading one is the first step of spending quota.
+        """
+        import subprocess
+        import sys
+
+        script = (
+            "import app.seam.join, app.seam.cohort, app.seam.token, "
+            "app.seam.measurement, app.seam.clock, sys;"
+            "print(sorted(m for m in sys.modules if m.startswith('app.social')))"
+        )
+        out = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            check=True,
+            cwd=str(__import__("pathlib").Path(__file__).resolve().parents[1]),
+        ).stdout
+        loaded = eval(out.strip())
+        assert loaded, "the seam loads no social module at all; it is not a seam"
+        for module in loaded:
+            assert module in {
+                "app.social",
+                "app.social.artifact",
+                "app.social.timebase",
+            }, f"the seam loaded a non-schema social module: {module}"
+
+    def test_importing_app_fills_pulls_in_no_social_module_at_all(self):
+        """`app/fills/schema.py` reaches the seam for the clock type only, so
+        the fills corpus must remain entirely independent of `app.social`."""
+        import subprocess
+        import sys
+
+        out = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import app.fills.schema, sys;"
+                "print(sorted(m for m in sys.modules "
+                "if m.startswith('app.social')))",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+            cwd=str(__import__("pathlib").Path(__file__).resolve().parents[1]),
+        ).stdout
+        assert eval(out.strip()) == []
+
+
 class TestSeamContainsNoSignal:
     def test_the_package_ranks_scores_and_predicts_nothing(self):
         import ast

@@ -393,10 +393,10 @@ Two smaller notes:
 
 | suite | result |
 |---|---|
-| `tests/test_social_fill_measurement_seam_001.py` | **74 passed** |
+| `tests/test_social_fill_measurement_seam_001.py` | **76 passed** |
 | `tests/test_realized_fill_*.py` (5 files) | **82 passed, 1 skipped** |
 | `tests/test_social_*.py` (3 files) | **153 passed** |
-| the nine files together | **309 passed, 1 skipped** |
+| the nine files together | **311 passed, 1 skipped** |
 | full suite | see §11 |
 
 `tests/test_social_x_collector_001.py::TestSeam::
@@ -409,6 +409,14 @@ asserts that no seam module mentions `x_collector`, `transport`, `connectors`,
 `tape` or `cost_guard`, **and** that `app/seam` exists and does reference a
 social type (doctrine 4: assert the permitted thing exists, or the guard is
 satisfied by a repository in which nothing works).
+
+Two further guards prove the same thing at **import time** rather than by
+grep: `test_importing_the_seam_pulls_in_no_collection_module` (importing all
+five seam modules loads `app.social`, `app.social.artifact` and
+`app.social.timebase` and nothing else) and
+`test_importing_app_fills_pulls_in_no_social_module_at_all` (importing
+`app.fills.schema` loads **no** `app.social` module — the corpus stays
+independent).
 
 ## 11. Constraints honoured
 
