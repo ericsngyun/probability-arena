@@ -277,6 +277,43 @@ already cost this project months.
     microseconds before demonstrating positive expectancy over seconds or
     minutes is spending money to make an unproven edge arrive faster.
 
+## Intermediate state is not final state (binding)
+
+> **A branch may not be merged until its agent has explicitly declared it
+> finished AND the commit being merged is that declared tip.**
+
+Not "it looks done", not "its tests were green an hour ago", not "it stopped
+talking". An agent that is interrupted, stalled, or mid-verification has a
+branch that is *in flight*, and a tip that is not an endpoint.
+
+**Earned three times in one session, from one root cause:**
+
+* A branch was merged while its agent was still working. Two commits never
+  landed — one of them a real durability bug, where an `fsync` taken before
+  `close()` persisted a gzip stream missing its own trailer. The agent had to
+  report the omission afterwards; nothing in the merge would have revealed it.
+* A test assertion stayed pinned to `NOT_QUALIFIED:NOT_YET_COMPUTED` after the
+  verdict it described had been computed. The change and its own test were
+  separated by a merge, and the suite asserted a staleness the repository had
+  already moved past.
+* A leak guard re-committed the two identifiers it existed to ban, because its
+  probe fixture spelled them. It passed only because the scan exempts its own
+  file — **the guard reported green while restoring the defect**.
+
+**The operational rules:**
+
+1. **Merge the declared tip, not the branch name.** Re-read the branch head at
+   merge time and confirm it is the commit the agent reported. A branch that
+   advanced after the report is a different artifact.
+2. **Verify the code you changed, not the tests you wrote.** The stale
+   assertion survived because the P4 files *authored* in that milestone were
+   run, while the file testing the script actually *edited* was not.
+3. **A stalled or interrupted agent has NOT delivered.** Resume it, or take the
+   work over deliberately — but do not treat its last commit as an endpoint.
+4. **Incremental commits are mandatory for long-running agents.** In this
+   session that discipline was the entire difference between agents that lost
+   everything to an interruption and agents that lost nothing.
+
 ## Parallel-agent composition (binding)
 
 > **Every parallel-agent milestone with a shared runtime path must have an
