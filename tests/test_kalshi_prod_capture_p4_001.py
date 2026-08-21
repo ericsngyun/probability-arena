@@ -178,13 +178,29 @@ def test_ticker_sequence_gaps_are_typed_NOT_MEASURABLE_never_zero():
 
     assert absences["recoveries_from_tape"]["state"] == (
         "NOT_RECONSTRUCTABLE_BY_DESIGN")
-    # B3 CLOSED 2026-08-19 (KALSHI-P4-1-REPLAY-REQUAL). The blocker is gone; the
-    # verdict is still not claimed, because it has never been RUN over a
-    # production tape — and it stays typed rather than becoming a bare False.
+    # B3 CLOSED 2026-08-19 (KALSHI-P4-1-REPLAY-REQUAL), and the verdict it
+    # blocked was then COMPUTED over the frozen production tape in two arms
+    # (KALSHI-P4-4). This assertion tracked the intermediate state and was not
+    # updated when the verdict landed, so the suite asserted a staleness the
+    # repository had already moved past — the test was right to fail.
+    #
+    # What is still being defended here is the TYPING, not the value: this
+    # field must always carry a state a reader can act on, and must never
+    # collapse into a bare boolean. So the check is that the state is one of
+    # the closed vocabulary, that a claimed QUALIFIED carries the evidence
+    # naming both arms, and that the retired blocker cannot reappear.
     replay_equality = absences["replay_equality"]
-    assert replay_equality["state"] == "NOT_QUALIFIED:NOT_YET_COMPUTED"
+    assert replay_equality["state"] in (
+        "QUALIFIED", "NOT_QUALIFIED:NOT_YET_COMPUTED")
     assert replay_equality["b3_closed_by"] == "KALSHI-P4-1-REPLAY-REQUAL"
     assert "B3_OPEN" not in replay_equality["state"]
+    if replay_equality["state"] == "QUALIFIED":
+        # A bare "QUALIFIED" would be an unfalsifiable claim. Both arms must be
+        # named, because the production tape carries zero error frames and so
+        # cannot on its own exercise the branch B3 repaired.
+        assert replay_equality["arm_1_production"]
+        assert replay_equality["arm_2_b3_control"]
+        assert replay_equality["anti_vacuity"]
     assert absences["transport_dropped_frames"]["state"] == (
         "NOT_MEASURABLE:no_source_exists")
 
