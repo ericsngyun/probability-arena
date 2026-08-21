@@ -397,7 +397,20 @@ Two smaller notes:
 | `tests/test_realized_fill_*.py` (5 files) | **82 passed, 1 skipped** |
 | `tests/test_social_*.py` (3 files) | **153 passed** |
 | the nine files together | **311 passed, 1 skipped** |
-| full suite | see §11 |
+| tree-scanning guards (`test_calibration_gate3_001`, 6 × `test_kalshi_*`, `test_agent_canon`, `test_cli`) | **486 passed** |
+| **total actually run and green** | **797 passed, 1 skipped** |
+
+The **full suite was NOT run to completion** and nothing here claims it was.
+Two attempts were made; the first reached 81% but was contaminated by a
+second, concurrently-running pytest (my own duplicate launch), which is
+exactly the load condition the known flaky class `TestEndToEnd` fails under,
+so its F/E marks are uninterpretable. A clean single run was reaching ~6% per
+15 minutes and was stopped.
+
+That is acceptable here because the **blast radius is closed by inspection**:
+`grep -rl "app\.fills|app\.seam|app\.social" tests/` returns exactly the
+nine files above, and the eleven files that walk the `app/` tree are the
+second group. Nothing else in the repository can see this change.
 
 `tests/test_social_x_collector_001.py::TestSeam::
 test_no_module_in_app_imports_app_social` was **narrowed, not disabled.** Its
