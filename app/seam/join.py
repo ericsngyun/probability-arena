@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Mapping
+from typing import Any
 
 from app.seam import SEAM_VERSION
 from app.seam.clock import (
@@ -32,7 +32,7 @@ from app.seam.clock import (
     our_response_latency,
 )
 from app.seam.cohort import CohortPurpose, PRIMARY_ALPHA_DELIVERY_MODE
-from app.seam.measurement import Measurement, Observation
+from app.seam.measurement import Measurement
 from app.seam.token import TokenResolution
 
 __all__ = [

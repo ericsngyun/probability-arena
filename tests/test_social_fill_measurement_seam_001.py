@@ -90,7 +90,6 @@ from app.seam.measurement import (
 )
 from app.seam.token import (
     Chain,
-    EscalationLadder,
     EvidenceKind,
     JOINABLE_STATUSES,
     NotWiredStage,

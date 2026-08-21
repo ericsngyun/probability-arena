@@ -687,7 +687,6 @@ def from_social_deferred(
 
     availability_table, observation_table = _social_tables()
     state = deferred.state
-    ob = observation_table[state]
     origin = OriginTag(vocabulary=SOCIAL_VOCABULARY, code=state.value)
     resolved_source = source or f"social.Deferred@{deferred.observed_at}"
 
