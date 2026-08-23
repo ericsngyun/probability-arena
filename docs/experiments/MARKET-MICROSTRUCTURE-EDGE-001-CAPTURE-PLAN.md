@@ -160,3 +160,57 @@ last time; it is kept again here.
 the 30 s primary horizon, order flow is declared non-additive over static book
 state and this lane stops. No Hawkes, no transformer, no additional features.
 Economics stay strictly downstream of `Loss(M1) < Loss(M0)`.
+
+---
+
+## Addendum 1 — 2026-08-23: the candidate-set rule the plan was missing
+
+Found by `MARKET-MICROSTRUCTURE-CAPTURE-RUNNER-VALIDATION-001` on its first
+attempt to build a real candidate set, before any tranche capture. Recorded
+rather than patched silently.
+
+**The hole.** §1 says `candidate_markets := open markets in eligible_series
+whose occurrence_datetime falls inside the session's event window`, and §2 caps
+concurrency at 24. It never said **which 24** when the window yields more. It
+does: a live 5-hour window on 2026-08-23 returned **88 candidates**.
+
+**Why the obvious fix is wrong.** Ticker-lexicographic truncation is
+deterministic and unsteerable, so it looks safe. Applied live it selected 24
+`KXATPMATCH` markets with events **17–26 hours away** — markets that would sit
+below the activity floor for the whole session. The panel would never rotate,
+and the session would validate nothing. Alphabetical order is uncorrelated with
+the event cluster the session is supposed to be anchored to.
+
+**The rule, frozen here:**
+
+```text
+candidate_set := markets in eligible_series whose occurrence_datetime lies in
+                 [session_open + 1800 s, session_open + 5 h]
+              ordered by (occurrence_datetime ASC, ticker ASC)
+              truncated to the concurrency ceiling (24)
+```
+
+The lower edge guarantees `TTE > 600 s` at the final decision tick of a session
+of the planned length, so no label can be truncated. Ordering by event time
+ascending makes the subscribed set an actual **event cluster** — which is what
+"event-anchored session" was always supposed to mean — and ticker ascending
+breaks ties.
+
+**This selects on no activity signal.** `occurrence_datetime` is a scheduled
+calendar fact known before the session opens and is not a measure of activity,
+volume, liquidity or expected return. It cannot be steered by anything the
+venue does during the session. The activity-based rule remains confined to the
+K=12 research panel, exactly as Amendment 2 §B and §E freeze it.
+
+**Subscriptions vs the research panel, stated explicitly** — the plan implied
+this but never said it, and the runner had to resolve it:
+
+* **subscribed set** = the capacity-guarded quantity, ≤ 24, **fixed for the
+  session**. This is what the 3,500 f/s stop protects.
+* **research panel** = K = 12, **rotating every 300 s** by lagged order-book
+  activity among the subscribed set.
+
+The split is what makes rotation possible at all: a market that was never
+subscribed has no lagged order-book activity to rank, so the panel can only
+rotate within what is already being observed. It also means **the collector is
+never modified** and no mid-session resubscription occurs.
