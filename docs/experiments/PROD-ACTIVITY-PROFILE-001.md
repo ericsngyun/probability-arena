@@ -410,3 +410,79 @@ exist yet and must not exist when this check is made.
 If every assumption survives, **run the preregistration unchanged.** If one is
 objectively wrong, **amend it, document why, and only then run** — with the
 amendment timestamped before any M0/M1 output is produced.
+
+## Amendment 4 — `capped_events` is a RIGHT-CENSORED window, recorded before any per-market result was read
+
+Amendment 3 froze the analysis but did not say how a window that ends on the
+**frame cap** rather than the clock is to be treated. One of the six did:
+`day=2026-08-21 slot=C` terminated `capped_events` at exactly **1,000,000
+frames**, **1472.3 s** into its 1500 s budget. The other five ended
+`capped_time` at ~1500 s.
+
+This amendment is written **before any per-market activity result has been
+read**, and its trigger is purely mechanical and already present in session
+metadata written at capture time: `capture_session_status == "capped_events"`.
+It defines how the *already preregistered* statistics behave under a terminal
+status the acquisition layer already treats as VALID
+(`kalshi_activity_profile_window.py`, the `cap_status` block). It is not
+outcome-shopping: nothing here can move which markets are selected or whether
+the capacity gate fired, and both of those were already determined.
+
+**What changes: nothing in the design.** No threshold moves. No selection rule
+moves. No universe changes. No window is revalidated, re-run or discarded — the
+window is VALID and stays VALID.
+
+**What is defined:**
+
+1. **Exposure is the observed duration, not the budget.** For any additive
+   activity statistic, the analyzable quantity is the rate
+
+   > λ_i = N_i / T_observed
+
+   where `T_observed` is that window's own `session_duration_s` — **1472.3 s**
+   for day 2-C, ~1500 s for the other five. Rates so normalised are comparable
+   across all six.
+
+2. **Raw totals from a censored window are not pooled as equal-duration
+   totals.** `N_C = 1,000,000` is the value of a *stopping rule*, not the count
+   that would have accrued over 1500 s. Any table that sums or compares raw
+   frame counts across windows must either normalise by exposure or mark the
+   censored window explicitly.
+
+3. **Peak statistics from a censored window are LOWER BOUNDS.** Truncation can
+   only lower an observed maximum, so for day 2-C
+
+   > peak₁ₛ^true ≥ 2704
+
+   and it is reported as `PEAK LOWER BOUND — CENSORED WINDOW`, never as a point
+   estimate.
+
+4. **No extrapolated peak is generated.** The unobserved 27.7 s is not modelled,
+   imputed, rescaled or annualised. It is unobserved and is reported as
+   unobserved.
+
+5. **The §6 capacity claim is stated in the form the evidence supports.** No
+   observed breach occurred in any of the six windows; the largest observed
+   sliding 1 s rate was 2,704 f/s against the 3,500 f/s stop. Because day 2-C
+   is censored, the profile establishes **no upper bound below 3,500 f/s for
+   that window's unobserved tail**. "No observed breach" and "demonstrated to
+   stay under the stop" are different claims and only the first is made.
+
+**Also recorded here, from the pre-analysis acquisition reconciliation** (counts
+only; no per-market activity was read to produce it):
+
+* `candidates.json`/`candidates.txt` (163 day 1, 188 day 2) and
+  `universe.json:candidates_total` (175 day 1, 213 day 2) are **two independent
+  REST enumerations at different wall-clock times** — the driver's at start-up,
+  and `freeze_universe.py`'s own re-enumeration at freeze (13:50 UTC). They
+  measure the same rule against a live venue minutes apart. Both are correct;
+  they are not the same population.
+* Consequently `candidates_silent` conflates **watched-and-silent** with
+  **never-subscribed**: day 1, 69 silent = 57 watched-and-silent + 12 markets
+  that entered the book after the discovery subscription; day 2, 107 = 82 + 25.
+  Only the watched-and-silent count is evidence of inactivity.
+* This does **not** touch selection or the control: every ticker-active market
+  was in the subscribed set (`active \ watched = ∅` both days), so no
+  never-watched market can enter the top 40; and both §7 positive controls were
+  verified **subscribed during discovery and emitting zero ticker frames**, so
+  the anti-vacuity arm is genuine on both days.
