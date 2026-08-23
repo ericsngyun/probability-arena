@@ -6,7 +6,8 @@ Written 2026-08-19.
 Read-only. No capital, no orders, no venue writes. This experiment measures
 information, not profit, and cannot authorise a trade.
 
-**Depends on:** `PROD-ACTIVITY-PROFILE-001` (frozen `universe.json`),
+**Depends on:** `PROD-ACTIVITY-PROFILE-001` (**COMPLETE 2026-08-22**; its
+`universe.json` static-panel premise is **RETIRED by Amendment 2**),
 `MARKET-STATE-FABRIC-v1` (feature spec), KALSHI-TAPE-MEASUREMENT-CONTRACT-001
 §16 (measured production facts).
 
@@ -169,3 +170,210 @@ its thresholds are statistical (FDR 10%), temporal (300 s embargo) and economic
 
 Recorded explicitly because "we checked and nothing needed changing" and "we did
 not check" are indistinguishable in a document that stays silent.
+
+---
+
+## Amendment 2 — 2026-08-22: the static panel is retired, before any alpha was observed
+
+`PROD-ACTIVITY-PROFILE-001` completed on 2026-08-22 (six windows, all `VALID`,
+§6 never fired, every sequenced SID contiguous). Its result — recorded at
+`1f70a9e`, and produced **without reading a single microstructure alpha
+quantity** — falsifies a premise this preregistration was built on.
+
+**No alpha result exists and none was inspected.** Everything below is derived
+from wire-activity and capacity evidence only. That ordering is what makes this
+amendment legitimate rather than outcome-shopping.
+
+### What the profile falsified
+
+| this document assumed | the profile measured |
+|---|---|
+| a **static 40-market universe** from a frozen `universe.json` | market-level activity rank is **unstable within a day** — ρ_orderbook 0.431 / 0.004 / **−0.648** across day 1's three slot pairs. The markets busy at 14:00 ET are the *quiet* ones at 20:00 ET. |
+| 40 markets are active for the whole window | **0 of 40** markets (day 1) and **5 of 40** (day 2) clear §4's activity floor in all three windows. 22 and 18 clear it in exactly one. |
+| ≈360,000 rows ⇒ ≈12,000 quasi-independent 30 s blocks | rests entirely on the above; **unsupported** |
+| 40 markets sit ~3.4× under the stop | realised **2.55×** vs the 6,900 envelope and **1.29×** vs the 3,500 stop; observed peak **1.33× above** the 2,040 f/s projection — and that peak is a **lower bound** (Amendment 4 of the profile) |
+
+What *is* stable is the **series**: ρ_orderbook **0.881**, ρ_trade **0.905**
+across days at series level. Activity is **event-time dependent**, not a market
+property.
+
+### §A. The unit of eligibility becomes market × event-time block
+
+**Retired:** "the 40 markets in the frozen `universe.json`."
+
+**Replaces it:**
+
+```text
+eligible series
+      -> live markets in those series
+      -> at prediction time t:
+             valid current-generation book
+             sufficient LAGGED order-book activity
+             enough future horizon remaining
+             no sequence/fault contamination
+      -> eligible (market, t) block
+```
+
+**Eligibility at `t` may use only information available at or before `t`:**
+
+> Eligibility(i,t) = f( X(i, ≤t) )
+
+Selecting a row because the market *became* active afterwards is
+future-conditioned selection and is forbidden. This is now the single most
+likely way to fake a result in this experiment, and it is called out here so it
+cannot be committed quietly.
+
+### §B. The eligibility gate is lagged order-book activity
+
+Over a frozen lookback **L = 300 s**:
+
+> Activity(i,t) = N_orderbook(i, (t−L, t]) / L
+
+Order book is the primary signal because it is the only channel that is both
+**sequenced** and **continuously published**. Explicitly **not** used for
+eligibility:
+
+* `ticker` — §5 already bars it, and the profile confirmed why on production:
+  both §7 positive controls emitted **zero ticker frames** while producing
+  **279 and 73 real order-book deltas**.
+* contracts/min or any traded-volume proxy — activity is measured from wire
+  frames, never inferred from volume.
+
+**Zero trades is a measurement, not ineligibility.** A market with a complete
+sequenced trade stream and no trades in the lookback has `TradeFlow = 0`, which
+is real information. Eligibility may not require a trade unless a hypothesis
+explicitly demands one; none here does.
+
+### §C. Event lifecycle is an explicit conditioning variable, frozen now
+
+Every research row carries time-to-event:
+
+> TTE(t) = t_event_resolution − t
+
+using `occurrence_datetime` (== `expected_expiration_time`) — **not**
+`close_time`, which the profile's preflight proved is a settlement deadline
+days after the event.
+
+**Bins, frozen before any M0/M1 output exists:**
+
+| bin | TTE |
+|---|---|
+| `far` | > 6 h |
+| `approaching` | 2 h – 6 h |
+| `near_event` | 15 min – 2 h |
+| `live_event` | 0 – 15 min before, through the event |
+| `late_resolution` | past scheduled event time, pre-settlement |
+
+These boundaries are fixed here so that `E[r(t+h) | OFI(t), TTE(t)]` can be
+asked later without averaging structurally different market states into one
+effect. **They may not be redrawn after seeing results.**
+
+### §D. Concurrency ceiling — a capacity guard, not an alpha parameter
+
+The 40-market premise is dead. The replacement is set from capacity evidence
+alone and **selects nothing on expected return**.
+
+The naive scaling — 2,704 × 24/40 ≈ 1,622 f/s, ~2.16× headroom — is
+**optimistic**, and the profile says so directly. Traffic is heavily
+concentrated, and an activity-ranked selection takes the *busiest* markets, not
+a random subset. Measured on the busiest window (day 2 slot C):
+
+| K (ranked by that window's frames) | share of window traffic | naive peak scaling | headroom vs 3,500 |
+|---:|---:|---:|---:|
+| 8 | 45.3% | 1,224 f/s | 2.86× |
+| **12** | **59.9%** | **1,620 f/s** | **2.16×** |
+| 16 | 70.9% | 1,916 f/s | 1.83× |
+| 20 | 79.1% | 2,138 f/s | 1.64× |
+| **24** | **86.5%** | **2,340 f/s** | **1.50×** |
+| 41 | 100% | 2,704 f/s | 1.29× |
+
+So **K = 24 buys ~1.50× headroom, not 2.16×.** The concurrency that actually
+delivers the intended ~2.16× is **K = 12**.
+
+**Frozen for the first experiment: K = 12. Absolute never-exceed ceiling: 24.**
+Every figure above is a lower bound, because it scales a censored peak. None of
+them is a prediction of traffic; the **3,500 f/s hard stop remains the sole
+authoritative capacity control** and is unchanged.
+
+### §E. Re-selection, not a one-time list
+
+At each research interval, from the currently eligible set:
+
+```text
+eligible now
+  -> rank by preceding-window order-book event rate  (lagged, per §B)
+  -> deterministic tie-break: ticker lexicographic ascending
+  -> take at most K
+```
+
+No ticker proxy, no volume proxy, no future activity, **no alpha score** may
+enter this rule. The panel is expected to turn over during a session; that is
+the intended behaviour, and it is what a live system would have to do anyway.
+
+### §F. Series is a grouping variable, not the trading unit
+
+Given ρ_series ≈ 0.88–0.90 against unstable market-level ranks, series is used
+for **sampling strata, evaluation groups, model covariates, and clustering** —
+never as a licence for the model to win by memorising "series X is usually
+active." The target remains future price movement.
+
+**Clustering is strengthened.** §4 already clusters standard errors by market
+and block-bootstraps at ≥300 s. That survives and is **extended**: uncertainty
+is clustered at the **event/market** level, and the writeup reports the
+**realised** effective block count. The retired "≈12,000 blocks" figure may not
+be quoted.
+
+### §G. The six profile windows are DESIGN evidence, not confirmation data
+
+They have now been used to design the universe rule, the concurrency ceiling,
+the eligibility gate and the event-time conditioning. They are therefore
+**burned for confirmation** and may not serve as the M0/M1 evaluation set.
+
+```text
+PROD-ACTIVITY-PROFILE-001  ->  research design
+NEW PROSPECTIVE CAPTURE    ->  edge evaluation
+```
+
+§9's "nothing about times of day outside the six windows" is superseded: the
+prospective capture defines its own coverage, declared before it starts.
+
+### §H. Cross-SID joins are timestamp association, never causal ordering
+
+Order book (sid 1) and trade (sid 3) are **independently sequenced**. All six
+windows were fully contiguous on both, and there is still **no venue-guaranteed
+common order between them**.
+
+M1 may compute `TradeFlow(t−L, t]` from **receive timestamps**, described as
+**temporally associated cross-stream flow**. It may **not** claim that a given
+trade caused a given book update. Every feature window ends **at or before** the
+prediction timestamp `t`; no post-`t` trade may enter a `t`-prediction. §4's
+pre-declared trade lag, and the requirement to report M1 at that lag and at
+double it, are unchanged.
+
+### §I. Horizons stay exactly as frozen; the target may report itself unusable
+
+Horizons remain **h ∈ {1 s, 5 s, 30 s, 300 s}** with **30 s primary** and the §7
+Benjamini–Hochberg correction over all twelve cells. This set is **not**
+re-opened — changing it now, after profile data, is precisely the move this
+amendment exists to prevent.
+
+Added: the experiment must be able to emit **`TARGET_UNINFORMATIVE`** for a
+horizon whose realised mid-movement distribution is too degenerate to evaluate,
+declared from the prospective data **before** any M0/M1 fit. A horizon so
+labelled is reported as unevaluable, not silently dropped, and **the best-looking
+horizon may never be promoted to primary after the fact.**
+
+### §J. Unchanged
+
+§1 the question · §2 the prior (net edge ≤ 0) · §3 M0/M1 model structure and the
+12 state-only features · §5 both noise floors · §6 the economic gate and the
+unverified-fee rule · §7 FDR 10% over twelve cells · §8 the binding stopping
+rule · §9's execution and regime disclaimers.
+
+**§8 remains binding in full.** If M1 does not beat M0 out-of-sample at the
+primary horizon, order flow is declared non-additive and the lane stops. No
+Hawkes, no transformer, no additional features. Economics stay strictly
+downstream of `Loss(M1) < Loss(M0)`.
+
+**Status after this amendment: PREREGISTERED, NOT RUN. Prospective capture not
+started. M0/M1 not run.**

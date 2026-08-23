@@ -1,7 +1,21 @@
 # PROD-ACTIVITY-PROFILE-001 — preregistration
 
-**Status: PREREGISTERED, NOT RUN.** Written 2026-08-19 against the amended
-KALSHI-TAPE-MEASUREMENT-CONTRACT-001 (§16, L20–L22).
+**Status: COMPLETE AND FROZEN — 2026-08-22.** Written 2026-08-19 against the
+amended KALSHI-TAPE-MEASUREMENT-CONTRACT-001 (§16, L20–L22); all six windows
+captured 2026-08-20/21 and analysed 2026-08-22 under Amendment 3, with
+Amendment 4 governing the one right-censored window.
+
+**No further analysis may be added to this experiment** unless it corrects a
+demonstrated defect. Its result is the pre-alpha record that justifies
+`MARKET-MICROSTRUCTURE-EDGE-001` Amendment 2, and it must be preserved exactly
+as it stands. Results are in
+[`PROD-ACTIVITY-PROFILE-001-RUNLOG.md`](PROD-ACTIVITY-PROFILE-001-RUNLOG.md);
+the analysis tool is `scripts/kalshi_activity_profile_analyze.py`.
+
+Headline: capacity **STAYS FROZEN**, and **there is no stable high-activity
+market panel** — activity is event-time dependent, with series-level rank far
+more stable (ρ ≈ 0.88–0.90) than market-level rank (ρ 0.43 / 0.00 / **−0.65**
+within one day).
 
 Read-only observation. No capital, no orders, no portfolio channels, no venue
 writes except protocol-required subscription/control messages.
