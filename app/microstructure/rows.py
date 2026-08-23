@@ -178,6 +178,22 @@ def build_rows(*, env_dir: Path, panel_schedule: PanelSchedule, markets: dict,
             ask_u = book.best_yes_ask_units if state.publishable else None
             acc[tk].add_best(sample_ms, bid_u, ask_u)
 
+            # THE MID GRID IS OBSERVABILITY, NOT SELECTION.
+            # Recorded for every subscribed market with a publishable book,
+            # whether or not it is in the governing panel. Restricting it to
+            # panel members made a 300 s label depend on the market still
+            # being selected 300 s later -- and since rotation is also 300 s,
+            # label availability became correlated with panel persistence,
+            # which is correlated with sustained activity. That is a
+            # selection-dependent target, not a coverage inconvenience.
+            # A future mid is a price the venue published; whether we chose to
+            # emit a research row for that market at that instant has nothing
+            # to do with whether its price moved.
+            if bid_u is not None and ask_u is not None:
+                mid_obs = ((bid_u + ask_u) / 2) / F.PRICE_UNITS_PER_PROB
+                acc[tk].add_mid(sample_ms, mid_obs)
+                mid_grid[tk][round(sample_ms)] = mid_obs
+
             if gov is None:
                 skips[SKIP_BEFORE_FIRST_PANEL] = skips.get(SKIP_BEFORE_FIRST_PANEL, 0) + 1
                 continue
@@ -195,9 +211,6 @@ def build_rows(*, env_dir: Path, panel_schedule: PanelSchedule, markets: dict,
             meta = markets[tk]
             tte = (meta.occurrence_datetime.timestamp() * 1000 - sample_ms) / 1000.0
             m0 = F.compute_m0(view, seconds_to_close=tte)
-            acc[tk].add_mid(sample_ms, m0["mid"])
-            if m0["mid"] is not None:
-                mid_grid[tk][round(sample_ms)] = m0["mid"]
             m1 = F.compute_m1_flow(acc[tk], sample_ms, trade_lag_ms=trade_lag_ms)
 
             rows.append({

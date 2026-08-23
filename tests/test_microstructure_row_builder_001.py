@@ -463,3 +463,32 @@ def test_segment_order_is_by_opened_at_not_by_path_text(tmp_path):
         (d / "manifest.json").write_text(_json.dumps({"opened_at": opened}))
     got = [d.name for d in R.segment_dirs_in_order(env)]
     assert got == ["segment=s.0000", "segment=s.0000.r0001"]
+
+
+def test_mid_grid_is_observability_not_selection(tiny_tape):
+    """A label endpoint must not depend on the market still being selected.
+
+    Rotation and the 300 s horizon are the same length, so restricting the mid
+    grid to panel members made 300 s label availability correlate with panel
+    persistence -- which correlates with sustained activity. That is a
+    selection-dependent target.
+    """
+    env, markets, base = tiny_tape
+    # AAA is in the panel for the first tick only; BBB never is.
+    sched = R.PanelSchedule(ticks=[
+        (base + 3000, frozenset({"AAA"}), "tick0"),
+        (base + 7000, frozenset({"BBB"}), "tick1"),
+    ])
+    out = R.build_rows(env_dir=env, panel_schedule=sched, markets=markets,
+                       session_id="s", capture_commit="c",
+                       dataset_role=DatasetRole.VALIDATION,
+                       preregistration_version="Amendment 2")
+    aaa = [r for r in out["rows"] if r["ticker"] == "AAA"]
+    assert aaa, "AAA should have rows from tick0"
+    # AAA leaves the panel at tick1, but its 1 s labels must still resolve,
+    # because its price stayed observable the whole time.
+    late = [r for r in aaa if r["sample_time_ms"] >= base + 5000]
+    assert late, "expected AAA rows shortly before it leaves the panel"
+    assert any(r["labels"]["1"]["available"] for r in late), (
+        "a label failed because the market left the panel, not because the "
+        "price was unobservable")
