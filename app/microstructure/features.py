@@ -21,6 +21,23 @@ FIVE_CENTS_UNITS = 500                      # 0.05 probability
 #: Trailing windows for the flow block (fabric §4).
 FLOW_WINDOWS_S = (1, 5, 30)
 
+#: Sampling rate of the research grid. Volatility features are estimated from
+#: the mid series ON THIS GRID, so the grid bounds which windows can carry one.
+SAMPLING_HZ = 1
+
+#: A sample standard deviation needs at least two differences, so at least
+#: three samples: `window_seconds * SAMPLING_HZ >= 2` is the minimum for a
+#: window to admit ANY sample-stdev feature at all. At 1 Hz that removes the
+#: 1 s window: one midpoint sample, zero returns, sigma undefined.
+#: `realized_vol_1s` was therefore 100% missing at every sample in every
+#: session -- an impossible estimator under the sampling contract, not an
+#: empirical fact about markets. Removed with NO replacement (Amendment 3);
+#: introducing abs(return_1s) or an EWMA here would be a new feature added
+#: after the design was frozen.
+MIN_SAMPLES_FOR_STDEV = 2
+STDEV_WINDOWS_S = tuple(w for w in FLOW_WINDOWS_S
+                        if w * SAMPLING_HZ >= MIN_SAMPLES_FOR_STDEV)
+
 #: The pre-declared trade safety margin. §16.4 measured a 580 ms max
 #: cross-sid interarrival on the P4 tape; 1,000 ms respects that scale with
 #: margin. The preregistration requires M1 be reported at this lag AND at
@@ -43,8 +60,10 @@ M0_CONTROLS = ("seconds_to_close", "book_age_ms")
 
 M1_FLOW_BASE = ("delta_count", "signed_depth_flow", "quote_reversal",
                 "realized_vol", "trade_count", "signed_trade_flow")
-M1_FLOW_FEATURES = tuple(f"{n}_{w}s" for w in FLOW_WINDOWS_S
-                         for n in M1_FLOW_BASE)
+#: `realized_vol` exists only on windows that can actually carry a stdev.
+M1_FLOW_FEATURES = tuple(
+    f"{n}_{w}s" for w in FLOW_WINDOWS_S for n in M1_FLOW_BASE
+    if not (n == "realized_vol" and w not in STDEV_WINDOWS_S))
 M1_FEATURES = M0_FEATURES + M1_FLOW_FEATURES
 
 #: A value the venue did not provide. NEVER collapses to 0.0 -- "no ask side"
@@ -179,10 +198,11 @@ def compute_m1_flow(acc: FlowAccumulator, t_ms: float, *,
         bests = [b for b in acc.best_prices if lo < b[0] <= t_ms]
         out[f"quote_reversal_{w}s"] = _quote_reversals(bests)
 
-        mids = [m for m in acc.mids if lo < m[0] <= t_ms and m[1] is not None]
-        diffs = [b - a for (_, a), (_, b) in zip(mids, mids[1:])]
-        out[f"realized_vol_{w}s"] = (statistics.stdev(diffs)
-                                     if len(diffs) >= 2 else NOT_PROVIDED)
+        if w in STDEV_WINDOWS_S:
+            mids = [m for m in acc.mids if lo < m[0] <= t_ms and m[1] is not None]
+            diffs = [b - a for (_, a), (_, b) in zip(mids, mids[1:])]
+            out[f"realized_vol_{w}s"] = (statistics.stdev(diffs)
+                                         if len(diffs) >= 2 else NOT_PROVIDED)
 
         # LAGGED trade window -- ends before t, never at it.
         t_trade = t_ms - trade_lag_ms

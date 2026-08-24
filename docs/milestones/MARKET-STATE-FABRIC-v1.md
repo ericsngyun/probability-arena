@@ -120,3 +120,51 @@ cost floor beside it. The floor is the **half-spread plus fees** at the row's ow
 state — which the fabric already carries (`spread`, `mid`), so there is no excuse
 for reporting a naked effect size. A 0.4-cent predicted move on a 2-cent spread
 is not an edge; it is a measurement of the spread.
+
+---
+
+## Amendment 3 — 2026-08-23: `realized_vol_1s` removed, with no replacement
+
+Found by `MARKET-MICROSTRUCTURE-ROW-BUILDER-001` running against the VALIDATION
+tape, **before any confirmation capture and before any M0/M1 outcome existed.**
+
+§4 defines `realized_vol_Δ` as the **stdev of 1 s mid changes** over window Δ,
+with Δ ∈ {1 s, 5 s, 30 s}. §2 fixes sampling on a **1 Hz** grid. Those two
+clauses are incompatible at Δ = 1 s:
+
+> 1 Hz sampling + a 1 s window ⇒ **1** midpoint sample ⇒ **0** returns ⇒ σ undefined
+
+Measured completeness on the validation tape was **0.0000** — the column was
+never computable, at any sample, in any session.
+
+**This is not an empirical finding about markets. It is an impossible estimator
+under the sampling contract.** And it is not cosmetic: a column that is 100%
+missing destroys complete-case estimation entirely, because a fit that drops
+rows with any missing feature drops *every* row, and M1 could not have been
+estimated at all.
+
+**`realized_vol_1s` is removed. No replacement feature is introduced.**
+`realized_vol_5s` and `realized_vol_30s` are unchanged. Substituting
+`abs(return_1s)`, an EWMA, or any other 1 s volatility proxy would be adding a
+**new feature after the design was frozen**, which is precisely what this
+amendment exists to avoid. The 1 s window keeps its other five flow columns.
+
+M1's flow block therefore has **17** columns, not 18. `M0 ⊂ M1` still holds and
+the difference is still exactly the preregistered flow set.
+
+**Schema versions bumped** to `microstructure-row-v2` / `microstructure-label-v2`,
+so confirmation rows can never be silently pooled with validation rows built
+under the old definition.
+
+### The standing invariant this becomes
+
+A one-off fix would leave the same trap for the next window or sampling-rate
+change, so the rule is now permanent and tested:
+
+> For any sample-standard-deviation feature:
+> **`window_seconds × sampling_hz ≥ 2`**
+
+(two differences, hence three samples). `STDEV_WINDOWS_S` is derived from that
+inequality rather than hand-listed, and a test asserts both that every declared
+stdev column satisfies it and that **no declared flow column can be
+structurally always-missing** — which is the general form of the defect.

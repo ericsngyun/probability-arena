@@ -33,8 +33,8 @@ from app.realtime.book import SubscriptionRouter, SubscriptionState
 SAMPLE_INTERVAL_S = 1
 ORDERBOOK_TYPES = ("orderbook_delta", "orderbook_snapshot")
 
-ROW_SCHEMA_VERSION = "microstructure-row-v1"
-LABEL_SCHEMA_VERSION = "microstructure-label-v1"
+ROW_SCHEMA_VERSION = "microstructure-row-v2"   # v2: realized_vol_1s removed (Amendment 3)
+LABEL_SCHEMA_VERSION = "microstructure-label-v2"
 
 SKIP_NOT_IN_PANEL = "not_in_governing_panel"
 SKIP_BOOK_UNPUBLISHABLE = "book_not_publishable"

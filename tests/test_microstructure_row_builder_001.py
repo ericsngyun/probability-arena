@@ -124,7 +124,7 @@ def test_empty_book_reports_absence_rather_than_zero_depth():
 def test_realized_vol_is_absent_not_zero_when_too_few_points():
     acc = F.FlowAccumulator()
     acc.add_mid(T0_MS - 500, 0.42)
-    assert F.compute_m1_flow(acc, T0_MS)["realized_vol_1s"] is None
+    assert F.compute_m1_flow(acc, T0_MS)["realized_vol_5s"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -134,7 +134,59 @@ def test_realized_vol_is_absent_not_zero_when_too_few_points():
 def test_m0_is_a_strict_subset_of_m1_and_the_difference_is_the_flow_set():
     assert F.m0_is_subset_of_m1()
     assert set(F.M1_FEATURES) - set(F.M0_FEATURES) == set(F.M1_FLOW_FEATURES)
-    assert len(F.M1_FLOW_FEATURES) == len(F.FLOW_WINDOWS_S) * len(F.M1_FLOW_BASE)
+    # every base name on every window, MINUS the stdev features whose window
+    # cannot carry one (Amendment 3)
+    expected = (len(F.FLOW_WINDOWS_S) * len(F.M1_FLOW_BASE)
+                - (len(F.FLOW_WINDOWS_S) - len(F.STDEV_WINDOWS_S)))
+    assert len(F.M1_FLOW_FEATURES) == expected == 17
+
+
+# ---------------------------------------------------------------------------
+# Amendment 3 — a stdev feature may not exist on a window that cannot carry one
+# ---------------------------------------------------------------------------
+
+def test_stdev_features_require_at_least_two_returns_in_their_window():
+    """`window_seconds * sampling_hz >= 2`, as a standing invariant.
+
+    A sample standard deviation needs two differences, so three samples. This
+    turns the `realized_vol_1s` defect -- 100% missing at every sample in every
+    session, because a 1 s window on a 1 Hz grid holds one midpoint -- from a
+    one-off bug into a feature-definition rule that any future window or
+    sampling-rate change must satisfy.
+    """
+    for w in F.STDEV_WINDOWS_S:
+        assert w * F.SAMPLING_HZ >= F.MIN_SAMPLES_FOR_STDEV
+    for w in F.FLOW_WINDOWS_S:
+        admissible = w * F.SAMPLING_HZ >= F.MIN_SAMPLES_FOR_STDEV
+        assert (f"realized_vol_{w}s" in F.M1_FLOW_FEATURES) is admissible
+
+
+def test_realized_vol_1s_is_gone_and_has_no_replacement():
+    assert "realized_vol_1s" not in F.M1_FLOW_FEATURES
+    assert "realized_vol_5s" in F.M1_FLOW_FEATURES
+    assert "realized_vol_30s" in F.M1_FLOW_FEATURES
+    # no substitute snuck in for the 1 s window
+    one_s = {f for f in F.M1_FLOW_FEATURES if f.endswith("_1s")}
+    assert one_s == {"delta_count_1s", "signed_depth_flow_1s",
+                     "quote_reversal_1s", "trade_count_1s",
+                     "signed_trade_flow_1s"}
+    assert not any(k in f for f in one_s
+                   for k in ("vol", "sigma", "stdev", "ewma", "abs"))
+
+
+def test_no_feature_column_can_be_structurally_always_missing():
+    """Every declared flow column must be computable for SOME input."""
+    acc = F.FlowAccumulator()
+    for i in range(120):
+        ms = T0_MS - 30_000 + i * 250
+        acc.add_delta(ms, 100, "yes", 4200)
+        acc.add_mid(ms, 0.42 + i * 0.0001)
+        acc.add_best(ms, 4200 + (i % 3), 4300)
+        acc.add_trade(ms, 1.0)
+    out = F.compute_m1_flow(acc, T0_MS)
+    assert set(out) == set(F.M1_FLOW_FEATURES)
+    missing = [k for k, v in out.items() if v is None]
+    assert not missing, f"columns that can never be computed: {missing}"
 
 
 def test_flow_set_is_exactly_the_preregistered_names():
