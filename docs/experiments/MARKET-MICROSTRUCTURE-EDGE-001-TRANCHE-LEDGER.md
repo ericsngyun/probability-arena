@@ -25,7 +25,7 @@ already-preregistered coverage constraints** — never to improve a result.
 | order | primary bin | sessions | status |
 |---:|---|---:|---|
 | 1 | `late_resolution` | 4 | **1 of 4 complete** |
-| 2 | `live_event` | 4 | not started |
+| 2 | `live_event` | 4 | **1 armed** |
 | 3 | `near_event` | 4 | not started |
 | 4 | `approaching` | 4 | not started |
 | 5 | `far` | 4 | not started |
@@ -55,6 +55,7 @@ fill out the 4/4/4/4/4 allocation.
 | # | label | primary bin | start (UTC) | length | subscribed | status |
 |---:|---|---|---|---:|---:|---|
 | 01 | `MMEDGE-S01-late_resolution-20260824` | `late_resolution` | 2026-08-24T00:41:58Z | 10,800 s | 24 | **CLEAN — counts** |
+| 02 | `MMEDGE-S02-live_event-20260824` | `live_event` | 2026-08-24T16:40:00Z | 10,800 s | 24 | **ARMED** |
 
 ### Session 01 — pre-capture record
 
@@ -218,3 +219,54 @@ correction.
 by then the only honest options are to skip the stratified view entirely or to
 start a separate preregistration under a new name. Recorded here so the choice
 is made with a clear head and no results in view.
+
+### Session 02 — scheduling record, frozen before capture
+
+Chosen by `kalshi_microstructure_schedule_anchor.py`, not by hand.
+
+| field | value |
+|---|---|
+| `scheduled_target_bin` | `live_event` |
+| `anchor_occurrence_datetime` | `2026-08-24T17:00:00Z` |
+| `scheduled_session_start` | `2026-08-24T16:40:00Z` (occurrence − 20 min) |
+| `session_seconds` | 10,800 |
+| `selection_rule_version` | `capture-plan-addendum-1+2 / edge-amendment-4` |
+| `candidate_count_at_freeze` | 24 (all 24 on the anchor slate) |
+| `pool_size_at_freeze` | 509 markets, 23 distinct occurrence times |
+| `feasible_anchors` | 23 — the earliest was taken |
+| `projected_covering_intervals` | 3 (the `live_event` maximum) |
+| `replacement_reason` | none |
+| `frozen_at_utc` | `2026-08-24T15:55:46Z` |
+| scheduler commit | `73a7017` |
+
+The winner is `KXATPMATCH` — 23 anchors were feasible and the rule took the
+earliest, with no reference to activity, price or any S01-derived information.
+Launch is armed by a timer that waits for the frozen start and then runs the
+session unchanged, so the start time cannot drift by however long a human takes
+to notice the clock.
+
+### ⚠ Series concentration is accumulating on the hard bins
+
+| session | bin | series |
+|---|---|---|
+| S01 | `late_resolution` | `KXWTAMATCH` ×16, `KXATPMATCH` ×8 — tennis |
+| S02 | `live_event` | `KXATPMATCH` ×24 — tennis |
+
+Both hard-bin sessions are tennis, and that is not coincidence: the hard bins
+need anchors whose *timing* qualifies, and tennis has many more distinct
+occurrence times per day than baseball. The deterministic
+earliest-feasible-anchor rule will therefore keep selecting tennis for
+`live_event` and `late_resolution`.
+
+This pulls against the frozen spread constraints — **≥6 of 8 series**, **no
+series more than 4 primary sessions**, and **each bin across more than one
+series where feasible**. If S03 and S04 also land on tennis, the tennis budget
+is spent on two strata and the wide bins must carry all remaining series
+diversity.
+
+**Nothing is changed on this basis now.** Adjusting the scheduler to prefer a
+different series would make it activity-adjacent and defeat the AST guard.
+Recorded so the tension is visible while it is still cheap to address inside
+the frozen rules — e.g. by taking the earliest feasible anchor *of the target
+bin* on a day whose slate is not tennis-dominated, which is a scheduling input,
+not a selection signal.
