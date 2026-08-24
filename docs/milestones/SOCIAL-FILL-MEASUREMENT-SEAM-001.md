@@ -439,3 +439,67 @@ independent).
 * No alpha model, signal, scoring, trading or capital. Asserted mechanically by
   `TestSeamContainsNoSignal`.
 * Branch `SOCIAL-FILL-MEASUREMENT-SEAM-001`, not merged.
+
+---
+
+## 12. Falsifiers 2 and 3, exercised on Linux — 2026-08-24
+
+§9 recorded that the boot-id path was **entirely unexercised**: the branch was
+Mac-only, macOS returns `NOT_AVAILABLE_ON_PLATFORM`, and every boot-id test
+used constructed values. EVO is Linux, so both falsifiers could finally be run
+against a real kernel.
+
+### Falsifier 2 — the boot-id path itself: **PARTIALLY CLOSED**
+
+```
+platform            linux
+/proc/sys/kernel/random/boot_id   exists
+status              BootIdStatus.PRESENT
+is_known            True
+stable across reads True
+```
+
+**Established:** on Linux the path returns a real, stable, **known** boot id
+rather than the macOS refusal. The comparability key `(host_id, host_boot_id)`
+is a live quantity on the deployment host, not only a constructed one.
+
+**Not established, and deliberately not attempted:** that the boot id *changes*
+across a reboot. That requires rebooting a shared production host, which is not
+something to do for a test. Falsifier 2 therefore stays **open** on its
+reboot half. Host uptime at the time of the check was since 2026-05-28, so no
+natural reboot was available to observe.
+
+### Falsifier 3 — monotonic vs bounded wall, two processes, one host: **EXERCISED, CONSISTENT**
+
+Two genuinely separate OS processes, each minting its own `process_epoch_id`,
+2 s apart:
+
+| | |
+|---|---|
+| different `process_epoch_id` | yes |
+| same `host_id`, same `host_boot_id` | yes |
+| `interval()` basis | **`MONOTONIC_SAME_BOOT`** — rule 1 fired across processes |
+| monotonic delta (by hand) | 2,038,408.3 µs |
+| wall delta (by hand) | 2,038,408 µs |
+| **disagreement** | **0.3 µs over 2.04 s** |
+
+No disagreement beyond the bound. Rule 1's cross-process claim holds on this
+platform for this configuration.
+
+**A caution about how this was verified.** The first run reported *exactly
+0 µs* disagreement, which is not what two independent clocks should produce —
+it is what one clock reported twice would produce. That was worth suspecting:
+if `MONOTONIC_SAME_BOOT` silently returned the *wall* delta, the entire boot-id
+comparability machinery would be decorative and would fail precisely when it
+matters, across an NTP step. Re-checked by computing both deltas by hand from
+the raw stamp fields: the monotonic clock is genuinely used, the two clocks
+differ by 0.3 µs, and the earlier zero was **microsecond truncation** of a
+sub-microsecond difference. The suspicious reading was arithmetic, not a defect
+— but a `0` that agrees too well is a thing to check, not to accept.
+
+### What this does not touch
+
+The larger blocker is unchanged: **`CANONICALLY_VERIFIED` remains unreachable**,
+so the primary alpha cohort is still empty by construction. Nothing here wires
+a chain-existence stage or a corroboration stage, and neither is authorized.
+This closes measurement-contract questions about the clock, not the mint.
