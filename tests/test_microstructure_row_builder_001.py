@@ -573,3 +573,85 @@ def test_coverage_requires_the_whole_300s_interval_inside_the_bin():
     assert V.interval_wholly_within(899, PP.TTE_LIVE_EVENT) is True
     assert V.interval_wholly_within(300, PP.TTE_LIVE_EVENT) is True
     assert V.interval_wholly_within(299, PP.TTE_LIVE_EVENT) is False
+
+
+# ---------------------------------------------------------------------------
+# The deterministic anchor scheduler
+# ---------------------------------------------------------------------------
+
+def _sched():
+    import importlib.util, pathlib
+    spec = importlib.util.spec_from_file_location(
+        "sched", pathlib.Path("scripts/kalshi_microstructure_schedule_anchor.py"))
+    m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+    return m
+
+
+def test_covering_intervals_counts_only_the_TARGET_bin():
+    """Both endpoints must be in the target bin, not merely in the same bin.
+
+    Testing `tte_bin(a) == tte_bin(b)` counts intervals lying wholly inside
+    some OTHER stratum, which made a 900 s-wide `live_event` target report 34
+    covering intervals for a 3 h session.
+    """
+    S = _sched()
+    from app.microstructure import panel as PP
+    ev = datetime(2026, 8, 24, 22, 40, tzinfo=timezone.utc)
+
+    start = S.required_start(ev, PP.TTE_LIVE_EVENT)
+    assert (ev - start).total_seconds() == 1200, "start is event - 20 min"
+    # live_event spans 900 s -> exactly three complete 300 s intervals
+    assert S.covering_intervals(ev, start, 10_800, PP.TTE_LIVE_EVENT) == 3
+    # and the same session sits mostly in late_resolution, which must NOT
+    # be credited to the live_event target
+    assert S.covering_intervals(ev, start, 10_800, PP.TTE_LATE_RESOLUTION) > 3
+
+
+def test_every_bin_has_a_feasible_anchor_for_a_three_hour_session():
+    S = _sched()
+    from app.microstructure import panel as PP
+    ev = datetime(2026, 8, 24, 22, 40, tzinfo=timezone.utc)
+    for b in (PP.TTE_FAR, PP.TTE_APPROACHING, PP.TTE_NEAR_EVENT,
+              PP.TTE_LIVE_EVENT, PP.TTE_LATE_RESOLUTION):
+        start = S.required_start(ev, b)
+        assert S.covering_intervals(ev, start, 10_800, b) > 0, f"{b} infeasible"
+
+
+def test_far_anchor_keeps_the_whole_session_above_the_edge():
+    """Anchoring `far` just above 21,600 descends out of the stratum at once."""
+    S = _sched()
+    from app.microstructure import panel as PP
+    ev = datetime(2026, 8, 24, 22, 40, tzinfo=timezone.utc)
+    start = S.required_start(ev, PP.TTE_FAR)
+    assert S.covering_intervals(ev, start, 10_800, PP.TTE_FAR) >= 30
+
+
+def test_scheduler_reads_no_activity_or_price_signal():
+    """Scheduling must be blind to everything but timing.
+
+    Checked over identifiers and NON-docstring literals. Two false positives
+    make the naive form useless: the module's own docstring says "price" and
+    "volume" while asserting it reads neither, and `timedelta` contains
+    "delta". A guard that cannot tell an assertion from a violation is not a
+    guard.
+    """
+    import ast, inspect
+    tree = ast.parse(inspect.getsource(_sched()))
+    docstrings = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.FunctionDef, ast.ClassDef)):
+            d = ast.get_docstring(node, clean=False)
+            if d:
+                docstrings.add(d)
+    used = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
+    used |= {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
+    used |= {n.value for n in ast.walk(tree)
+             if isinstance(n, ast.Constant) and isinstance(n.value, str)
+             and n.value not in docstrings}
+    used = {u.lower() for u in used} - {"timedelta"}
+    for banned in ("volume", "price", "spread", "depth", "liquidity",
+                   "open_interest", "ticker_frames", "imbalance", "microprice"):
+        hits = {u for u in used if banned in u}
+        assert not hits, f"scheduler references {hits}"
+    # the only venue fields it may key on are timing and identity
+    assert "event_time" in used and "occurrence_datetime" in used

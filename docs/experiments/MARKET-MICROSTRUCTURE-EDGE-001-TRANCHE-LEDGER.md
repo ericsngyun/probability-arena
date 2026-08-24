@@ -35,6 +35,23 @@ interval lies wholly within b**.
 
 ## Sessions
 
+### Scheduling record (per session, frozen BEFORE capture)
+
+`scheduled_target_bin` · `anchor_event_id` · `anchor_occurrence_datetime` ·
+`scheduled_session_start` · `selection_rule_version` ·
+`candidate_count_at_freeze` · `replacement_reason`
+
+Timing and identity only. No activity outcomes, prices, returns or feature
+statistics — enforced by an AST guard over
+`scripts/kalshi_microstructure_schedule_anchor.py`, which fails if the
+scheduler so much as references a volume or price field.
+
+### Hard-bin ordering
+
+`S02 live_event → S03 late_resolution → S04 live_event`, until both difficult
+strata hold ≥3 qualifying sessions. Then `near_event`, `approaching` and `far`
+fill out the 4/4/4/4/4 allocation.
+
 | # | label | primary bin | start (UTC) | length | subscribed | status |
 |---:|---|---|---|---:|---:|---|
 | 01 | `MMEDGE-S01-late_resolution-20260824` | `late_resolution` | 2026-08-24T00:41:58Z | 10,800 s | 24 | **CLEAN — counts** |
@@ -109,3 +126,39 @@ preserve. Under the old `TTE > 600 s` gate this session was impossible.
 **Power, measured rather than projected.** 377 market-blocks and 21 clusters
 from one session, against projections of 420 and a conservative 12. At this
 rate 20 sessions yield ≈7,540 blocks (floor 4,000) and well past 150 clusters.
+
+### S02 — deferred to a fuller slate, deliberately
+
+Not launched on the night of 2026-08-23. The frozen design schedules around
+event timing, so there is no reason to spend a `live_event` session on a
+thinning late-Sunday card. **S01 already established that the hard strata are
+available**, so nothing is at risk in waiting: all 24 post-event markets
+cleared the activity floor, and the only exclusions were legitimate top-K
+competition.
+
+The anchor is chosen by `kalshi_microstructure_schedule_anchor.py`, not by
+hand. It enumerates open markets in the eligible series, computes the required
+start per bin, and takes the **earliest feasible occurrence time** — it cannot
+prefer a busier-looking game because it never sees activity.
+
+### Anchor arithmetic, per bin (3 h session)
+
+| target bin | session start | complete intervals inside the bin |
+|---|---|---:|
+| `far` | event − 545 min | 35 |
+| `approaching` | event − 365 min | 35 |
+| `near_event` | event − 125 min | 20 |
+| **`live_event`** | **event − 20 min** | **3** |
+| `late_resolution` | event + 5 min | 35 |
+
+`event − 20 min` puts the first post-warmup tick at TTE ≈ 900 s, the top of the
+stratum.
+
+**`live_event` is structurally the thinnest stratum**, and always will be: the
+bin is 900 s wide, so a session can contribute at most three complete 300 s
+intervals no matter how long it runs. Four sessions therefore yield ~12
+covering intervals against ~140 for each of the wide bins. That is a
+consequence of the frozen bin boundaries, not a defect, and it is **not** a
+reason to widen them after the fact — but per-bin block counts will be sharply
+unbalanced and the analysis must not read that imbalance as a property of the
+markets.
