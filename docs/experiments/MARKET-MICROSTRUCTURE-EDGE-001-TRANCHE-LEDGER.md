@@ -25,7 +25,7 @@ already-preregistered coverage constraints** — never to improve a result.
 | order | primary bin | sessions | status |
 |---:|---|---:|---|
 | 1 | `late_resolution` | 4 | **1 of 4 complete** |
-| 2 | `live_event` | 4 | **1 armed** |
+| 2 | `live_event` | 4 | **1 of 4 complete** |
 | 3 | `near_event` | 4 | not started |
 | 4 | `approaching` | 4 | not started |
 | 5 | `far` | 4 | not started |
@@ -55,7 +55,7 @@ fill out the 4/4/4/4/4 allocation.
 | # | label | primary bin | start (UTC) | length | subscribed | status |
 |---:|---|---|---|---:|---:|---|
 | 01 | `MMEDGE-S01-late_resolution-20260824` | `late_resolution` | 2026-08-24T00:41:58Z | 10,800 s | 24 | **CLEAN — counts** |
-| 02 | `MMEDGE-S02-live_event-20260824` | `live_event` | 2026-08-24T16:40:00Z | 10,800 s | 24 | **ARMED** |
+| 02 | `MMEDGE-S02-live_event-20260824` | `live_event` | 2026-08-24T16:40:00Z | 10,800 s | 24 | **CLEAN — counts** |
 
 ### Session 01 — pre-capture record
 
@@ -270,3 +270,70 @@ Recorded so the tension is visible while it is still cheap to address inside
 the frozen rules — e.g. by taking the earliest feasible anchor *of the target
 bin* on a day whose slate is not tennis-dominated, which is a scheduling input,
 not a selection signal.
+
+### Session 02 — verdict: **OPERATIONALLY CLEAN**, counts toward `live_event`
+
+**L1 capture validity — PASS.** Terminal `capped_time`.
+`events_received == events_archived == 1,203,459`. `frames_malformed`,
+`events_rejected`, `rotation_failures`, `sequence_faults`, `reconnects`,
+`recoveries_requested` all **0**. 94 segments committed. `peak_1s_sliding`
+**1,328** against the 3,500 stop.
+
+**L2 sampling validity — PASS.** First tick exactly at open+300 s; no warmup
+tick emitted a panel; tick gaps exactly `[300.0]`; max panel **12**, K
+respected; reason vocabulary closed, no unexpected reasons; no ticker or volume
+in eligibility. The final two ticks returned empty panels, correctly — the
+Amendment 4 session-remaining gate again.
+
+**L3 dataset validity — PASS.** `microstructure-row-v2` / `label-v2`; 13 M0 and
+17 M1 columns; minimum completeness **0.996 / 0.996**; **no always-missing
+columns**; `dataset_role=CONFIRMATION`; **118,800 rows**; 0 dispatch errors.
+
+Label coverage **0.9960 / 0.9958 / 0.9951 / 0.9909** at 1/5/30/300 s — the 300 s
+horizon at 99.1%, better than S01's 96.7%.
+
+**L4 coverage outcome — earned under the frozen rule.**
+
+| | |
+|---|---|
+| covering intervals wholly in `live_event` | **24** |
+| counts toward target bin | **yes** |
+| market-blocks accumulated | **396** |
+| market/session clusters | **21** |
+| markets ever eligible / selected | 23 / 21 of 24 |
+| bins touched | `live_event`, `late_resolution` |
+| no-row reasons | outranked ×2, **naturally closed/resolved ×1** |
+
+The session earned `live_event` coverage on **24** covering intervals. The
+question was never whether 396 blocks "look like enough" — it was whether a
+complete 300 s post-warmup interval fell wholly inside the stratum, and 24 did.
+
+**The closed-vs-quiet distinction produced its first real answer.**
+`KXATPMATCH-26AUG24COPROD-COP` was **naturally closed or resolved mid-session**,
+not quiet — a fact wire data alone cannot establish, and exactly why that field
+exists. Zero markets stayed open and failed activity eligibility.
+
+### Tranche ledger after S02
+
+| bin | target | complete | remaining |
+|---|---:|---:|---:|
+| `late_resolution` | 4 | 1 | 3 |
+| `live_event` | 4 | 1 | 3 |
+| `near_event` | 4 | 0 | 4 |
+| `approaching` | 4 | 0 | 4 |
+| `far` | 4 | 0 | 4 |
+
+| quantity | accumulated | floor | status |
+|---|---:|---:|---|
+| market-blocks | **773** (377 + 396) | 4,000 | 19% after 2 of 20 |
+| market/session clusters | **42** (21 + 21) | 150 | 28% after 2 of 20 |
+
+| series | primary sessions used | budget (≤4) |
+|---|---:|---:|
+| `KXWTAMATCH` | 1 (S01) | 3 remaining |
+| `KXATPMATCH` | 1 (S02) | 3 remaining |
+| other 6 series | 0 | — |
+
+**Series represented: 2 of 8** (floor ≥6). **Weekend sessions: 0 of ≥4** —
+S01 ran Sunday 00:41Z, which is Saturday evening ET, and S02 ran Monday. Both
+strata so far are tennis, as flagged before S02.
