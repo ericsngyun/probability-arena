@@ -337,3 +337,73 @@ exists. Zero markets stayed open and failed activity eligibility.
 **Series represented: 2 of 8** (floor ≥6). **Weekend sessions: 0 of ≥4** —
 S01 ran Sunday 00:41Z, which is Saturday evening ET, and S02 ran Monday. Both
 strata so far are tennis, as flagged before S02.
+
+---
+
+## Session 03 — scheduling decision (coverage layer → anchor layer)
+
+**Not launched. Decision produced and frozen; start is 4.25 h out.**
+
+### Coverage layer — which obligation, which slate
+
+| | |
+|---|---|
+| sessions counted | 2 |
+| bin remaining | `late_resolution` 3 · `live_event` 3 · `near_event` 4 · `approaching` 4 · `far` 4 |
+| series used | `KXWTAMATCH` 1, `KXATPMATCH` 1 |
+| weekend | 1 done, **3 still required** |
+| **next obligation** | **`late_resolution`** (hard bins first) |
+
+Feasible slates, by timing alone:
+
+| day (ET) | series with a feasible `late_resolution` anchor |
+|---|---|
+| 2026-08-24 | ATP, MLBGAME, MLBHR, MLBTOTAL, WNBAGAME, WNBATOTAL |
+| 2026-08-25 | + WTA |
+| 2026-08-26 | ATP, MLBGAME, MLBTOTAL, WNBAGAME, WNBATOTAL, WTA |
+| 2026-08-27 | MLBGAME, NFLGAME, WNBAGAME |
+| 2026-08-28/29 | NFLGAME |
+
+**Selected: `2026-08-24`, preferred series `KXMLBGAME`.**
+Reason: *"KXMLBGAME is not yet represented (2/6); earliest qualifying date, ties
+broken by day then series."*
+
+The scheduler reached baseball **on its own, from the diversity obligation** —
+not because anyone judged baseball more interesting. That is precisely the
+degree of freedom this layer exists to remove.
+
+### Anchor layer — which occurrence on that slate
+
+| field | value |
+|---|---|
+| `anchor_occurrence_datetime` | `2026-08-25T01:40:00Z` |
+| `scheduled_session_start` | `2026-08-25T01:45:00Z` (occurrence + 5 min) |
+| `series_restriction` | `KXMLBGAME` (supplied by the coverage layer) |
+| candidates at freeze | **8** (4 on the anchor slate) |
+| feasible anchors considered | 3, earliest taken |
+| projected covering intervals | **35** |
+
+### ⚠ Diversity costs blocks, and that is a real trade
+
+Restricting to `KXMLBGAME` yields **8 candidates**, not the 24 ceiling — that
+series simply has fewer markets per day than tennis. With K = 12, the panel is
+then bounded by **availability, not by K**: at most 8 markets, so roughly
+8 × 35 ≈ **280 market-blocks** against S02's 396.
+
+Nothing is changed on this basis. The coverage floors (`≥6 of 8 series`) and
+the power floors (4,000 blocks, 150 clusters) are both frozen, and satisfying
+one costs a little of the other. Recorded so that a later shortfall in blocks
+is read as **the price of the diversity obligation**, not as markets being
+thin — and so nobody is tempted to widen the series restriction after seeing
+block counts.
+
+### Integration gap found and closed
+
+The coverage layer selected a date *and* a preferred series, but the anchor
+layer took the earliest feasible occurrence **across the whole pool** regardless
+of series. Diversity would never have materialised — coverage would keep asking
+for baseball and the anchor would keep returning whatever started soonest. The
+anchor scheduler now accepts a coverage-supplied series restriction. Series
+membership is a design quantity like the target bin and the calendar, not an
+activity signal, and the module still cannot see price, volume or wire activity
+for the series it is handed.
