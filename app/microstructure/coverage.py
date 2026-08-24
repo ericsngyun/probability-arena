@@ -44,17 +44,37 @@ ELIGIBLE_SERIES = ("KXMLBGAME", "KXMLBTOTAL", "KXMLBHR", "KXATPMATCH",
 MAX_SESSIONS_PER_SERIES = 4
 MIN_SERIES_REPRESENTED = 6
 MIN_WEEKEND_SESSIONS = 4
-TOTAL_SESSIONS = 20
+#: The PLANNED tranche. Not a cap: a coverage deficit is discharged by
+#: appending replacement sessions (S21+), never by stealing quota from another
+#: bin, widening a TTE definition, or retargeting a session after the fact.
+PLANNED_SESSIONS = 20
+TOTAL_SESSIONS = PLANNED_SESSIONS
 
 
 @dataclass(frozen=True)
 class SessionRecord:
-    """What the ledger knows about a completed session. Coverage facts only."""
+    """What the ledger knows about a completed session. Coverage facts only.
+
+    Two independent facts, deliberately not merged:
+
+    * ``operationally_clean`` -- L1-L3 passed, so the rows belong in the corpus.
+    * ``counted`` -- L4 earned the target bin, so the obligation is discharged.
+
+    A session can be the first without the second. It stays in the corpus, is
+    NOT relabelled to whichever bin it happened to touch, and leaves its
+    obligation outstanding. Merging the two would force a choice between
+    discarding good rows and faking coverage.
+    """
     label: str
     target_bin: str
     series: str
     start_utc: str
     counted: bool
+    operationally_clean: bool = True
+
+    @property
+    def in_corpus(self) -> bool:
+        return self.operationally_clean
 
     @property
     def is_weekend_et(self) -> bool:
@@ -100,6 +120,9 @@ class CoverageState:
 
 
 def state_from_ledger(records: list[SessionRecord]) -> CoverageState:
+    # An obligation is discharged only by a session that EARNED its bin. A
+    # clean session that missed its bin still consumes a series budget slot --
+    # it really did subscribe to those markets -- but leaves the bin owing.
     counted = [r for r in records if r.counted]
     bins: dict = {}
     series: dict = {}
@@ -237,3 +260,64 @@ def feasibility_report(state: CoverageState) -> dict:
         "weekend_still_required": state.weekend_remaining(),
         "weekend_quota_satisfiable": state.weekend_remaining() <= left,
     }
+
+
+# ---------------------------------------------------------------------------
+# Coverage deficit and replacement sessions (frozen 2026-08-24, before any
+# target-bin failure had occurred)
+# ---------------------------------------------------------------------------
+
+def coverage_deficit(records: list[SessionRecord]) -> dict:
+    """Which obligations are outstanding, and what it takes to discharge them.
+
+    The frozen contingency rule, stated once:
+
+    * a session that is operationally valid but **fails its target-bin
+      coverage stays in the corpus** -- its rows are good rows;
+    * it is **never relabelled** to another bin, however many intervals it
+      happened to land there;
+    * its obligation remains outstanding and is discharged by a
+      **deterministic replacement session for that same bin**, appended after
+      the planned tranche as S21+;
+    * quota is **never stolen** from another bin, no TTE definition is
+      widened, and no completed session is retroactively retargeted.
+
+    "20 sessions" therefore remains the planned tranche while the experiment
+    may require more sessions purely to satisfy already-frozen coverage floors.
+    No statistical hypothesis changes: the cells, horizons, family and verdicts
+    are untouched.
+    """
+    state = state_from_ledger(records)
+    clean = [r for r in records if r.in_corpus]
+    missed = [r for r in records if r.in_corpus and not r.counted]
+
+    remaining = state.bin_remaining()
+    outstanding = {b: n for b, n in remaining.items() if n > 0}
+    planned_left = max(0, PLANNED_SESSIONS - len(clean))
+    needed = sum(outstanding.values())
+
+    return {
+        "sessions_in_corpus": len(clean),
+        "sessions_discharging_a_bin": state.sessions_completed,
+        "sessions_clean_but_bin_missed": [r.label for r in missed],
+        "bin_obligations_outstanding": outstanding,
+        "obligations_total": needed,
+        "planned_sessions_remaining": planned_left,
+        # Replacements are the overflow: obligations that cannot fit inside
+        # the planned tranche because clean-but-missed sessions consumed slots.
+        "replacement_sessions_required": max(0, needed - planned_left),
+        "next_replacement_index": PLANNED_SESSIONS + 1 + max(
+            0, len(clean) - PLANNED_SESSIONS),
+        "rule": ("a clean session that misses its bin stays in the corpus, is "
+                 "never relabelled, and its obligation is discharged by an "
+                 "appended replacement session for the SAME bin"),
+    }
+
+
+def replacement_obligations(records: list[SessionRecord]) -> list[str]:
+    """Outstanding bins, in the frozen hard-first order. Deterministic."""
+    remaining = state_from_ledger(records).bin_remaining()
+    out = []
+    for b in BIN_ORDER:
+        out.extend([b] * remaining[b])
+    return out

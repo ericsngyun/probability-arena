@@ -69,7 +69,8 @@ def test_scheduler_imports_nothing_that_can_read_rows_or_results():
 
 def test_session_record_carries_only_coverage_facts():
     fields = set(C.SessionRecord.__dataclass_fields__)
-    assert fields == {"label", "target_bin", "series", "start_utc", "counted"}
+    assert fields == {"label", "target_bin", "series", "start_utc", "counted",
+                      "operationally_clean"}
 
 
 # --- obligations ------------------------------------------------------------
@@ -201,3 +202,75 @@ def test_feasibility_is_reported_not_enforced():
     assert rep["bin_quota_satisfiable"] is True
     assert rep["series_still_required"] == 4
     assert rep["weekend_still_required"] == 3
+
+
+# --- the frozen contingency rule: coverage deficit -> replacement session ----
+
+def test_clean_session_that_misses_its_bin_stays_in_corpus():
+    """Operational validity and bin coverage are independent facts."""
+    missed = C.SessionRecord("S03", TTE_LATE_RESOLUTION, "KXMLBGAME",
+                             "2026-08-25T01:45:00Z", counted=False,
+                             operationally_clean=True)
+    assert missed.in_corpus is True, "good rows must not be discarded"
+    d = C.coverage_deficit([S01, S02, missed])
+    assert d["sessions_in_corpus"] == 3
+    assert d["sessions_discharging_a_bin"] == 2
+    assert "S03" in d["sessions_clean_but_bin_missed"]
+
+
+def test_a_missed_bin_is_never_relabelled_to_a_bin_it_touched():
+    missed = C.SessionRecord("S03", TTE_LATE_RESOLUTION, "KXMLBGAME",
+                             "2026-08-25T01:45:00Z", counted=False)
+    st = C.state_from_ledger([S01, S02, missed])
+    # late_resolution still owes 3; nothing was credited anywhere else
+    assert st.bin_remaining()[TTE_LATE_RESOLUTION] == 3
+    assert sum(st.bin_remaining().values()) == 18
+    assert C.next_obligation(st) == TTE_LATE_RESOLUTION
+
+
+def test_a_missed_bin_generates_a_replacement_rather_than_stealing_quota():
+    # 20 clean sessions, but two missed their bin
+    recs = []
+    obligations = [b for b in C.BIN_ORDER for _ in range(4)]
+    for i, b in enumerate(obligations):
+        recs.append(C.SessionRecord(f"S{i+1:02d}", b, "KXMLBGAME",
+                                    "2026-08-25T18:00:00Z",
+                                    counted=(i not in (0, 5)),
+                                    operationally_clean=True))
+    d = C.coverage_deficit(recs)
+    assert d["sessions_in_corpus"] == 20
+    assert d["obligations_total"] == 2
+    assert d["planned_sessions_remaining"] == 0
+    assert d["replacement_sessions_required"] == 2, (
+        "the deficit must be discharged by APPENDED sessions, not by quota "
+        "taken from another bin")
+    assert d["next_replacement_index"] == 21
+
+
+def test_replacement_obligations_are_deterministic_and_hard_bins_first():
+    recs = [C.SessionRecord("a", TTE_FAR, "KXMLBGAME", "2026-08-25T18:00:00Z",
+                            counted=True)]
+    obs = C.replacement_obligations(recs)
+    assert obs[0] == TTE_LATE_RESOLUTION
+    assert obs.count(TTE_FAR) == 3
+    assert len(obs) == 19
+    assert C.replacement_obligations(recs) == obs
+
+
+def test_planned_tranche_is_not_a_cap():
+    assert C.PLANNED_SESSIONS == 20
+    recs = [C.SessionRecord(f"S{i}", TTE_FAR, "KXMLBGAME",
+                            "2026-08-25T18:00:00Z", counted=False)
+            for i in range(20)]
+    d = C.coverage_deficit(recs)
+    assert d["replacement_sessions_required"] == 20
+    assert d["obligations_total"] == 20
+
+
+def test_no_hypothesis_quantity_appears_in_the_deficit_rule():
+    import ast, inspect
+    tree = ast.parse(inspect.getsource(C.coverage_deficit))
+    names = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
+    names |= {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
+    for banned in ("cell", "horizon", "fdr", "verdict", "p_value", "loss"):
+        assert not any(banned in n.lower() for n in names)

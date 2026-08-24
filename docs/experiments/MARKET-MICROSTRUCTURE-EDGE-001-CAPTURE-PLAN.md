@@ -308,3 +308,52 @@ differences.
 
 **The only adaptive action permitted is scheduling future sessions to satisfy
 already-preregistered coverage constraints** — never to improve a result.
+
+---
+
+## Addendum 3 — 2026-08-24: coverage deficit → replacement session
+
+**Frozen before any target-bin failure had occurred.** After S02 the tranche
+has **18 bin obligations across 18 remaining sessions** — zero slack. One
+mechanically valid session that fails to earn its target bin would create a
+coverage shortfall with nowhere to absorb it.
+
+### The rule
+
+A session that is **operationally valid but fails its target-bin coverage**:
+
+1. **remains in the corpus.** Its rows passed L1–L3; they are good rows and
+   discarding them would trade real data for tidy bookkeeping.
+2. **is never relabelled** to another bin, however many complete intervals it
+   happened to land there. The session was scheduled against one obligation and
+   is scored against that one.
+3. **leaves its obligation outstanding**, discharged by a **deterministic
+   replacement session for the same bin**, appended after the planned tranche
+   as **S21+**, chosen by the same frozen coverage and anchor schedulers.
+4. **never takes quota from another bin**, never widens a TTE definition, and
+   never retroactively retargets a completed session.
+
+**"20 sessions" remains the planned tranche; the experiment may require more
+sessions purely to satisfy already-frozen coverage floors.**
+
+### Why this changes no hypothesis
+
+The cells, horizons, comparisons, family size, FDR level, embargo, clustering
+and §8 verdicts are all untouched. This addendum governs **how many sessions
+are collected**, not what is computed from them. The power floors (≥4,000
+market-blocks, ≥150 clusters, ≥3 sessions per TTE bin) are unchanged and are
+what the replacement sessions exist to satisfy.
+
+`PLANNED_SESSIONS = 20` is now explicitly **not a cap** in `coverage.py`, and
+`SessionRecord` carries **two independent facts** rather than one merged flag:
+
+| field | meaning |
+|---|---|
+| `operationally_clean` | L1–L3 passed → the rows belong in the corpus |
+| `counted` | L4 earned the target bin → the obligation is discharged |
+
+Merging them would have forced a choice between discarding good rows and faking
+coverage. `coverage_deficit()` reports outstanding obligations, sessions that
+were clean but missed their bin, and how many appended sessions the frozen
+floors still require; `replacement_obligations()` lists them in the frozen
+hard-bins-first order.
