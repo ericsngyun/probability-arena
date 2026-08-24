@@ -170,16 +170,21 @@ markets.
 Per-bin block counts will be **sharply unbalanced**, and the cause is the
 frozen bin widths, not the markets:
 
-| bin | TTE width | complete 300 s blocks per 3 h session |
-|---|---:|---:|
-| `far` | unbounded | ~35 |
-| `approaching` | 14,400 s | ~35 |
-| `near_event` | 6,300 s | ~20 |
-| **`live_event`** | **900 s** | **3** — `900 / 300` |
-| `late_resolution` | unbounded | ~35 |
+| bin | TTE width | time-intervals / session | market-blocks / session (K=12) | over 4 sessions |
+|---|---:|---:|---:|---:|
+| `far` | unbounded | 35 | 420 | ~1,680 |
+| `approaching` | 14,400 s | 35 | 420 | ~1,680 |
+| `near_event` | 6,300 s | 20 | 240 | ~960 |
+| **`live_event`** | **900 s** | **3** — `900/300` | **36** | **~144** |
+| `late_resolution` | unbounded | 35 | 420 | ~1,680 |
 
-Four `live_event` sessions can therefore contribute only ~12 fully contained
-blocks against ~140 for each wide bin. **That is geometry, not evidence.** It
+**Correction (2026-08-23):** an earlier revision of this note said four
+`live_event` sessions yield "~12 blocks against ~140". That conflated
+*time-intervals* with *market-blocks* — each qualifying interval yields up to
+K=12 market-blocks. The corrected figures are **~144 against ~1,680**. The
+**ratio** was right (~12×); the absolute counts were an order of magnitude low.
+S01 bears the scale out: 377 market-blocks in one `late_resolution` session,
+90% of the 420 ceiling. **That is geometry, not evidence.** It
 says nothing about whether live-event markets are sparse, quiet or
 uninformative — S01 already showed the analogous post-event stratum was dense,
 with 24 of 24 markets clearing the activity floor.
