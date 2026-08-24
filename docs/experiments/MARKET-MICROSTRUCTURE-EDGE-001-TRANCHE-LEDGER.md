@@ -162,3 +162,54 @@ consequence of the frozen bin boundaries, not a defect, and it is **not** a
 reason to widen them after the fact — but per-bin block counts will be sharply
 unbalanced and the analysis must not read that imbalance as a property of the
 markets.
+
+---
+
+## A note for the future evaluator: unequal block counts are geometric
+
+Per-bin block counts will be **sharply unbalanced**, and the cause is the
+frozen bin widths, not the markets:
+
+| bin | TTE width | complete 300 s blocks per 3 h session |
+|---|---:|---:|
+| `far` | unbounded | ~35 |
+| `approaching` | 14,400 s | ~35 |
+| `near_event` | 6,300 s | ~20 |
+| **`live_event`** | **900 s** | **3** — `900 / 300` |
+| `late_resolution` | unbounded | ~35 |
+
+Four `live_event` sessions can therefore contribute only ~12 fully contained
+blocks against ~140 for each wide bin. **That is geometry, not evidence.** It
+says nothing about whether live-event markets are sparse, quiet or
+uninformative — S01 already showed the analogous post-event stratum was dense,
+with 24 of 24 markets clearing the activity floor.
+
+The hazard is pooling: weighting every block equally and reading the result as
+"the experiment's average regime" lets the wide bins dominate purely because
+they contain more clock time.
+
+**No weights are changed here.** This is documentation so the imbalance is
+never mistaken for market behaviour.
+
+### ⚠ The TTE-stratified view is NOT currently a preregistered cell
+
+Checked rather than assumed, and it matters:
+
+* **§7 freezes exactly twelve cells** — 3 comparisons × 4 horizons —
+  Benjamini–Hochberg at FDR 10% "computed once, on the pre-declared set", and
+  states plainly: *"No cell may be added after seeing results; a cell that
+  looks interesting later starts a new preregistration with a new name."*
+* **Amendment 2 §F** names **series** as strata/evaluation groups/covariates
+  and clusters uncertainty at event/market level. It does not name TTE.
+* **Amendment 2 §C** froze the TTE bins and observes they *allow* asking
+  `E[r(t+h) | OFI(t), TTE(t)]` later — but never registers that as a cell.
+
+So "M0 vs M1 by TTE stratum" is currently **an unregistered analysis**. Running
+it after the tranche would violate §7; registering it now is legitimate but
+multiplies the cell count (12 × 5 = 60) and materially changes the FDR
+correction.
+
+**This needs a decision before the tranche completes, not at analysis time** —
+by then the only honest options are to skip the stratified view entirely or to
+start a separate preregistration under a new name. Recorded here so the choice
+is made with a clear head and no results in view.
