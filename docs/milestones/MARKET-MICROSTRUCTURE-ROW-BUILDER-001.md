@@ -146,3 +146,47 @@ do that rather than assuming it falls out.
 
 Nothing above asks whether any feature predicts anything. The question answered
 is only: *did we build the intended dataset?*
+
+---
+
+## Post-amendment integration smoke test — 2026-08-24
+
+`MMSMOKE-v2-20260824`, 420 s, `VALIDATION_ONLY`, `usable_as_confirmation=false`.
+Its only job is to prove the **seam** between the separately-qualified capture
+runner and row builder, after Amendment 3.
+
+420 s rather than 300 s: a 300 s session's only decision tick lands exactly at
+session end and yields zero rows, which would prove nothing. 420 s gives one
+tick plus 120 s of rows.
+
+```text
+production tape -> panel decisions -> 1 Hz rows -> M0/M1 schema -> labels -> durable dataset
+```
+
+| | |
+|---|---|
+| frames | 140,312 |
+| peak₁ₛ | 1,631 vs the 3,500 stop → `ok` |
+| decision ticks | 1, panel of 12 |
+| **rows emitted** | **1,440** = 12 × 120 s |
+| skips | 7,200 warmup (24 × 300) + 1,440 not-in-panel (12 × 120) |
+| dispatch errors | **0** |
+| schema | **`microstructure-row-v2` / `microstructure-label-v2`** |
+| M0 / M1 columns | **13 / 17** |
+| `realized_vol_1s` | **absent**; only `_5s` and `_30s` present |
+| M0 / M1 min completeness | **1.0 / 1.0** |
+| **always-missing columns** | **NONE** |
+| `dataset_role` | `VALIDATION` |
+
+Arithmetic reconciles exactly: 1,440 + 8,640 = 10,080 = 420 × 24.
+
+**The Amendment 3 defect is measurably gone.** Before it, `realized_vol_1s` sat
+at 0.0000 completeness; the always-missing-column check now returns NONE, and
+minimum M1 completeness is 1.0 across all seventeen columns.
+
+Label coverage 0.9917 / 0.9583 / 0.7500 / **0.0000**. The 300 s zero is pure
+session length and carries no selection component: rows span t+300 … t+420,
+while a 300 s label needs `t + 300 ≤ session_end ≈ 420`, so no row can have
+one. At the planned 3 h session length this is projected at ~97%.
+
+**Seam: GREEN.** The pipeline is proven end to end under the amended schema.
