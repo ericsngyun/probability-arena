@@ -164,8 +164,16 @@ def main(argv) -> int:
     session_end = frames[-1].received_at_utc
     log(f"tape: {len(frames):,} frames, {session_open} -> {session_end}")
 
-    ps = PanelSession(session_open=session_open, markets=markets, k=a.k)
-    ticks = ps.decision_ticks(session_end)
+    # The SCHEDULED end, derived from the session budget that was fixed before
+    # the socket opened. Deliberately not the observed last-frame time:
+    # eligibility at `t` must not consult how long the venue happened to keep
+    # publishing afterwards, which at decision time is unknowable.
+    scheduled_end = session_open + timedelta(seconds=a.seconds)
+    ps = PanelSession(session_open=session_open, markets=markets,
+                      session_end=scheduled_end, k=a.k)
+    # Ticks are bounded by what was actually observed -- a decision cannot be
+    # replayed at an instant the tape never reached.
+    ticks = ps.decision_ticks(min(scheduled_end, session_end))
     log(f"{len(ticks)} decision ticks (warmup {session_open} + 300s)")
 
     decisions, cursor = [], 0
@@ -206,7 +214,8 @@ def main(argv) -> int:
         "archive_root": str(root),
         "started_at": started.isoformat(),
         "session_open": session_open.isoformat(),
-        "session_end": session_end.isoformat(),
+        "session_end_observed": session_end.isoformat(),
+        "session_end_scheduled": scheduled_end.isoformat(),
         "subscribed": tickers, "subscribed_count": len(tickers),
         "never_exceed_concurrency": NEVER_EXCEED_CONCURRENCY,
         "panel_k": a.k,

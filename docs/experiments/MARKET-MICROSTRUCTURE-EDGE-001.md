@@ -377,3 +377,77 @@ downstream of `Loss(M1) < Loss(M0)`.
 
 **Status after this amendment: PREREGISTERED, NOT RUN. Prospective capture not
 started. M0/M1 not run.**
+
+---
+
+## Amendment 4 — 2026-08-23: eligibility gates on session-remaining, not TTE
+
+The original `TTE > max_horizon + embargo` eligibility constraint incorrectly
+used **event-relative time as a proxy for future-label computability**. This
+made two preregistered TTE strata structurally unreachable. Future-label
+feasibility depends on remaining capture/session time and is independently
+enforced by the labeler. Eligibility is therefore amended to require sufficient
+**session time remaining**; **TTE remains unrestricted** and retains its frozen
+bin definitions.
+
+Made before any confirmation capture and before any M0/M1 outcome existed.
+
+### What was broken
+
+| bin | eligible sub-range under `TTE > 600` | width |
+|---|---|---:|
+| `far` | > 21,600 | ∞ |
+| `approaching` | 7,200–21,600 | 14,400 s |
+| `near_event` | 900–7,200 | 6,300 s |
+| `live_event` | 600–900 | **300 s** |
+| `late_resolution` | none | **0 — UNREACHABLE** |
+
+### The amended rule
+
+> eligible(i,t) ⟺ Activity(i,t) ≥ 0.10 events/s
+> ∧ valid current-generation book
+> ∧ no sequence fault in (t−300, t]
+> ∧ **session_end − t > 600 s**
+
+`session_end` is the **scheduled** end, fixed before the socket opens — never
+the observed last-frame time, because eligibility at `t` may not consult how
+long the venue happened to keep publishing afterwards.
+
+**Nothing else moves.** Activity floor, K, rotation, tie-break, warmup, the
+safety stop and all five bin boundaries are untouched. The boundary stays
+**strictly** greater. No market is required to remain open for another 600 s —
+that would be future knowledge; if it closes naturally, `labels.py` records the
+affected horizon as unavailable rather than fabricating a value. Horizon-specific
+availability is preserved: a row may legitimately carry 1 s/5 s/30 s labels and
+no 300 s label. **Late-resolution rows are not excluded for having worse 300 s
+coverage** — doing so would reintroduce lifecycle-dependent selection.
+
+### Reachability, proven against the production decision core
+
+| bin | TTE | session remaining | eligible |
+|---|---:|---:|---|
+| `far` | 30,000 | 3,600 | ✅ |
+| `approaching` | 10,000 | 3,600 | ✅ |
+| `near_event` | 3,000 | 3,600 | ✅ |
+| `live_event` | 300 | 3,600 | ✅ |
+| `late_resolution` | −1,200 | 3,600 | ✅ |
+
+Opposing control — the gate still bites in the other direction:
+
+```
+TTE=+7200 (near_event), 600 s session left -> INELIGIBLE (session_remaining_at_or_below_600s)
+TTE=+7200,              601 s session left -> eligible
+```
+
+And TTE is not consulted at all: eligibility is identical at TTE ∈ {−100000,
+−1, 0, 1, 600, 601, 100000}. A 12-mutation campaign killed all twelve;
+**reverting the gate to a TTE test fails 7 tests**.
+
+### `late_resolution` means past the nominal occurrence time, not resolved
+
+A contract can have `TTE < 0` while still actively trading, because the event
+has occurred or passed its nominal time but the contract has not settled. Once
+the venue actually closes it there is simply no usable future market state, and
+the labeler handles that. The distinction — *event over* ≠ *information fully
+incorporated* ≠ *contract resolved* — may become scientifically interesting
+later. **Nothing is changed on that basis now.**

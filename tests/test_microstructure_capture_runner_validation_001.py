@@ -32,8 +32,10 @@ def ob(ticker: str, at: datetime, *, sid: int = 1, seq: int | None = None,
                          subscription_generation=gen)
 
 
-def session(markets: dict, *, open_at: datetime = T0, k: int = P.PANEL_K):
-    return P.PanelSession(session_open=open_at, markets=markets, k=k)
+def session(markets: dict, *, open_at: datetime = T0, k: int = P.PANEL_K,
+            end: datetime | None = None):
+    return P.PanelSession(session_open=open_at, markets=markets,
+                          session_end=end, k=k)
 
 
 def base(s: P.PanelSession, ticker: str, at: datetime, gen: int = 1):
@@ -359,16 +361,68 @@ def test_invariant_07_reuses_the_collectors_own_vocabulary():
 # 8. TTE boundaries, and every frozen bin edge
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("tte,expect", [(601, True), (600, False), (599, False)])
-def test_invariant_08_tte_boundary_is_strictly_greater_than_600s(tte, expect):
+@pytest.mark.parametrize("remaining,expect", [(601, True), (600, False), (599, False)])
+def test_invariant_08_session_remaining_boundary_is_strictly_greater_than_600s(
+        remaining, expect):
+    """The feasibility gate is SESSION-remaining, strictly greater (Amendment 4)."""
     t = T0 + timedelta(seconds=600)
-    s = session({"A": meta("A", event=t + timedelta(seconds=tte))})
+    s = session({"A": meta("A", event=t + timedelta(hours=3))},
+                end=t + timedelta(seconds=remaining))
     base(s, "A", T0)
     feed(s, "A", 60, end=t - timedelta(seconds=2))
     row = s.decide_panel(t).audit[0]
     assert row.eligible is expect
     if not expect:
-        assert row.reason_if_not_selected == P.NOT_SELECTED_TTE_TOO_SHORT
+        assert row.reason_if_not_selected == P.NOT_SELECTED_SESSION_TOO_SHORT
+
+
+# --- Amendment 4 anti-vacuity: TTE and label feasibility are independent -----
+
+def _eligibility_at(tte_s, session_remaining_s):
+    t = T0 + timedelta(seconds=600)
+    s = session({"A": meta("A", event=t + timedelta(seconds=tte_s))},
+                end=t + timedelta(seconds=session_remaining_s))
+    base(s, "A", T0)
+    feed(s, "A", 60, end=t - timedelta(seconds=2))
+    return s.decide_panel(t).audit[0]
+
+
+def test_amendment4_late_resolution_is_reachable():
+    row = _eligibility_at(-1200, 3600)
+    assert row.tte_bin == P.TTE_LATE_RESOLUTION
+    assert row.eligible is True, "late_resolution must not be structurally empty"
+
+
+def test_amendment4_live_event_is_reachable_below_the_old_600s_floor():
+    row = _eligibility_at(300, 3600)
+    assert row.tte_bin == P.TTE_LIVE_EVENT
+    assert row.eligible is True, "live_event must not be a 300 s sliver"
+
+
+def test_amendment4_opposing_control_short_session_blocks_a_distant_event():
+    """The separation is real in BOTH directions, not just the permissive one."""
+    row = _eligibility_at(7200, 600)
+    assert row.tte_bin == P.TTE_NEAR_EVENT
+    assert row.eligible is False
+    assert row.reason_if_not_selected == P.NOT_SELECTED_SESSION_TOO_SHORT
+
+
+def test_amendment4_all_five_tte_bins_are_reachable_under_the_production_core():
+    """The mechanical reachability proof, run against the real decision core."""
+    cases = {P.TTE_FAR: 30_000, P.TTE_APPROACHING: 10_000,
+             P.TTE_NEAR_EVENT: 3_000, P.TTE_LIVE_EVENT: 300,
+             P.TTE_LATE_RESOLUTION: -1_200}
+    for expected_bin, tte in cases.items():
+        row = _eligibility_at(tte, 3600)
+        assert row.tte_bin == expected_bin
+        assert row.eligible is True, f"{expected_bin} unreachable at TTE={tte}"
+
+
+def test_amendment4_tte_is_not_consulted_by_the_eligibility_gate():
+    """Same market state, wildly different TTE -> identical eligibility."""
+    verdicts = {t: _eligibility_at(t, 3600).eligible
+                for t in (-100_000, -1, 0, 1, 600, 601, 100_000)}
+    assert set(verdicts.values()) == {True}, verdicts
 
 
 @pytest.mark.parametrize("tte,expect", [

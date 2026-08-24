@@ -45,9 +45,18 @@ MIN_OB_EVENTS_IN_LOOKBACK = 30
 PANEL_K = 12
 NEVER_EXCEED_CONCURRENCY = 24
 
-#: TTE must be STRICTLY greater, so a label horizon can never run past the
-#: session: max horizon 300 s + 300 s embargo.
-MIN_TTE_S = 600
+#: Label feasibility depends on how much SESSION remains, not on where the
+#: market sits in its event lifecycle. Strictly greater: max horizon 300 s +
+#: 300 s embargo.
+#:
+#: This replaced a `TTE > 600 s` gate (Amendment 4). That rule used
+#: event-relative time as a proxy for future-label computability, which made
+#: two preregistered strata structurally unreachable -- `late_resolution`
+#: (TTE < 0) could never produce a single row, and `live_event` admitted only
+#: a 300 s sliver. The two concepts are independent: TTE is a stratification
+#: variable, session-remaining is the feasibility constraint, and horizon
+#: availability is enforced independently by the labeler.
+MIN_SESSION_REMAINING_S = 600
 
 #: Order-book message types. `ticker` is absent BY CONTRACT (Amendment 2 SS.B):
 #: both PROD-ACTIVITY-PROFILE-001 SS7 controls emitted zero ticker frames while
@@ -71,7 +80,7 @@ NOT_SELECTED_WARMUP = "warmup"
 NOT_SELECTED_LOW_ACTIVITY = "activity_below_floor"
 NOT_SELECTED_BOOK_UNPUBLISHABLE = "book_not_publishable"
 NOT_SELECTED_SEQUENCE_FAULT = "sequence_fault_in_lookback"
-NOT_SELECTED_TTE_TOO_SHORT = "tte_at_or_below_600s"
+NOT_SELECTED_SESSION_TOO_SHORT = "session_remaining_at_or_below_600s"
 NOT_SELECTED_RANK = "eligible_but_outranked"
 
 
@@ -236,6 +245,10 @@ class PanelSession:
     """
     session_open: datetime
     markets: dict[str, MarketMeta]
+    #: The SCHEDULED end, known before the socket opens. Deliberately not the
+    #: observed last-frame time: eligibility at `t` may not consult how long
+    #: the venue happened to keep publishing afterwards.
+    session_end: datetime | None = None
     k: int = PANEL_K
     _ob_events: dict[str, list[datetime]] = field(default_factory=dict)
     _seq: SubscriptionSequenceTracker = field(
@@ -280,6 +293,8 @@ class PanelSession:
             book = self._books.state_of(ticker)
             clean = self._seq.clean_over(lo, t)
             tte = (meta.occurrence_datetime - t).total_seconds()
+            remaining = ((self.session_end - t).total_seconds()
+                         if self.session_end is not None else float("inf"))
 
             # INTEGER comparison -- see MIN_OB_EVENTS_IN_LOOKBACK.
             reason = None
@@ -291,8 +306,11 @@ class PanelSession:
                 reason = NOT_SELECTED_BOOK_UNPUBLISHABLE
             elif not clean:
                 reason = NOT_SELECTED_SEQUENCE_FAULT
-            elif tte <= MIN_TTE_S:
-                reason = NOT_SELECTED_TTE_TOO_SHORT
+            elif remaining <= MIN_SESSION_REMAINING_S:
+                # NOT a TTE test. A market deep in `late_resolution` is
+                # eligible; a market hours from its event is not, if the
+                # session is about to end.
+                reason = NOT_SELECTED_SESSION_TOO_SHORT
 
             eligible = reason is None
             rows.append({
@@ -331,15 +349,16 @@ class PanelSession:
         return PanelDecision(tick_t=t.isoformat(), is_warmup=warmup,
                              panel=panel, audit=tuple(audit))
 
-    def decision_ticks(self, session_end: datetime) -> list[datetime]:
+    def decision_ticks(self, session_end: datetime | None = None) -> list[datetime]:
         """Panel changes happen ONLY on this clock (invariant 9).
 
         The first decision is at open + 300 s; nothing before it may emit a
         research row, and activity arriving at open+317 s cannot enter the
         panel until the next scheduled tick.
         """
+        end = session_end if session_end is not None else self.session_end
         ticks, t = [], self.session_open + timedelta(seconds=WARMUP_S)
-        while t <= session_end:
+        while t <= end:
             ticks.append(t)
             t += timedelta(seconds=DECISION_TICK_S)
         return ticks
