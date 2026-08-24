@@ -82,6 +82,12 @@ def main(argv) -> int:
     ap.add_argument("--target-bin", required=True, choices=sorted(FIRST_TICK_TTE_S))
     ap.add_argument("--seconds", type=int, default=10_800)
     ap.add_argument("--days", default="", help="ET days to enumerate, comma-separated")
+    ap.add_argument("--series", default="",
+                    help="restrict to these series, comma-separated. Supplied "
+                         "by the COVERAGE layer to discharge a diversity "
+                         "obligation; it is a design quantity, never an "
+                         "activity signal, and this module still cannot see "
+                         "activity for the series it is handed.")
     ap.add_argument("--out-prefix", default="/tmp/anchor")
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args(argv[1:])
@@ -90,9 +96,13 @@ def main(argv) -> int:
     days = ([d for d in a.days.split(",") if d]
             or [(now + timedelta(days=k)).strftime("%Y-%m-%d") for k in (0, 1, 2)])
 
+    allowed = tuple(x for x in a.series.split(",") if x) or SERIES
+    unknown = set(allowed) - set(SERIES)
+    if unknown:
+        print(f"REFUSED: unknown series {sorted(unknown)}"); return 2
     pool = {}
     for d in days:
-        pool.update(candidates_closing_on(d, series=list(SERIES)))
+        pool.update(candidates_closing_on(d, series=list(allowed)))
     if not pool:
         print("REFUSED: no open markets enumerated"); return 2
 
@@ -125,6 +135,7 @@ def main(argv) -> int:
         "scheduled_session_start": start.isoformat(),
         "session_seconds": a.seconds,
         "selection_rule_version": SELECTION_RULE_VERSION,
+        "series_restriction": list(allowed),
         "candidate_count_at_freeze": len(chosen),
         "pool_size_at_freeze": len(pool),
         "distinct_occurrence_times": len(times),
