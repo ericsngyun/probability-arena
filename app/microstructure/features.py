@@ -11,6 +11,7 @@ contract settles in [0, 1], so probability = `price_units / 10_000`.
 
 from __future__ import annotations
 
+import bisect
 import statistics
 from dataclasses import dataclass, field
 
@@ -186,20 +187,31 @@ def compute_m1_flow(acc: FlowAccumulator, t_ms: float, *,
     relate them. The lag is the pre-declared safety margin, not a tuning knob.
     """
     out = {}
+    # Events are appended in receive order, so each list is already sorted by
+    # timestamp and a trailing window is a contiguous slice. Rescanning the
+    # whole list per sample is O(samples x events) -- fine for a 1,200-sample
+    # validation tape and quadratic for a 10,800-sample production session.
+    # `bisect` makes it O(log n) to locate the slice; the window semantics
+    # (half-open `(t-w, t]`) are unchanged, and the existing tests pin that.
+    def _slice(events, lo_ms, hi_ms):
+        i = bisect.bisect_right(events, lo_ms, key=lambda e: e[0])
+        j = bisect.bisect_right(events, hi_ms, key=lambda e: e[0])
+        return events[i:j]
+
     for w in FLOW_WINDOWS_S:
         lo = t_ms - w * 1000
-        win = [d for d in acc.deltas if lo < d[0] <= t_ms]
+        win = _slice(acc.deltas, lo, t_ms)
         out[f"delta_count_{w}s"] = len(win)
         # side "yes" is a resting BID, side "no" is a YES-scaled OFFER.
         out[f"signed_depth_flow_{w}s"] = sum(
             (u if side == "yes" else -u) for _ms, u, side, _p in win
         ) / CONTRACT_UNITS_PER_CONTRACT
 
-        bests = [b for b in acc.best_prices if lo < b[0] <= t_ms]
+        bests = _slice(acc.best_prices, lo, t_ms)
         out[f"quote_reversal_{w}s"] = _quote_reversals(bests)
 
         if w in STDEV_WINDOWS_S:
-            mids = [m for m in acc.mids if lo < m[0] <= t_ms and m[1] is not None]
+            mids = [m for m in _slice(acc.mids, lo, t_ms) if m[1] is not None]
             diffs = [b - a for (_, a), (_, b) in zip(mids, mids[1:])]
             out[f"realized_vol_{w}s"] = (statistics.stdev(diffs)
                                          if len(diffs) >= 2 else NOT_PROVIDED)
@@ -207,7 +219,7 @@ def compute_m1_flow(acc: FlowAccumulator, t_ms: float, *,
         # LAGGED trade window -- ends before t, never at it.
         t_trade = t_ms - trade_lag_ms
         lo_trade = t_trade - w * 1000
-        tw = [x for x in acc.trades if lo_trade < x[0] <= t_trade]
+        tw = _slice(acc.trades, lo_trade, t_trade)
         out[f"trade_count_{w}s"] = len(tw)
         out[f"signed_trade_flow_{w}s"] = sum(c for _ms, c in tw)
     return out
