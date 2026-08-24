@@ -334,9 +334,27 @@ exists. Zero markets stayed open and failed activity eligibility.
 | `KXATPMATCH` | 1 (S02) | 3 remaining |
 | other 6 series | 0 | — |
 
-**Series represented: 2 of 8** (floor ≥6). **Weekend sessions: 0 of ≥4** —
-S01 ran Sunday 00:41Z, which is Saturday evening ET, and S02 ran Monday. Both
+**Series represented: 2 of 8** (floor ≥6). **Weekend sessions: 1 of ≥4.** Both
 strata so far are tennis, as flagged before S02.
+
+**Correction (2026-08-24), derived from code rather than restated.** An earlier
+revision of this line said *"Weekend sessions: 0 of ≥4 — S01 ran Sunday 00:41Z,
+which is **Saturday** evening ET"*. Both halves were wrong: 00:41Z Monday minus
+four hours is **Sunday 20:41 ET**, which **is** a weekend session. The frozen
+rule (`SessionRecord.is_weekend_et`) classifies in ET precisely because a UTC
+weekday would credit the wrong day, and the code has said `weekend_sessions: 1`
+since the coverage scheduler was built — the prose was stale, not the rule.
+
+| session | start (UTC) | start (ET) | weekend |
+|---|---|---|---|
+| S01 | `2026-08-24T00:41:58Z` | Sunday 2026-08-23 20:41 | **yes** |
+| S02 | `2026-08-24T16:40:00Z` | Monday 2026-08-24 12:40 | no |
+
+Authoritative coverage state, code-derived: **2 sessions · 1 weekend (3 still
+required) · 2 of 8 series (4 still required) · 18 bin-sessions outstanding
+across 18 remaining sessions.** All three quotas remain satisfiable, though the
+bin quota now has **zero slack** — every remaining session must count toward
+its target bin.
 
 ---
 
