@@ -12,6 +12,7 @@ it should feel like one.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from dataclasses import dataclass
@@ -20,6 +21,52 @@ from pathlib import Path
 
 from app.microstructure.panel import DatasetRole
 
+REPO = Path(__file__).resolve().parents[2]
+
+#: Every module whose contents define the statistical test. A change to any of
+#: them changes the fingerprint and invalidates an existing authorization.
+#: This is the point: a "harmless refactor" during the two weeks of capture
+#: must not be able to alter the test before the corpus is opened.
+FROZEN_EVALUATOR_FILES = (
+    "app/microstructure/evaluate.py",
+    "app/microstructure/features.py",
+    "app/microstructure/labels.py",
+    "app/microstructure/rows.py",
+    "app/microstructure/panel.py",
+    "app/microstructure/linalg.py",
+)
+
+#: The documents the test is preregistered in.
+FROZEN_PREREGISTRATION_FILES = (
+    "docs/experiments/MARKET-MICROSTRUCTURE-EDGE-001.md",
+    "docs/experiments/MARKET-MICROSTRUCTURE-EDGE-001-CAPTURE-PLAN.md",
+    "docs/milestones/MARKET-STATE-FABRIC-v1.md",
+)
+
+
+def _fingerprint(paths) -> str:
+    """sha256 over (relative path, bytes) for each file, in fixed order."""
+    h = hashlib.sha256()
+    for rel in paths:
+        f = REPO / rel
+        if not f.exists():
+            raise ConfirmationDataLocked(
+                f"frozen file {rel} is missing; the evaluator cannot be "
+                f"fingerprinted and confirmation data stays locked")
+        h.update(rel.encode())
+        h.update(b"\0")
+        h.update(f.read_bytes())
+        h.update(b"\0")
+    return h.hexdigest()
+
+
+def evaluator_fingerprint() -> str:
+    return _fingerprint(FROZEN_EVALUATOR_FILES)
+
+
+def preregistration_fingerprint() -> str:
+    return _fingerprint(FROZEN_PREREGISTRATION_FILES)
+
 #: Where the authorization must live. Overridable ONLY for tests -- production
 #: callers never pass a path, so a stray env var cannot silently unlock a real
 #: evaluation on someone else's machine.
@@ -27,7 +74,9 @@ AUTH_ENV = "PROBABILITY_ARENA_EDGE001_AUTHORIZATION"
 DEFAULT_AUTH_PATH = Path.home() / ".probability-arena" / "EDGE001-FINAL-EVALUATION.json"
 
 REQUIRED_FIELDS = ("milestone", "operator", "authorized_at_utc",
-                   "sessions_complete", "statement")
+                   "sessions_complete", "statement",
+                   "evaluator_fingerprint", "preregistration_fingerprint",
+                   "expected_row_schema", "expected_label_schema")
 
 EXPECTED_MILESTONE = "MARKET-MICROSTRUCTURE-EDGE-001"
 REQUIRED_SESSIONS = 20
@@ -48,6 +97,8 @@ class Authorization:
     authorized_at_utc: str
     sessions_complete: int
     statement: str
+    evaluator_fingerprint: str
+    preregistration_fingerprint: str
 
 
 def _auth_path() -> Path:
@@ -80,8 +131,36 @@ def load_authorization() -> Authorization | None:
         raise ConfirmationDataLocked(
             f"authorization claims {d['sessions_complete']} complete sessions, "
             f"but the tranche requires {REQUIRED_SESSIONS}")
+
+    # VERSION BINDING. An authorization is for one exact evaluator against one
+    # exact preregistration. If either has changed since it was signed, the
+    # test being run is not the test that was authorised.
+    actual_ev, actual_pre = evaluator_fingerprint(), preregistration_fingerprint()
+    if d["evaluator_fingerprint"] != actual_ev:
+        raise ConfirmationDataLocked(
+            "the running evaluator does not match the authorised one.\n"
+            f"  authorised: {d['evaluator_fingerprint']}\n"
+            f"  running:    {actual_ev}\n"
+            "One of the frozen modules changed after the authorisation was "
+            "signed. Re-authorise deliberately, or restore the frozen code.")
+    if d["preregistration_fingerprint"] != actual_pre:
+        raise ConfirmationDataLocked(
+            "the preregistration does not match the authorised one.\n"
+            f"  authorised: {d['preregistration_fingerprint']}\n"
+            f"  running:    {actual_pre}\n"
+            "The documents defining this test changed after authorisation.")
+    from app.microstructure.rows import (LABEL_SCHEMA_VERSION,
+                                         ROW_SCHEMA_VERSION)
+    if (d["expected_row_schema"] != ROW_SCHEMA_VERSION
+            or d["expected_label_schema"] != LABEL_SCHEMA_VERSION):
+        raise ConfirmationDataLocked(
+            f"authorization expects schema "
+            f"{d['expected_row_schema']}/{d['expected_label_schema']}, "
+            f"running {ROW_SCHEMA_VERSION}/{LABEL_SCHEMA_VERSION}")
     return Authorization(str(d["operator"]), str(d["authorized_at_utc"]),
-                         int(d["sessions_complete"]), str(d["statement"]))
+                         int(d["sessions_complete"]), str(d["statement"]),
+                         str(d["evaluator_fingerprint"]),
+                         str(d["preregistration_fingerprint"]))
 
 
 def require_readable(dataset_role: str, *, context: str = "") -> None:

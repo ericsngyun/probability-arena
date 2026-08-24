@@ -23,9 +23,15 @@ def auth_path(tmp_path, monkeypatch):
 
 
 def _valid(**over):
+    from app.microstructure.rows import (LABEL_SCHEMA_VERSION,
+                                         ROW_SCHEMA_VERSION)
     d = {"milestone": A.EXPECTED_MILESTONE, "operator": "eric",
          "authorized_at_utc": datetime.now(timezone.utc).isoformat(),
-         "sessions_complete": 20, "statement": A.REQUIRED_STATEMENT}
+         "sessions_complete": 20, "statement": A.REQUIRED_STATEMENT,
+         "evaluator_fingerprint": A.evaluator_fingerprint(),
+         "preregistration_fingerprint": A.preregistration_fingerprint(),
+         "expected_row_schema": ROW_SCHEMA_VERSION,
+         "expected_label_schema": LABEL_SCHEMA_VERSION}
     d.update(over)
     return d
 
@@ -101,3 +107,58 @@ def test_banner_states_the_posture(auth_path):
     assert "LOCKED" in A.authorization_banner()
     auth_path.write_text(json.dumps(_valid()))
     assert "UNLOCKED" in A.authorization_banner()
+
+
+# --- version binding: an authorization is for ONE exact test ----------------
+
+def test_authorization_is_bound_to_the_running_evaluator(auth_path):
+    auth_path.write_text(json.dumps(_valid(
+        evaluator_fingerprint="0" * 64)))
+    with pytest.raises(A.ConfirmationDataLocked,
+                       match="running evaluator does not match"):
+        A.require_readable(DatasetRole.CONFIRMATION)
+
+
+def test_authorization_is_bound_to_the_preregistration(auth_path):
+    auth_path.write_text(json.dumps(_valid(
+        preregistration_fingerprint="0" * 64)))
+    with pytest.raises(A.ConfirmationDataLocked,
+                       match="preregistration does not match"):
+        A.require_readable(DatasetRole.CONFIRMATION)
+
+
+def test_authorization_is_bound_to_the_schema(auth_path):
+    auth_path.write_text(json.dumps(_valid(expected_row_schema="row-v1")))
+    with pytest.raises(A.ConfirmationDataLocked, match="expects schema"):
+        A.require_readable(DatasetRole.CONFIRMATION)
+
+
+def test_editing_a_frozen_module_invalidates_an_existing_authorization(
+        auth_path, tmp_path, monkeypatch):
+    """The scenario this exists for: a harmless-looking refactor mid-tranche."""
+    auth_path.write_text(json.dumps(_valid()))
+    A.require_readable(DatasetRole.CONFIRMATION)          # valid right now
+
+    target = A.REPO / "app" / "microstructure" / "evaluate.py"
+    original = target.read_bytes()
+    try:
+        target.write_bytes(original + b"\n# a harmless comment\n")
+        with pytest.raises(A.ConfirmationDataLocked,
+                           match="running evaluator does not match"):
+            A.require_readable(DatasetRole.CONFIRMATION)
+    finally:
+        target.write_bytes(original)
+    A.require_readable(DatasetRole.CONFIRMATION)          # valid again
+
+
+def test_fingerprints_are_stable_and_order_independent_of_filesystem():
+    a, b = A.evaluator_fingerprint(), A.evaluator_fingerprint()
+    assert a == b and len(a) == 64
+    assert A.evaluator_fingerprint() != A.preregistration_fingerprint()
+
+
+def test_a_missing_frozen_file_locks_rather_than_skipping_it(monkeypatch):
+    monkeypatch.setattr(A, "FROZEN_EVALUATOR_FILES",
+                        A.FROZEN_EVALUATOR_FILES + ("app/does_not_exist.py",))
+    with pytest.raises(A.ConfirmationDataLocked, match="is missing"):
+        A.evaluator_fingerprint()
