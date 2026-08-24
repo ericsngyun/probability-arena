@@ -544,3 +544,32 @@ def test_mid_grid_is_observability_not_selection(tiny_tape):
     assert any(r["labels"]["1"]["available"] for r in late), (
         "a label failed because the market left the panel, not because the "
         "price was unobservable")
+
+
+# ---------------------------------------------------------------------------
+# The frozen bin-coverage rule used by the tranche verdict
+# ---------------------------------------------------------------------------
+
+def test_coverage_requires_the_whole_300s_interval_inside_the_bin():
+    import importlib.util, pathlib
+    spec = importlib.util.spec_from_file_location(
+        "verdict", pathlib.Path("scripts/kalshi_microstructure_session_verdict.py"))
+    V = importlib.util.module_from_spec(spec); spec.loader.exec_module(V)
+    from app.microstructure import panel as PP
+
+    # TTE 3000 -> 2700 : both in near_event (900, 7200]  -> counts
+    assert V.interval_wholly_within(3000, PP.TTE_NEAR_EVENT) is True
+    # TTE 1000 -> 700 : starts in near_event, ends in live_event -> straddles
+    assert V.interval_wholly_within(1000, PP.TTE_NEAR_EVENT) is False
+    # a bin grazed for one second never counts
+    assert V.interval_wholly_within(901, PP.TTE_NEAR_EVENT) is False
+    # late_resolution: TTE already negative and only getting more so
+    assert V.interval_wholly_within(-10, PP.TTE_LATE_RESOLUTION) is True
+    assert V.interval_wholly_within(100, PP.TTE_LATE_RESOLUTION) is False
+    # live_event spans 0..900, so it is THREE 300 s intervals wide: any start
+    # from 300 to 900 fits wholly inside it, and 299 spills into
+    # late_resolution.
+    assert V.interval_wholly_within(900, PP.TTE_LIVE_EVENT) is True
+    assert V.interval_wholly_within(899, PP.TTE_LIVE_EVENT) is True
+    assert V.interval_wholly_within(300, PP.TTE_LIVE_EVENT) is True
+    assert V.interval_wholly_within(299, PP.TTE_LIVE_EVENT) is False
