@@ -214,3 +214,97 @@ The split is what makes rotation possible at all: a market that was never
 subscribed has no lagged order-book activity to rank, so the panel can only
 rotate within what is already being observed. It also means **the collector is
 never modified** and no mid-session resubscription occurs.
+
+---
+
+## Addendum 2 — 2026-08-23: the tranche schedule, frozen
+
+Supersedes §2's "20 sessions spanning ≥14 days" coverage sketch with a
+mechanical plan. **Blocked on one decision** — see
+[`TRANCHE-SCHEDULE-BLOCKER.md`](TRANCHE-SCHEDULE-BLOCKER.md): two of the five
+TTE bins are unreachable under the frozen `TTE > 600 s` eligibility gate.
+Everything below is frozen and correct either way; only the bin *allocation*
+depends on that decision.
+
+### What "a session covers bin *b*" means
+
+Preregistered here so a session that grazes a bin for one second cannot count:
+
+> A session counts toward TTE bin **b** only if **at least one complete 300 s
+> research panel interval, after warmup, lies wholly within b**.
+
+This reuses the existing 300 s decision block rather than inventing another
+duration. The power gate is then `N_sessions,b ≥ 3` for every bin, under
+exactly this definition.
+
+### Allocation
+
+| primary TTE anchor | sessions |
+|---|---:|
+| `far` | 4 |
+| `approaching` | 4 |
+| `near_event` | 4 |
+| `live_event` | 4 |
+| `late_resolution` | 4 |
+| **total** | **20** |
+
+One session of redundancy per bin over the ≥3 floor. A 3 h session naturally
+contributes to several bins; that is fine. Each session has **one predeclared
+primary target used only for scheduling** — never for deciding which
+observations are retained.
+
+**`live_event` and `late_resolution` are scheduled FIRST.** `far`,
+`approaching` and `near_event` are obtainable simply by starting earlier. The
+in-play bins depend on the venue keeping markets open, on exact event timing,
+and on whether useful book activity continues at all — none of which we have
+evidence for. If a bin proves structurally impossible for a series, that must
+be discovered at session 2, not session 18.
+
+### The scheduling rule
+
+```text
+eligible event/session candidate
+  -> compute session start from occurrence_datetime and the frozen bin edges
+  -> choose the start that places a complete post-warmup 300 s panel interval
+     inside the assigned bin
+  -> freeze event and start time BEFORE capture
+```
+
+**The scheduling variable is event time and TTE coverage. Nothing else.**
+Explicitly not: current price movement, spread, order flow, social or news
+signal, preliminary alpha, or "this game looks active."
+
+### Deterministic replacement
+
+> If a scheduled event is unavailable, or its markets are closed before capture
+> begins, take the next eligible event with the **same primary bin target**,
+> ordered `(occurrence_datetime ASC, ticker ASC)`.
+
+No substituting a more interesting game. The replacement is recorded with the
+reason.
+
+### Series spread
+
+Beyond §2's ≥6-of-8 floor, operationally:
+
+* target all **8** series where feasible;
+* **no series may hold more than 4** primary sessions;
+* **≥6 series represented before session 15**;
+* **≥4 weekend sessions** (all profile and validation sessions were weekdays);
+* each TTE bin spread across **more than one series** where feasible.
+
+This is what stops "M1 works" from quietly meaning "one sport dominated one TTE
+regime." Series is a sampling stratum, never an alpha-selection variable.
+
+### Blind-capture discipline
+
+During the tranche, inspect only: process health, the safety gate, sequence
+integrity, archive conservation, row counts, schema/version correctness,
+power/coverage progress, and per-bin session counts.
+
+Do **not** inspect: feature/return correlations, M0 or M1 coefficients, feature
+importance, directional markouts, "interesting" markets, or preliminary loss
+differences.
+
+**The only adaptive action permitted is scheduling future sessions to satisfy
+already-preregistered coverage constraints** — never to improve a result.
