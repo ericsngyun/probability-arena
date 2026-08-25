@@ -24,7 +24,7 @@ already-preregistered coverage constraints** — never to improve a result.
 
 | order | primary bin | sessions | status |
 |---:|---|---:|---|
-| 1 | `late_resolution` | 4 | **1 of 4 complete** |
+| 1 | `late_resolution` | 4 | **2 of 4 complete** |
 | 2 | `live_event` | 4 | **1 of 4 complete** |
 | 3 | `near_event` | 4 | not started |
 | 4 | `approaching` | 4 | not started |
@@ -56,6 +56,7 @@ fill out the 4/4/4/4/4 allocation.
 |---:|---|---|---|---:|---:|---|
 | 01 | `MMEDGE-S01-late_resolution-20260824` | `late_resolution` | 2026-08-24T00:41:58Z | 10,800 s | 24 | **CLEAN — counts** |
 | 02 | `MMEDGE-S02-live_event-20260824` | `live_event` | 2026-08-24T16:40:00Z | 10,800 s | 24 | **CLEAN — counts** |
+| 03 | `MMEDGE-S03-late_resolution-20260825` | `late_resolution` | 2026-08-25T01:45:04Z | 10,800 s | 8 | **CLEAN — counts** |
 
 ### Session 01 — pre-capture record
 
@@ -425,3 +426,78 @@ anchor scheduler now accepts a coverage-supplied series restriction. Series
 membership is a design quantity like the target bin and the calendar, not an
 activity signal, and the module still cannot see price, volume or wire activity
 for the series it is handed.
+
+### Session 03 — verdict: **OPERATIONALLY CLEAN**, counts toward `late_resolution`
+
+**L1 — PASS.** `capped_time`. `events_received == events_archived == 34,972`.
+Malformed, rejected, rotation failures, sequence faults, reconnects: **0**.
+6 segments. `peak_1s_sliding` **1,042** vs 3,500.
+
+**L2 — PASS.** First tick at open+300 s, gaps exactly `[300.0]`, reason
+vocabulary closed, no ticker/volume in eligibility. **Max panel size 6**, not
+12 — bounded by *availability*, exactly as the 8-market diversity restriction
+predicted.
+
+**L3 — PASS**, with a caveat that matters more than the pass. Schema
+`row-v2`/`label-v2`, 13/17 columns, **no always-missing columns**,
+`dataset_role=CONFIRMATION`, 9,331 rows, 0 dispatch errors — but **minimum M0
+completeness 0.2509** and label coverage **0.251 / 0.249 / 0.241 / 0.170**
+against ~0.99 in S02.
+
+**L4 — earns the bin.**
+
+| | S01 | S02 | **S03** |
+|---|---:|---:|---:|
+| covering intervals | 377 | 24 | **12** |
+| counts toward bin | yes | yes | **yes** |
+| market-blocks | 377 | 396 | **31** |
+| clusters | 21 | 21 | **6** |
+| markets clearing the floor | 24/24 | 23/24 | **6/8** |
+
+Two markets (`KXMLBGAME-26AUG241840TBDET-DET`/`-TB`) were **naturally closed or
+resolved** mid-session. Zero stayed open and failed activity eligibility.
+
+### The finding: post-event baseball is not post-event tennis
+
+The books went quiet as the games ended. Segment write times run
+`01:51 → 01:59 → 02:15 → 02:30 → 02:45 → 02:51` with sizes collapsing
+`2.2M → 1.3M → 1.8M → 396K → 216K → 108K`, and **the last frame arrived at
+~02:51Z — 1 h 54 m before the session's scheduled end**. The capture stayed
+alive and correctly recorded a quiet venue rather than truncating: a quiet
+venue is a measurement.
+
+That is a real venue-structure fact, and it **contradicts the S01 result within
+the same stratum**. S01's post-event *tennis* books were dense — 24 of 24
+markets cleared the floor, 377 blocks. S03's post-event *baseball* books
+decayed to nothing. `late_resolution` is not one regime; it depends on the
+sport's settlement behaviour. Recorded now because it will otherwise look, at
+analysis time, like a property of the bin rather than of the series.
+
+**The low completeness has a mechanical cause worth stating.** Rows are emitted
+only for a publishable book, but a publishable book can be **one-sided** — and
+a quiet post-event book frequently is. With no bid or no ask there is no mid,
+no spread and no microprice, so those columns are absent and `design()` will
+drop the row. **S03's usable sample is ~25% of its 9,331 rows, roughly 2,300**,
+not the row count.
+
+### Tranche ledger after S03
+
+| bin | target | complete | remaining |
+|---|---:|---:|---:|
+| `late_resolution` | 4 | **2** | 2 |
+| `live_event` | 4 | 1 | 3 |
+| `near_event` | 4 | 0 | 4 |
+| `approaching` | 4 | 0 | 4 |
+| `far` | 4 | 0 | 4 |
+
+| quantity | accumulated | floor | note |
+|---|---:|---:|---|
+| market-blocks | **804** (377+396+31) | 4,000 | S03 added 31, not ~280 as projected |
+| clusters | **48** (21+21+6) | 150 | |
+| series represented | **3 of 8** (`KXWTAMATCH`, `KXATPMATCH`, `KXMLBGAME`) | ≥6 | diversity advanced |
+| weekend sessions | **1** | ≥4 | S03 was Sunday 21:45 ET → **weekday** |
+
+**The 280-block projection for S03 was wrong by ~9×.** It assumed 8 markets ×
+35 intervals. What actually bound the session was neither K nor the market
+count but **the venue going quiet**, which no projection anticipated because
+S01 had shown the opposite in the same bin.
