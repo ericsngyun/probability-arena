@@ -93,6 +93,22 @@ class TokenResolutionStatus(str, Enum):
     #: is the ceiling of any offline resolver and it is NOT joinable.
     TEXT_CANDIDATE = "TEXT_CANDIDATE"
 
+    #: GATE 1 PASSED. The address is a real, initialized SPL mint and its
+    #: chain facts are known. This says NOTHING about whether the artifact
+    #: referred to it -- a competitor's genuine mint quoted in a scam post
+    #: reaches exactly this state. Not joinable.
+    CHAIN_VERIFIED = "CHAIN_VERIFIED"
+
+    #: Gate 1 passed and gate 2 has been ATTEMPTED but found no authoritative
+    #: binding. Distinct from a refusal: the check ran and came back empty,
+    #: which is a measurement. Not joinable.
+    CORROBORATION_PENDING = "CORROBORATION_PENDING"
+
+    #: Gate 2 found evidence that CONTRADICTS the binding -- an authoritative
+    #: source naming a different mint, or disavowing this one. Louder than
+    #: "unsupported", because someone authoritative said otherwise.
+    CONFLICTING_EVIDENCE = "CONFLICTING_EVIDENCE"
+
     #: The mint exists on chain AND independent context corroborates that
     #: THIS post refers to THAT token. The only joinable status.
     CANONICALLY_VERIFIED = "CANONICALLY_VERIFIED"
