@@ -32,6 +32,21 @@ def fail(msg: str) -> int:
     return 2
 
 
+def _commit_state(expected: str) -> tuple[bool, str, str]:
+    """HEAD must be clean AND exactly the authorised commit."""
+    commit = subprocess.run(["git", "-C", str(REPO), "rev-parse", "HEAD"],
+                            capture_output=True, text=True).stdout.strip()
+    dirty = subprocess.run(["git", "-C", str(REPO), "status", "--porcelain"],
+                           capture_output=True, text=True).stdout.strip()
+    if dirty:
+        return False, commit, ("working tree is dirty; a confirmation session "
+                               f"must run from committed code:\n{dirty[:400]}")
+    if not commit.startswith(expected) and not expected.startswith(commit[:len(expected)]):
+        return False, commit, (f"HEAD is {commit[:12]}, but this session is "
+                               f"authorised for {expected}")
+    return True, commit, ""
+
+
 def main(argv) -> int:
     import argparse
     ap = argparse.ArgumentParser()
@@ -45,6 +60,11 @@ def main(argv) -> int:
     ap.add_argument("--root-base", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--max-events", type=int, default=40_000_000)
+    ap.add_argument("--expected-commit", required=True,
+                    help="the exact commit authorised to run this session. "
+                         "Verified at preflight AND again immediately before "
+                         "the socket opens; a drift between the two is a "
+                         "refusal, never a silent upgrade.")
     a = ap.parse_args(argv[1:])
 
     sched = json.loads(Path(a.schedule).read_text())
@@ -84,14 +104,10 @@ def main(argv) -> int:
         return fail(f"{root} exists and is not empty; a session owns its root")
     print(f"  archive root          fresh: {root}", flush=True)
 
-    commit = subprocess.run(["git", "-C", str(REPO), "rev-parse", "HEAD"],
-                            capture_output=True, text=True).stdout.strip()
-    dirty = subprocess.run(["git", "-C", str(REPO), "status", "--porcelain"],
-                           capture_output=True, text=True).stdout.strip()
-    if dirty:
-        return fail(f"working tree is dirty; a confirmation session must run "
-                    f"from committed code:\n{dirty[:400]}")
-    print(f"  code commit           {commit[:12]} (clean)", flush=True)
+    ok, commit, why = _commit_state(a.expected_commit)
+    if not ok:
+        return fail(why)
+    print(f"  code commit           {commit[:12]} (clean, pinned)", flush=True)
     print(f"  schema                {ROW_SCHEMA_VERSION} / {LABEL_SCHEMA_VERSION}",
           flush=True)
     print(f"  mode                  {a.mode}", flush=True)
@@ -107,6 +123,15 @@ def main(argv) -> int:
 
     while datetime.now(timezone.utc) < start:
         time.sleep(5)
+
+    # RE-VERIFY AFTER THE WAIT. Hours pass between preflight and launch, and
+    # the tree can move in that time -- a pull, a merge, a stray edit. The
+    # session is authorised for ONE commit, so drift is a refusal rather than
+    # a silent upgrade to whatever happens to be checked out now.
+    ok, now_commit, why = _commit_state(a.expected_commit)
+    if not ok:
+        return fail(f"commit drifted between preflight and launch: {why}")
+    print(f"  re-verified at launch: {now_commit[:12]}", flush=True)
 
     cmd = [sys.executable,
            str(REPO / "scripts" / "kalshi_microstructure_capture_runner.py"),

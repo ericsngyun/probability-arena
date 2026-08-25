@@ -134,3 +134,63 @@ def test_support_ledger_is_not_reachable_from_the_evaluator():
     assert not any("support" in m for m in mods), mods
     names = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
     assert not any("support_ledger" in n for n in names)
+
+
+# --- metadata provenance: wrong metadata must REFUSE, not return zero rows ---
+
+def _session(sid="s-1", tickers=("A", "B", "C")):
+    return {"session_id": sid, "subscribed": list(tickers),
+            "capture_commit": "cafe"}
+
+
+def _events(tickers=("A", "B", "C"), series="KXTEST"):
+    return {t: {"series": series, "occurrence_datetime": "2026-08-25T01:40:00Z"}
+            for t in tickers}
+
+
+def test_positive_control_matching_metadata_is_accepted():
+    p = S.assert_metadata_matches_session(_session(), _events())
+    assert p["session_id"] == "s-1" and p["markets"] == 3
+    assert len(p["candidate_universe_hash"]) == 64
+    assert len(p["candidate_metadata_hash"]) == 64
+
+
+def test_a_plausible_file_from_another_session_is_refused():
+    """The demonstrated defect: S01 paired with another session's events file
+    produced zero rows and no error."""
+    other = _events(("X", "Y", "Z"))          # same shape, same series, wrong set
+    with pytest.raises(S.MetadataProvenanceMismatch, match="PROVENANCE_MISMATCH"):
+        S.assert_metadata_matches_session(_session(), other)
+
+
+def test_a_subset_or_superset_is_refused_not_tolerated():
+    with pytest.raises(S.MetadataProvenanceMismatch):
+        S.assert_metadata_matches_session(_session(), _events(("A", "B")))
+    with pytest.raises(S.MetadataProvenanceMismatch):
+        S.assert_metadata_matches_session(_session(), _events(("A", "B", "C", "D")))
+
+
+def test_a_session_with_no_subscribed_set_refuses_rather_than_passing():
+    with pytest.raises(S.MetadataProvenanceMismatch, match="no subscribed set"):
+        S.assert_metadata_matches_session({"session_id": "s"}, _events())
+
+
+def test_universe_hash_is_order_independent_but_content_sensitive():
+    assert (S.candidate_universe_hash(["A", "B"])
+            == S.candidate_universe_hash(["B", "A"]))
+    assert (S.candidate_universe_hash(["A", "B"])
+            != S.candidate_universe_hash(["A", "C"]))
+
+
+def test_metadata_hash_notices_a_changed_event_time():
+    a = _events()
+    b = _events()
+    b["A"]["occurrence_datetime"] = "2026-08-25T02:40:00Z"
+    assert S.candidate_metadata_hash(a) != S.candidate_metadata_hash(b)
+
+
+def test_the_refusal_names_what_actually_differs():
+    with pytest.raises(S.MetadataProvenanceMismatch) as exc:
+        S.assert_metadata_matches_session(_session(), _events(("A", "B", "Q")))
+    msg = str(exc.value)
+    assert "'C'" in msg and "'Q'" in msg, "the refusal must name the divergence"

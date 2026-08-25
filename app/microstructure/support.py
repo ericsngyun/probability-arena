@@ -25,6 +25,8 @@ and ≥150 cluster thresholds are untouched, and the evaluator's own
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import asdict, dataclass
 
 from app.microstructure import features as F
@@ -101,4 +103,69 @@ def support_ledger(rows: list[dict]) -> dict:
         "changes_no_floor": True,
         "sessions": out,
         "tranche_totals_by_horizon": totals,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Metadata provenance (repair, 2026-08-25)
+#
+# A demonstrated measurement defect, not a hypothetical one. Pairing S01 with
+# another session's candidate-metadata file produced **zero rows and no error**:
+# the market keys simply did not match the tape, every row was skipped, and the
+# ledger reported two sessions where three were expected. Nothing intrinsically
+# said which session had been mis-paired.
+#
+# That is the doctrine-7 shape -- a silent empty result that looks like a valid
+# measurement of nothing. The fix binds the metadata to the session it came
+# from and REFUSES on a mismatch.
+# ---------------------------------------------------------------------------
+
+
+class MetadataProvenanceMismatch(RuntimeError):
+    """The supplied metadata does not belong to this session."""
+
+
+def candidate_universe_hash(tickers) -> str:
+    """Order-independent digest of the subscribed set."""
+    payload = "\n".join(sorted(tickers))
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def candidate_metadata_hash(events: dict) -> str:
+    """Digest of the full metadata mapping, including series and event times."""
+    canon = json.dumps(
+        {t: {"series": events[t]["series"],
+             "occurrence_datetime": events[t]["occurrence_datetime"]}
+         for t in sorted(events)}, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canon.encode()).hexdigest()
+
+
+def assert_metadata_matches_session(session: dict, events: dict) -> dict:
+    """Bind metadata to a capture. Raises rather than yielding nothing.
+
+    Checked on the SUBSCRIBED SET, which the session records at capture time,
+    so a plausible file from a different session of the same shape -- 24
+    markets, same series, same day -- is still refused.
+    """
+    subscribed = list(session.get("subscribed") or [])
+    if not subscribed:
+        raise MetadataProvenanceMismatch(
+            f"session {session.get('session_id')!r} records no subscribed set; "
+            "provenance cannot be established and the ledger refuses to guess")
+    want, got = set(subscribed), set(events)
+    if want != got:
+        missing, extra = sorted(want - got)[:3], sorted(got - want)[:3]
+        raise MetadataProvenanceMismatch(
+            f"METADATA_PROVENANCE_MISMATCH for session "
+            f"{session.get('session_id')!r}: the supplied metadata describes "
+            f"{len(got)} markets, the capture subscribed {len(want)}. "
+            f"missing from metadata: {missing}; not subscribed: {extra}. "
+            "This is refused rather than producing zero rows, which is what "
+            "the mismatch previously did.")
+    return {
+        "session_id": session.get("session_id"),
+        "candidate_universe_hash": candidate_universe_hash(subscribed),
+        "candidate_metadata_hash": candidate_metadata_hash(events),
+        "capture_commit": session.get("capture_commit"),
+        "markets": len(subscribed),
     }
