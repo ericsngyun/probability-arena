@@ -30,6 +30,16 @@ from app.microstructure.rows import (  # noqa: E402
 
 REST = "https://api.elections.kalshi.com/trade-api/v2"
 
+#: Statuses at which a market can still trade.
+#:
+#: `open` is a QUERY FILTER, not a status value: `?status=open` returns markets
+#: whose own `status` field reads **`active`**. Checking for `"open"` therefore
+#: rejected 24 perfectly live markets on the guard's first live firing. Dead
+#: states are `closed`, `determined` and `finalized` -- S04's candidates were
+#: all `finalized`. Both spellings are accepted so a venue rename cannot
+#: silently turn every session into a refusal.
+LIVE_STATUSES = frozenset({"active", "open"})
+
 
 def market_status(ticker: str) -> str | None:
     """Read-only GET of one market's lifecycle status."""
@@ -140,9 +150,9 @@ def main(argv) -> int:
     # day, because all 24 had closed or resolved. Timing feasibility is not
     # market liveness, and a dead candidate set burns a whole session slot.
     statuses = {t: market_status(t) for t in markets}
-    open_now = [t for t, st in statuses.items() if st == "open"]
+    open_now = [t for t, st in statuses.items() if st in LIVE_STATUSES]
     unknown = [t for t, st in statuses.items() if st is None]
-    print(f"  candidate liveness    {len(open_now)}/{len(markets)} open"
+    print(f"  candidate liveness    {len(open_now)}/{len(markets)} live"
           f"{f', {len(unknown)} unreadable' if unknown else ''}", flush=True)
     if not open_now and not unknown:
         return fail(
