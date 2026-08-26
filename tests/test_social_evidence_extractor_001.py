@@ -19,6 +19,10 @@ from app.seam.corroboration import (
     decide_corroboration,
 )
 from app.seam.token import TokenResolutionStatus as T
+from app.social.source_authority import (
+    AuthorityEvidence, AuthorityEvidenceKind as AK, AuthorityState,
+    resolve_authority,
+)
 
 X = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 Y = "So11111111111111111111111111111111111111112"
@@ -41,10 +45,31 @@ def claims_for(raws):
     return extract_claims({"artifact_id": "a1"}, Stub(raws), model="stub-1")
 
 
-def verdict(claims, candidate):
+def aev(kind, subject="acct", named=None, ref="ae", project="Proj"):
+    return AuthorityEvidence(kind=kind, project=project,
+                             subject_source_id=subject, named_source_id=named,
+                             evidence_ref=ref, evidence_sha256="0"*64,
+                             observed_at_utc=NOW)
+
+
+def authoritative(source="acct"):
+    """A mutually-attested account: site names it, it names the domain."""
+    return resolve_authority(project="Proj", source_id=source, evidence=[
+        aev(AK.SITE_LINKS_ACCOUNT, source, ref="site"),
+        aev(AK.ACCOUNT_LINKS_DOMAIN, source, ref="acct"),
+    ])
+
+
+def verdict(claims, candidate, authority=None):
+    """Authority defaults to a resolved AUTHORITATIVE account.
+
+    Passing None instead exercises the UNRESOLVED path, which must NOT bind.
+    """
+    auth = authoritative() if authority == "default" or authority is None else authority
     return decide_corroboration(
         candidate_mint=candidate, chain_verified=True,
-        evidence=[to_gate2_evidence(c, observed_at_utc=NOW) for c in claims])
+        evidence=[to_gate2_evidence(c, observed_at_utc=NOW, authority=auth)
+                  for c in claims])
 
 
 # --- the boundary: no decision may travel through a claim -------------------
@@ -244,3 +269,78 @@ def test_every_claim_the_model_returns_survives_to_the_gate():
     c = claims_for(rs)
     assert len(c) == len(rs) == 3
     assert len({cl.evidence_span_hash for cl in c}) == 3
+
+
+# --- the impersonator loophole, closed ---------------------------------------
+
+def test_a_convincing_impersonator_publishing_a_REAL_mint_does_not_verify():
+    """Gate 1 passes. The extractor is perfectly correct. Gate 2 must refuse.
+
+    The impersonator even links to the project's domain -- anyone can link
+    outward. What it cannot produce is the project's own surface naming it.
+    """
+    imp = resolve_authority(project="Proj", source_id="fake_proj", evidence=[
+        aev(AK.ACCOUNT_LINKS_DOMAIN, "fake_proj", ref="fake-links-out"),
+        aev(AK.SITE_LINKS_ACCOUNT, "real_proj", ref="site-names-real"),
+        aev(AK.NAMES_DIFFERENT_ACCOUNT, "fake_proj", named="real_proj",
+            ref="site-says-real"),
+    ])
+    assert imp.state is AuthorityState.IMPERSONATOR
+    assert imp.can_bind is False
+    c = claims_for([raw(X, R.PUBLISHED_MINT, SS.CLAIMED_OFFICIAL_ACCOUNT,
+                        SO.DIRECT, who="fake_proj")])
+    assert verdict(c, X, authority=imp).status is T.CORROBORATION_PENDING
+
+
+def test_unresolved_authority_fails_CLOSED():
+    """Omitting the resolution must not fall back to 'official'."""
+    c = claims_for([raw(X, R.PUBLISHED_MINT, SS.CLAIMED_OFFICIAL_ACCOUNT, SO.DIRECT)])
+    e = to_gate2_evidence(c[0], observed_at_utc=NOW, authority=None)
+    assert e.authority is A.UNKNOWN
+    d = decide_corroboration(candidate_mint=X, chain_verified=True, evidence=[e])
+    assert d.status is T.CORROBORATION_PENDING
+
+
+def test_only_AUTHORITATIVE_can_bind_not_CORROBORATED():
+    corr = resolve_authority(project="Proj", source_id="acct", evidence=[
+        aev(AK.SITE_LINKS_ACCOUNT, "acct", ref="one-way"),
+        aev(AK.LAUNCHPAD_IDENTIFIES_ACCOUNT, "acct", ref="launchpad"),
+    ])
+    assert corr.state is AuthorityState.CORROBORATED
+    assert corr.can_bind is False, "corroborated is real evidence, not attestation"
+    c = claims_for([raw(X, R.PUBLISHED_MINT, SS.CLAIMED_OFFICIAL_ACCOUNT, SO.DIRECT)])
+    assert verdict(c, X, authority=corr).status is T.CORROBORATION_PENDING
+
+
+def test_one_directional_linkage_alone_is_unverified():
+    """Anyone can link to a project's website."""
+    r = resolve_authority(project="Proj", source_id="acct", evidence=[
+        aev(AK.ACCOUNT_LINKS_DOMAIN, "acct", ref="links-out")])
+    assert r.state is AuthorityState.UNVERIFIED and r.can_bind is False
+
+
+def test_mutual_attestation_binds():
+    a = authoritative()
+    assert a.state is AuthorityState.AUTHORITATIVE and a.can_bind is True
+
+
+def test_disagreeing_authoritative_surfaces_are_CONFLICTING_not_authoritative():
+    r = resolve_authority(project="Proj", source_id="acct", evidence=[
+        aev(AK.SITE_LINKS_ACCOUNT, "acct", ref="site"),
+        aev(AK.ACCOUNT_LINKS_DOMAIN, "acct", ref="acct"),
+        aev(AK.NAMES_DIFFERENT_ACCOUNT, "acct", named="other", ref="disagree"),
+    ])
+    assert r.state is AuthorityState.CONFLICTING and r.can_bind is False
+
+
+def test_binding_states_is_one_member():
+    from app.social.source_authority import BINDING_STATES
+    assert BINDING_STATES == frozenset({AuthorityState.AUTHORITATIVE})
+
+
+def test_authority_resolution_has_no_score_to_threshold():
+    from app.social.source_authority import AuthorityEvidence as AE, AuthorityResolution as AR
+    for cls in (AE, AR):
+        for n in cls.__dataclass_fields__:
+            assert not any(b in n.lower() for b in
+                           ("score", "confidence", "probability", "weight"))

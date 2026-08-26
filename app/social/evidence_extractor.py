@@ -29,6 +29,7 @@ from typing import Protocol
 from app.seam.corroboration import (
     BindingKind, CorroborationEvidence, ProvenanceScope, SourceAuthority,
 )
+from app.social.source_authority import AuthorityResolution
 
 EXTRACTOR_VERSION = "social-evidence-extractor-v1"
 
@@ -163,13 +164,12 @@ def extract_claims(artifact: dict, extractor: ClaimExtractor, *,
 # Adapter: typed claims -> Gate 2 evidence. Lossless and mechanical.
 # ---------------------------------------------------------------------------
 
-#: A CLAIMED official surface becomes an official authority only here, and the
-#: mapping is deliberately narrow: a third-party account claiming to represent
-#: a project is NOT an official surface, however it describes itself.
-_SURFACE_TO_AUTHORITY = {
-    SourceSurface.CLAIMED_OFFICIAL_ACCOUNT: SourceAuthority.OFFICIAL_PROJECT_SURFACE,
-    SourceSurface.CLAIMED_OFFICIAL_SITE: SourceAuthority.OFFICIAL_PROJECT_SURFACE,
-    SourceSurface.LAUNCHPAD_PAGE: SourceAuthority.OFFICIAL_PROJECT_SURFACE,
+#: A surface that is not even CLAIMED to be official can never be one, whatever
+#: the authority resolver says -- this floor is applied first.
+_SURFACE_FLOOR = {
+    SourceSurface.CLAIMED_OFFICIAL_ACCOUNT: None,   # may be resolved upward
+    SourceSurface.CLAIMED_OFFICIAL_SITE: None,
+    SourceSurface.LAUNCHPAD_PAGE: None,
     SourceSurface.THIRD_PARTY_ACCOUNT: SourceAuthority.THIRD_PARTY,
     SourceSurface.UNKNOWN_SURFACE: SourceAuthority.UNKNOWN,
 }
@@ -204,16 +204,38 @@ _ORIGIN_TO_SCOPE = {
 }
 
 
-def to_gate2_evidence(claim: EvidenceClaim, *,
-                      observed_at_utc: str) -> CorroborationEvidence:
+def to_gate2_evidence(claim: EvidenceClaim, *, observed_at_utc: str,
+                      authority: AuthorityResolution | None = None
+                      ) -> CorroborationEvidence:
+    """Claim -> Gate 2 evidence, with authority RESOLVED rather than claimed.
+
+    The extractor's `source_surface` is a claim the model made. Letting it
+    become `OFFICIAL_PROJECT_SURFACE` directly is the impersonator loophole:
+    Gate 1 passes on a real mint, the extractor reads the post correctly, and
+    Gate 2 verifies the wrong token because nobody checked who was speaking.
+
+    An `AuthorityResolution` is therefore REQUIRED to reach official standing.
+    Omitting it does not fail open -- the evidence degrades to `UNKNOWN`, which
+    Gate 2 will not bind on.
+    """
+    floor = _SURFACE_FLOOR[claim.source_surface]
+    if floor is not None:
+        resolved = floor                       # never claimed official at all
+    elif authority is not None and authority.can_bind:
+        resolved = SourceAuthority.OFFICIAL_PROJECT_SURFACE
+    elif authority is not None:
+        resolved = SourceAuthority.THIRD_PARTY
+    else:
+        resolved = SourceAuthority.UNKNOWN     # unresolved is NOT official
     return CorroborationEvidence(
         kind=_RELATIONSHIP_TO_KIND[claim.relationship],
-        authority=_SURFACE_TO_AUTHORITY[claim.source_surface],
+        authority=resolved,
         scope=_ORIGIN_TO_SCOPE[claim.span_origin],
         subject_mint=claim.candidate_mint,
         evidence_ref=f"{claim.artifact_id}:{claim.evidence_span_hash[:12]}",
         evidence_sha256=claim.evidence_span_hash,
         observed_at_utc=observed_at_utc,
         detail=f"{claim.relationship.value} via {claim.source_surface.value} "
-               f"({claim.span_origin.value}) by {claim.source_identity}",
+               f"({claim.span_origin.value}) by {claim.source_identity}; "
+               f"authority={authority.state.value if authority else 'UNRESOLVED'}",
     )
