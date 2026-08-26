@@ -124,10 +124,21 @@ def verdict(session_path: Path, events_path: Path, target_bin: str,
                                "sequence-fault state", "session remaining"],
         "ticker_or_volume_in_eligibility": False,   # proven by AST guard in tests
     }
-    L2["PASS"] = bool(L2["first_tick_at_open_plus_300s"]
-                      and L2["no_warmup_tick_emitted_a_panel"]
-                      and L2["cadence_exactly_300s"] and L2["k_respected"]
-                      and L2["reason_vocabulary_closed"])
+    # A PASS on zero ticks is VACUOUS -- every clause is trivially true when
+    # nothing happened, which is the doctrine-7 shape: a green light that means
+    # "we measured nothing". S04 exposed this by producing 0 ticks and passing.
+    L2["ticks"] = len(ticks)
+    if not ticks:
+        L2["PASS"] = False
+        L2["VACUOUS"] = True
+        L2["note"] = ("no decision tick occurred, so no sampling property was "
+                      "exercised; this is NOT a pass")
+    else:
+        L2["VACUOUS"] = False
+        L2["PASS"] = bool(L2["first_tick_at_open_plus_300s"]
+                          and L2["no_warmup_tick_emitted_a_panel"]
+                          and L2["cadence_exactly_300s"] and L2["k_respected"]
+                          and L2["reason_vocabulary_closed"])
 
     # ---- layer 3: dataset validity ------------------------------------
     sched = PanelSchedule(ticks=[
@@ -161,8 +172,18 @@ def verdict(session_path: Path, events_path: Path, target_bin: str,
         "rows_emitted": rep["rows_emitted"],
         "dispatch_errors": rep["dispatch_errors"],
     }
-    L3["PASS"] = bool(L3["schema_is_v2"] and not always_missing
-                      and not L3["dispatch_errors"])
+    # Same trap: `always_missing_columns` is empty when there are no rows to
+    # check, and completeness is None. Passing on that would certify an empty
+    # dataset as a good one.
+    if not rows:
+        L3["PASS"] = False
+        L3["VACUOUS"] = True
+        L3["note"] = ("no research row was emitted, so no dataset property "
+                      "was exercised; this is NOT a pass")
+    else:
+        L3["VACUOUS"] = False
+        L3["PASS"] = bool(L3["schema_is_v2"] and not always_missing
+                          and not L3["dispatch_errors"])
 
     # ---- layer 4: coverage outcome ------------------------------------
     covering = []
@@ -212,7 +233,10 @@ def verdict(session_path: Path, events_path: Path, target_bin: str,
             "session_id": S["session_id"], "target_bin": target_bin,
             "L1_capture_validity": L1, "L2_sampling_validity": L2,
             "L3_dataset_validity": L3, "L4_coverage_outcome": L4,
-            "OPERATIONALLY_CLEAN": bool(L1["PASS"] and L2["PASS"] and L3["PASS"])}
+            "OPERATIONALLY_CLEAN": bool(L1["PASS"] and L2["PASS"] and L3["PASS"]),
+            "CAPTURE_HEALTHY_BUT_EMPTY": bool(
+                L1["PASS"] and (L2.get("VACUOUS") or L3.get("VACUOUS"))),
+            "counts_toward_target_bin": L4["counts_toward_target_bin"]}
 
 
 def main(argv) -> int:

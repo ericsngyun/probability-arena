@@ -15,6 +15,7 @@ import os
 import subprocess
 import sys
 import time
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -25,6 +26,20 @@ from app.microstructure.panel import (  # noqa: E402
     HARD_STOP_FPS, NEVER_EXCEED_CONCURRENCY, assert_capacity_relationship)
 from app.microstructure.rows import (  # noqa: E402
     LABEL_SCHEMA_VERSION, ROW_SCHEMA_VERSION)
+
+
+REST = "https://api.elections.kalshi.com/trade-api/v2"
+
+
+def market_status(ticker: str) -> str | None:
+    """Read-only GET of one market's lifecycle status."""
+    try:
+        req = urllib.request.Request(f"{REST}/markets/{ticker}",
+                                     headers={"Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return (json.load(r).get("market") or {}).get("status")
+    except Exception:
+        return None
 
 
 def fail(msg: str) -> int:
@@ -119,6 +134,22 @@ def main(argv) -> int:
         return fail(f"scheduled start {start.isoformat()} is already past")
     print(f"  scheduled start       {start.isoformat()} "
           f"(in {(start - now).total_seconds() / 3600:.2f} h)", flush=True)
+    # LIVENESS. Hours pass between freezing a candidate set and opening the
+    # socket, and markets close in between. S04 froze 24 KXMLBHR markets that
+    # were open at 05:01Z and captured 27 frames in 16 ms at 01:45Z the next
+    # day, because all 24 had closed or resolved. Timing feasibility is not
+    # market liveness, and a dead candidate set burns a whole session slot.
+    statuses = {t: market_status(t) for t in markets}
+    open_now = [t for t, st in statuses.items() if st == "open"]
+    unknown = [t for t, st in statuses.items() if st is None]
+    print(f"  candidate liveness    {len(open_now)}/{len(markets)} open"
+          f"{f', {len(unknown)} unreadable' if unknown else ''}", flush=True)
+    if not open_now and not unknown:
+        return fail(
+            f"every one of the {len(markets)} frozen candidates is closed or "
+            f"resolved ({sorted(set(s for s in statuses.values() if s))}). "
+            f"Capturing would produce a dead tape and consume a session slot; "
+            f"reschedule under the frozen replacement rule instead.")
     print("=== PREFLIGHT PASSED — waiting ===", flush=True)
 
     while datetime.now(timezone.utc) < start:
