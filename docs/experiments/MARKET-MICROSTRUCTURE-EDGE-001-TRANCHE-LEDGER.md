@@ -501,3 +501,42 @@ not the row count.
 35 intervals. What actually bound the session was neither K nor the market
 count but **the venue going quiet**, which no projection anticipated because
 S01 had shown the opposite in the same bin.
+
+---
+
+## How to read S05 — written before the session closes
+
+**Lifecycle compatibility and activity density are different claims, and S05
+can only speak to one of them.**
+
+The lifecycle rule claims exactly this: `KXATPMATCH × late_resolution` is
+*structurally capable* of remaining open after `occurrence_datetime`, because
+ATP contracts settle a median **+3.82 h** past that anchor. It claims **nothing**
+about how much those markets will trade once open. A compatible stratum can be
+quiet.
+
+### The interpretation ladder
+
+| S05 outcome | reading |
+|---|---|
+| candidates already **closed at launch** | a **lifecycle/preflight** problem — the rule or the guard is wrong |
+| candidates **open** but fail the 30-events/300 s gate | **structurally compatible, operationally quiet** — the lifecycle rule worked |
+| **some** markets qualify | a valid **sparse** late-resolution session |
+| **dense/full** panels | a valid **dense** late-resolution session |
+
+Only the first row is evidence against the lifecycle rule. The second is
+consistent with it: the markets were reachable and simply had little trade.
+
+### What must not happen
+
+**No comparison with S01 may alter any rule.** I had framed S05 as "should look
+like S01 rather than S03/S04", which quietly promotes a density comparison into
+a test of a compatibility claim. It is not one. S05 may earn its bin weakly, or
+fail the activity gate entirely, without invalidating lifecycle compatibility —
+and it may look dense without confirming anything beyond that one slate.
+
+If S05 fails on activity, the frozen contingency rule applies exactly as it did
+for S04: the session stays in the corpus, is never relabelled, and its
+obligation goes to S21+. **The lifecycle table is not re-derived from it.** That
+table was measured from settlement metadata over 200 markets per series and is
+not a hypothesis this session tests.
