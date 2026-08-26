@@ -60,3 +60,49 @@ Any preregistered experiment, any guard protecting an experiment's integrity
 conservation or refusal path. For these, **a mutation campaign is part of the
 test, not a review of it** — a suite that has not had its own mechanisms
 deleted has not been checked.
+
+---
+
+## Never establish remote process existence with `pgrep -f`
+
+**Rule.** Do not use `pgrep -f <pattern>` to decide whether a remote process
+exists when the pattern appears in the SSH command line. It matches its own
+invocation.
+
+This has now fired three times in one milestone, and **every time in the
+reassuring direction**:
+
+| what it claimed | what was true |
+|---|---|
+| "CAPTURE STILL RUNNING — DO NOT MERGE" | no capture was running; the merge was safe |
+| "MICROSTRUCTURE STILL RUNNING" | EVO was idle |
+| "LAUNCHED" | S05 had not launched; it was still 42 minutes from its start |
+
+A false *running* is worse than a false *stopped*: it makes us believe a
+capture, a guard or a session exists when it does not, and it is exactly the
+class of silent-wrongness this project keeps guarding against elsewhere.
+
+### Use instead
+
+* a PID the process itself recorded, confirmed with `kill -0`;
+* systemd unit state, where the process is systemd-managed;
+* a **script file on the remote host**, so the pattern never appears in the
+  invocation;
+* `/proc/<pid>/cmdline`, after resolving the PID from a non-self-referential
+  source.
+
+### For tranche sessions, prefer artifact-backed state
+
+`scripts/kalshi_session_state.py` implements it. Process search is
+**diagnostic only**; the state machine turns on artifacts the session itself
+creates:
+
+```text
+ARMED     arm process alive, no session root yet
+LAUNCHED  session root + genesis exist, capture PID recorded and alive
+RUNNING   as LAUNCHED, and the archive is accumulating
+CLOSED    terminal session artifact written
+```
+
+The existence of the archive is then part of the proof of launch, rather than
+something inferred from a string match.
