@@ -118,7 +118,7 @@ def test_an_unrepresented_series_is_preferred_over_a_used_one():
     st = C.state_from_ledger([S01, S02])
     out = C.choose_slate(st, [C.SlateOption(
         "2026-08-26", ("KXATPMATCH", "KXMLBGAME"))],
-        target_bin=TTE_LATE_RESOLUTION)
+        target_bin=TTE_NEAR_EVENT)
     assert out["preferred_series"] == "KXMLBGAME"
     assert "not yet represented" in out["reason"]
 
@@ -155,9 +155,11 @@ def test_weekend_dominates_only_when_it_becomes_binding():
 
 def test_weekend_is_only_a_tiebreak_when_not_binding():
     st = C.state_from_ledger([S01, S02])
+    # NEAR_EVENT: a pre-anchor bin, so lifecycle compatibility is not the
+    # thing under test here -- diversity-vs-weekend ordering is.
     out = C.choose_slate(st, [C.SlateOption("2026-08-26", ("KXMLBGAME",)),
                               C.SlateOption("2026-08-29", ("KXATPMATCH",))],
-                         target_bin=TTE_LATE_RESOLUTION)
+                         target_bin=TTE_NEAR_EVENT)
     assert out["weekend_quota_binding"] is False
     # diversity wins: the unrepresented series on the weekday beats the
     # already-used series on the weekend
@@ -179,7 +181,7 @@ def test_choice_is_deterministic():
 def test_audit_artifact_has_every_required_field():
     st = C.state_from_ledger([S01, S02])
     out = C.choose_slate(st, [C.SlateOption("2026-08-26", ("KXMLBGAME",))],
-                         target_bin=TTE_LATE_RESOLUTION)
+                         target_bin=TTE_NEAR_EVENT)
     required = {"target_bin", "bin_remaining_before", "series_budget_before",
                 "weekend_remaining_before", "eligible_slates",
                 "selected_day_et", "reason", "series_budget_after_projected"}
@@ -189,7 +191,7 @@ def test_audit_artifact_has_every_required_field():
 def test_projected_budget_reflects_the_choice():
     st = C.state_from_ledger([S01, S02])
     out = C.choose_slate(st, [C.SlateOption("2026-08-26", ("KXMLBGAME",))],
-                         target_bin=TTE_LATE_RESOLUTION)
+                         target_bin=TTE_NEAR_EVENT)
     assert out["series_budget_before"]["KXMLBGAME"] == 4
     assert out["series_budget_after_projected"]["KXMLBGAME"] == 3
 
@@ -274,3 +276,74 @@ def test_no_hypothesis_quantity_appears_in_the_deficit_rule():
     names |= {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
     for banned in ("cell", "horizon", "fdr", "verdict", "p_value", "loss"):
         assert not any(banned in n.lower() for n in names)
+
+
+# --- lifecycle compatibility (forward rule, frozen after S04) ---------------
+
+def test_late_resolution_is_only_compatible_with_series_that_outlive_the_anchor():
+    """S04 captured 27 frames in 16ms because every candidate had FINALIZED.
+
+    For MLB/WNBA the contract settles at or before `occurrence_datetime`, so a
+    TTE<0 session begins after settlement. This is a contract property measured
+    from published metadata, not an activity or outcome observation.
+    """
+    compat = C.compatible_series(TTE_LATE_RESOLUTION)
+    assert set(compat) == {"KXATPMATCH", "KXWTAMATCH"}
+    for dead in ("KXMLBHR", "KXMLBGAME", "KXMLBTOTAL", "KXWNBAGAME",
+                 "KXWNBATOTAL", "KXNFLGAME"):
+        ok, why = C.lifecycle_compatible(dead, TTE_LATE_RESOLUTION)
+        assert ok is False and why
+
+
+def test_pre_anchor_bins_exclude_nothing():
+    """TTE>0 is before the anchor, so every series is still live there."""
+    for b in (TTE_FAR, TTE_APPROACHING, TTE_NEAR_EVENT, TTE_LIVE_EVENT):
+        assert set(C.compatible_series(b)) == set(C.ELIGIBLE_SERIES)
+
+
+def test_the_rule_is_about_window_length_not_just_sign():
+    """NFL settles AFTER occurrence, but only by 7 minutes."""
+    ok, why = C.lifecycle_compatible("KXNFLGAME", TTE_LATE_RESOLUTION,
+                                     session_seconds=10_800)
+    assert ok is False and "shorter than" in why
+    ok2, _ = C.lifecycle_compatible("KXNFLGAME", TTE_LATE_RESOLUTION,
+                                    session_seconds=300)
+    assert ok2 is True, "a short enough window would fit inside +0.12h"
+
+
+def test_an_unmeasured_series_is_not_excluded():
+    """Absence of a measurement is not evidence of incompatibility."""
+    ok, why = C.lifecycle_compatible("KXNEWSERIES", TTE_LATE_RESOLUTION)
+    assert ok is True and "not excluded" in why
+
+
+def test_the_scheduler_will_not_offer_an_incompatible_series():
+    st = C.state_from_ledger([S01])
+    out = C.choose_slate(st, [C.SlateOption("2026-08-27",
+                                            ("KXMLBHR", "KXMLBGAME"))],
+                         target_bin=TTE_LATE_RESOLUTION)
+    assert out["selected"] is None, "a dead-by-construction slate must not be chosen"
+
+
+def test_lifecycle_uses_no_activity_or_outcome_input():
+    import ast, inspect
+    tree = ast.parse(inspect.getsource(C.lifecycle_compatible))
+    names = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
+    names |= {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
+    for banned in ("activity", "volume", "price", "frames", "blocks",
+                   "counted", "verdict", "rows"):
+        assert not any(banned in n.lower() for n in names), banned
+
+
+def test_the_measurement_provenance_is_recorded():
+    assert C.SETTLEMENT_LAG_MEASURED_AT == "2026-08-26"
+    assert C.SETTLEMENT_LAG_SAMPLE_PER_SERIES == 200
+    assert set(C.SERIES_SETTLEMENT_LAG_H) == set(C.ELIGIBLE_SERIES)
+
+
+def test_the_rule_is_forward_only_and_does_not_invalidate_S03():
+    """S03 was KXMLBGAME/late_resolution and legitimately counted 12 intervals.
+    A forward rule changes future scheduling, never a completed session."""
+    s03 = rec("S03", TTE_LATE_RESOLUTION, "KXMLBGAME", "2026-08-25T01:45:04Z")
+    st = C.state_from_ledger([S01, S02, s03])
+    assert st.bin_completed[TTE_LATE_RESOLUTION] == 2

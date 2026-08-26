@@ -92,11 +92,20 @@ def verdict(session_path: Path, events_path: Path, target_bin: str,
         "safety_status": S["safety"]["status"],
         "under_hard_stop": not S["safety"]["breached"],
     }
+    # CARDINALITY. `events_received == events_archived == 0` is conserved,
+    # and zero faults of zero frames is not evidence of a healthy collector.
+    # L1 still passes on a genuinely quiet venue -- that is a measurement --
+    # but the emptiness is named rather than hidden behind a green tick.
+    L1["EMPTY"] = (L1["events_received"] or 0) == 0
     L1["PASS"] = bool(
         L1["reached_expected_terminal_condition"] and L1["conserved"]
         and not L1["frames_malformed"] and not L1["events_rejected"]
         and not L1["rotation_failures"] and not L1["sequence_faults"]
         and L1["under_hard_stop"])
+    if L1["EMPTY"]:
+        L1["note"] = ("the capture received ZERO frames; conservation and "
+                      "fault counts are vacuously satisfied and evidence "
+                      "nothing about collector health")
 
     # ---- layer 2: sampling validity -----------------------------------
     ticks = S["decision_ticks"]
@@ -227,6 +236,12 @@ def verdict(session_path: Path, events_path: Path, target_bin: str,
             r: sum(1 for v in reasons.values() if v == r)
             for r in sorted(set(reasons.values()))},
     }
+
+    L4["NO_EVIDENCE"] = (L4["market_blocks_accumulated"] == 0
+                         and L4["markets_ever_eligible"] == 0)
+    if L4["NO_EVIDENCE"]:
+        L4["note"] = ("no market was ever eligible, so the bin was not merely "
+                      "missed -- nothing was observed that could have earned it")
 
     return {"milestone": "MARKET-MICROSTRUCTURE-EDGE-001",
             "phase": "tranche_session_verdict", "label": S["label"],
