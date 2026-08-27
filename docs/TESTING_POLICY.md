@@ -150,3 +150,58 @@ It is the same class as a vacuous test pass and a `pgrep -f` self-match:
   the module and check the attribute, run the test that should now change;
 * never conclude a behaviour is wrong until you have confirmed the code that
   produces it is the code you think you edited.
+
+---
+
+## A guard is not qualified until a mutation proves it can detect the violation
+
+**Rule.** Any static guard protecting a safety or preregistration property —
+capability whitelists, import-graph checks, forbidden-concept scans,
+look-ahead controls, dataset-role locks — must be accompanied by a mutation
+that **injects the forbidden behaviour** and is shown to fail. A guard that has
+never been mutated is a guard whose coverage is unknown.
+
+**Why the standard has to be this strict.** A guard is the one kind of test
+that is *supposed* to pass on every healthy run. It therefore emits the same
+signal whether it is working or inert, and unlike a normal test, nothing else in
+the suite depends on it being right. It can be broken for its entire life and
+never once say so.
+
+### The case that forced the rule
+
+The observer composition guard asserted that no module reachable from the
+social observer opens a network transport. It resolved the call's base with:
+
+```python
+base = getattr(n.func.value, "id", None)
+```
+
+`.id` exists on an `ast.Name`, so `socket.connect(...)` was caught. But
+`urllib.request.urlopen(...)` has an **`ast.Attribute`** base, `.id` was absent,
+the call was skipped, and the guard **passed a module that opened a socket**.
+
+It looked correct. It read correctly. It caught nothing — and it would have gone
+on reporting green forever, because the healthy state and the broken state
+produce identical output. Only injecting `urllib.request.urlopen` revealed it.
+
+### Practice
+
+* write the guard, then **immediately** inject the violation it forbids;
+* verify the injected version **fails**, and restore byte-identically;
+* inject **more than one shape** of the violation where shapes differ
+  structurally — `socket.connect` and `urllib.request.urlopen` are different
+  AST shapes and the first does not test the second;
+* prefer positive controls alongside: a guard that can only ever say "no" is
+  indistinguishable from a guard that always says "no".
+
+### The family this completes
+
+| failure | reported | actually |
+|---|---|---|
+| vacuous test pass | `PASS` | nothing exercised |
+| `pgrep -f` self-match | process found | matched its own command line |
+| no-op `str.replace` | success, exit 0 | file unchanged |
+| **unmutated guard** | **guard green** | **guard inert** |
+
+All four are the same sentence: **operation reports success ≠ intended property
+holds.**
