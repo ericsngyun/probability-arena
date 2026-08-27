@@ -106,3 +106,47 @@ CLOSED    terminal session artifact written
 
 The existence of the archive is then part of the proof of launch, rather than
 something inferred from a string match.
+
+---
+
+## A scripted source transformation must prove it transformed its target
+
+**Rule.** Any scripted edit — `str.replace`, a codemod, a regex substitution,
+`sed -i` — must assert that it matched, and then assert the intended
+postcondition. Silence is not success.
+
+```python
+assert old in s, "TARGET NOT FOUND -- refusing to silently no-op"
+s = s.replace(old, new, 1)
+```
+
+**Why this specific failure is nastier than it looks.** A `str.replace` that
+matches nothing **returns the original string and raises nothing**. The script
+exits 0, the file is rewritten identically, and every downstream signal says
+the edit succeeded. When the Token-2022 fix was applied this way against a
+pattern that had already been edited earlier, the patch silently did nothing —
+and the subsequent live run showed the *old* behaviour, which looked exactly
+like the fix having failed **on its merits**. The wrong debugging question
+follows: "why didn't my logic work?" instead of "did my edit land?"
+
+It is the same class as a vacuous test pass and a `pgrep -f` self-match:
+
+> **operation reports success ≠ intended state changed**
+
+### The three instances so far, all in one milestone
+
+| operation | reported | actually |
+|---|---|---|
+| `str.replace` on an already-edited pattern | success, exit 0 | file unchanged |
+| L2/L3 verdict on a session with zero ticks | `PASS` | nothing was exercised |
+| `pgrep -f <pattern>` over SSH | process found | matched its own command line |
+
+### Practice
+
+* assert the target exists **before** replacing;
+* prefer `assert match_count == expected`, not merely `> 0`, when the count is
+  known;
+* after the edit, assert the **postcondition** — grep for the new branch, import
+  the module and check the attribute, run the test that should now change;
+* never conclude a behaviour is wrong until you have confirmed the code that
+  produces it is the code you think you edited.
