@@ -53,10 +53,29 @@ def imported_modules(obj) -> set[str]:
     return {m.lower() for m in mods}
 
 
-def assert_never_references(obj, banned, *, allow=()):
-    """Fail if the CODE references a banned concept. Prose is not code."""
+#: A literal long enough to be a sentence is prose, not data. Module notes,
+#: error messages and refusal explanations routinely NAME the thing they
+#: promise not to compute -- "no return, markout, price response ... is
+#: computed here" -- and a guard that reads them as usage condemns the module
+#: for documenting itself. Identifiers and short literals (dict keys, method
+#: names, enum values) are what can actually carry a forbidden concept.
+PROSE_MIN_CHARS = 40
+
+
+def is_prose(literal: str) -> bool:
+    return len(literal) >= PROSE_MIN_CHARS and " " in literal.strip()
+
+
+def assert_never_references(obj, banned, *, allow=(), literals=True):
+    """Fail if the CODE references a banned concept. Prose is not code.
+
+    Prose literals are excluded on the same principle as docstrings: a module
+    that says "no price is computed here" is asserting the property, not
+    violating it.
+    """
     allowed = {a.lower() for a in allow}
-    used = referenced_names(obj) - allowed
+    used = {u for u in referenced_names(obj, include_literals=literals)
+            if not is_prose(u)} - allowed
     for b in banned:
         hits = {u for u in used if b.lower() in u}
         assert not hits, f"{getattr(obj, '__name__', obj)} references {sorted(hits)}"
