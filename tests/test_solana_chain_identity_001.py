@@ -218,3 +218,57 @@ def test_chain_existence_alone_defeats_none_of_the_named_threats():
     assert "decoy address in a scam post" in THREATS
     assert "competitor token mentioned in passing" in THREATS
     assert not hasattr(r, "canonically_verified")
+
+
+# --- Token-2022 extensions: found by LIVE qualification, not by fixtures -----
+
+def extended(kind_byte, *, total_len=866, base=None):
+    """A Token-2022 account: base layout, padding, discriminator, TLV."""
+    b = bytearray(base if base is not None else mint_bytes())
+    b += b"\x00" * (CI.ACCOUNT_TYPE_OFFSET - len(b))
+    b += bytes([kind_byte])
+    b += b"\x00" * (total_len - len(b))
+    return bytes(b)
+
+
+def test_an_EXTENDED_token2022_mint_verifies():
+    """The fixture bug: every constructed mint was base-length (82 bytes), so
+    the strict `length != 82` check passed the suite while rejecting every real
+    extended mint. PYUSD's is 866 bytes and was refused as WRONG_ACCOUNT_TYPE
+    until live qualification exposed it."""
+    r = CI.verify_chain_existence(MINT, Reader({
+        MINT: acct(CI.SPL_TOKEN_2022_PROGRAM,
+                   extended(CI.ACCOUNT_TYPE_MINT))}))
+    assert r.verified is True
+    assert r.facts.decimals == 6
+    assert r.facts.account_len == 866
+
+
+def test_an_EXTENDED_token_account_is_still_not_the_mint():
+    """Length no longer discriminates, so the discriminator byte must."""
+    r = CI.verify_chain_existence(MINT, Reader({
+        MINT: acct(CI.SPL_TOKEN_2022_PROGRAM,
+                   extended(CI.ACCOUNT_TYPE_TOKEN_ACCOUNT))}))
+    assert r.verified is False
+    assert r.verdict is V.WRONG_ACCOUNT_TYPE
+    assert "EXTENDED token ACCOUNT" in (r.detail or "")
+
+
+def test_an_extended_account_of_an_unknown_type_is_refused():
+    r = CI.verify_chain_existence(MINT, Reader({
+        MINT: acct(CI.SPL_TOKEN_2022_PROGRAM, extended(7))}))
+    assert r.verdict is V.WRONG_ACCOUNT_TYPE
+    assert "type 7" in (r.detail or "")
+
+
+def test_a_base_length_account_still_uses_the_length_rule():
+    """Non-extended accounts are unaffected by the discriminator path."""
+    assert CI.verify_chain_existence(MINT, Reader({
+        MINT: acct(CI.SPL_TOKEN_PROGRAM, mint_bytes())})).verified is True
+    assert CI.verify_chain_existence(MINT, Reader({
+        MINT: acct(CI.SPL_TOKEN_PROGRAM, b"\x00" * 120)})).verdict is V.WRONG_ACCOUNT_TYPE
+
+
+def test_the_discriminator_offset_is_the_token_account_length():
+    assert CI.ACCOUNT_TYPE_OFFSET == CI.TOKEN_ACCOUNT_LEN == 165
+    assert CI.ACCOUNT_TYPE_MINT == 1 and CI.ACCOUNT_TYPE_TOKEN_ACCOUNT == 2

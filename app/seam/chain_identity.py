@@ -43,6 +43,18 @@ SYSTEM_PROGRAM = "11111111111111111111111111111111"
 MINT_ACCOUNT_LEN = 82
 TOKEN_ACCOUNT_LEN = 165
 
+#: Token-2022 accounts may carry TLV EXTENSIONS after the base layout, so a
+#: real extended mint is far longer than 82 bytes -- PYUSD's is 866. Requiring
+#: exactly 82 rejected every extended mint, which the constructed fixtures did
+#: not catch because they were all base-length. Found by live qualification.
+#:
+#: Extended accounts are padded to `TOKEN_ACCOUNT_LEN` and carry a
+#: discriminator byte at that offset: 1 = Mint, 2 = Account. That byte, not the
+#: length, is what separates a token from somebody's balance of it.
+ACCOUNT_TYPE_OFFSET = TOKEN_ACCOUNT_LEN
+ACCOUNT_TYPE_MINT = 1
+ACCOUNT_TYPE_TOKEN_ACCOUNT = 2
+
 _B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 
 
@@ -212,7 +224,27 @@ def verify_chain_existence(address: str, reader: AccountReader) -> ChainVerifica
             ChainVerdict.WRONG_ACCOUNT_TYPE, address, observed_owner=owner,
             observed_len=length,
             detail="this is a token ACCOUNT (someone's balance of some token), not the mint itself")
-    if data is None or length != MINT_ACCOUNT_LEN:
+    if data is None:
+        return ChainVerification(
+            ChainVerdict.WRONG_ACCOUNT_TYPE, address, observed_owner=owner,
+            observed_len=length, detail="account data could not be decoded")
+    if length > ACCOUNT_TYPE_OFFSET:
+        # EXTENDED (Token-2022). The discriminator byte decides, not the
+        # length: a real extended mint is far longer than 82 bytes.
+        kind = data[ACCOUNT_TYPE_OFFSET]
+        if kind == ACCOUNT_TYPE_TOKEN_ACCOUNT:
+            return ChainVerification(
+                ChainVerdict.WRONG_ACCOUNT_TYPE, address, observed_owner=owner,
+                observed_len=length,
+                detail="this is an EXTENDED token ACCOUNT (someone's balance "
+                       "of some token), not the mint itself")
+        if kind != ACCOUNT_TYPE_MINT:
+            return ChainVerification(
+                ChainVerdict.WRONG_ACCOUNT_TYPE, address, observed_owner=owner,
+                observed_len=length,
+                detail=f"extended account type {kind} is not a mint")
+        # a base mint layout occupies the first 82 bytes; extensions follow
+    elif length != MINT_ACCOUNT_LEN:
         return ChainVerification(
             ChainVerdict.WRONG_ACCOUNT_TYPE, address, observed_owner=owner,
             observed_len=length,
