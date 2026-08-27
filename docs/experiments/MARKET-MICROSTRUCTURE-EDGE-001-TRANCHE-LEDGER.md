@@ -24,7 +24,7 @@ already-preregistered coverage constraints** — never to improve a result.
 
 | order | primary bin | sessions | status |
 |---:|---|---:|---|
-| 1 | `late_resolution` | 4 | **2 of 4 complete** |
+| 1 | `late_resolution` | 4 | **3 of 4 complete** |
 | 2 | `live_event` | 4 | **1 of 4 complete** |
 | 3 | `near_event` | 4 | not started |
 | 4 | `approaching` | 4 | not started |
@@ -57,6 +57,8 @@ fill out the 4/4/4/4/4 allocation.
 | 01 | `MMEDGE-S01-late_resolution-20260824` | `late_resolution` | 2026-08-24T00:41:58Z | 10,800 s | 24 | **CLEAN — counts** |
 | 02 | `MMEDGE-S02-live_event-20260824` | `live_event` | 2026-08-24T16:40:00Z | 10,800 s | 24 | **CLEAN — counts** |
 | 03 | `MMEDGE-S03-late_resolution-20260825` | `late_resolution` | 2026-08-25T01:45:04Z | 10,800 s | 8 | **CLEAN — counts** |
+| 04 | `MMEDGE-S04-late_resolution-20260826` | `late_resolution` | 2026-08-26T01:45:02Z | 10,800 s | 24 | **CLEAN BUT EMPTY — does not count, S21+** |
+| 05 | `MMEDGE-S05-late_resolution-20260826` | `late_resolution` | 2026-08-26T21:05:01Z | 10,800 s | 24 | **CLEAN — counts** |
 
 ### Session 01 — pre-capture record
 
@@ -540,3 +542,64 @@ for S04: the session stays in the corpus, is never relabelled, and its
 obligation goes to S21+. **The lifecycle table is not re-derived from it.** That
 table was measured from settlement metadata over 200 markets per series and is
 not a hypothesis this session tests.
+
+### Session 05 — verdict: **OPERATIONALLY CLEAN**, counts toward `late_resolution`
+
+**L1 — PASS.** `capped_time`. `events_received == events_archived == 367,003`.
+Malformed, rejected, rotation failures, sequence faults, reconnects: **0**.
+33 segments. `peak_1s_sliding` **901** vs 3,500. Capture commit
+`c7a7c965…` — exactly the pinned commit, verified at launch.
+
+**L2 — PASS**, not vacuous. **35 ticks**, gaps exactly `[300.0]`, K respected,
+closed reason vocabulary. The final two ticks were empty under the
+session-remaining gate, as designed.
+
+**L3 — PASS**, not vacuous. `row-v2`/`label-v2`, 13/17 columns, no
+always-missing columns, `dataset_role=CONFIRMATION`, **29,700 rows**, 0 dispatch
+errors, minimum M0 completeness **0.8262**. Label coverage
+**0.826 / 0.825 / 0.819 / 0.783**.
+
+**L4 — earns the bin.** **99 covering intervals** wholly inside
+`late_resolution`; 99 market-blocks; 8 clusters; only `late_resolution` touched.
+
+### Reading it against the pre-registered ladder
+
+The ladder written before the session closes has four rungs. S05 lands on the
+third: **a valid sparse late-resolution session.**
+
+* candidates were **not** closed at launch — preflight recorded **24/24 live**,
+  so this is not a lifecycle or preflight failure;
+* **8 of 24** markets cleared the 30-events/300 s floor;
+* **16** were *naturally closed or resolved during the session*;
+* **0** stayed open and failed the activity gate.
+
+**No comparison with S01 is drawn, and no rule is re-derived from this
+session**, per the ladder.
+
+One observation worth recording without acting on it: ATP's measured settlement
+lag is a **median** of +3.82 h, so a 3 h session anchored at occurrence+5 min
+sits inside a *distribution* of settlement times, and markets drop out
+progressively as they settle. Sixteen did. That is consistent with the lifecycle
+table rather than evidence against it — the table says the stratum is reachable,
+not that every market survives the whole window. **The table is not re-measured
+from this session.**
+
+### Tranche ledger after S05
+
+| bin | target | counted | remaining |
+|---|---:|---:|---:|
+| `late_resolution` | 4 | **3** | 1 |
+| `live_event` | 4 | 1 | 3 |
+| `near_event` | 4 | 0 | 4 |
+| `approaching` | 4 | 0 | 4 |
+| `far` | 4 | 0 | 4 |
+
+| quantity | value | floor |
+|---|---:|---:|
+| sessions in corpus | **5** | — |
+| sessions counted | **4** | — |
+| market-blocks | **903** (377+396+31+99) | 4,000 |
+| clusters | **56** (21+21+6+8) | 150 |
+| series represented | **3 of 8** | ≥6 |
+| weekend sessions | **1** | ≥4 |
+| replacement obligations | **1** (S04 → S21+) | — |
