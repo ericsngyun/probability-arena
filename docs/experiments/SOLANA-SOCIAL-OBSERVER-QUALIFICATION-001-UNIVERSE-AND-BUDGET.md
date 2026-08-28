@@ -52,6 +52,36 @@ mint-bearing shape, and a deliberate quoted artifact — per §6 of the
 preregistration. **They are never pooled into any reported count or latency**,
 and every artifact carries its population.
 
+## 3b. The concrete 18 — FROZEN 2026-08-28, with one correction
+
+The identities are frozen in
+`SOLANA-SOCIAL-OBSERVER-QUALIFICATION-001-SOURCE-UNIVERSE.frozen.json` and
+validated by `app/social/x_universe.py`. Quotas land exactly on §2: 4/3/3/4/2/2.
+
+**Correction to §2.** Classes 5 and 6 were specified as *accounts* ("accounts
+that post tickers without addresses", "known-impersonator accounts, if
+identifiable"). Made concrete, they are **shape rules, not identities**, and
+the loader now refuses a named handle in either class.
+
+Two reasons. Ticker-only is a property of a *post*, not of an account — the
+same account posts addresses on Monday and bare cashtags on Tuesday, so
+freezing an identity into that class would mislabel it from the first post
+that carried an address. And naming a specific real account as an impersonator
+asserts a fact about a real entity that nothing here has verified; it is an
+accusation, not a selection. The authority resolver already decides
+`IMPERSONATOR` from mutual attestation at run time. The rule's only job is to
+surface the candidate — which is what §2's "if identifiable" hedge was
+already gesturing at.
+
+**Handle resolution is a precondition, not an assumption.** All 14 named
+accounts are frozen with `handle_resolved: false`. A `from:` rule against a
+misspelled handle matches nothing and is indistinguishable from a quiet
+source — the exact silent zero this qualification exists to prevent — so
+`assert_activatable()` refuses until every handle resolves to a platform user
+id. Resolution needs the network; `x_universe.py` imports only json,
+dataclasses, enum, pathlib and typing, and a test asserts that. The smoke
+performs the resolution and passes it in.
+
 ## 4. Cost envelope — hard, fail-closed
 
 | field | value |
@@ -71,6 +101,28 @@ answering "how many are left?" — there is no path returning a boolean a caller
 can ignore.
 
 **CONTROL artifacts consume no Post-read budget.** They are injected, not read.
+
+## 4b. The observer lifecycle — events in, states out
+
+The transport **reports**; the driver **interprets**. `x_transport` emits
+typed `TransportEvent`s and cannot reach `x_stream_state` at all — asserted
+structurally, along with the absence of any `transition`, `note_frame` or
+budget identifier in the transport.
+
+Three things live in `observer_session.py` and deliberately not in the
+transport: the event→state mapping, the Post-read budget, and the keepalive
+stall deadline. A transport that knew its own budget could stop for a reason
+the accounting never saw, and every future edit to reconnect handling would
+silently be an edit to observation accounting. As events, the entire
+lifecycle — including every failure path — replays from a list with no socket.
+
+`tick()` exists because the two judgements the wire cannot report are both
+about elapsed time: a wedged connection emits nothing, *including no event
+saying so*. Its first version had the wall cap as an `elif` after the stall
+check, so past the stall window a wedged stream masked the absolute 8-hour
+bound. A hard stop that only applies when nothing else is wrong is not a cap;
+the cap is now evaluated first and unconditionally, with a regression test
+that sets up the masking condition on purpose.
 
 ## 5. LIVE only
 
