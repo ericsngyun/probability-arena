@@ -72,6 +72,33 @@ def _commit_state(expected: str) -> tuple[bool, str, str]:
     return True, commit, ""
 
 
+def check_liveness(markets, *, when, fail):
+    """Are the frozen candidates still tradable? Fails closed.
+
+    Timing feasibility is not market liveness. A dead candidate set burns a
+    whole session slot and -- worse -- yields a tape that looks like a quiet
+    market rather than an absent one.
+
+    `unknown` (unreadable status) is NOT treated as dead: an unreachable
+    status endpoint is our failure, not the market's, and refusing on it
+    would let a status outage cancel sessions whose markets are fine.
+    """
+    statuses = {t: market_status(t) for t in markets}
+    open_now = [t for t, st in statuses.items() if st in LIVE_STATUSES]
+    unknown = [t for t, st in statuses.items() if st is None]
+    print(f"  candidate liveness    ({when}) {len(open_now)}/{len(markets)} "
+          f"live{f', {len(unknown)} unreadable' if unknown else ''}",
+          flush=True)
+    if not open_now and not unknown:
+        seen = sorted({s for s in statuses.values() if s})
+        fail(f"at {when}: every one of the {len(markets)} frozen candidates "
+             f"is closed or resolved ({seen}). Capturing would produce a dead "
+             f"tape and consume a session slot; reschedule under the frozen "
+             f"replacement rule instead.")
+        return False
+    return True
+
+
 def main(argv) -> int:
     import argparse
     ap = argparse.ArgumentParser()
@@ -144,22 +171,8 @@ def main(argv) -> int:
         return fail(f"scheduled start {start.isoformat()} is already past")
     print(f"  scheduled start       {start.isoformat()} "
           f"(in {(start - now).total_seconds() / 3600:.2f} h)", flush=True)
-    # LIVENESS. Hours pass between freezing a candidate set and opening the
-    # socket, and markets close in between. S04 froze 24 KXMLBHR markets that
-    # were open at 05:01Z and captured 27 frames in 16 ms at 01:45Z the next
-    # day, because all 24 had closed or resolved. Timing feasibility is not
-    # market liveness, and a dead candidate set burns a whole session slot.
-    statuses = {t: market_status(t) for t in markets}
-    open_now = [t for t, st in statuses.items() if st in LIVE_STATUSES]
-    unknown = [t for t, st in statuses.items() if st is None]
-    print(f"  candidate liveness    {len(open_now)}/{len(markets)} live"
-          f"{f', {len(unknown)} unreadable' if unknown else ''}", flush=True)
-    if not open_now and not unknown:
-        return fail(
-            f"every one of the {len(markets)} frozen candidates is closed or "
-            f"resolved ({sorted(set(s for s in statuses.values() if s))}). "
-            f"Capturing would produce a dead tape and consume a session slot; "
-            f"reschedule under the frozen replacement rule instead.")
+    if not check_liveness(markets, when="preflight", fail=fail):
+        return 1
     print("=== PREFLIGHT PASSED — waiting ===", flush=True)
 
     while datetime.now(timezone.utc) < start:
@@ -173,6 +186,18 @@ def main(argv) -> int:
     if not ok:
         return fail(f"commit drifted between preflight and launch: {why}")
     print(f"  re-verified at launch: {now_commit[:12]}", flush=True)
+
+    # RE-CHECK LIVENESS TOO. The preflight check above was written because S04
+    # captured 27 frames against 24 dead markets -- and then it was placed
+    # BEFORE the wait it describes, so it could not catch its own scenario.
+    # S07 proved that: preflight passed at 02:45Z with the candidates live,
+    # the script slept 100 minutes, and by launch at 04:25Z all 24 KXMLBHR
+    # markets had resolved with the game. The capture ran its full 10,800s,
+    # produced 75 frames in the first 5.6 minutes and nothing after, and
+    # exited 0. Market drift needs the same treatment as code drift: checked
+    # on BOTH sides of the wait, and a refusal rather than a dead tape.
+    if not check_liveness(markets, when="launch", fail=fail):
+        return 1
 
     cmd = [sys.executable,
            str(REPO / "scripts" / "kalshi_microstructure_capture_runner.py"),
