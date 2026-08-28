@@ -24,7 +24,7 @@ already-preregistered coverage constraints** — never to improve a result.
 
 | order | primary bin | sessions | status |
 |---:|---|---:|---|
-| 1 | `late_resolution` | 4 | **3 of 4 complete** |
+| 1 | `late_resolution` | 4 | **4 of 4 — quota met** |
 | 2 | `live_event` | 4 | **1 of 4 complete** |
 | 3 | `near_event` | 4 | not started |
 | 4 | `approaching` | 4 | not started |
@@ -59,6 +59,7 @@ fill out the 4/4/4/4/4 allocation.
 | 03 | `MMEDGE-S03-late_resolution-20260825` | `late_resolution` | 2026-08-25T01:45:04Z | 10,800 s | 8 | **CLEAN — counts** |
 | 04 | `MMEDGE-S04-late_resolution-20260826` | `late_resolution` | 2026-08-26T01:45:02Z | 10,800 s | 24 | **CLEAN BUT EMPTY — does not count, S21+** |
 | 05 | `MMEDGE-S05-late_resolution-20260826` | `late_resolution` | 2026-08-26T21:05:01Z | 10,800 s | 24 | **CLEAN — counts** |
+| 06 | `MMEDGE-S06-late_resolution-20260827` | `late_resolution` | 2026-08-27T18:05:03Z | 10,800 s | 24 | **CLEAN — counts** |
 
 ### Session 01 — pre-capture record
 
@@ -603,3 +604,80 @@ from this session.**
 | series represented | **3 of 8** | ≥6 |
 | weekend sessions | **1** | ≥4 |
 | replacement obligations | **1** (S04 → S21+) | — |
+
+### Session 06 — verdict: **OPERATIONALLY CLEAN**, counts toward `late_resolution`
+
+**L1 — PASS.** `capped_time`. `events_received == events_archived ==
+1,604,010`. Malformed, rejected, rotation failures, sequence faults,
+reconnects: **0**. 125 segments. `peak_1s_sliding` **1,676** vs 3,500. Capture
+commit `d7cfede…`, and the post-sleep drift guard logged
+`re-verified at launch: d7cfede1ac6b` — its first production firing, after a
+15-hour wait.
+
+**L2 — PASS**, not vacuous. **35 ticks**, gaps exactly `[300.0]`, K respected.
+
+**L3 — PASS**, not vacuous. 118,800 rows, minimum M0 completeness **0.966**, no
+always-missing columns. Label coverage **0.975 / 0.974 / 0.973 / 0.963**.
+
+**L4 — earns the bin.** **396 covering intervals**, 396 market-blocks, 22
+clusters. **24 of 24 markets cleared the activity floor**; none closed
+mid-session; none were too quiet. The only two markets without rows lost a
+top-12 competition.
+
+Rung four of the ladder: a **dense** late-resolution session. Per the rule
+recorded before it closed, that validates nothing the table did not already
+claim — the table says the stratum is *reachable*, and S05 and S06 are both
+consistent with it at different densities.
+
+Observed and **not acted on**: S05 anchored at 21:00Z and lost 16 of 24 markets
+to settlement mid-session; S06 anchored at 18:00Z and lost none. Same series,
+same rule, different points in the settlement distribution. **The lifecycle
+table is not re-measured from this.**
+
+---
+
+## Tranche state after S06 — two separate facts
+
+### 1. Bin quota
+
+| bin | target | counted | remaining |
+|---|---:|---:|---:|
+| `late_resolution` | 4 | **4** | **0 — quota met** |
+| `live_event` | 4 | 1 | 3 |
+| `near_event` | 4 | 0 | 4 |
+| `approaching` | 4 | 0 | 4 |
+| `far` | 4 | 0 | 4 |
+
+### 2. Replacement debt — **NOT cancelled by the quota being met**
+
+| session | bin | discharged by |
+|---|---|---|
+| `MMEDGE-S04-late_resolution-20260826` | `late_resolution` | **S21** |
+
+**`late_resolution` reads 4/4 AND S04 still owes a replacement.** These are
+different facts. S05 and S06 discharged their **own** scheduled obligations,
+not S04's, so the corpus legitimately ends with **five counted
+`late_resolution` sessions** once S21 runs.
+
+This distinction is now encoded, not merely written down. `coverage_deficit()`
+previously inferred the requirement from slot arithmetic
+(`obligations_total − planned_sessions_remaining`), which returned the right
+number while S04 was the only miss but **named no session** and derived a
+per-session debt from a bin-level quantity. Any later shift in the counts could
+have cancelled a real debt silently, and a scheduler reading it would have
+concluded S21 was unnecessary. `replacement_debt` is now a list of
+`(session, bin)` attached to the missed sessions themselves.
+
+### 3. Power and coverage
+
+| quantity | value | floor |
+|---|---:|---:|
+| sessions in corpus / counted | 6 / **5** | — |
+| market-blocks | **1,299** (377+396+31+99+396) | 4,000 |
+| clusters | **78** (21+21+6+8+22) | 150 |
+| series represented | **3 of 8** (`KXWTAMATCH` 2, `KXATPMATCH` 2, `KXMLBGAME` 1) | ≥6 |
+| weekend sessions | **1** | ≥4 |
+
+**Next obligation: `live_event`** — which carries no lifecycle restriction, so
+all eight series are available and the coverage layer can finally advance
+diversity mechanically.
