@@ -133,6 +133,59 @@ asserts no test in the file names a host outside `api.x.com/2/`.
 
 Full suite green.
 
+## The runtime state machine — frozen before the authenticated smoke
+
+`app/social/x_stream_state.py` exists to make one number legible:
+
+> `N_received == 0`. What does that mean?
+
+Without it, zero is five facts wearing the same digit — a quiet market, a
+stream that never connected, a stream wedged open delivering nothing, a rate
+limit, and our own budget stop. Nine states separate them:
+
+```
+UNCONFIGURED → AUTHENTICATED → RULES_RECONCILED → STREAM_CONNECTED
+             → RECEIVING ⇄ DEGRADED → RECONNECTING
+             → BUDGET_EXHAUSTED → STOPPED
+```
+
+**The one frozen fact is `OBSERVATION_BEARING == {RECEIVING}`.** Silence is
+evidence only for wall time spent where we could have heard something.
+`DEGRADED` is deliberately excluded: a rate-limited or erroring stream drops
+Posts we cannot enumerate, so its time can be claimed as neither observation
+nor silence. Widening that set is the single edit that would let a broken run
+pass as a quiet one, so it is a named constant with a mutation that proves the
+defect visible — under the mutation, 600 seconds of rate-limited nothing
+reports 100% observation coverage.
+
+The machine records **dwell time per state**, not just the current state, so
+the qualification gets `observation_coverage = t(RECEIVING) / t(total)` and
+`system_failure_s` as separate quantities. `zero_posts_is_interpretable` is a
+precondition rather than a threshold: with no observation-bearing time, zero
+is not a small number, it is an absent measurement. No coverage floor lives in
+the transport — sufficiency is a qualification decision, and a test asserts no
+threshold, verdict or pass/fail identifier exists in the module.
+
+`LEGAL_TRANSITIONS` is a declared table; an illegal transition raises rather
+than being recorded, because a state history that could not have happened is
+worse than a crash — it gets averaged into a report. Dwell time is conserved
+(`Σ dwell == total`), the seconds analogue of artifact conservation.
+
+`KEEPALIVE_STALL_S = 45.0` is the wedged-vs-quiet detector, and it is
+**transcribed from protocol documentation, not measured**. A test asserts the
+source says so. The authenticated smoke is the first chance to observe X's
+real keepalive cadence, and this constant is expected to be corrected against
+it; it is set loose deliberately, because a false stall costs observation
+coverage while a late one costs only detection latency.
+
+The module imports only `time`, `dataclasses`, `enum` and `typing` — it holds
+no credential, opens no socket, and computes no return, markout, price or
+ranking. All three are asserted structurally.
+
+27 tests, five of them mutations: widening `OBSERVATION_BEARING`, disabling
+the transition table, counting keepalives as Posts, dropping dwell accrual,
+and treating an absent measurement as silence.
+
 ## What this does NOT do
 
 No collector is wired to it. No rules are registered. No token is installed.
