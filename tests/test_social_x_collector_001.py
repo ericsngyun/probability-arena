@@ -172,13 +172,27 @@ class Harness:
 # --------------------------------------------------------------------------
 
 
+#: Modules in `app/social/` permitted to hold network capability, named one
+#: by one. SOCIAL-TAPE-001 shipped with this set EMPTY and the guard phrased
+#: as a blanket ban -- correct then, because nothing had been connected.
+#: SOCIAL-X-LIVE-TRANSPORT-001 authorizes exactly one connecting module, so
+#: the guard becomes an equality against a named set rather than a ban.
+#:
+#: This is a deliberate architectural change, and the equality is checked in
+#: BOTH directions: a new file that acquires an HTTP client fails, and so does
+#: `x_transport` quietly losing the one it is supposed to have. A ban that
+#: gets relaxed to "except files whose name looks live" would be no guard at
+#: all; a named set stays exactly as strong as its contents.
+NETWORK_CAPABLE_MODULES = frozenset({"x_transport.py"})
+
+
 class TestNoNetworkExists:
-    def test_the_social_package_imports_no_http_client(self):
+    def test_only_the_named_module_holds_network_capability(self):
         forbidden = {
             "httpx", "requests", "aiohttp", "urllib", "urllib3", "http",
             "socket", "websockets", "websocket", "ssl", "tweepy",
         }
-        offenders: list[str] = []
+        capable: dict[str, list[str]] = {}
         for path in sorted(SOCIAL_PACKAGE.glob("*.py")):
             tree = ast.parse(path.read_text(encoding="utf-8"))
             for node in ast.walk(tree):
@@ -190,8 +204,10 @@ class TestNoNetworkExists:
                     continue
                 for name in names:
                     if name in forbidden:
-                        offenders.append(f"{path.name}: {name}")
-        assert offenders == [], f"network capability in app/social/: {offenders}"
+                        capable.setdefault(path.name, []).append(name)
+        assert set(capable) == NETWORK_CAPABLE_MODULES, (
+            f"network capability in app/social/ is {sorted(capable)}, "
+            f"expected exactly {sorted(NETWORK_CAPABLE_MODULES)}")
 
     def test_positive_control_the_import_scan_can_fail(self):
         tree = ast.parse("import httpx\n")
@@ -223,15 +239,42 @@ class TestNoNetworkExists:
         assert isinstance(FixtureTransport([]), SocialStreamTransport)
         assert isinstance(NullTransport(), SocialStreamTransport)
 
-    def test_no_credential_surface_in_the_package(self):
+    def test_credential_surface_exists_only_where_a_socket_can(self):
+        """A credential is useless without a socket, and dangerous without
+        one nearby to justify it. Asserting the two sets are EQUAL is
+        stronger than banning either: a module that acquires a token without
+        network capability, or a connector that reaches the wire without one,
+        both fail here.
+
+        The scan is structural. The previous form lowercased raw file text,
+        which condemned any module that merely NAMED a credential in prose --
+        the recurring false-positive class in this repo.
+        """
         banned = ("api_key", "bearer_token", "access_token", "client_secret")
-        offenders = []
+        with_credentials: set[str] = set()
         for path in sorted(SOCIAL_PACKAGE.glob("*.py")):
-            text = path.read_text(encoding="utf-8").lower()
-            for token in banned:
-                if token in text:
-                    offenders.append(f"{path.name}: {token}")
-        assert offenders == [], f"credential surface present: {offenders}"
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            docs = {
+                ast.get_docstring(n, clean=False)
+                for n in ast.walk(tree)
+                if isinstance(n, (ast.Module, ast.FunctionDef,
+                                  ast.AsyncFunctionDef, ast.ClassDef))
+            }
+            used = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
+            used |= {n.attr for n in ast.walk(tree)
+                     if isinstance(n, ast.Attribute)}
+            used |= {n.name for n in ast.walk(tree)
+                     if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                       ast.ClassDef))}
+            used |= {n.value for n in ast.walk(tree)
+                     if isinstance(n, ast.Constant)
+                     and isinstance(n.value, str) and n.value not in docs
+                     and not (len(n.value) >= 40 and " " in n.value.strip())}
+            if any(b in u.lower() for u in used for b in banned):
+                with_credentials.add(path.name)
+        assert with_credentials == NETWORK_CAPABLE_MODULES, (
+            f"credential surface is in {sorted(with_credentials)}, "
+            f"network capability is in {sorted(NETWORK_CAPABLE_MODULES)}")
 
 
 # --------------------------------------------------------------------------
