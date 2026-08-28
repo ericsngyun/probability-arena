@@ -40,12 +40,17 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import AsyncIterator, Sequence
+from typing import AsyncIterator, Callable, Sequence
 
 import httpx
 
 from app.social.transport import (
     FrameKind, RuleSyncResult, StreamFrame, TransportError, TransportRule,
+)
+from app.social.x_events import (
+    AuthenticationAccepted, ConnectionEnded, FrameObserved, HttpErrorObserved,
+    PlatformErrorObserved, RateLimited, RetryBudgetExhausted, RulesReconciled,
+    StreamOpened, TransportEvent,
 )
 
 STREAM_URL = "https://api.x.com/2/tweets/search/stream"
@@ -143,7 +148,9 @@ class XFilteredStreamTransport:
                  client: httpx.AsyncClient | None = None,
                  max_reconnects: int = 8,
                  backoff_initial_s: float = 1.0,
-                 backoff_max_s: float = 60.0) -> None:
+                 backoff_max_s: float = 60.0,
+                 events: Callable[[TransportEvent], None] | None = None
+                 ) -> None:
         self._token = token if token is not None else BearerToken.load()
         self._client = client
         self._owns_client = client is None
@@ -152,6 +159,15 @@ class XFilteredStreamTransport:
         self._backoff_initial_s = backoff_initial_s
         self._backoff_max_s = backoff_max_s
         self.health = StreamHealth()
+        # The transport REPORTS. It does not interpret, and it cannot: it has
+        # no budget, no cap, and no notion of whether silence is evidence.
+        # Those belong to the session driver, which is why this is a sink for
+        # facts rather than a reference to a state machine.
+        self._events = events
+
+    def _emit(self, event: TransportEvent) -> None:
+        if self._events is not None:
+            self._events(event)
 
     def __repr__(self) -> str:
         # never renders the token, even indirectly
@@ -249,8 +265,14 @@ class XFilteredStreamTransport:
                 raise TransportError(
                     f"rule add rejected: {json.dumps(errs)[:300]}")
 
-        return RuleSyncResult(added=tuple(added), deleted=tuple(deleted),
-                              unchanged=tuple(unchanged), foreign=foreign)
+        result = RuleSyncResult(added=tuple(added), deleted=tuple(deleted),
+                                unchanged=tuple(unchanged), foreign=foreign)
+        self._emit(AuthenticationAccepted())
+        self._emit(RulesReconciled(added=len(result.added),
+                                   deleted=len(result.deleted),
+                                   unchanged=len(result.unchanged),
+                                   foreign=len(result.foreign)))
+        return result
 
     # -- Protocol: frames --------------------------------------------------
     async def frames(self) -> AsyncIterator[StreamFrame]:
@@ -283,23 +305,37 @@ class XFilteredStreamTransport:
                                          headers=self._headers()) as resp:
                     if resp.status_code == 429:
                         self._bump(rate_limited=1, http_errors=1)
+                        self._emit(RateLimited())
                         raise TransportError("rate limited by the platform")
                     if resp.status_code >= 400:
                         self._bump(http_errors=1)
+                        self._emit(HttpErrorObserved(status=resp.status_code))
                         raise TransportError(
                             f"stream returned HTTP {resp.status_code}")
                     self._bump(connects=1)
+                    self._emit(StreamOpened(
+                        subscription_generation=self._generation))
                     async for line in resp.aiter_lines():
                         raw = line.encode()
                         produced += 1
                         if raw.strip() in KEEPALIVE_BYTES:
                             self._bump(keepalives=1)
+                            self._emit(FrameObserved(
+                                is_post=False,
+                                subscription_generation=self._generation))
                             yield StreamFrame(
                                 kind=FrameKind.KEEPALIVE,
                                 subscription_generation=self._generation)
                             continue
                         seq += 1
-                        yield self._to_frame(raw, seq)
+                        frame = self._to_frame(raw, seq)
+                        if frame.kind is FrameKind.ERROR:
+                            self._emit(PlatformErrorObserved())
+                        else:
+                            self._emit(FrameObserved(
+                                is_post=True, delivery_sequence=seq,
+                                subscription_generation=self._generation))
+                        yield frame
             except (httpx.HTTPError, TransportError) as exc:
                 fatal = exc
 
@@ -308,12 +344,14 @@ class XFilteredStreamTransport:
             # something. Resetting on connect alone would mean an endpoint
             # that accepts and immediately closes reconnects forever at the
             # floor backoff -- a hot loop wearing the costume of resilience.
+            self._emit(ConnectionEnded(clean=fatal is None))
             if produced:
                 attempt, backoff = 0, self._backoff_initial_s
             attempt += 1
             self._generation += 1
             self._bump(reconnects=1)
             if attempt > self._max_reconnects:
+                self._emit(RetryBudgetExhausted(attempts=attempt))
                 if fatal is not None:
                     raise fatal
                 return
