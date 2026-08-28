@@ -347,3 +347,49 @@ def test_the_rule_is_forward_only_and_does_not_invalidate_S03():
     s03 = rec("S03", TTE_LATE_RESOLUTION, "KXMLBGAME", "2026-08-25T01:45:04Z")
     st = C.state_from_ledger([S01, S02, s03])
     assert st.bin_completed[TTE_LATE_RESOLUTION] == 2
+
+
+# --- replacement debt is NOT cancelled by the quota filling ------------------
+
+def test_a_filled_quota_does_not_cancel_a_missed_session_s_debt():
+    """S05 and S06 discharged their OWN obligations, not S04's.
+
+    An earlier form inferred the debt from slot arithmetic, which named no
+    session and could have cancelled a real debt silently -- a scheduler would
+    then have concluded S21 was unnecessary.
+    """
+    recs = [rec("S01", TTE_LATE_RESOLUTION, "KXWTAMATCH", "2026-08-24T00:41:58Z"),
+            rec("S03", TTE_LATE_RESOLUTION, "KXMLBGAME", "2026-08-25T01:45:04Z"),
+            rec("S04", TTE_LATE_RESOLUTION, "KXMLBHR", "2026-08-26T01:45:02Z",
+                counted=False),
+            rec("S05", TTE_LATE_RESOLUTION, "KXATPMATCH", "2026-08-26T21:05:01Z"),
+            rec("S06", TTE_LATE_RESOLUTION, "KXWTAMATCH", "2026-08-27T18:05:03Z")]
+    st = C.state_from_ledger(recs)
+    d = C.coverage_deficit(recs)
+    # the quota is met
+    assert st.bin_remaining()[TTE_LATE_RESOLUTION] == 0
+    assert TTE_LATE_RESOLUTION not in d["bin_obligations_outstanding"]
+    # and the debt survives it
+    assert d["replacement_debt"] == [{"session": "S04",
+                                      "bin": TTE_LATE_RESOLUTION}]
+    assert d["replacement_sessions_required"] == 1
+    assert d["next_replacement_index"] == 21
+
+
+def test_the_debt_names_the_session_and_its_bin():
+    recs = [rec("Sx", TTE_LIVE_EVENT, "KXMLBGAME", "2026-08-25T18:00:00Z",
+                counted=False),
+            rec("Sy", TTE_FAR, "KXMLBHR", "2026-08-25T18:00:00Z", counted=False)]
+    d = C.coverage_deficit(recs)
+    assert {x["session"] for x in d["replacement_debt"]} == {"Sx", "Sy"}
+    assert {x["bin"] for x in d["replacement_debt"]} == {TTE_LIVE_EVENT, TTE_FAR}
+    assert d["replacement_sessions_required"] == 2
+
+
+def test_quota_shortfall_and_replacement_debt_are_separate_fields():
+    recs = [rec(f"S{i}", b, "KXMLBGAME", "2026-08-25T18:00:00Z")
+            for i, b in enumerate(C.BIN_ORDER) for _ in range(4)]
+    d = C.coverage_deficit(recs)
+    assert "quota_shortfall_beyond_planned_tranche" in d
+    assert "replacement_debt" in d
+    assert d["replacement_debt"] == []           # nothing missed

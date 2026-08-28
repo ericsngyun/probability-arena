@@ -295,23 +295,44 @@ def coverage_deficit(records: list[SessionRecord]) -> dict:
     remaining = state.bin_remaining()
     outstanding = {b: n for b, n in remaining.items() if n > 0}
     planned_left = max(0, PLANNED_SESSIONS - len(clean))
-    needed = sum(outstanding.values())
+
+    # TWO SEPARATE FACTS, deliberately not merged.
+    #
+    # `bin_obligations_outstanding` is the QUOTA: how far each bin is from its
+    # target. `replacement_debt` is attached to the MISSED SESSION ITSELF and
+    # survives the quota being filled by other sessions.
+    #
+    # They must not be collapsed. S05 and S06 discharged their OWN scheduled
+    # obligations, not S04's -- so `late_resolution` can read 4/4 while S04
+    # still owes a replacement, and the corpus legitimately ends with five
+    # counted late_resolution sessions.
+    #
+    # An earlier form inferred the debt from slot arithmetic
+    # (`needed - planned_left`). That happened to give the right number while
+    # S04 was the only miss, but it named no session, and any later shift in
+    # the counts could have cancelled a real debt silently -- a scheduler
+    # would then have concluded S21 was unnecessary.
+    replacement_debt = [{"session": r.label, "bin": r.target_bin} for r in missed]
+    quota_shortfall = max(0, sum(outstanding.values()) - planned_left)
 
     return {
         "sessions_in_corpus": len(clean),
         "sessions_discharging_a_bin": state.sessions_completed,
         "sessions_clean_but_bin_missed": [r.label for r in missed],
         "bin_obligations_outstanding": outstanding,
-        "obligations_total": needed,
+        "obligations_total": sum(outstanding.values()),
         "planned_sessions_remaining": planned_left,
-        # Replacements are the overflow: obligations that cannot fit inside
-        # the planned tranche because clean-but-missed sessions consumed slots.
-        "replacement_sessions_required": max(0, needed - planned_left),
-        "next_replacement_index": PLANNED_SESSIONS + 1 + max(
-            0, len(clean) - PLANNED_SESSIONS),
+        # the quota view
+        "quota_shortfall_beyond_planned_tranche": quota_shortfall,
+        # the debt view -- independent of whether the bin later filled
+        "replacement_debt": replacement_debt,
+        "replacement_sessions_required": len(replacement_debt),
+        "next_replacement_index": PLANNED_SESSIONS + 1,
         "rule": ("a clean session that misses its bin stays in the corpus, is "
                  "never relabelled, and its obligation is discharged by an "
-                 "appended replacement session for the SAME bin"),
+                 "appended replacement session for the SAME bin. The debt is "
+                 "attached to the MISSED SESSION and is NOT cancelled by "
+                 "another session later filling that bin's quota."),
     }
 
 
