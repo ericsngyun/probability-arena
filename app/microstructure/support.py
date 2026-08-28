@@ -62,10 +62,18 @@ def presence_of(row: dict) -> PresenceMask:
         m0_complete=m0, m1_complete=m1, label_available=labels)
 
 
-def support_ledger(rows: list[dict]) -> dict:
-    """Per session x horizon evaluable support. Counts only."""
+def support_ledger(rows: list[dict], *,
+                   expected_sessions: list[str] | None = None) -> dict:
+    """Per session x horizon evaluable support. Counts only.
+
+    `expected_sessions` makes a ZERO-ROW session visible. Without it, a session
+    that produced no rows simply does not appear -- indistinguishable from one
+    that was never processed. S04 vanished from this ledger exactly that way,
+    and the header then read "5 sessions" for a six-session corpus.
+    """
     masks = [presence_of(r) for r in rows]        # values discarded here
-    sessions = sorted({m.session_id for m in masks})
+    seen = {m.session_id for m in masks}
+    sessions = sorted(seen | set(expected_sessions or ()))
     out = {}
     for sid in sessions:
         sm = [m for m in masks if m.session_id == sid]
@@ -101,6 +109,8 @@ def support_ledger(rows: list[dict]) -> dict:
     return {
         "note": "missingness only; no feature or label VALUE is read here",
         "changes_no_floor": True,
+        "sessions_expected": len(sessions),
+        "sessions_with_zero_rows": sorted(set(sessions) - seen),
         "sessions": out,
         "tranche_totals_by_horizon": totals,
     }

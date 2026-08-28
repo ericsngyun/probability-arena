@@ -194,3 +194,21 @@ def test_the_refusal_names_what_actually_differs():
         S.assert_metadata_matches_session(_session(), _events(("A", "B", "Q")))
     msg = str(exc.value)
     assert "'C'" in msg and "'Q'" in msg, "the refusal must name the divergence"
+
+
+def test_a_zero_row_session_is_visible_not_absent():
+    """S04 produced no rows and simply vanished from the ledger, which is
+    indistinguishable from never having been processed."""
+    rows = corpus(n_sessions=2, n_markets=3, n_per=5)
+    out = S.support_ledger(rows, expected_sessions=["s0", "s1", "s_empty"])
+    assert out["sessions_expected"] == 3
+    assert out["sessions_with_zero_rows"] == ["s_empty"]
+    assert out["sessions"]["s_empty"]["rows_emitted"] == 0
+    assert out["sessions"]["s_empty"]["clusters"] == 0
+
+
+def test_without_expected_sessions_the_ledger_reports_none_missing():
+    rows = corpus(n_sessions=2, n_markets=3, n_per=5)
+    out = S.support_ledger(rows)
+    assert out["sessions_with_zero_rows"] == []
+    assert out["sessions_expected"] == 2
