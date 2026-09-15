@@ -275,6 +275,10 @@ def coverage_deficit(records: list[SessionRecord]) -> dict:
 
     * a session that is operationally valid but **fails its target-bin
       coverage stays in the corpus** -- its rows are good rows;
+    * a session whose capture was healthy but which observed **nothing** (its
+      markets had settled) keeps **no** rows, yet still **consumed a slot** and
+      therefore still owes a replacement -- corpus membership and slot
+      consumption are different questions;
     * it is **never relabelled** to another bin, however many intervals it
       happened to land there;
     * its obligation remains outstanding and is discharged by a
@@ -290,11 +294,25 @@ def coverage_deficit(records: list[SessionRecord]) -> dict:
     """
     state = state_from_ledger(records)
     clean = [r for r in records if r.in_corpus]
-    missed = [r for r in records if r.in_corpus and not r.counted]
+
+    # THREE states, not two. `in_corpus` answers "do these rows belong in the
+    # dataset". It does NOT answer "was a scheduled slot consumed". A session
+    # whose capture was flawless but whose markets had all already settled --
+    # L1 PASS, L4 NO_EVIDENCE, `CAPTURE_HEALTHY_BUT_EMPTY` -- carries
+    # `operationally_clean=False` and so used to fall out of `missed`
+    # altogether, owing nothing. Both vacuous sessions this tranche has
+    # produced (S04, S07) take exactly that path, so the written ledger
+    # asserted a replacement debt that the code never booked. A slot spent is
+    # a slot spent, however healthy the socket was.
+    missed = [r for r in records if not r.counted]
 
     remaining = state.bin_remaining()
     outstanding = {b: n for b, n in remaining.items() if n > 0}
-    planned_left = max(0, PLANNED_SESSIONS - len(clean))
+    # Planned slots are consumed by every session that RAN, not merely by the
+    # ones whose rows survived into the corpus. Counting corpus membership
+    # here overstated the remaining tranche and so suppressed the very
+    # shortfall this field exists to expose.
+    planned_left = max(0, PLANNED_SESSIONS - len(records))
 
     # TWO SEPARATE FACTS, deliberately not merged.
     #
@@ -318,7 +336,7 @@ def coverage_deficit(records: list[SessionRecord]) -> dict:
     return {
         "sessions_in_corpus": len(clean),
         "sessions_discharging_a_bin": state.sessions_completed,
-        "sessions_clean_but_bin_missed": [r.label for r in missed],
+        "sessions_that_missed_their_bin": [r.label for r in missed],
         "bin_obligations_outstanding": outstanding,
         "obligations_total": sum(outstanding.values()),
         "planned_sessions_remaining": planned_left,
@@ -328,8 +346,10 @@ def coverage_deficit(records: list[SessionRecord]) -> dict:
         "replacement_debt": replacement_debt,
         "replacement_sessions_required": len(replacement_debt),
         "next_replacement_index": PLANNED_SESSIONS + 1,
-        "rule": ("a clean session that misses its bin stays in the corpus, is "
-                 "never relabelled, and its obligation is discharged by an "
+        "rule": ("a session that misses its bin owes a replacement whether or "
+                 "not its rows reached the corpus; a clean one stays in the "
+                 "corpus, is never relabelled, and its obligation is "
+                 "discharged by an "
                  "appended replacement session for the SAME bin. The debt is "
                  "attached to the MISSED SESSION and is NOT cancelled by "
                  "another session later filling that bin's quota."),

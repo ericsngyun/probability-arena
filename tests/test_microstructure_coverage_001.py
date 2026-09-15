@@ -217,7 +217,7 @@ def test_clean_session_that_misses_its_bin_stays_in_corpus():
     d = C.coverage_deficit([S01, S02, missed])
     assert d["sessions_in_corpus"] == 3
     assert d["sessions_discharging_a_bin"] == 2
-    assert "S03" in d["sessions_clean_but_bin_missed"]
+    assert "S03" in d["sessions_that_missed_their_bin"]
 
 
 def test_a_missed_bin_is_never_relabelled_to_a_bin_it_touched():
@@ -393,3 +393,75 @@ def test_quota_shortfall_and_replacement_debt_are_separate_fields():
     assert "quota_shortfall_beyond_planned_tranche" in d
     assert "replacement_debt" in d
     assert d["replacement_debt"] == []           # nothing missed
+
+
+# --- the vacuous-session debt path, which no test used to exercise ----------
+#
+# Every replacement-debt test above builds its missed session with
+# `operationally_clean` left at its default of True. Both vacuous sessions this
+# tranche actually produced are the other kind: capture flawless, market dead,
+# `CAPTURE_HEALTHY_BUT_EMPTY`, and therefore `operationally_clean=False`. The
+# debt rule was gated on corpus membership, so that shape produced no debt at
+# all while the suite stayed green.
+
+def _vacuous(label, bin_, series, start):
+    """A session exactly as the ledger records a CAPTURE_HEALTHY_BUT_EMPTY one."""
+    return C.SessionRecord(label, bin_, series, start,
+                           counted=False, operationally_clean=False)
+
+
+def test_a_capture_healthy_but_empty_session_still_owes_a_replacement():
+    """S07: L1 PASS, zero rows, every market already settled.
+
+    Its rows are correctly absent from the corpus. Its SLOT was still spent,
+    so the obligation it was scheduled to discharge is still outstanding.
+    """
+    s07 = _vacuous("MMEDGE-S07-live_event-20260828", TTE_LIVE_EVENT,
+                   "KXMLBHR", "2026-08-28T04:25:06Z")
+    d = C.coverage_deficit([S01, S02, s07])
+    assert d["replacement_debt"] == [
+        {"session": "MMEDGE-S07-live_event-20260828", "bin": TTE_LIVE_EVENT}]
+    assert d["replacement_sessions_required"] == 1
+    # and its rows still do not enter the corpus
+    assert d["sessions_in_corpus"] == 2
+
+
+def test_both_vacuous_sessions_are_named_not_merely_counted():
+    """The real ledger shape: S04 and S07, each owing its own bin."""
+    s04 = _vacuous("MMEDGE-S04-late_resolution-20260826", TTE_LATE_RESOLUTION,
+                   "KXMLBHR", "2026-08-26T01:45:04Z")
+    s07 = _vacuous("MMEDGE-S07-live_event-20260828", TTE_LIVE_EVENT,
+                   "KXMLBHR", "2026-08-28T04:25:06Z")
+    d = C.coverage_deficit([S01, S02, s04, s07])
+    assert {x["session"] for x in d["replacement_debt"]} == {
+        "MMEDGE-S04-late_resolution-20260826",
+        "MMEDGE-S07-live_event-20260828"}
+    assert {x["bin"] for x in d["replacement_debt"]} == {
+        TTE_LATE_RESOLUTION, TTE_LIVE_EVENT}
+    assert d["replacement_sessions_required"] == 2
+
+
+def test_a_spent_slot_counts_against_the_planned_tranche_even_if_vacuous():
+    """Planned capacity is consumed by running, not by surviving.
+
+    Counting corpus membership let a vacuous session look like it had never
+    occupied a slot, which inflated the remaining tranche and cancelled the
+    shortfall the field exists to report.
+    """
+    recs = [S01, S02,
+            _vacuous("S03", TTE_LATE_RESOLUTION, "KXMLBHR", "2026-08-25T01:45:00Z")]
+    d = C.coverage_deficit(recs)
+    assert d["sessions_in_corpus"] == 2, "the vacuous session keeps no rows"
+    assert d["planned_sessions_remaining"] == C.PLANNED_SESSIONS - 3, (
+        "three slots were spent, whatever became of their rows")
+
+
+def test_debt_is_independent_of_corpus_membership():
+    """The two facts must move independently, in both directions."""
+    clean_miss = C.SessionRecord("Sc", TTE_FAR, "KXMLBGAME",
+                                 "2026-08-25T18:00:00Z",
+                                 counted=False, operationally_clean=True)
+    dirty_miss = _vacuous("Sd", TTE_FAR, "KXMLBGAME", "2026-08-25T18:00:00Z")
+    d = C.coverage_deficit([clean_miss, dirty_miss])
+    assert d["sessions_in_corpus"] == 1          # only the clean one
+    assert d["replacement_sessions_required"] == 2   # but both owe
