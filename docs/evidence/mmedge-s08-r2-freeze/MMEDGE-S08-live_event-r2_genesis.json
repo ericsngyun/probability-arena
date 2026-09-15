@@ -109,7 +109,7 @@
   "freeze_documentation_commit": "c21b254",
   "authorization_revision": 2,
   "authorized_capture_contract": "8b448f687dc00ac0d34332f98d26f86d1a77f5f8",
-  "capture_code_fingerprint": "6260aa48debfec61c087e1689b301936daebf0662ffc0285a5e0738d5bd49dc0",
+  "capture_code_fingerprint": "7ad244362dd6d431b5a65d4d436f58747998a88179606c73d1f866afe71dc28f",
   "freeze_fingerprint": "a29f8c23fcb57aeedf372182a40167c70e5e38d14651ea692e6427cc264bfffa",
   "authorization_revised_at_utc": "2026-09-15T08:47:32.140559+00:00",
   "authorization_revision_reason": "Administrative revision: arm/launch binds to capture-code and freeze artifact fingerprints, not literal HEAD==code_commit. Experimental freeze (series/anchor/start/duration/debt) unchanged. Docs-tip commits must neither authorize collector drift nor invalidate identical collector bytes.",
