@@ -85,16 +85,17 @@
     "reason": "at least one complete live_event unit remains reachable for KXNFLGAME"
   },
   "arm_gates_required": [
-    "main == origin == EVO == 8b448f6",
-    "clean EVO tree",
-    "no existing session root",
+    "main == origin == EVO (clean trees)",
+    "HEAD is 8b448f6 or a descendant that does not change app/microstructure capture contract",
+    "no existing session root for MMEDGE-S08-live_event-r2",
     "target-bin reachability PASS",
     ">= 1 frozen candidate capable of a complete interval",
     "no expired/passed target bin",
-    "expected schema/prereg hashes exact"
+    "expected schema/prereg hashes exact",
+    "expected_commit pin: 8b448f6 (Amendment-002 capture contract)"
   ],
   "launch_drift_guards": [
-    "commit == 8b448f6",
+    "commit still carries Amendment-002 capture contract (8b448f6 lineage)",
     "candidate lifecycle still eligible",
     "session start still inside frozen tolerance"
   ],
@@ -103,5 +104,6 @@
     "NFL public schedule was a sanity check only; occurrence/anchor derived solely from Kalshi market metadata via the deterministic scheduler.",
     "Coverage layer selected day_et=2026-09-20 / KXNFLGAME (weekend tie-break for unrepresented series). Anchor layer restricted to that slate.",
     "DET@BUF Thursday 2026-09-17 exists in the venue book but was NOT selected; do not manually retarget."
-  ]
+  ],
+  "freeze_documentation_commit": "c21b254"
 }
