@@ -278,14 +278,14 @@ def test_no_hypothesis_quantity_appears_in_the_deficit_rule():
         assert not any(banned in n.lower() for n in names)
 
 
-# --- lifecycle compatibility (forward rule, frozen after S04) ---------------
+# --- lifecycle compatibility (LIFECYCLE-COMPATIBILITY-AMENDMENT-002) --------
 
 def test_late_resolution_is_only_compatible_with_series_that_outlive_the_anchor():
     """S04 captured 27 frames in 16ms because every candidate had FINALIZED.
 
     For MLB/WNBA the contract settles at or before `occurrence_datetime`, so a
-    TTE<0 session begins after settlement. This is a contract property measured
-    from published metadata, not an activity or outcome observation.
+    TTE<0 session cannot supply a complete late_resolution unit. NFL's +0.12 h
+    lag is also too short for the frozen first-tick geometry (TTE=-600).
     """
     compat = C.compatible_series(TTE_LATE_RESOLUTION)
     assert set(compat) == {"KXATPMATCH", "KXWTAMATCH"}
@@ -295,20 +295,32 @@ def test_late_resolution_is_only_compatible_with_series_that_outlive_the_anchor(
         assert ok is False and why
 
 
-def test_pre_anchor_bins_exclude_nothing():
-    """TTE>0 is before the anchor, so every series is still live there."""
-    for b in (TTE_FAR, TTE_APPROACHING, TTE_NEAR_EVENT, TTE_LIVE_EVENT):
-        assert set(C.compatible_series(b)) == set(C.ELIGIBLE_SERIES)
+def test_live_event_excludes_series_that_die_inside_the_bin():
+    """S07: KXMLBHR × live_event — the old pre-anchor bypass is gone."""
+    ok, why = C.lifecycle_compatible("KXMLBHR", TTE_LIVE_EVENT)
+    assert ok is False, why
+    compat = set(C.compatible_series(TTE_LIVE_EVENT))
+    assert "KXMLBHR" not in compat
+    assert "KXMLBTOTAL" not in compat
+    assert {"KXATPMATCH", "KXWTAMATCH", "KXMLBGAME", "KXNFLGAME"} <= compat
 
 
-def test_the_rule_is_about_window_length_not_just_sign():
-    """NFL settles AFTER occurrence, but only by 7 minutes."""
-    ok, why = C.lifecycle_compatible("KXNFLGAME", TTE_LATE_RESOLUTION,
+def test_approaching_remains_open_for_early_settling_series():
+    """Observation intervals fit before closure for approaching."""
+    for s in ("KXMLBHR", "KXMLBTOTAL", "KXWNBAGAME", "KXWNBATOTAL"):
+        ok, why = C.lifecycle_compatible(s, TTE_APPROACHING)
+        assert ok is True, why
+
+
+def test_a_3h_session_crossing_the_anchor_still_allows_complete_intervals():
+    """Killer regression: full capture length must NOT be the compatibility bar.
+
+    Tennis late_resolution under a 10_800 s session crosses deep past the
+    anchor; complete in-bin units still exist, so the pair stays compatible.
+    """
+    ok, why = C.lifecycle_compatible("KXWTAMATCH", TTE_LATE_RESOLUTION,
                                      session_seconds=10_800)
-    assert ok is False and "shorter than" in why
-    ok2, _ = C.lifecycle_compatible("KXNFLGAME", TTE_LATE_RESOLUTION,
-                                    session_seconds=300)
-    assert ok2 is True, "a short enough window would fit inside +0.12h"
+    assert ok is True, why
 
 
 def test_an_unmeasured_series_is_not_excluded():
@@ -327,9 +339,13 @@ def test_the_scheduler_will_not_offer_an_incompatible_series():
 
 def test_lifecycle_uses_no_activity_or_outcome_input():
     import ast, inspect
-    tree = ast.parse(inspect.getsource(C.lifecycle_compatible))
+    from app.microstructure import lifecycle_compatibility as LC
+    tree = ast.parse(inspect.getsource(LC.lifecycle_compatible))
+    tree2 = ast.parse(inspect.getsource(LC.count_complete_observable_intervals))
     names = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
     names |= {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
+    names |= {n.id for n in ast.walk(tree2) if isinstance(n, ast.Name)}
+    names |= {n.attr for n in ast.walk(tree2) if isinstance(n, ast.Attribute)}
     for banned in ("activity", "volume", "price", "frames", "blocks",
                    "counted", "verdict", "rows"):
         assert not any(banned in n.lower() for n in names), banned
@@ -339,6 +355,7 @@ def test_the_measurement_provenance_is_recorded():
     assert C.SETTLEMENT_LAG_MEASURED_AT == "2026-08-26"
     assert C.SETTLEMENT_LAG_SAMPLE_PER_SERIES == 200
     assert set(C.SERIES_SETTLEMENT_LAG_H) == set(C.ELIGIBLE_SERIES)
+    assert set(C.SERIES_LIFECYCLE_EVIDENCE) == set(C.ELIGIBLE_SERIES)
 
 
 def test_the_rule_is_forward_only_and_does_not_invalidate_S03():
@@ -347,6 +364,14 @@ def test_the_rule_is_forward_only_and_does_not_invalidate_S03():
     s03 = rec("S03", TTE_LATE_RESOLUTION, "KXMLBGAME", "2026-08-25T01:45:04Z")
     st = C.state_from_ledger([S01, S02, s03])
     assert st.bin_completed[TTE_LATE_RESOLUTION] == 2
+
+
+def test_post_anchor_bins_proxy_is_gone():
+    """The falsified abstraction must not remain as a gate."""
+    import app.microstructure.lifecycle_compatibility as LC
+    import app.microstructure.coverage as Cov
+    assert not hasattr(LC, "_POST_ANCHOR_BINS")
+    assert not hasattr(Cov, "_POST_ANCHOR_BINS")
 
 
 # --- replacement debt is NOT cancelled by the quota filling ------------------

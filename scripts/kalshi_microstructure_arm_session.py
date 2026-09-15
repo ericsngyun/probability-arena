@@ -26,6 +26,9 @@ from app.microstructure.panel import (  # noqa: E402
     HARD_STOP_FPS, NEVER_EXCEED_CONCURRENCY, assert_capacity_relationship)
 from app.microstructure.rows import (  # noqa: E402
     LABEL_SCHEMA_VERSION, ROW_SCHEMA_VERSION)
+from app.microstructure.lifecycle_compatibility import (  # noqa: E402
+    TARGET_BIN_REACHABLE, project_target_bin_reachability,
+)
 
 
 REST = "https://api.elections.kalshi.com/trade-api/v2"
@@ -173,6 +176,27 @@ def main(argv) -> int:
           f"(in {(start - now).total_seconds() / 3600:.2f} h)", flush=True)
     if not check_liveness(markets, when="preflight", fail=fail):
         return 1
+
+    # Projected target-bin survival — lifecycle/clock/status only. Refuses a
+    # slot that cannot structurally harvest a complete in-bin observation unit.
+    target_bin = sched.get("scheduled_target_bin") or sched.get("target_bin")
+    if target_bin:
+        statuses = {t: market_status(t) for t in markets}
+        occurrence = datetime.fromisoformat(
+            sched["anchor_occurrence_datetime"].replace("Z", "+00:00"))
+        code, why = project_target_bin_reachability(
+            target_bin=target_bin,
+            series=a.expected_series,
+            occurrence=occurrence,
+            session_start=start,
+            session_seconds=seconds,
+            now=now,
+            candidate_statuses=statuses,
+        )
+        print(f"  target-bin reachability {code}", flush=True)
+        if code != TARGET_BIN_REACHABLE:
+            return fail(f"target-bin reachability {code}: {why}")
+
     print("=== PREFLIGHT PASSED — waiting ===", flush=True)
 
     while datetime.now(timezone.utc) < start:

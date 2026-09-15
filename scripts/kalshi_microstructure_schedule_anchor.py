@@ -29,26 +29,15 @@ from app.microstructure.panel import (  # noqa: E402
     NEVER_EXCEED_CONCURRENCY, TTE_APPROACHING, TTE_FAR, TTE_LATE_RESOLUTION,
     TTE_LIVE_EVENT, TTE_NEAR_EVENT, WARMUP_S, tte_bin,
 )
+from app.microstructure.lifecycle_compatibility import (  # noqa: E402
+    FIRST_TICK_TTE_S, session_seconds_for_bin,
+)
 from scripts.kalshi_activity_profile_freeze_universe import (  # noqa: E402
     candidates_closing_on)
 
-SELECTION_RULE_VERSION = "capture-plan-addendum-1+2 / edge-amendment-4"
+SELECTION_RULE_VERSION = "capture-plan-addendum-1+2 / edge-amendment-4 / lifecycle-002"
 SERIES = ("KXMLBGAME", "KXMLBTOTAL", "KXMLBHR", "KXATPMATCH", "KXWTAMATCH",
           "KXWNBATOTAL", "KXWNBAGAME", "KXNFLGAME")
-
-#: TTE the FIRST research tick should land on, per bin. Chosen at each bin's
-#: upper edge so the session descends through the whole stratum, maximising
-#: the number of complete intervals that fall wholly inside it.
-#: `far` is unbounded above, so its first tick is placed high enough that the
-#: WHOLE session stays above the 21,600 edge; anchoring it just above the edge
-#: would descend out of the stratum within one interval.
-FIRST_TICK_TTE_S = {
-    TTE_FAR: 21_600 + 10_800,
-    TTE_APPROACHING: 21_600,
-    TTE_NEAR_EVENT: 7_200,
-    TTE_LIVE_EVENT: 900,
-    TTE_LATE_RESOLUTION: -600,
-}
 
 MIN_LEAD_S = 120   # do not schedule a start we cannot actually reach
 
@@ -80,7 +69,9 @@ def main(argv) -> int:
     import argparse
     ap = argparse.ArgumentParser()
     ap.add_argument("--target-bin", required=True, choices=sorted(FIRST_TICK_TTE_S))
-    ap.add_argument("--seconds", type=int, default=10_800)
+    ap.add_argument("--seconds", type=int, default=None,
+                    help="capture length; default = per-bin ops contract "
+                         "(LIFECYCLE-COMPATIBILITY-AMENDMENT-002)")
     ap.add_argument("--days", default="", help="ET days to enumerate, comma-separated")
     ap.add_argument("--series", default="",
                     help="restrict to these series, comma-separated. Supplied "
@@ -91,6 +82,8 @@ def main(argv) -> int:
     ap.add_argument("--out-prefix", default="/tmp/anchor")
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args(argv[1:])
+    if a.seconds is None:
+        a.seconds = session_seconds_for_bin(a.target_bin)
 
     now = datetime.now(timezone.utc)
     days = ([d for d in a.days.split(",") if d]

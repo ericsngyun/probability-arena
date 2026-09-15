@@ -28,6 +28,16 @@ from app.microstructure.panel import (
     TTE_APPROACHING, TTE_FAR, TTE_LATE_RESOLUTION, TTE_LIVE_EVENT,
     TTE_NEAR_EVENT,
 )
+from app.microstructure.lifecycle_compatibility import (
+    SERIES_LIFECYCLE_EVIDENCE,
+    SERIES_SETTLEMENT_LAG_H,
+    SETTLEMENT_LAG_MEASURED_AT,
+    SETTLEMENT_LAG_SAMPLE_PER_SERIES,
+    assess_compatibility,
+    compatible_series as _lc_compatible_series,
+    lifecycle_compatible as _lc_lifecycle_compatible,
+    session_seconds_for_bin,
+)
 
 #: The frozen 4/4/4/4/4 allocation.
 BIN_TARGETS = {TTE_LATE_RESOLUTION: 4, TTE_LIVE_EVENT: 4, TTE_NEAR_EVENT: 4,
@@ -366,70 +376,19 @@ def replacement_obligations(records: list[SessionRecord]) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Lifecycle compatibility (frozen 2026-08-26, after S04)
-#
-# S04 captured 27 frames in 16 ms because all 24 KXMLBHR candidates had
-# FINALIZED before the session opened. The cause is a contract property, not an
-# activity one:
-#
-#   `occurrence_datetime` is the anchor the whole schedule is built on, and for
-#   MLB/WNBA/NFL the contract SETTLES at or before that instant. `close_time`
-#   is a +69 h settlement DEADLINE and says nothing about when settlement
-#   actually happens.
-#
-# So `late_resolution` -- defined as TTE < 0, i.e. after `occurrence_datetime`
-# -- is *after settlement* for those series. There is no live market to
-# observe, however the session is scheduled. Tennis settles +4 to +6 h after
-# occurrence, which is why S01 (WTA) was dense in the same bin.
-#
-# Derived from published contract metadata over 200 settled markets per series.
-# It uses NO activity, NO confirmation outcome and NO result from S01-S04 --
-# the same table would have been computable before the tranche began.
+# Lifecycle compatibility — LIFECYCLE-COMPATIBILITY-AMENDMENT-002
+# Implementation: app.microstructure.lifecycle_compatibility
 # ---------------------------------------------------------------------------
-
-#: Median hours between `settlement_ts` and `occurrence_datetime`, measured
-#: 2026-08-26 over 200 settled/finalized markets per series. Negative means the
-#: contract is already settled when the anchor field says the event occurs.
-SERIES_SETTLEMENT_LAG_H = {
-    "KXMLBGAME": -0.04, "KXMLBHR": -0.22, "KXMLBTOTAL": -0.39,
-    "KXWNBAGAME": -0.55, "KXWNBATOTAL": -0.61, "KXNFLGAME": +0.12,
-    "KXATPMATCH": +3.82, "KXWTAMATCH": +5.80,
-}
-SETTLEMENT_LAG_MEASURED_AT = "2026-08-26"
-SETTLEMENT_LAG_SAMPLE_PER_SERIES = 200
-
-#: A `late_resolution` session must have live market for its whole research
-#: window, so the series must stay unsettled for at least that long past the
-#: anchor. Other bins sit at TTE > 0, before the anchor, where every series is
-#: still live.
-_POST_ANCHOR_BINS = (TTE_LATE_RESOLUTION,)
 
 
 def lifecycle_compatible(series: str, target_bin: str,
-                         session_seconds: int = 10_800) -> tuple[bool, str]:
-    """Can this series produce a live market throughout this bin's window?
-
-    A structural question about the contract, answered before any capture.
-    """
-    if target_bin not in _POST_ANCHOR_BINS:
-        return True, "bin sits before the anchor; the market is still live"
-    lag = SERIES_SETTLEMENT_LAG_H.get(series)
-    if lag is None:
-        return True, f"no settlement-lag measurement for {series}; not excluded"
-    need_h = session_seconds / 3600.0
-    if lag <= 0:
-        return False, (
-            f"{series} settles {abs(lag):.2f} h BEFORE its occurrence_datetime, "
-            f"so a {target_bin} session (TTE < 0) begins after the contract is "
-            f"finalized; there is no live market to observe")
-    if lag < need_h:
-        return False, (
-            f"{series} settles only {lag:.2f} h after occurrence, shorter than "
-            f"the {need_h:.2f} h research window a {target_bin} session needs")
-    return True, (f"{series} stays unsettled {lag:.2f} h past occurrence, "
-                  f"covering the {need_h:.2f} h window")
+                         session_seconds: int | None = None) -> tuple[bool, str]:
+    if session_seconds is None:
+        session_seconds = session_seconds_for_bin(target_bin)
+    return _lc_lifecycle_compatible(series, target_bin, session_seconds)
 
 
-def compatible_series(target_bin: str, session_seconds: int = 10_800) -> tuple:
-    return tuple(s for s in ELIGIBLE_SERIES
-                 if lifecycle_compatible(s, target_bin, session_seconds)[0])
+def compatible_series(target_bin: str, session_seconds: int | None = None) -> tuple:
+    if session_seconds is None:
+        session_seconds = session_seconds_for_bin(target_bin)
+    return _lc_compatible_series(target_bin, session_seconds, ELIGIBLE_SERIES)
