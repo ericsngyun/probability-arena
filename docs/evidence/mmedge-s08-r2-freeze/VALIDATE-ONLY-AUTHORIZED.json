@@ -1,0 +1,12 @@
+{
+  "phase": "no_socket_arm_validation",
+  "validated_at_utc": "2026-09-15T08:49:05.926544+00:00",
+  "repo_tip": "f92be1d6bba528b58598eaa9e527f4f71ca52766",
+  "authorized_capture_contract": "8b448f687dc00ac0d34332f98d26f86d1a77f5f8",
+  "capture_code_fingerprint": "MATCH",
+  "freeze_fingerprint": "MATCH",
+  "result": "AUTHORIZED",
+  "armed": false,
+  "socket_opened": false,
+  "session_root_created": false
+}
