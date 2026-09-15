@@ -61,6 +61,11 @@ fill out the 4/4/4/4/4 allocation.
 | 05 | `MMEDGE-S05-late_resolution-20260826` | `late_resolution` | 2026-08-26T21:05:01Z | 10,800 s | 24 | **CLEAN — counts** |
 | 06 | `MMEDGE-S06-late_resolution-20260827` | `late_resolution` | 2026-08-27T18:05:03Z | 10,800 s | 24 | **CLEAN — counts** |
 | 07 | `MMEDGE-S07-live_event-20260828` | `live_event` | 2026-08-28T04:25:06Z | 10,800 s | 24 | **CAPTURE HEALTHY BUT EMPTY — does not count, owes a replacement** |
+| 08 | `MMEDGE-S08-live_event-r2` | `live_event` | 2026-09-20T19:40:00Z | **1,800 s** | 24 | **FROZEN — not armed** (`schedule_revision=2`, commit `8b448f6`) |
+
+> **S08 r1 expired.** `schedule-decision-08.json` (2026-08-28 → 2026-08-29 /
+> `KXMLBHR`) was never armed and must not be reused. r2 is a fresh prospective
+> freeze under `LIFECYCLE-COMPATIBILITY-AMENDMENT-002`.
 
 ### Session 01 — pre-capture record
 
@@ -755,8 +760,45 @@ reads 0). A quota reading alone would therefore forget S04 entirely. That is
 precisely what the named debt list exists to prevent, and the two views are
 **not** summed here.
 
-**Next obligation: `live_event`.** The earlier form of this line read that
-`live_event` "carries no lifecycle restriction, so all eight series are
-available" — **that sentence names the defect.** The absence of a restriction
-is not a property of the bin; it is an artifact of `lifecycle_compatible()`
-being scoped to `late_resolution` alone. S07 is the cost of believing it.
+**Next obligation: `live_event` — FROZEN as `MMEDGE-S08-live_event-r2`, not
+armed.** Arm only T−30…T−60 minutes before `2026-09-20T19:40:00Z`. If
+reachability fails at arm, refuse and book replacement debt; do not substitute.
+
+### Session 08 — freeze record (`schedule_revision=2`, Amendment-002)
+
+Frozen **2026-09-15** on EVO at commit **`8b448f6`**. Not armed.
+
+| Field | Value |
+|---|---|
+| label | `MMEDGE-S08-live_event-r2` |
+| schedule_revision | **2** |
+| code_commit | `8b448f687dc00ac0d34332f98d26f86d1a77f5f8` |
+| target_bin | `live_event` |
+| duration_s | **1800** |
+| series | **`KXNFLGAME`** (deterministic coverage + anchor layers) |
+| selected_day_et | `2026-09-20` (weekend tie-break; unrepresented series) |
+| anchor_occurrence_datetime | `2026-09-20T20:00:00+00:00` |
+| scheduled_session_start | `2026-09-20T19:40:00+00:00` |
+| scheduled_session_end | `2026-09-20T20:10:00+00:00` |
+| replacement_debt_discharged | `MMEDGE-S07-live_event-20260828` (S07) |
+| lifecycle_amendment | `LIFECYCLE-COMPATIBILITY-AMENDMENT-002` |
+| capture_contract_version | `lifecycle_compatibility=interval-completeness-v1`, `session_duration=per-bin-v1` |
+| candidates at freeze | 24 (16 on the anchor slate); projected covering intervals **3** |
+| target-bin reachability at freeze | `TARGET_BIN_REACHABLE` |
+| artifacts | `~/microstructure-tranche/s08-r2-freeze/` + `MMEDGE-S08-live_event-r2_genesis.json` |
+
+NFL public schedules were a **sanity check only**. The Thursday DET@BUF game
+exists in the Kalshi book but was **not** selected: coverage chose the
+2026-09-20 weekend slate, and the anchor layer was restricted to that day.
+Do not manually retarget.
+
+**Arm gates (not yet run):** `main==origin==EVO==8b448f6`, clean tree, no
+session root, target-bin reachability PASS, ≥1 complete-interval-capable
+candidate, schema/prereg hashes exact. Launch drift guard immediately before
+socket open. On reachability failure: refuse; no series/anchor substitution.
+
+S01–S07 used the original capture contract (10,800 s global; `_POST_ANCHOR_BINS`
+proxy). **S08+ uses Amendment-002 acquisition mechanics.** The statistical
+estimand is unchanged.
+
+---

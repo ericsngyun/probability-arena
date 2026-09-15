@@ -1,0 +1,138 @@
+{
+  "milestone": "MARKET-MICROSTRUCTURE-EDGE-001",
+  "phase": "coverage_scheduling_decision",
+  "decided_at_utc": "2026-09-15T08:35:39.987623+00:00",
+  "selection_rule_version": "capture-plan-addendum-1+2 / edge-amendment-4 / lifecycle-002",
+  "coverage_state": {
+    "bin_completed": {
+      "late_resolution": 4,
+      "live_event": 1
+    },
+    "series_used": {
+      "KXATPMATCH|KXWTAMATCH": 1,
+      "KXATPMATCH": 2,
+      "KXMLBGAME": 1,
+      "KXWTAMATCH": 1
+    },
+    "weekend_sessions": 1,
+    "sessions_completed": 5,
+    "bin_remaining": {
+      "late_resolution": 0,
+      "live_event": 3,
+      "near_event": 4,
+      "approaching": 4,
+      "far": 4
+    },
+    "series_remaining": {
+      "KXMLBGAME": 3,
+      "KXMLBTOTAL": 4,
+      "KXMLBHR": 4,
+      "KXATPMATCH": 2,
+      "KXWTAMATCH": 3,
+      "KXWNBATOTAL": 4,
+      "KXWNBAGAME": 4,
+      "KXNFLGAME": 4
+    },
+    "series_represented": 3,
+    "series_still_required": 3,
+    "weekend_remaining": 3
+  },
+  "feasibility": {
+    "sessions_remaining": 15,
+    "bin_sessions_still_required": 15,
+    "bin_quota_satisfiable": true,
+    "series_still_required": 3,
+    "series_quota_satisfiable": true,
+    "weekend_still_required": 3,
+    "weekend_quota_satisfiable": true
+  },
+  "decision": {
+    "target_bin": "live_event",
+    "bin_remaining_before": {
+      "late_resolution": 0,
+      "live_event": 3,
+      "near_event": 4,
+      "approaching": 4,
+      "far": 4
+    },
+    "series_budget_before": {
+      "KXMLBGAME": 3,
+      "KXMLBTOTAL": 4,
+      "KXMLBHR": 4,
+      "KXATPMATCH": 2,
+      "KXWTAMATCH": 3,
+      "KXWNBATOTAL": 4,
+      "KXWNBAGAME": 4,
+      "KXNFLGAME": 4
+    },
+    "series_represented_before": 3,
+    "weekend_remaining_before": 3,
+    "weekend_quota_binding": false,
+    "eligible_slates": [
+      {
+        "day_et": "2026-09-20",
+        "series_available": [
+          "KXNFLGAME"
+        ]
+      },
+      {
+        "day_et": "2026-09-17",
+        "series_available": [
+          "KXMLBGAME",
+          "KXNFLGAME",
+          "KXWNBAGAME",
+          "KXWNBATOTAL"
+        ]
+      },
+      {
+        "day_et": "2026-09-21",
+        "series_available": [
+          "KXNFLGAME"
+        ]
+      },
+      {
+        "day_et": "2026-09-15",
+        "series_available": [
+          "KXMLBGAME",
+          "KXMLBHR",
+          "KXMLBTOTAL",
+          "KXWTAMATCH"
+        ]
+      },
+      {
+        "day_et": "2026-09-16",
+        "series_available": [
+          "KXMLBGAME",
+          "KXMLBHR",
+          "KXMLBTOTAL"
+        ]
+      },
+      {
+        "day_et": "2026-09-18",
+        "series_available": [
+          "KXMLBGAME",
+          "KXWNBAGAME",
+          "KXWNBATOTAL"
+        ]
+      }
+    ],
+    "selected_day_et": "2026-09-20",
+    "selected_is_weekend_et": true,
+    "series_usable_on_slate": [
+      "KXNFLGAME"
+    ],
+    "preferred_series": "KXNFLGAME",
+    "reason": "KXNFLGAME is not yet represented (3/6); slate is a weekend day in ET; earliest qualifying date, ties broken by day then series",
+    "series_budget_after_projected": {
+      "KXMLBGAME": 3,
+      "KXMLBTOTAL": 4,
+      "KXMLBHR": 4,
+      "KXATPMATCH": 2,
+      "KXWTAMATCH": 3,
+      "KXWNBATOTAL": 4,
+      "KXWNBAGAME": 4,
+      "KXNFLGAME": 3
+    },
+    "selected": "2026-09-20"
+  }
+}
