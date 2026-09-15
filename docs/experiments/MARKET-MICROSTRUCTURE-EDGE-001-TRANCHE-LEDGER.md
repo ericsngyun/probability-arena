@@ -60,6 +60,7 @@ fill out the 4/4/4/4/4 allocation.
 | 04 | `MMEDGE-S04-late_resolution-20260826` | `late_resolution` | 2026-08-26T01:45:02Z | 10,800 s | 24 | **CLEAN BUT EMPTY — does not count, S21+** |
 | 05 | `MMEDGE-S05-late_resolution-20260826` | `late_resolution` | 2026-08-26T21:05:01Z | 10,800 s | 24 | **CLEAN — counts** |
 | 06 | `MMEDGE-S06-late_resolution-20260827` | `late_resolution` | 2026-08-27T18:05:03Z | 10,800 s | 24 | **CLEAN — counts** |
+| 07 | `MMEDGE-S07-live_event-20260828` | `live_event` | 2026-08-28T04:25:06Z | 10,800 s | 24 | **CAPTURE HEALTHY BUT EMPTY — does not count, owes a replacement** |
 
 ### Session 01 — pre-capture record
 
@@ -634,9 +635,54 @@ to settlement mid-session; S06 anchored at 18:00Z and lost none. Same series,
 same rule, different points in the settlement distribution. **The lifecycle
 table is not re-measured from this.**
 
+### Session 07 — verdict: **CAPTURE HEALTHY BUT EMPTY**, does not count
+
+**L1 — PASS.** `capped_time`. `events_received == events_archived == 75`,
+conserved. Malformed, rejected, rotation failures, sequence faults,
+reconnects, disconnects: **0**. One segment committed. `peak_1s_sliding` **27**
+vs 3,500. The socket did everything asked of it.
+
+**L2 — PASS**, not vacuous. **1 tick**, warmup respected, cadence exact, K
+respected, reason vocabulary closed. The panel it emitted was empty.
+
+**L3 — FAIL, vacuous.** **0 rows.** No dataset property was exercised, so
+there is nothing here to pass; the verdict records this as *not a pass*
+rather than as a pass over an empty set.
+
+**L4 — NO EVIDENCE.** 0 covering intervals, 0 market-blocks, 0 clusters, 0
+markets ever eligible. All **24 of 24** subscribed markets carry the single
+reason `market_naturally_closed_or_resolved`. Not quiet, not outranked —
+settled.
+
+The tape is the clearest statement of it: **75 frames spanning
+04:25:06 → 04:30:46**, and nothing after. Every frame belongs to the
+subscription burst — 3 `subscribed`, 48 `orderbook_snapshot`, 24 `ticker`,
+**zero `orderbook_delta`, zero `trade`**. The session then held an open,
+healthy, silent socket for the remaining 2 h 54 m of its 3-hour window.
+
+**This is the second session to die this exact death.** S04 carries the same
+L4 signature — `{"market_naturally_closed_or_resolved": 24}` — against a
+different bin and the same series. Two sessions, one mechanism, and the
+mechanism was measurable in advance: `SERIES_SETTLEMENT_LAG_H["KXMLBHR"]` is
+**−0.22 h**, so against S07's 04:45:00Z anchor the table predicted settlement
+at **04:31:48Z**. The last frame arrived **04:30:46Z**. The model was wrong by
+**62 seconds** and was never consulted, because `lifecycle_compatible()` is
+scoped to `_POST_ANCHOR_BINS = (TTE_LATE_RESOLUTION,)` and `live_event` is not
+in it.
+
+**Recorded and NOT acted on here:** the arming-gap theory is refuted by the
+log — preflight ran **1.66 h** before launch with **24/24 candidates live**,
+and every market still responded at subscribe. The arm-time liveness re-check
+merged as `4626ee1` therefore addresses a cause that was not the cause; it
+fires at socket open, where these markets were alive. It remains a genuine
+safety improvement and is not the repair for this failure. **The lifecycle
+table is not re-measured from this**, and the series is not excluded on the
+strength of an outcome. Whether `_POST_ANCHOR_BINS` should widen is a
+separate, pre-registered decision about a measurement defect.
+
 ---
 
-## Tranche state after S06 — two separate facts
+## Tranche state after S07 — two separate facts
 
 ### 1. Bin quota
 
@@ -653,6 +699,7 @@ table is not re-measured from this.**
 | session | bin | discharged by |
 |---|---|---|
 | `MMEDGE-S04-late_resolution-20260826` | `late_resolution` | **S21** |
+| `MMEDGE-S07-live_event-20260828` | `live_event` | **S22** |
 
 **`late_resolution` reads 4/4 AND S04 still owes a replacement.** These are
 different facts. S05 and S06 discharged their **own** scheduled obligations,
@@ -672,12 +719,44 @@ concluded S21 was unnecessary. `replacement_debt` is now a list of
 
 | quantity | value | floor |
 |---|---:|---:|
-| sessions in corpus / counted | 6 / **5** | — |
+| sessions run / in corpus / counted | 7 / **5** / **5** | — |
 | market-blocks | **1,299** (377+396+31+99+396) | 4,000 |
 | clusters | **78** (21+21+6+8+22) | 150 |
 | series represented | **3 of 8** (`KXWTAMATCH` 2, `KXATPMATCH` 2, `KXMLBGAME` 1) | ≥6 |
 | weekend sessions | **1** | ≥4 |
+| planned slots remaining | **13** (S08–S20) | — |
+| bin obligations outstanding | **15** | — |
+| quota shortfall beyond the planned tranche | **2** | — |
 
-**Next obligation: `live_event`** — which carries no lifecycle restriction, so
-all eight series are available and the coverage layer can finally advance
-diversity mechanically.
+### 4. The debt above was written down but never booked
+
+Until this entry, `coverage_deficit()` returned `replacement_debt == []`
+against the real ledger. Both vacuous sessions are
+`CAPTURE_HEALTHY_BUT_EMPTY`, hence `operationally_clean=False`, and the debt
+rule was gated on `in_corpus` — which is that same flag. So the two sessions
+that most obviously owe a replacement were the two the code excluded from
+owing one, while the prose here asserted `S04 → S21` for two weeks.
+
+The suite did not catch it because every replacement-debt test built its
+missed session with `operationally_clean` left at its default of `True`. The
+clean-but-missed direction was tested; the direction the tranche actually took
+was not.
+
+`in_corpus` answers whether rows belong in the dataset. It was never an answer
+to whether a scheduled slot was consumed. The debt attaches to the second, and
+`planned_sessions_remaining` carried the same error in the same direction —
+counting corpus members rather than slots spent, so a vacuous session appeared
+never to have occupied one. Both are repaired, each qualified by a mutation.
+
+Note the asymmetry the two views expose, which is the reason they are kept
+apart: S07's `live_event` obligation is **still visible in the quota** (3
+remaining), whereas S04's `late_resolution` obligation is **not** (that bin
+reads 0). A quota reading alone would therefore forget S04 entirely. That is
+precisely what the named debt list exists to prevent, and the two views are
+**not** summed here.
+
+**Next obligation: `live_event`.** The earlier form of this line read that
+`live_event` "carries no lifecycle restriction, so all eight series are
+available" — **that sentence names the defect.** The absence of a restriction
+is not a property of the bin; it is an artifact of `lifecycle_compatible()`
+being scoped to `late_resolution` alone. S07 is the cost of believing it.
