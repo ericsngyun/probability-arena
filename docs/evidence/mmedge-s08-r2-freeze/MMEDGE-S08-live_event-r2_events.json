@@ -1,0 +1,98 @@
+{
+ "KXNFLGAME-26SEP20CARATL-ATL": {
+  "series": "KXNFLGAME",
+  "occurrence_datetime": "2026-09-20T20:00:00Z"
+ },
+ "KXNFLGAME-26SEP20CARATL-CAR": {
+  "series": "KXNFLGAME",
+  "occurrence_datetime": "2026-09-20T20:00:00Z"
+ },
+ "KXNFLGAME-26SEP20CINHOU-CIN": {
+  "series": "KXNFLGAME",
+  "occurrence_datetime": "2026-09-20T20:00:00Z"
+ },
+ "KXNFLGAME-26SEP20CINHOU-HOU": {
+  "series": "KXNFLGAME",
+  "occurrence_datetime": "2026-09-20T20:00:00Z"
+ },
+ "KXNFLGAME-26SEP20CLETB-CLE": {
+  "series": "KXNFLGAME",
+  "occurrence_datetime": "2026-09-20T20:00:00Z"
+ },
+ "KXNFLGAME-26SEP20CLETB-TB": {
+  "series": "KXNFLGAME",
+  "occurrence_datetime": "2026-09-20T20:00:00Z"
+ },
+ "KXNFLGAME-26SEP20GBNYJ-GB": {
+  "series": "KXNFLGAME",
+  "occurrence_datetime": "2026-09-20T20:00:00Z"
+ },
+ "KXNFLGAME-26SEP20GBNYJ-NYJ": {
+  "series": "KXNFLGAME",
+  "occurrence_datetime": "2026-09-20T20:00:00Z"
+ },
+ "KXNFLGAME-26SEP20MINCHI-CHI": {
+  "series": "KXNFLGAME",
+  "occurrence_datetime": "2026-09-20T20:00:00Z"
+ },
+ "KXNFLGAME-26SEP20MINCHI-MIN": {
+  "series": "KXNFLGAME",
+  "occurrence_datetime": "2026-09-20T20:00:00Z"
+ },
+ "KXNFLGAME-26SEP20NOBAL-BAL": {
+  "series": "KXNFLGAME",
+  "occurrence_datetime": "2026-09-20T20:00:00Z"
+ },
+ "KXNFLGAME-26SEP20NOBAL-NO": {
+  "series": "KXNFLGAME",
+  "occurrence_datetime": "2026-09-20T20:00:00Z"
+ },
+ "KXNFLGAME-26SEP20PHITEN-PHI": {
+  "series": "KXNFLGAME",
+  "occurrence_datetime": "2026-09-20T20:00:00Z"
+ },
+ "KXNFLGAME-26SEP20PHITEN-TEN": {
+  "series": "KXNFLGAME",
+  "occurrence_datetime": "2026-09-20T20:00:00Z"
+ },
+ "KXNFLGAME-26SEP20PITNE-NE": {
+  "series": "KXNFLGAME",
+  "occurrence_datetime": "2026-09-20T20:00:00Z"
+ },
+ "KXNFLGAME-26SEP20PITNE-PIT": {
+  "series": "KXNFLGAME",
+  "occurrence_datetime": "2026-09-20T20:00:00Z"
+ },
+ "KXNFLGAME-26SEP20JACDEN-DEN": {
+  "series": "KXNFLGAME",
+  "occurrence_datetime": "2026-09-20T23:05:00Z"
+ },
+ "KXNFLGAME-26SEP20JACDEN-JAC": {
+  "series": "KXNFLGAME",
+  "occurrence_datetime": "2026-09-20T23:05:00Z"
+ },
+ "KXNFLGAME-26SEP20LVLAC-LAC": {
+  "series": "KXNFLGAME",
+  "occurrence_datetime": "2026-09-20T23:05:00Z"
+ },
+ "KXNFLGAME-26SEP20LVLAC-LV": {
+  "series": "KXNFLGAME",
+  "occurrence_datetime": "2026-09-20T23:05:00Z"
+ },
+ "KXNFLGAME-26SEP20MIASF-MIA": {
+  "series": "KXNFLGAME",
+  "occurrence_datetime": "2026-09-20T23:25:00Z"
+ },
+ "KXNFLGAME-26SEP20MIASF-SF": {
+  "series": "KXNFLGAME",
+  "occurrence_datetime": "2026-09-20T23:25:00Z"
+ },
+ "KXNFLGAME-26SEP20SEAARI-ARI": {
+  "series": "KXNFLGAME",
+  "occurrence_datetime": "2026-09-20T23:25:00Z"
+ },
+ "KXNFLGAME-26SEP20SEAARI-SEA": {
+  "series": "KXNFLGAME",
+  "occurrence_datetime": "2026-09-20T23:25:00Z"
+ }
+}

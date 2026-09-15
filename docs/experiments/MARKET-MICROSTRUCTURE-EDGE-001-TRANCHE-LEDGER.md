@@ -61,7 +61,8 @@ fill out the 4/4/4/4/4 allocation.
 | 05 | `MMEDGE-S05-late_resolution-20260826` | `late_resolution` | 2026-08-26T21:05:01Z | 10,800 s | 24 | **CLEAN — counts** |
 | 06 | `MMEDGE-S06-late_resolution-20260827` | `late_resolution` | 2026-08-27T18:05:03Z | 10,800 s | 24 | **CLEAN — counts** |
 | 07 | `MMEDGE-S07-live_event-20260828` | `live_event` | 2026-08-28T04:25:06Z | 10,800 s | 24 | **CAPTURE HEALTHY BUT EMPTY — does not count, owes a replacement** |
-| 08 | `MMEDGE-S08-live_event-r2` | `live_event` | 2026-09-20T19:40:00Z | **1,800 s** | 24 | **FROZEN — not armed** (`schedule_revision=2`, commit `8b448f6`) |
+| 08 | `MMEDGE-S08-live_event-r2` | `live_event` | 2026-09-20T19:40:00Z | **1,800 s** | 24 | **FROZEN — not armed** (`schedule_revision=2`, `authorization_revision=2`, contract `8b448f6`) |
+
 
 > **S08 r1 expired.** `schedule-decision-08.json` (2026-08-28 → 2026-08-29 /
 > `KXMLBHR`) was never armed and must not be reused. r2 is a fresh prospective
@@ -792,10 +793,18 @@ exists in the Kalshi book but was **not** selected: coverage chose the
 2026-09-20 weekend slate, and the anchor layer was restricted to that day.
 Do not manually retarget.
 
-**Arm gates (not yet run):** `main==origin==EVO==8b448f6`, clean tree, no
-session root, target-bin reachability PASS, ≥1 complete-interval-capable
-candidate, schema/prereg hashes exact. Launch drift guard immediately before
-socket open. On reachability failure: refuse; no series/anchor substitution.
+**Arm gates (not yet run):** clean tree; `capture_code_fingerprint` MATCH;
+`freeze_fingerprint` MATCH; no session root; target-bin reachability PASS;
+≥1 complete-interval-capable candidate; schema/prereg hashes exact. Launch
+drift guard immediately before socket open. On reachability failure: refuse; no
+series/anchor substitution.
+
+**Authorization revision 2 (administrative, 2026-09-15):** arm/launch binds to
+capture-code + freeze-artifact fingerprints, not `HEAD == code_commit`. A
+docs/ledger commit must neither authorize collector drift nor invalidate
+identical collector bytes. Experimental freeze
+(series/anchor/start/duration/debt) is unchanged. Hard feature freeze on the
+Kalshi capture path until S08 closes.
 
 S01–S07 used the original capture contract (10,800 s global; `_POST_ANCHOR_BINS`
 proxy). **S08+ uses Amendment-002 acquisition mechanics.** The statistical

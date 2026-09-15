@@ -29,6 +29,9 @@ from app.microstructure.rows import (  # noqa: E402
 from app.microstructure.lifecycle_compatibility import (  # noqa: E402
     TARGET_BIN_REACHABLE, project_target_bin_reachability,
 )
+from app.microstructure.capture_contract import (  # noqa: E402
+    authorize_capture,
+)
 
 
 REST = "https://api.elections.kalshi.com/trade-api/v2"
@@ -60,19 +63,33 @@ def fail(msg: str) -> int:
     return 2
 
 
-def _commit_state(expected: str) -> tuple[bool, str, str]:
-    """HEAD must be clean AND exactly the authorised commit."""
-    commit = subprocess.run(["git", "-C", str(REPO), "rev-parse", "HEAD"],
-                            capture_output=True, text=True).stdout.strip()
-    dirty = subprocess.run(["git", "-C", str(REPO), "status", "--porcelain"],
-                           capture_output=True, text=True).stdout.strip()
-    if dirty:
-        return False, commit, ("working tree is dirty; a confirmation session "
-                               f"must run from committed code:\n{dirty[:400]}")
-    if not commit.startswith(expected) and not expected.startswith(commit[:len(expected)]):
-        return False, commit, (f"HEAD is {commit[:12]}, but this session is "
-                               f"authorised for {expected}")
-    return True, commit, ""
+def _load_genesis(path: Path | None) -> dict | None:
+    if path is None or not path.exists():
+        return None
+    return json.loads(path.read_text())
+
+
+def check_capture_authorization(genesis: dict, schedule: Path, events: Path,
+                                markets: Path, *, when: str):
+    """Executable-content authorization. Repo tip may differ from code_commit."""
+    auth = authorize_capture(
+        genesis=genesis,
+        schedule_path=schedule,
+        events_path=events,
+        markets_path=markets,
+    )
+    print(f"  capture authorization ({when})", flush=True)
+    print(f"    repo_tip                    {auth.repo_tip[:12]}", flush=True)
+    print(f"    authorized_capture_contract {auth.authorized_capture_contract[:12]}",
+          flush=True)
+    print(f"    capture_code_fingerprint    "
+          f"{'MATCH' if auth.capture_code_fingerprint == auth.expected_capture_code_fingerprint else 'DRIFT'}",
+          flush=True)
+    print(f"    freeze_fingerprint          "
+          f"{'MATCH' if auth.freeze_fingerprint == auth.expected_freeze_fingerprint else 'DRIFT'}",
+          flush=True)
+    print(f"    result                      {auth.result}", flush=True)
+    return auth
 
 
 def check_liveness(markets, *, when, fail):
@@ -115,17 +132,26 @@ def main(argv) -> int:
     ap.add_argument("--root-base", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--max-events", type=int, default=40_000_000)
-    ap.add_argument("--expected-commit", required=True,
-                    help="the exact commit authorised to run this session. "
-                         "Verified at preflight AND again immediately before "
-                         "the socket opens; a drift between the two is a "
-                         "refusal, never a silent upgrade.")
+    ap.add_argument("--genesis", required=True,
+                    help="frozen session genesis JSON carrying capture_code_"
+                         "fingerprint and freeze_fingerprint. Authorization "
+                         "binds to those fingerprints, not to HEAD==code_commit.")
+    ap.add_argument("--expected-commit", default="",
+                    help="deprecated: capture-contract tip label only; "
+                         "ignored for the live check when --genesis is present. "
+                         "Retained so older runbooks do not break on the flag.")
+    ap.add_argument("--validate-only", action="store_true",
+                    help="run authorization + mechanical preflight checks and "
+                         "exit without waiting or opening a socket")
     a = ap.parse_args(argv[1:])
 
     sched = json.loads(Path(a.schedule).read_text())
     events = json.loads(Path(a.events_file).read_text())
     markets = [t for t in Path(a.markets_file).read_text().split() if t]
     seconds = int(sched["session_seconds"])
+    genesis = _load_genesis(Path(a.genesis))
+    if genesis is None:
+        return fail(f"genesis not found: {a.genesis}")
 
     print("=== PREFLIGHT ===", flush=True)
 
@@ -159,10 +185,11 @@ def main(argv) -> int:
         return fail(f"{root} exists and is not empty; a session owns its root")
     print(f"  archive root          fresh: {root}", flush=True)
 
-    ok, commit, why = _commit_state(a.expected_commit)
-    if not ok:
-        return fail(why)
-    print(f"  code commit           {commit[:12]} (clean, pinned)", flush=True)
+    auth = check_capture_authorization(
+        genesis, Path(a.schedule), Path(a.events_file), Path(a.markets_file),
+        when="preflight")
+    if not auth.authorized:
+        return fail(auth.reason)
     print(f"  schema                {ROW_SCHEMA_VERSION} / {LABEL_SCHEMA_VERSION}",
           flush=True)
     print(f"  mode                  {a.mode}", flush=True)
@@ -170,10 +197,33 @@ def main(argv) -> int:
     start = datetime.fromisoformat(
         sched["scheduled_session_start"].replace("Z", "+00:00"))
     now = datetime.now(timezone.utc)
-    if start < now:
+    if start < now and not a.validate_only:
         return fail(f"scheduled start {start.isoformat()} is already past")
     print(f"  scheduled start       {start.isoformat()} "
           f"(in {(start - now).total_seconds() / 3600:.2f} h)", flush=True)
+
+    if a.validate_only:
+        # Structural reachability only — no live status GETs required for the
+        # authorization/drift boundary test. Sunday arm still checks liveness.
+        target_bin = sched.get("scheduled_target_bin") or sched.get("target_bin")
+        if target_bin:
+            occurrence = datetime.fromisoformat(
+                sched["anchor_occurrence_datetime"].replace("Z", "+00:00"))
+            code, why = project_target_bin_reachability(
+                target_bin=target_bin,
+                series=a.expected_series,
+                occurrence=occurrence,
+                session_start=start,
+                session_seconds=seconds,
+                now=now,
+                candidate_statuses=None,
+            )
+            print(f"  target-bin reachability {code}", flush=True)
+            if code != TARGET_BIN_REACHABLE:
+                return fail(f"target-bin reachability {code}: {why}")
+        print("=== VALIDATE-ONLY AUTHORIZED (no socket, no wait) ===", flush=True)
+        return 0
+
     if not check_liveness(markets, when="preflight", fail=fail):
         return 1
 
@@ -204,12 +254,18 @@ def main(argv) -> int:
 
     # RE-VERIFY AFTER THE WAIT. Hours pass between preflight and launch, and
     # the tree can move in that time -- a pull, a merge, a stray edit. The
-    # session is authorised for ONE commit, so drift is a refusal rather than
-    # a silent upgrade to whatever happens to be checked out now.
-    ok, now_commit, why = _commit_state(a.expected_commit)
-    if not ok:
-        return fail(f"commit drifted between preflight and launch: {why}")
-    print(f"  re-verified at launch: {now_commit[:12]}", flush=True)
+    # session is authorised for ONE capture-code fingerprint, so drift is a
+    # refusal rather than a silent upgrade to whatever happens to be checked
+    # out now. Repo-tip docs commits are fine; collector-byte drift is not.
+    auth2 = check_capture_authorization(
+        genesis, Path(a.schedule), Path(a.events_file), Path(a.markets_file),
+        when="launch")
+    if not auth2.authorized:
+        return fail(f"capture authorization drifted between preflight and "
+                    f"launch: {auth2.reason}")
+    if auth2.capture_code_fingerprint != auth.capture_code_fingerprint:
+        return fail("capture-code fingerprint changed during the wait")
+    print(f"  re-verified at launch: repo_tip={auth2.repo_tip[:12]}", flush=True)
 
     # RE-CHECK LIVENESS TOO. The preflight check above was written because S04
     # captured 27 frames against 24 dead markets -- and then it was placed
@@ -232,6 +288,7 @@ def main(argv) -> int:
     print(f"=== LAUNCHING at {datetime.now(timezone.utc).isoformat()} ===",
           flush=True)
     os.execv(sys.executable, cmd)
+    return 0
 
 
 if __name__ == "__main__":

@@ -85,17 +85,18 @@
     "reason": "at least one complete live_event unit remains reachable for KXNFLGAME"
   },
   "arm_gates_required": [
-    "main == origin == EVO (clean trees)",
-    "HEAD is 8b448f6 or a descendant that does not change app/microstructure capture contract",
+    "clean EVO tree",
+    "capture_code_fingerprint MATCH",
+    "freeze_fingerprint MATCH",
     "no existing session root for MMEDGE-S08-live_event-r2",
     "target-bin reachability PASS",
     ">= 1 frozen candidate capable of a complete interval",
     "no expired/passed target bin",
-    "expected schema/prereg hashes exact",
-    "expected_commit pin: 8b448f6 (Amendment-002 capture contract)"
+    "expected schema/prereg hashes exact"
   ],
   "launch_drift_guards": [
-    "commit still carries Amendment-002 capture contract (8b448f6 lineage)",
+    "capture_code_fingerprint still MATCH",
+    "freeze_fingerprint still MATCH",
     "candidate lifecycle still eligible",
     "session start still inside frozen tolerance"
   ],
@@ -105,5 +106,12 @@
     "Coverage layer selected day_et=2026-09-20 / KXNFLGAME (weekend tie-break for unrepresented series). Anchor layer restricted to that slate.",
     "DET@BUF Thursday 2026-09-17 exists in the venue book but was NOT selected; do not manually retarget."
   ],
-  "freeze_documentation_commit": "c21b254"
+  "freeze_documentation_commit": "c21b254",
+  "authorization_revision": 2,
+  "authorized_capture_contract": "8b448f687dc00ac0d34332f98d26f86d1a77f5f8",
+  "capture_code_fingerprint": "6260aa48debfec61c087e1689b301936daebf0662ffc0285a5e0738d5bd49dc0",
+  "freeze_fingerprint": "a29f8c23fcb57aeedf372182a40167c70e5e38d14651ea692e6427cc264bfffa",
+  "authorization_revised_at_utc": "2026-09-15T08:47:32.140559+00:00",
+  "authorization_revision_reason": "Administrative revision: arm/launch binds to capture-code and freeze artifact fingerprints, not literal HEAD==code_commit. Experimental freeze (series/anchor/start/duration/debt) unchanged. Docs-tip commits must neither authorize collector drift nor invalidate identical collector bytes.",
+  "repo_tip_at_authorization_revision": "0250cc2f95d3e16da628a9656da9dd52919a2388"
 }
